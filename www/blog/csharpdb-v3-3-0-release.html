@@ -381,13 +381,13 @@
     )
     """</span>);
 
-<span class="kw">var</span> batch = db.PrepareInsertBatch(<span class="str">"bench"</span>, initialCapacity: <span class="nm">10_000</span>);
+<span class="kw">var</span> batch = db.PrepareInsertBatch(<span class="str">"bench"</span>, initialCapacity: <span class="num">10_000</span>);
 
-<span class="kw">for</span> (<span class="tp">int</span> block = <span class="nm">0</span>; block &lt; <span class="nm">100</span>; block++)
+<span class="kw">for</span> (<span class="tp">int</span> block = <span class="num">0</span>; block &lt; <span class="num">100</span>; block++)
 {
-    <span class="kw">for</span> (<span class="tp">int</span> i = <span class="nm">0</span>; i &lt; <span class="nm">10_000</span>; i++)
+    <span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; <span class="num">10_000</span>; i++)
     {
-        <span class="tp">int</span> id = (block * <span class="nm">10_000</span>) + i;
+        <span class="tp">int</span> id = (block * <span class="num">10_000</span>) + i;
         batch.AddRow(
             <span class="tp">DbValue</span>.FromInteger(id),
             <span class="tp">DbValue</span>.FromInteger(id),

@@ -120,11 +120,11 @@
                     <p>Hardware: Intel i9-11900K (16 logical cores), Windows 10.0.26300, .NET SDK 10.0.202, .NET runtime 10.0.6. The headline numbers in this post come from the v3.3.0 release-core run, captured with <code>--release-core --repeat 3 --repro</code> (priority=High, affinity=0xFF). The release guardrail comparison passed with <code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>.</p>
                     <p>Both engines work against the same schema:</p>
                     <div class="code-block" data-title="Schema (identical on both engines)">
-                        <pre><code>CREATE TABLE products (
-    id       INTEGER PRIMARY KEY,
-    name     TEXT NOT NULL,
-    price    REAL NOT NULL,
-    category TEXT
+                        <pre><code><span class="kw">CREATE TABLE</span> products (
+    id       <span class="tp">INTEGER</span> <span class="kw">PRIMARY KEY</span>,
+    name     <span class="tp">TEXT</span> <span class="kw">NOT NULL</span>,
+    price    <span class="tp">REAL</span> <span class="kw">NOT NULL</span>,
+    category <span class="tp">TEXT</span>
 )</code></pre>
                     </div>
                     <p>SQLite runs through <code>Microsoft.Data.Sqlite</code> 10.0.6 with <code>journal_mode=WAL</code>, <code>synchronous=FULL</code>, private cache, and pooling disabled — the standard durable local configuration. CSharpDB runs through three surfaces: <code>CSharpDB.Data</code> (ADO.NET), <code>CSharpDB.Engine</code> (direct engine API), and <code>CSharpDB.EntityFrameworkCore</code>. Every CSharpDB row below is durable and file-backed unless noted otherwise.</p>
@@ -171,83 +171,83 @@
                     </table>
                     <p>Single-row durable commits are a wash — both engines bottleneck on the fsync per commit. The CSharpDB lead grows with batch size because the bulk path ships a whole batch as one multi-row engine call, so per-row SQL parsing, plan lookup, and parameter binding all collapse into a single operation. <code>Database.PrepareInsertBatch</code> accepts a typed row buffer that is committed as a single atomic insert:</p>
                     <div class="code-block" data-title="Program.cs — CSharpDB.Engine bulk insert">
-                        <pre><code>using CSharpDB.Engine;
-using CSharpDB.Primitives;
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> CSharpDB.Primitives;
 
-await using var db = await Database.OpenAsync("bulk.cdb");
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"bulk.cdb"</span>);
 
-await db.ExecuteAsync("""
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"""
     CREATE TABLE IF NOT EXISTS products (
         id       INTEGER PRIMARY KEY,
         name     TEXT NOT NULL,
         price    REAL NOT NULL,
         category TEXT
     )
-    """);
+    """</span>);
 
-var batch = db.PrepareInsertBatch("products", initialCapacity: 10_000);
-for (int i = 1; i &lt;= 10_000; i++)
+<span class="kw">var</span> batch = db.PrepareInsertBatch(<span class="str">"products"</span>, initialCapacity: 10_000);
+<span class="kw">for</span> (<span class="tp">int</span> i = 1; i &lt;= 10_000; i++)
 {
     batch.AddRow(
-        DbValue.FromInteger(i),
-        DbValue.FromText("Product"),
-        DbValue.FromReal(9.99 + i),
-        DbValue.FromText("Books"));
+        <span class="tp">DbValue</span>.FromInteger(i),
+        <span class="tp">DbValue</span>.FromText(<span class="str">"Product"</span>),
+        <span class="tp">DbValue</span>.FromReal(9.99 + i),
+        <span class="tp">DbValue</span>.FromText(<span class="str">"Books"</span>));
 }
-int inserted = await batch.ExecuteAsync();
-Console.WriteLine($"Inserted {inserted} rows");</code></pre>
+<span class="tp">int</span> inserted = <span class="kw">await</span> batch.ExecuteAsync();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Inserted {inserted} rows"</span>);</code></pre>
                     </div>
                     <p>For comparison, here is the SQLite side of the same B10000 row — prepared statement, explicit transaction, parameter reuse — which is what the comparison benchmark uses as the SQLite baseline:</p>
                     <div class="code-block" data-title="Program.cs — SQLite bulk insert baseline">
-                        <pre><code>using Microsoft.Data.Sqlite;
+                        <pre><code><span class="kw">using</span> Microsoft.Data.Sqlite;
 
-await using var conn = new SqliteConnection("Data Source=bulk.db");
-await conn.OpenAsync();
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">SqliteConnection</span>(<span class="str">"Data Source=bulk.db"</span>);
+<span class="kw">await</span> conn.OpenAsync();
 
-await using (var cmd = conn.CreateCommand())
+<span class="kw">await using</span> (<span class="kw">var</span> cmd = conn.CreateCommand())
 {
-    cmd.CommandText = """
+    cmd.CommandText = <span class="str">"""
         CREATE TABLE IF NOT EXISTS products (
             id       INTEGER PRIMARY KEY,
             name     TEXT NOT NULL,
             price    REAL NOT NULL,
             category TEXT
         )
-        """;
-    await cmd.ExecuteNonQueryAsync();
+        """</span>;
+    <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
 }
 
-await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync();
-await using var insert = conn.CreateCommand();
+<span class="kw">await using var</span> tx = (<span class="tp">SqliteTransaction</span>)<span class="kw">await</span> conn.BeginTransactionAsync();
+<span class="kw">await using var</span> insert = conn.CreateCommand();
 insert.Transaction = tx;
 insert.CommandText =
-    "INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)";
-var id    = insert.CreateParameter(); id.ParameterName    = "@id";
-var name  = insert.CreateParameter(); name.ParameterName  = "@name";
-var price = insert.CreateParameter(); price.ParameterName = "@price";
-var cat   = insert.CreateParameter(); cat.ParameterName   = "@cat";
+    <span class="str">"INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)"</span>;
+<span class="kw">var</span> id    = insert.CreateParameter(); id.ParameterName    = <span class="str">"@id"</span>;
+<span class="kw">var</span> name  = insert.CreateParameter(); name.ParameterName  = <span class="str">"@name"</span>;
+<span class="kw">var</span> price = insert.CreateParameter(); price.ParameterName = <span class="str">"@price"</span>;
+<span class="kw">var</span> cat   = insert.CreateParameter(); cat.ParameterName   = <span class="str">"@cat"</span>;
 insert.Parameters.Add(id);
 insert.Parameters.Add(name);
 insert.Parameters.Add(price);
 insert.Parameters.Add(cat);
 insert.Prepare();
 
-for (int i = 1; i &lt;= 10_000; i++)
+<span class="kw">for</span> (<span class="tp">int</span> i = 1; i &lt;= 10_000; i++)
 {
     id.Value    = i;
-    name.Value  = "Product";
+    name.Value  = <span class="str">"Product"</span>;
     price.Value = 9.99 + i;
-    cat.Value   = "Books";
-    await insert.ExecuteNonQueryAsync();
+    cat.Value   = <span class="str">"Books"</span>;
+    <span class="kw">await</span> insert.ExecuteNonQueryAsync();
 }
-await tx.CommitAsync();</code></pre>
+<span class="kw">await</span> tx.CommitAsync();</code></pre>
                     </div>
                     <p>That is SQLite at its best on .NET: prepared statement, explicit transaction, parameter reuse. CSharpDB ships the same 10,000 rows in roughly two-thirds the wall time with less ceremony — no parameter setup, no prepared statement, no manual transaction. The packages you'll need:</p>
                     <div class="code-block" data-title="*.csproj — package references">
-                        <pre><code>&lt;ItemGroup&gt;
-    &lt;PackageReference Include="CSharpDB" Version="3.3.0" /&gt;
-    &lt;PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.6" /&gt;
-&lt;/ItemGroup&gt;</code></pre>
+                        <pre><code>&lt;<span class="tp">ItemGroup</span>&gt;
+    &lt;<span class="tp">PackageReference</span> <span class="kw">Include</span>=<span class="str">"CSharpDB"</span> <span class="kw">Version</span>=<span class="str">"3.3.0"</span> /&gt;
+    &lt;<span class="tp">PackageReference</span> <span class="kw">Include</span>=<span class="str">"Microsoft.Data.Sqlite"</span> <span class="kw">Version</span>=<span class="str">"10.0.6"</span> /&gt;
+&lt;/<span class="tp">ItemGroup</span>&gt;</code></pre>
                     </div>
                     <p>The practical takeaway: on CSharpDB, <strong><code>InsertBatch</code> is how you get the 1.48&times; lead</strong> — it is not an optimization, it is the bulk-load API. Reach for it any time you are inserting more than a handful of rows from known data.</p>
 
@@ -280,38 +280,38 @@ await tx.CommitAsync();</code></pre>
                     <p>Single-connection lookups: CSharpDB is about <strong>10&times; faster</strong>. Move to an 8-reader burst against a tiny hot read shape and the gap opens to nearly <strong>98&times;</strong> — because CSharpDB's snapshot readers share the warm page cache with no per-reader lock contention, while SQLite's readers each serialize at the WAL gate for consistency. (Caveat: the burst row is intentionally a tiny hot read. It is not a broad analytical-query comparison.)</p>
                     <p>Here is the direct engine API version of the single-lookup path:</p>
                     <div class="code-block" data-title="Program.cs — CSharpDB.Engine direct lookup">
-                        <pre><code>using CSharpDB.Engine;
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
-await using var db = await Database.OpenAsync("bulk.cdb");
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"bulk.cdb"</span>);
 
-async ValueTask&lt;string?&gt; GetProductName(long id)
+<span class="kw">async</span> <span class="tp">ValueTask</span>&lt;<span class="tp">string</span>?&gt; GetProductName(<span class="tp">long</span> id)
 {
-    await using var result = await db.ExecuteAsync(
-        $"SELECT name FROM products WHERE id = {id}");
+    <span class="kw">await using var</span> result = <span class="kw">await</span> db.ExecuteAsync(
+        <span class="str">$"SELECT name FROM products WHERE id = {id}"</span>);
 
-    await foreach (var row in result.GetRowsAsync())
-        return row[0].AsText;
+    <span class="kw">await foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> result.GetRowsAsync())
+        <span class="kw">return</span> row[0].AsText;
 
-    return null;
+    <span class="kw">return null</span>;
 }
 
-Console.WriteLine(await GetProductName(42));</code></pre>
+<span class="tp">Console</span>.WriteLine(<span class="kw">await</span> GetProductName(42));</code></pre>
                     </div>
                     <p>The speed comes from a short-circuit in <code>Database.ExecuteAsync</code> that recognises primary-key lookups and goes straight to the B-tree without running the full planner. You don't need a prepared command, and you don't need a special API &mdash; the engine does it for you.</p>
                     <p>If you need parameterised queries against user input (the normal case), the ADO.NET provider still keeps most of that advantage:</p>
                     <div class="code-block" data-title="Program.cs — CSharpDB ADO.NET parameterised lookup">
-                        <pre><code>using CSharpDB.Data;
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
 
-await using var conn = new CSharpDbConnection("Data Source=bulk.cdb");
-await conn.OpenAsync();
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=bulk.cdb"</span>);
+<span class="kw">await</span> conn.OpenAsync();
 
-await using var cmd = conn.CreateCommand();
-cmd.CommandText = "SELECT name FROM products WHERE id = @id";
-cmd.Parameters.AddWithValue("@id", 42L);
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">"SELECT name FROM products WHERE id = @id"</span>;
+cmd.Parameters.AddWithValue(<span class="str">"@id"</span>, 42L);
 
-await using var reader = await cmd.ExecuteReaderAsync();
-string? name = await reader.ReadAsync() ? reader.GetString(0) : null;
-Console.WriteLine(name);</code></pre>
+<span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+<span class="tp">string</span>? name = <span class="kw">await</span> reader.ReadAsync() ? reader.GetString(0) : <span class="kw">null</span>;
+<span class="tp">Console</span>.WriteLine(name);</code></pre>
                     </div>
                     <p>The ADO.NET wrapper adds overhead per lookup for parameter binding, reader state, and <code>DbCommand</code> plumbing, but stays well inside the 10&times; engine-to-engine gap. If you serve a read-heavy API from an embedded database &mdash; especially one where multiple threads hit the same hot tables &mdash; this is where CSharpDB earns its keep: an order of magnitude faster on warm single lookups, and roughly two orders of magnitude faster on the 8-reader burst shape, without changing anything else about your code.</p>
 
@@ -331,53 +331,53 @@ Console.WriteLine(name);</code></pre>
                     </div>
                     <p>Here is the CSharpDB side of the multi-writer scenario end-to-end:</p>
                     <div class="code-block" data-title="Program.cs — CSharpDB concurrent writers">
-                        <pre><code>using CSharpDB.Engine;
-using CSharpDB.Primitives;
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> CSharpDB.Primitives;
 
-const int TotalRows = 10_000;
-const int Writers   = 8;
+<span class="kw">const int</span> TotalRows = 10_000;
+<span class="kw">const int</span> Writers   = 8;
 
-var options = new DatabaseOptions
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>
 {
-    ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+    ImplicitInsertExecutionMode = <span class="tp">ImplicitInsertExecutionMode</span>.ConcurrentWriteTransactions,
 }.ConfigureStorageEngine(builder =&gt;
 {
     builder.UseWriteOptimizedPreset();
-    builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25));
+    builder.UseDurableGroupCommit(<span class="tp">TimeSpan</span>.FromMilliseconds(0.25));
 });
 
-await using var db = await Database.OpenAsync("ingest.cdb", options);
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"ingest.cdb"</span>, options);
 
-await db.ExecuteAsync("""
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"""
     CREATE TABLE IF NOT EXISTS products (
         id       INTEGER PRIMARY KEY,
         name     TEXT NOT NULL,
         price    REAL NOT NULL,
         category TEXT
     )
-    """);
+    """</span>);
 
-int rowsPerWriter = TotalRows / Writers;
-Task[] tasks = Enumerable.Range(0, Writers)
-    .Select(writerIndex =&gt; Task.Run(async () =&gt;
+<span class="tp">int</span> rowsPerWriter = TotalRows / Writers;
+<span class="tp">Task</span>[] tasks = <span class="tp">Enumerable</span>.Range(0, Writers)
+    .Select(writerIndex =&gt; <span class="tp">Task</span>.Run(<span class="kw">async</span> () =&gt;
     {
-        int startId = writerIndex * rowsPerWriter + 1;
+        <span class="tp">int</span> startId = writerIndex * rowsPerWriter + 1;
 
-        // Each writer owns a disjoint primary-key range — no conflicts.
-        var batch = db.PrepareInsertBatch("products", rowsPerWriter);
-        for (int i = 0; i &lt; rowsPerWriter; i++)
+        <span class="cm">// Each writer owns a disjoint primary-key range — no conflicts.</span>
+        <span class="kw">var</span> batch = db.PrepareInsertBatch(<span class="str">"products"</span>, rowsPerWriter);
+        <span class="kw">for</span> (<span class="tp">int</span> i = 0; i &lt; rowsPerWriter; i++)
         {
             batch.AddRow(
-                DbValue.FromInteger(startId + i),
-                DbValue.FromText("Product"),
-                DbValue.FromReal(9.99 + i),
-                DbValue.FromText("Books"));
+                <span class="tp">DbValue</span>.FromInteger(startId + i),
+                <span class="tp">DbValue</span>.FromText(<span class="str">"Product"</span>),
+                <span class="tp">DbValue</span>.FromReal(9.99 + i),
+                <span class="tp">DbValue</span>.FromText(<span class="str">"Books"</span>));
         }
-        await batch.ExecuteAsync();
+        <span class="kw">await</span> batch.ExecuteAsync();
     }))
     .ToArray();
 
-await Task.WhenAll(tasks);</code></pre>
+<span class="kw">await</span> <span class="tp">Task</span>.WhenAll(tasks);</code></pre>
                     </div>
                     <p>Three things matter in that configuration:</p>
                     <ul>
@@ -387,18 +387,18 @@ await Task.WhenAll(tasks);</code></pre>
                     </ul>
                     <p>The equivalent SQLite code for comparison is the standard connection-per-worker pattern with WAL mode enabled:</p>
                     <div class="code-block" data-title="Program.cs — SQLite concurrent writers (for reference)">
-                        <pre><code>using Microsoft.Data.Sqlite;
+                        <pre><code><span class="kw">using</span> Microsoft.Data.Sqlite;
 
-const int TotalRows = 10_000;
-const int Writers   = 8;
-const string Cs     = "Data Source=ingest.db;Pooling=True";
+<span class="kw">const int</span> TotalRows = 10_000;
+<span class="kw">const int</span> Writers   = 8;
+<span class="kw">const string</span> Cs     = <span class="str">"Data Source=ingest.db;Pooling=True"</span>;
 
-// WAL + NORMAL sync is the most concurrency-friendly SQLite configuration.
-await using (var init = new SqliteConnection(Cs))
+<span class="cm">// WAL + NORMAL sync is the most concurrency-friendly SQLite configuration.</span>
+<span class="kw">await using</span> (<span class="kw">var</span> init = <span class="kw">new</span> <span class="tp">SqliteConnection</span>(Cs))
 {
-    await init.OpenAsync();
-    await using var cmd = init.CreateCommand();
-    cmd.CommandText = @"
+    <span class="kw">await</span> init.OpenAsync();
+    <span class="kw">await using var</span> cmd = init.CreateCommand();
+    cmd.CommandText = <span class="str">@"
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous  = NORMAL;
         PRAGMA busy_timeout = 30000;
@@ -407,47 +407,47 @@ await using (var init = new SqliteConnection(Cs))
             name     TEXT NOT NULL,
             price    REAL NOT NULL,
             category TEXT
-        );";
-    await cmd.ExecuteNonQueryAsync();
+        );"</span>;
+    <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
 }
 
-int rowsPerWriter = TotalRows / Writers;
-Task[] tasks = Enumerable.Range(0, Writers)
-    .Select(writerIndex =&gt; Task.Run(async () =&gt;
+<span class="tp">int</span> rowsPerWriter = TotalRows / Writers;
+<span class="tp">Task</span>[] tasks = <span class="tp">Enumerable</span>.Range(0, Writers)
+    .Select(writerIndex =&gt; <span class="tp">Task</span>.Run(<span class="kw">async</span> () =&gt;
     {
-        int startId = writerIndex * rowsPerWriter + 1;
+        <span class="tp">int</span> startId = writerIndex * rowsPerWriter + 1;
 
-        await using var conn = new SqliteConnection(Cs);
-        await conn.OpenAsync();
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">SqliteConnection</span>(Cs);
+        <span class="kw">await</span> conn.OpenAsync();
 
-        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync();
-        await using var cmd = conn.CreateCommand();
+        <span class="kw">await using var</span> tx = (<span class="tp">SqliteTransaction</span>)<span class="kw">await</span> conn.BeginTransactionAsync();
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText =
-            "INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)";
-        var id    = cmd.CreateParameter(); id.ParameterName    = "@id";
-        var name  = cmd.CreateParameter(); name.ParameterName  = "@name";
-        var price = cmd.CreateParameter(); price.ParameterName = "@price";
-        var cat   = cmd.CreateParameter(); cat.ParameterName   = "@cat";
+            <span class="str">"INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)"</span>;
+        <span class="kw">var</span> id    = cmd.CreateParameter(); id.ParameterName    = <span class="str">"@id"</span>;
+        <span class="kw">var</span> name  = cmd.CreateParameter(); name.ParameterName  = <span class="str">"@name"</span>;
+        <span class="kw">var</span> price = cmd.CreateParameter(); price.ParameterName = <span class="str">"@price"</span>;
+        <span class="kw">var</span> cat   = cmd.CreateParameter(); cat.ParameterName   = <span class="str">"@cat"</span>;
         cmd.Parameters.Add(id);
         cmd.Parameters.Add(name);
         cmd.Parameters.Add(price);
         cmd.Parameters.Add(cat);
         cmd.Prepare();
 
-        for (int i = 0; i &lt; rowsPerWriter; i++)
+        <span class="kw">for</span> (<span class="tp">int</span> i = 0; i &lt; rowsPerWriter; i++)
         {
             id.Value    = startId + i;
-            name.Value  = "Product";
+            name.Value  = <span class="str">"Product"</span>;
             price.Value = 9.99 + i;
-            cat.Value   = "Books";
-            await cmd.ExecuteNonQueryAsync();
+            cat.Value   = <span class="str">"Books"</span>;
+            <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
         }
-        await tx.CommitAsync();
+        <span class="kw">await</span> tx.CommitAsync();
     }))
     .ToArray();
 
-await Task.WhenAll(tasks);</code></pre>
+<span class="kw">await</span> <span class="tp">Task</span>.WhenAll(tasks);</code></pre>
                     </div>
                     <p>A note on interpreting the win: it is for <strong>disjoint-key inserts</strong> &mdash; each writer owns a slice of the primary-key space. A workload where every writer is hammering the same monotonic right edge of the index (typical for a shared identity column with no partitioning) will not see the same fan-in. v3.3.0 shipped hot-right-edge recovery work, but this shape is still the most constrained multi-writer pattern on either engine.</p>
 
@@ -482,20 +482,20 @@ await Task.WhenAll(tasks);</code></pre>
                     <p>The single-writer default is already well-tuned &mdash; write presets earn their keep under contention or on long-lived write-heavy services where the checkpoint pattern matters, not on small single-threaded loads. Measure your workload before adopting a preset; don't flip it on because it sounds faster.</p>
                     <p>Switching presets is a one-line change through the engine API:</p>
                     <div class="code-block" data-title="Program.cs — applying a storage preset">
-                        <pre><code>using CSharpDB.Engine;
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
-var options = new DatabaseOptions()
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
     .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
 
-await using var db = await Database.OpenAsync("app.cdb", options);</code></pre>
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"app.cdb"</span>, options);</code></pre>
                     </div>
                     <p>Or through the ADO.NET connection string &mdash; the v3.3.0 storage-tuning additions make this the easiest path for embedded users:</p>
                     <div class="code-block" data-title="Program.cs — applying a preset via ADO.NET connection string">
-                        <pre><code>using CSharpDB.Data;
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
 
-var cs = "Data Source=app.cdb;Storage Preset=WriteOptimized;Embedded Open Mode=Direct";
-await using var conn = new CSharpDbConnection(cs);
-await conn.OpenAsync();</code></pre>
+<span class="kw">var</span> cs = <span class="str">"Data Source=app.cdb;Storage Preset=WriteOptimized;Embedded Open Mode=Direct"</span>;
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(cs);
+<span class="kw">await</span> conn.OpenAsync();</code></pre>
                     </div>
                     <p>Read-side presets like <code>UseDirectLookupOptimizedPreset</code>, <code>UseHybridFileCachePreset</code>, and <code>UseDirectColdFileLookupPreset</code> follow the same pattern.</p>
 
@@ -518,50 +518,50 @@ await conn.OpenAsync();</code></pre>
                     <p>The CSharpDB EF Core provider is newer than the ADO.NET one, and that shows up in the numbers. For bulk insert through <code>DbContext.SaveChanges</code>, CSharpDB and SQLite are roughly tied on throughput, with CSharpDB allocating noticeably less per row. For <code>DbSet.Find</code> by primary key on a warm table, the picture flips: the CSharpDB EF Core Find path is currently <em>slower</em> than SQLite's EF Core Find path, even though the underlying engine is about 10&times; <em>faster</em> than SQLite on the same lookup (Lesson 2). The gap lives at the EF Core provider layer &mdash; specifically in how EF Core's materialization and change tracking interact with the CSharpDB provider's current plan caching. v3.3.0 tightened provider option validation and connection setup, but did not retarget the Find hot path; that is follow-up work.</p>
                     <p>The practical workaround today is to drop a layer for hot lookups. Either use the ADO.NET provider inside your service:</p>
                     <div class="code-block" data-title="Program.cs — drop to ADO.NET from EF Core-style code">
-                        <pre><code>using CSharpDB.Data;
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
 
-public sealed class ProductReader(string connectionString)
+<span class="kw">public sealed class</span> <span class="tp">ProductReader</span>(<span class="tp">string</span> connectionString)
 {
-    public async Task&lt;string?&gt; GetNameAsync(long id)
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">string</span>?&gt; GetNameAsync(<span class="tp">long</span> id)
     {
-        await using var conn = new CSharpDbConnection(connectionString);
-        await conn.OpenAsync();
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connectionString);
+        <span class="kw">await</span> conn.OpenAsync();
 
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT name FROM products WHERE id = @id";
-        cmd.Parameters.AddWithValue("@id", id);
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">"SELECT name FROM products WHERE id = @id"</span>;
+        cmd.Parameters.AddWithValue(<span class="str">"@id"</span>, id);
 
-        await using var reader = await cmd.ExecuteReaderAsync();
-        return await reader.ReadAsync() ? reader.GetString(0) : null;
+        <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+        <span class="kw">return await</span> reader.ReadAsync() ? reader.GetString(0) : <span class="kw">null</span>;
     }
 }</code></pre>
                     </div>
                     <p>Or, if you own the context lifecycle, resolve the underlying <code>CSharpDbConnection</code> through the EF Core context and reuse it for the fast path:</p>
                     <div class="code-block" data-title="Program.cs — use EF for writes, ADO.NET for hot reads">
-                        <pre><code>using System.Data.Common;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
+                        <pre><code><span class="kw">using</span> System.Data.Common;
+<span class="kw">using</span> Microsoft.EntityFrameworkCore;
+<span class="kw">using</span> Microsoft.EntityFrameworkCore.Infrastructure;
 
-using var ctx = new AppDbContext(options);
+<span class="kw">using var</span> ctx = <span class="kw">new</span> <span class="tp">AppDbContext</span>(options);
 
-// Writes through EF Core: tracked entities, migrations, change tracking.
-ctx.Products.Add(new Product { Id = 1, Name = "Widget", Price = 9.99 });
-await ctx.SaveChangesAsync();
+<span class="cm">// Writes through EF Core: tracked entities, migrations, change tracking.</span>
+ctx.Products.Add(<span class="kw">new</span> <span class="tp">Product</span> { Id = 1, Name = <span class="str">"Widget"</span>, Price = 9.99 });
+<span class="kw">await</span> ctx.SaveChangesAsync();
 
-// Reads through the same physical connection, bypassing the EF provider.
-DbConnection conn = ctx.Database.GetDbConnection();
-if (conn.State != System.Data.ConnectionState.Open)
-    await conn.OpenAsync();
+<span class="cm">// Reads through the same physical connection, bypassing the EF provider.</span>
+<span class="tp">DbConnection</span> conn = ctx.Database.GetDbConnection();
+<span class="kw">if</span> (conn.State != <span class="tp">System</span>.Data.ConnectionState.Open)
+    <span class="kw">await</span> conn.OpenAsync();
 
-await using var cmd = conn.CreateCommand();
-cmd.CommandText = "SELECT name FROM products WHERE id = @id";
-var idParam = cmd.CreateParameter();
-idParam.ParameterName = "@id";
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">"SELECT name FROM products WHERE id = @id"</span>;
+<span class="kw">var</span> idParam = cmd.CreateParameter();
+idParam.ParameterName = <span class="str">"@id"</span>;
 idParam.Value = 1L;
 cmd.Parameters.Add(idParam);
 
-await using var reader = await cmd.ExecuteReaderAsync();
-string? name = await reader.ReadAsync() ? reader.GetString(0) : null;</code></pre>
+<span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+<span class="tp">string</span>? name = <span class="kw">await</span> reader.ReadAsync() ? reader.GetString(0) : <span class="kw">null</span>;</code></pre>
                     </div>
                     <p>That keeps the write surface ergonomic while routing hot reads through the fast path the engine is already capable of serving.</p>
 
