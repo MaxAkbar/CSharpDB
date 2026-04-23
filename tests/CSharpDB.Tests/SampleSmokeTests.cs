@@ -9,6 +9,15 @@ namespace CSharpDB.Tests;
 
 public sealed class SampleSmokeTests : IAsyncLifetime
 {
+#if DEBUG
+    private const string SampleConfiguration = "Debug";
+#else
+    private const string SampleConfiguration = "Release";
+#endif
+
+    private const string SampleTargetFramework = "net10.0";
+    private static readonly TimeSpan SampleProcessTimeout = TimeSpan.FromMinutes(2);
+
     private readonly string _dbPath;
     private ICSharpDbClient _client = null!;
 
@@ -100,16 +109,14 @@ public sealed class SampleSmokeTests : IAsyncLifetime
         try
         {
             ProcessResult result = await RunDotNetAsync(
-                [
-                    "run",
-                    "--project",
+                CreateSampleRunArguments(
                     projectPath,
-                    "--verbosity",
-                    "quiet",
-                    "--",
-                    "--database-path",
-                    dbPath,
-                ],
+                    [
+                        "--csv-path",
+                        csvPath,
+                        "--database-path",
+                        dbPath,
+                    ]),
                 repoRoot,
                 Ct);
 
@@ -153,16 +160,12 @@ public sealed class SampleSmokeTests : IAsyncLifetime
         try
         {
             ProcessResult result = await RunDotNetAsync(
-                [
-                    "run",
-                    "--project",
+                CreateSampleRunArguments(
                     projectPath,
-                    "--verbosity",
-                    "quiet",
-                    "--",
-                    "--database-path",
-                    dbPath,
-                ],
+                    [
+                        "--database-path",
+                        dbPath,
+                    ]),
                 repoRoot,
                 Ct);
 
@@ -244,15 +247,77 @@ public sealed class SampleSmokeTests : IAsyncLifetime
         if (!process.Start())
             throw new InvalidOperationException("Failed to start the sample process.");
 
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync(ct);
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync();
 
-        await process.WaitForExitAsync(ct);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(SampleProcessTimeout);
+
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            await process.WaitForExitAsync(CancellationToken.None);
+
+            throw new Xunit.Sdk.XunitException(
+                $"Sample process timed out after {SampleProcessTimeout}.\n" +
+                $"Command: dotnet {string.Join(' ', args)}\n" +
+                $"STDOUT:\n{await stdoutTask}\n" +
+                $"STDERR:\n{await stderrTask}");
+        }
 
         return new ProcessResult(
             process.ExitCode,
             await stdoutTask,
             await stderrTask);
+    }
+
+    private static IReadOnlyList<string> CreateSampleRunArguments(
+        string projectPath,
+        IReadOnlyList<string> sampleArgs)
+    {
+        var args = new List<string>
+        {
+            "run",
+            "--project",
+            projectPath,
+            "-c",
+            SampleConfiguration,
+            "--no-launch-profile",
+            "--verbosity",
+            "quiet",
+        };
+
+        if (HasProjectBuildOutput(projectPath))
+            args.Add("--no-build");
+
+        args.Add("--");
+        args.AddRange(sampleArgs);
+        return args;
+    }
+
+    private static bool HasProjectBuildOutput(string projectPath)
+    {
+        string projectDirectory = Path.GetDirectoryName(projectPath)!;
+        string assemblyPath = Path.Combine(
+            projectDirectory,
+            "bin",
+            SampleConfiguration,
+            SampleTargetFramework,
+            Path.GetFileNameWithoutExtension(projectPath) + ".dll");
+
+        return File.Exists(assemblyPath);
     }
 
     private static void DeleteDirectoryIfExists(string path)
