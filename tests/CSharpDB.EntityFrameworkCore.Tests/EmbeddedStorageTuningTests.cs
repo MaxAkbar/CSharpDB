@@ -98,9 +98,11 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
                 csharpdb => csharpdb.UseDirectDatabaseOptions(new DatabaseOptions()))
             .Options;
 
-        await using var db = new ObservedRuntimeContext(providerOptions);
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.EnsureCreatedAsync(Ct));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await using var db = new ObservedRuntimeContext(providerOptions);
+            await db.Database.EnsureCreatedAsync(Ct);
+        });
         Assert.Contains("DirectDatabaseOptions", error.Message, StringComparison.Ordinal);
     }
 
@@ -115,9 +117,11 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
                 csharpdb => csharpdb.UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode.HybridSnapshot))
             .Options;
 
-        await using var db = new ObservedRuntimeContext(providerOptions);
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.EnsureCreatedAsync(Ct));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await using var db = new ObservedRuntimeContext(providerOptions);
+            await db.Database.EnsureCreatedAsync(Ct);
+        });
         Assert.Contains("EmbeddedOpenMode", error.Message, StringComparison.Ordinal);
     }
 
