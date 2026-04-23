@@ -1772,17 +1772,17 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
             db = await Database.OpenAsync(dbPath, options, ct);
             await db.ExecuteAsync("CREATE TABLE tx_background_checkpoint (id INTEGER PRIMARY KEY, value INTEGER)", ct);
             await db.CheckpointAsync(ct);
+            db.ResetCommitPathDiagnostics();
 
             await using (var tx = await db.BeginWriteTransactionAsync(ct))
             {
                 await tx.ExecuteAsync("SELECT COUNT(*) FROM tx_background_checkpoint", ct);
                 await db.ExecuteAsync("INSERT INTO tx_background_checkpoint VALUES (1, 10)", ct);
 
-                Assert.True(File.Exists(walPath));
-                long walLengthWhileTransactionActive = new FileInfo(walPath).Length;
+                var appendDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
                 Assert.True(
-                    walLengthWhileTransactionActive > PageConstants.WalHeaderSize,
-                    $"Expected the insert to append WAL frames before the background checkpoint ran, observed walLength={walLengthWhileTransactionActive}.");
+                    appendDiagnostics.WalAppendCount > 0,
+                    $"Expected the insert to append WAL frames, observed walAppendCount={appendDiagnostics.WalAppendCount}.");
 
                 await WaitForConditionAsync(
                     () => db.GetCommitPathDiagnosticsSnapshot().BackgroundCheckpointStartCount > 0,
