@@ -226,6 +226,7 @@ public sealed class QueryPlanner
     private readonly Dictionary<TableSchema, Dictionary<string, LogicalMutationConflictMetadata>> _logicalMutationConflictMetadataCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<TableSchema, ColumnDefinition[]> _tableSchemaArrayCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<(TableSchema Schema, int ColumnIndex), ColumnDefinition[]> _singleColumnOutputSchemaCache = new();
+    private readonly Dictionary<TableSchema, ResolvedInsertIndexPlanSet> _resolvedInsertIndexPlanCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Expression, bool> _requiresQualifiedMappingCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<TableRef, TableSchema> _correlationTableRefSchemaCache = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<QueryStatement, ColumnDefinition[]> _correlationQueryOutputSchemaCache = new(ReferenceEqualityComparer.Instance);
@@ -309,6 +310,31 @@ public sealed class QueryPlanner
     {
         public bool Initialized { get; set; }
         public TableRef? ReorderedFrom { get; set; }
+    }
+
+    private sealed class ResolvedInsertIndexPlanSet
+    {
+        public required IndexSchema[] FullTextIndexes { get; init; }
+        public required ResolvedInsertIndexMutationPlan[] SqlIndexes { get; init; }
+    }
+
+    private sealed class ReusableInsertEncodingBuffer
+    {
+        public byte[] Buffer { get; set; } = Array.Empty<byte>();
+    }
+
+    private sealed class ResolvedInsertIndexMutationPlan
+    {
+        public required IndexSchema Index { get; init; }
+        public required IIndexStore IndexStore { get; init; }
+        public required int[] ColumnIndices { get; init; }
+        public required string?[] IndexColumnCollations { get; init; }
+        public required SqlIndexStorageMode StorageMode { get; init; }
+        public required bool UsesDirectIntegerKey { get; init; }
+        public DbValue[]? ReusableKeyComponents { get; init; }
+        public byte[]? ReusableDirectRowIdPayload { get; init; }
+        public OptimisticInsertSequenceContext? OptimisticDirectIntegerInsertContext { get; init; }
+        public AppendOptimizedIndexMutationContext? AppendContext { get; init; }
     }
 
     internal readonly record struct SelectPlanCacheDiagnostics(
@@ -488,6 +514,7 @@ public sealed class QueryPlanner
         _qualifiedMappingFingerprintCache.Clear();
         _tableSchemaArrayCache.Clear();
         _singleColumnOutputSchemaCache.Clear();
+        _resolvedInsertIndexPlanCache.Clear();
         _requiresQualifiedMappingCache.Clear();
         _systemTablesRowsCache = null;
         _systemColumnsRowsCache = null;
@@ -2664,12 +2691,19 @@ public sealed class QueryPlanner
         var schema = GetSchema(stmt.TableName);
         var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans = indexes.Count > 0
+            ? GetResolvedInsertIndexPlanSet(schema, indexes)
+            : null;
 
         int inserted = 0;
         long? generatedIntegerKey = null;
         ForeignKeyMutationContext? mutationContext =
             _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0
                 ? new ForeignKeyMutationContext()
+                : null;
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer =
+            stmt.ValueRows.Count > 1
+                ? new ReusableInsertEncodingBuffer()
                 : null;
         try
         {
@@ -2680,10 +2714,11 @@ public sealed class QueryPlanner
                     stmt.TableName,
                     schema,
                     tree,
-                    indexes,
+                    resolvedIndexPlans,
                     row,
                     mutationContext,
                     adjustTableRowCount: false,
+                    reusableEncodingBuffer,
                     ct);
                 if (stmt.ValueRows.Count == 1)
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
@@ -4383,13 +4418,19 @@ public sealed class QueryPlanner
         CancellationToken ct = default)
     {
         var schema = GetSchema(insert.TableName);
+        int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
+            ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
+            : null;
         var tree = _catalog.GetTableTree(insert.TableName);
         var indexes = _catalog.GetIndexesForTable(insert.TableName);
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans = indexes.Count > 0
+            ? GetResolvedInsertIndexPlanSet(schema, indexes)
+            : null;
         IReadOnlyList<ForeignKeyDefinition> foreignKeys = _catalog.GetForeignKeysForTable(insert.TableName);
         IReadOnlyList<TriggerSchema> triggers = _catalog.GetTriggersForTable(insert.TableName);
 
         if (indexes.Count == 0 && foreignKeys.Count == 0 && triggers.Count == 0)
-            return await ExecuteBareSimpleInsertAsync(insert, schema, tree, persistRootChanges, ct);
+            return await ExecuteBareSimpleInsertAsync(insert, schema, explicitColumnIndices, tree, persistRootChanges, ct);
 
         int inserted = 0;
         long? generatedIntegerKey = null;
@@ -4397,34 +4438,42 @@ public sealed class QueryPlanner
             foreignKeys.Count > 0
                 ? new ForeignKeyMutationContext()
                 : null;
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer =
+            insert.RowCount > 1
+                ? new ReusableInsertEncodingBuffer()
+                : null;
+        bool useDeferredAppendAmortization =
+            insert.RowCount > 1 &&
+            foreignKeys.Count == 0 &&
+            triggers.Count == 0;
+        SetDeferredAppendAmortization(resolvedIndexPlans, useDeferredAppendAmortization);
+        ResetOptimisticInsertContexts(resolvedIndexPlans, enabled: insert.RowCount > 1);
         try
         {
             for (int i = 0; i < insert.RowCount; i++)
             {
-                var row = insert.ValueRows[i];
-                if (row.Length != schema.Columns.Count)
-                {
-                    throw new CSharpDbException(
-                        ErrorCode.SyntaxError,
-                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
-                }
+                DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i]);
 
                 InsertRowResult insertRow = await ExecuteResolvedInsertRowAsync(
                     insert.TableName,
                     schema,
                     tree,
-                    indexes,
+                    resolvedIndexPlans,
                     row,
                     mutationContext,
                     adjustTableRowCount: false,
+                    reusableEncodingBuffer,
                     ct);
                 if (insert.RowCount == 1)
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
                 inserted++;
             }
+
+            await FlushDeferredAppendAmortizationAsync(resolvedIndexPlans, ct);
         }
         catch
         {
+            await FlushDeferredAppendAmortizationAsync(resolvedIndexPlans, ct);
             await FinalizeInsertStatementAsync(
                 mutationContext,
                 insert.TableName,
@@ -4432,6 +4481,11 @@ public sealed class QueryPlanner
                 persistRootChanges: false,
                 ct);
             throw;
+        }
+        finally
+        {
+            ResetOptimisticInsertContexts(resolvedIndexPlans, enabled: false);
+            SetDeferredAppendAmortization(resolvedIndexPlans, enabled: false);
         }
 
         await FinalizeInsertStatementAsync(mutationContext, insert.TableName, inserted, persistRootChanges, ct);
@@ -4441,6 +4495,7 @@ public sealed class QueryPlanner
     private async ValueTask<QueryResult> ExecuteBareSimpleInsertAsync(
         SimpleInsertSql insert,
         TableSchema schema,
+        int[]? explicitColumnIndices,
         BTree tree,
         bool persistRootChanges,
         CancellationToken ct)
@@ -4449,25 +4504,21 @@ public sealed class QueryPlanner
         long? generatedIntegerKey = null;
         List<uint>? insertTraversalPath = null;
         HashSet<uint>? insertTraversalSet = null;
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer = null;
         if (insert.RowCount > 1)
         {
             // Reuse traversal state across rows in a multi-row simple insert so successive inserts
             // can stay on the hot path without paying this allocation cost for single-row statements.
             insertTraversalPath = new List<uint>(capacity: 8);
             insertTraversalSet = new HashSet<uint>();
+            reusableEncodingBuffer = new ReusableInsertEncodingBuffer();
         }
 
         try
         {
             for (int i = 0; i < insert.RowCount; i++)
             {
-                DbValue[] row = insert.ValueRows[i];
-                if (row.Length != schema.Columns.Count)
-                {
-                    throw new CSharpDbException(
-                        ErrorCode.SyntaxError,
-                        $"Expected {schema.Columns.Count} values, got {row.Length}.");
-                }
+                DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i]);
 
                 InsertRowResult insertRow = await ExecuteBareInsertRowAsync(
                     insert.TableName,
@@ -4476,6 +4527,7 @@ public sealed class QueryPlanner
                     row,
                     insertTraversalPath,
                     insertTraversalSet,
+                    reusableEncodingBuffer,
                     ct);
                 if (insert.RowCount == 1)
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
@@ -4528,6 +4580,7 @@ public sealed class QueryPlanner
         DbValue[] row,
         List<uint>? traversalPath,
         HashSet<uint>? traversalSet,
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer,
         CancellationToken ct)
     {
         var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
@@ -4541,7 +4594,7 @@ public sealed class QueryPlanner
         {
             try
             {
-                ReadOnlyMemory<byte> encodedRow = _recordSerializer.Encode(row);
+                ReadOnlyMemory<byte> encodedRow = EncodeRowForInsert(row, reusableEncodingBuffer);
                 if (traversalPath != null && traversalSet != null)
                     await tree.InsertAsync(rowId, encodedRow, traversalPath, traversalSet, ct);
                 else
@@ -5712,13 +5765,16 @@ public sealed class QueryPlanner
         }
 
         var outputSchema = BuildAggregateOutputSchema(stmt.Columns, schema);
+        bool trailingIntegerStoredInCursorKey =
+            IndexMaintenanceHelper.ResolveSqlIndexStorageMode(matchingIndex, schema) == SqlIndexStorageMode.HashedTrailingInteger;
         result = new QueryResult(new CompositeIndexGroupedAggregateOperator(
             _catalog.GetIndexStore(matchingIndex.IndexName, _pager),
             _catalog.GetTableTree(simpleRef.TableName, _pager),
             GetReadSerializer(schema),
             groupColumnIndices,
             outputSchema,
-            projectionKinds));
+            projectionKinds,
+            trailingIntegerStoredInCursorKey));
         return true;
     }
 
@@ -7731,6 +7787,7 @@ public sealed class QueryPlanner
         bool lookupIsPrimaryKey = false;
         bool usesDirectIntegerLookup = false;
         bool usesOrderedTextLookupPayload = false;
+        SqlIndexStorageMode lookupStorageMode = SqlIndexStorageMode.Hashed;
         int[]? orderedLeftKeyIndices = null;
         int[]? orderedRightKeyIndices = null;
         string?[]? orderedRightKeyCollations = null;
@@ -7786,9 +7843,12 @@ public sealed class QueryPlanner
                 bool candidateUsesDirectIntegerKey =
                     candidateRightKeyIndices.Length == 1 &&
                     rightSchema.Columns[candidateRightKeyIndices[0]].Type == DbType.Integer;
+                SqlIndexStorageMode candidateStorageMode = candidateUsesDirectIntegerKey
+                    ? SqlIndexStorageMode.Hashed
+                    : IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, rightSchema);
                 bool candidateUsesOrderedTextPayload =
                     !candidateUsesDirectIntegerKey &&
-                    IndexMaintenanceHelper.UsesOrderedTextIndexKey(idx, rightSchema);
+                    candidateStorageMode == SqlIndexStorageMode.OrderedText;
 
                 if (selected == null ||
                     (idx.IsUnique && !selected.IsUnique) ||
@@ -7800,6 +7860,7 @@ public sealed class QueryPlanner
                     orderedRightKeyCollations = candidateRightKeyCollations;
                     selectedUsesDirectIntegerKey = candidateUsesDirectIntegerKey;
                     usesOrderedTextLookupPayload = candidateUsesOrderedTextPayload;
+                    lookupStorageMode = candidateStorageMode;
                 }
             }
 
@@ -7883,6 +7944,7 @@ public sealed class QueryPlanner
                 rightSchema.PrimaryKeyColumnIndex,
                 residualCondition,
                 compositeSchema,
+                storageMode: lookupStorageMode,
                 usesOrderedTextPayload: usesOrderedTextLookupPayload,
                 recordSerializer: GetReadSerializer(rightSchema),
                 estimatedOutputRowCount: estimatedOutputRowCount);
@@ -8882,7 +8944,9 @@ public sealed class QueryPlanner
             if (!CollationSupport.CanUseIndexForLookup(idx, schema, candidateColumnIndices, candidateQueryCollations))
                 continue;
 
-            long key = ComputeIndexKey(candidateKeyComponents);
+            long key = ComputeIndexKey(
+                candidateKeyComponents,
+                IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema));
 
             if (idx.IsUnique)
             {
@@ -9175,8 +9239,10 @@ public sealed class QueryPlanner
         return true;
     }
 
-    private static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents)
-        => IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
+    private static long ComputeIndexKey(
+        ReadOnlySpan<DbValue> keyComponents,
+        SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed)
+        => IndexMaintenanceHelper.ComputeIndexKey(keyComponents, storageMode);
 
     private static long ComputeLookupKeyForIndex(
         IndexSchema index,
@@ -9185,15 +9251,16 @@ public sealed class QueryPlanner
         int schemaColumnIndex,
         DbValue normalizedLiteral)
     {
+        SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(index, schema);
         if (normalizedLiteral.Type == DbType.Text &&
             index.Columns.Count == 1 &&
             indexColumnPosition == 0 &&
-            IndexMaintenanceHelper.UsesOrderedTextIndexKey(index, schema))
+            storageMode == SqlIndexStorageMode.OrderedText)
         {
             return OrderedTextIndexKeyCodec.ComputeKey(normalizedLiteral.AsText);
         }
 
-        return ComputeIndexKey([normalizedLiteral]);
+        return ComputeIndexKey([normalizedLiteral], storageMode);
     }
 
     /// <summary>
@@ -11475,94 +11542,209 @@ public sealed class QueryPlanner
 
     #region Index Maintenance Helpers
 
-    private async ValueTask InsertIntoAllIndexesAsync(
-        IReadOnlyList<IndexSchema> indexes, TableSchema schema, DbValue[] row, long rowId, CancellationToken ct)
+    private ResolvedInsertIndexPlanSet GetResolvedInsertIndexPlanSet(
+        TableSchema schema,
+        IReadOnlyList<IndexSchema> indexes)
     {
-        var tableTree = _catalog.GetTableTree(schema.TableName, _pager);
+        if (_resolvedInsertIndexPlanCache.TryGetValue(schema, out ResolvedInsertIndexPlanSet? cached))
+            return cached;
 
-        foreach (var idx in indexes)
+        var fullTextIndexes = new List<IndexSchema>();
+        var sqlIndexes = new List<ResolvedInsertIndexMutationPlan>(indexes.Count);
+        for (int i = 0; i < indexes.Count; i++)
         {
-            if (idx.Kind == IndexKind.FullText)
+            IndexSchema index = indexes[i];
+            if (index.Kind == IndexKind.FullText)
             {
-                await FullTextIndexMaintenance.InsertAsync(_catalog, schema, idx, row, rowId, ct);
+                fullTextIndexes.Add(index);
                 continue;
             }
 
-            if (idx.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal))
+            if (index.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal))
                 continue;
 
-            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(idx, schema, out var columnIndices, out bool usesDirectIntegerKey))
+            if (!IndexMaintenanceHelper.TryResolveIndexColumnIndices(index, schema, out int[]? columnIndices, out bool usesDirectIntegerKey))
                 continue;
-            string?[] indexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(idx, schema, columnIndices);
-            SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(idx, schema);
+
+            SqlIndexStorageMode storageMode = IndexMaintenanceHelper.ResolveSqlIndexStorageMode(index, schema);
+            sqlIndexes.Add(
+                new ResolvedInsertIndexMutationPlan
+                {
+                    Index = index,
+                    IndexStore = _catalog.GetIndexStore(index.IndexName),
+                    ColumnIndices = columnIndices,
+                    IndexColumnCollations = CollationSupport.GetEffectiveIndexColumnCollations(index, schema, columnIndices),
+                    StorageMode = storageMode,
+                    UsesDirectIntegerKey = usesDirectIntegerKey,
+                    ReusableKeyComponents = usesDirectIntegerKey ? null : new DbValue[columnIndices.Length],
+                    ReusableDirectRowIdPayload = usesDirectIntegerKey ? new byte[RowIdPayloadCodec.RowIdSize] : null,
+                    OptimisticDirectIntegerInsertContext = usesDirectIntegerKey ? new OptimisticInsertSequenceContext() : null,
+                    AppendContext = !usesDirectIntegerKey && IndexMaintenanceHelper.UsesHashedPayloadStorage(storageMode)
+                        ? new AppendOptimizedIndexMutationContext()
+                        : null,
+                });
+        }
+
+        ResolvedInsertIndexPlanSet plans = new()
+        {
+            FullTextIndexes = fullTextIndexes.Count == 0 ? [] : [.. fullTextIndexes],
+            SqlIndexes = sqlIndexes.Count == 0 ? [] : [.. sqlIndexes],
+        };
+        _resolvedInsertIndexPlanCache.Add(schema, plans);
+        return plans;
+    }
+
+    private async ValueTask InsertIntoAllIndexesAsync(
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans,
+        TableSchema schema,
+        DbValue[] row,
+        long rowId,
+        CancellationToken ct)
+    {
+        if (resolvedIndexPlans is null)
+            return;
+
+        for (int i = 0; i < resolvedIndexPlans.FullTextIndexes.Length; i++)
+            await FullTextIndexMaintenance.InsertAsync(_catalog, schema, resolvedIndexPlans.FullTextIndexes[i], row, rowId, ct);
+
+        BTree? tableTree = null;
+        IRecordSerializer? readSerializer = null;
+        for (int i = 0; i < resolvedIndexPlans.SqlIndexes.Length; i++)
+        {
+            ResolvedInsertIndexMutationPlan plan = resolvedIndexPlans.SqlIndexes[i];
             if (!IndexMaintenanceHelper.TryBuildIndexKey(
                     row,
-                    columnIndices,
-                    indexColumnCollations,
-                    usesDirectIntegerKey,
-                    storageMode,
+                    plan.ColumnIndices,
+                    plan.IndexColumnCollations,
+                    plan.UsesDirectIntegerKey,
+                    plan.StorageMode,
+                    plan.ReusableKeyComponents,
                     out long indexKey,
                     out DbValue[]? keyComponents))
             {
                 continue; // Don't index entries that include NULL.
             }
 
-            var indexStore = _catalog.GetIndexStore(idx.IndexName);
-
-            if (idx.IsUnique)
+            if (plan.Index.IsUnique)
             {
-                if (usesDirectIntegerKey)
+                if (plan.UsesDirectIntegerKey)
                 {
-                    _pager.RecordLogicalIndexRead(idx.IndexName, indexKey);
-                    var existing = await indexStore.FindAsync(indexKey, ct);
+                    _pager.RecordLogicalIndexRead(plan.Index.IndexName, indexKey);
+                    byte[]? existing = await plan.IndexStore.FindAsync(indexKey, ct);
                     if (existing != null)
-                        throw new CSharpDbException(ErrorCode.ConstraintViolation,
-                            $"Duplicate key value in unique index '{idx.IndexName}'.");
+                    {
+                        throw new CSharpDbException(
+                            ErrorCode.ConstraintViolation,
+                            $"Duplicate key value in unique index '{plan.Index.IndexName}'.");
+                    }
 
-                    var payload = new byte[8];
-                    BitConverter.TryWriteBytes(payload, rowId);
-                    await indexStore.InsertAsync(indexKey, payload, ct);
-                    _pager.RecordLogicalIndexWrite(idx.IndexName, indexKey);
+                    byte[] payload = plan.ReusableDirectRowIdPayload ?? new byte[RowIdPayloadCodec.RowIdSize];
+                    BinaryPrimitives.WriteInt64LittleEndian(payload, rowId);
+                    await plan.IndexStore.InsertAsync(indexKey, payload, ct);
+                    _pager.RecordLogicalIndexWrite(plan.Index.IndexName, indexKey);
                 }
                 else
                 {
+                    tableTree ??= _catalog.GetTableTree(schema.TableName, _pager);
+                    readSerializer ??= GetReadSerializer(schema);
                     await IndexMaintenanceHelper.EnsureUniqueConstraintAsync(
                         _pager,
-                        indexStore,
-                        idx.IndexName,
+                        plan.IndexStore,
+                        plan.Index.IndexName,
                         tableTree,
                         schema,
-                        GetReadSerializer(schema),
-                        columnIndices,
-                        indexColumnCollations,
+                        readSerializer,
+                        plan.ColumnIndices,
+                        plan.IndexColumnCollations,
                         keyComponents!,
                         indexKey,
-                        storageMode,
+                        plan.StorageMode,
                         ct);
 
                     await IndexMaintenanceHelper.InsertRowIdAsync(
                         _pager,
-                        indexStore,
-                        idx.IndexName,
+                        plan.IndexStore,
+                        plan.Index.IndexName,
                         indexKey,
                         rowId,
                         keyComponents,
-                        storageMode,
-                        ct);
+                        plan.StorageMode,
+                        ct,
+                        plan.AppendContext,
+                        plan.ReusableDirectRowIdPayload,
+                        plan.OptimisticDirectIntegerInsertContext);
                 }
             }
             else
             {
                 await IndexMaintenanceHelper.InsertRowIdAsync(
                     _pager,
-                    indexStore,
-                    idx.IndexName,
+                    plan.IndexStore,
+                    plan.Index.IndexName,
                     indexKey,
                     rowId,
                     keyComponents,
-                    storageMode,
-                    ct);
+                    plan.StorageMode,
+                    ct,
+                    plan.AppendContext,
+                    plan.ReusableDirectRowIdPayload,
+                    plan.OptimisticDirectIntegerInsertContext);
             }
+        }
+    }
+
+    private static void SetDeferredAppendAmortization(
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans,
+        bool enabled)
+    {
+        if (resolvedIndexPlans is null)
+            return;
+
+        for (int i = 0; i < resolvedIndexPlans.SqlIndexes.Length; i++)
+        {
+            AppendOptimizedIndexMutationContext? appendContext = resolvedIndexPlans.SqlIndexes[i].AppendContext;
+            if (appendContext is not null)
+                appendContext.AllowDeferredExternalAppends = enabled;
+        }
+    }
+
+    private static void ResetOptimisticInsertContexts(
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans,
+        bool enabled)
+    {
+        if (resolvedIndexPlans is null)
+            return;
+
+        for (int i = 0; i < resolvedIndexPlans.SqlIndexes.Length; i++)
+        {
+            OptimisticInsertSequenceContext? directIntegerContext =
+                resolvedIndexPlans.SqlIndexes[i].OptimisticDirectIntegerInsertContext;
+            if (directIntegerContext is not null)
+                directIntegerContext.Reset(enabled);
+
+            AppendOptimizedIndexMutationContext? appendContext = resolvedIndexPlans.SqlIndexes[i].AppendContext;
+            if (appendContext is not null)
+                appendContext.ResetOptimisticInsertState(enabled);
+        }
+    }
+
+    private static async ValueTask FlushDeferredAppendAmortizationAsync(
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans,
+        CancellationToken ct)
+    {
+        if (resolvedIndexPlans is null)
+            return;
+
+        for (int i = 0; i < resolvedIndexPlans.SqlIndexes.Length; i++)
+        {
+            ResolvedInsertIndexMutationPlan plan = resolvedIndexPlans.SqlIndexes[i];
+            if (plan.AppendContext is null ||
+                plan.IndexStore is not IAppendOptimizedIndexStore appendOptimizedStore)
+            {
+                continue;
+            }
+
+            await appendOptimizedStore.FlushPendingHashedRowIdsAsync(plan.AppendContext, ct);
         }
     }
 
@@ -13944,29 +14126,62 @@ public sealed class QueryPlanner
 
         if (columnNames != null)
         {
-            if (columnNames.Count != values.Count)
-                throw new CSharpDbException(ErrorCode.SyntaxError,
-                    $"Column count ({columnNames.Count}) doesn't match value count ({values.Count}).");
+            int[] columnIndices = ResolveInsertColumnIndices(schema, columnNames);
+            ValidateInsertValueCount(columnIndices.Length, values.Count);
 
-            for (int i = 0; i < columnNames.Count; i++)
-            {
-                int colIdx = schema.GetColumnIndex(columnNames[i]);
-                if (colIdx < 0)
-                    throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnNames[i]}' not found.");
-                row[colIdx] = ResolveInsertValue(values[i], schema);
-            }
+            for (int i = 0; i < columnIndices.Length; i++)
+                row[columnIndices[i]] = ResolveInsertValue(values[i], schema);
         }
         else
         {
-            if (values.Count != schema.Columns.Count)
-                throw new CSharpDbException(ErrorCode.SyntaxError,
-                    $"Expected {schema.Columns.Count} values, got {values.Count}.");
+            ValidateInsertValueCount(schema.Columns.Count, values.Count);
 
             for (int i = 0; i < values.Count; i++)
                 row[i] = ResolveInsertValue(values[i], schema);
         }
 
         return row;
+    }
+
+    private DbValue[] ResolveSimpleInsertRow(TableSchema schema, int[]? explicitColumnIndices, DbValue[] values)
+    {
+        if (explicitColumnIndices is null)
+        {
+            ValidateInsertValueCount(schema.Columns.Count, values.Length);
+            return values;
+        }
+
+        ValidateInsertValueCount(explicitColumnIndices.Length, values.Length);
+        var row = new DbValue[schema.Columns.Count];
+        for (int i = 0; i < explicitColumnIndices.Length; i++)
+            row[explicitColumnIndices[i]] = values[i];
+
+        return row;
+    }
+
+    private static int[] ResolveInsertColumnIndices(TableSchema schema, IReadOnlyList<string> columnNames)
+    {
+        var columnIndices = new int[columnNames.Count];
+        for (int i = 0; i < columnNames.Count; i++)
+        {
+            int columnIndex = schema.GetColumnIndex(columnNames[i]);
+            if (columnIndex < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnNames[i]}' not found.");
+
+            columnIndices[i] = columnIndex;
+        }
+
+        return columnIndices;
+    }
+
+    private static void ValidateInsertValueCount(int expectedCount, int actualCount)
+    {
+        if (expectedCount != actualCount)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Expected {expectedCount} values, got {actualCount}.");
+        }
     }
 
     private static DbValue ResolveInsertValue(Expression valueExpression, TableSchema schema)
@@ -14393,7 +14608,7 @@ public sealed class QueryPlanner
         keyComponents = [normalizedValue];
         lookupKey = storageMode == SqlIndexStorageMode.OrderedText
             ? OrderedTextIndexKeyCodec.ComputeKey(normalizedValue.AsText)
-            : IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
+            : IndexMaintenanceHelper.ComputeIndexKey(keyComponents, storageMode);
         return true;
     }
 
@@ -14445,6 +14660,9 @@ public sealed class QueryPlanner
         long? oldRowId = null,
         long? newRowId = null)
     {
+        if (!_pager.RequiresLogicalWriteConflictTracking)
+            return;
+
         LogicalMutationConflictMetadata metadata = GetLogicalMutationConflictMetadata(tableName, schema);
         if (oldRowId.HasValue)
             _pager.RecordLogicalResourceWrite(metadata.RowResourceName, oldRowId.Value);
@@ -14544,10 +14762,11 @@ public sealed class QueryPlanner
         string tableName,
         TableSchema schema,
         BTree tree,
-        IReadOnlyList<IndexSchema> indexes,
+        ResolvedInsertIndexPlanSet? resolvedIndexPlans,
         DbValue[] row,
         ForeignKeyMutationContext? mutationContext,
         bool adjustTableRowCount,
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer,
         CancellationToken ct)
     {
         // BEFORE INSERT triggers
@@ -14566,7 +14785,7 @@ public sealed class QueryPlanner
         {
             try
             {
-                await tree.InsertAsync(rowId, _recordSerializer.Encode(row), ct);
+                await tree.InsertAsync(rowId, EncodeRowForInsert(row, reusableEncodingBuffer), ct);
                 RecordLogicalMutationWrites(tableName, schema, oldRow: null, newRow: row, newRowId: rowId);
                 break;
             }
@@ -14585,7 +14804,7 @@ public sealed class QueryPlanner
         }
 
         // Maintain indexes
-        await InsertIntoAllIndexesAsync(indexes, schema, row, rowId, ct);
+        await InsertIntoAllIndexesAsync(resolvedIndexPlans, schema, row, rowId, ct);
         if (adjustTableRowCount)
             await _catalog.AdjustTableRowCountAsync(tableName, 1, ct);
         if (mutationContext is not null)
@@ -14598,6 +14817,29 @@ public sealed class QueryPlanner
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Insert, null, row, schema, ct);
 
         return new InsertRowResult(rowId, generatedIntegerIdentity);
+    }
+
+    private ReadOnlyMemory<byte> EncodeRowForInsert(
+        ReadOnlySpan<DbValue> row,
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer)
+    {
+        if (reusableEncodingBuffer is null)
+            return _recordSerializer.Encode(row);
+
+        int encodedLength = _recordSerializer.GetEncodedLength(row);
+        byte[] buffer = reusableEncodingBuffer.Buffer;
+        if (buffer.Length < encodedLength)
+        {
+            int newCapacity = buffer.Length == 0 ? encodedLength : buffer.Length;
+            while (newCapacity < encodedLength)
+                newCapacity = checked(newCapacity * 2);
+
+            buffer = GC.AllocateUninitializedArray<byte>(newCapacity);
+            reusableEncodingBuffer.Buffer = buffer;
+        }
+
+        int written = _recordSerializer.EncodeInto(row, buffer, encodedLength);
+        return buffer.AsMemory(0, written);
     }
 
     private async ValueTask<(long RowId, bool AutoGenerated)> ResolveRowIdForInsertAsync(

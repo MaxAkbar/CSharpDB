@@ -262,8 +262,16 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
             BTreeInteriorSplitCount: 0,
             BTreeRightEdgeInteriorSplitCount: 0,
             BTreeRootSplitCount: 0,
+            HashedIndexAppendContextHitCount: 0,
+            HashedIndexAppendContextMissCount: 0,
+            HashedIndexAppendExternalMetadataReadCount: 0,
+            HashedIndexAppendPromotionCount: 0,
+            HashedIndexAppendNotApplicableCount: 0,
+            HashedIndexDeferredAppendCount: 0,
+            HashedIndexDeferredFlushCount: 0,
             MaxPendingCommitCount: Interlocked.Read(ref _maxPendingCommitCount),
-            MaxPendingCommitBytes: Interlocked.Read(ref _maxPendingCommitBytes));
+            MaxPendingCommitBytes: Interlocked.Read(ref _maxPendingCommitBytes),
+            BTreeResourceDiagnostics: []);
     }
 
     void ICommitPathDiagnosticsProvider.ResetCommitPathDiagnostics()

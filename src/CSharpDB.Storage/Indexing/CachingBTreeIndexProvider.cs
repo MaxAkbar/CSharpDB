@@ -17,7 +17,12 @@ public sealed class CachingBTreeIndexProvider : IIndexProvider
 
     public IIndexStore CreateIndexStore(Pager pager, uint rootPageId, string logicalName)
     {
-        var btreeStore = new BTreeIndexStore(new BTree(pager, rootPageId), logicalName);
+        var btreeStore = new BTreeIndexStore(
+            new BTree(
+                pager,
+                rootPageId,
+                logicalResourceName: Pager.BuildLogicalIndexResourceName(logicalName)),
+            logicalName);
         return new CachingIndexStore(btreeStore, _findCacheCapacity);
     }
 }

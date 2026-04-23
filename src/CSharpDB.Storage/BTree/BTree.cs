@@ -28,6 +28,7 @@ public sealed class BTree
 
     private readonly Pager _pager;
     private readonly string? _logicalTableName;
+    private readonly string? _logicalResourceName;
     private uint _rootPageId;
     private long? _cachedEntryCount;
     private readonly Dictionary<uint, CachedInteriorRouting> _interiorRoutingCache = new();
@@ -55,11 +56,17 @@ public sealed class BTree
 
     public uint RootPageId => _rootPageId;
 
-    public BTree(Pager pager, uint rootPageId, string? logicalTableName = null)
+    public BTree(
+        Pager pager,
+        uint rootPageId,
+        string? logicalTableName = null,
+        string? logicalResourceName = null)
     {
         _pager = pager;
         _rootPageId = rootPageId;
         _logicalTableName = logicalTableName;
+        _logicalResourceName = logicalResourceName ??
+            (logicalTableName is null ? null : Pager.BuildLogicalTableRowResourceName(logicalTableName));
     }
 
     internal async ValueTask WarmOwnedPagesAsync(CancellationToken ct = default)
@@ -524,7 +531,7 @@ public sealed class BTree
         traversalPath.Clear();
         traversalSet.Clear();
 
-        if (await TryInsertIntoRightEdgeLeafAsync(key, payload, ct))
+        if (await TryInsertIntoRightEdgeLeafAsync(key, payload, traversalPath, traversalSet, ct))
         {
             _cachedEntryCount = null;
             return;
@@ -549,7 +556,7 @@ public sealed class BTree
             await _pager.MarkDirtyAsync(newRootId, ct);
 
             _rootPageId = newRootId;
-            _pager.RecordBTreeRootSplit();
+            _pager.RecordBTreeRootSplit(_logicalResourceName);
         }
 
         _cachedEntryCount = null;
@@ -597,7 +604,7 @@ public sealed class BTree
             await _pager.MarkDirtyAsync(newRootId, ct);
 
             _rootPageId = newRootId;
-            _pager.RecordBTreeRootSplit();
+            _pager.RecordBTreeRootSplit(_logicalResourceName);
         }
 
         return true;
@@ -813,6 +820,8 @@ public sealed class BTree
     private async ValueTask<bool> TryInsertIntoRightEdgeLeafAsync(
         long key,
         ReadOnlyMemory<byte> payload,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
         CancellationToken ct)
     {
         if (!_rightEdgeLeafHintValid || key <= _rightEdgeLeafMaxKey)
@@ -838,8 +847,60 @@ public sealed class BTree
         if (!await TryInsertIntoLeafWithoutSplitAsync(_rightEdgeLeafPageId, sp, sp.CellCount, key, payload, ct))
             return false;
 
+        await RecordExplicitRightEdgeLeafInsertTraversalAsync(
+            _rightEdgeLeafPageId,
+            sp,
+            key,
+            traversalPath,
+            traversalSet,
+            ct);
         UpdateRightEdgeLeafHint(_rightEdgeLeafPageId, sp);
         return true;
+    }
+
+    private async ValueTask RecordExplicitRightEdgeLeafInsertTraversalAsync(
+        uint targetLeafPageId,
+        SlottedPage targetLeaf,
+        long key,
+        List<uint> traversalPath,
+        HashSet<uint> traversalSet,
+        CancellationToken ct)
+    {
+        if (!_pager.IsExplicitWriteTransactionActive ||
+            targetLeaf.PageType != PageConstants.PageTypeLeaf)
+        {
+            return;
+        }
+
+        traversalPath.Clear();
+        traversalSet.Clear();
+        try
+        {
+            uint pageId = _rootPageId;
+            while (true)
+            {
+                EnterTraversal(pageId, key, traversalPath, traversalSet);
+                if (pageId == targetLeafPageId)
+                {
+                    _pager.RecordExplicitLeafInsertTraversal(_rootPageId, traversalPath);
+                    return;
+                }
+
+                var page = await _pager.GetPageAsync(pageId, ct);
+                var sp = new SlottedPage(page, pageId);
+                if (sp.PageType != PageConstants.PageTypeInterior)
+                    return;
+
+                pageId = sp.RightChildOrNextLeaf;
+                if (pageId == PageConstants.NullPageId)
+                    return;
+            }
+        }
+        finally
+        {
+            traversalPath.Clear();
+            traversalSet.Clear();
+        }
     }
 
     private async ValueTask<bool> TryInsertIntoLeafWithoutSplitAsync(
@@ -1013,6 +1074,12 @@ public sealed class BTree
                 if (idx < 0)
                     return default;
 
+                if (TryReplaceLeafPayloadInPlace(sp, idx, payload.Span))
+                {
+                    await _pager.MarkDirtyAsync(pageId, ct);
+                    return new ReplaceResult(found: true, new InsertResult { Split = false });
+                }
+
                 sp.DeleteCell(idx);
                 sp.Defragment();
                 var insertResult = await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
@@ -1109,6 +1176,26 @@ public sealed class BTree
             insertIdx == existingCellCount;
         try
         {
+            if (rightEdgeSplit)
+            {
+                uint appendPageId = await _pager.AllocatePageAsync(ct);
+                var appendPage = await _pager.GetPageAsync(appendPageId, ct);
+                var appendSp = new SlottedPage(appendPage, appendPageId);
+                appendSp.Initialize(PageConstants.PageTypeLeaf);
+                appendSp.RightChildOrNextLeaf = sp.RightChildOrNextLeaf;
+
+                if (appendSp.InsertCell(0, newCell.AsSpan(0, newCellLength)))
+                {
+                    sp.RightChildOrNextLeaf = appendPageId;
+                    await _pager.MarkDirtyAsync(pageId, ct);
+                    await _pager.MarkDirtyAsync(appendPageId, ct);
+                    _pager.RecordBTreeLeafSplit(_logicalResourceName, rightEdgeSplit);
+                    UpdateRightEdgeLeafHint(appendPageId, appendSp);
+                    long appendSplitKey = ReadLeafCellKey(newCell.AsSpan(0, newCellLength));
+                    return new InsertResult { Split = true, SplitKey = appendSplitKey, NewPageId = appendPageId };
+                }
+            }
+
             splitCellBuffer = BuildSplitCellBuffer(
                 page,
                 sp,
@@ -1166,7 +1253,7 @@ public sealed class BTree
 
             await _pager.MarkDirtyAsync(pageId, ct);
             await _pager.MarkDirtyAsync(newPageId, ct);
-            _pager.RecordBTreeLeafSplit(rightEdgeSplit);
+            _pager.RecordBTreeLeafSplit(_logicalResourceName, rightEdgeSplit);
 
             if (rightEdgeSplit)
                 UpdateRightEdgeLeafHint(newPageId, newSp);
@@ -1234,7 +1321,7 @@ public sealed class BTree
     private async ValueTask<InsertResult> InsertIntoInteriorAsync(uint pageId, byte[] page, SlottedPage sp, long key, uint newChildPageId, int afterChildIdx, CancellationToken ct)
     {
         bool rightEdgeInsert = afterChildIdx >= sp.CellCount;
-        _pager.RecordBTreeInteriorInsert(rightEdgeInsert);
+        _pager.RecordBTreeInteriorInsert(_logicalResourceName, rightEdgeInsert);
 
         // Get the original child pointer that was at afterChildIdx
         uint originalChild = FindChildAtIndex(sp, afterChildIdx);
@@ -1325,7 +1412,7 @@ public sealed class BTree
 
             await _pager.MarkDirtyAsync(pageId, ct);
             await _pager.MarkDirtyAsync(newPageId, ct);
-            _pager.RecordBTreeInteriorSplit(rightEdgeSplit);
+            _pager.RecordBTreeInteriorSplit(_logicalResourceName, rightEdgeSplit);
 
             return new InsertResult { Split = true, SplitKey = promotedKey, NewPageId = newPageId };
         }
@@ -1659,6 +1746,19 @@ public sealed class BTree
 
         BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(pos, 8), key);
         payload.CopyTo(destination[(pos + 8)..]);
+    }
+
+    private static bool TryReplaceLeafPayloadInPlace(SlottedPage sp, int index, ReadOnlySpan<byte> payload)
+    {
+        byte[] page = sp.Buffer;
+        int offset = sp.GetCellOffset(index);
+        ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
+        int existingPayloadLength = checked((int)payloadSize - 8);
+        if (existingPayloadLength != payload.Length)
+            return false;
+
+        payload.CopyTo(page.AsSpan(offset + headerBytes + 8, existingPayloadLength));
+        return true;
     }
 
     internal static long ReadLeafKey(SlottedPage sp, int index)

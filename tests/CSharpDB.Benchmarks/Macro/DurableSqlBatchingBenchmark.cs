@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
@@ -7,22 +8,64 @@ using CSharpDB.Storage.Wal;
 namespace CSharpDB.Benchmarks.Macro;
 
 /// <summary>
-/// Focused file-backed durable SQL ingest benchmark that compares single-row auto-commit
-/// against explicit transaction batching using the existing PrepareInsertBatch API.
+/// Focused file-backed durable single-writer ingest benchmark that keeps storage semantics fixed
+/// while comparing the embedded bulk APIs, batch-size effects, row-width effects, secondary-index
+/// maintenance, and primary-key locality.
 /// </summary>
 public static class DurableSqlBatchingBenchmark
 {
-    private static readonly SqlBatchScenario[] s_scenarios =
-    [
-        new("AutoCommitSingle_WriteOptimized", RowsPerCommit: 1, UseLowLatencyPreset: false, AnalyzeBeforeRun: false),
-        new("AutoCommitSingle_WriteOptimized_Analyzed", RowsPerCommit: 1, UseLowLatencyPreset: false, AnalyzeBeforeRun: true),
-        new("AutoCommitSingle_LowLatency_Analyzed", RowsPerCommit: 1, UseLowLatencyPreset: true, AnalyzeBeforeRun: true),
-        new("TxBatch10_LowLatency", RowsPerCommit: 10, UseLowLatencyPreset: true, AnalyzeBeforeRun: false),
-        new("TxBatch100_LowLatency", RowsPerCommit: 100, UseLowLatencyPreset: true, AnalyzeBeforeRun: false),
-        new("TxBatch1000_LowLatency", RowsPerCommit: 1000, UseLowLatencyPreset: true, AnalyzeBeforeRun: false),
-    ];
+    private const string CreateValueIndexSql = "CREATE INDEX idx_bench_value ON bench(value)";
+    private const string CreateCategoryIndexSql = "CREATE INDEX idx_bench_category ON bench(category)";
+    private const string CreateTextColIndexSql = "CREATE INDEX idx_bench_text_col ON bench(text_col)";
+    private const string CreateCategoryValueIndexSql = "CREATE INDEX idx_bench_category_value ON bench(category, value)";
 
-    private static int _nextId;
+    private static readonly RowProfile s_baselineRow = new("Baseline", "durable_batch", "Alpha");
+    private static readonly RowProfile s_mediumRow = new("Medium", new string('m', 64), "CategoryMedium");
+    private static readonly RowProfile s_wideRow = new("Wide", new string('w', 512), "CategoryWide");
+
+    private static readonly IndexLayout s_pkOnlyIndexes = new("PkOnly", []);
+    private static readonly IndexLayout s_secondary1Indexes = new(
+        "Idx1",
+        [CreateValueIndexSql]);
+    private static readonly IndexLayout s_secondary2Indexes = new(
+        "Idx2",
+        [
+            CreateValueIndexSql,
+            CreateCategoryIndexSql,
+        ]);
+    private static readonly IndexLayout s_categoryOnlyIndexes = new(
+        "IdxCategory",
+        [CreateCategoryIndexSql]);
+    private static readonly IndexLayout s_textOnlyIndexes = new(
+        "IdxTextCol",
+        [CreateTextColIndexSql]);
+    private static readonly IndexLayout s_compositeCategoryValueIndex = new(
+        "IdxCompositeCategoryValue",
+        [CreateCategoryValueIndexSql]);
+    private static readonly IndexLayout s_valueAndCategoryIndexes = new(
+        "IdxValueCategory",
+        [
+            CreateValueIndexSql,
+            CreateCategoryIndexSql,
+        ]);
+    private static readonly IndexLayout s_valueAndCompositeCategoryValueIndexes = new(
+        "IdxValueCompositeCategoryValue",
+        [
+            CreateValueIndexSql,
+            CreateCategoryValueIndexSql,
+        ]);
+    private static readonly IndexLayout s_secondary4Indexes = new(
+        "Idx4",
+        [
+            CreateValueIndexSql,
+            CreateCategoryIndexSql,
+            CreateTextColIndexSql,
+            CreateCategoryValueIndexSql,
+        ]);
+
+    private static readonly SqlBatchScenario[] s_scenarios = CreateScenarios();
+
+    private static int _nextSequence;
 
     public static async Task<List<BenchmarkResult>> RunAsync()
     {
@@ -41,63 +84,385 @@ public static class DurableSqlBatchingBenchmark
         SqlBatchScenario? scenario = s_scenarios.FirstOrDefault(
             scenario => scenario.Name.Equals(scenarioName, StringComparison.OrdinalIgnoreCase));
         if (scenario is null)
+        {
             throw new ArgumentException(
                 $"Unknown durable SQL batching scenario '{scenarioName}'.",
                 nameof(scenarioName));
+        }
 
         return RunScenarioAsync(scenario);
     }
 
+    private static SqlBatchScenario[] CreateScenarios()
+    {
+        return
+        [
+            // Historical controls retained for existing guardrails and prior published notes.
+            new(
+                "AutoCommitSingle_WriteOptimized",
+                OperationPath.AutoCommitSingleSql,
+                RowsPerCommit: 1,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "AutoCommitSingle_WriteOptimized_Analyzed",
+                OperationPath.AutoCommitSingleSql,
+                RowsPerCommit: 1,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic,
+                AnalyzeBeforeRun: true),
+            new(
+                "AutoCommitSingle_LowLatency_Analyzed",
+                OperationPath.AutoCommitSingleSql,
+                RowsPerCommit: 1,
+                Preset: StoragePreset.LowLatency,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic,
+                AnalyzeBeforeRun: true),
+            new(
+                "TxBatch10_LowLatency",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 10,
+                Preset: StoragePreset.LowLatency,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "TxBatch100_LowLatency",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 100,
+                Preset: StoragePreset.LowLatency,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "TxBatch1000_LowLatency",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.LowLatency,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+
+            // Plan 1: single-writer durable bulk-path matrix.
+            new(
+                "ApiPath_InsertBatch_B1000_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "ApiPath_MultiRowSql_B1000_Baseline_PkOnly_Monotonic",
+                OperationPath.MultiRowSql,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "ApiPath_RowSqlTx_B1000_Baseline_PkOnly_Monotonic",
+                OperationPath.RowSqlInExplicitTransaction,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+
+            new(
+                "BatchSweep_InsertBatch_B1_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "BatchSweep_InsertBatch_B10_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 10,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "BatchSweep_InsertBatch_B100_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 100,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 10000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+
+            new(
+                "RowWidth_InsertBatch_B1000_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "RowWidth_InsertBatch_B1000_Medium_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_mediumRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "RowWidth_InsertBatch_B1000_Wide_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_wideRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+
+            new(
+                "IndexSweep_InsertBatch_B1000_Baseline_Idx0_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexSweep_InsertBatch_B1000_Baseline_Idx1_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_secondary1Indexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexSweep_InsertBatch_B1000_Baseline_Idx2_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_secondary2Indexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexSweep_InsertBatch_B1000_Baseline_IdxCompositeCategoryValue_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_compositeCategoryValueIndex,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexSweep_InsertBatch_B1000_Baseline_Idx4_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_secondary4Indexes,
+                KeyPattern: KeyPattern.Monotonic),
+
+            // Plan 6: per-index-family attribution rows for realistic indexed ingest.
+            // Existing continuity rows already cover:
+            // - value only: IndexSweep_*_Idx1_*
+            // - composite category+value only: IndexSweep_*_IdxCompositeCategoryValue_*
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxCategory_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_categoryOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxTextCol_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_textOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxValueCategory_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_valueAndCategoryIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "IndexFamily_InsertBatch_B1000_Baseline_IdxValueCompositeCategoryValue_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_valueAndCompositeCategoryValueIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+
+            new(
+                "KeySweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Monotonic),
+            new(
+                "KeySweep_InsertBatch_B1000_Baseline_PkOnly_Random",
+                OperationPath.InsertBatch,
+                RowsPerCommit: 1000,
+                Preset: StoragePreset.WriteOptimized,
+                RowProfile: s_baselineRow,
+                Indexes: s_pkOnlyIndexes,
+                KeyPattern: KeyPattern.Random),
+        ];
+    }
+
     private static async Task<BenchmarkResult> RunScenarioAsync(SqlBatchScenario scenario)
     {
-        _nextId = 0;
-        var options = new DatabaseOptions().ConfigureStorageEngine(builder =>
-        {
-            if (scenario.UseLowLatencyPreset)
-                builder.UseLowLatencyDurableWritePreset();
-            else
-                builder.UseWriteOptimizedPreset();
-        });
+        _nextSequence = 0;
+        DatabaseOptions options = CreateOptions(scenario.Preset);
 
-        await using var bench = await BenchmarkDatabase.CreateAsync(options: options);
+        await using var bench = await BenchmarkDatabase.CreateWithSchemaAsync(
+            "CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT)",
+            options);
+
+        foreach (string createIndexSql in scenario.Indexes.CreateStatements)
+            await ExecuteCommandAsync(bench.Db, createIndexSql);
 
         if (scenario.AnalyzeBeforeRun)
         {
-            await bench.Db.ExecuteAsync("INSERT INTO bench VALUES (0, 0, 'seed', 'Alpha')");
-            await bench.Db.ExecuteAsync("ANALYZE bench");
+            await ExecuteNonQueryAsync(
+                bench.Db,
+                $"INSERT INTO bench VALUES (0, 0, 'seed', '{s_baselineRow.CategoryValue}')");
+            await ExecuteCommandAsync(bench.Db, "ANALYZE bench");
         }
 
-        InsertBatch? batch = scenario.RowsPerCommit > 1
+        InsertBatch? batch = scenario.Path == OperationPath.InsertBatch
             ? bench.Db.PrepareInsertBatch("bench", initialCapacity: scenario.RowsPerCommit)
             : null;
-        var row = new DbValue[4];
-        DbValue textValue = DbValue.FromText("durable_batch");
-        DbValue categoryValue = DbValue.FromText("Alpha");
+        var rowBuffer = new DbValue[4];
+        DbValue textValue = DbValue.FromText(scenario.RowProfile.TextValue);
+        DbValue categoryValue = DbValue.FromText(scenario.RowProfile.CategoryValue);
+        int sqlBuilderCapacity = EstimateSqlBuilderCapacity(scenario.RowsPerCommit, scenario.RowProfile);
+        var multiRowSqlBuilder = scenario.Path == OperationPath.MultiRowSql
+            ? new StringBuilder(sqlBuilderCapacity)
+            : null;
 
         async Task OperationAsync()
         {
-            if (scenario.RowsPerCommit == 1)
+            switch (scenario.Path)
             {
-                int id = Interlocked.Increment(ref _nextId);
-                await bench.Db.ExecuteAsync(
-                    $"INSERT INTO bench (id, value, text_col, category) VALUES ({id}, {id}, 'durable_batch', 'Alpha')");
-                return;
-            }
+                case OperationPath.AutoCommitSingleSql:
+                {
+                    int sequence = Interlocked.Increment(ref _nextSequence);
+                    long id = MapId(sequence, scenario.KeyPattern);
+                    string sql = BuildSingleInsertSql(id, sequence, scenario.RowProfile);
+                    await ExecuteNonQueryAsync(bench.Db, sql);
+                    return;
+                }
 
-            batch!.Clear();
-            await bench.Db.BeginTransactionAsync();
-            for (int i = 0; i < scenario.RowsPerCommit; i++)
-            {
-                int id = Interlocked.Increment(ref _nextId);
-                row[0] = DbValue.FromInteger(id);
-                row[1] = DbValue.FromInteger(id);
-                row[2] = textValue;
-                row[3] = categoryValue;
-                batch.AddRow(row);
-            }
+                case OperationPath.InsertBatch:
+                {
+                    batch!.Clear();
+                    await bench.Db.BeginTransactionAsync();
+                    try
+                    {
+                        for (int i = 0; i < scenario.RowsPerCommit; i++)
+                        {
+                            int sequence = Interlocked.Increment(ref _nextSequence);
+                            long id = MapId(sequence, scenario.KeyPattern);
+                            PopulateRow(rowBuffer, id, sequence, textValue, categoryValue);
+                            batch.AddRow(rowBuffer);
+                        }
 
-            await batch.ExecuteAsync();
-            await bench.Db.CommitAsync();
+                        int rowsAffected = await batch.ExecuteAsync();
+                        if (rowsAffected != scenario.RowsPerCommit)
+                        {
+                            throw new InvalidOperationException(
+                                $"Expected {scenario.RowsPerCommit} inserted rows, observed {rowsAffected}.");
+                        }
+
+                        await bench.Db.CommitAsync();
+                    }
+                    catch
+                    {
+                        await RollbackQuietlyAsync(bench.Db);
+                        throw;
+                    }
+
+                    return;
+                }
+
+                case OperationPath.MultiRowSql:
+                {
+                    await bench.Db.BeginTransactionAsync();
+                    try
+                    {
+                        string sql = BuildMultiRowInsertSql(
+                            multiRowSqlBuilder!,
+                            scenario.RowsPerCommit,
+                            scenario.KeyPattern,
+                            scenario.RowProfile);
+                        await ExecuteNonQueryAsync(bench.Db, sql, scenario.RowsPerCommit);
+                        await bench.Db.CommitAsync();
+                    }
+                    catch
+                    {
+                        await RollbackQuietlyAsync(bench.Db);
+                        throw;
+                    }
+
+                    return;
+                }
+
+                case OperationPath.RowSqlInExplicitTransaction:
+                {
+                    await bench.Db.BeginTransactionAsync();
+                    try
+                    {
+                        for (int i = 0; i < scenario.RowsPerCommit; i++)
+                        {
+                            int sequence = Interlocked.Increment(ref _nextSequence);
+                            long id = MapId(sequence, scenario.KeyPattern);
+                            string sql = BuildSingleInsertSql(id, sequence, scenario.RowProfile);
+                            await ExecuteNonQueryAsync(bench.Db, sql);
+                        }
+
+                        await bench.Db.CommitAsync();
+                    }
+                    catch
+                    {
+                        await RollbackQuietlyAsync(bench.Db);
+                        throw;
+                    }
+
+                    return;
+                }
+
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
         }
 
         TimeSpan warmupDuration = TimeSpan.FromSeconds(2);
@@ -131,14 +496,15 @@ public static class DurableSqlBatchingBenchmark
         WalFlushDiagnosticsSnapshot walDiagnostics = bench.Db.GetWalFlushDiagnosticsSnapshot();
         var commitPathDiagnostics = bench.Db.GetCommitPathDiagnosticsSnapshot();
         double elapsedSeconds = totalSw.Elapsed.TotalSeconds <= 0 ? 0 : totalSw.Elapsed.TotalSeconds;
-        double rowsPerSecond = elapsedSeconds <= 0 ? 0 : histogram.Count * (double)scenario.RowsPerCommit / elapsedSeconds;
+        double rowsPerSecond = elapsedSeconds <= 0
+            ? 0
+            : histogram.Count * (double)scenario.RowsPerCommit / elapsedSeconds;
         double commitsPerFlush = walDiagnostics.FlushCount == 0
             ? 0
             : (double)walDiagnostics.FlushedCommitCount / walDiagnostics.FlushCount;
         double kibPerFlush = walDiagnostics.FlushCount == 0
             ? 0
             : walDiagnostics.FlushedByteCount / (double)walDiagnostics.FlushCount / 1024.0;
-        string presetName = scenario.UseLowLatencyPreset ? "LowLatencyDurableWritePreset" : "WriteOptimizedPreset";
         string commitSummary = CommitPathDiagnosticsFormatter.BuildSummary(commitPathDiagnostics);
 
         var result = new BenchmarkResult
@@ -156,7 +522,7 @@ public static class DurableSqlBatchingBenchmark
             MeanMs = histogram.Mean,
             StdDevMs = histogram.StdDev,
             ExtraInfo =
-                $"preset={presetName}, analyzed={scenario.AnalyzeBeforeRun}, rowsPerCommit={scenario.RowsPerCommit}, rowsPerSec={rowsPerSecond:F1}, flushes={walDiagnostics.FlushCount}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, {commitSummary}",
+                $"path={scenario.Path}, preset={scenario.Preset}, analyzed={scenario.AnalyzeBeforeRun}, rowsPerCommit={scenario.RowsPerCommit}, rowShape={scenario.RowProfile.Name}, indexLayout={scenario.Indexes.Name}, secondaryIndexes={scenario.Indexes.SecondaryIndexCount}, keyPattern={scenario.KeyPattern}, rowsPerSec={rowsPerSecond:F1}, flushes={walDiagnostics.FlushCount}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, batchWindowBypasses={walDiagnostics.BatchWindowThresholdBypassCount}, {commitSummary}",
         };
 
         Console.WriteLine(
@@ -165,9 +531,147 @@ public static class DurableSqlBatchingBenchmark
         return result;
     }
 
+    private static DatabaseOptions CreateOptions(StoragePreset preset)
+    {
+        return new DatabaseOptions().ConfigureStorageEngine(builder =>
+        {
+            if (preset == StoragePreset.LowLatency)
+                builder.UseLowLatencyDurableWritePreset();
+            else
+                builder.UseWriteOptimizedPreset();
+        });
+    }
+
+    private static async Task ExecuteNonQueryAsync(Database db, string sql, int expectedRowsAffected = 1)
+    {
+        int rowsAffected;
+        await using (var result = await db.ExecuteAsync(sql))
+        {
+            rowsAffected = result.RowsAffected;
+        }
+
+        if (rowsAffected != expectedRowsAffected)
+        {
+            throw new InvalidOperationException(
+                $"Expected {expectedRowsAffected} affected rows for SQL '{sql}', observed {rowsAffected}.");
+        }
+    }
+
+    private static async Task ExecuteCommandAsync(Database db, string sql)
+    {
+        await using var _ = await db.ExecuteAsync(sql);
+    }
+
+    private static async Task RollbackQuietlyAsync(Database db)
+    {
+        try
+        {
+            await db.RollbackAsync();
+        }
+        catch
+        {
+            // Preserve the original benchmark failure.
+        }
+    }
+
+    private static long MapId(int sequence, KeyPattern keyPattern)
+    {
+        return keyPattern switch
+        {
+            KeyPattern.Monotonic => sequence,
+            KeyPattern.Random => unchecked((long)((uint)sequence * 2654435761u)) + 1,
+            _ => throw new ArgumentOutOfRangeException(nameof(keyPattern), keyPattern, null),
+        };
+    }
+
+    private static void PopulateRow(
+        DbValue[] row,
+        long id,
+        int sequence,
+        DbValue textValue,
+        DbValue categoryValue)
+    {
+        row[0] = DbValue.FromInteger(id);
+        row[1] = DbValue.FromInteger(sequence);
+        row[2] = textValue;
+        row[3] = categoryValue;
+    }
+
+    private static string BuildSingleInsertSql(long id, int sequence, RowProfile rowProfile)
+    {
+        return $"INSERT INTO bench VALUES ({id}, {sequence}, '{rowProfile.TextValue}', '{rowProfile.CategoryValue}')";
+    }
+
+    private static string BuildMultiRowInsertSql(
+        StringBuilder builder,
+        int rowsPerCommit,
+        KeyPattern keyPattern,
+        RowProfile rowProfile)
+    {
+        builder.Clear();
+        builder.Append("INSERT INTO bench VALUES ");
+
+        for (int i = 0; i < rowsPerCommit; i++)
+        {
+            if (i > 0)
+                builder.Append(", ");
+
+            int sequence = Interlocked.Increment(ref _nextSequence);
+            long id = MapId(sequence, keyPattern);
+            builder.Append('(');
+            builder.Append(id);
+            builder.Append(", ");
+            builder.Append(sequence);
+            builder.Append(", '");
+            builder.Append(rowProfile.TextValue);
+            builder.Append("', '");
+            builder.Append(rowProfile.CategoryValue);
+            builder.Append("')");
+        }
+
+        return builder.ToString();
+    }
+
+    private static int EstimateSqlBuilderCapacity(int rowsPerCommit, RowProfile rowProfile)
+    {
+        int perRowCapacity = 48 + rowProfile.TextValue.Length + rowProfile.CategoryValue.Length;
+        return 32 + perRowCapacity * Math.Max(rowsPerCommit, 1);
+    }
+
     private sealed record SqlBatchScenario(
         string Name,
+        OperationPath Path,
         int RowsPerCommit,
-        bool UseLowLatencyPreset,
-        bool AnalyzeBeforeRun);
+        StoragePreset Preset,
+        RowProfile RowProfile,
+        IndexLayout Indexes,
+        KeyPattern KeyPattern,
+        bool AnalyzeBeforeRun = false);
+
+    private sealed record RowProfile(string Name, string TextValue, string CategoryValue);
+
+    private sealed record IndexLayout(string Name, string[] CreateStatements)
+    {
+        public int SecondaryIndexCount => CreateStatements.Length;
+    }
+
+    private enum OperationPath
+    {
+        AutoCommitSingleSql,
+        InsertBatch,
+        MultiRowSql,
+        RowSqlInExplicitTransaction,
+    }
+
+    private enum StoragePreset
+    {
+        WriteOptimized,
+        LowLatency,
+    }
+
+    private enum KeyPattern
+    {
+        Monotonic,
+        Random,
+    }
 }

@@ -87,6 +87,52 @@ public sealed class BTreeCursorTests
     }
 
     [Fact]
+    public async Task ReplaceSameLengthPayload_PreservesKeysAndUpdatesValue()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint rootPageId = await BTree.CreateNewAsync(pager, ct);
+        var tree = new BTree(pager, rootPageId);
+
+        for (int key = 1; key <= 24; key++)
+        {
+            byte[] payload = new byte[128];
+            payload[0] = (byte)key;
+            payload[1] = 0x11;
+            await tree.InsertAsync(key, payload, ct);
+        }
+
+        byte[] replacement = new byte[128];
+        replacement[0] = 0x7F;
+        replacement[1] = 0x22;
+        Assert.True(await tree.ReplaceAsync(12, replacement, ct));
+
+        await pager.CommitAsync(ct);
+
+        Assert.Equal(24L, await tree.CountEntriesAsync(ct));
+
+        for (int key = 1; key <= 24; key++)
+        {
+            byte[]? payload = await tree.FindAsync(key, ct);
+            Assert.NotNull(payload);
+            if (key == 12)
+            {
+                Assert.Equal(0x7F, payload![0]);
+                Assert.Equal(0x22, payload[1]);
+                continue;
+            }
+
+            Assert.Equal((byte)key, payload![0]);
+            Assert.Equal(0x11, payload[1]);
+        }
+    }
+
+    [Fact]
     public async Task AppendDrivenRootSplit_BiasesRightmostLeafToStaySparse()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -216,6 +262,7 @@ public sealed class BTreeCursorTests
                 startKey: -1,
                 step: -1,
                 payloadSize: 768,
+                logicalTableName: null,
                 ct);
         }
 
@@ -229,6 +276,7 @@ public sealed class BTreeCursorTests
                 startKey: 1_000_000,
                 step: 1,
                 payloadSize: 768,
+                logicalTableName: null,
                 ct);
         }
 
@@ -375,6 +423,47 @@ public sealed class BTreeCursorTests
     }
 
     [Fact]
+    public async Task RightEdgeRootLeafSplit_AppendsSingleCellNewRightSibling()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint originalRootPageId = await BTree.CreateNewAsync(pager, ct);
+        var tree = new BTree(pager, originalRootPageId);
+        byte[] payload = new byte[1000];
+        long insertedKey = 0;
+
+        while (tree.RootPageId == originalRootPageId)
+        {
+            insertedKey++;
+            payload[0] = (byte)insertedKey;
+            await tree.InsertAsync(insertedKey, payload, ct);
+        }
+
+        uint newRootPageId = tree.RootPageId;
+        var root = new SlottedPage(await pager.GetPageAsync(newRootPageId, ct), newRootPageId);
+        Assert.Equal(PageConstants.PageTypeInterior, root.PageType);
+        Assert.Equal((ushort)1, root.CellCount);
+
+        ReadOnlySpan<byte> rootCell = root.GetCellMemory(0).Span;
+        uint leftLeafPageId = BinaryPrimitives.ReadUInt32LittleEndian(rootCell.Slice(1, sizeof(uint)));
+        uint rightLeafPageId = root.RightChildOrNextLeaf;
+
+        var leftLeaf = new SlottedPage(await pager.GetPageAsync(leftLeafPageId, ct), leftLeafPageId);
+        var rightLeaf = new SlottedPage(await pager.GetPageAsync(rightLeafPageId, ct), rightLeafPageId);
+        Assert.Equal(PageConstants.PageTypeLeaf, leftLeaf.PageType);
+        Assert.Equal(PageConstants.PageTypeLeaf, rightLeaf.PageType);
+        Assert.True(leftLeaf.CellCount > 1);
+        Assert.Equal((ushort)1, rightLeaf.CellCount);
+        Assert.Equal(insertedKey, BTree.ReadLeafKey(rightLeaf, 0));
+        Assert.Equal(rightLeafPageId, leftLeaf.RightChildOrNextLeaf);
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitTransactions_CommittedLeafSplitCanDiscardLosingLocalSplitParentUpdate()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -445,6 +534,78 @@ public sealed class BTreeCursorTests
     }
 
     [Fact]
+    public async Task ConcurrentExplicitTransactions_CommittedLeafSplitCanPromoteLosingInsertIntoSecondCommittedRightEdgeSplit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var pager = await CreatePagerAsync(ct);
+
+        await pager.InitializeNewDatabaseAsync(ct);
+        await pager.RecoverAsync(ct);
+        await pager.BeginTransactionAsync(ct);
+
+        uint leftLeafPageId = await pager.AllocatePageAsync(ct);
+        uint rightLeafPageId = await pager.AllocatePageAsync(ct);
+        uint rootPageId = await pager.AllocatePageAsync(ct);
+
+        var leftLeaf = new SlottedPage(await pager.GetPageAsync(leftLeafPageId, ct), leftLeafPageId);
+        leftLeaf.Initialize(PageConstants.PageTypeLeaf);
+        leftLeaf.RightChildOrNextLeaf = rightLeafPageId;
+        InsertLeafCell(ref leftLeaf, key: 10, payloadLength: 32, fillByte: 0x11);
+        await pager.MarkDirtyAsync(leftLeafPageId, ct);
+
+        var rightLeaf = new SlottedPage(await pager.GetPageAsync(rightLeafPageId, ct), rightLeafPageId);
+        rightLeaf.Initialize(PageConstants.PageTypeLeaf);
+        InsertLeafCell(ref rightLeaf, key: 100, payloadLength: 2052, fillByte: 0x22);
+        InsertLeafCell(ref rightLeaf, key: 150, payloadLength: 1000, fillByte: 0x33);
+        await pager.MarkDirtyAsync(rightLeafPageId, ct);
+
+        var root = new SlottedPage(await pager.GetPageAsync(rootPageId, ct), rootPageId);
+        root.Initialize(PageConstants.PageTypeInterior);
+        root.RightChildOrNextLeaf = rightLeafPageId;
+        Assert.True(root.InsertCell(0, BuildInteriorCell(leftLeafPageId, 100)));
+        await pager.MarkDirtyAsync(rootPageId, ct);
+        await pager.CommitAsync(ct);
+
+        pager.ResetCommitPathDiagnostics();
+
+        await using var tx1 = await pager.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await pager.BeginWriteTransactionAsync(ct);
+
+        using (tx1.Bind())
+        {
+            var tree = new BTree(pager, rootPageId);
+            await tree.InsertAsync(200, new byte[2052], ct);
+        }
+
+        using (tx2.Bind())
+        {
+            var tree = new BTree(pager, rootPageId);
+            await tree.InsertAsync(300, new byte[2052], ct);
+        }
+
+        await tx1.CommitAsync(ct);
+        Assert.Equal((ushort)2, await GetRootCellCountAsync(pager, rootPageId, ct));
+
+        await tx2.CommitAsync(ct);
+
+        var committedTree = new BTree(pager, rootPageId);
+        Assert.Equal((ushort)3, await GetRootCellCountAsync(pager, rootPageId, ct));
+        Assert.Equal(5L, await committedTree.CountEntriesAsync(ct));
+        Assert.NotNull(await committedTree.FindAsync(10, ct));
+        Assert.NotNull(await committedTree.FindAsync(100, ct));
+        Assert.NotNull(await committedTree.FindAsync(150, ct));
+        Assert.NotNull(await committedTree.FindAsync(200, ct));
+        Assert.NotNull(await committedTree.FindAsync(300, ct));
+
+        CommitPathDiagnosticsSnapshot diagnostics = pager.GetCommitPathDiagnosticsSnapshot();
+        Assert.True(diagnostics.ExplicitLeafRebaseAttemptCount > 0);
+        Assert.True(diagnostics.ExplicitLeafRebaseSuccessCount > 0);
+        Assert.Equal(0, diagnostics.ExplicitLeafRebaseRejectDirtyParentRebaseFailureCount);
+        Assert.True(diagnostics.BTreeLeafSplitCount >= 2);
+        Assert.True(diagnostics.BTreeInteriorInsertCount >= 2);
+    }
+
+    [Fact]
     public async Task CommitPathDiagnostics_TrackAndResetRightEdgeInsertStructureEvents()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -455,7 +616,7 @@ public sealed class BTreeCursorTests
         await pager.BeginTransactionAsync(ct);
 
         uint rootPageId = await BTree.CreateNewAsync(pager, ct);
-        var tree = new BTree(pager, rootPageId);
+        var tree = new BTree(pager, rootPageId, logicalTableName: "bench");
         int seededCount = await SeedTreeUntilRootHasAtLeastInteriorCellsAsync(tree, pager, minimumRootCells: 2, ct);
         Assert.True(seededCount > 0);
 
@@ -470,6 +631,7 @@ public sealed class BTreeCursorTests
             startKey: 1_000_000,
             step: 1,
             payloadSize: 768,
+            logicalTableName: "bench",
             ct);
 
         Assert.NotEmpty(insertedKeys);
@@ -482,6 +644,16 @@ public sealed class BTreeCursorTests
         Assert.Equal(0, diagnostics.BTreeInteriorSplitCount);
         Assert.Equal(0, diagnostics.BTreeRightEdgeInteriorSplitCount);
         Assert.Equal(0, diagnostics.BTreeRootSplitCount);
+        CommitPathBTreeResourceDiagnosticsSnapshot resourceDiagnostics =
+            Assert.Single(diagnostics.BTreeResourceDiagnostics!);
+        Assert.Equal("table:bench:rowid", resourceDiagnostics.ResourceName);
+        Assert.Equal(diagnostics.BTreeLeafSplitCount, resourceDiagnostics.LeafSplitCount);
+        Assert.Equal(diagnostics.BTreeRightEdgeLeafSplitCount, resourceDiagnostics.RightEdgeLeafSplitCount);
+        Assert.Equal(diagnostics.BTreeInteriorInsertCount, resourceDiagnostics.InteriorInsertCount);
+        Assert.Equal(diagnostics.BTreeRightEdgeInteriorInsertCount, resourceDiagnostics.RightEdgeInteriorInsertCount);
+        Assert.Equal(0, resourceDiagnostics.InteriorSplitCount);
+        Assert.Equal(0, resourceDiagnostics.RightEdgeInteriorSplitCount);
+        Assert.Equal(0, resourceDiagnostics.RootSplitCount);
 
         pager.ResetCommitPathDiagnostics();
         CommitPathDiagnosticsSnapshot resetDiagnostics = pager.GetCommitPathDiagnosticsSnapshot();
@@ -492,6 +664,7 @@ public sealed class BTreeCursorTests
         Assert.Equal(0, resetDiagnostics.BTreeInteriorSplitCount);
         Assert.Equal(0, resetDiagnostics.BTreeRightEdgeInteriorSplitCount);
         Assert.Equal(0, resetDiagnostics.BTreeRootSplitCount);
+        Assert.Empty(resetDiagnostics.BTreeResourceDiagnostics ?? []);
     }
 
     private static async ValueTask<Pager> CreatePagerAsync(CancellationToken ct)
@@ -541,9 +714,10 @@ public sealed class BTreeCursorTests
         long startKey,
         long step,
         int payloadSize,
+        string? logicalTableName,
         CancellationToken ct)
     {
-        var tree = new BTree(pager, rootPageId);
+        var tree = new BTree(pager, rootPageId, logicalTableName);
         byte[] payload = new byte[payloadSize];
         var insertedKeys = new List<long>();
         long key = startKey;

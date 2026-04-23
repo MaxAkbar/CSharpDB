@@ -20,7 +20,7 @@
         "headline": "CSharpDB vs SQLite: A Benchmark-Driven Guide",
         "description": "Head-to-head benchmarks of CSharpDB and SQLite on .NET 10 — bulk inserts, point lookups, concurrent writers, and EF Core — with compilable sample code for every pattern.",
         "url": "https://csharpdb.com/blog/csharpdb-vs-sqlite-benchmark-guide.html",
-        "datePublished": "2026-04-18",
+        "datePublished": "2026-04-21",
         "author": { "@type": "Organization", "name": "CSharpDB" },
         "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
     }
@@ -108,7 +108,7 @@
                 <h1>CSharpDB vs SQLite: A Benchmark-Driven Guide</h1>
                 <div class="blog-post-meta">
                     <span class="blog-post-tag">Guide</span>
-                    <span>April 18, 2026</span>
+                    <span>April 21, 2026 &middot; Updated for v3.3.0</span>
                     <span>&middot; 12 min read</span>
                 </div>
 
@@ -117,229 +117,267 @@
                     <p>This post walks through four paired benchmarks on .NET 10 — bulk inserts, point lookups, concurrent writers, and EF Core — and shows the compilable code that produced each number. Everything in this post runs end-to-end with <code>dotnet run -c Release</code>.</p>
 
                     <h2>The Setup</h2>
-                    <p>Hardware: Intel Core i9-11900K, .NET 10.0.6, Windows 11. All benchmarks use BenchmarkDotNet's <code>--job short</code> (3 warmup + 3 iterations). Both engines work against the same schema:</p>
+                    <p>Hardware: Intel i9-11900K (16 logical cores), Windows 10.0.26300, .NET SDK 10.0.202, .NET runtime 10.0.6. The headline numbers in this post come from the v3.3.0 release-core run, captured with <code>--release-core --repeat 3 --repro</code> (priority=High, affinity=0xFF). The release guardrail comparison passed with <code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>.</p>
+                    <p>Both engines work against the same schema:</p>
                     <div class="code-block" data-title="Schema (identical on both engines)">
-                        <pre><code>CREATE TABLE products (
-    id       INTEGER PRIMARY KEY,
-    name     TEXT NOT NULL,
-    price    REAL NOT NULL,
-    category TEXT
+                        <pre><code><span class="kw">CREATE TABLE</span> products (
+    id       <span class="tp">INTEGER</span> <span class="kw">PRIMARY KEY</span>,
+    name     <span class="tp">TEXT</span> <span class="kw">NOT NULL</span>,
+    price    <span class="tp">REAL</span> <span class="kw">NOT NULL</span>,
+    category <span class="tp">TEXT</span>
 )</code></pre>
                     </div>
-                    <p>SQLite runs through <code>Microsoft.Data.Sqlite</code> 10.0.4. CSharpDB runs through three surfaces: <code>CSharpDB.Data</code> (ADO.NET), <code>CSharpDB.Engine</code> (direct engine API), and <code>CSharpDB.EntityFrameworkCore</code>. The full benchmark harness is open source — search for <em>ClaudeBench</em> on GitHub if you want to reproduce.</p>
+                    <p>SQLite runs through <code>Microsoft.Data.Sqlite</code> 10.0.6 with <code>journal_mode=WAL</code>, <code>synchronous=FULL</code>, private cache, and pooling disabled — the standard durable local configuration. CSharpDB runs through three surfaces: <code>CSharpDB.Data</code> (ADO.NET), <code>CSharpDB.Engine</code> (direct engine API), and <code>CSharpDB.EntityFrameworkCore</code>. Every CSharpDB row below is durable and file-backed unless noted otherwise.</p>
+                    <p>The full benchmark harness lives under <code>tests/CSharpDB.Benchmarks/</code> in the repo; the headline comparison rows also appear in <code>SQLITE_COMPARISON.md</code>. Ratios below are <code>CSharpDB throughput / SQLite throughput</code> — values above 1.00× mean CSharpDB is faster. This is a same-machine local comparison, not a universal database ranking.</p>
                     <p>Let's walk through the four lessons, cheapest first.</p>
 
-                    <h2>Lesson 1: For Bulk Inserts, Use InsertBatch</h2>
-                    <p>The naive CSharpDB path — open a <code>CSharpDbConnection</code>, prepare a parameterised INSERT, loop N times inside a transaction — is <strong>the same pattern you'd use on SQLite</strong>. But it's the slow path on CSharpDB. For a 10,000-row bulk load, ADO.NET-per-row measures <strong>243 ms</strong>. SQLite through the same pattern measures <strong>29 ms</strong>. That looks like CSharpDB losing by 8×.</p>
-                    <p>The fix is to stop sending one statement per row. <code>Database.PrepareInsertBatch</code> accepts a typed row buffer that is committed as a single atomic insert:</p>
+                    <h2>Lesson 1: Scale Your Batch Size &mdash; InsertBatch Wins at Large Batches</h2>
+                    <p>The first thing you learn putting CSharpDB and SQLite head-to-head on durable inserts is that <strong>batch size is the biggest lever on either engine</strong>. Here is the v3.3.0 release-core comparison at four batch shapes, all with WAL+FULL durability and prepared reuse on both sides:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Workload</th>
+                                <th>CSharpDB</th>
+                                <th>SQLite WAL+FULL</th>
+                                <th>Ratio</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Single-row auto-commit insert</td>
+                                <td>279 ops/sec</td>
+                                <td>282 ops/sec</td>
+                                <td>0.99&times; (tied)</td>
+                            </tr>
+                            <tr>
+                                <td>100 rows per transaction</td>
+                                <td>26.7K rows/sec</td>
+                                <td>25.5K rows/sec</td>
+                                <td>1.05&times;</td>
+                            </tr>
+                            <tr>
+                                <td>1,000 rows per <code>InsertBatch</code></td>
+                                <td>204K rows/sec</td>
+                                <td>192K rows/sec</td>
+                                <td>1.06&times;</td>
+                            </tr>
+                            <tr>
+                                <td>10,000 rows per <code>InsertBatch</code></td>
+                                <td><strong>798K rows/sec</strong></td>
+                                <td>540K rows/sec</td>
+                                <td><strong>1.48&times;</strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>Single-row durable commits are a wash — both engines bottleneck on the fsync per commit. The CSharpDB lead grows with batch size because the bulk path ships a whole batch as one multi-row engine call, so per-row SQL parsing, plan lookup, and parameter binding all collapse into a single operation. <code>Database.PrepareInsertBatch</code> accepts a typed row buffer that is committed as a single atomic insert:</p>
                     <div class="code-block" data-title="Program.cs — CSharpDB.Engine bulk insert">
-                        <pre><code>using CSharpDB.Engine;
-using CSharpDB.Primitives;
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> CSharpDB.Primitives;
 
-await using var db = await Database.OpenAsync("bulk.cdb");
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"bulk.cdb"</span>);
 
-await db.ExecuteAsync("""
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"""
     CREATE TABLE IF NOT EXISTS products (
         id       INTEGER PRIMARY KEY,
         name     TEXT NOT NULL,
         price    REAL NOT NULL,
         category TEXT
     )
-    """);
+    """</span>);
 
-var batch = db.PrepareInsertBatch("products", initialCapacity: 10_000);
-for (int i = 1; i &lt;= 10_000; i++)
+<span class="kw">var</span> batch = db.PrepareInsertBatch(<span class="str">"products"</span>, initialCapacity: 10_000);
+<span class="kw">for</span> (<span class="tp">int</span> i = 1; i &lt;= 10_000; i++)
 {
     batch.AddRow(
-        DbValue.FromInteger(i),
-        DbValue.FromText("Product"),
-        DbValue.FromReal(9.99 + i),
-        DbValue.FromText("Books"));
+        <span class="tp">DbValue</span>.FromInteger(i),
+        <span class="tp">DbValue</span>.FromText(<span class="str">"Product"</span>),
+        <span class="tp">DbValue</span>.FromReal(9.99 + i),
+        <span class="tp">DbValue</span>.FromText(<span class="str">"Books"</span>));
 }
-int inserted = await batch.ExecuteAsync();
-Console.WriteLine($"Inserted {inserted} rows");</code></pre>
+<span class="tp">int</span> inserted = <span class="kw">await</span> batch.ExecuteAsync();
+<span class="tp">Console</span>.WriteLine(<span class="str">$"Inserted {inserted} rows"</span>);</code></pre>
                     </div>
-                    <p>The same workload through <code>PrepareInsertBatch</code> measures <strong>29 ms median</strong> — tied with SQLite on the same machine. The difference is architectural: the batch is dispatched as a single multi-row insert against the engine, so per-row parsing, per-row plan lookup, and per-row parameter binding all collapse into one operation.</p>
-                    <p>For comparison, here is what the equivalent SQLite fast path looks like:</p>
+                    <p>For comparison, here is the SQLite side of the same B10000 row — prepared statement, explicit transaction, parameter reuse — which is what the comparison benchmark uses as the SQLite baseline:</p>
                     <div class="code-block" data-title="Program.cs — SQLite bulk insert baseline">
-                        <pre><code>using Microsoft.Data.Sqlite;
+                        <pre><code><span class="kw">using</span> Microsoft.Data.Sqlite;
 
-await using var conn = new SqliteConnection("Data Source=bulk.db");
-await conn.OpenAsync();
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">SqliteConnection</span>(<span class="str">"Data Source=bulk.db"</span>);
+<span class="kw">await</span> conn.OpenAsync();
 
-await using (var cmd = conn.CreateCommand())
+<span class="kw">await using</span> (<span class="kw">var</span> cmd = conn.CreateCommand())
 {
-    cmd.CommandText = """
+    cmd.CommandText = <span class="str">"""
         CREATE TABLE IF NOT EXISTS products (
             id       INTEGER PRIMARY KEY,
             name     TEXT NOT NULL,
             price    REAL NOT NULL,
             category TEXT
         )
-        """;
-    await cmd.ExecuteNonQueryAsync();
+        """</span>;
+    <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
 }
 
-await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync();
-await using var insert = conn.CreateCommand();
+<span class="kw">await using var</span> tx = (<span class="tp">SqliteTransaction</span>)<span class="kw">await</span> conn.BeginTransactionAsync();
+<span class="kw">await using var</span> insert = conn.CreateCommand();
 insert.Transaction = tx;
 insert.CommandText =
-    "INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)";
-var id    = insert.CreateParameter(); id.ParameterName    = "@id";
-var name  = insert.CreateParameter(); name.ParameterName  = "@name";
-var price = insert.CreateParameter(); price.ParameterName = "@price";
-var cat   = insert.CreateParameter(); cat.ParameterName   = "@cat";
+    <span class="str">"INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)"</span>;
+<span class="kw">var</span> id    = insert.CreateParameter(); id.ParameterName    = <span class="str">"@id"</span>;
+<span class="kw">var</span> name  = insert.CreateParameter(); name.ParameterName  = <span class="str">"@name"</span>;
+<span class="kw">var</span> price = insert.CreateParameter(); price.ParameterName = <span class="str">"@price"</span>;
+<span class="kw">var</span> cat   = insert.CreateParameter(); cat.ParameterName   = <span class="str">"@cat"</span>;
 insert.Parameters.Add(id);
 insert.Parameters.Add(name);
 insert.Parameters.Add(price);
 insert.Parameters.Add(cat);
 insert.Prepare();
 
-for (int i = 1; i &lt;= 10_000; i++)
+<span class="kw">for</span> (<span class="tp">int</span> i = 1; i &lt;= 10_000; i++)
 {
     id.Value    = i;
-    name.Value  = "Product";
+    name.Value  = <span class="str">"Product"</span>;
     price.Value = 9.99 + i;
-    cat.Value   = "Books";
-    await insert.ExecuteNonQueryAsync();
+    cat.Value   = <span class="str">"Books"</span>;
+    <span class="kw">await</span> insert.ExecuteNonQueryAsync();
 }
-await tx.CommitAsync();</code></pre>
+<span class="kw">await</span> tx.CommitAsync();</code></pre>
                     </div>
-                    <p>That's SQLite at its best: prepared statement, explicit transaction, parameter reuse. 29 ms for 10,000 rows. The CSharpDB <code>InsertBatch</code> code above lands at the same number with less ceremony — no parameter setup, no prepared statement, no manual transaction. The packages you'll need:</p>
+                    <p>That is SQLite at its best on .NET: prepared statement, explicit transaction, parameter reuse. CSharpDB ships the same 10,000 rows in roughly two-thirds the wall time with less ceremony — no parameter setup, no prepared statement, no manual transaction. The packages you'll need:</p>
                     <div class="code-block" data-title="*.csproj — package references">
-                        <pre><code>&lt;ItemGroup&gt;
-    &lt;PackageReference Include="CSharpDB" Version="3.1.2" /&gt;
-    &lt;PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.4" /&gt;
-&lt;/ItemGroup&gt;</code></pre>
+                        <pre><code>&lt;<span class="tp">ItemGroup</span>&gt;
+    &lt;<span class="tp">PackageReference</span> <span class="kw">Include</span>=<span class="str">"CSharpDB"</span> <span class="kw">Version</span>=<span class="str">"3.3.0"</span> /&gt;
+    &lt;<span class="tp">PackageReference</span> <span class="kw">Include</span>=<span class="str">"Microsoft.Data.Sqlite"</span> <span class="kw">Version</span>=<span class="str">"10.0.6"</span> /&gt;
+&lt;/<span class="tp">ItemGroup</span>&gt;</code></pre>
                     </div>
-                    <p>The practical takeaway: on CSharpDB, <strong><code>InsertBatch</code> is not an optimization — it is the bulk-load API</strong>. Reach for it any time you're inserting more than a handful of rows from known data.</p>
+                    <p>The practical takeaway: on CSharpDB, <strong><code>InsertBatch</code> is how you get the 1.48&times; lead</strong> — it is not an optimization, it is the bulk-load API. Reach for it any time you are inserting more than a handful of rows from known data.</p>
 
-                    <h2>Lesson 2: Point Lookups Favour CSharpDB by Two Orders of Magnitude</h2>
-                    <p>Single-key lookups are where CSharpDB's storage layer has the clearest advantage. On a 10,000-row warm table with a prepared command, SQLite through ADO.NET averages <strong>63 μs</strong> per lookup. CSharpDB through its own ADO.NET provider is <strong>2.4 μs</strong> — 26 times faster. Dropping to the direct engine API takes it down further:</p>
-                    <div class="code-block" data-title="Program.cs — CSharpDB.Engine direct lookup">
-                        <pre><code>using CSharpDB.Engine;
-
-await using var db = await Database.OpenAsync("bulk.cdb");
-
-async ValueTask&lt;string?&gt; GetProductName(long id)
-{
-    await using var result = await db.ExecuteAsync(
-        $"SELECT name FROM products WHERE id = {id}");
-
-    await foreach (var row in result.GetRowsAsync())
-        return row[0].AsText;
-
-    return null;
-}
-
-Console.WriteLine(await GetProductName(42));</code></pre>
-                    </div>
-                    <p>That path measures <strong>525 ns</strong> — roughly 120× faster than SQLite through ADO.NET. The speed comes from a short-circuit in <code>Database.ExecuteAsync</code> that recognises primary-key lookups and goes straight to the B-tree without running the full planner. You don't need a prepared command, and you don't need a special API — the engine does it for you.</p>
-                    <p>If you need parameterised queries against user input (the normal case), the ADO.NET provider still keeps most of that advantage:</p>
-                    <div class="code-block" data-title="Program.cs — CSharpDB ADO.NET parameterised lookup">
-                        <pre><code>using CSharpDB.Data;
-
-await using var conn = new CSharpDbConnection("Data Source=bulk.cdb");
-await conn.OpenAsync();
-
-await using var cmd = conn.CreateCommand();
-cmd.CommandText = "SELECT name FROM products WHERE id = @id";
-cmd.Parameters.AddWithValue("@id", 42L);
-
-await using var reader = await cmd.ExecuteReaderAsync();
-string? name = await reader.ReadAsync() ? reader.GetString(0) : null;
-Console.WriteLine(name);</code></pre>
-                    </div>
-                    <p>The ADO.NET wrapper adds ~1.9 μs of overhead per lookup for parameter binding, reader state, and <code>DbCommand</code> plumbing — still well under SQLite's 63 μs. If you serve a read-heavy API from an embedded database, this is where CSharpDB earns its keep: four orders of magnitude more cache-friendly lookups per second than the equivalent SQLite path, without changing anything else about your code.</p>
-
-                    <h2>Lesson 3: Concurrent Writers Are CSharpDB's Territory</h2>
-                    <p>This is the benchmark where the architectures diverge most. SQLite is fundamentally single-writer — WAL mode lets readers run alongside a writer, but writers themselves must take the reserved lock one at a time. Eight concurrent tasks doing 1,250 disjoint inserts each still serialize at the write lock.</p>
-                    <p>CSharpDB 3.x exposes <code>ImplicitInsertExecutionMode.ConcurrentWriteTransactions</code>, which routes shared auto-commit inserts through isolated <code>WriteTransaction</code> state. Combined with <code>UseDurableGroupCommit</code>, disjoint-key writers can overlap and coalesce their fsyncs. The numbers on our box, for 10,000 total rows split evenly across N writers:</p>
+                    <h2>Lesson 2: Reads Favour CSharpDB &mdash; and Scale Harder Under Concurrency</h2>
+                    <p>Single-key lookups are where CSharpDB's storage layer has the clearest advantage. The v3.3.0 release-core SQL point lookup row, warm single-connection primary-key lookup on both engines:</p>
                     <table>
                         <thead>
                             <tr>
-                                <th>Writers</th>
-                                <th>SQLite (WAL, synchronous=NORMAL)</th>
-                                <th>CSharpDB (multi-writer config)</th>
+                                <th>Workload</th>
+                                <th>CSharpDB</th>
+                                <th>SQLite WAL+FULL</th>
                                 <th>Ratio</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
-                                <td>1</td>
-                                <td>18.9 ms</td>
-                                <td>49.7 ms</td>
-                                <td>SQLite 2.6× faster</td>
+                                <td>SQL point lookup (warm, single connection)</td>
+                                <td>1.33M ops/sec (0.75 &mu;s P50)</td>
+                                <td>138.3K ops/sec (5.8 &mu;s P50)</td>
+                                <td><strong>9.63&times;</strong></td>
                             </tr>
                             <tr>
-                                <td>2</td>
-                                <td>172 ms</td>
-                                <td>58.8 ms</td>
-                                <td><strong>CSharpDB 2.9× faster</strong></td>
-                            </tr>
-                            <tr>
-                                <td>4</td>
-                                <td>475 ms</td>
-                                <td>85.8 ms</td>
-                                <td><strong>CSharpDB 5.5× faster</strong></td>
-                            </tr>
-                            <tr>
-                                <td>8</td>
-                                <td>1,094 ms</td>
-                                <td>125 ms</td>
-                                <td><strong>CSharpDB 8.8× faster</strong></td>
+                                <td>8-reader burst &mdash; <code>COUNT(*)</code> hot read</td>
+                                <td><strong>10.77M ops/sec</strong></td>
+                                <td>110.0K ops/sec</td>
+                                <td><strong>97.95&times;</strong></td>
                             </tr>
                         </tbody>
                     </table>
-                    <p>SQLite scales almost linearly with writer count — which is exactly what you'd expect from serialised writers. CSharpDB stays nearly flat, and the crossover happens at just two writers. Here is the CSharpDB side of that benchmark end-to-end:</p>
-                    <div class="code-block" data-title="Program.cs — CSharpDB concurrent writers">
-                        <pre><code>using CSharpDB.Engine;
-using CSharpDB.Primitives;
+                    <p>Single-connection lookups: CSharpDB is about <strong>10&times; faster</strong>. Move to an 8-reader burst against a tiny hot read shape and the gap opens to nearly <strong>98&times;</strong> — because CSharpDB's snapshot readers share the warm page cache with no per-reader lock contention, while SQLite's readers each serialize at the WAL gate for consistency. (Caveat: the burst row is intentionally a tiny hot read. It is not a broad analytical-query comparison.)</p>
+                    <p>Here is the direct engine API version of the single-lookup path:</p>
+                    <div class="code-block" data-title="Program.cs — CSharpDB.Engine direct lookup">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
-const int TotalRows = 10_000;
-const int Writers   = 8;
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"bulk.cdb"</span>);
 
-var options = new DatabaseOptions
+<span class="kw">async</span> <span class="tp">ValueTask</span>&lt;<span class="tp">string</span>?&gt; GetProductName(<span class="tp">long</span> id)
 {
-    ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+    <span class="kw">await using var</span> result = <span class="kw">await</span> db.ExecuteAsync(
+        <span class="str">$"SELECT name FROM products WHERE id = {id}"</span>);
+
+    <span class="kw">await foreach</span> (<span class="kw">var</span> row <span class="kw">in</span> result.GetRowsAsync())
+        <span class="kw">return</span> row[0].AsText;
+
+    <span class="kw">return null</span>;
+}
+
+<span class="tp">Console</span>.WriteLine(<span class="kw">await</span> GetProductName(42));</code></pre>
+                    </div>
+                    <p>The speed comes from a short-circuit in <code>Database.ExecuteAsync</code> that recognises primary-key lookups and goes straight to the B-tree without running the full planner. You don't need a prepared command, and you don't need a special API &mdash; the engine does it for you.</p>
+                    <p>If you need parameterised queries against user input (the normal case), the ADO.NET provider still keeps most of that advantage:</p>
+                    <div class="code-block" data-title="Program.cs — CSharpDB ADO.NET parameterised lookup">
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
+
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(<span class="str">"Data Source=bulk.cdb"</span>);
+<span class="kw">await</span> conn.OpenAsync();
+
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">"SELECT name FROM products WHERE id = @id"</span>;
+cmd.Parameters.AddWithValue(<span class="str">"@id"</span>, 42L);
+
+<span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+<span class="tp">string</span>? name = <span class="kw">await</span> reader.ReadAsync() ? reader.GetString(0) : <span class="kw">null</span>;
+<span class="tp">Console</span>.WriteLine(name);</code></pre>
+                    </div>
+                    <p>The ADO.NET wrapper adds overhead per lookup for parameter binding, reader state, and <code>DbCommand</code> plumbing, but stays well inside the 10&times; engine-to-engine gap. If you serve a read-heavy API from an embedded database &mdash; especially one where multiple threads hit the same hot tables &mdash; this is where CSharpDB earns its keep: an order of magnitude faster on warm single lookups, and roughly two orders of magnitude faster on the 8-reader burst shape, without changing anything else about your code.</p>
+
+                    <h2>Lesson 3: Concurrent Writers Are CSharpDB's Territory</h2>
+                    <p>This is the workload where the architectures diverge most. SQLite is fundamentally single-writer &mdash; WAL mode lets readers run alongside a writer, but writers themselves must take the reserved lock one at a time. Eight concurrent tasks doing 1,250 disjoint inserts each still serialize at the write lock.</p>
+                    <p>CSharpDB 3.x exposes <code>ImplicitInsertExecutionMode.ConcurrentWriteTransactions</code>, which routes shared auto-commit inserts through isolated <code>WriteTransaction</code> state. Combined with <code>UseDurableGroupCommit</code>, disjoint-key writers can overlap and coalesce their fsyncs. The practical shape we observe on the concurrent-writer benchmark suites is:</p>
+                    <ul>
+                        <li>At <strong>1 writer</strong>, SQLite is typically ahead &mdash; <code>UseDurableGroupCommit</code> adds a small batching window and <code>WriteOptimizedPreset</code> trades single-writer latency for multi-writer throughput, so the default preset is the right choice when you know your workload is single-threaded.</li>
+                        <li>At <strong>2 writers</strong>, the crossover point: CSharpDB catches up and pulls slightly ahead.</li>
+                        <li>At <strong>4&ndash;8 writers</strong> with disjoint keys, SQLite scales linearly with writer count (because serialized writers queue at the lock), while CSharpDB stays roughly flat &mdash; so the gap opens up several&times; at 4 writers and keeps widening.</li>
+                    </ul>
+                    <p>These numbers are workload-sensitive (key distribution, row size, disk) and move around with each release. Rerun the concurrent benchmark to get current figures for your machine:</p>
+                    <div class="code-block" data-title="Powershell &mdash; rerun the concurrent benchmark">
+                        <pre><code>dotnet run -c Release `
+    --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --concurrent-sqlite-capi-compare --repeat 3 --repro</code></pre>
+                    </div>
+                    <p>Here is the CSharpDB side of the multi-writer scenario end-to-end:</p>
+                    <div class="code-block" data-title="Program.cs — CSharpDB concurrent writers">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> CSharpDB.Primitives;
+
+<span class="kw">const int</span> TotalRows = 10_000;
+<span class="kw">const int</span> Writers   = 8;
+
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>
+{
+    ImplicitInsertExecutionMode = <span class="tp">ImplicitInsertExecutionMode</span>.ConcurrentWriteTransactions,
 }.ConfigureStorageEngine(builder =&gt;
 {
     builder.UseWriteOptimizedPreset();
-    builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(0.25));
+    builder.UseDurableGroupCommit(<span class="tp">TimeSpan</span>.FromMilliseconds(0.25));
 });
 
-await using var db = await Database.OpenAsync("ingest.cdb", options);
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"ingest.cdb"</span>, options);
 
-await db.ExecuteAsync("""
+<span class="kw">await</span> db.ExecuteAsync(<span class="str">"""
     CREATE TABLE IF NOT EXISTS products (
         id       INTEGER PRIMARY KEY,
         name     TEXT NOT NULL,
         price    REAL NOT NULL,
         category TEXT
     )
-    """);
+    """</span>);
 
-int rowsPerWriter = TotalRows / Writers;
-Task[] tasks = Enumerable.Range(0, Writers)
-    .Select(writerIndex =&gt; Task.Run(async () =&gt;
+<span class="tp">int</span> rowsPerWriter = TotalRows / Writers;
+<span class="tp">Task</span>[] tasks = <span class="tp">Enumerable</span>.Range(0, Writers)
+    .Select(writerIndex =&gt; <span class="tp">Task</span>.Run(<span class="kw">async</span> () =&gt;
     {
-        int startId = writerIndex * rowsPerWriter + 1;
+        <span class="tp">int</span> startId = writerIndex * rowsPerWriter + 1;
 
-        // Each writer owns a disjoint primary-key range — no conflicts.
-        var batch = db.PrepareInsertBatch("products", rowsPerWriter);
-        for (int i = 0; i &lt; rowsPerWriter; i++)
+        <span class="cm">// Each writer owns a disjoint primary-key range — no conflicts.</span>
+        <span class="kw">var</span> batch = db.PrepareInsertBatch(<span class="str">"products"</span>, rowsPerWriter);
+        <span class="kw">for</span> (<span class="tp">int</span> i = 0; i &lt; rowsPerWriter; i++)
         {
             batch.AddRow(
-                DbValue.FromInteger(startId + i),
-                DbValue.FromText("Product"),
-                DbValue.FromReal(9.99 + i),
-                DbValue.FromText("Books"));
+                <span class="tp">DbValue</span>.FromInteger(startId + i),
+                <span class="tp">DbValue</span>.FromText(<span class="str">"Product"</span>),
+                <span class="tp">DbValue</span>.FromReal(9.99 + i),
+                <span class="tp">DbValue</span>.FromText(<span class="str">"Books"</span>));
         }
-        await batch.ExecuteAsync();
+        <span class="kw">await</span> batch.ExecuteAsync();
     }))
     .ToArray();
 
-await Task.WhenAll(tasks);</code></pre>
+<span class="kw">await</span> <span class="tp">Task</span>.WhenAll(tasks);</code></pre>
                     </div>
                     <p>Three things matter in that configuration:</p>
                     <ul>
@@ -349,18 +387,18 @@ await Task.WhenAll(tasks);</code></pre>
                     </ul>
                     <p>The equivalent SQLite code for comparison is the standard connection-per-worker pattern with WAL mode enabled:</p>
                     <div class="code-block" data-title="Program.cs — SQLite concurrent writers (for reference)">
-                        <pre><code>using Microsoft.Data.Sqlite;
+                        <pre><code><span class="kw">using</span> Microsoft.Data.Sqlite;
 
-const int TotalRows = 10_000;
-const int Writers   = 8;
-const string Cs     = "Data Source=ingest.db;Pooling=True";
+<span class="kw">const int</span> TotalRows = 10_000;
+<span class="kw">const int</span> Writers   = 8;
+<span class="kw">const string</span> Cs     = <span class="str">"Data Source=ingest.db;Pooling=True"</span>;
 
-// WAL + NORMAL sync is the most concurrency-friendly SQLite configuration.
-await using (var init = new SqliteConnection(Cs))
+<span class="cm">// WAL + NORMAL sync is the most concurrency-friendly SQLite configuration.</span>
+<span class="kw">await using</span> (<span class="kw">var</span> init = <span class="kw">new</span> <span class="tp">SqliteConnection</span>(Cs))
 {
-    await init.OpenAsync();
-    await using var cmd = init.CreateCommand();
-    cmd.CommandText = @"
+    <span class="kw">await</span> init.OpenAsync();
+    <span class="kw">await using var</span> cmd = init.CreateCommand();
+    cmd.CommandText = <span class="str">@"
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous  = NORMAL;
         PRAGMA busy_timeout = 30000;
@@ -369,97 +407,106 @@ await using (var init = new SqliteConnection(Cs))
             name     TEXT NOT NULL,
             price    REAL NOT NULL,
             category TEXT
-        );";
-    await cmd.ExecuteNonQueryAsync();
+        );"</span>;
+    <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
 }
 
-int rowsPerWriter = TotalRows / Writers;
-Task[] tasks = Enumerable.Range(0, Writers)
-    .Select(writerIndex =&gt; Task.Run(async () =&gt;
+<span class="tp">int</span> rowsPerWriter = TotalRows / Writers;
+<span class="tp">Task</span>[] tasks = <span class="tp">Enumerable</span>.Range(0, Writers)
+    .Select(writerIndex =&gt; <span class="tp">Task</span>.Run(<span class="kw">async</span> () =&gt;
     {
-        int startId = writerIndex * rowsPerWriter + 1;
+        <span class="tp">int</span> startId = writerIndex * rowsPerWriter + 1;
 
-        await using var conn = new SqliteConnection(Cs);
-        await conn.OpenAsync();
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">SqliteConnection</span>(Cs);
+        <span class="kw">await</span> conn.OpenAsync();
 
-        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync();
-        await using var cmd = conn.CreateCommand();
+        <span class="kw">await using var</span> tx = (<span class="tp">SqliteTransaction</span>)<span class="kw">await</span> conn.BeginTransactionAsync();
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText =
-            "INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)";
-        var id    = cmd.CreateParameter(); id.ParameterName    = "@id";
-        var name  = cmd.CreateParameter(); name.ParameterName  = "@name";
-        var price = cmd.CreateParameter(); price.ParameterName = "@price";
-        var cat   = cmd.CreateParameter(); cat.ParameterName   = "@cat";
+            <span class="str">"INSERT INTO products (id, name, price, category) VALUES (@id, @name, @price, @cat)"</span>;
+        <span class="kw">var</span> id    = cmd.CreateParameter(); id.ParameterName    = <span class="str">"@id"</span>;
+        <span class="kw">var</span> name  = cmd.CreateParameter(); name.ParameterName  = <span class="str">"@name"</span>;
+        <span class="kw">var</span> price = cmd.CreateParameter(); price.ParameterName = <span class="str">"@price"</span>;
+        <span class="kw">var</span> cat   = cmd.CreateParameter(); cat.ParameterName   = <span class="str">"@cat"</span>;
         cmd.Parameters.Add(id);
         cmd.Parameters.Add(name);
         cmd.Parameters.Add(price);
         cmd.Parameters.Add(cat);
         cmd.Prepare();
 
-        for (int i = 0; i &lt; rowsPerWriter; i++)
+        <span class="kw">for</span> (<span class="tp">int</span> i = 0; i &lt; rowsPerWriter; i++)
         {
             id.Value    = startId + i;
-            name.Value  = "Product";
+            name.Value  = <span class="str">"Product"</span>;
             price.Value = 9.99 + i;
-            cat.Value   = "Books";
-            await cmd.ExecuteNonQueryAsync();
+            cat.Value   = <span class="str">"Books"</span>;
+            <span class="kw">await</span> cmd.ExecuteNonQueryAsync();
         }
-        await tx.CommitAsync();
+        <span class="kw">await</span> tx.CommitAsync();
     }))
     .ToArray();
 
-await Task.WhenAll(tasks);</code></pre>
+<span class="kw">await</span> <span class="tp">Task</span>.WhenAll(tasks);</code></pre>
                     </div>
-                    <p>Two notes on interpreting the numbers. First, the win is for <strong>disjoint-key inserts</strong> — each writer owns a slice of the primary-key space. A workload where every writer is hammering the same monotonic right edge of the index (typical for a shared identity column with no partitioning) will not see the same fan-in. Second, CSharpDB is slower at W=1 because <code>UseDurableGroupCommit</code> adds a small batching window and <code>WriteOptimizedPreset</code> trades single-writer latency for multi-writer throughput. Use the default preset if you know your workload is single-threaded.</p>
+                    <p>A note on interpreting the win: it is for <strong>disjoint-key inserts</strong> &mdash; each writer owns a slice of the primary-key space. A workload where every writer is hammering the same monotonic right edge of the index (typical for a shared identity column with no partitioning) will not see the same fan-in. v3.3.0 shipped hot-right-edge recovery work, but this shape is still the most constrained multi-writer pattern on either engine.</p>
 
-                    <h2>Lesson 4: Storage Presets Trade Small Amounts of Durability for Write Speed</h2>
-                    <p>CSharpDB exposes several presets on the <code>StorageEngineOptionsBuilder</code> that cover the common tuning axes. For the 10,000-row single-writer bulk insert benchmark, the spread across presets looked like this:</p>
+                    <h2>Lesson 4: Storage Presets Match the Workload, Not the Other Way Around</h2>
+                    <p>CSharpDB exposes storage presets on the <code>StorageEngineOptionsBuilder</code> that cover the common tuning axes. In v3.3.0, the same presets are also surfaced through the ADO.NET connection string (<code>Storage Preset=WriteOptimized</code>) and through the EF Core provider (<code>UseStoragePreset(WriteOptimized)</code>), so embedded users don't have to reach for the engine API to pick a tuning profile:</p>
                     <table>
                         <thead>
                             <tr>
                                 <th>Preset</th>
-                                <th>Median</th>
                                 <th>When to use it</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
                                 <td>Default</td>
-                                <td>29 ms</td>
-                                <td>Single writer, no contention</td>
+                                <td>Single writer, no contention, short-lived processes</td>
                             </tr>
                             <tr>
                                 <td><code>UseWriteOptimizedPreset</code></td>
-                                <td>33 ms</td>
-                                <td>Sustained write load, background checkpoints</td>
+                                <td>Sustained write load, background checkpoints, multi-writer disjoint keys</td>
                             </tr>
                             <tr>
                                 <td><code>UseLowLatencyDurableWritePreset</code></td>
-                                <td>35 ms</td>
                                 <td>Deferred planner stats, commit-path focus</td>
                             </tr>
                             <tr>
-                                <td><code>WriteOptimized + DurableGroupCommit(0.25ms)</code></td>
-                                <td>31 ms</td>
-                                <td>Multi-writer disjoint keys (see Lesson 3)</td>
+                                <td><code>WriteOptimized + DurableGroupCommit(...)</code></td>
+                                <td>Several concurrent writers, willing to trade some latency for flush sharing</td>
                             </tr>
                         </tbody>
                     </table>
-                    <p>None of the write presets beat Default on a single-writer workload — that was an interesting finding. They earn their keep under contention or on long-lived write-heavy services where the checkpoint pattern matters. Switching them on is a one-line change:</p>
+                    <p>The single-writer default is already well-tuned &mdash; write presets earn their keep under contention or on long-lived write-heavy services where the checkpoint pattern matters, not on small single-threaded loads. Measure your workload before adopting a preset; don't flip it on because it sounds faster.</p>
+                    <p>Switching presets is a one-line change through the engine API:</p>
                     <div class="code-block" data-title="Program.cs — applying a storage preset">
-                        <pre><code>using CSharpDB.Engine;
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
 
-var options = new DatabaseOptions()
+<span class="kw">var</span> options = <span class="kw">new</span> <span class="tp">DatabaseOptions</span>()
     .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
 
-await using var db = await Database.OpenAsync("app.cdb", options);</code></pre>
+<span class="kw">await using var</span> db = <span class="kw">await</span> <span class="tp">Database</span>.OpenAsync(<span class="str">"app.cdb"</span>, options);</code></pre>
                     </div>
-                    <p>Read-side presets like <code>UseDirectLookupOptimizedPreset</code>, <code>UseHybridFileCachePreset</code>, and <code>UseDirectColdFileLookupPreset</code> follow the same pattern, and again, the default is already well-tuned — measure before adopting a preset.</p>
+                    <p>Or through the ADO.NET connection string &mdash; the v3.3.0 storage-tuning additions make this the easiest path for embedded users:</p>
+                    <div class="code-block" data-title="Program.cs — applying a preset via ADO.NET connection string">
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
+
+<span class="kw">var</span> cs = <span class="str">"Data Source=app.cdb;Storage Preset=WriteOptimized;Embedded Open Mode=Direct"</span>;
+<span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(cs);
+<span class="kw">await</span> conn.OpenAsync();</code></pre>
+                    </div>
+                    <p>Read-side presets like <code>UseDirectLookupOptimizedPreset</code>, <code>UseHybridFileCachePreset</code>, and <code>UseDirectColdFileLookupPreset</code> follow the same pattern.</p>
 
                     <h2>Matching Durability Is Non-Negotiable for Fair Comparisons</h2>
-                    <p>If you're running your own CSharpDB-vs-SQLite numbers, the single biggest trap is comparing engines under mismatched durability settings. SQLite's default is <code>journal_mode=DELETE</code> with <code>synchronous=FULL</code> — an fsync per commit, full rollback journal. That's strict, and slow. CSharpDB's defaults are WAL-based with different fsync semantics.</p>
-                    <p>The benchmarks in this post deliberately matched durability where it mattered: in the multi-writer test, SQLite was configured with <code>PRAGMA journal_mode=WAL; synchronous=NORMAL</code>, which is the industry-standard "fast but crash-safe" configuration. If you see any CSharpDB benchmark that beats SQLite by 10× on a single-row insert, check the durability settings before believing it.</p>
+                    <p>If you're running your own CSharpDB-vs-SQLite numbers, the single biggest trap is comparing engines under mismatched durability settings. SQLite's default is <code>journal_mode=DELETE</code> with <code>synchronous=FULL</code> &mdash; an fsync per commit, full rollback journal. That's strict, and slow. CSharpDB's defaults are WAL-based with different fsync semantics.</p>
+                    <p>The benchmarks in this post use two durability contracts, each matched on both sides:</p>
+                    <ul>
+                        <li><strong>Headline durable comparison (Lessons 1 and 2):</strong> SQLite runs with <code>PRAGMA journal_mode=WAL; synchronous=FULL</code> &mdash; the strict "every commit fsyncs" configuration. CSharpDB runs in its default durable file-backed mode. This is the comparison that appears in <code>SQLITE_COMPARISON.md</code>.</li>
+                        <li><strong>Concurrent writer comparison (Lesson 3):</strong> SQLite uses <code>WAL; synchronous=NORMAL</code> &mdash; the industry-standard "fast but crash-safe" configuration. This is a more generous setting for SQLite than the headline comparison uses, precisely because we want to show the contention behaviour even when SQLite is tuned for speed.</li>
+                    </ul>
+                    <p>If you see any CSharpDB benchmark that beats SQLite by 100&times; on a single-row insert, check the durability settings before believing it. A 1.48&times; lead on durable B10000 bulk with both sides on WAL+FULL is a real and fair comparison; the same workload can look like a 10&times; gap if the SQLite side is accidentally running with <code>synchronous=OFF</code>.</p>
                     <p>A practical checklist when writing comparison code:</p>
                     <ul>
                         <li><strong>SQLite:</strong> set <code>journal_mode</code> (WAL for concurrent readers, MEMORY/OFF for pure speed) and <code>synchronous</code> (FULL for durable, NORMAL for WAL-safe, OFF for unsafe) explicitly in the connection initialisation.</li>
@@ -467,54 +514,54 @@ await using var db = await Database.OpenAsync("app.cdb", options);</code></pre>
                         <li><strong>Both:</strong> use the same row count, same schema, same iteration harness, and the same batch size. BenchmarkDotNet's paired baseline/candidate pattern makes this easy.</li>
                     </ul>
 
-                    <h2>EF Core: Parity on Writes, Bug on Reads</h2>
-                    <p>The CSharpDB EF Core provider is newer than the ADO.NET one, and that shows up in the numbers. For bulk insert through <code>DbContext.SaveChanges</code>, CSharpDB and SQLite are essentially tied at 10,000 rows — CSharpDB even allocates 22% less memory. For <code>DbSet.Find</code> by primary key, the picture flips hard: SQLite EF Core averaged 72 μs, CSharpDB EF Core averaged 9,480 μs on the same warm 10,000-row table. That's a 130× regression at the EF layer despite the underlying engine being 120× <em>faster</em> than SQLite on the same lookup.</p>
+                    <h2>EF Core: Parity on Writes, Slower on Hot Reads</h2>
+                    <p>The CSharpDB EF Core provider is newer than the ADO.NET one, and that shows up in the numbers. For bulk insert through <code>DbContext.SaveChanges</code>, CSharpDB and SQLite are roughly tied on throughput, with CSharpDB allocating noticeably less per row. For <code>DbSet.Find</code> by primary key on a warm table, the picture flips: the CSharpDB EF Core Find path is currently <em>slower</em> than SQLite's EF Core Find path, even though the underlying engine is about 10&times; <em>faster</em> than SQLite on the same lookup (Lesson 2). The gap lives at the EF Core provider layer &mdash; specifically in how EF Core's materialization and change tracking interact with the CSharpDB provider's current plan caching. v3.3.0 tightened provider option validation and connection setup, but did not retarget the Find hot path; that is follow-up work.</p>
                     <p>The practical workaround today is to drop a layer for hot lookups. Either use the ADO.NET provider inside your service:</p>
                     <div class="code-block" data-title="Program.cs — drop to ADO.NET from EF Core-style code">
-                        <pre><code>using CSharpDB.Data;
+                        <pre><code><span class="kw">using</span> CSharpDB.Data;
 
-public sealed class ProductReader(string connectionString)
+<span class="kw">public sealed class</span> <span class="tp">ProductReader</span>(<span class="tp">string</span> connectionString)
 {
-    public async Task&lt;string?&gt; GetNameAsync(long id)
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">string</span>?&gt; GetNameAsync(<span class="tp">long</span> id)
     {
-        await using var conn = new CSharpDbConnection(connectionString);
-        await conn.OpenAsync();
+        <span class="kw">await using var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(connectionString);
+        <span class="kw">await</span> conn.OpenAsync();
 
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT name FROM products WHERE id = @id";
-        cmd.Parameters.AddWithValue("@id", id);
+        <span class="kw">await using var</span> cmd = conn.CreateCommand();
+        cmd.CommandText = <span class="str">"SELECT name FROM products WHERE id = @id"</span>;
+        cmd.Parameters.AddWithValue(<span class="str">"@id"</span>, id);
 
-        await using var reader = await cmd.ExecuteReaderAsync();
-        return await reader.ReadAsync() ? reader.GetString(0) : null;
+        <span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+        <span class="kw">return await</span> reader.ReadAsync() ? reader.GetString(0) : <span class="kw">null</span>;
     }
 }</code></pre>
                     </div>
                     <p>Or, if you own the context lifecycle, resolve the underlying <code>CSharpDbConnection</code> through the EF Core context and reuse it for the fast path:</p>
                     <div class="code-block" data-title="Program.cs — use EF for writes, ADO.NET for hot reads">
-                        <pre><code>using System.Data.Common;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
+                        <pre><code><span class="kw">using</span> System.Data.Common;
+<span class="kw">using</span> Microsoft.EntityFrameworkCore;
+<span class="kw">using</span> Microsoft.EntityFrameworkCore.Infrastructure;
 
-using var ctx = new AppDbContext(options);
+<span class="kw">using var</span> ctx = <span class="kw">new</span> <span class="tp">AppDbContext</span>(options);
 
-// Writes through EF Core: tracked entities, migrations, change tracking.
-ctx.Products.Add(new Product { Id = 1, Name = "Widget", Price = 9.99 });
-await ctx.SaveChangesAsync();
+<span class="cm">// Writes through EF Core: tracked entities, migrations, change tracking.</span>
+ctx.Products.Add(<span class="kw">new</span> <span class="tp">Product</span> { Id = 1, Name = <span class="str">"Widget"</span>, Price = 9.99 });
+<span class="kw">await</span> ctx.SaveChangesAsync();
 
-// Reads through the same physical connection, bypassing the EF provider.
-DbConnection conn = ctx.Database.GetDbConnection();
-if (conn.State != System.Data.ConnectionState.Open)
-    await conn.OpenAsync();
+<span class="cm">// Reads through the same physical connection, bypassing the EF provider.</span>
+<span class="tp">DbConnection</span> conn = ctx.Database.GetDbConnection();
+<span class="kw">if</span> (conn.State != <span class="tp">System</span>.Data.ConnectionState.Open)
+    <span class="kw">await</span> conn.OpenAsync();
 
-await using var cmd = conn.CreateCommand();
-cmd.CommandText = "SELECT name FROM products WHERE id = @id";
-var idParam = cmd.CreateParameter();
-idParam.ParameterName = "@id";
+<span class="kw">await using var</span> cmd = conn.CreateCommand();
+cmd.CommandText = <span class="str">"SELECT name FROM products WHERE id = @id"</span>;
+<span class="kw">var</span> idParam = cmd.CreateParameter();
+idParam.ParameterName = <span class="str">"@id"</span>;
 idParam.Value = 1L;
 cmd.Parameters.Add(idParam);
 
-await using var reader = await cmd.ExecuteReaderAsync();
-string? name = await reader.ReadAsync() ? reader.GetString(0) : null;</code></pre>
+<span class="kw">await using var</span> reader = <span class="kw">await</span> cmd.ExecuteReaderAsync();
+<span class="tp">string</span>? name = <span class="kw">await</span> reader.ReadAsync() ? reader.GetString(0) : <span class="kw">null</span>;</code></pre>
                     </div>
                     <p>That keeps the write surface ergonomic while routing hot reads through the fast path the engine is already capable of serving.</p>
 
@@ -530,19 +577,24 @@ string? name = await reader.ReadAsync() ? reader.GetString(0) : null;</code></pr
                         </thead>
                         <tbody>
                             <tr>
-                                <td>Single-threaded bulk load</td>
-                                <td>CSharpDB <code>InsertBatch</code></td>
-                                <td>Parity with SQLite; simpler API; less boilerplate</td>
+                                <td>Single-threaded bulk load (large batches)</td>
+                                <td>CSharpDB <code>InsertBatch</code> at B10000</td>
+                                <td>1.48&times; faster than SQLite prepared-bulk on WAL+FULL</td>
+                            </tr>
+                            <tr>
+                                <td>Single-threaded bulk load (small/medium batches)</td>
+                                <td>Either engine, batch size 1,000&ndash;10,000</td>
+                                <td>Tied to 1.06&times; in CSharpDB's favour; pick for API ergonomics</td>
                             </tr>
                             <tr>
                                 <td>Read-heavy, point-lookup-dominated</td>
                                 <td>CSharpDB engine API or ADO.NET</td>
-                                <td>26–120× faster than SQLite ADO.NET</td>
+                                <td>~10&times; faster on warm single lookups; ~98&times; on 8-reader bursts</td>
                             </tr>
                             <tr>
                                 <td>Concurrent writers, disjoint keys</td>
                                 <td>CSharpDB with <code>ConcurrentWriteTransactions</code> + <code>DurableGroupCommit</code></td>
-                                <td>5–9× faster than SQLite at 4–8 writers</td>
+                                <td>Approximately flat scaling vs SQLite's linear writer-count penalty</td>
                             </tr>
                             <tr>
                                 <td>Concurrent writers, shared hot key range</td>
@@ -551,13 +603,13 @@ string? name = await reader.ReadAsync() ? reader.GetString(0) : null;</code></pr
                             </tr>
                             <tr>
                                 <td>EF Core writes</td>
-                                <td>Either engine; CSharpDB has slightly lower allocations</td>
-                                <td>Roughly tied at 10k-row SaveChanges</td>
+                                <td>Either engine; CSharpDB has lower allocations</td>
+                                <td>Roughly tied at 10k-row <code>SaveChanges</code></td>
                             </tr>
                             <tr>
-                                <td>EF Core hot reads (today)</td>
+                                <td>EF Core hot reads (v3.3.0)</td>
                                 <td>SQLite through EF Core, or CSharpDB with an ADO.NET escape hatch</td>
-                                <td>The CSharpDB EF Core <code>Find</code> path is slow in 3.1.x</td>
+                                <td>CSharpDB EF Core <code>Find</code> path is not yet tuned</td>
                             </tr>
                             <tr>
                                 <td>Mixed workload with unknown ratios</td>
@@ -568,16 +620,36 @@ string? name = await reader.ReadAsync() ? reader.GetString(0) : null;</code></pr
                     </table>
 
                     <h2>Reproducing the Numbers</h2>
-                    <p>The full benchmark suite that produced the numbers in this post is available as a BenchmarkDotNet project called ClaudeBench. It references CSharpDB from source so you can point it at any commit, and it runs both engines through paired benchmark classes with matching call patterns. On any modern .NET 10 machine:</p>
-                    <div class="code-block" data-title="shell">
-                        <pre><code>dotnet run -c Release -- --filter "*" --job short</code></pre>
+                    <p>The full benchmark suite that produced the numbers in this post lives under <code>tests/CSharpDB.Benchmarks/</code> in the CSharpDB repo. It references CSharpDB from source so you can point it at any commit, and it runs both engines through paired benchmark classes with matching call patterns. To reproduce the headline comparison rows in this post:</p>
+                    <div class="code-block" data-title="Powershell &mdash; release-core suite (all headline rows)">
+                        <pre><code>dotnet run -c Release `
+    --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --release-core --repeat 3 --repro</code></pre>
                     </div>
-                    <p>You'll see the same shape — SQLite winning single-writer bulk load by a hair, CSharpDB winning point lookups by two orders of magnitude, and CSharpDB pulling ahead on anything with more than one concurrent writer. The absolute numbers will vary with your CPU, disk, and filesystem.</p>
+                    <p>Or target individual comparison surfaces:</p>
+                    <div class="code-block" data-title="Powershell &mdash; individual comparisons">
+                        <pre><code><span class="cm"># Headline SQLite comparison (durable batched inserts, point lookup, reader burst)</span>
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --sqlite-compare --repeat 3 --repro
+
+<span class="cm"># Engine-to-engine concurrent writers (CSharpDB vs SQLite C API)</span>
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --concurrent-sqlite-capi-compare --repeat 3 --repro
+
+<span class="cm"># ADO.NET provider comparison</span>
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --concurrent-adonet-compare --repeat 3 --repro
+
+<span class="cm"># EF Core provider comparison</span>
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj `
+    -- --efcore-compare --repeat 3 --repro</code></pre>
+                    </div>
+                    <p>You should see the same directional shape on any modern .NET 10 machine &mdash; CSharpDB ahead on durable bulk batches, well ahead on point lookups and concurrent reads, and ahead on concurrent-writer disjoint-key workloads at 2+ writers. Absolute numbers will vary with CPU, disk, and filesystem. The canonical comparison rules and source benchmark files are documented in <code>tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md</code>.</p>
 
                     <h2>Closing Thoughts</h2>
-                    <p>SQLite is a legendary piece of software, and the right default for a large class of .NET applications. CSharpDB isn't trying to replace it — it's a pure-C# embedded engine with a different set of trade-offs, and those trade-offs show up clearly when you put both engines under the same benchmark harness.</p>
-                    <p>The real signal from this exercise isn't the horse-race: it's that the API you pick inside each engine matters at least as much as the engine itself. <code>InsertBatch</code> turns a 243 ms CSharpDB insert into a 29 ms one. Dropping from EF Core to ADO.NET turns a 9.5 ms CSharpDB lookup into a 2.4 μs one. Matching durability turns an apples-to-oranges comparison into an apples-to-apples one. Those levers exist on both engines, and pulling them is usually cheaper than switching engines.</p>
-                    <p>If your workload is a good fit for CSharpDB's sweet spots — concurrent disjoint-key writes, hot point-lookups, or an engine-API that gets out of your way — the numbers will reward you. If it isn't, the same benchmark harness will tell you that too.</p>
+                    <p>SQLite is a legendary piece of software, and the right default for a large class of .NET applications. CSharpDB isn't trying to replace it &mdash; it's a pure-C# embedded engine with a different set of trade-offs, and those trade-offs show up clearly when you put both engines under the same benchmark harness.</p>
+                    <p>The real signal from this exercise isn't the horse-race: it's that the API you pick inside each engine matters at least as much as the engine itself. <code>InsertBatch</code> is what takes CSharpDB from "tied with SQLite" to "1.48&times; ahead" on durable bulk. Dropping from EF Core to ADO.NET is what recovers the engine's 10&times; lookup advantage. Matching durability is what keeps an apples-to-apples comparison from silently becoming apples-to-oranges. Those levers exist on both engines, and pulling them is usually cheaper than switching engines.</p>
+                    <p>If your workload is a good fit for CSharpDB's sweet spots &mdash; concurrent disjoint-key writes, hot point-lookups, large durable batches, or an engine API that gets out of your way &mdash; the numbers will reward you. If it isn't, the same benchmark harness will tell you that too.</p>
 
                     <div class="blog-nav">
                         <a href="index.html">&larr; All posts</a>
@@ -589,8 +661,6 @@ string? name = await reader.ReadAsync() ? reader.GetString(0) : null;</code></pr
     </main>
 
     <div id="site-footer"></div>
-    <script src="../js/components.js"></script>
-    <script src="../js/app.js"></script>
-    <script src="../js/csharpdb.bundle.js"></script>
+    <script src="../js/csharpdb.bundle.js" defer></script>
 </body>
 </html>

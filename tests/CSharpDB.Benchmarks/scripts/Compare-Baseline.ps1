@@ -328,6 +328,128 @@ function Convert-SizeToBytes
     throw "Unable to parse size value '$Value'."
 }
 
+function Get-ExtraInfoValue
+{
+    param(
+        [Parameter(Mandatory = $true)]$Row,
+        [Parameter(Mandatory = $true)][string]$Key
+    )
+
+    $extraInfo = [string](Get-OptionalProperty -Object $Row -Name "ExtraInfo" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($extraInfo))
+    {
+        return $null
+    }
+
+    $escapedKey = [regex]::Escape($Key)
+    $match = [regex]::Match($extraInfo, "(?:^|[,;]\s*)$escapedKey=([^,;]+)")
+    if (-not $match.Success)
+    {
+        return $null
+    }
+
+    return $match.Groups[1].Value.Trim()
+}
+
+function Convert-ComparableNumber
+{
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $text = $Value.Trim("'").Trim() -replace ",", ""
+    if ($text -match "^([+-]?[0-9]*\.?[0-9]+)")
+    {
+        return [double]$matches[1]
+    }
+
+    throw "Unable to parse numeric $Description value '$Value'."
+}
+
+function Test-ExtraInfoChecks
+{
+    param(
+        [Parameter(Mandatory = $true)]$BaselineRow,
+        [Parameter(Mandatory = $true)]$CurrentRow,
+        [Parameter(Mandatory = $false)]$Checks
+    )
+
+    $notes = New-Object System.Collections.Generic.List[string]
+    $regressed = $false
+
+    if ($null -eq $Checks)
+    {
+        return [pscustomobject]@{
+            Regressed = $false
+            Notes = [string[]]@()
+        }
+    }
+
+    foreach ($check in @($Checks))
+    {
+        if ($null -eq $check)
+        {
+            continue
+        }
+
+        $key = [string](Get-OptionalProperty -Object $check -Name "key" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($key))
+        {
+            throw "extraInfoChecks entries must define a key."
+        }
+
+        $baselineRaw = Get-ExtraInfoValue -Row $BaselineRow -Key $key
+        $currentRaw = Get-ExtraInfoValue -Row $CurrentRow -Key $key
+        if ($null -eq $baselineRaw -or $null -eq $currentRaw)
+        {
+            $regressed = $true
+            $notes.Add("ExtraInfo $key missing") | Out-Null
+            continue
+        }
+
+        $baselineValue = Convert-ComparableNumber -Value $baselineRaw -Description "baseline ExtraInfo '$key'"
+        $currentValue = Convert-ComparableNumber -Value $currentRaw -Description "current ExtraInfo '$key'"
+
+        $minRatioText = [string](Get-OptionalProperty -Object $check -Name "minRatio" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($minRatioText))
+        {
+            $minRatio = [double]$minRatioText
+            $required = $baselineValue * $minRatio
+            if ($currentValue -lt $required)
+            {
+                $regressed = $true
+                $formattedRatio = "{0:N2}" -f $minRatio
+                $notes.Add("$key>=$formattedRatio x baseline (baseline=$baselineRaw, current=$currentRaw)") | Out-Null
+                continue
+            }
+
+            $notes.Add("$key OK (baseline=$baselineRaw, current=$currentRaw)") | Out-Null
+        }
+
+        $maxRatioText = [string](Get-OptionalProperty -Object $check -Name "maxRatio" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($maxRatioText))
+        {
+            $maxRatio = [double]$maxRatioText
+            $allowed = $baselineValue * $maxRatio
+            if ($currentValue -gt $allowed)
+            {
+                $regressed = $true
+                $formattedRatio = "{0:N2}" -f $maxRatio
+                $notes.Add("$key<=$formattedRatio x baseline (baseline=$baselineRaw, current=$currentRaw)") | Out-Null
+                continue
+            }
+
+            $notes.Add("$key OK (baseline=$baselineRaw, current=$currentRaw)") | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        Regressed = $regressed
+        Notes = [string[]]$notes.ToArray()
+    }
+}
+
 function Test-RowMatch
 {
     param(
@@ -995,7 +1117,11 @@ foreach ($check in $config.checks)
             }
         }
 
-        $meanRegressed = $meanDeltaPct -gt $maxMeanRegression
+        $skipMeanComparison = [bool](Get-OptionalProperty -Object $check -Name "skipMeanComparison" -DefaultValue $false)
+        $extraInfoChecks = Get-OptionalProperty -Object $check -Name "extraInfoChecks" -DefaultValue @()
+        $extraInfoEvaluation = Test-ExtraInfoChecks -BaselineRow $baselineRow -CurrentRow $currentRow -Checks $extraInfoChecks
+
+        $meanRegressed = (-not $skipMeanComparison) -and ($meanDeltaPct -gt $maxMeanRegression)
         $allocRegressed = $allocComparisonEnabled -and
             ($allocDeltaPct -gt $maxAllocRegressionPct) -and
             ($allocDeltaBytes -gt $maxAllocRegressionBytes)
@@ -1004,7 +1130,7 @@ foreach ($check in $config.checks)
         {
             $status = "SKIP"
         }
-        elseif ($meanRegressed -or $allocRegressed)
+        elseif ($meanRegressed -or $allocRegressed -or $extraInfoEvaluation.Regressed)
         {
             $status = $(if ($machineCompatibility.Classification -eq "compatible") { "WARN" } else { "FAIL" })
         }
@@ -1021,11 +1147,16 @@ foreach ($check in $config.checks)
         $thresholdNote =
         if ($allocComparisonEnabled)
         {
-            "Mean<=${maxMeanRegression}% ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
+            "$(if ($skipMeanComparison) { "Mean skipped" } else { "Mean<=${maxMeanRegression}%" }) ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
         }
         else
         {
-            "Mean<=${maxMeanRegression}% ; Alloc skipped"
+            "$(if ($skipMeanComparison) { "Mean skipped" } else { "Mean<=${maxMeanRegression}%" }) ; Alloc skipped"
+        }
+
+        if ($extraInfoEvaluation.Notes.Count -gt 0)
+        {
+            $thresholdNote = "$thresholdNote ; $($extraInfoEvaluation.Notes -join '; ')"
         }
 
         $machineNote =

@@ -205,6 +205,15 @@ Accepted trigger values:
 | `DELETE` | `/api/procedures/{name}` | Delete a procedure. |
 | `POST` | `/api/procedures/{name}/execute` | Execute a procedure. |
 
+### Saved Queries
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/api/saved-queries` | List saved queries. |
+| `GET` | `/api/saved-queries/{name}` | Get a saved query. |
+| `PUT` | `/api/saved-queries/{name}` | Create or update a saved query. |
+| `DELETE` | `/api/saved-queries/{name}` | Delete a saved query. |
+
 ### SQL
 
 | Method | Route | Description |
@@ -212,6 +221,45 @@ Accepted trigger values:
 | `POST` | `/api/sql/execute` | Execute arbitrary SQL. |
 
 This is the main way to create tables today.
+
+### Transactions
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `POST` | `/api/transactions` | Begin a client-managed transaction session. |
+| `POST` | `/api/transactions/{id}/execute` | Execute SQL inside a transaction. |
+| `POST` | `/api/transactions/{id}/commit` | Commit a transaction. |
+| `POST` | `/api/transactions/{id}/rollback` | Roll back a transaction. |
+
+### Collections
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/api/collections` | List document collections. |
+| `GET` | `/api/collections/{name}/count` | Get collection document count. |
+| `GET` | `/api/collections/{name}?page=1&pageSize=50` | Browse collection documents. |
+| `GET` | `/api/collections/{name}/document?key=...` | Get one document by key. |
+| `PUT` | `/api/collections/{name}/document?key=...` | Put one document by key. |
+| `DELETE` | `/api/collections/{name}/document?key=...` | Delete one document by key. |
+
+### ETL Pipelines
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/api/etl/pipelines?limit=100` | List stored pipeline definitions. |
+| `GET` | `/api/etl/pipelines/{name}` | Get a stored pipeline definition. |
+| `GET` | `/api/etl/pipelines/{name}/revisions?limit=25` | List stored pipeline revisions. |
+| `GET` | `/api/etl/pipelines/{name}/revisions/{revision}` | Get one stored pipeline revision. |
+| `PUT` | `/api/etl/pipelines/{name}` | Save a pipeline definition. |
+| `DELETE` | `/api/etl/pipelines/{name}` | Delete a stored pipeline. |
+| `POST` | `/api/etl/pipelines/{name}/run?mode=Run` | Run a stored pipeline. |
+| `POST` | `/api/etl/validate` | Validate an inline pipeline package. |
+| `POST` | `/api/etl/run` | Run, dry-run, validate, or resume an inline pipeline package. |
+| `GET` | `/api/etl/runs?limit=50` | List pipeline runs. |
+| `GET` | `/api/etl/runs/{runId}` | Get one pipeline run. |
+| `GET` | `/api/etl/runs/{runId}/package` | Get the package captured for a run. |
+| `GET` | `/api/etl/runs/{runId}/rejects` | List rejected rows for a run. |
+| `POST` | `/api/etl/runs/{runId}/resume` | Resume a run from its checkpoint. |
 
 ### Storage Inspection
 
@@ -221,6 +269,18 @@ This is the main way to create tables today.
 | `GET` | `/api/inspect/wal?path=...` | Inspect the WAL. |
 | `GET` | `/api/inspect/page/{id}?hex=false&path=...` | Inspect a page. |
 | `GET` | `/api/inspect/indexes?index=...&sample=...&path=...` | Check indexes. |
+
+### Maintenance
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `POST` | `/api/maintenance/checkpoint` | Checkpoint the WAL. |
+| `POST` | `/api/maintenance/backup` | Write a committed snapshot backup. |
+| `POST` | `/api/maintenance/restore` | Validate or restore a database snapshot. |
+| `POST` | `/api/maintenance/migrate-foreign-keys` | Validate or retrofit foreign-key metadata. |
+| `GET` | `/api/maintenance/report` | Get a maintenance and space-usage report. |
+| `POST` | `/api/maintenance/reindex` | Rebuild indexes. |
+| `POST` | `/api/maintenance/vacuum` | Rewrite the database to reclaim free pages. |
 
 ## Request Examples
 
@@ -337,10 +397,12 @@ Some common response shapes:
 - `MutationResponse`: rows affected
 - `SqlResultResponse`: query or non-query SQL execution result
 - `ProcedureExecutionResponse`: multi-statement procedure execution details
+- `CollectionBrowseResult`: paged collection documents
+- `PipelineRunResult`: ETL execution state, metrics, rejects, and checkpoints
 - `DatabaseInfoResponse`: top-level object counts
 
-See `Dtos/Requests.cs`, `Dtos/Responses.cs`, and `Dtos/ProcedureDtos.cs` for the
-current source-of-truth contract types.
+See `Dtos/Requests.cs`, `Dtos/Responses.cs`, `Dtos/ProcedureDtos.cs`, and
+`Dtos/PipelineDtos.cs` for the current source-of-truth contract types.
 
 ## Error Handling
 

@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Indexing;
 using CSharpDB.Storage.Paging;
 
 namespace CSharpDB.Execution;
@@ -126,7 +128,10 @@ internal static class IndexMaintenanceHelper
 
                 if (!groupedPayloads.TryGetValue(indexKey, out var payload))
                 {
-                    groupedPayloads[indexKey] = HashedIndexPayloadCodec.CreateSingle(keyComponents!, scan.CurrentRowId);
+                    groupedPayloads[indexKey] = HashedIndexPayloadCodec.CreateSingle(
+                        keyComponents!,
+                        scan.CurrentRowId,
+                        omitTrailingInteger: storageMode == SqlIndexStorageMode.HashedTrailingInteger);
                     continue;
                 }
 
@@ -223,8 +228,74 @@ internal static class IndexMaintenanceHelper
         long rowId,
         DbValue[]? keyComponents = null,
         SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        AppendOptimizedIndexMutationContext? appendContext = null,
+        byte[]? reusableSingleRowIdPayload = null,
+        OptimisticInsertSequenceContext? optimisticDirectIntegerInsertContext = null)
     {
+        if (keyComponents is null &&
+            optimisticDirectIntegerInsertContext?.TryBeginInsert(indexKey) == true)
+        {
+            try
+            {
+                byte[] optimisticPayload = CreateSingleRowIdPayload(rowId, reusableSingleRowIdPayload);
+                await indexStore.InsertAsync(indexKey, optimisticPayload, ct);
+                pager?.RecordLogicalIndexWrite(indexName, indexKey);
+                optimisticDirectIntegerInsertContext.RecordInsertSuccess(indexKey);
+                return;
+            }
+            catch (CSharpDbException ex) when (ex.Code == ErrorCode.DuplicateKey)
+            {
+                optimisticDirectIntegerInsertContext.RecordInsertFallback(indexKey);
+            }
+        }
+
+        if (UsesHashedPayloadStorage(storageMode) &&
+            keyComponents is { Length: > 0 } &&
+            appendContext?.TryBeginOptimisticInsert(indexKey) == true)
+        {
+            try
+            {
+                byte[] optimisticPayload = HashedIndexPayloadCodec.CreateSingle(
+                    keyComponents,
+                    rowId,
+                    omitTrailingInteger: storageMode == SqlIndexStorageMode.HashedTrailingInteger);
+                await indexStore.InsertAsync(indexKey, optimisticPayload, ct);
+                pager?.RecordLogicalIndexWrite(indexName, indexKey);
+                appendContext.RecordOptimisticInsertSuccess(indexKey);
+                return;
+            }
+            catch (CSharpDbException ex) when (ex.Code == ErrorCode.DuplicateKey)
+            {
+                appendContext.RecordOptimisticInsertFallback(indexKey);
+            }
+        }
+
+        if (UsesHashedPayloadStorage(storageMode) &&
+            keyComponents is { Length: > 0 } &&
+            indexStore is IAppendOptimizedIndexStore appendOptimizedStore)
+        {
+            AppendRowIdResult appendResult = await appendOptimizedStore.TryAppendHashedRowIdAsync(
+                indexKey,
+                keyComponents,
+                rowId,
+                appendContext,
+                ct);
+            switch (appendResult)
+            {
+                case AppendRowIdResult.Appended:
+                    pager?.RecordLogicalIndexWrite(indexName, indexKey);
+                    return;
+                case AppendRowIdResult.AlreadyExists:
+                    return;
+                case AppendRowIdResult.Missing:
+                case AppendRowIdResult.NotApplicable:
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(appendResult), appendResult, "Unknown append result.");
+            }
+        }
+
         var existing = await indexStore.FindAsync(indexKey, ct);
         if (existing == null)
         {
@@ -234,8 +305,11 @@ internal static class IndexMaintenanceHelper
                     GetOrderedTextKeyComponent(keyComponents),
                     rowId),
                 _ => keyComponents is { Length: > 0 }
-                    ? HashedIndexPayloadCodec.CreateSingle(keyComponents, rowId)
-                    : RowIdPayloadCodec.CreateSingle(rowId),
+                    ? HashedIndexPayloadCodec.CreateSingle(
+                        keyComponents,
+                        rowId,
+                        omitTrailingInteger: storageMode == SqlIndexStorageMode.HashedTrailingInteger)
+                    : CreateSingleRowIdPayload(rowId, reusableSingleRowIdPayload),
             };
             await indexStore.InsertAsync(indexKey, initialPayload, ct);
             pager?.RecordLogicalIndexWrite(indexName, indexKey);
@@ -273,6 +347,17 @@ internal static class IndexMaintenanceHelper
 
         if (await indexStore.ReplaceAsync(indexKey, newPayload, ct))
             pager?.RecordLogicalIndexWrite(indexName, indexKey);
+    }
+
+    private static byte[] CreateSingleRowIdPayload(long rowId, byte[]? reusablePayload)
+    {
+        if (reusablePayload is { Length: RowIdPayloadCodec.RowIdSize })
+        {
+            BinaryPrimitives.WriteInt64LittleEndian(reusablePayload, rowId);
+            return reusablePayload;
+        }
+
+        return RowIdPayloadCodec.CreateSingle(rowId);
     }
 
     public static async ValueTask DeleteRowIdAsync(
@@ -364,6 +449,25 @@ internal static class IndexMaintenanceHelper
         SqlIndexStorageMode storageMode,
         out long indexKey,
         out DbValue[]? keyComponents)
+        => TryBuildIndexKey(
+            row,
+            indexColumnIndices,
+            indexColumnCollations,
+            usesDirectIntegerKey,
+            storageMode,
+            reusableKeyComponents: null,
+            out indexKey,
+            out keyComponents);
+
+    public static bool TryBuildIndexKey(
+        DbValue[] row,
+        int[] indexColumnIndices,
+        string?[] indexColumnCollations,
+        bool usesDirectIntegerKey,
+        SqlIndexStorageMode storageMode,
+        DbValue[]? reusableKeyComponents,
+        out long indexKey,
+        out DbValue[]? keyComponents)
     {
         indexKey = 0;
         keyComponents = null;
@@ -385,7 +489,10 @@ internal static class IndexMaintenanceHelper
             return true;
         }
 
-        var components = new DbValue[indexColumnIndices.Length];
+        DbValue[] components = reusableKeyComponents is { Length: > 0 } &&
+            reusableKeyComponents.Length == indexColumnIndices.Length
+                ? reusableKeyComponents
+                : new DbValue[indexColumnIndices.Length];
         for (int i = 0; i < indexColumnIndices.Length; i++)
         {
             int colIdx = indexColumnIndices[i];
@@ -409,7 +516,7 @@ internal static class IndexMaintenanceHelper
             return true;
         }
 
-        indexKey = ComputeIndexKey(components);
+        indexKey = ComputeIndexKey(components, storageMode);
         keyComponents = components;
         return true;
     }
@@ -419,6 +526,9 @@ internal static class IndexMaintenanceHelper
 
     public static bool UsesOrderedTextIndexKey(IndexSchema index, TableSchema schema)
         => ResolveSqlIndexStorageMode(index, schema) == SqlIndexStorageMode.OrderedText;
+
+    public static bool UsesHashedPayloadStorage(SqlIndexStorageMode storageMode)
+        => storageMode != SqlIndexStorageMode.OrderedText;
 
     public static bool IndexKeyComponentsEqual(DbValue[]? left, DbValue[]? right)
     {
@@ -449,6 +559,18 @@ internal static class IndexMaintenanceHelper
             hash = HashIndexKeyComponent(hash, keyComponents[i], prime);
 
         return unchecked((long)hash);
+    }
+
+    public static long ComputeIndexKey(ReadOnlySpan<DbValue> keyComponents, SqlIndexStorageMode storageMode)
+    {
+        if (storageMode == SqlIndexStorageMode.HashedTrailingInteger &&
+            keyComponents.Length > 1 &&
+            keyComponents[^1].Type == DbType.Integer)
+        {
+            return keyComponents[^1].AsInteger;
+        }
+
+        return ComputeIndexKey(keyComponents);
     }
 
     public static async ValueTask EnsureUniqueConstraintAsync(

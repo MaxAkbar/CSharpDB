@@ -83,6 +83,30 @@
             "Method": "'ORDER BY text + LIMIT 100 (ordered text index)'"
           },
           "maxMeanRegressionPercent": 35.0
+        },
+        {
+          "match": {
+            "Method": "'INSERT with collated text index (tx rollback)'",
+            "RowCount": "100000",
+            "Collation": "BINARY"
+          },
+          "maxMeanRegressionPercent": 35.0
+        },
+        {
+          "match": {
+            "Method": "'INSERT with collated text index (tx rollback)'",
+            "RowCount": "100000",
+            "Collation": "ICU:en-US"
+          },
+          "maxMeanRegressionPercent": 35.0
+        },
+        {
+          "match": {
+            "Method": "'INSERT with collated text index (tx rollback)'",
+            "RowCount": "100000",
+            "Collation": "NOCASE_AI"
+          },
+          "maxMeanRegressionPercent": 45.0
         }
       ]
     },
@@ -142,6 +166,13 @@
         }
       ],
       "overrides": [
+        {
+          "match": {
+            "Method": "'SELECT by primary key'",
+            "RowCount": "1000"
+          },
+          "maxMeanRegressionPercent": 15.0
+        },
         {
           "match": {
             "Method": "'SELECT by primary key'",
@@ -326,7 +357,23 @@
         "Method",
         "RowCount"
       ],
-      "maxMeanRegressionPercent": 30.0
+      "maxMeanRegressionPercent": 30.0,
+      "overrides": [
+        {
+          "match": {
+            "Method": "'Scalar MIN(value)'",
+            "RowCount": "1000"
+          },
+          "maxMeanRegressionPercent": 35.0
+        },
+        {
+          "match": {
+            "Method": "'Scalar SUM(DISTINCT value)'",
+            "RowCount": "10000"
+          },
+          "maxMeanRegressionPercent": 45.0
+        }
+      ]
     },
     {
       "csv": "CSharpDB.Benchmarks.Micro.ScalarAggregateLookupBenchmarks-report.csv",
@@ -602,6 +649,17 @@
       ],
       "maxMeanRegressionPercent": 25.0,
       "skipAllocationComparison": true,
+      "skipMeanComparison": true,
+      "extraInfoChecks": [
+        {
+          "key": "commitsPerFlush",
+          "minRatio": 0.85
+        },
+        {
+          "key": "maxPendingCommits",
+          "minRatio": 1.0
+        }
+      ],
       "suiteKey": "commit-fan-in-diagnostics",
       "suiteLabel": "Commit Fan-In Diagnostics",
       "suiteArgs": [

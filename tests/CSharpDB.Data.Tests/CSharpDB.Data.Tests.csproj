@@ -17,6 +17,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.6" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.6" />
+    <PackageReference Update="coverlet.collector" Version="10.0.0" />
     <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.4.0" />
   </ItemGroup>
 

@@ -9,6 +9,14 @@ public sealed class DefaultRecordSerializer : IRecordSerializer
 {
     public byte[] Encode(ReadOnlySpan<DbValue> values) => RecordEncoder.Encode(values);
 
+    public int GetEncodedLength(ReadOnlySpan<DbValue> values) => RecordEncoder.GetEncodedLength(values);
+
+    public int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination, int encodedLength) =>
+        RecordEncoder.EncodeInto(values, destination, encodedLength);
+
+    public int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination) =>
+        RecordEncoder.EncodeInto(values, destination);
+
     public DbValue[] Decode(ReadOnlySpan<byte> buffer) => RecordEncoder.Decode(buffer);
 
     public int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination) =>

@@ -1,52 +1,87 @@
-# ADO.NET and EF Core Embedded Storage Tuning Plan
+# ADO.NET and EF Core Embedded Storage Tuning
 
-`src/CSharpDB.Storage/README.md` already documents useful embedded read and write presets, but `CSharpDB.Data` and `CSharpDB.EntityFrameworkCore` do not yet expose those tuning paths cleanly. This document captures the planned API, behavior, and validation rules for bringing those storage-performance options into the ADO.NET and EF Core surfaces without changing current defaults.
+`CSharpDB.Data` and `CSharpDB.EntityFrameworkCore` now expose the same
+embedded storage-engine tuning surface that already existed at the engine
+level. That lets ADO.NET and EF Core callers opt into the read, write, and
+hybrid performance presets documented in `src/CSharpDB.Storage/README.md`
+without changing default behavior for existing applications.
 
 ## Summary
 
-- Add first-class embedded tuning to `CSharpDbConnection` and `UseCSharpDb(...)` so callers can opt into the storage README's read, write, and hybrid-oriented performance paths.
-- Keep existing behavior unchanged when callers do not opt in.
-- Limit the convenience connection-string surface to named presets and embedded open mode selection; keep advanced tuning on full `DatabaseOptions` and `HybridDatabaseOptions`.
+- No behavior changes unless you opt in.
+- Connection strings expose a small convenience surface:
+  `Storage Preset` and `Embedded Open Mode`.
+- Full engine composition still lives on `DatabaseOptions` and
+  `HybridDatabaseOptions`.
+- EF Core can apply the same settings through the provider-specific
+  `CSharpDbDbContextOptionsBuilder`.
 
-## Proposed Public API
+## Public Surface
 
-- `CSharpDbConnection` gains `DirectDatabaseOptions` and `HybridDatabaseOptions` properties.
-- `CSharpDbConnection` gains additive constructor overloads so callers can provide `DatabaseOptions` and `HybridDatabaseOptions` at construction time.
-- `CSharpDbConnectionStringBuilder` gains a small convenience surface for preset and open-mode selection only.
-- The new connection-string keywords are `Storage Preset` and `Embedded Open Mode`.
-- `Storage Preset` values are `DirectLookupOptimized`, `DirectColdFileLookup`, `HybridFileCache`, `WriteOptimized`, and `LowLatencyDurableWrite`.
-- `Embedded Open Mode` values are `Direct`, `HybridIncrementalDurable`, and `HybridSnapshot`.
-- `CSharpDbDbContextOptionsBuilder` gains provider-specific builder methods for direct options, hybrid options, storage preset, and embedded open mode.
-- The planned EF Core builder methods are `UseDirectDatabaseOptions(DatabaseOptions)`, `UseHybridDatabaseOptions(HybridDatabaseOptions)`, `UseStoragePreset(CSharpDbStoragePreset)`, and `UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode)`.
+ADO.NET:
 
-The following examples show planned API shape, not current behavior.
+- `CSharpDbConnection.DirectDatabaseOptions`
+- `CSharpDbConnection.HybridDatabaseOptions`
+- additive `CSharpDbConnection` constructor overloads for direct and hybrid
+  options
+- `CSharpDbConnectionStringBuilder.StoragePreset`
+- `CSharpDbConnectionStringBuilder.EmbeddedOpenMode`
+
+EF Core:
+
+- `UseDirectDatabaseOptions(DatabaseOptions)`
+- `UseHybridDatabaseOptions(HybridDatabaseOptions)`
+- `UseStoragePreset(CSharpDbStoragePreset)`
+- `UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode)`
+
+Connection-string keywords:
+
+- `Storage Preset`
+- `Embedded Open Mode`
+
+Supported `Storage Preset` values:
+
+- `DirectLookupOptimized`
+- `DirectColdFileLookup`
+- `HybridFileCache`
+- `WriteOptimized`
+- `LowLatencyDurableWrite`
+
+Supported `Embedded Open Mode` values:
+
+- `Direct`
+- `HybridIncrementalDurable`
+- `HybridSnapshot`
+
+Both keywords parse case-insensitively.
+
+## ADO.NET Examples
+
+Use full direct options when you want exact engine control:
 
 ```csharp
 using CSharpDB.Data;
 using CSharpDB.Engine;
 
 var directOptions = new DatabaseOptions()
-    .ConfigureStorageEngine(builder =>
-    {
-        builder.UseWriteOptimizedPreset();
-    });
+    .ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
 
 await using var connection = new CSharpDbConnection(
     "Data Source=ingest.cdb",
-    directDatabaseOptions: directOptions);
+    directOptions);
 
 await connection.OpenAsync();
 ```
 
+Use hybrid open mode plus direct options when you want a lazy-resident
+file-backed runtime:
+
 ```csharp
 using CSharpDB.Data;
 using CSharpDB.Engine;
 
 var directOptions = new DatabaseOptions()
-    .ConfigureStorageEngine(builder =>
-    {
-        builder.UseDirectLookupOptimizedPreset();
-    });
+    .ConfigureStorageEngine(builder => builder.UseDirectLookupOptimizedPreset());
 
 var hybridOptions = new HybridDatabaseOptions
 {
@@ -63,60 +98,91 @@ await using var connection = new CSharpDbConnection("Data Source=app.cdb")
 await connection.OpenAsync();
 ```
 
-```csharp
-using Microsoft.EntityFrameworkCore;
+Use connection-string convenience keywords when a named preset is enough:
 
-optionsBuilder.UseCSharpDb(
-    "Data Source=app.cdb;Storage Preset=DirectColdFileLookup;Embedded Open Mode=Direct",
-    csharpdb =>
-    {
-        csharpdb.UseStoragePreset(CSharpDbStoragePreset.DirectColdFileLookup);
-        csharpdb.UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode.Direct);
-    });
+```csharp
+await using var connection = new CSharpDbConnection(
+    "Data Source=app.cdb;Storage Preset=WriteOptimized;Embedded Open Mode=HybridIncrementalDurable");
+
+await connection.OpenAsync();
 ```
 
-## Pooling and Configuration Rules
+## EF Core Examples
 
-- Explicit `DirectDatabaseOptions` and `HybridDatabaseOptions` win over connection-string preset keywords.
-- Connection-string preset and open-mode keywords only fill gaps when explicit options objects are absent.
-- Pooling remains supported for file-backed direct opens.
-- Pool identity becomes options-aware instead of relying only on normalized data source and max pool size.
-- The options-aware pool key includes the effective embedded open mode and effective preset selection.
-- Explicit options objects participate in pool identity by object instance in v1.
-- Separate explicit options object instances do not share a pool in v1, even if their contents are equivalent.
-- Pooling remains correctness-first in v1; maximal pool sharing across equivalent-but-distinct option instances is deferred.
+Apply engine options directly:
 
-## Unsupported in V1
+```csharp
+using CSharpDB.Engine;
+using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 
-- Remote `Http`, `Grpc`, and `NamedPipes` transports do not accept direct or hybrid tuning.
-- Hybrid mode is file-backed direct only.
-- Named shared-memory tuning is deferred.
-- Private `:memory:` can use direct tuning, but it does not use hybrid mode.
-- EF builder tuning does not mutate an existing supplied `CSharpDbConnection`.
-- If EF Core is given an existing `CSharpDbConnection`, provider builder tuning is validated and conflicting configuration is rejected.
+var directOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
 
-## Test Plan
+var options = new DbContextOptionsBuilder<AppDbContext>()
+    .UseCSharpDb(
+        "Data Source=app.cdb",
+        csharpdb => csharpdb.UseDirectDatabaseOptions(directOptions))
+    .Options;
+```
 
-- Verify a file-backed ADO.NET connection honors `DirectDatabaseOptions` with an externally visible read-path setting such as `UseMemoryMappedReads`.
-- Verify a file-backed ADO.NET connection honors `HybridDatabaseOptions` and opens through the hybrid path.
-- Verify a private `:memory:` ADO.NET connection honors `DirectDatabaseOptions`.
-- Verify a private `:memory:` ADO.NET connection rejects `HybridDatabaseOptions`.
-- Verify remote endpoint connections reject direct and hybrid tuning properties.
-- Verify `Storage Preset` and `Embedded Open Mode` parse case-insensitively and map to the expected effective embedded settings.
-- Verify explicit options override conflicting preset and open-mode values from the connection string.
-- Verify pooled file-backed direct connections reuse the pool when the effective configuration matches.
-- Verify pooled file-backed direct connections do not share a pool when explicit options object instances differ.
-- Verify `ClearPool(connectionString)` still clears the relevant pooled entries for the normalized file-backed target.
-- Verify `UseCSharpDb(connectionString, builder => ...)` flows direct, hybrid, preset, and open-mode settings into the created `CSharpDbConnection`.
-- Verify `UseCSharpDb(existingConnection, builder => ...)` rejects conflicting provider builder tuning instead of mutating the supplied connection.
-- Verify current rejection behavior for pooled EF connections, endpoint connections, non-direct transports, and named shared-memory inputs remains intact.
-- Verify default behavior is unchanged when callers do not use any new tuning properties, builder methods, or connection-string keywords.
+Apply named presets and embedded open mode through the provider builder:
 
-## Assumptions
+```csharp
+var options = new DbContextOptionsBuilder<AppDbContext>()
+    .UseCSharpDb(
+        "Data Source=app.cdb",
+        csharpdb =>
+        {
+            csharpdb.UseStoragePreset(CSharpDbStoragePreset.WriteOptimized);
+            csharpdb.UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode.HybridIncrementalDurable);
+        })
+    .Options;
+```
 
-- This is a design and handoff document only; it does not imply that the behavior exists yet.
-- No behavior changes occur without explicit opt-in.
-- Connection strings expose named presets and embedded open mode only.
-- Advanced knobs such as durable group commit, WAL preallocation, hot-table lists, and `ImplicitInsertExecutionMode` remain on full options objects.
-- Pooling favors correctness over maximal sharing in v1.
-- Existing package READMEs remain unchanged in this step.
+If you pass an existing `CSharpDbConnection`, EF Core validates that any
+provider builder tuning matches the supplied connection. It does not mutate the
+existing connection object.
+
+## Precedence and Pooling
+
+- Explicit `DirectDatabaseOptions` override `Storage Preset`.
+- Explicit `HybridDatabaseOptions` override `Embedded Open Mode`.
+- Connection-string preset and open-mode keywords only fill gaps when the
+  corresponding explicit options object is absent.
+- Pooling remains supported for file-backed embedded opens.
+- Pool identity is options-aware in v1.
+- The pool key includes the normalized file target, max pool size, effective
+  embedded open mode, effective preset selection, and explicit options object
+  identity.
+- Separate explicit options object instances do not share a pool in v1 even if
+  their contents are equivalent.
+- `ClearPool(connectionString)` clears all pooled entries for the normalized
+  file-backed target.
+
+## Unsupported Cases
+
+- Remote `Http`, `Grpc`, and `NamedPipes` connections reject embedded tuning.
+- Named shared-memory databases reject embedded tuning.
+- Private `:memory:` databases support direct tuning, but not hybrid open
+  modes.
+- EF Core still rejects pooled connections, endpoint connections, non-direct
+  transports, and named shared-memory databases.
+
+## Practical Preset Guidance
+
+Use these as the first measurement targets:
+
+- `WriteOptimized` for file-backed durable ingest and general write-heavy
+  embedded workloads.
+- `LowLatencyDurableWrite` only as a measure-first variant when you want to
+  test deferred advisory planner-stat persistence.
+- `DirectLookupOptimized` for hot local file-backed lookup workloads.
+- `DirectColdFileLookup` for colder or cache-pressured direct file reads where
+  memory-mapped clean-page reads help.
+- `HybridFileCache` for explicit bounded file-cache experiments.
+
+As of April 20, 2026, the repository benchmark guidance still treats
+`WriteOptimized` as the stable first preset for file-backed durable write
+paths, while `LowLatencyDurableWrite` remains a workload-specific experiment
+rather than a blanket default change.

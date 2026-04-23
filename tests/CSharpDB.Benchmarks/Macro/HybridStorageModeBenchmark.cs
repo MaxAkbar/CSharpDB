@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
+using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Benchmarks.Macro;
 
@@ -8,11 +10,15 @@ public static class HybridStorageModeBenchmark
 {
     private const int SeedCount = 20_000;
     private const int BatchSize = 100;
+    private const int InsertTradeoffRowsPerCommit = 1_000;
+    private const int InsertTradeoffSeedRows = 20_000;
     private const int ConcurrentReaderCount = 8;
     private const int ReusedSessionBurstReads = 32;
     private const int HighThroughputLatencySampleEvery = 128;
     private static readonly TimeSpan WarmupDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MeasuredDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan InsertTradeoffMeasuredDuration = TimeSpan.FromSeconds(10);
+    private static readonly InsertTradeoffScenario[] s_insertTradeoffScenarios = CreateInsertTradeoffScenarios();
 
     private sealed record BenchDoc(string Name, int Value, string Category);
 
@@ -38,6 +44,9 @@ public static class HybridStorageModeBenchmark
             results.Add(await RunCollectionBatchInsertAsync(mode));
             results.Add(await RunCollectionGetAsync(mode));
         }
+
+        foreach (InsertTradeoffScenario scenario in s_insertTradeoffScenarios)
+            results.Add(await RunInsertTradeoffScenarioAsync(scenario));
 
         return results;
     }
@@ -193,6 +202,56 @@ public static class HybridStorageModeBenchmark
             });
     }
 
+    private static async Task<BenchmarkResult> RunInsertTradeoffScenarioAsync(InsertTradeoffScenario scenario)
+    {
+        await using var context = await InsertTradeoffContext.CreateAsync(scenario);
+        var db = context.Database;
+        var batch = db.PrepareInsertBatch("bench", initialCapacity: InsertTradeoffRowsPerCommit);
+        var rowBuffer = new DbValue[4];
+        DbValue textValue = DbValue.FromText("durable_batch");
+        DbValue categoryValue = DbValue.FromText("Alpha");
+        int nextSequence = scenario.SeedRows;
+
+        async Task OperationAsync()
+        {
+            nextSequence = await ExecuteInsertBatchCommitAsync(
+                db,
+                batch,
+                rowBuffer,
+                nextSequence,
+                InsertTradeoffRowsPerCommit,
+                textValue,
+                categoryValue);
+        }
+
+        string benchmarkName =
+            $"StoragePlan2_{scenario.Name}_InsertBatch_B{InsertTradeoffRowsPerCommit}_Seed{scenario.SeedRows}_10s";
+        BenchmarkResult rawResult = await MacroBenchmarkRunner.RunForDurationAsync(
+            benchmarkName,
+            WarmupDuration,
+            InsertTradeoffMeasuredDuration,
+            OperationAsync);
+
+        double rowsPerSecond = rawResult.OpsPerSecond * InsertTradeoffRowsPerCommit;
+        string? extraInfo = AppendExtraInfo(
+            rawResult.ExtraInfo,
+            $"throughput-unit=commits/sec; rowsPerSec={rowsPerSecond:F1}",
+            $"rowsPerCommit={InsertTradeoffRowsPerCommit}",
+            $"seedRows={scenario.SeedRows}",
+            "schema=bench(id,value,text_col,category)",
+            "keyPattern=monotonic",
+            $"preset={scenario.PresetLabel}",
+            $"durability={scenario.DurabilitySemantics}",
+            $"residency={scenario.ResidencySemantics}");
+
+        Console.WriteLine(
+            $"    rows/sec={rowsPerSecond:N0}, P50={rawResult.P50Ms:F3}ms, P95={rawResult.P95Ms:F3}ms, P99={rawResult.P99Ms:F3}ms");
+        Console.WriteLine($"    durability={scenario.DurabilitySemantics}");
+        Console.WriteLine($"    residency={scenario.ResidencySemantics}");
+
+        return CloneResult(rawResult, extraInfo);
+    }
+
     private static async Task<BenchmarkResult> RunSqlConcurrentReadsAsync(StorageMode mode, bool reuseSessionBurstReads)
     {
         await using var context = await BenchmarkContext.CreateSqlReadAsync(mode);
@@ -309,6 +368,197 @@ public static class HybridStorageModeBenchmark
             _ = await collection.GetAsync($"doc:{id}");
         }
     }
+
+    private static InsertTradeoffScenario[] CreateInsertTradeoffScenarios()
+    {
+        return
+        [
+            new(
+                "FileBackedDurableWriteOptimized",
+                InsertTradeoffMode.FileBacked,
+                InsertTradeoffSeedRows,
+                StoragePreset.WriteOptimized,
+                "full durable file-backed commits; each acknowledged commit forces durable backing-file visibility",
+                "file-backed pages stay on disk and are cached on demand"),
+            new(
+                "FileBackedDurableLowLatency",
+                InsertTradeoffMode.FileBacked,
+                InsertTradeoffSeedRows,
+                StoragePreset.LowLatency,
+                "full durable file-backed commits; same durability as the baseline with deferred planner-stat persistence",
+                "file-backed pages stay on disk and are cached on demand"),
+            new(
+                "FileBackedBufferedWriteOptimized",
+                InsertTradeoffMode.FileBackedBuffered,
+                InsertTradeoffSeedRows,
+                StoragePreset.WriteOptimized,
+                "buffered file-backed commits; managed buffers are flushed but recent commits remain more exposed on OS crash or power loss",
+                "file-backed pages stay on disk and are cached on demand"),
+            new(
+                "InMemoryFresh",
+                InsertTradeoffMode.InMemoryFresh,
+                InsertTradeoffSeedRows,
+                StoragePreset.NotApplicable,
+                "no crash durability; the database exists only in private process memory",
+                "new private in-memory database with no backing file"),
+            new(
+                "LoadIntoMemory",
+                InsertTradeoffMode.LoadIntoMemory,
+                InsertTradeoffSeedRows,
+                StoragePreset.NotApplicable,
+                "no crash durability after load; persistence requires an explicit later save back to disk",
+                "an existing file plus committed WAL state are loaded once, then inserts run entirely in memory"),
+            new(
+                "HybridIncrementalDurable",
+                InsertTradeoffMode.HybridIncrementalDurable,
+                InsertTradeoffSeedRows,
+                StoragePreset.WriteOptimized,
+                "full durable commits through the hybrid WAL and checkpoint path",
+                "the durable backing file remains authoritative while touched pages stay resident by cache policy"),
+        ];
+    }
+
+    private static async Task InitializeInsertTradeoffDatabaseAsync(Database db, int seedRows)
+    {
+        await using var _ = await db.ExecuteAsync(
+            "CREATE TABLE bench (id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT);");
+
+        if (seedRows <= 0)
+            return;
+
+        var batch = db.PrepareInsertBatch("bench", initialCapacity: InsertTradeoffRowsPerCommit);
+        var rowBuffer = new DbValue[4];
+        DbValue textValue = DbValue.FromText("durable_batch");
+        DbValue categoryValue = DbValue.FromText("Alpha");
+        int nextSequence = 0;
+
+        while (nextSequence < seedRows)
+        {
+            int remaining = seedRows - nextSequence;
+            int rowsThisCommit = Math.Min(InsertTradeoffRowsPerCommit, remaining);
+            nextSequence = await ExecuteInsertBatchCommitAsync(
+                db,
+                batch,
+                rowBuffer,
+                nextSequence,
+                rowsThisCommit,
+                textValue,
+                categoryValue);
+        }
+    }
+
+    private static async Task<int> ExecuteInsertBatchCommitAsync(
+        Database db,
+        InsertBatch batch,
+        DbValue[] rowBuffer,
+        int nextSequence,
+        int rowsToInsert,
+        DbValue textValue,
+        DbValue categoryValue)
+    {
+        batch.Clear();
+        await db.BeginTransactionAsync();
+        try
+        {
+            for (int i = 0; i < rowsToInsert; i++)
+            {
+                nextSequence++;
+                PopulateInsertTradeoffRow(rowBuffer, nextSequence, textValue, categoryValue);
+                batch.AddRow(rowBuffer);
+            }
+
+            int rowsAffected = await batch.ExecuteAsync();
+            if (rowsAffected != rowsToInsert)
+            {
+                throw new InvalidOperationException(
+                    $"Expected {rowsToInsert} inserted rows, observed {rowsAffected}.");
+            }
+
+            await db.CommitAsync();
+            return nextSequence;
+        }
+        catch
+        {
+            await RollbackQuietlyAsync(db);
+            throw;
+        }
+    }
+
+    private static void PopulateInsertTradeoffRow(
+        DbValue[] row,
+        int sequence,
+        DbValue textValue,
+        DbValue categoryValue)
+    {
+        row[0] = DbValue.FromInteger(sequence);
+        row[1] = DbValue.FromInteger(sequence);
+        row[2] = textValue;
+        row[3] = categoryValue;
+    }
+
+    private static async Task RollbackQuietlyAsync(Database db)
+    {
+        try
+        {
+            await db.RollbackAsync();
+        }
+        catch
+        {
+            // Preserve the original benchmark failure.
+        }
+    }
+
+    private static DatabaseOptions CreateInsertTradeoffOptions(StoragePreset preset, DurabilityMode durabilityMode)
+    {
+        return new DatabaseOptions().ConfigureStorageEngine(builder =>
+        {
+            builder.UseDurabilityMode(durabilityMode);
+
+            if (preset == StoragePreset.LowLatency)
+            {
+                builder.UseLowLatencyDurableWritePreset();
+            }
+            else
+            {
+                builder.UseWriteOptimizedPreset();
+            }
+        });
+    }
+
+    private static BenchmarkResult CloneResult(BenchmarkResult source, string? extraInfo)
+    {
+        return new BenchmarkResult
+        {
+            Name = source.Name,
+            TotalOps = source.TotalOps,
+            ElapsedMs = source.ElapsedMs,
+            P50Ms = source.P50Ms,
+            P90Ms = source.P90Ms,
+            P95Ms = source.P95Ms,
+            P99Ms = source.P99Ms,
+            P999Ms = source.P999Ms,
+            MinMs = source.MinMs,
+            MaxMs = source.MaxMs,
+            MeanMs = source.MeanMs,
+            StdDevMs = source.StdDevMs,
+            ExtraInfo = extraInfo,
+        };
+    }
+
+    private static string? AppendExtraInfo(params string?[] values)
+    {
+        var parts = new List<string>(values.Length);
+        foreach (string? value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                parts.Add(value);
+        }
+
+        return parts.Count == 0 ? null : string.Join("; ", parts);
+    }
+
+    private static string NewInsertTradeoffDbPath(string prefix)
+        => Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}.db");
 
     private static string GetPrefix(StorageMode mode)
         => mode switch
@@ -514,5 +764,126 @@ public static class HybridStorageModeBenchmark
 
         private static string NewTempDbPath(string prefix)
             => Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}.db");
+    }
+
+    private sealed class InsertTradeoffContext : IAsyncDisposable
+    {
+        private readonly string[] _cleanupPaths;
+
+        private InsertTradeoffContext(Database database, params string?[] cleanupPaths)
+        {
+            Database = database;
+            _cleanupPaths = cleanupPaths
+                .Where(static path => !string.IsNullOrWhiteSpace(path))
+                .Select(static path => path!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        internal Database Database { get; }
+
+        internal static async Task<InsertTradeoffContext> CreateAsync(InsertTradeoffScenario scenario)
+        {
+            switch (scenario.Mode)
+            {
+                case InsertTradeoffMode.FileBacked:
+                {
+                    string filePath = NewInsertTradeoffDbPath("storage-plan2-file");
+                    var database = await Database.OpenAsync(
+                        filePath,
+                        CreateInsertTradeoffOptions(scenario.Preset, DurabilityMode.Durable));
+                    await InitializeInsertTradeoffDatabaseAsync(database, scenario.SeedRows);
+                    return new InsertTradeoffContext(database, filePath);
+                }
+
+                case InsertTradeoffMode.FileBackedBuffered:
+                {
+                    string filePath = NewInsertTradeoffDbPath("storage-plan2-buffered");
+                    var database = await Database.OpenAsync(
+                        filePath,
+                        CreateInsertTradeoffOptions(scenario.Preset, DurabilityMode.Buffered));
+                    await InitializeInsertTradeoffDatabaseAsync(database, scenario.SeedRows);
+                    return new InsertTradeoffContext(database, filePath);
+                }
+
+                case InsertTradeoffMode.InMemoryFresh:
+                {
+                    var database = await Database.OpenInMemoryAsync();
+                    await InitializeInsertTradeoffDatabaseAsync(database, scenario.SeedRows);
+                    return new InsertTradeoffContext(database);
+                }
+
+                case InsertTradeoffMode.LoadIntoMemory:
+                {
+                    string sourcePath = NewInsertTradeoffDbPath("storage-plan2-load");
+                    await using (var source = await Database.OpenAsync(
+                                     sourcePath,
+                                     CreateInsertTradeoffOptions(StoragePreset.WriteOptimized, DurabilityMode.Durable)))
+                    {
+                        await InitializeInsertTradeoffDatabaseAsync(source, scenario.SeedRows);
+                    }
+
+                    var database = await Database.LoadIntoMemoryAsync(sourcePath);
+                    return new InsertTradeoffContext(database, sourcePath);
+                }
+
+                case InsertTradeoffMode.HybridIncrementalDurable:
+                {
+                    string filePath = NewInsertTradeoffDbPath("storage-plan2-hybrid");
+                    var database = await Database.OpenHybridAsync(
+                        filePath,
+                        CreateInsertTradeoffOptions(scenario.Preset, DurabilityMode.Durable),
+                        new HybridDatabaseOptions
+                        {
+                            PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+                        });
+                    await InitializeInsertTradeoffDatabaseAsync(database, scenario.SeedRows);
+                    return new InsertTradeoffContext(database, filePath);
+                }
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(scenario.Mode), scenario.Mode, null);
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Database.DisposeAsync();
+            foreach (string path in _cleanupPaths)
+                InMemoryBenchmarkDatabaseFactory.DeleteDatabaseFiles(path);
+        }
+    }
+
+    private sealed record InsertTradeoffScenario(
+        string Name,
+        InsertTradeoffMode Mode,
+        int SeedRows,
+        StoragePreset Preset,
+        string DurabilitySemantics,
+        string ResidencySemantics)
+    {
+        public string PresetLabel => Preset switch
+        {
+            StoragePreset.WriteOptimized => "write-optimized",
+            StoragePreset.LowLatency => "low-latency durable",
+            StoragePreset.NotApplicable => "n/a",
+            _ => throw new ArgumentOutOfRangeException(nameof(Preset), Preset, null),
+        };
+    }
+
+    private enum InsertTradeoffMode
+    {
+        FileBacked,
+        FileBackedBuffered,
+        InMemoryFresh,
+        LoadIntoMemory,
+        HybridIncrementalDurable,
+    }
+
+    private enum StoragePreset
+    {
+        WriteOptimized,
+        LowLatency,
+        NotApplicable,
     }
 }

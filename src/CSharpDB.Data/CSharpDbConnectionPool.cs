@@ -25,6 +25,23 @@ internal static class CSharpDbConnectionPoolRegistry
             await pool.DisableAsync();
     }
 
+    internal static async ValueTask ClearPoolsAsync(Func<PoolKey, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        KeyValuePair<PoolKey, CSharpDbConnectionPool>[] pools = s_pools
+            .Where(pair => predicate(pair.Key))
+            .ToArray();
+
+        foreach ((PoolKey key, CSharpDbConnectionPool pool) in pools)
+        {
+            if (s_pools.TryRemove(key, out var removedPool))
+                await removedPool.DisableAsync();
+            else
+                await pool.DisableAsync();
+        }
+    }
+
     internal static async ValueTask ClearAllAsync()
     {
         var pools = s_pools.ToArray();
@@ -44,7 +61,13 @@ internal static class CSharpDbConnectionPoolRegistry
     }
 }
 
-internal readonly record struct PoolKey(string DataSource, int MaxPoolSize);
+internal readonly record struct PoolKey(
+    string DataSource,
+    int MaxPoolSize,
+    CSharpDbEmbeddedOpenMode EffectiveOpenMode,
+    CSharpDbStoragePreset? EffectiveStoragePreset,
+    object? ExplicitDirectDatabaseOptions,
+    object? ExplicitHybridDatabaseOptions);
 
 internal sealed class CSharpDbConnectionPool
 {

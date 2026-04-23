@@ -69,8 +69,16 @@ public readonly record struct CommitPathDiagnosticsSnapshot(
     long BTreeInteriorSplitCount,
     long BTreeRightEdgeInteriorSplitCount,
     long BTreeRootSplitCount,
+    long HashedIndexAppendContextHitCount,
+    long HashedIndexAppendContextMissCount,
+    long HashedIndexAppendExternalMetadataReadCount,
+    long HashedIndexAppendPromotionCount,
+    long HashedIndexAppendNotApplicableCount,
+    long HashedIndexDeferredAppendCount,
+    long HashedIndexDeferredFlushCount,
     long MaxPendingCommitCount,
-    long MaxPendingCommitBytes)
+    long MaxPendingCommitBytes,
+    CommitPathBTreeResourceDiagnosticsSnapshot[]? BTreeResourceDiagnostics)
 {
     public static CommitPathDiagnosticsSnapshot Empty { get; } = new();
 }

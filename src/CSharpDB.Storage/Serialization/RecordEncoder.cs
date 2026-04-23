@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using System.Text;
 using CSharpDB.Primitives;
 
@@ -18,55 +19,90 @@ public static class RecordEncoder
     private static readonly Encoding Utf8 = Encoding.UTF8;
     private const int TextCacheCapacity = 64;
     private const int MaxCachedTextByteLength = 16;
+    private const int EncodedTextCacheCapacity = 128;
+    private const int MaxEncodedTextByteLength = 128;
     [ThreadStatic] private static TextCacheEntry[]? s_textCache;
+    [ThreadStatic] private static EncodedTextCacheEntry[]? s_encodedTextCache;
 
     public static byte[] Encode(ReadOnlySpan<DbValue> values)
     {
-        // Calculate total size
+        int size = GetEncodedLength(values);
+        byte[] buffer = GC.AllocateUninitializedArray<byte>(size);
+        EncodeInto(values, buffer);
+        return buffer;
+    }
+
+    public static int GetEncodedLength(ReadOnlySpan<DbValue> values)
+    {
         int size = Varint.SizeOf((ulong)values.Length);
-        foreach (var v in values)
-            size += 1 + ValueDataSize(v);
+        foreach (DbValue value in values)
+            size += 1 + ValueDataSize(value);
 
-        var buffer = new byte[size];
-        int pos = Varint.Write(buffer, (ulong)values.Length);
+        return size;
+    }
 
-        foreach (var v in values)
+    public static int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination)
+    {
+        return EncodeInto(values, destination, GetEncodedLength(values));
+    }
+
+    public static int EncodeInto(ReadOnlySpan<DbValue> values, Span<byte> destination, int encodedLength)
+    {
+        if (destination.Length < encodedLength)
         {
-            buffer[pos++] = (byte)v.Type;
+            throw new ArgumentException(
+                "Destination buffer is too small for the encoded record.",
+                nameof(destination));
+        }
+
+        int pos = Varint.Write(destination, (ulong)values.Length);
+
+        foreach (DbValue v in values)
+        {
+            destination[pos++] = (byte)v.Type;
             switch (v.Type)
             {
                 case DbType.Null:
                     break;
                 case DbType.Integer:
-                    BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(pos), v.AsInteger);
+                    BinaryPrimitives.WriteInt64LittleEndian(destination[pos..], v.AsInteger);
                     pos += 8;
                     break;
                 case DbType.Real:
                     BinaryPrimitives.WriteInt64LittleEndian(
-                        buffer.AsSpan(pos),
+                        destination[pos..],
                         BitConverter.DoubleToInt64Bits(v.AsReal));
                     pos += 8;
                     break;
                 case DbType.Text:
                 {
                     string text = v.AsText;
+                    if (TryGetEncodedTextBytes(text, out byte[]? encodedTextBytes) &&
+                        encodedTextBytes is { } cachedTextBytes)
+                    {
+                        pos += Varint.Write(destination[pos..], (ulong)cachedTextBytes.Length);
+                        cachedTextBytes.CopyTo(destination[pos..]);
+                        pos += cachedTextBytes.Length;
+                        break;
+                    }
+
                     int byteCount = Utf8.GetByteCount(text);
-                    pos += Varint.Write(buffer.AsSpan(pos), (ulong)byteCount);
-                    pos += Utf8.GetBytes(text.AsSpan(), buffer.AsSpan(pos, byteCount));
+                    pos += Varint.Write(destination[pos..], (ulong)byteCount);
+                    pos += Utf8.GetBytes(text.AsSpan(), destination.Slice(pos, byteCount));
                     break;
                 }
                 case DbType.Blob:
                 {
                     var blob = v.AsBlob;
-                    pos += Varint.Write(buffer.AsSpan(pos), (ulong)blob.Length);
-                    blob.CopyTo(buffer.AsSpan(pos));
+                    pos += Varint.Write(destination[pos..], (ulong)blob.Length);
+                    blob.CopyTo(destination[pos..]);
                     pos += blob.Length;
                     break;
                 }
             }
         }
 
-        return buffer;
+        return pos;
     }
 
     public static DbValue[] Decode(ReadOnlySpan<byte> buffer)
@@ -685,6 +721,13 @@ public static class RecordEncoder
         public string? Text;
     }
 
+    private struct EncodedTextCacheEntry
+    {
+        public int Hash;
+        public string? Text;
+        public byte[]? Utf8Bytes;
+    }
+
     private static int ValueDataSize(DbValue v)
     {
         switch (v.Type)
@@ -696,7 +739,9 @@ public static class RecordEncoder
                 return 8;
             case DbType.Text:
             {
-                int byteCount = Utf8.GetByteCount(v.AsText);
+                int byteCount = TryGetEncodedTextBytes(v.AsText, out byte[]? encodedTextBytes)
+                    ? encodedTextBytes!.Length
+                    : Utf8.GetByteCount(v.AsText);
                 return Varint.SizeOf((ulong)byteCount) + byteCount;
             }
             case DbType.Blob:
@@ -707,5 +752,44 @@ public static class RecordEncoder
             default:
                 return 0;
         }
+    }
+
+    private static bool TryGetEncodedTextBytes(string text, out byte[]? encodedTextBytes)
+    {
+        encodedTextBytes = null;
+        if (string.IsNullOrEmpty(text))
+        {
+            encodedTextBytes = Array.Empty<byte>();
+            return true;
+        }
+
+        if (text.Length > MaxEncodedTextByteLength)
+            return false;
+
+        EncodedTextCacheEntry[] cache = s_encodedTextCache ??= new EncodedTextCacheEntry[EncodedTextCacheCapacity];
+        int hash = RuntimeHelpers.GetHashCode(text);
+        int slot = hash & (EncodedTextCacheCapacity - 1);
+        ref EncodedTextCacheEntry entry = ref cache[slot];
+        if (entry.Hash == hash &&
+            ReferenceEquals(entry.Text, text) &&
+            entry.Utf8Bytes is { } cachedBytes)
+        {
+            encodedTextBytes = cachedBytes;
+            return true;
+        }
+
+        int byteCount = Utf8.GetByteCount(text);
+        if (byteCount > MaxEncodedTextByteLength)
+            return false;
+
+        byte[] utf8Bytes = GC.AllocateUninitializedArray<byte>(byteCount);
+        if (byteCount > 0)
+            Utf8.GetBytes(text.AsSpan(), utf8Bytes);
+
+        entry.Hash = hash;
+        entry.Text = text;
+        entry.Utf8Bytes = utf8Bytes;
+        encodedTextBytes = utf8Bytes;
+        return true;
     }
 }

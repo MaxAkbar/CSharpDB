@@ -162,8 +162,16 @@ public sealed class MemoryWriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnostics
         BTreeInteriorSplitCount: 0,
         BTreeRightEdgeInteriorSplitCount: 0,
         BTreeRootSplitCount: 0,
+        HashedIndexAppendContextHitCount: 0,
+        HashedIndexAppendContextMissCount: 0,
+        HashedIndexAppendExternalMetadataReadCount: 0,
+        HashedIndexAppendPromotionCount: 0,
+        HashedIndexAppendNotApplicableCount: 0,
+        HashedIndexDeferredAppendCount: 0,
+        HashedIndexDeferredFlushCount: 0,
         MaxPendingCommitCount: 0,
-        MaxPendingCommitBytes: 0);
+        MaxPendingCommitBytes: 0,
+        BTreeResourceDiagnostics: []);
 
     void ICommitPathDiagnosticsProvider.ResetCommitPathDiagnostics()
     {

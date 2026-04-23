@@ -2,45 +2,45 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://csharpdb.com/</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://csharpdb.com/getting-started.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <loc>https://csharpdb.com/architecture.html</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
+    <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://csharpdb.com/docs/</loc>
-    <lastmod>2026-03-27</lastmod>
+    <loc>https://csharpdb.com/downloads.html</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
+    <priority>0.7</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/roadmap.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/changelog.html</loc>
+    <lastmod>2026-04-21</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://csharpdb.com/api-reference.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <loc>https://csharpdb.com/docs/getting-started.html</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/architecture.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/benchmarks.html</loc>
-    <lastmod>2026-03-27</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.6</priority>
+    <priority>0.8</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/admin-ui.html</loc>
@@ -49,8 +49,14 @@
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://csharpdb.com/docs/architecture.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <loc>https://csharpdb.com/docs/api-reference.html</loc>
+    <lastmod>2026-04-20</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/benchmarks.html</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -62,13 +68,13 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/collation-support.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/collection-indexing.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -80,19 +86,19 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/core-concepts.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/database-modes.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/ecosystem.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -104,139 +110,157 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/full-text-search.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/internals.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/mcp-server.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/migrations.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/performance.html</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/pipelines.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/reports.html</loc>
-    <lastmod>2026-04-03</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/rest-api.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/samples.html</loc>
-    <lastmod>2026-04-14</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/sql.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/storage-architecture.html</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/storage-engine.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/storage-inspector.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/storage.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/</loc>
-    <lastmod>2026-04-14</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/docs/tutorials/multi-writer-daemon-grpc.html</loc>
-    <lastmod>2026-04-14</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/csv-bulk-import.html</loc>
-    <lastmod>2026-04-14</lastmod>
+    <lastmod>2026-04-20</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/tutorials/multi-writer-daemon-grpc.html</loc>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/native-ffi-javascript.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/native-ffi-python.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/native-ffi.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/storage-examples.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/storage-extensibility.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/tutorials/storage.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/blog/</loc>
-    <lastmod>2026-04-18</lastmod>
+    <lastmod>2026-04-21</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://csharpdb.com/blog/csharpdb-v3-3-0-release.html</loc>
+    <lastmod>2026-04-21</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://csharpdb.com/blog/csharpdb-vs-sqlite-benchmark-guide.html</loc>
-    <lastmod>2026-04-18</lastmod>
+    <lastmod>2026-04-21</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -248,7 +272,7 @@
   </url>
   <url>
     <loc>https://csharpdb.com/blog/getting-started-with-csharpdb.html</loc>
-    <lastmod>2026-03-31</lastmod>
+    <lastmod>2026-04-20</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -263,11 +287,5 @@
     <lastmod>2026-03-31</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
-  </url>
-  <url>
-    <loc>https://csharpdb.com/news/</loc>
-    <lastmod>2026-03-31</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
   </url>
 </urlset>

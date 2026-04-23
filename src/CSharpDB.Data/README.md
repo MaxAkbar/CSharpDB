@@ -143,6 +143,78 @@ Seeds an in-memory database from `seed.db` on first open. For named shared memor
 
 Named shared in-memory connections allow multiple live connections at once. One connection may own an explicit transaction at a time; other connections can still run reads against the last committed snapshot while that transaction is active.
 
+## Embedded Storage Tuning
+
+You can now push engine-level embedded tuning through the ADO.NET surface
+without dropping down to `Database.OpenAsync(...)`.
+
+Direct engine options:
+
+```csharp
+using CSharpDB.Data;
+using CSharpDB.Engine;
+
+var directOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
+
+await using var connection = new CSharpDbConnection("Data Source=ingest.db", directOptions);
+await connection.OpenAsync();
+```
+
+Hybrid embedded mode:
+
+```csharp
+await using var connection = new CSharpDbConnection("Data Source=app.db")
+{
+    DirectDatabaseOptions = new DatabaseOptions()
+        .ConfigureStorageEngine(builder => builder.UseDirectLookupOptimizedPreset()),
+    HybridDatabaseOptions = new HybridDatabaseOptions
+    {
+        PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+    },
+};
+
+await connection.OpenAsync();
+```
+
+Convenience connection-string keywords:
+
+```text
+Data Source=app.db;Storage Preset=WriteOptimized
+Data Source=app.db;Storage Preset=DirectColdFileLookup;Embedded Open Mode=Direct
+Data Source=app.db;Storage Preset=WriteOptimized;Embedded Open Mode=HybridIncrementalDurable
+```
+
+Supported `Storage Preset` values:
+
+- `DirectLookupOptimized`
+- `DirectColdFileLookup`
+- `HybridFileCache`
+- `WriteOptimized`
+- `LowLatencyDurableWrite`
+
+Supported `Embedded Open Mode` values:
+
+- `Direct`
+- `HybridIncrementalDurable`
+- `HybridSnapshot`
+
+Configuration rules:
+
+- explicit `DirectDatabaseOptions` override `Storage Preset`
+- explicit `HybridDatabaseOptions` override `Embedded Open Mode`
+- connection-string keywords fill gaps only when the corresponding explicit
+  options object is absent
+- remote transports and named shared-memory databases reject embedded tuning
+- private `:memory:` supports direct tuning, but not hybrid open modes
+
+Pooling note:
+
+- file-backed pooling is now options-aware
+- distinct explicit options object instances do not share a pool in v1
+- `ClearPool(connectionString)` clears all pooled entries for the normalized
+  file-backed target
+
 ## Connection Pooling (Opt-In)
 
 Connection pooling is disabled by default. Enable it explicitly in the connection string:

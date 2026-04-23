@@ -1,0 +1,436 @@
+{
+  "schemaVersion": 1,
+  "metadata": {
+    "Published snapshot": "April 21, 2026 release-core snapshot",
+    "Run date": "Release-core artifacts captured April 21, 2026; release guardrail compare captured April 22, 2026 UTC",
+    "Promotion status": "Promoted after release-core suite and release guardrail compare passed",
+    "Latest release guardrail": "PASS=185, WARN=0, SKIP=0, FAIL=0",
+    "Runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.202, .NET runtime 10.0.6",
+    "Repro mode": "priority=High, affinity=0xFF when captured with --repro",
+    "Commit": "4e12bbe6eed58ffa7b7cf85371093008c292ec13 plus uncommitted release-prep fixes"
+  },
+  "artifacts": [
+    {
+      "id": "master",
+      "command": "--master-table --repeat 3 --repro",
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260421-212338-median-of-3.csv"
+    },
+    {
+      "id": "batching",
+      "command": "--durable-sql-batching --repeat 3 --repro",
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260421-214227-median-of-3.csv"
+    },
+    {
+      "id": "concurrent",
+      "command": "--concurrent-write-diagnostics --repeat 3 --repro",
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260421-220505-median-of-3.csv"
+    },
+    {
+      "id": "storage",
+      "command": "--hybrid-storage-mode --repeat 3 --repro",
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260421-221135-median-of-3.csv"
+    },
+    {
+      "id": "hotset",
+      "command": "--hybrid-hot-set-read --repeat 3 --repro",
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260421-222712-median-of-3.csv"
+    },
+    {
+      "id": "coldopen",
+      "command": "--hybrid-cold-open --repeat 3 --repro",
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260421-222743-median-of-3.csv"
+    },
+    {
+      "id": "sqlite",
+      "command": "--sqlite-compare --repeat 3 --repro",
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260421-222824-median-of-3.csv"
+    }
+  ],
+  "sections": [
+    {
+      "title": "Scorecard",
+      "description": [
+        "These are the headline rows readers should use first. Detailed tables below map each number back to a source CSV row."
+      ],
+      "columns": [ "Area", "Metric", "Result", "Source" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "Release health" },
+            { "value": "Latest guardrail compare" },
+            { "value": "PASS: PASS=185, FAIL=0" },
+            { "value": "`Run-Perf-Guardrails.ps1 -Mode release`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQL durable write" },
+            { "value": "Single INSERT" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_SingleInsert", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "value": "`master`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQL durable write" },
+            { "value": "Batch x100" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_BatchInsertRows", "column": "OpsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "value": "`master`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQL hot read" },
+            { "value": "Point lookup" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_PointLookup", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "value": "`master`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQL concurrent read" },
+            { "value": "8 readers, reused snapshots x32" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_ConcurrentReadsBurst32", "column": "OpsPerSec", "format": "rate", "unit": "COUNT(*) ops/sec" },
+            { "value": "`master`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Collection hot read" },
+            { "value": "Point Get" },
+            { "artifact": "master", "row": "MasterComparison_Collection_FileBacked_PointGet", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "value": "`master`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Single-writer ingest" },
+            { "value": "InsertBatch B1000" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s", "extraKey": "rowsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "value": "`batching`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Concurrent durable write" },
+            { "value": "W8, 250us commit window" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch250us_10s", "column": "OpsPerSec", "format": "rate", "unit": "commits/sec" },
+            { "value": "`concurrent`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Resident hot set" },
+            { "value": "Hybrid hot-set SQL burst" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridHotSetIncrementalDurable_Sql_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "value": "`hotset`" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Local SQLite reference" },
+            { "value": "SQLite WAL+FULL B1000" },
+            { "artifact": "sqlite", "row": "SQLite_WalFull_Sql_PreparedBulk4Col_B1000_5s", "column": "OpsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "value": "`sqlite`" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Durable API Top Lines",
+      "columns": [ "Surface", "Single write", "Batch x100", "Point read", "Concurrent read" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "SQL file-backed" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_SingleInsert", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_BatchInsertRows", "column": "OpsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_PointLookup", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_ConcurrentReadsBurst32", "column": "OpsPerSec", "format": "rate", "unit": "COUNT(*) ops/sec" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQL hybrid incremental-durable" },
+            { "artifact": "master", "row": "MasterComparison_Sql_HybridIncrementalDurable_SingleInsert", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_HybridIncrementalDurable_BatchInsertRows", "column": "OpsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_HybridIncrementalDurable_PointLookup", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_HybridIncrementalDurable_ConcurrentReadsBurst32", "column": "OpsPerSec", "format": "rate", "unit": "COUNT(*) ops/sec" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQL in-memory" },
+            { "artifact": "master", "row": "MasterComparison_Sql_InMemory_SingleInsert", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_InMemory_BatchInsertRows", "column": "OpsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_InMemory_PointLookup", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_InMemory_ConcurrentReadsBurst32", "column": "OpsPerSec", "format": "rate", "unit": "COUNT(*) ops/sec" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Collection file-backed" },
+            { "artifact": "master", "row": "MasterComparison_Collection_FileBacked_SinglePut", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Collection_FileBacked_BatchPutDocs", "column": "OpsPerSec", "format": "rate", "unit": "docs/sec" },
+            { "artifact": "master", "row": "MasterComparison_Collection_FileBacked_PointGet", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "value": "-" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Collection hybrid incremental-durable" },
+            { "artifact": "master", "row": "MasterComparison_Collection_HybridIncrementalDurable_SinglePut", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Collection_HybridIncrementalDurable_BatchPutDocs", "column": "OpsPerSec", "format": "rate", "unit": "docs/sec" },
+            { "artifact": "master", "row": "MasterComparison_Collection_HybridIncrementalDurable_PointGet", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "value": "-" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Collection in-memory" },
+            { "artifact": "master", "row": "MasterComparison_Collection_InMemory_SinglePut", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Collection_InMemory_BatchPutDocs", "column": "OpsPerSec", "format": "rate", "unit": "docs/sec" },
+            { "artifact": "master", "row": "MasterComparison_Collection_InMemory_PointGet", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "value": "-" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Single-Writer Durable Ingest",
+      "columns": [ "Batch shape", "Rows/sec", "P50", "P99" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "InsertBatch B1" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1_Baseline_PkOnly_Monotonic_10s", "extraKey": "rowsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1_Baseline_PkOnly_Monotonic_10s", "column": "P50", "format": "ms" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1_Baseline_PkOnly_Monotonic_10s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "InsertBatch B100" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B100_Baseline_PkOnly_Monotonic_10s", "extraKey": "rowsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B100_Baseline_PkOnly_Monotonic_10s", "column": "P50", "format": "ms" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B100_Baseline_PkOnly_Monotonic_10s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "InsertBatch B1000" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s", "extraKey": "rowsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s", "column": "P50", "format": "ms" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "InsertBatch B10000" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic_10s", "extraKey": "rowsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic_10s", "column": "P50", "format": "ms" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic_10s", "column": "P99", "format": "ms" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Concurrent Durable Writes",
+      "description": [
+        "Each row is total successful commits/sec across one shared engine. The intended insert shape uses `ConcurrentWriteTransactions` and disjoint explicit key ranges."
+      ],
+      "columns": [ "Scenario", "Commits/sec", "Commits/flush", "P50", "P99" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "W4, window 0" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch0_10s", "column": "OpsPerSec", "format": "rate", "unit": "commits/sec" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch0_10s", "extraKey": "commitsPerFlush", "format": "number", "decimals": 2 },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch0_10s", "column": "P50", "format": "ms" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch0_10s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "W4, window 250us" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch250us_10s", "column": "OpsPerSec", "format": "rate", "unit": "commits/sec" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch250us_10s", "extraKey": "commitsPerFlush", "format": "number", "decimals": 2 },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch250us_10s", "column": "P50", "format": "ms" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W4_Batch250us_10s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "W8, window 0" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch0_10s", "column": "OpsPerSec", "format": "rate", "unit": "commits/sec" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch0_10s", "extraKey": "commitsPerFlush", "format": "number", "decimals": 2 },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch0_10s", "column": "P50", "format": "ms" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch0_10s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "W8, window 250us" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch250us_10s", "column": "OpsPerSec", "format": "rate", "unit": "commits/sec" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch250us_10s", "extraKey": "commitsPerFlush", "format": "number", "decimals": 2 },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch250us_10s", "column": "P50", "format": "ms" },
+            { "artifact": "concurrent", "row": "ConcurrentDurableWrite_W8_Batch250us_10s", "column": "P99", "format": "ms" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Storage Mode Hot Steady State",
+      "columns": [ "Mode", "SQL insert", "SQL batch x100", "SQL point lookup", "Collection put", "Collection batch x100", "Collection get" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "File-backed" },
+            { "artifact": "storage", "row": "Storage_FileBacked_Sql_SingleInsert_5s", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_FileBacked_Sql_Batch100_5s", "column": "OpsPerSec", "multiplier": 100, "format": "rate", "unit": "rows/sec" },
+            { "artifact": "storage", "row": "Storage_FileBacked_Sql_PointLookup_20000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_FileBacked_Collection_Put_5s", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_FileBacked_Collection_Batch100_5s", "column": "OpsPerSec", "multiplier": 100, "format": "rate", "unit": "docs/sec" },
+            { "artifact": "storage", "row": "Storage_FileBacked_Collection_Get_20000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Hybrid incremental-durable" },
+            { "artifact": "storage", "row": "Storage_HybridIncrementalDurable_Sql_SingleInsert_5s", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_HybridIncrementalDurable_Sql_Batch100_5s", "column": "OpsPerSec", "multiplier": 100, "format": "rate", "unit": "rows/sec" },
+            { "artifact": "storage", "row": "Storage_HybridIncrementalDurable_Sql_PointLookup_20000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_HybridIncrementalDurable_Collection_Put_5s", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_HybridIncrementalDurable_Collection_Batch100_5s", "column": "OpsPerSec", "multiplier": 100, "format": "rate", "unit": "docs/sec" },
+            { "artifact": "storage", "row": "Storage_HybridIncrementalDurable_Collection_Get_20000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "In-memory" },
+            { "artifact": "storage", "row": "Storage_InMemory_Sql_SingleInsert_5s", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_InMemory_Sql_Batch100_5s", "column": "OpsPerSec", "multiplier": 100, "format": "rate", "unit": "rows/sec" },
+            { "artifact": "storage", "row": "Storage_InMemory_Sql_PointLookup_20000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_InMemory_Collection_Put_5s", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "storage", "row": "Storage_InMemory_Collection_Batch100_5s", "column": "OpsPerSec", "multiplier": 100, "format": "rate", "unit": "docs/sec" },
+            { "artifact": "storage", "row": "Storage_InMemory_Collection_Get_20000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Resident Hot-Set Reads",
+      "columns": [ "Mode", "SQL hot burst", "SQL P50", "Collection hot burst", "Collection P50" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "File-backed" },
+            { "artifact": "hotset", "row": "HotSetRead_FileBacked_Sql_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_FileBacked_Sql_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" },
+            { "artifact": "hotset", "row": "HotSetRead_FileBacked_Collection_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_FileBacked_Collection_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Hybrid incremental-durable" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridIncrementalDurable_Sql_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridIncrementalDurable_Sql_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridIncrementalDurable_Collection_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridIncrementalDurable_Collection_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Hybrid hot-set incremental-durable" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridHotSetIncrementalDurable_Sql_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridHotSetIncrementalDurable_Sql_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridHotSetIncrementalDurable_Collection_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_HybridHotSetIncrementalDurable_Collection_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "In-memory" },
+            { "artifact": "hotset", "row": "HotSetRead_InMemory_Sql_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_InMemory_Sql_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" },
+            { "artifact": "hotset", "row": "HotSetRead_InMemory_Collection_PostOpenHotBurst256_200000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "hotset", "row": "HotSetRead_InMemory_Collection_PostOpenHotBurst256_200000", "column": "P50", "format": "ms" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cold Open And First Read",
+      "columns": [ "Mode", "SQL open+first lookup P50", "Collection open+first get P50" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "File-backed" },
+            { "artifact": "coldopen", "row": "ColdOpen_FileBacked_Sql_OpenAndFirstLookup_200000", "column": "P50", "format": "ms" },
+            { "artifact": "coldopen", "row": "ColdOpen_FileBacked_Collection_OpenAndFirstGet_200000", "column": "P50", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Hybrid incremental-durable" },
+            { "artifact": "coldopen", "row": "ColdOpen_HybridIncrementalDurable_Sql_OpenAndFirstLookup_200000", "column": "P50", "format": "ms" },
+            { "artifact": "coldopen", "row": "ColdOpen_HybridIncrementalDurable_Collection_OpenAndFirstGet_200000", "column": "P50", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "Hybrid hot-set incremental-durable" },
+            { "artifact": "coldopen", "row": "ColdOpen_HybridHotSetIncrementalDurable_Sql_OpenAndFirstLookup_200000", "column": "P50", "format": "ms" },
+            { "artifact": "coldopen", "row": "ColdOpen_HybridHotSetIncrementalDurable_Collection_OpenAndFirstGet_200000", "column": "P50", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "In-memory" },
+            { "artifact": "coldopen", "row": "ColdOpen_InMemory_Sql_OpenAndFirstLookup_200000", "column": "P50", "format": "ms" },
+            { "artifact": "coldopen", "row": "ColdOpen_InMemory_Collection_OpenAndFirstGet_200000", "column": "P50", "format": "ms" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Local SQLite Matched Rows",
+      "columns": [ "Engine / row", "Throughput", "P50", "P99" ],
+      "rows": [
+        {
+          "cells": [
+            { "value": "CSharpDB InsertBatch B1000" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s", "extraKey": "rowsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s", "column": "P50", "format": "ms" },
+            { "artifact": "batching", "row": "DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQLite WAL+FULL prepared B1000" },
+            { "artifact": "sqlite", "row": "SQLite_WalFull_Sql_PreparedBulk4Col_B1000_5s", "column": "OpsPerSec", "format": "rate", "unit": "rows/sec" },
+            { "artifact": "sqlite", "row": "SQLite_WalFull_Sql_PreparedBulk4Col_B1000_5s", "column": "P50", "format": "ms" },
+            { "artifact": "sqlite", "row": "SQLite_WalFull_Sql_PreparedBulk4Col_B1000_5s", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "CSharpDB SQL point lookup" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_PointLookup", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_PointLookup", "column": "P50", "format": "ms" },
+            { "artifact": "master", "row": "MasterComparison_Sql_FileBacked_PointLookup", "column": "P99", "format": "ms" }
+          ]
+        },
+        {
+          "cells": [
+            { "value": "SQLite WAL+FULL point lookup" },
+            { "artifact": "sqlite", "row": "SQLite_WalFull_Sql_PointLookup_20000", "column": "OpsPerSec", "format": "rate", "unit": "ops/sec" },
+            { "artifact": "sqlite", "row": "SQLite_WalFull_Sql_PointLookup_20000", "column": "P50", "format": "ms" },
+            { "artifact": "sqlite", "row": "SQLite_WalFull_Sql_PointLookup_20000", "column": "P99", "format": "ms" }
+          ]
+        }
+      ]
+    }
+  ]
+}

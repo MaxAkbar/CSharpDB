@@ -20,8 +20,30 @@ internal static class HashedIndexPayloadCodec
         => payload.Length >= HeaderSize &&
            payload[..MagicBytes.Length].SequenceEqual(MagicBytes);
 
-    public static byte[] CreateSingle(ReadOnlySpan<DbValue> keyComponents, long rowId)
-        => EncodeGroups(keyComponents.Length, [new BucketGroup(keyComponents.ToArray(), RowIdPayloadCodec.CreateSingle(rowId))]);
+    public static byte[] CreateSingle(
+        ReadOnlySpan<DbValue> keyComponents,
+        long rowId,
+        bool omitTrailingInteger = false)
+    {
+        ReadOnlySpan<DbValue> storedKeyComponents = GetStoredKeyComponents(keyComponents, omitTrailingInteger);
+        int totalLength = HeaderSize + GetEncodedKeySize(storedKeyComponents) + sizeof(int) + RowIdPayloadCodec.RowIdSize;
+        byte[] payload = GC.AllocateUninitializedArray<byte>(totalLength);
+        MagicBytes.CopyTo(payload);
+
+        int offset = MagicBytes.Length;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, sizeof(int)), storedKeyComponents.Length);
+        offset += sizeof(int);
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, sizeof(int)), 1);
+        offset += sizeof(int);
+        offset = WriteKeyComponents(payload, offset, storedKeyComponents);
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, sizeof(int)), 1);
+        offset += sizeof(int);
+        BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, RowIdPayloadCodec.RowIdSize), rowId);
+        return payload;
+    }
+
+    public static byte[] CreateSingleGroup(ReadOnlySpan<DbValue> keyComponents, ReadOnlySpan<byte> rowIdPayload)
+        => EncodeGroups(keyComponents.Length, [new BucketGroup(keyComponents.ToArray(), rowIdPayload.ToArray())]);
 
     public static bool TryGetMatchingRowIds(
         ReadOnlySpan<byte> payload,
@@ -32,12 +54,12 @@ internal static class HashedIndexPayloadCodec
         if (!TryDecodeGroups(payload, out int componentCount, out var groups))
             return false;
 
-        if (componentCount != keyComponents.Length)
+        if (!TryGetComparableRequestedKeyComponents(componentCount, keyComponents, out ReadOnlySpan<DbValue> comparableKeyComponents))
             return true;
 
         for (int i = 0; i < groups.Count; i++)
         {
-            if (!ComponentsEqual(groups[i].KeyComponents, keyComponents))
+            if (!ComponentsEqual(groups[i].KeyComponents, comparableKeyComponents))
                 continue;
 
             rowIdPayload = groups[i].RowIdPayload;
@@ -70,7 +92,7 @@ internal static class HashedIndexPayloadCodec
         if (componentCount <= 0 || groupCount < 0)
             return false;
 
-        if (componentCount != keyComponents.Length)
+        if (!TryGetComparableRequestedKeyComponents(componentCount, keyComponents, out ReadOnlySpan<DbValue> comparableKeyComponents))
             return true;
 
         for (int groupIndex = 0; groupIndex < groupCount; groupIndex++)
@@ -82,7 +104,7 @@ internal static class HashedIndexPayloadCodec
                     return false;
 
                 byte tag = span[offset++];
-                var expectedComponent = keyComponents[componentIndex];
+                var expectedComponent = comparableKeyComponents[componentIndex];
                 switch (tag)
                 {
                     case IntegerComponentTag:
@@ -171,7 +193,7 @@ internal static class HashedIndexPayloadCodec
         if (componentCount <= 0 || groupCount < 0)
             return false;
 
-        if (componentCount != keyComponents.Length)
+        if (!TryGetComparableRequestedKeyComponents(componentCount, keyComponents, out ReadOnlySpan<DbValue> comparableKeyComponents))
             return true;
 
         for (int groupIndex = 0; groupIndex < groupCount; groupIndex++)
@@ -183,7 +205,7 @@ internal static class HashedIndexPayloadCodec
                     return false;
 
                 byte tag = span[offset++];
-                var expectedComponent = keyComponents[componentIndex];
+                        var expectedComponent = comparableKeyComponents[componentIndex];
                 switch (tag)
                 {
                     case IntegerComponentTag:
@@ -263,12 +285,12 @@ internal static class HashedIndexPayloadCodec
         if (!TryDecodeGroups(payload, out int componentCount, out var groups))
             throw new InvalidOperationException("Payload is not in hashed-index bucket format.");
 
-        if (componentCount != keyComponents.Length)
+        if (!TryGetComparableRequestedKeyComponents(componentCount, keyComponents, out ReadOnlySpan<DbValue> comparableKeyComponents))
             throw new InvalidOperationException("Hashed-index payload component count mismatch.");
 
         for (int i = 0; i < groups.Count; i++)
         {
-            if (!ComponentsEqual(groups[i].KeyComponents, keyComponents))
+            if (!ComponentsEqual(groups[i].KeyComponents, comparableKeyComponents))
                 continue;
 
             if (!RowIdPayloadCodec.TryInsert(groups[i].RowIdPayload, rowId, out var newRowIdPayload))
@@ -282,7 +304,7 @@ internal static class HashedIndexPayloadCodec
             return EncodeGroups(componentCount, groups);
         }
 
-        groups.Add(new BucketGroup(keyComponents.ToArray(), RowIdPayloadCodec.CreateSingle(rowId)));
+        groups.Add(new BucketGroup(comparableKeyComponents.ToArray(), RowIdPayloadCodec.CreateSingle(rowId)));
         changed = true;
         return EncodeGroups(componentCount, groups);
     }
@@ -296,12 +318,12 @@ internal static class HashedIndexPayloadCodec
         if (!TryDecodeGroups(payload, out int componentCount, out var groups))
             throw new InvalidOperationException("Payload is not in hashed-index bucket format.");
 
-        if (componentCount != keyComponents.Length)
+        if (!TryGetComparableRequestedKeyComponents(componentCount, keyComponents, out ReadOnlySpan<DbValue> comparableKeyComponents))
             throw new InvalidOperationException("Hashed-index payload component count mismatch.");
 
         for (int i = 0; i < groups.Count; i++)
         {
-            if (!ComponentsEqual(groups[i].KeyComponents, keyComponents))
+            if (!ComponentsEqual(groups[i].KeyComponents, comparableKeyComponents))
                 continue;
 
             if (!RowIdPayloadCodec.TryRemove(groups[i].RowIdPayload, rowId, out var newRowIdPayload))
@@ -321,6 +343,32 @@ internal static class HashedIndexPayloadCodec
 
         changed = false;
         return null;
+    }
+
+    public static bool TryDecodeSingleGroup(
+        ReadOnlySpan<byte> payload,
+        out DbValue[]? keyComponents,
+        out byte[]? rowIdPayload)
+    {
+        keyComponents = null;
+        rowIdPayload = null;
+        if (!TryDecodeGroups(payload, out _, out List<BucketGroup>? groups) || groups.Count != 1)
+            return false;
+
+        keyComponents = groups[0].KeyComponents;
+        rowIdPayload = groups[0].RowIdPayload;
+        return true;
+    }
+
+    internal static bool KeyComponentsEqualStored(
+        ReadOnlySpan<DbValue> storedKeyComponents,
+        ReadOnlySpan<DbValue> requestedKeyComponents)
+    {
+        return TryGetComparableRequestedKeyComponents(
+                   storedKeyComponents.Length,
+                   requestedKeyComponents,
+                   out ReadOnlySpan<DbValue> comparableKeyComponents) &&
+               ComponentsEqual(storedKeyComponents, comparableKeyComponents);
     }
 
     internal static bool TryDecodeGroups(
@@ -454,6 +502,70 @@ internal static class HashedIndexPayloadCodec
         }
 
         return payload;
+    }
+
+    private static int WriteKeyComponents(byte[] payload, int offset, ReadOnlySpan<DbValue> keyComponents)
+    {
+        for (int i = 0; i < keyComponents.Length; i++)
+        {
+            var component = keyComponents[i];
+            if (component.Type == DbType.Integer)
+            {
+                payload[offset++] = IntegerComponentTag;
+                BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(offset, sizeof(long)), component.AsInteger);
+                offset += sizeof(long);
+                continue;
+            }
+
+            if (component.Type != DbType.Text)
+                throw new InvalidOperationException($"Unsupported hashed index component type: {component.Type}.");
+
+            payload[offset++] = TextComponentTag;
+            int byteCount = Encoding.UTF8.GetByteCount(component.AsText);
+            BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(offset, sizeof(int)), byteCount);
+            offset += sizeof(int);
+            int written = Encoding.UTF8.GetBytes(component.AsText, payload.AsSpan(offset, byteCount));
+            offset += written;
+        }
+
+        return offset;
+    }
+
+    private static ReadOnlySpan<DbValue> GetStoredKeyComponents(
+        ReadOnlySpan<DbValue> keyComponents,
+        bool omitTrailingInteger)
+    {
+        if (!omitTrailingInteger ||
+            keyComponents.Length <= 1 ||
+            keyComponents[^1].Type != DbType.Integer)
+        {
+            return keyComponents;
+        }
+
+        return keyComponents[..^1];
+    }
+
+    private static bool TryGetComparableRequestedKeyComponents(
+        int storedComponentCount,
+        ReadOnlySpan<DbValue> requestedKeyComponents,
+        out ReadOnlySpan<DbValue> comparableKeyComponents)
+    {
+        if (storedComponentCount == requestedKeyComponents.Length)
+        {
+            comparableKeyComponents = requestedKeyComponents;
+            return true;
+        }
+
+        if (requestedKeyComponents.Length > 1 &&
+            storedComponentCount == requestedKeyComponents.Length - 1 &&
+            requestedKeyComponents[^1].Type == DbType.Integer)
+        {
+            comparableKeyComponents = requestedKeyComponents[..^1];
+            return true;
+        }
+
+        comparableKeyComponents = default;
+        return false;
     }
 
     private static int GetEncodedKeySize(ReadOnlySpan<DbValue> keyComponents)

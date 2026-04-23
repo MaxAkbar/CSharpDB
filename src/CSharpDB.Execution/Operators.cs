@@ -9424,6 +9424,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     private readonly int[] _outerKeyIndices;
     private readonly int[] _rightKeyColumnIndices;
     private readonly string?[] _rightKeyCollations;
+    private readonly SqlIndexStorageMode _storageMode;
     private readonly bool _usesOrderedTextPayload;
     private readonly int _leftColCount;
     private readonly int _rightColCount;
@@ -9461,7 +9462,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
     public int? EstimatedRowCount => _estimatedRowCount;
     IBatchOperator IBatchBackedRowOperator.BatchSource => this;
 
-    public HashedIndexNestedLoopJoinOperator(
+    internal HashedIndexNestedLoopJoinOperator(
         IOperator outer,
         BTree innerTableTree,
         IIndexStore innerIndexStore,
@@ -9474,6 +9475,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         int rightPrimaryKeyColumnIndex,
         Expression? residualCondition,
         TableSchema compositeSchema,
+        SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
         bool usesOrderedTextPayload = false,
         IRecordSerializer? recordSerializer = null,
         int? estimatedOutputRowCount = null)
@@ -9485,6 +9487,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         _outerKeyIndices = outerKeyIndices.ToArray();
         _rightKeyColumnIndices = rightKeyColumnIndices.ToArray();
         _rightKeyCollations = rightKeyCollations.ToArray();
+        _storageMode = storageMode;
         _usesOrderedTextPayload = usesOrderedTextPayload;
         _leftColCount = leftColCount;
         _rightColCount = rightColCount;
@@ -9860,7 +9863,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
             return true;
         }
 
-        lookupKey = IndexMaintenanceHelper.ComputeIndexKey(keyComponents);
+        lookupKey = IndexMaintenanceHelper.ComputeIndexKey(keyComponents, _storageMode);
         return true;
     }
 
@@ -13506,6 +13509,7 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
     private readonly IIndexStore _indexStore;
     private readonly BTree _tableTree;
     private readonly IRecordSerializer _recordSerializer;
+    private readonly bool _trailingIntegerStoredInCursorKey;
     private readonly int[] _groupColumnIndices;
     private readonly int[] _projectionKinds;
     private readonly RecordColumnAccessor?[] _groupAccessors;
@@ -13525,11 +13529,13 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
         IRecordSerializer recordSerializer,
         ReadOnlySpan<int> groupColumnIndices,
         ColumnDefinition[] outputSchema,
-        ReadOnlySpan<int> projectionKinds)
+        ReadOnlySpan<int> projectionKinds,
+        bool trailingIntegerStoredInCursorKey = false)
     {
         _indexStore = indexStore;
         _tableTree = tableTree;
         _recordSerializer = recordSerializer;
+        _trailingIntegerStoredInCursorKey = trailingIntegerStoredInCursorKey;
         _groupColumnIndices = groupColumnIndices.ToArray();
         _projectionKinds = projectionKinds.ToArray();
         _groupAccessors = BoundColumnAccessHelper.CreateAccessors(recordSerializer, _groupColumnIndices);
@@ -13546,7 +13552,7 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
         {
             ReadOnlyMemory<byte> payloadMemory = cursor.CurrentValue;
             if (HashedIndexPayloadCodec.TryDecodeGroups(payloadMemory.Span, out int componentCount, out var decodedGroups) &&
-                componentCount >= _groupColumnIndices.Length)
+                CanProjectGroupDirectlyFromPayload(componentCount))
             {
                 for (int i = 0; i < decodedGroups.Count; i++)
                 {
@@ -13554,7 +13560,14 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
                     if (entryCount <= 0)
                         continue;
 
-                    AccumulateGroup(decodedGroups[i].KeyComponents, entryCount, groups, groupIndex);
+                    ReadOnlySpan<DbValue> sourceComponents = decodedGroups[i].KeyComponents;
+                    if (_trailingIntegerStoredInCursorKey &&
+                        sourceComponents.Length == _groupColumnIndices.Length - 1)
+                    {
+                        sourceComponents = AppendTrailingInteger(sourceComponents, cursor.CurrentKey);
+                    }
+
+                    AccumulateGroup(sourceComponents, entryCount, groups, groupIndex);
                 }
 
                 continue;
@@ -13580,6 +13593,10 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
         _index = -1;
         Current = Array.Empty<DbValue>();
     }
+
+    private bool CanProjectGroupDirectlyFromPayload(int componentCount)
+        => componentCount >= _groupColumnIndices.Length ||
+           (_trailingIntegerStoredInCursorKey && componentCount == _groupColumnIndices.Length - 1);
 
     public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
     {
@@ -13667,6 +13684,14 @@ public sealed class CompositeIndexGroupedAggregateOperator : IOperator, IEstimat
         for (int i = 0; i < components.Length; i++)
             hash.Add(components[i]);
         return hash.ToHashCode();
+    }
+
+    private static DbValue[] AppendTrailingInteger(ReadOnlySpan<DbValue> sourceComponents, long trailingInteger)
+    {
+        var components = new DbValue[sourceComponents.Length + 1];
+        sourceComponents.CopyTo(components);
+        components[^1] = DbValue.FromInteger(trailingInteger);
+        return components;
     }
 
     private sealed class GroupState
