@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Creating a C# Launcher for CSharpDB Admin &mdash; Blog &mdash; CSharpDB</title>
+    <meta name="description" content="Build a small C# launcher executable that starts CSharpDB Admin locally, waits for the ASP.NET Core site, and opens the default browser to the home page.">
+    <link rel="canonical" href="https://csharpdb.com/blog/csharpdb-admin-csharp-launcher.html">
+    <meta property="og:title" content="Creating a C# Launcher for CSharpDB Admin">
+    <meta property="og:description" content="Build a small C# launcher executable that starts CSharpDB Admin locally, waits for the ASP.NET Core site, and opens the default browser to the home page.">
+    <meta property="og:url" content="https://csharpdb.com/blog/csharpdb-admin-csharp-launcher.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Creating a C# Launcher for CSharpDB Admin",
+        "description": "Build a small C# launcher executable that starts CSharpDB Admin locally, waits for the ASP.NET Core site, and opens the default browser to the home page.",
+        "url": "https://csharpdb.com/blog/csharpdb-admin-csharp-launcher.html",
+        "datePublished": "2026-04-23",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 {
+            margin-top: 48px;
+            margin-bottom: 16px;
+        }
+        .blog-post-content h3 {
+            margin-top: 32px;
+            margin-bottom: 12px;
+        }
+        .blog-post-content p {
+            margin-bottom: 16px;
+        }
+        .blog-post-content .code-block {
+            margin: 20px 0 24px;
+        }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Creating a C# Launcher for CSharpDB Admin',
+        description: 'Build a small C# launcher executable that starts CSharpDB Admin locally, waits for the ASP.NET Core site, and opens the default browser to the home page.',
+        keywords: 'CSharpDB Admin, C# launcher, ASP.NET Core executable, local web app, open default browser',
+        canonicalPath: 'blog/csharpdb-admin-csharp-launcher.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>Creating a C# Launcher for CSharpDB Admin</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Guide</span>
+                    <span>April 23, 2026</span>
+                    <span>&middot; 6 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB Admin is an ASP.NET Core web app. That is a good fit for the tool itself: it can use the browser, Blazor Server, static assets, and the same hosting model developers already understand.</p>
+                    <p>For an end user, though, the ideal flow is simpler: double-click an executable, let it start the local Admin site, and land on the home page in the default browser.</p>
+
+                    <h2>Why Publishing the Web App Is Not Enough</h2>
+                    <p>Publishing an ASP.NET Core project can produce a normal Windows executable. For example, CSharpDB Admin can be published as <code>CSharpDB.Admin.exe</code>. Running that executable starts the local Kestrel web server.</p>
+                    <p>The part it does not do automatically is open the browser. The <code>launchBrowser</code> setting in <code>Properties/launchSettings.json</code> is a development-time setting used by Visual Studio and <code>dotnet run</code>. It is not part of the published app's runtime behavior.</p>
+
+                    <h2>Two Ways to Add Browser Launching</h2>
+                    <p>One option is to add browser-launch code directly to the Admin web app. After startup, the app can find its bound localhost URL and call <code>Process.Start</code> with <code>UseShellExecute = true</code>. That gives a true single-entry executable experience.</p>
+                    <p>The other option is to keep the web app unchanged and create a tiny C# launcher executable. The launcher starts <code>CSharpDB.Admin.exe</code>, waits for the localhost port, and opens the browser. This keeps the desktop-style startup behavior separate from the web host.</p>
+                    <p>For CSharpDB Admin, the launcher approach is a clean default. The Admin project stays a normal ASP.NET Core app, while the launcher owns the double-click experience.</p>
+
+                    <h2>The Launcher Program</h2>
+                    <p>The launcher should live beside the published Admin executable. At runtime it chooses a local port, passes that URL through <code>ASPNETCORE_URLS</code>, starts the Admin process, waits for the site to listen, and opens the default browser.</p>
+                    <div class="code-block" data-title="Program.cs">
+                        <pre><code><span class="kw">using</span> System.Diagnostics;
+<span class="kw">using</span> System.Net;
+<span class="kw">using</span> System.Net.Sockets;
+
+<span class="kw">var</span> port = GetAvailablePort();
+<span class="kw">var</span> host = <span class="str">"127.0.0.1"</span>;
+<span class="kw">var</span> baseUrl = <span class="str">$"http://{host}:{port}"</span>;
+<span class="kw">var</span> homeUrl = <span class="str">$"{baseUrl}/"</span>;
+<span class="kw">var</span> adminExe = Path.Combine(AppContext.BaseDirectory, <span class="str">"CSharpDB.Admin.exe"</span>);
+
+<span class="kw">if</span> (!File.Exists(adminExe))
+{
+    Console.Error.WriteLine(<span class="str">$"Could not find {adminExe}."</span>);
+    <span class="kw">return</span> <span class="num">1</span>;
+}
+
+<span class="kw">var</span> startInfo = <span class="kw">new</span> <span class="tp">ProcessStartInfo</span>
+{
+    FileName = adminExe,
+    WorkingDirectory = AppContext.BaseDirectory,
+    UseShellExecute = <span class="kw">false</span>
+};
+
+startInfo.Environment[<span class="str">"ASPNETCORE_URLS"</span>] = baseUrl;
+
+<span class="kw">using var</span> adminProcess = Process.Start(startInfo);
+<span class="kw">if</span> (adminProcess <span class="kw">is</span> <span class="kw">null</span>)
+{
+    Console.Error.WriteLine(<span class="str">"Could not start CSharpDB.Admin.exe."</span>);
+    <span class="kw">return</span> <span class="num">1</span>;
+}
+
+<span class="kw">try</span>
+{
+    <span class="kw">await</span> WaitForPortAsync(host, port, adminProcess, <span class="tp">TimeSpan</span>.FromSeconds(<span class="num">30</span>));
+
+    Process.Start(<span class="kw">new</span> <span class="tp">ProcessStartInfo</span>
+    {
+        FileName = homeUrl,
+        UseShellExecute = <span class="kw">true</span>
+    });
+
+    Console.WriteLine(<span class="str">$"CSharpDB Admin is running at {homeUrl}"</span>);
+    Console.WriteLine(<span class="str">"Close this window or press Ctrl+C to stop the Admin host."</span>);
+
+    <span class="kw">await</span> adminProcess.WaitForExitAsync();
+    <span class="kw">return</span> adminProcess.ExitCode;
+}
+<span class="kw">catch</span> (<span class="tp">Exception</span> ex)
+{
+    Console.Error.WriteLine(ex.Message);
+
+    <span class="kw">if</span> (!adminProcess.HasExited)
+        adminProcess.Kill(entireProcessTree: <span class="kw">true</span>);
+
+    <span class="kw">return</span> <span class="num">1</span>;
+}
+
+<span class="kw">static int</span> GetAvailablePort()
+{
+    <span class="kw">using var</span> listener = <span class="kw">new</span> <span class="tp">TcpListener</span>(<span class="tp">IPAddress</span>.Loopback, <span class="num">0</span>);
+    listener.Start();
+    <span class="kw">return</span> ((<span class="tp">IPEndPoint</span>)listener.LocalEndpoint).Port;
+}
+
+<span class="kw">static async</span> Task WaitForPortAsync(<span class="kw">string</span> host, <span class="kw">int</span> port, <span class="tp">Process</span> process, <span class="tp">TimeSpan</span> timeout)
+{
+    <span class="kw">var</span> deadline = <span class="tp">DateTimeOffset</span>.UtcNow.Add(timeout);
+
+    <span class="kw">while</span> (<span class="tp">DateTimeOffset</span>.UtcNow.CompareTo(deadline) &lt;= <span class="num">0</span>)
+    {
+        <span class="kw">if</span> (process.HasExited)
+            <span class="kw">throw new</span> <span class="tp">InvalidOperationException</span>(<span class="str">"CSharpDB Admin exited before it started listening."</span>);
+
+        <span class="kw">try</span>
+        {
+            <span class="kw">using var</span> client = <span class="kw">new</span> <span class="tp">TcpClient</span>();
+            <span class="kw">using var</span> cts = <span class="kw">new</span> <span class="tp">CancellationTokenSource</span>(<span class="tp">TimeSpan</span>.FromMilliseconds(<span class="num">500</span>));
+            <span class="kw">await</span> client.ConnectAsync(host, port, cts.Token);
+            <span class="kw">return</span>;
+        }
+        <span class="kw">catch</span>
+        {
+            <span class="kw">await</span> Task.Delay(<span class="num">250</span>);
+        }
+    }
+
+    <span class="kw">throw new</span> <span class="tp">TimeoutException</span>(<span class="str">$"CSharpDB Admin did not start on {host}:{port}."</span>);
+}</code></pre>
+                    </div>
+
+                    <h2>Why <code>ASPNETCORE_URLS</code> Matters</h2>
+                    <p>The launcher should control the URL instead of guessing which URL the web app selected. Setting <code>ASPNETCORE_URLS</code> tells ASP.NET Core exactly where to listen for this run.</p>
+                    <p>The example uses <code>127.0.0.1</code> instead of a public interface. That keeps the Admin site local to the machine and avoids exposing the tool on the network by accident.</p>
+
+                    <h2>Opening the Default Browser</h2>
+                    <p>The browser launch is the one line that makes this feel like a desktop app:</p>
+                    <div class="code-block" data-title="Open the browser">
+                        <pre><code>Process.Start(<span class="kw">new</span> <span class="tp">ProcessStartInfo</span>
+{
+    FileName = homeUrl,
+    UseShellExecute = <span class="kw">true</span>
+});</code></pre>
+                    </div>
+                    <p><code>UseShellExecute = true</code> asks Windows to open the URL with the user's default handler, which is normally their default browser.</p>
+
+                    <h2>What to Ship</h2>
+                    <p>The launcher does not remove the need to ship the published Admin app. It just becomes the friendly entry point. The publish folder should look like this:</p>
+                    <div class="code-block" data-title="Published folder">
+                        <pre><code>CSharpDB.Admin.Launcher.exe
+CSharpDB.Admin.exe
+appsettings.json
+appsettings.Development.json
+CSharpDB.Admin.staticwebassets.endpoints.json
+wwwroot/
+...</code></pre>
+                    </div>
+                    <p>Users run <code>CSharpDB.Admin.Launcher.exe</code>. The launcher starts <code>CSharpDB.Admin.exe</code>, waits for the site, and opens the home page.</p>
+
+                    <h2>When to Put This in the Web App Instead</h2>
+                    <p>Adding browser launch code directly to the Admin web app is still reasonable if the published Admin executable is always meant to be used interactively on a desktop. It reduces the number of binaries and makes <code>CSharpDB.Admin.exe</code> itself the only entry point.</p>
+                    <p>A separate launcher is better when you want the Admin project to remain a normal web host that can still be run by developers, scripts, services, or future packaging tools without always opening a browser.</p>
+
+                    <h2>The Result</h2>
+                    <p>With a small C# launcher, CSharpDB Admin keeps its ASP.NET Core architecture and gains a desktop-style startup path. The user double-clicks one launcher executable, the local site starts on an available localhost port, and the default browser opens to the Admin home page.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="csharpdb-v3-3-0-release.html">Next: CSharpDB v3.3.0 &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
