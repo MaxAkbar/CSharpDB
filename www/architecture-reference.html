@@ -95,7 +95,8 @@
                 ships a reusable package-driven ETL pipeline runtime in <code>CSharpDB.Pipelines</code>
                 that is reused by the client, API, CLI, and Admin surfaces.</p>
                 <h2 id="layer-overview">Layer Overview</h2>
-                <div class="code-block" data-title="Code"><pre><code>┌────────────────────────────────────────────────────────────────────┐
+                <div class="code-block" data-title="Code"><pre><code>
+                ┌────────────────────────────────────────────────────────────────────┐
                 │ Hosts / Applications                                               │
                 │ CSharpDB.Api   CSharpDB.Daemon   CSharpDB.Admin   CSharpDB.Cli     │
                 │ CSharpDB.Mcp                                                       │
@@ -229,7 +230,8 @@
                 </table>
                 <h4>Database File Format</h4>
                 <p>The database is a sequence of 4096-byte pages. Page 0 contains the file header:</p>
-                <div class="code-block" data-title="Code"><pre><code>Offset  Size  Field
+                <div class="code-block" data-title="Code"><pre><code>
+                Offset  Size  Field
                 ──────  ────  ─────
                 0       4     Magic bytes: "CSDB"
                 4       4     Format version (1)
@@ -243,7 +245,8 @@
                 </code></pre></div>
                 <h4>Slotted Page Layout</h4>
                 <p>Each B+tree page uses a slotted page format:</p>
-                <div class="code-block" data-title="Code"><pre><code>┌───────────────────────────────────────────────────────────┐
+                <div class="code-block" data-title="Code"><pre><code>
+                ┌───────────────────────────────────────────────────────────┐
                 │ Page Header (9 bytes)                                     │
                 │  [PageType:1] [CellCount:2] [ContentStart:2] [RightPtr:4] │
                 ├───────────────────────────────────────────────────────────┤
@@ -288,7 +291,8 @@
                 </table>
                 <p>CSharpDB uses a Write-Ahead Log for crash recovery and concurrent reader support. Modified pages are appended to a <code>.wal</code> file during commit, while the main <code>.db</code> file retains old data until checkpoint.</p>
                 <h4>WAL File Format</h4>
-                <div class="code-block" data-title="Code"><pre><code>┌──────────────────────────────────────────────────────┐
+                <div class="code-block" data-title="Code"><pre><code>
+                ┌──────────────────────────────────────────────────────┐
                 │ WAL Header (32 bytes)                                │
                 │  [magic:"CWAL"] [version:4] [pageSize:4]             │
                 │  [dbPageCount:4] [salt1:4] [salt2:4]                 │
@@ -301,7 +305,7 @@
                 ├──────────────────────────────────────────────────────┤
                 │ Frame 1 ...                                          │
                 ├──────────────────────────────────────────────────────┤
-                │ Frame N (commit frame: dbPageCount &gt; 0)              │
+                │ Frame N (commit frame: dbPageCount &gt; 0)           │
                 └──────────────────────────────────────────────────────┘
                 </code></pre></div>
                 <h4>Transaction Lifecycle (WAL Mode)</h4>
@@ -538,7 +542,8 @@
                 </code></pre></div>
                 <p>The <strong>tokenizer</strong> scans the input character by character, recognizing keywords (case-insensitive), identifiers, numeric literals (integer and real), string literals (single-quoted with <code>''</code> escaping), operators, and punctuation.</p>
                 <p>The <strong>parser</strong> is a recursive descent parser. Each SQL statement type has its own parsing method. Expression parsing uses precedence climbing to correctly handle operator precedence:</p>
-                <div class="code-block" data-title="Code"><pre><code>Precedence (low to high):
+                <div class="code-block" data-title="Code"><pre><code>
+                Precedence (low to high):
                   OR
                   AND
                   NOT (unary)
@@ -577,7 +582,8 @@
                 </table>
                 <h3 id="iterator-model">Iterator Model</h3>
                 <p>Query execution follows the Volcano/iterator model. Each operator implements <code>IOperator</code>:</p>
-                <div class="code-block" data-title="C#"><pre><code class="language-csharp">public interface IOperator : IAsyncDisposable
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">
+                public interface IOperator : IAsyncDisposable
                 {
                     ColumnDefinition[] OutputSchema { get; }
                     ValueTask OpenAsync(CancellationToken ct = default);
@@ -1001,7 +1007,8 @@
                 </tbody>
                 </table>
                 <p>The ADO.NET provider allows CSharpDB to be used with the standard <code>System.Data.Common</code> APIs, making it compatible with ORMs and existing .NET data access code:</p>
-                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var conn = new CSharpDbConnection("Data Source=myapp.db");
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">
+                await using var conn = new CSharpDbConnection("Data Source=myapp.db");
                 await conn.OpenAsync();
                 
                 using var cmd = conn.CreateCommand();
