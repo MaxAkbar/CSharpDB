@@ -41,6 +41,15 @@ client contract.
 - The Admin SQL query editor now has homegrown guided completions for SQL
   keywords, table/view selection, select-list columns, qualified alias columns,
   and stored procedure names without adding a third-party editor dependency.
+- The Admin SQL query tab now exposes a visible vertical splitter so the SQL
+  editor and results pane can be resized when longer queries need more working
+  space.
+- The visual query designer now exposes its own splitter so the generated SQL
+  preview can be expanded against the results section instead of staying pinned
+  to a fixed preview height.
+- The form designer property inspector now renders the selected control ID with
+  theme-aware display styling instead of inheriting browser-native readonly
+  input colors that were hard to read in the dark theme.
 
 ### Daemon Service Packaging
 
@@ -91,6 +100,27 @@ client contract.
   internals, and storage inspector guides after their website versions were
   audited and verified.
 
+### Samples And Forms Runtime
+
+- Added `samples/fulfillment-hub`, a runnable end-to-end warehouse and order
+  fulfillment sample that seeds tables, indexes, views, triggers, procedures,
+  saved queries, Admin forms, Admin reports, stored pipelines, typed
+  collections, and a full-text index into one database.
+- The Fulfillment Hub sample includes an operational workbook plus a narrative
+  README walkthrough that teaches the platform through receiving, allocation,
+  shipment, returns, audit, pipeline, collection, and full-text flows instead
+  of a flat feature list.
+- Added a forms-only runtime host at `src/CSharpDB.Admin.Forms.Web` that lists
+  stored forms and runs them without exposing the form designer.
+- The forms runtime host points at any target CSharpDB database through
+  `CSharpDB:DataSource`, `ConnectionStrings:CSharpDB`, or `CSharpDB:Endpoint`
+  and reuses the existing `DataEntry` runtime component from
+  `CSharpDB.Admin.Forms`.
+- `CSharpDB.Admin.Forms` now supports runtime-only hosting through optional
+  `ShowDesignerButton`, `BackHref`, and `BackLabel` parameters on
+  `DataEntry.razor`, while keeping the existing Admin studio behavior unchanged
+  by default.
+
 ### Validation
 
 - PowerShell parser validation passed for the daemon release publisher and
@@ -112,6 +142,16 @@ client contract.
   passed for the updated site map.
 - Repo scan found no remaining references to the deleted duplicated markdown
   docs.
+- `dotnet run --project samples\fulfillment-hub\FulfillmentHubSample.csproj`
+  completed successfully and seeded `3` forms, `3` reports, `5` procedures,
+  `5` saved queries, `3` stored pipelines, `2` collections, and the
+  `fts_ops_playbooks` full-text index into the sample database.
+- `dotnet build src\CSharpDB.Admin.Forms.Web\CSharpDB.Admin.Forms.Web.csproj`
+  completed successfully.
+- `dotnet run --project src\CSharpDB.Admin.Forms.Web\CSharpDB.Admin.Forms.Web.csproj -- --urls http://127.0.0.1:5095 --CSharpDB:DataSource=<fulfillment-hub-demo.db>`
+  started successfully, listed the seeded sample forms at `/`, and served the
+  runtime-only `orders-workbench` form route at `/forms/orders-workbench`
+  without the designer action.
 - `.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime win-x64 -OutputRoot artifacts\daemon-release-local`
   created `csharpdb-daemon-v3.4.0-win-x64.zip` and `SHA256SUMS.txt`.
 - The extracted `win-x64` daemon archive smoke-started successfully, served
@@ -125,3 +165,9 @@ client contract.
 - `dotnet run --project src\CSharpDB.Admin\CSharpDB.Admin.csproj --configuration Release --no-build --no-launch-profile`
   smoke-started successfully in direct hybrid incremental-durable mode with a
   temporary database.
+- `dotnet build src\CSharpDB.Admin.Forms\CSharpDB.Admin.Forms.csproj`
+  completed successfully after the form designer property inspector styling
+  changes.
+- `dotnet build src\CSharpDB.Admin\CSharpDB.Admin.csproj -p:BaseOutputPath=artifacts\verify\`
+  completed successfully after the query tab and visual designer splitter
+  changes.

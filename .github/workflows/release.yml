@@ -212,9 +212,190 @@ jobs:
           path: src/CSharpDB.Native/csharpdb.h
           if-no-files-found: error
 
+  daemon-archives:
+    name: Daemon Archives (${{ matrix.os }} ${{ matrix.rid }})
+    needs: build-and-test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            extension: tar.gz
+            executable: CSharpDB.Daemon
+          - os: windows-latest
+            rid: win-x64
+            extension: zip
+            executable: CSharpDB.Daemon.exe
+          - os: macos-latest
+            rid: osx-arm64
+            extension: tar.gz
+            executable: CSharpDB.Daemon
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Publish daemon archive
+        shell: pwsh
+        run: ./scripts/Publish-CSharpDbDaemonRelease.ps1 -Runtime ${{ matrix.rid }} -OutputRoot artifacts/daemon-release
+
+      - name: Verify daemon archive and smoke start
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $archiveName = "csharpdb-daemon-v$version-${{ matrix.rid }}.${{ matrix.extension }}"
+          $archivePath = Join-Path "artifacts/daemon-release/archives" $archiveName
+          $checksumsPath = Join-Path "artifacts/daemon-release/archives" "SHA256SUMS.txt"
+
+          if (-not (Test-Path -Path $archivePath)) {
+            throw "Expected daemon archive was not created: $archivePath"
+          }
+
+          if (-not (Select-String -Path $checksumsPath -Pattern ([regex]::Escape($archiveName)) -Quiet)) {
+            throw "Checksum file does not contain $archiveName."
+          }
+
+          $extractRoot = Join-Path $env:RUNNER_TEMP "csharpdb-daemon-extract"
+          if (Test-Path -Path $extractRoot) {
+            Remove-Item -LiteralPath $extractRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $extractRoot | Out-Null
+
+          if ($archiveName.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) {
+            Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
+          }
+          else {
+            & tar -xzf $archivePath -C $extractRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "tar extraction failed with exit code $LASTEXITCODE."
+            }
+          }
+
+          $executablePath = Join-Path $extractRoot "${{ matrix.executable }}"
+          if (-not (Test-Path -Path $executablePath)) {
+            throw "Expected daemon executable was not found after extraction: $executablePath"
+          }
+
+          if (-not $IsWindows) {
+            & chmod +x $executablePath
+          }
+
+          $outPath = Join-Path $env:RUNNER_TEMP "csharpdb-daemon-smoke.out.log"
+          $errPath = Join-Path $env:RUNNER_TEMP "csharpdb-daemon-smoke.err.log"
+          $dbPath = Join-Path $env:RUNNER_TEMP "csharpdb-daemon-smoke.db"
+          $env:DOTNET_ENVIRONMENT = 'Production'
+          $env:ASPNETCORE_ENVIRONMENT = 'Production'
+          $env:ASPNETCORE_URLS = 'http://127.0.0.1:5820'
+          $env:ConnectionStrings__CSharpDB = "Data Source=$dbPath"
+          $env:CSharpDB__Daemon__EnableRestApi = 'true'
+
+          $process = Start-Process `
+            -FilePath $executablePath `
+            -WorkingDirectory $extractRoot `
+            -PassThru `
+            -RedirectStandardOutput $outPath `
+            -RedirectStandardError $errPath
+
+          $info = $null
+          $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+          while ([DateTimeOffset]::UtcNow -lt $deadline) {
+            if ($process.HasExited) {
+              Write-Host "--- stdout ---"
+              if (Test-Path $outPath) { Get-Content $outPath }
+              Write-Host "--- stderr ---"
+              if (Test-Path $errPath) { Get-Content $errPath }
+              throw "Daemon smoke process exited early with code $($process.ExitCode)."
+            }
+
+            try {
+              $info = Invoke-RestMethod -Uri 'http://127.0.0.1:5820/api/info' -TimeoutSec 2
+              break
+            }
+            catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+
+          if ($null -eq $info) {
+            Write-Host "--- stdout ---"
+            if (Test-Path $outPath) { Get-Content $outPath }
+            Write-Host "--- stderr ---"
+            if (Test-Path $errPath) { Get-Content $errPath }
+            throw "Daemon REST smoke endpoint did not respond before the timeout."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($info.dataSource)) {
+            throw "Daemon REST smoke endpoint returned no dataSource."
+          }
+
+          $grpcSmokeRoot = Join-Path $env:RUNNER_TEMP "csharpdb-daemon-grpc-smoke"
+          if (Test-Path -Path $grpcSmokeRoot) {
+            Remove-Item -LiteralPath $grpcSmokeRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $grpcSmokeRoot | Out-Null
+
+          $clientProjectPath = (Resolve-Path "src/CSharpDB.Client/CSharpDB.Client.csproj").Path
+          $grpcSmokeProject = Join-Path $grpcSmokeRoot "CSharpDbDaemonGrpcSmoke.csproj"
+          $grpcSmokeProgram = Join-Path $grpcSmokeRoot "Program.cs"
+
+          @"
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net10.0</TargetFramework>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+            </PropertyGroup>
+            <ItemGroup>
+              <ProjectReference Include="$clientProjectPath" />
+            </ItemGroup>
+          </Project>
+          "@ | Set-Content -Path $grpcSmokeProject -Encoding UTF8
+
+          @"
+          using CSharpDB.Client;
+
+          await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+          {
+              Transport = CSharpDbTransport.Grpc,
+              Endpoint = args[0],
+          });
+
+          var info = await client.GetInfoAsync();
+          if (string.IsNullOrWhiteSpace(info.DataSource))
+              throw new InvalidOperationException("Daemon gRPC smoke returned no data source.");
+
+          Console.WriteLine(info.DataSource);
+          "@ | Set-Content -Path $grpcSmokeProgram -Encoding UTF8
+
+          & dotnet run --project $grpcSmokeProject --configuration Release -- 'http://127.0.0.1:5820'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Daemon gRPC smoke client failed with exit code $LASTEXITCODE."
+          }
+
+          $process.Kill($true)
+          $process.WaitForExit()
+
+      - name: Upload daemon archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-${{ matrix.rid }}
+          path: |
+            artifacts/daemon-release/archives/*.zip
+            artifacts/daemon-release/archives/*.tar.gz
+          if-no-files-found: error
+
   create-release:
     name: Create GitHub Release
-    needs: [publish-nuget, native-aot]
+    needs: [publish-nuget, native-aot, daemon-archives]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -235,6 +416,20 @@ jobs:
           pattern: native-*
           path: artifacts/native
           merge-multiple: true
+
+      - name: Download daemon artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: daemon-*
+          path: artifacts/daemon
+          merge-multiple: true
+
+      - name: Generate daemon checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts/daemon
+          sha256sum csharpdb-daemon-v* > SHA256SUMS.txt
 
       - name: Resolve release notes
         id: notes
@@ -270,6 +465,7 @@ jobs:
           files: |
             artifacts/nuget/*.nupkg
             artifacts/native/*
+            artifacts/daemon/*
 
       - name: Create release (auto-generated notes)
         if: steps.notes.outputs.has_notes == 'false'
@@ -280,3 +476,4 @@ jobs:
           files: |
             artifacts/nuget/*.nupkg
             artifacts/native/*
+            artifacts/daemon/*

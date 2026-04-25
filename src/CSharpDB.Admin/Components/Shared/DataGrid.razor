@@ -61,10 +61,20 @@
                         {
                             var colIdx = c;
                             <td>
-                                <input type="text" class="filter-input" placeholder="Filter..."
-                                       value="@GetFilterInput(colIdx)"
-                                       @oninput="e => UpdateFilterDraft(colIdx, e.Value?.ToString())"
-                                       @onkeydown="e => HandleFilterKeyDown(e, colIdx)" />
+                                <div class="filter-control">
+                                    <select class="filter-mode-select" title="Filter match mode"
+                                            value="@GetFilterMode(colIdx)"
+                                            @onchange="e => UpdateFilterModeAsync(colIdx, e.Value?.ToString())">
+                                        <option value="@DataGridFilterMatchMode.Contains">%x%</option>
+                                        <option value="@DataGridFilterMatchMode.StartsWith">x%</option>
+                                        <option value="@DataGridFilterMatchMode.EndsWith">%x</option>
+                                        <option value="@DataGridFilterMatchMode.Exact">=</option>
+                                    </select>
+                                    <input type="text" class="filter-input" placeholder="@GetFilterPlaceholder(colIdx)"
+                                           value="@GetFilterInput(colIdx)"
+                                           @oninput="e => UpdateFilterDraft(colIdx, e.Value?.ToString())"
+                                           @onkeydown="e => HandleFilterKeyDown(e, colIdx)" />
+                                </div>
                             </td>
                         }
                     </tr>
@@ -193,6 +203,7 @@
     private bool _sortAsc = true;
     private readonly Dictionary<int, string> _filters = new();
     private readonly Dictionary<int, string> _filterInputs = new();
+    private readonly Dictionary<int, DataGridFilterMatchMode> _filterModes = new();
     private readonly HashSet<DataGridRow> _selectedRows = new();
     private EditingCell? _editingCell;
     private ContextMenu? _contextMenu;
@@ -244,6 +255,7 @@
             _loadedAllRows = false;
             _filters.Clear();
             _filterInputs.Clear();
+            _filterModes.Clear();
             Columns = null;
             ColumnTypes = null;
             PrimaryKeyColumn = null;
@@ -339,9 +351,37 @@
                 ? activeValue
                 : string.Empty;
 
+    private DataGridFilterMatchMode GetFilterMode(int colIdx)
+        => _filterModes.TryGetValue(colIdx, out var mode)
+            ? mode
+            : DataGridFilterMatchMode.Contains;
+
+    private string GetFilterPlaceholder(int colIdx)
+        => GetFilterMode(colIdx) switch
+        {
+            DataGridFilterMatchMode.Exact => "Equals...",
+            DataGridFilterMatchMode.StartsWith => "Starts with...",
+            DataGridFilterMatchMode.EndsWith => "Ends with...",
+            _ => "Contains...",
+        };
+
     private void UpdateFilterDraft(int colIdx, string? value)
     {
         _filterInputs[colIdx] = value ?? string.Empty;
+    }
+
+    private async Task UpdateFilterModeAsync(int colIdx, string? value)
+    {
+        if (!Enum.TryParse<DataGridFilterMatchMode>(value, ignoreCase: true, out var mode))
+            mode = DataGridFilterMatchMode.Contains;
+
+        if (mode == DataGridFilterMatchMode.Contains)
+            _filterModes.Remove(colIdx);
+        else
+            _filterModes[colIdx] = mode;
+
+        if (_filters.TryGetValue(colIdx, out var activeValue) && !string.IsNullOrWhiteSpace(activeValue))
+            await RefreshAfterFilterChangeAsync();
     }
 
     private async Task HandleFilterKeyDown(KeyboardEventArgs e, int colIdx)
@@ -373,6 +413,19 @@
             _filterInputs[colIdx] = value;
         }
 
+        await RefreshAfterFilterChangeAsync();
+    }
+
+    private void ResetFilterDraft(int colIdx)
+    {
+        if (_filters.TryGetValue(colIdx, out var activeValue))
+            _filterInputs[colIdx] = activeValue;
+        else
+            _filterInputs.Remove(colIdx);
+    }
+
+    private async Task RefreshAfterFilterChangeAsync()
+    {
         _page = 1;
 
         if (ShouldLoadAllRows())
@@ -391,14 +444,6 @@
         }
 
         await LoadDataAsync();
-    }
-
-    private void ResetFilterDraft(int colIdx)
-    {
-        if (_filters.TryGetValue(colIdx, out var activeValue))
-            _filterInputs[colIdx] = activeValue;
-        else
-            _filterInputs.Remove(colIdx);
     }
 
     // ─── Row Selection ──────────────
@@ -619,6 +664,7 @@
                 continue;
 
             int colIdx = filter.Key;
+            var mode = GetFilterMode(colIdx);
             query = query.Where(row =>
             {
                 if (colIdx < 0 || colIdx >= row.CurrentValues.Length)
@@ -631,7 +677,7 @@
                     byte[] bytes => $"[{bytes.Length} bytes]",
                     _ => value.ToString() ?? string.Empty
                 };
-                return text.Contains(needle, StringComparison.OrdinalIgnoreCase);
+                return MatchesFilter(text, needle, mode);
             });
         }
 
@@ -669,6 +715,15 @@
 
         return row.CurrentValues[colIdx];
     }
+
+    private static bool MatchesFilter(string text, string needle, DataGridFilterMatchMode mode)
+        => mode switch
+        {
+            DataGridFilterMatchMode.Exact => string.Equals(text, needle, StringComparison.Ordinal),
+            DataGridFilterMatchMode.StartsWith => text.StartsWith(needle, StringComparison.OrdinalIgnoreCase),
+            DataGridFilterMatchMode.EndsWith => text.EndsWith(needle, StringComparison.OrdinalIgnoreCase),
+            _ => text.Contains(needle, StringComparison.OrdinalIgnoreCase),
+        };
 
     private sealed class CellValueComparer : IComparer<object?>
     {
@@ -911,7 +966,7 @@
                 string[] displayColumns = Columns ?? Array.Empty<string>();
                 // Over-fetch one row so ad-hoc SQL paging can stay responsive without blocking on COUNT(*).
                 var pageResult = await DbClient.ExecuteSqlAsync(
-                    _queryPagingPlan.BuildPageSql(_filters, _sortCol, _sortAsc, _pageSize + 1, _page, displayColumns));
+                    _queryPagingPlan.BuildPageSql(_filters, _filterModes, _sortCol, _sortAsc, _pageSize + 1, _page, displayColumns));
                 if (pageResult.Error is not null)
                     throw new InvalidOperationException(pageResult.Error);
 
@@ -1045,14 +1100,123 @@
                 continue;
 
             string columnName = RequireIdentifier(Columns[colIdx]);
-            string pattern = EscapeSqlString($"%{EscapeLikePattern(filter.Value)}%");
-            clauses.Add($"TEXT({columnName}) LIKE '{pattern}' ESCAPE '!'");
+            clauses.Add(BuildFilterClause(colIdx, columnName, filter.Value, GetFilterMode(colIdx)));
         }
 
         return clauses.Count == 0
             ? string.Empty
             : $" WHERE {string.Join(" AND ", clauses)}";
     }
+
+    private string BuildFilterClause(int colIdx, string columnName, string filterValue, DataGridFilterMatchMode mode)
+    {
+        string expression = $"TEXT({columnName})";
+        if (mode == DataGridFilterMatchMode.Exact)
+        {
+            string? columnType = GetColumnType(colIdx);
+            if (TryBuildSargableExactFilterClause(columnName, columnType, filterValue, out var exactClause))
+                return exactClause;
+
+            return $"{expression} = '{EscapeSqlString(filterValue)}'";
+        }
+
+        string pattern = EscapeSqlString(BuildLikePattern(filterValue, mode));
+        return $"{expression} LIKE '{pattern}' ESCAPE '!'";
+    }
+
+    private static string BuildLikePattern(string filterValue, DataGridFilterMatchMode mode)
+    {
+        string escapedFilterValue = EscapeLikePattern(filterValue);
+        return mode switch
+        {
+            DataGridFilterMatchMode.StartsWith => $"{escapedFilterValue}%",
+            DataGridFilterMatchMode.EndsWith => $"%{escapedFilterValue}",
+            _ => $"%{escapedFilterValue}%",
+        };
+    }
+
+    private string? GetColumnType(int colIdx)
+        => ColumnTypes is not null && colIdx >= 0 && colIdx < ColumnTypes.Length
+            ? ColumnTypes[colIdx]
+            : null;
+
+    private static bool TryBuildSargableExactFilterClause(
+        string columnName,
+        string? columnType,
+        string filterValue,
+        out string clause)
+    {
+        clause = string.Empty;
+        if (string.IsNullOrWhiteSpace(columnType))
+            return false;
+
+        if (filterValue.Equals("NULL", StringComparison.OrdinalIgnoreCase))
+        {
+            clause = IsTextColumnType(columnType)
+                ? $"({columnName} IS NULL OR {columnName} = 'NULL')"
+                : $"{columnName} IS NULL";
+            return true;
+        }
+
+        if (IsTextColumnType(columnType))
+        {
+            clause = $"{columnName} = '{EscapeSqlString(filterValue)}'";
+            return true;
+        }
+
+        if (IsIntegerColumnType(columnType))
+        {
+            if (long.TryParse(
+                    filterValue,
+                    System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out long value) &&
+                string.Equals(filterValue, value.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal))
+            {
+                clause = $"{columnName} = {value}";
+            }
+            else
+            {
+                clause = "0 = 1";
+            }
+
+            return true;
+        }
+
+        if (IsRealColumnType(columnType))
+        {
+            if (double.TryParse(
+                    filterValue,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double value) &&
+                double.IsFinite(value) &&
+                string.Equals(filterValue, value.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal))
+            {
+                clause = $"{columnName} = {value.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            }
+            else
+            {
+                clause = "0 = 1";
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsTextColumnType(string columnType)
+        => columnType.Equals("TEXT", StringComparison.OrdinalIgnoreCase)
+            || columnType.Equals("VARCHAR", StringComparison.OrdinalIgnoreCase)
+            || columnType.Equals("CHAR", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsIntegerColumnType(string columnType)
+        => columnType.Equals("INTEGER", StringComparison.OrdinalIgnoreCase)
+            || columnType.Equals("INT", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRealColumnType(string columnType)
+        => columnType.Equals("REAL", StringComparison.OrdinalIgnoreCase);
 
     private string BuildOrderByClause()
     {

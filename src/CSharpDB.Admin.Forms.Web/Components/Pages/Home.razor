@@ -1,0 +1,86 @@
+@page "/"
+@inject IFormRepository FormRepository
+@inject ICSharpDbClient DbClient
+
+<PageTitle>Forms Runtime</PageTitle>
+
+<div class="forms-home">
+    <div class="forms-home__header">
+        <div>
+            <h1>Forms Runtime</h1>
+            <p>Runnable form host for <code>@DbClient.DataSource</code></p>
+        </div>
+    </div>
+
+    <div class="forms-home__intro">
+        This host runs stored form definitions without exposing the designer. Seed forms into the target database, then open them from this list.
+    </div>
+
+    @if (_loading)
+    {
+        <div class="forms-home__state">Loading forms...</div>
+    }
+    else if (_error is not null)
+    {
+        <div class="forms-home__state forms-home__state--error">@_error</div>
+    }
+    else if (_forms.Count == 0)
+    {
+        <div class="forms-home__state">
+            No forms were found in this database. Run a sample or seed form metadata into the current database first.
+        </div>
+    }
+    else
+    {
+        <div class="forms-home__summary">@_forms.Count form(s) available</div>
+        <table class="forms-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Source</th>
+                    <th>Form Id</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (FormDefinition form in _forms)
+                {
+                    <tr>
+                        <td data-label="Name">@form.Name</td>
+                        <td data-label="Source">@form.TableName</td>
+                        <td data-label="Form Id"><code>@form.FormId</code></td>
+                        <td data-label="Action" class="forms-table__actions">
+                            <a class="forms-home__action" href="@GetFormHref(form.FormId)">Open</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    private IReadOnlyList<FormDefinition> _forms = [];
+    private bool _loading = true;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _forms = (await FormRepository.ListAsync())
+                .OrderBy(form => form.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load forms: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string GetFormHref(string formId) => $"/forms/{Uri.EscapeDataString(formId)}";
+}

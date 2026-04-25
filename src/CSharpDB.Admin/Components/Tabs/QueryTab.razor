@@ -7,10 +7,12 @@
 @using CSharpDB.Client.Models
 @using CSharpDB.Sql
 @inject ICSharpDbClient DbClient
+@inject IJSRuntime JS
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
+@implements IDisposable
 
-<div class="query-tab">
+<div class="query-tab" @ref="_queryTabRef" style="@($"--query-editor-height: {_editorHeightPx}px;")">
     <div class="toolbar">
         @if (_mode == QueryMode.Sql)
         {
@@ -111,88 +113,100 @@
             </button>
         </div>
 
-        <SqlEditor @ref="_editor"
-                   @bind-Value="_sqlText"
-                   OnExecute="RunQuery"
-                   Height="200"
-                   Placeholder="Enter SQL query..." />
+        <div class="query-workspace">
+            <div class="query-editor-panel">
+                <SqlEditor @ref="_editor"
+                           @bind-Value="_sqlText"
+                           OnExecute="RunQuery"
+                           CompletionCatalog="_completionCatalog"
+                           Height="var(--query-editor-height)"
+                           Placeholder="Enter SQL query..." />
+            </div>
 
-        @if (_activeQuerySql is not null && !_loading)
-        {
-            <DataGrid QuerySql="@_activeQuerySql"
-                      ReloadVersion="_queryReloadVersion"
-                      IsReadOnly="true"
-                      OnQueryStatusChanged="OnQueryResultsChanged" />
-        }
-        else
-        {
-            <div class="grid-container">
-                @if (_loading)
+            <div class="query-editor-splitter"
+                 title="Resize SQL editor"
+                 @onmousedown="StartEditorResizeAsync"
+                 @onmousedown:preventDefault></div>
+
+            <div class="query-results-panel">
+                @if (_activeQuerySql is not null && !_loading)
                 {
-                    <div class="loading-overlay">
-                        <div class="spinner"></div>
-                    </div>
-                }
-                else if (_error is not null)
-                {
-                    <div class="query-error">
-                        <i class="bi bi-exclamation-triangle"></i> @_error
-                    </div>
-                }
-                else if (_resultColumns is not null && _resultRows is not null)
-                {
-                    <table class="data-grid query-results">
-                        <thead>
-                            <tr>
-                                <th class="row-num-header">#</th>
-                                @foreach (var col in _resultColumns)
-                                {
-                                    <th>@col</th>
-                                }
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @for (int r = 0; r < _resultRows.Count; r++)
-                            {
-                                <tr>
-                                    <td class="row-num">@(r + 1)</td>
-                                    @foreach (var val in _resultRows[r])
-                                    {
-                                        <td>
-                                            @if (val is null)
-                                            {
-                                                <span class="null-val">NULL</span>
-                                            }
-                                            else if (val is byte[] bytes)
-                                            {
-                                                <span class="blob-val">[@bytes.Length bytes]</span>
-                                            }
-                                            else
-                                            {
-                                                @val.ToString()
-                                            }
-                                        </td>
-                                    }
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                }
-                else if (_nonQueryMessage is not null)
-                {
-                    <div class="query-message">
-                        <i class="bi bi-check-circle"></i> @_nonQueryMessage
-                    </div>
+                    <DataGrid QuerySql="@_activeQuerySql"
+                              ReloadVersion="_queryReloadVersion"
+                              IsReadOnly="true"
+                              OnQueryStatusChanged="OnQueryResultsChanged" />
                 }
                 else
                 {
-                    <div class="empty-state">
-                        <i class="bi bi-terminal"></i>
-                        <p>Run a query to see results</p>
+                    <div class="grid-container">
+                        @if (_loading)
+                        {
+                            <div class="loading-overlay">
+                                <div class="spinner"></div>
+                            </div>
+                        }
+                        else if (_error is not null)
+                        {
+                            <div class="query-error">
+                                <i class="bi bi-exclamation-triangle"></i> @_error
+                            </div>
+                        }
+                        else if (_resultColumns is not null && _resultRows is not null)
+                        {
+                            <table class="data-grid query-results">
+                                <thead>
+                                    <tr>
+                                        <th class="row-num-header">#</th>
+                                        @foreach (var col in _resultColumns)
+                                        {
+                                            <th>@col</th>
+                                        }
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @for (int r = 0; r < _resultRows.Count; r++)
+                                    {
+                                        <tr>
+                                            <td class="row-num">@(r + 1)</td>
+                                            @foreach (var val in _resultRows[r])
+                                            {
+                                                <td>
+                                                    @if (val is null)
+                                                    {
+                                                        <span class="null-val">NULL</span>
+                                                    }
+                                                    else if (val is byte[] bytes)
+                                                    {
+                                                        <span class="blob-val">[@bytes.Length bytes]</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        @val.ToString()
+                                                    }
+                                                </td>
+                                            }
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                        else if (_nonQueryMessage is not null)
+                        {
+                            <div class="query-message">
+                                <i class="bi bi-check-circle"></i> @_nonQueryMessage
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="empty-state">
+                                <i class="bi bi-terminal"></i>
+                                <p>Run a query to see results</p>
+                            </div>
+                        }
                     </div>
                 }
             </div>
-        }
+        </div>
     }
     else
     {
@@ -225,6 +239,21 @@
     private const string AnalyzeSql = "ANALYZE;";
     private const string TableStatsSql = "SELECT * FROM sys.table_stats ORDER BY table_name;";
     private const string ColumnStatsSql = "SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;";
+    private const int DefaultEditorHeightPx = 220;
+    private const int MinEditorHeightPx = 120;
+    private const int MaxEditorHeightPx = 560;
+    private static readonly string[] s_systemCatalogSourceNames =
+    [
+        "sys.tables",
+        "sys.columns",
+        "sys.indexes",
+        "sys.table_stats",
+        "sys.column_stats",
+        "sys.views",
+        "sys.triggers",
+        "sys.objects",
+        "sys.saved_queries",
+    ];
 
     [Parameter] public TabDescriptor? Tab { get; set; }
 
@@ -240,13 +269,20 @@
     private string _savedQueryName = string.Empty;
     private string? _selectedSavedQueryName;
     private bool _loadingSavedQueries;
+    private SqlCompletionCatalog _completionCatalog = SqlCompletionCatalog.Empty;
     private string? _activeQuerySql;
     private int _queryReloadVersion;
     private QueryResultsStatus _queryResultsStatus = new();
+    private int _editorHeightPx = DefaultEditorHeightPx;
+    private bool _editorHeightInitialized;
+    private ElementReference _queryTabRef;
+    private DotNetObjectReference<QueryTab>? _dotNetRef;
 
     protected override async Task OnInitializedAsync()
     {
+        Changes.Changed += OnDatabaseObjectsChanged;
         await RefreshSavedQueriesAsync();
+        await RefreshCompletionCatalogAsync();
     }
 
     protected override void OnParametersSet()
@@ -259,6 +295,40 @@
             && Enum.TryParse<QueryMode>(modeStr, out var savedMode))
         {
             _mode = savedMode;
+        }
+
+        if (TryReadTabEditorHeight(out var persistedHeight))
+            _editorHeightPx = NormalizeEditorHeight(persistedHeight);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            _dotNetRef = DotNetObjectReference.Create(this);
+
+        if (_editorHeightInitialized)
+            return;
+
+        _editorHeightInitialized = true;
+
+        try
+        {
+            int resolvedHeight = await JS.InvokeAsync<int>(
+                "resizeInterop.initQueryEditorPane",
+                _queryTabRef,
+                _editorHeightPx,
+                MinEditorHeightPx,
+                MaxEditorHeightPx);
+
+            resolvedHeight = NormalizeEditorHeight(resolvedHeight);
+            if (resolvedHeight != _editorHeightPx)
+            {
+                PersistEditorHeight(resolvedHeight);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -435,6 +505,63 @@
         }
     }
 
+    private async void OnDatabaseObjectsChanged()
+    {
+        await RefreshCompletionCatalogAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RefreshCompletionCatalogAsync()
+    {
+        try
+        {
+            var tableNamesTask = DbClient.GetTableNamesAsync();
+            var viewNamesTask = DbClient.GetViewNamesAsync();
+            var proceduresTask = DbClient.GetProceduresAsync(includeDisabled: false);
+
+            await Task.WhenAll(tableNamesTask, viewNamesTask, proceduresTask);
+
+            var sourceByName = new Dictionary<string, SqlCompletionSource>(StringComparer.OrdinalIgnoreCase);
+            foreach (string tableName in tableNamesTask.Result)
+                sourceByName.TryAdd(tableName, new SqlCompletionSource(tableName, SqlCompletionSourceKind.Table));
+
+            foreach (string viewName in viewNamesTask.Result)
+                sourceByName.TryAdd(viewName, new SqlCompletionSource(viewName, SqlCompletionSourceKind.View));
+
+            foreach (string systemCatalogName in s_systemCatalogSourceNames)
+                sourceByName.TryAdd(systemCatalogName, new SqlCompletionSource(systemCatalogName, SqlCompletionSourceKind.SystemCatalog));
+
+            var columnsBySource = new Dictionary<string, IReadOnlyList<SqlCompletionColumn>>(StringComparer.OrdinalIgnoreCase);
+            foreach (string tableName in tableNamesTask.Result)
+            {
+                var schema = await DbClient.GetTableSchemaAsync(tableName);
+                if (schema is null)
+                    continue;
+
+                columnsBySource[tableName] = schema.Columns
+                    .Select(column => new SqlCompletionColumn(column.Name, column.Type.ToString().ToUpperInvariant(), tableName))
+                    .ToArray();
+            }
+
+            _completionCatalog = new SqlCompletionCatalog
+            {
+                Sources = sourceByName.Values
+                    .OrderBy(source => source.Kind)
+                    .ThenBy(source => source.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                ColumnsBySource = columnsBySource,
+                Procedures = proceduresTask.Result
+                    .Select(procedure => procedure.Name)
+                    .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+            };
+        }
+        catch
+        {
+            _completionCatalog = SqlCompletionCatalog.Empty;
+        }
+    }
+
     private async Task RunExecuteCommandAsync(string procedureName, IReadOnlyDictionary<string, object?> args)
     {
         var result = await DbClient.ExecuteProcedureAsync(procedureName, args);
@@ -510,6 +637,66 @@
         if (resetActiveQuery)
             _activeQuerySql = null;
     }
+
+    private async Task StartEditorResizeAsync(MouseEventArgs e)
+    {
+        if (_dotNetRef is null)
+            return;
+
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "resizeInterop.startQueryEditorResize",
+                new { clientY = e.ClientY },
+                _queryTabRef,
+                _editorHeightPx,
+                MinEditorHeightPx,
+                MaxEditorHeightPx,
+                _dotNetRef);
+        }
+        catch
+        {
+        }
+    }
+
+    [JSInvokable]
+    public Task OnQueryEditorHeightChanged(int newHeight)
+    {
+        PersistEditorHeight(newHeight);
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void PersistEditorHeight(int height)
+    {
+        _editorHeightPx = NormalizeEditorHeight(height);
+        if (Tab is not null)
+            Tab.State["QueryEditorHeightPx"] = _editorHeightPx;
+    }
+
+    private bool TryReadTabEditorHeight(out int height)
+    {
+        height = DefaultEditorHeightPx;
+        if (Tab?.State.TryGetValue("QueryEditorHeightPx", out var value) != true || value is null)
+            return false;
+
+        switch (value)
+        {
+            case int intValue:
+                height = intValue;
+                return true;
+            case long longValue when longValue is >= int.MinValue and <= int.MaxValue:
+                height = (int)longValue;
+                return true;
+            case string stringValue when int.TryParse(stringValue, out var parsed):
+                height = parsed;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static int NormalizeEditorHeight(int height)
+        => Math.Max(MinEditorHeightPx, Math.Min(MaxEditorHeightPx, height));
 
     private string GetResultSummary()
     {
@@ -837,5 +1024,11 @@
         value = null;
         error = "Invalid EXEC args: unterminated double-quoted string literal.";
         return false;
+    }
+
+    public void Dispose()
+    {
+        Changes.Changed -= OnDatabaseObjectsChanged;
+        _dotNetRef?.Dispose();
     }
 }

@@ -15,58 +15,64 @@
         <div class="main-panel">
             <TabBar />
             <div class="content-area">
-                @if (TabManager.ActiveTab is not null)
+                @foreach (var tab in TabManager.Tabs)
                 {
-                    @switch (TabManager.ActiveTab.Kind)
-                    {
-                        case TabKind.Welcome:
-                            <WelcomeTab />
-                            break;
-                        case TabKind.Query:
-                            <QueryTab @key="TabManager.ActiveTab.Id" Tab="TabManager.ActiveTab" />
-                            break;
-                        case TabKind.TableData:
-                            <DataTab @key="TabManager.ActiveTab.Id"
-                                     ObjectName="@(TabManager.ActiveTab.ObjectName ?? string.Empty)"
-                                     IsView="false" />
-                            break;
-                        case TabKind.ViewData:
-                            <DataTab @key="TabManager.ActiveTab.Id"
-                                     ObjectName="@(TabManager.ActiveTab.ObjectName ?? string.Empty)"
-                                     IsView="true" />
-                            break;
-                        case TabKind.Procedure:
-                            <ProcedureTab @key="TabManager.ActiveTab.Id"
-                                          Tab="TabManager.ActiveTab" />
-                            break;
-                        case TabKind.Pipeline:
-                            <PipelineTab @key="TabManager.ActiveTab.Id"
-                                         Tab="TabManager.ActiveTab" />
-                            break;
-                        case TabKind.Storage:
-                            <StorageTab @key="TabManager.ActiveTab.Id" />
-                            break;
-                        case TabKind.TableDesigner:
-                            <TableDesignerTab @key="TabManager.ActiveTab.Id"
-                                              Tab="TabManager.ActiveTab" />
-                            break;
-                        case TabKind.FormDesigner:
-                            <FormDesignerTab @key="TabManager.ActiveTab.Id"
-                                             Tab="TabManager.ActiveTab" />
-                            break;
-                        case TabKind.FormEntry:
-                            <FormEntryTab @key="TabManager.ActiveTab.Id"
-                                          Tab="TabManager.ActiveTab" />
-                            break;
-                        case TabKind.ReportDesigner:
-                            <ReportDesignerTab @key="TabManager.ActiveTab.Id"
-                                               Tab="TabManager.ActiveTab" />
-                            break;
-                        case TabKind.ReportPreview:
-                            <ReportPreviewTab @key="TabManager.ActiveTab.Id"
-                                              Tab="TabManager.ActiveTab" />
-                            break;
-                    }
+                    bool isActive = TabManager.ActiveTab?.Id == tab.Id;
+
+                    <div class="tab-content-panel" hidden="@(!isActive)" aria-hidden="@(!isActive)" @key="tab.Id">
+                        @switch (tab.Kind)
+                        {
+                            case TabKind.Welcome:
+                                <WelcomeTab />
+                                break;
+                            case TabKind.Query:
+                                <QueryTab @key="tab.Id" Tab="tab" />
+                                break;
+                            case TabKind.TableData:
+                                <DataTab @key="tab.Id"
+                                         Tab="tab"
+                                         ObjectName="@(tab.ObjectName ?? string.Empty)"
+                                         IsView="false" />
+                                break;
+                            case TabKind.ViewData:
+                                <DataTab @key="tab.Id"
+                                         Tab="tab"
+                                         ObjectName="@(tab.ObjectName ?? string.Empty)"
+                                         IsView="true" />
+                                break;
+                            case TabKind.Procedure:
+                                <ProcedureTab @key="tab.Id"
+                                              Tab="tab" />
+                                break;
+                            case TabKind.Pipeline:
+                                <PipelineTab @key="tab.Id"
+                                             Tab="tab" />
+                                break;
+                            case TabKind.Storage:
+                                <StorageTab @key="tab.Id" />
+                                break;
+                            case TabKind.TableDesigner:
+                                <TableDesignerTab @key="tab.Id"
+                                                  Tab="tab" />
+                                break;
+                            case TabKind.FormDesigner:
+                                <FormDesignerTab @key="tab.Id"
+                                                 Tab="tab" />
+                                break;
+                            case TabKind.FormEntry:
+                                <FormEntryTab @key="tab.Id"
+                                              Tab="tab" />
+                                break;
+                            case TabKind.ReportDesigner:
+                                <ReportDesignerTab @key="tab.Id"
+                                                   Tab="tab" />
+                                break;
+                            case TabKind.ReportPreview:
+                                <ReportPreviewTab @key="tab.Id"
+                                                  Tab="tab" />
+                                break;
+                        }
+                    </div>
                 }
             </div>
         </div>

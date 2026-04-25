@@ -1,0 +1,35 @@
+{
+  "name": "low-stock-export",
+  "version": "1.0.0",
+  "description": "Exports the live low-stock watchlist to a CSV file for morning warehouse reviews.",
+  "source": {
+    "kind": "sqlQuery",
+    "queryText": "SELECT warehouse_code, sku, product_name, supplier_name, available_qty, inbound_qty, reorder_point, shortage_qty FROM low_stock_watch WHERE shortage_qty > 0 ORDER BY warehouse_code, shortage_qty DESC, sku;"
+  },
+  "transforms": [
+    {
+      "kind": "select",
+      "selectColumns": [
+        "warehouse_code",
+        "sku",
+        "product_name",
+        "supplier_name",
+        "available_qty",
+        "inbound_qty",
+        "reorder_point",
+        "shortage_qty"
+      ]
+    }
+  ],
+  "destination": {
+    "kind": "csvFile",
+    "path": "__OUTPUT_DIR__/low-stock-watch.csv",
+    "overwrite": true
+  },
+  "options": {
+    "batchSize": 100,
+    "errorMode": "failFast",
+    "checkpointInterval": 50,
+    "maxRejects": 0
+  }
+}

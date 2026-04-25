@@ -9,11 +9,21 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Grpc.AspNetCore.Web" Version="2.76.0" />
     <PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.7" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Api\CSharpDB.Api.csproj" PrivateAssets="all" ExcludeAssets="contentFiles" />
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
   </ItemGroup>
+
+  <Target Name="ExcludeApiHostSettingsFromDaemonPublish" BeforeTargets="_HandleFileConflictsForPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(ResolvedFileToPublish.Identity)').Contains('CSharpDB.Api\appsettings')) Or $([System.String]::Copy('%(ResolvedFileToPublish.Identity)').Contains('CSharpDB.Api/appsettings'))" />
+    </ItemGroup>
+  </Target>
 
 </Project>

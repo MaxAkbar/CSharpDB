@@ -1,20 +1,22 @@
 # CSharpDB.Daemon
 
-`CSharpDB.Daemon` is the dedicated gRPC host for CSharpDB.
+`CSharpDB.Daemon` is the preferred combined remote host for CSharpDB.
 
-It exposes the `CSharpDB.Client` contract over gRPC and keeps that transport
-separate from the REST-only [`CSharpDB.Api`](../CSharpDB.Api/README.md) host.
+It exposes the `CSharpDB.Client` contract over gRPC and the existing REST/HTTP
+surface under `/api` from one long-running process. Both transports use the same
+warm daemon-hosted `ICSharpDbClient` instance.
 
 ## What This Process Is Designed For
 
 `CSharpDB.Daemon` is designed as a long-running service process for systems that
 want to keep one CSharpDB database available to multiple clients through a
-stable gRPC endpoint.
+stable remote endpoint.
 
 Current design assumptions:
 
 - one daemon process manages one database file
-- clients talk to it through `CSharpDB.Client` with `Transport = Grpc`
+- clients talk to it through `CSharpDB.Client` with `Transport = Grpc` or
+  `Transport = Http`
 - the daemon is best suited for trusted internal networks, local development, or
   service-to-service communication
 - the daemon is a thin transport host over `ICSharpDbClient`, not a separate
@@ -24,16 +26,17 @@ This makes it a good fit for:
 
 - backend services that should not open the database file directly
 - local tools that need a reusable database process
+- REST tooling and gRPC clients that should share one warm database instance
 - test environments that want a stable remote-style endpoint
-- future service-daemon work without coupling that work to the REST API host
+- future service-daemon work without adding a second database host process
 
 It is not yet designed as:
 
 - a multi-tenant database server
 - a public internet-facing database endpoint
 - a multi-database host in one process
-- a hardened production service with built-in auth, metrics, health endpoints,
-  or OS service installers
+- a hardened public production service with built-in auth, metrics, or health
+  endpoints
 
 ## Current Runtime Model
 
@@ -43,7 +46,8 @@ Today the daemon does the following:
 2. registers a direct `ICSharpDbClient` from configuration
 3. opens and validates the configured database during startup by calling
    `GetInfoAsync()`
-4. exposes explicit generated gRPC methods under
+4. exposes REST routes under `/api`, including `/api/info`
+5. exposes explicit generated gRPC methods under
    `/csharpdb.rpc.CSharpDbRpc/*` such as
    `/csharpdb.rpc.CSharpDbRpc/GetInfo` and
    `/csharpdb.rpc.CSharpDbRpc/ExecuteSql`
@@ -67,17 +71,17 @@ The contract is now method-based and strongly typed:
 - dynamic row/document/argument values use a recursive protobuf value shape instead of JSON payload strings
 - maintenance operations such as backup/restore, reindex, vacuum, and foreign-key retrofit migration are first-class RPCs rather than a generic tunnel
 
-## Protocol Boundary
+## Protocol Model
 
-The host split is intentional:
+`CSharpDB.Daemon` now hosts both remote protocols by default:
 
-- `CSharpDB.Api` is the REST/HTTP host
-- `CSharpDB.Daemon` is the gRPC host
+- REST/HTTP routes are available under `/api`
+- gRPC routes are available under `/csharpdb.rpc.CSharpDbRpc/*`
+- both transports share the same daemon-hosted database client and cache
 
-If you want HTTP/JSON routes under `/api/...`, use `CSharpDB.Api`.
-
-If you want the `CSharpDB.Client` remote transport over gRPC, use
-`CSharpDB.Daemon`.
+The standalone [`CSharpDB.Api`](../CSharpDB.Api/README.md) host remains
+supported for existing REST-only deployments. Use the daemon when REST and gRPC
+clients should share one warm database instance.
 
 ## Transport Guidance
 
@@ -85,11 +89,16 @@ Use transports as follows:
 
 - `Direct`: fastest overall when the caller can open the database locally in the same process space; this bypasses the daemon entirely
 - `Grpc`: recommended remote transport and the fastest supported network transport in the current codebase
-- `Http`: use [`CSharpDB.Api`](../CSharpDB.Api/README.md) when you need REST/JSON routes rather than the client RPC contract
+- `Http`: use the daemon for REST/JSON routes that should share the daemon database instance, or use [`CSharpDB.Api`](../CSharpDB.Api/README.md) for standalone REST-only hosting
 - `NamedPipes`: reserved in transport enums and parsers, but not implemented end to end today
 
-For remote access to a daemon on another machine, use `Grpc` with a normal base
-address such as:
+When `Transport = Grpc` connects to a plain `http://` daemon endpoint,
+`CSharpDB.Client` uses gRPC-Web compatibility so gRPC and REST can share the
+default HTTP service URL. HTTPS endpoints and custom gRPC test clients can still
+use native gRPC.
+
+For remote access to a daemon on another machine, use `Grpc` or `Http` with a
+normal base address such as:
 
 ```text
 http://db-host:5820
@@ -109,10 +118,11 @@ For best remote performance:
 ## Requirements
 
 - .NET SDK 10.0 or newer to build from source
+- no .NET SDK requirement when using the self-contained release archives
 - a filesystem location where the daemon can create and update:
   - `*.db`
   - `*.wal`
-- an HTTP/2-capable path between client and daemon
+- an HTTP/2-capable path between client and daemon when using native gRPC
 
 For local development, plain `http://localhost:...` is enough.
 
@@ -125,6 +135,7 @@ The daemon reads the database path plus a small daemon-only host database
 section:
 
 - `ConnectionStrings:CSharpDB`
+- `CSharpDB:Daemon:EnableRestApi`
 - `CSharpDB:HostDatabase:OpenMode`
 - `CSharpDB:HostDatabase:ImplicitInsertExecutionMode`
 - `CSharpDB:HostDatabase:UseWriteOptimizedPreset`
@@ -142,6 +153,9 @@ Default [`appsettings.json`](./appsettings.json):
     "CSharpDB": "Data Source=csharpdb.db"
   },
   "CSharpDB": {
+    "Daemon": {
+      "EnableRestApi": true
+    },
     "HostDatabase": {
       "OpenMode": "HybridIncrementalDurable",
       "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
@@ -161,6 +175,7 @@ Data Source=csharpdb.db
 
 Current daemon defaults:
 
+- `EnableRestApi = true`
 - `OpenMode = HybridIncrementalDurable`
 - `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
 - `UseWriteOptimizedPreset = true`
@@ -171,6 +186,7 @@ Useful overrides:
 
 ```powershell
 $env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
+$env:CSharpDB__Daemon__EnableRestApi = "false"
 $env:CSharpDB__HostDatabase__OpenMode = "Direct"
 $env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "Serialized"
 $env:CSharpDB__HostDatabase__HotTableNames__0 = "users"
@@ -182,6 +198,7 @@ Linux/macOS shell:
 
 ```bash
 export ConnectionStrings__CSharpDB="Data Source=/var/lib/csharpdb/app.db"
+export CSharpDB__Daemon__EnableRestApi="false"
 export CSharpDB__HostDatabase__OpenMode="Direct"
 export CSharpDB__HostDatabase__ImplicitInsertExecutionMode="Serialized"
 export CSharpDB__HostDatabase__HotTableNames__0="users"
@@ -192,7 +209,9 @@ export ASPNETCORE_URLS="http://0.0.0.0:5820"
 `OpenMode=HybridIncrementalDurable` is the default and recommended daemon
 shape. Use `Direct` only when you want the host to open the backing file
 without the lazy-resident hybrid cache. `HotTableNames` and
-`HotCollectionNames` are optional hybrid-only preload hints.
+`HotCollectionNames` are optional hybrid-only preload hints. Set
+`CSharpDB:Daemon:EnableRestApi=false` only when the daemon should expose gRPC
+without the REST `/api` surface.
 
 ## Local Development
 
@@ -220,7 +239,7 @@ scripts documented in [`scripts/README.md`](../../scripts/README.md).
 
 The intended consumer is `CSharpDB.Client`.
 
-Example:
+gRPC example:
 
 ```csharp
 using CSharpDB.Client;
@@ -235,11 +254,26 @@ var info = await client.GetInfoAsync();
 var tables = await client.GetTableNamesAsync();
 ```
 
+HTTP/REST example against the same daemon:
+
+```csharp
+using CSharpDB.Client;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Http,
+    Endpoint = "http://localhost:5820",
+});
+
+var info = await client.GetInfoAsync();
+```
+
 Notes:
 
-- use `Transport = Grpc`
+- use `Transport = Grpc` for the generated RPC contract
+- use `Transport = Http` for REST/JSON routes under `/api`
 - set `Endpoint` to the daemon base address, not the raw RPC path
-- the client handles the generated gRPC contract internally
+- the client handles the generated gRPC and REST contracts internally
 - for remote hosts, prefer `https://...` or private-network `http://...` endpoints with long-lived client reuse
 
 ## Deployment Patterns
@@ -292,6 +326,14 @@ Self-contained Linux publish:
 dotnet publish src/CSharpDB.Daemon/CSharpDB.Daemon.csproj -c Release -r linux-x64 --self-contained true -o ./artifacts/daemon-linux-x64
 ```
 
+Release archive publish:
+
+```powershell
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime win-x64
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime linux-x64
+.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime osx-arm64
+```
+
 ### 3. Sidecar-Style Deployment
 
 Best when:
@@ -305,58 +347,155 @@ Typical pattern:
 - bind to localhost or a private container port
 - point only the colocated app at the daemon
 
+## Release Archives
+
+Tagged releases now attach self-contained daemon archives:
+
+- `csharpdb-daemon-v{version}-win-x64.zip`
+- `csharpdb-daemon-v{version}-linux-x64.tar.gz`
+- `csharpdb-daemon-v{version}-osx-arm64.tar.gz`
+- `SHA256SUMS.txt`
+
+Each archive contains the daemon executable, production-ready default config,
+this README, and service install assets under `service/`.
+
+Verify an archive before installing:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+For a maintainer/operator walkthrough that explains which scripts are part of
+the release cycle and which scripts are run after downloading an archive, see
+[`scripts/README.md`](../../scripts/README.md).
+
 ## Example Service Setup
 
-The repo does not yet ship production-ready install scripts for systemd,
-Windows Service, or launchd. Current deployment is manual.
-
-Use the following as starting points, not as final supported installers.
+The release archives include service scripts and templates. The scripts copy the
+extracted archive into an install directory, write `appsettings.Production.json`,
+configure the database path and bind URL, and register the OS service.
 
 ### Windows Service
 
-Publish first, then register the executable:
+Run from an elevated PowerShell session inside the extracted Windows archive:
 
 ```powershell
-sc.exe create CSharpDBDaemon binPath= "C:\Services\CSharpDB\CSharpDB.Daemon.exe"
-sc.exe start CSharpDBDaemon
+.\service\windows\install-csharpdb-daemon.ps1 -Start
 ```
 
-Recommended:
+Defaults:
 
-- set `ConnectionStrings__CSharpDB` as a machine or service environment value
-- run under a dedicated account with access only to the database directory
-- bind to a private address where possible
+- service name: `CSharpDBDaemon`
+- install directory: `C:\Program Files\CSharpDB\Daemon`
+- data directory: `C:\ProgramData\CSharpDB`
+- bind URL: `http://127.0.0.1:5820`
+
+Override defaults:
+
+```powershell
+.\service\windows\install-csharpdb-daemon.ps1 `
+  -ServiceName CSharpDBDaemon `
+  -InstallDirectory "C:\Services\CSharpDB" `
+  -DataDirectory "D:\Data\CSharpDB" `
+  -Url "http://0.0.0.0:5820" `
+  -Force `
+  -Start
+```
+
+Uninstall:
+
+```powershell
+.\service\windows\uninstall-csharpdb-daemon.ps1
+```
 
 ### systemd
 
-Example unit:
+Run from inside the extracted Linux archive:
 
-```ini
-[Unit]
-Description=CSharpDB gRPC Daemon
-After=network.target
+```bash
+sudo ./service/linux/install-csharpdb-daemon.sh --start
+```
 
-[Service]
-WorkingDirectory=/opt/csharpdb
-ExecStart=/opt/csharpdb/CSharpDB.Daemon
-Environment=ConnectionStrings__CSharpDB=Data Source=/var/lib/csharpdb/app.db
-Environment=ASPNETCORE_URLS=http://0.0.0.0:5820
-Restart=on-failure
-User=csharpdb
-Group=csharpdb
+Defaults:
 
-[Install]
-WantedBy=multi-user.target
+- service name: `csharpdb-daemon`
+- install directory: `/opt/csharpdb-daemon`
+- data directory: `/var/lib/csharpdb`
+- service user/group: `csharpdb`
+- bind URL: `http://127.0.0.1:5820`
+
+Override defaults:
+
+```bash
+sudo ./service/linux/install-csharpdb-daemon.sh \
+  --install-dir /srv/csharpdb-daemon \
+  --data-dir /srv/csharpdb-data \
+  --url http://0.0.0.0:5820 \
+  --force \
+  --start
+```
+
+Uninstall:
+
+```bash
+sudo ./service/linux/uninstall-csharpdb-daemon.sh
 ```
 
 ### launchd
 
-The same model applies on macOS:
+Run from inside the extracted macOS archive:
 
-- publish the daemon
-- register it with `launchd`
-- provide `ConnectionStrings__CSharpDB` and `ASPNETCORE_URLS`
-- run it as a dedicated service user where appropriate
+```bash
+sudo ./service/macos/install-csharpdb-daemon.sh --start
+```
+
+Defaults:
+
+- service label: `com.csharpdb.daemon`
+- install directory: `/usr/local/lib/csharpdb-daemon`
+- data directory: `/usr/local/var/csharpdb`
+- bind URL: `http://127.0.0.1:5820`
+
+Override defaults:
+
+```bash
+sudo ./service/macos/install-csharpdb-daemon.sh \
+  --install-dir /usr/local/lib/csharpdb-daemon \
+  --data-dir /usr/local/var/csharpdb \
+  --url http://0.0.0.0:5820 \
+  --force \
+  --start
+```
+
+Uninstall:
+
+```bash
+sudo ./service/macos/uninstall-csharpdb-daemon.sh
+```
+
+## Upgrade And Configuration
+
+To upgrade, extract the newer archive and rerun the matching install script with
+the same service name, data directory, and `--force` / `-Force`. The scripts
+replace the installed daemon files but do not delete the database directory.
+
+The generated production config keeps the current daemon defaults:
+
+- `OpenMode = HybridIncrementalDurable`
+- `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
+- `UseWriteOptimizedPreset = true`
+
+Service-level environment variables still override JSON configuration. The
+supported keys remain the standard daemon settings:
+
+- `ConnectionStrings__CSharpDB`
+- `ASPNETCORE_URLS`
+- `CSharpDB__Daemon__EnableRestApi`
+- `CSharpDB__HostDatabase__OpenMode`
+- `CSharpDB__HostDatabase__ImplicitInsertExecutionMode`
+- `CSharpDB__HostDatabase__UseWriteOptimizedPreset`
+- `CSharpDB__HostDatabase__HotTableNames__0`
+- `CSharpDB__HostDatabase__HotCollectionNames__0`
 
 ## Storage And Filesystem Notes
 
@@ -373,14 +512,17 @@ Operational guidance:
 
 ## Networking Notes
 
-gRPC requires HTTP/2 semantics.
+Native gRPC requires HTTP/2 semantics. For the default plaintext HTTP service
+URL, `CSharpDB.Client` uses gRPC-Web compatibility for `Transport = Grpc` so
+gRPC and REST can share the same base URL. REST uses ordinary HTTP semantics
+under `/api`.
 
 Practical guidance:
 
 - local development can use `http://localhost:...`
 - internal deployments should prefer private networking
 - if you place the daemon behind a proxy or ingress, make sure that proxy
-  correctly supports gRPC
+  correctly supports native gRPC or gRPC-Web, depending on the client path
 - do not expose the daemon directly to untrusted clients until authentication,
   authorization, and stronger operational controls exist
 
@@ -390,6 +532,7 @@ Current state:
 
 - startup fails early if the database cannot be opened
 - ASP.NET Core logging is available through the standard host logging pipeline
+- `/api/info` is available when REST hosting is enabled
 
 Not implemented yet in this host:
 
@@ -398,11 +541,10 @@ Not implemented yet in this host:
 - authentication
 - authorization
 - TLS-specific configuration helpers
-- admin endpoints
-- service install scripts
+- admin endpoints beyond the existing database REST API
 
 For broader future direction, see
-[`docs/service-daemon/README.md`](../../docs/service-daemon/README.md).
+[`docs/roadmap.md`](../../docs/roadmap.md).
 
 ## Troubleshooting
 
@@ -412,8 +554,13 @@ Check:
 
 - the daemon is running
 - `Endpoint` points at the daemon base address
-- `Transport = Grpc` is set in `CSharpDbClientOptions`
+- `Transport = Grpc` or `Transport = Http` is set in `CSharpDbClientOptions`
 - the bound URL in `ASPNETCORE_URLS` is reachable from the client
+
+### REST returns 404 under `/api`
+
+Check whether `CSharpDB:Daemon:EnableRestApi` or
+`CSharpDB__Daemon__EnableRestApi` has been set to `false`.
 
 ### Startup fails immediately
 
@@ -437,11 +584,13 @@ Important files:
 
 - [`Program.cs`](./Program.cs) - daemon host startup and service wiring
 - [`Grpc/CSharpDbRpcService.cs`](./Grpc/CSharpDbRpcService.cs) - gRPC server implementation
+- [`../CSharpDB.Api/CSharpDbRestApiHostExtensions.cs`](../CSharpDB.Api/CSharpDbRestApiHostExtensions.cs) - shared REST host wiring
 - [`appsettings.json`](./appsettings.json) - default configuration
 - [`../CSharpDB.Client/Protos/csharpdb_rpc.proto`](../CSharpDB.Client/Protos/csharpdb_rpc.proto) - transport contract
 
 ## Status
 
-This README documents the current daemon implementation, not the full planned
-service-daemon feature set. The broader roadmap remains in
-[`docs/service-daemon/README.md`](../../docs/service-daemon/README.md).
+This README documents the current daemon implementation, v3.4.0 service
+packaging, and v3.4.0 REST/gRPC host consolidation. Auth, TLS helpers, and
+marketplace distribution remain tracked in
+[`docs/roadmap.md`](../../docs/roadmap.md).

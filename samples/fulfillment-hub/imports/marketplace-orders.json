@@ -1,0 +1,50 @@
+[
+  {
+    "externalOrderId": "MKP-10001",
+    "customerEmail": "buyers@driftcoffee.example",
+    "customerName": "Drift Coffee",
+    "warehouseCode": "SEA-FC",
+    "orderDate": "2026-04-24",
+    "sku": "BOT-220",
+    "quantity": "4",
+    "unitPrice": "24.00",
+    "salesChannel": "marketplace",
+    "status": "ready"
+  },
+  {
+    "externalOrderId": "MKP-10001",
+    "customerEmail": "buyers@driftcoffee.example",
+    "customerName": "Drift Coffee",
+    "warehouseCode": "SEA-FC",
+    "orderDate": "2026-04-24",
+    "sku": "BOT-220",
+    "quantity": "4",
+    "unitPrice": "24.00",
+    "salesChannel": "marketplace",
+    "status": "ready"
+  },
+  {
+    "externalOrderId": "MKP-10002",
+    "customerEmail": "ops@alpineoutdoor.example",
+    "customerName": "Alpine Outdoor",
+    "warehouseCode": "SEA-FC",
+    "orderDate": "2026-04-24",
+    "sku": "TRJ-100",
+    "quantity": "2",
+    "unitPrice": "89.00",
+    "salesChannel": "marketplace",
+    "status": "ready"
+  },
+  {
+    "externalOrderId": "MKP-10003",
+    "customerEmail": "warehouse@cedarrobotics.example",
+    "customerName": "Cedar Robotics",
+    "warehouseCode": "ATL-RTN",
+    "orderDate": "2026-04-24",
+    "sku": "CCS-810",
+    "quantity": "1",
+    "unitPrice": "48.30",
+    "salesChannel": "marketplace",
+    "status": "hold"
+  }
+]

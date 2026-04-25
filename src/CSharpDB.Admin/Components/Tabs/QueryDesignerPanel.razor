@@ -338,13 +338,20 @@
     } @* end grid @if *@
 
     @* ─── SQL Preview ─── *@
-    <div class="designer-sql-preview">
+    <div class="designer-sql-preview" style="height:@(_sqlPreviewHeightPx)px" @ref="_sqlPreviewRef">
         <pre>@GeneratedSql</pre>
     </div>
 
     @* ─── Results section ─── *@
     @if (_runError is not null || _lastRunSql is not null)
     {
+        @if (!_resultsCollapsed)
+        {
+            <div class="designer-preview-splitter"
+                 title="Resize SQL preview"
+                 @onmousedown="StartSqlPreviewResizeAsync"
+                 @onmousedown:preventDefault></div>
+        }
         <div class="designer-section-header" @onclick="() => _resultsCollapsed = !_resultsCollapsed">
             <i class="bi @(_resultsCollapsed ? "bi-chevron-right" : "bi-chevron-down")"></i>
             <span>Results</span>
@@ -408,6 +415,7 @@
 
     // Canvas splitter
     private int _canvasHeightPx = 300;
+    private int _sqlPreviewHeightPx = 132;
 
     private string? _runError;
     private string? _lastRunSql;
@@ -417,6 +425,7 @@
     // JS interop
     private DotNetObjectReference<QueryDesignerPanel>? _dotNetRef;
     private ElementReference _canvasRef;
+    private ElementReference _sqlPreviewRef;
 
     // ── Lifecycle ──────────────────────────────────────────────────
 
@@ -430,6 +439,16 @@
                 if (loaded is not null) _state = NormalizeState(loaded);
             }
             catch { }
+        }
+
+        if (Tab?.State.TryGetValue("QueryDesignerSqlPreviewHeightPx", out var previewHeight) == true)
+        {
+            if (previewHeight is int intValue)
+                _sqlPreviewHeightPx = NormalizeSqlPreviewHeight(intValue);
+            else if (previewHeight is long longValue && longValue is >= int.MinValue and <= int.MaxValue)
+                _sqlPreviewHeightPx = NormalizeSqlPreviewHeight((int)longValue);
+            else if (previewHeight is string stringValue && int.TryParse(stringValue, out var parsed))
+                _sqlPreviewHeightPx = NormalizeSqlPreviewHeight(parsed);
         }
     }
 
@@ -758,6 +777,35 @@
         _canvasHeightPx = Math.Max(100, Math.Min(800, newHeight));
         InvokeAsync(StateHasChanged);
     }
+
+    private async Task StartSqlPreviewResizeAsync(MouseEventArgs e)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "designerInterop.startPreviewSplitterDrag",
+                new { clientY = e.ClientY },
+                _sqlPreviewRef,
+                _dotNetRef,
+                _sqlPreviewHeightPx);
+        }
+        catch
+        {
+        }
+    }
+
+    [JSInvokable]
+    public void OnSqlPreviewHeightMoved(int newHeight)
+    {
+        _sqlPreviewHeightPx = NormalizeSqlPreviewHeight(newHeight);
+        if (Tab is not null)
+            Tab.State["QueryDesignerSqlPreviewHeightPx"] = _sqlPreviewHeightPx;
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    private static int NormalizeSqlPreviewHeight(int height)
+        => Math.Max(96, Math.Min(320, height));
 
     // ── Helpers ────────────────────────────────────────────────────
 

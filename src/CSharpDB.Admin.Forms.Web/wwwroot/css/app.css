@@ -1,0 +1,174 @@
+html,
+body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: #f3f5f7;
+    color: #16202a;
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+    min-height: 100vh;
+}
+
+a {
+    color: inherit;
+}
+
+code {
+    font-family: "JetBrains Mono", Consolas, monospace;
+    font-size: 0.92em;
+}
+
+.forms-home {
+    min-height: 100vh;
+    box-sizing: border-box;
+    padding: 28px 32px 40px;
+}
+
+.forms-home__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.forms-home__header h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 600;
+    color: #101820;
+}
+
+.forms-home__header p {
+    margin: 6px 0 0;
+    color: #51606f;
+    font-size: 14px;
+}
+
+.forms-home__intro {
+    max-width: 880px;
+    margin-bottom: 20px;
+    color: #334454;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.forms-home__summary {
+    margin-bottom: 10px;
+    color: #51606f;
+    font-size: 13px;
+}
+
+.forms-home__state {
+    padding: 16px 18px;
+    border: 1px solid #d4dbe3;
+    background: #fff;
+    color: #334454;
+    font-size: 14px;
+}
+
+.forms-home__state--error {
+    border-color: #e2b3b3;
+    color: #8b2f2f;
+    background: #fff7f7;
+}
+
+.forms-home__action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    padding: 0 12px;
+    border: 1px solid #b9c6d3;
+    border-radius: 6px;
+    background: #fff;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    color: #16202a;
+}
+
+.forms-home__action:hover {
+    background: #eef3f8;
+}
+
+.forms-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    border: 1px solid #d4dbe3;
+}
+
+.forms-table th,
+.forms-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid #e6ebf1;
+    text-align: left;
+    vertical-align: middle;
+    font-size: 14px;
+}
+
+.forms-table th {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #5a6876;
+    background: #f7f9fb;
+}
+
+.forms-table tbody tr:hover {
+    background: #fafcff;
+}
+
+.forms-table__actions {
+    width: 1%;
+    white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+    .forms-home {
+        padding: 18px 18px 28px;
+    }
+
+    .forms-home__header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .forms-table,
+    .forms-table thead,
+    .forms-table tbody,
+    .forms-table tr,
+    .forms-table th,
+    .forms-table td {
+        display: block;
+    }
+
+    .forms-table thead {
+        display: none;
+    }
+
+    .forms-table tr {
+        border-bottom: 1px solid #e6ebf1;
+    }
+
+    .forms-table td {
+        border-bottom: none;
+        padding: 8px 12px;
+    }
+
+    .forms-table td::before {
+        content: attr(data-label);
+        display: block;
+        margin-bottom: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #5a6876;
+    }
+}

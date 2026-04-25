@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{SERVICE_NAME}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{INSTALL_DIR}}/CSharpDB.Daemon</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{{INSTALL_DIR}}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DOTNET_ENVIRONMENT</key>
+    <string>Production</string>
+    <key>ASPNETCORE_ENVIRONMENT</key>
+    <string>Production</string>
+    <key>ASPNETCORE_URLS</key>
+    <string>{{URL}}</string>
+    <key>ConnectionStrings__CSharpDB</key>
+    <string>Data Source={{DATABASE_PATH}}</string>
+    <key>CSharpDB__Daemon__EnableRestApi</key>
+    <string>true</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{{LOG_DIR}}/csharpdb-daemon.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG_DIR}}/csharpdb-daemon.err.log</string>
+</dict>
+</plist>

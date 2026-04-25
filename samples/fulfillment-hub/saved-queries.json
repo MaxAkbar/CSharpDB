@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Open Order Queue",
+    "sqlText": "SELECT order_id, order_number, customer_name, warehouse_code, order_date, required_ship_date, order_status, priority_code, is_expedited, total_amount\nFROM order_fulfillment_board\nWHERE order_status IN ('released', 'allocated', 'picking')\nORDER BY is_expedited DESC, required_ship_date, priority_code DESC, order_number;"
+  },
+  {
+    "name": "Low Stock By Warehouse",
+    "sqlText": "SELECT warehouse_code, warehouse_name, sku, product_name, supplier_name, available_qty, inbound_qty, reorder_point, shortage_qty\nFROM low_stock_watch\nWHERE shortage_qty > 0\nORDER BY warehouse_code, shortage_qty DESC, sku;"
+  },
+  {
+    "name": "Returns Awaiting Inspection",
+    "sqlText": "SELECT return_id, return_number, return_status, requested_date, received_date, customer_name, sku, product_name, warehouse_code, quantity, reason, disposition\nFROM return_queue\nWHERE return_status IN ('requested', 'received')\nORDER BY requested_date DESC, return_number;"
+  },
+  {
+    "name": "Purchase Orders Due This Week",
+    "sqlText": "SELECT purchase_order_id, po_number, supplier_name, warehouse_code, expected_date, po_status, priority_receiving, sku, ordered_qty, received_qty, outstanding_qty\nFROM purchase_order_receiving_board\nWHERE po_status IN ('open', 'partial')\n  AND expected_date <= '2026-04-30'\nORDER BY expected_date, priority_receiving DESC, po_number, sku;"
+  },
+  {
+    "name": "Shipment Exceptions",
+    "sqlText": "SELECT o.order_number, c.name AS customer_name, w.warehouse_code, o.required_ship_date, o.status AS order_status, 0 AS shipment_count, o.notes\nFROM orders o\nINNER JOIN customers c ON c.id = o.customer_id\nINNER JOIN warehouses w ON w.id = o.warehouse_id\nLEFT JOIN shipments sh ON sh.order_id = o.id\nWHERE o.status IN ('released', 'allocated', 'picking')\n  AND sh.id IS NULL\nORDER BY o.required_ship_date, o.priority_code DESC, o.order_number;"
+  }
+]

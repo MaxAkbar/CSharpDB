@@ -1,0 +1,95 @@
+{
+  "name": "supplier-receipts-import",
+  "version": "1.0.0",
+  "description": "Imports supplier receipt files into the operational receipt staging table.",
+  "source": {
+    "kind": "csvFile",
+    "path": "__SAMPLE_DIR__/imports/supplier-receipts.csv",
+    "hasHeaderRow": true
+  },
+  "transforms": [
+    {
+      "kind": "select",
+      "selectColumns": [
+        "batch_id",
+        "supplier",
+        "warehouse",
+        "sku",
+        "qty",
+        "cost",
+        "received_date",
+        "reference",
+        "status"
+      ]
+    },
+    {
+      "kind": "rename",
+      "renameMappings": [
+        {
+          "source": "batch_id",
+          "target": "receipt_batch"
+        },
+        {
+          "source": "supplier",
+          "target": "supplier_code"
+        },
+        {
+          "source": "warehouse",
+          "target": "warehouse_code"
+        },
+        {
+          "source": "qty",
+          "target": "received_qty"
+        },
+        {
+          "source": "cost",
+          "target": "unit_cost"
+        },
+        {
+          "source": "reference",
+          "target": "reference_number"
+        },
+        {
+          "source": "status",
+          "target": "ingest_status"
+        }
+      ]
+    },
+    {
+      "kind": "cast",
+      "castMappings": [
+        {
+          "column": "received_qty",
+          "targetType": "integer"
+        },
+        {
+          "column": "unit_cost",
+          "targetType": "real"
+        }
+      ]
+    },
+    {
+      "kind": "filter",
+      "filterExpression": "ingest_status == 'posted'"
+    },
+    {
+      "kind": "deduplicate",
+      "deduplicateKeys": [
+        "receipt_batch",
+        "sku",
+        "reference_number"
+      ]
+    }
+  ],
+  "destination": {
+    "kind": "cSharpDbTable",
+    "tableName": "supplier_receipts_stage",
+    "overwrite": true
+  },
+  "options": {
+    "batchSize": 100,
+    "errorMode": "skipBadRows",
+    "checkpointInterval": 50,
+    "maxRejects": 10
+  }
+}

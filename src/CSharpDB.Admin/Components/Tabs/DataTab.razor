@@ -394,6 +394,7 @@
 </div>
 
 @code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
     [Parameter] public string ObjectName { get; set; } = string.Empty;
     [Parameter] public bool IsView { get; set; }
 
@@ -443,19 +444,25 @@
 
     // ─── Confirmation state ─────────────
     private string? _confirmDrop;
+    private string? _loadedObjectName;
+    private bool? _loadedIsView;
 
     // ─── Lifecycle ──────────────────────
     protected override async Task OnParametersSetAsync()
     {
-        // Check if navigation requested schema view (e.g. clicking an index/trigger in sidebar)
-        var activeTab = TabManager.ActiveTab;
-        if (activeTab?.State.TryGetValue("ShowSchema", out var ss) == true && ss is true)
+        if (Tab?.State.TryGetValue("ShowSchema", out var ss) == true && ss is true)
         {
             _showData = false;
-            activeTab.State.Remove("ShowSchema");
+            Tab.State.Remove("ShowSchema");
         }
 
-        await LoadSchemaAsync();
+        if (!string.Equals(_loadedObjectName, ObjectName, StringComparison.Ordinal)
+            || _loadedIsView != IsView)
+        {
+            _loadedObjectName = ObjectName;
+            _loadedIsView = IsView;
+            await LoadSchemaAsync();
+        }
     }
 
     private async Task LoadSchemaAsync()

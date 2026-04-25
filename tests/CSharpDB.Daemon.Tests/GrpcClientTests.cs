@@ -171,6 +171,82 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Daemon_RestApi_IsServedByDefault()
+    {
+        using var transportClient = CreateHttpTransportClient();
+        await using var client = CreateHttpClient(transportClient);
+
+        DatabaseInfo info = await client.GetInfoAsync(Ct);
+
+        Assert.Equal(Path.GetFullPath(_dbPath), info.DataSource);
+    }
+
+    [Fact]
+    public async Task Daemon_RestAndGrpcClients_ShareHostedDatabaseState()
+    {
+        using var grpcTransportClient = CreateGrpcHttpClient();
+        await using var grpcClient = CreateGrpcClient(grpcTransportClient);
+
+        using var httpTransportClient = CreateHttpTransportClient();
+        await using var httpClient = CreateHttpClient(httpTransportClient);
+
+        SqlExecutionResult createResult = await grpcClient.ExecuteSqlAsync(
+            "CREATE TABLE daemon_shared_users (id INTEGER PRIMARY KEY, name TEXT)",
+            Ct);
+        Assert.Null(createResult.Error);
+
+        await grpcClient.InsertRowAsync(
+            "daemon_shared_users",
+            new Dictionary<string, object?> { ["id"] = 1L, ["name"] = "grpc" },
+            Ct);
+
+        Dictionary<string, object?>? grpcRowFromRest = await httpClient.GetRowByPkAsync(
+            "daemon_shared_users",
+            "id",
+            1L,
+            Ct);
+        Assert.NotNull(grpcRowFromRest);
+        Assert.Equal("grpc", Assert.IsType<string>(grpcRowFromRest!["name"]));
+
+        await httpClient.InsertRowAsync(
+            "daemon_shared_users",
+            new Dictionary<string, object?> { ["id"] = 2L, ["name"] = "rest" },
+            Ct);
+
+        Dictionary<string, object?>? restRowFromGrpc = await grpcClient.GetRowByPkAsync(
+            "daemon_shared_users",
+            "id",
+            2L,
+            Ct);
+        Assert.NotNull(restRowFromGrpc);
+        Assert.Equal("rest", Assert.IsType<string>(restRowFromGrpc!["name"]));
+
+        Assert.Equal(2, await grpcClient.GetRowCountAsync("daemon_shared_users", Ct));
+    }
+
+    [Fact]
+    public async Task Daemon_RestApiCanBeDisabledWithoutDisablingGrpc()
+    {
+        using var factory = new TestDaemonFactory(
+            _dbPath,
+            new Dictionary<string, string?>
+            {
+                ["CSharpDB:Daemon:EnableRestApi"] = "false",
+            });
+
+        using var httpClient = factory.CreateClient();
+        using HttpResponseMessage restResponse = await httpClient.GetAsync("/api/info", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, restResponse.StatusCode);
+
+        using var grpcTransportClient = CreateGrpcHttpClient(factory);
+        await using var grpcClient = CreateGrpcClient(grpcTransportClient);
+
+        DatabaseInfo info = await grpcClient.GetInfoAsync(Ct);
+        Assert.Equal(Path.GetFullPath(_dbPath), info.DataSource);
+    }
+
+    [Fact]
     public async Task GrpcClient_Collections_RoundTripNestedDocuments()
     {
         using var transportClient = CreateGrpcHttpClient();
@@ -519,6 +595,12 @@ public sealed class GrpcClientTests : IAsyncLifetime
     private HttpClient CreateGrpcHttpClient()
         => CreateGrpcHttpClient(_factory);
 
+    private HttpClient CreateHttpTransportClient()
+        => _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://localhost"),
+        });
+
     private static HttpClient CreateGrpcHttpClient(TestDaemonFactory factory)
     {
         return new HttpClient(factory.Server.CreateHandler())
@@ -528,6 +610,14 @@ public sealed class GrpcClientTests : IAsyncLifetime
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact,
         };
     }
+
+    private static ICSharpDbClient CreateHttpClient(HttpClient transportClient)
+        => CSharpDbClient.Create(new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Http,
+            Endpoint = "http://localhost",
+            HttpClient = transportClient,
+        });
 
     private static DaemonHostDatabaseOptions GetResolvedHostDatabaseOptions(TestDaemonFactory factory)
         => factory.Services.GetRequiredService<DaemonHostDatabaseOptions>();

@@ -1,0 +1,195 @@
+[
+  {
+    "name": "AllocateOrder",
+    "bodySql": "UPDATE inventory_positions\nSET allocated_qty = allocated_qty + (\n    SELECT SUM(ol.ordered_qty - ol.allocated_qty)\n    FROM order_lines ol\n    INNER JOIN orders o ON o.id = ol.order_id\n    WHERE ol.order_id = @orderId\n      AND o.warehouse_id = inventory_positions.warehouse_id\n      AND ol.product_id = inventory_positions.product_id\n      AND ol.ordered_qty > ol.allocated_qty\n)\nWHERE EXISTS (\n    SELECT 1\n    FROM order_lines ol\n    INNER JOIN orders o ON o.id = ol.order_id\n    WHERE ol.order_id = @orderId\n      AND o.warehouse_id = inventory_positions.warehouse_id\n      AND ol.product_id = inventory_positions.product_id\n      AND ol.ordered_qty > ol.allocated_qty\n);\nUPDATE order_lines\nSET allocated_qty = ordered_qty\nWHERE order_id = @orderId;\nUPDATE orders\nSET status = 'allocated',\n    notes = @note\nWHERE id = @orderId;\nINSERT INTO ops_events (entity_type, entity_id, event_type, event_date, actor_name, details)\nVALUES ('order', @orderId, 'allocated', @allocatedDate, @allocatedBy, @note);\nSELECT *\nFROM order_fulfillment_board\nWHERE order_id = @orderId;\nSELECT sku, product_name, available_qty, shortage_qty\nFROM low_stock_watch\nWHERE warehouse_id = (\n    SELECT warehouse_id\n    FROM orders\n    WHERE id = @orderId\n)\nORDER BY shortage_qty DESC, sku;",
+    "parameters": [
+      {
+        "name": "orderId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Sales order identifier."
+      },
+      {
+        "name": "allocatedDate",
+        "type": "TEXT",
+        "required": false,
+        "default": "2026-04-24",
+        "description": "Allocation date (YYYY-MM-DD)."
+      },
+      {
+        "name": "allocatedBy",
+        "type": "TEXT",
+        "required": false,
+        "default": "Wave Planner",
+        "description": "Planner or automation actor."
+      },
+      {
+        "name": "note",
+        "type": "TEXT",
+        "required": false,
+        "default": "Allocation released from Fulfillment Hub sample procedure.",
+        "description": "Operational note written back to the order."
+      }
+    ],
+    "description": "Allocates all unallocated order lines for one sales order, updates inventory reservations, and returns the refreshed order plus low-stock watch rows for the warehouse.",
+    "isEnabled": true
+  },
+  {
+    "name": "ReceivePurchaseOrder",
+    "bodySql": "UPDATE inventory_positions\nSET on_hand_qty = on_hand_qty + (\n        SELECT SUM(pol.ordered_qty - pol.received_qty)\n        FROM purchase_order_lines pol\n        INNER JOIN purchase_orders po ON po.id = pol.purchase_order_id\n        WHERE pol.purchase_order_id = @purchaseOrderId\n          AND po.warehouse_id = inventory_positions.warehouse_id\n          AND pol.product_id = inventory_positions.product_id\n    ),\n    inbound_qty = inbound_qty - (\n        SELECT SUM(pol.ordered_qty - pol.received_qty)\n        FROM purchase_order_lines pol\n        INNER JOIN purchase_orders po ON po.id = pol.purchase_order_id\n        WHERE pol.purchase_order_id = @purchaseOrderId\n          AND po.warehouse_id = inventory_positions.warehouse_id\n          AND pol.product_id = inventory_positions.product_id\n    )\nWHERE EXISTS (\n    SELECT 1\n    FROM purchase_order_lines pol\n    INNER JOIN purchase_orders po ON po.id = pol.purchase_order_id\n    WHERE pol.purchase_order_id = @purchaseOrderId\n      AND po.warehouse_id = inventory_positions.warehouse_id\n      AND pol.product_id = inventory_positions.product_id\n      AND pol.ordered_qty > pol.received_qty\n);\nUPDATE purchase_order_lines\nSET received_qty = ordered_qty\nWHERE purchase_order_id = @purchaseOrderId;\nUPDATE purchase_orders\nSET status = 'received',\n    notes = @note\nWHERE id = @purchaseOrderId;\nINSERT INTO ops_events (entity_type, entity_id, event_type, event_date, actor_name, details)\nVALUES ('purchase_order', @purchaseOrderId, 'received', @receivedDate, @receivedBy, @note);\nSELECT *\nFROM purchase_order_receiving_board\nWHERE purchase_order_id = @purchaseOrderId\nORDER BY sku;\nSELECT *\nFROM low_stock_watch\nWHERE warehouse_id = (\n    SELECT warehouse_id\n    FROM purchase_orders\n    WHERE id = @purchaseOrderId\n)\nORDER BY shortage_qty DESC, sku;",
+    "parameters": [
+      {
+        "name": "purchaseOrderId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Purchase order identifier."
+      },
+      {
+        "name": "receivedDate",
+        "type": "TEXT",
+        "required": false,
+        "default": "2026-04-24",
+        "description": "Receipt date (YYYY-MM-DD)."
+      },
+      {
+        "name": "receivedBy",
+        "type": "TEXT",
+        "required": false,
+        "default": "Receiving Desk",
+        "description": "Receiving actor recorded in ops events."
+      },
+      {
+        "name": "note",
+        "type": "TEXT",
+        "required": false,
+        "default": "Purchase order fully received from sample procedure.",
+        "description": "Operational note written back to the purchase order."
+      }
+    ],
+    "description": "Receives all outstanding quantities for a purchase order, moves inbound stock into on-hand inventory, and returns the refreshed receiving board plus warehouse shortage rows.",
+    "isEnabled": true
+  },
+  {
+    "name": "CreateShipment",
+    "bodySql": "INSERT INTO shipments (\n    id,\n    shipment_number,\n    order_id,\n    carrier_id,\n    warehouse_id,\n    shipped_date,\n    status,\n    tracking_number,\n    picked_by,\n    packed_by\n)\nSELECT\n    @shipmentId,\n    @shipmentNumber,\n    o.id,\n    @carrierId,\n    o.warehouse_id,\n    @shippedDate,\n    'shipped',\n    @trackingNumber,\n    @pickedBy,\n    @packedBy\nFROM orders o\nWHERE o.id = @orderId;\nINSERT INTO shipment_lines (shipment_id, order_line_id, product_id, quantity_shipped, line_total)\nSELECT\n    @shipmentId,\n    ol.id,\n    ol.product_id,\n    ol.allocated_qty - ol.shipped_qty,\n    (ol.allocated_qty - ol.shipped_qty) * ol.unit_price\nFROM order_lines ol\nWHERE ol.order_id = @orderId\n  AND ol.allocated_qty > ol.shipped_qty;\nUPDATE inventory_positions\nSET on_hand_qty = on_hand_qty - (\n        SELECT SUM(ol.allocated_qty - ol.shipped_qty)\n        FROM order_lines ol\n        INNER JOIN orders o ON o.id = ol.order_id\n        WHERE ol.order_id = @orderId\n          AND o.warehouse_id = inventory_positions.warehouse_id\n          AND ol.product_id = inventory_positions.product_id\n    ),\n    allocated_qty = allocated_qty - (\n        SELECT SUM(ol.allocated_qty - ol.shipped_qty)\n        FROM order_lines ol\n        INNER JOIN orders o ON o.id = ol.order_id\n        WHERE ol.order_id = @orderId\n          AND o.warehouse_id = inventory_positions.warehouse_id\n          AND ol.product_id = inventory_positions.product_id\n    )\nWHERE EXISTS (\n    SELECT 1\n    FROM order_lines ol\n    INNER JOIN orders o ON o.id = ol.order_id\n    WHERE ol.order_id = @orderId\n      AND o.warehouse_id = inventory_positions.warehouse_id\n      AND ol.product_id = inventory_positions.product_id\n      AND ol.allocated_qty > ol.shipped_qty\n);\nUPDATE order_lines\nSET shipped_qty = allocated_qty\nWHERE order_id = @orderId;\nUPDATE orders\nSET status = 'shipped',\n    notes = @note\nWHERE id = @orderId;\nSELECT *\nFROM shipment_manifest_report_source\nWHERE shipment_id = @shipmentId\nORDER BY sku;\nSELECT *\nFROM order_fulfillment_board\nWHERE order_id = @orderId;",
+    "parameters": [
+      {
+        "name": "orderId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Sales order identifier."
+      },
+      {
+        "name": "shipmentId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Shipment identifier to create."
+      },
+      {
+        "name": "shipmentNumber",
+        "type": "TEXT",
+        "required": true,
+        "description": "Shipment number."
+      },
+      {
+        "name": "carrierId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Carrier identifier."
+      },
+      {
+        "name": "shippedDate",
+        "type": "TEXT",
+        "required": false,
+        "default": "2026-04-24",
+        "description": "Ship date (YYYY-MM-DD)."
+      },
+      {
+        "name": "trackingNumber",
+        "type": "TEXT",
+        "required": false,
+        "default": "TRACK-SAMPLE-001",
+        "description": "Carrier tracking number."
+      },
+      {
+        "name": "pickedBy",
+        "type": "TEXT",
+        "required": false,
+        "default": "Wave Picker",
+        "description": "Picker name."
+      },
+      {
+        "name": "packedBy",
+        "type": "TEXT",
+        "required": false,
+        "default": "Pack Station 4",
+        "description": "Packer name."
+      },
+      {
+        "name": "note",
+        "type": "TEXT",
+        "required": false,
+        "default": "Shipment created from Fulfillment Hub sample procedure.",
+        "description": "Operational note written back to the sales order."
+      }
+    ],
+    "description": "Creates a shipment for one order, copies all remaining allocated lines into shipment lines, consumes reserved inventory, and returns the manifest rows plus refreshed order status.",
+    "isEnabled": true
+  },
+  {
+    "name": "RecordReturn",
+    "bodySql": "UPDATE returns\nSET status = @newStatus,\n    disposition = @disposition,\n    received_date = @processedDate,\n    notes = @note\nWHERE id = @returnId;\nUPDATE inventory_positions\nSET on_hand_qty = on_hand_qty + (\n    SELECT quantity\n    FROM returns r\n    WHERE r.id = @returnId\n      AND r.warehouse_id = inventory_positions.warehouse_id\n      AND r.product_id = inventory_positions.product_id\n      AND @disposition = 'restock'\n)\nWHERE EXISTS (\n    SELECT 1\n    FROM returns r\n    WHERE r.id = @returnId\n      AND r.warehouse_id = inventory_positions.warehouse_id\n      AND r.product_id = inventory_positions.product_id\n      AND @disposition = 'restock'\n);\nINSERT INTO ops_events (entity_type, entity_id, event_type, event_date, actor_name, details)\nVALUES ('return', @returnId, 'processed', @processedDate, @processedBy, @note);\nSELECT *\nFROM return_queue\nWHERE return_id = @returnId;\nSELECT *\nFROM low_stock_watch\nWHERE product_id = (\n    SELECT product_id\n    FROM returns\n    WHERE id = @returnId\n)\nORDER BY warehouse_code;",
+    "parameters": [
+      {
+        "name": "returnId",
+        "type": "INTEGER",
+        "required": true,
+        "description": "Return identifier."
+      },
+      {
+        "name": "newStatus",
+        "type": "TEXT",
+        "required": false,
+        "default": "closed",
+        "description": "Updated return status."
+      },
+      {
+        "name": "disposition",
+        "type": "TEXT",
+        "required": false,
+        "default": "restock",
+        "description": "Disposition such as restock, inspect, or scrap."
+      },
+      {
+        "name": "processedDate",
+        "type": "TEXT",
+        "required": false,
+        "default": "2026-04-24",
+        "description": "Processing date (YYYY-MM-DD)."
+      },
+      {
+        "name": "processedBy",
+        "type": "TEXT",
+        "required": false,
+        "default": "Returns Desk",
+        "description": "Return processor."
+      },
+      {
+        "name": "note",
+        "type": "TEXT",
+        "required": false,
+        "default": "Return processed from Fulfillment Hub sample procedure.",
+        "description": "Operational note written back to the return."
+      }
+    ],
+    "description": "Processes one return, optionally restocks inventory when the disposition is restock, and returns the refreshed return queue row plus product shortage rows.",
+    "isEnabled": true
+  },
+  {
+    "name": "RefreshOperationalStats",
+    "bodySql": "SELECT table_name, row_count, row_count_is_exact, has_stale_columns\nFROM sys.table_stats\nORDER BY row_count DESC, table_name;\nSELECT warehouse_code, sku, product_name, available_qty, inbound_qty, reorder_point, shortage_qty\nFROM low_stock_watch\nWHERE shortage_qty > 0\nORDER BY shortage_qty DESC, warehouse_code, sku;\nSELECT order_number, customer_name, warehouse_code, order_status, priority_code, total_amount\nFROM order_fulfillment_board\nORDER BY required_ship_date, priority_code DESC, order_number;",
+    "parameters": [],
+    "description": "Returns table stats, shortage watch rows, and the live order fulfillment board for planner review.",
+    "isEnabled": true
+  }
+]
