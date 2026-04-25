@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Fulfillment Hub: A Guided CSharpDB Sample &mdash; Blog &mdash; CSharpDB</title>
+    <meta name="description" content="Set up the Fulfillment Hub sample, seed a working CSharpDB database, and explore its tables, forms, reports, procedures, pipelines, collections, and full-text index through CSharpDB Admin.">
+    <link rel="canonical" href="https://csharpdb.com/blog/fulfillment-hub-sample-walkthrough.html">
+    <meta property="og:title" content="Fulfillment Hub: A Guided CSharpDB Sample">
+    <meta property="og:description" content="Set up the Fulfillment Hub sample, seed a working CSharpDB database, and explore its tables, forms, reports, procedures, pipelines, collections, and full-text index through CSharpDB Admin.">
+    <meta property="og:url" content="https://csharpdb.com/blog/fulfillment-hub-sample-walkthrough.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Fulfillment Hub: A Guided CSharpDB Sample",
+        "description": "Set up the Fulfillment Hub sample, seed a working CSharpDB database, and explore its tables, forms, reports, procedures, pipelines, collections, and full-text index through CSharpDB Admin.",
+        "url": "https://csharpdb.com/blog/fulfillment-hub-sample-walkthrough.html",
+        "datePublished": "2026-04-25",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 {
+            margin-top: 48px;
+            margin-bottom: 16px;
+        }
+        .blog-post-content h3 {
+            margin-top: 32px;
+            margin-bottom: 12px;
+        }
+        .blog-post-content p {
+            margin-bottom: 16px;
+        }
+        .blog-post-content ul,
+        .blog-post-content ol {
+            margin: 0 0 18px 1.25rem;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+        .blog-post-content li {
+            margin-bottom: 8px;
+        }
+        .blog-post-content .code-block {
+            margin: 20px 0 24px;
+        }
+        .walkthrough-callout {
+            margin: 24px 0;
+            padding: 18px 20px;
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-md);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+        }
+        .walkthrough-callout strong {
+            color: var(--text-primary);
+        }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Fulfillment Hub: A Guided CSharpDB Sample',
+        description: 'Set up the Fulfillment Hub sample, seed a working CSharpDB database, and explore its tables, forms, reports, procedures, pipelines, collections, and full-text index through CSharpDB Admin.',
+        keywords: 'CSharpDB sample, Fulfillment Hub, CSharpDB Admin, CSharpDB forms, CSharpDB reports, CSharpDB pipelines, .NET database sample',
+        canonicalPath: 'blog/fulfillment-hub-sample-walkthrough.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 900px; margin: 0 auto;">
+                <h1>Fulfillment Hub: A Guided CSharpDB Sample</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Sample</span>
+                    <span>April 25, 2026</span>
+                    <span>&middot; 8 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>Most database samples are too small to teach much. A todo list can show inserts and queries, but it does not show what happens when a real application needs forms, reports, imports, exports, operational procedures, search, and semi-structured event data.</p>
+                    <p><code>samples/fulfillment-hub</code> is designed to be the opposite. It gives you a small warehouse and order-fulfillment system with one working database and enough moving parts to see how CSharpDB features fit together.</p>
+
+                    <div class="walkthrough-callout">
+                        <strong>Goal:</strong> run the sample seeder, open the generated database in CSharpDB Admin, then walk through the same database as an operator using tables, views, forms, reports, procedures, saved queries, pipelines, collections, and full-text search.
+                    </div>
+
+                    <h2>What the Sample Creates</h2>
+                    <p>Running the sample creates a fresh <code>fulfillment-hub-demo.db</code> database. The seeder loads more than SQL schema; it also stores the metadata-driven parts that Admin can run later.</p>
+                    <ul>
+                        <li>Relational tables for customers, products, inventory, orders, purchase orders, shipments, returns, carriers, suppliers, and audit events.</li>
+                        <li>Views such as <code>order_fulfillment_board</code>, <code>low_stock_watch</code>, <code>purchase_order_receiving_board</code>, and <code>shipment_manifest_report_source</code>.</li>
+                        <li>Stored procedures for allocation, receiving, shipment creation, returns, and operational stats.</li>
+                        <li>Admin forms for order work, purchase-order receiving, and return intake.</li>
+                        <li>Admin reports for the open order queue, low-stock watch, and shipment manifest.</li>
+                        <li>Stored pipeline packages for CSV import, JSON import, and low-stock export.</li>
+                        <li>Typed collections for scanner sessions and webhook archives.</li>
+                        <li>A full-text index over operational playbooks.</li>
+                    </ul>
+
+                    <h2>Step 1: Run the Seeder</h2>
+                    <p>From the repository root, run the sample project:</p>
+                    <div class="code-block" data-title="PowerShell">
+                        <pre><code>dotnet run --project samples\fulfillment-hub\FulfillmentHubSample.csproj</code></pre>
+                    </div>
+                    <p>Each run deletes and recreates the demo database in the build output folder:</p>
+                    <div class="code-block" data-title="Generated database">
+                        <pre><code>samples\fulfillment-hub\bin\Debug\net10.0\fulfillment-hub-demo.db</code></pre>
+                    </div>
+                    <p>The console output should show counts for forms, reports, procedures, saved queries, stored pipelines, pipeline runs, collections, and the full-text index. It also prints a few query results so you know the database was seeded successfully.</p>
+
+                    <h2>Step 2: Start Admin Against the Sample</h2>
+                    <p>CSharpDB Admin reads its local database from <code>ConnectionStrings:CSharpDB</code>. The easiest way to point Admin at the sample is to set the connection string for this terminal session and then run the Admin project.</p>
+                    <div class="code-block" data-title="PowerShell">
+                        <pre><code><span class="kw">$sampleDb</span> = (<span class="tp">Resolve-Path</span> .\samples\fulfillment-hub\bin\Debug\net10.0\fulfillment-hub-demo.db).Path
+<span class="kw">$env:ConnectionStrings__CSharpDB</span> = <span class="str">"Data Source=$sampleDb"</span>
+<span class="kw">$env:CSharpDB__Transport</span> = <span class="str">"direct"</span>
+
+dotnet run --project src\CSharpDB.Admin\CSharpDB.Admin.csproj</code></pre>
+                    </div>
+                    <p>The development launch profile uses these URLs:</p>
+                    <ul>
+                        <li><code>https://localhost:61816</code></li>
+                        <li><code>http://localhost:61817</code></li>
+                    </ul>
+                    <p>If those ports are already busy, run without the launch profile and choose a local URL:</p>
+                    <div class="code-block" data-title="Alternate Admin URL">
+                        <pre><code>dotnet run --no-launch-profile --project src\CSharpDB.Admin\CSharpDB.Admin.csproj -- --urls http://127.0.0.1:6190</code></pre>
+                    </div>
+
+                    <h2>Step 3: Confirm You Opened the Right Database</h2>
+                    <p>When Admin opens, check the title bar and Object Explorer. You should see the Fulfillment Hub database path and a populated object tree.</p>
+                    <p>The useful signal is not just that tables exist. You should also see:</p>
+                    <ul>
+                        <li><code>Forms</code> with <code>Order Workbench</code>, <code>Purchase Order Receiving</code>, and <code>Return Intake</code>.</li>
+                        <li><code>Reports</code> with <code>Low Stock Watch</code>, <code>Open Order Queue</code>, and <code>Shipment Manifest</code>.</li>
+                        <li><code>Views</code> with operational read models such as <code>order_fulfillment_board</code> and <code>low_stock_watch</code>.</li>
+                        <li><code>Procedures</code> with <code>AllocateOrder</code>, <code>ReceivePurchaseOrder</code>, <code>CreateShipment</code>, <code>RecordReturn</code>, and <code>RefreshOperationalStats</code>.</li>
+                    </ul>
+
+                    <h2>Step 4: Start With the Order Board</h2>
+                    <p>Open a query tab in Admin and run the main operational queue:</p>
+                    <div class="code-block" data-title="Order board query">
+                        <pre><code><span class="kw">SELECT</span> order_number, customer_name, warehouse_code, order_status, required_ship_date
+<span class="kw">FROM</span> order_fulfillment_board
+<span class="kw">WHERE</span> order_status <span class="kw">IN</span> (<span class="str">'released'</span>, <span class="str">'allocated'</span>, <span class="str">'picking'</span>)
+<span class="kw">ORDER BY</span> required_ship_date, priority_code <span class="kw">DESC</span>, order_number;</code></pre>
+                    </div>
+                    <p>This is the first lesson in the sample: CSharpDB features are not isolated demos. The same order workflow is visible through a view, a saved query, a form, a report, and stored procedures.</p>
+
+                    <h2>Step 5: Use the Forms</h2>
+                    <p>Open <code>Forms</code> in the Object Explorer and start with <code>Order Workbench</code>. This form is bound to the <code>orders</code> table and includes child data for order lines.</p>
+                    <p>Then open <code>Purchase Order Receiving</code>. That form is tied to the purchase-order model and helps you inspect the same receiving data that the procedure updates.</p>
+                    <p>Finally, open <code>Return Intake</code>. It shows how reverse logistics can live beside outbound fulfillment without becoming a separate system.</p>
+
+                    <h2>Step 6: Run Operational Procedures</h2>
+                    <p>Procedures let you package multi-statement operational work. You can run them from SQL tabs with <code>EXEC</code> commands.</p>
+                    <div class="code-block" data-title="Procedure examples">
+                        <pre><code><span class="kw">EXEC</span> RefreshOperationalStats;
+
+<span class="kw">EXEC</span> ReceivePurchaseOrder purchaseOrderId=<span class="num">9001</span>;
+
+<span class="kw">EXEC</span> AllocateOrder orderId=<span class="num">7005</span>;
+
+<span class="kw">EXEC</span> CreateShipment orderId=<span class="num">7001</span>, shipmentId=<span class="num">8101</span>, shipmentNumber=<span class="str">'SHP-8101'</span>, carrierId=<span class="num">2</span>;</code></pre>
+                    </div>
+                    <p>After each procedure, rerun the related view. This is where the sample starts to feel like a small operations system: receiving changes inventory, allocation changes order state, and shipment creation produces report-ready data.</p>
+
+                    <h2>Step 7: Open the Reports</h2>
+                    <p>The sample ships with three Admin reports. They are intentionally tied to the same operational story:</p>
+                    <ul>
+                        <li><code>Open Order Queue</code> shows the work waiting on the floor.</li>
+                        <li><code>Low Stock Watch</code> shows shortage pressure by warehouse and SKU.</li>
+                        <li><code>Shipment Manifest</code> shows shipment-ready output from a report-shaped view.</li>
+                    </ul>
+                    <p>Run <code>CreateShipment</code>, then open the shipment report. That connects the procedural workflow to the reporting surface.</p>
+
+                    <h2>Step 8: Inspect Pipelines</h2>
+                    <p>The seeder stores and runs three pipeline packages:</p>
+                    <ul>
+                        <li><code>supplier-receipts-import</code> imports CSV receiving data.</li>
+                        <li><code>marketplace-orders-import</code> imports JSON marketplace orders.</li>
+                        <li><code>low-stock-export</code> exports the low-stock view to CSV.</li>
+                    </ul>
+                    <p>In Admin, open the pipeline area and inspect the stored packages and run history. Then check the generated export file:</p>
+                    <div class="code-block" data-title="Generated export">
+                        <pre><code>samples\fulfillment-hub\bin\Debug\net10.0\generated-output\low-stock-watch.csv</code></pre>
+                    </div>
+
+                    <h2>Step 9: Look at Collections and Full-Text Search</h2>
+                    <p>Fulfillment Hub also includes data that does not need to be forced into normal relational tables. The sample seeds two collections:</p>
+                    <ul>
+                        <li><code>scanner_sessions</code> for handheld scanner state.</li>
+                        <li><code>webhook_archive</code> for external event payloads.</li>
+                    </ul>
+                    <p>It also creates a full-text index called <code>fts_ops_playbooks</code> over the <code>ops_playbooks</code> table. That gives the sample a place for operational runbooks next to the live data.</p>
+                    <p>The sample project demonstrates the full-text query through the engine API:</p>
+                    <div class="code-block" data-title="Full-text search">
+                        <pre><code><span class="kw">await using var</span> db = <span class="kw">await</span> Database.OpenAsync(<span class="str">"samples/fulfillment-hub/bin/Debug/net10.0/fulfillment-hub-demo.db"</span>);
+<span class="kw">var</span> hits = <span class="kw">await</span> db.SearchAsync(<span class="str">"fts_ops_playbooks"</span>, <span class="str">"partial receipt"</span>);</code></pre>
+                    </div>
+
+                    <h2>How to Learn From the Sample</h2>
+                    <p>The best way to use Fulfillment Hub is to treat it like a live system, not a collection of files.</p>
+                    <ol>
+                        <li>Run the seeder.</li>
+                        <li>Open the generated database in Admin.</li>
+                        <li>Run one query against a view.</li>
+                        <li>Open the matching form or report.</li>
+                        <li>Run a procedure that changes the workflow.</li>
+                        <li>Reopen the view, form, and report to see what changed.</li>
+                    </ol>
+                    <p>That loop is the point of the sample. It shows how CSharpDB can hold the transactional model, the operational read models, the metadata-driven UI, the reporting layer, the integration pipelines, and supporting document-style data in one local database.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="csharpdb-admin-csharp-launcher.html">Next: CSharpDB Admin Launcher &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
