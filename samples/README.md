@@ -306,5 +306,5 @@ The `native-ffi/` folder contains wrappers and examples for calling CSharpDB fro
 
 - [Getting Started Tutorial](../docs/getting-started.md)
 - [CSharpDB.Client README](../src/CSharpDB.Client/README.md)
-- [REST API Reference](../docs/rest-api.md)
-- [CLI Reference](../docs/cli.md)
+- [REST API Reference](https://csharpdb.com/docs/rest-api.html)
+- [CLI Reference](https://csharpdb.com/docs/cli.html)

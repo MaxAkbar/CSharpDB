@@ -40,6 +40,9 @@
             <div class="doc-content full-width">
                 <h1>ETL Pipelines</h1>
                 <p class="lead">Built-in pipeline runtime for Extract-Transform-Load workflows. Define packages in JSON, validate them, serialize them, execute them in batches, and inspect run metrics.</p>
+                <div class="callout callout-info">
+                    <strong>Important naming split.</strong> This page covers product ETL pipelines. The original markdown document that had been loosely matched here described the SQL execution engine instead, and that full migrated content now lives at <a href="query-execution-pipeline.html">Query Execution Pipeline Source Reference</a>.
+                </div>
 
                 <h2>Overview</h2>
                 <p>The pipeline system connects sources to destinations through a chain of transforms. Pipelines are defined as JSON package files and executed by the <code>PipelineOrchestrator</code>. The built-in runtime supports CSV and JSON file connectors.</p>

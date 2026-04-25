@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Getting Started Source Reference — CSharpDB</title>
+    <meta name="description" content="Full migrated source reference for the original CSharpDB getting-started markdown guide.">
+    <link rel="canonical" href="https://csharpdb.com/docs/getting-started-reference.html">
+    <meta property="og:title" content="Getting Started Source Reference — CSharpDB">
+    <meta property="og:description" content="Full migrated source reference for the original CSharpDB getting-started markdown guide.">
+    <meta property="og:url" content="https://csharpdb.com/docs/getting-started-reference.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Getting Started Source Reference",
+        "description": "Full migrated source reference for the original CSharpDB getting-started markdown guide.",
+        "url": "https://csharpdb.com/docs/getting-started-reference.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Getting Started Source Reference',
+        description: 'Full migrated source reference for the original CSharpDB getting-started markdown guide.',
+        keywords: 'CSharpDB source reference, migrated markdown, archival reference',
+        canonicalPath: 'docs/getting-started-reference.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#prerequisites">Prerequisites</a></li>
+                        <li><a href="#setup">Setup</a></li>
+                        <li><a href="#1-opening-a-database">1. Opening a Database</a></li>
+                        <li><a href="#2-creating-tables">2. Creating Tables</a></li>
+                        <li><a href="#3-inserting-data">3. Inserting Data</a></li>
+                        <li><a href="#4-querying-data">4. Querying Data</a></li>
+                        <li class="toc-child"><a href="#select-all-rows">SELECT all rows</a></li>
+                        <li class="toc-child"><a href="#materialize-all-rows-at-once">Materialize all rows at once</a></li>
+                        <li class="toc-child"><a href="#where-clause">WHERE clause</a></li>
+                        <li class="toc-child"><a href="#like-pattern-matching">LIKE pattern matching</a></li>
+                        <li class="toc-child"><a href="#in-lists">IN lists</a></li>
+                        <li class="toc-child"><a href="#between-ranges">BETWEEN ranges</a></li>
+                        <li class="toc-child"><a href="#order-by">ORDER BY</a></li>
+                        <li class="toc-child"><a href="#limit-and-offset">LIMIT and OFFSET</a></li>
+                        <li class="toc-child"><a href="#select-specific-columns">Select specific columns</a></li>
+                        <li class="toc-child"><a href="#system-catalog-metadata-sys">System catalog metadata ( sys.* )</a></li>
+                        <li><a href="#5-aggregate-functions">5. Aggregate Functions</a></li>
+                        <li><a href="#6-joins">6. JOINs</a></li>
+                        <li><a href="#7-updating-rows">7. Updating Rows</a></li>
+                        <li><a href="#8-deleting-rows">8. Deleting Rows</a></li>
+                        <li><a href="#9-working-with-null">9. Working with NULL</a></li>
+                        <li><a href="#10-transactions">10. Transactions</a></li>
+                        <li class="toc-child"><a href="#rollback-example">Rollback example</a></li>
+                        <li><a href="#11-indexes">11. Indexes</a></li>
+                        <li><a href="#12-alter-table">12. ALTER TABLE</a></li>
+                        <li class="toc-child"><a href="#retrofitting-foreign-keys-onto-older-databases">Retrofitting foreign keys onto older databases</a></li>
+                        <li class="toc-child"><a href="#schema-migration-pattern-primary-key-identity-changes">Schema migration pattern (PRIMARY KEY / IDENTITY changes)</a></li>
+                        <li><a href="#13-views">13. Views</a></li>
+                        <li><a href="#14-common-table-expressions-ctes">14. Common Table Expressions (CTEs)</a></li>
+                        <li><a href="#15-triggers">15. Triggers</a></li>
+                        <li><a href="#16-concurrent-readers">16. Concurrent Readers</a></li>
+                        <li><a href="#17-dropping-tables">17. Dropping Tables</a></li>
+                        <li><a href="#18-error-handling">18. Error Handling</a></li>
+                        <li><a href="#19-using-the-ado-net-provider">19. Using the ADO.NET Provider</a></li>
+                        <li class="toc-child"><a href="#executescalar">ExecuteScalar</a></li>
+                        <li class="toc-child"><a href="#executenonquery">ExecuteNonQuery</a></li>
+                        <li class="toc-child"><a href="#transactions-via-ado-net">Transactions via ADO.NET</a></li>
+                        <li class="toc-child"><a href="#daemon-backed-ado-net">Daemon-Backed ADO.NET</a></li>
+                        <li><a href="#20-data-persistence">20. Data Persistence</a></li>
+                        <li><a href="#next-steps">Next Steps</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/getting-started.md</code>. For the shorter curated page, see <a href="getting-started.html">Getting Started</a>.</div>
+                <h1 id="getting-started-with-csharpdb">Getting Started with CSharpDB</h1>
+                <p class="lead">This tutorial walks you through using CSharpDB from opening a database to running queries and transactions.</p>
+                <h2 id="prerequisites">Prerequisites</h2>
+                <ul>
+                <li><a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10 SDK</a></li>
+                </ul>
+                <h2 id="setup">Setup</h2>
+                <p>Add a project reference to <code>CSharpDB.Engine</code> (which transitively pulls in all other projects):</p>
+                <div class="code-block" data-title="Bash"><pre><code class="language-bash">dotnet add reference path/to/src/CSharpDB.Engine/CSharpDB.Engine.csproj
+                </code></pre></div>
+                <p>Then add the using directive:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using CSharpDB.Engine;
+                </code></pre></div>
+                <hr/>
+                <h2 id="1-opening-a-database">1. Opening a Database</h2>
+                <p><code>Database.OpenAsync</code> opens an existing database file or creates a new one if it doesn't exist:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var db = await Database.OpenAsync("myapp.db");
+                </code></pre></div>
+                <p>The <code>await using</code> pattern ensures the database is properly closed when you're done. On open, if a WAL (Write-Ahead Log) file exists from a previous crash, the database automatically recovers committed data.</p>
+                <hr/>
+                <h2 id="2-creating-tables">2. Creating Tables</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync(@"
+                    CREATE TABLE products (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        price REAL,
+                        category TEXT
+                    )
+                ");
+                </code></pre></div>
+                <p>Supported column types:</p>
+                <ul>
+                <li><code>INTEGER</code> — 64-bit signed integer (<code>long</code>)</li>
+                <li><code>REAL</code> — 64-bit floating point (<code>double</code>)</li>
+                <li><code>TEXT</code> — UTF-8 string</li>
+                <li><code>BLOB</code> — raw byte array</li>
+                </ul>
+                <p>Column constraints:</p>
+                <ul>
+                <li><code>PRIMARY KEY</code> — marks the column as the primary key</li>
+                <li><code>IDENTITY</code> / <code>AUTOINCREMENT</code> — mark an <code>INTEGER PRIMARY KEY</code> as an identity column (explicit ID inserts are still allowed)</li>
+                <li><code>NOT NULL</code> — disallows NULL values</li>
+                </ul>
+                <p>Use <code>IF NOT EXISTS</code> to avoid errors when the table already exists:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("CREATE TABLE IF NOT EXISTS products (id INTEGER, name TEXT)");
+                </code></pre></div>
+                <hr/>
+                <h2 id="3-inserting-data">3. Inserting Data</h2>
+                <p>Insert with all columns:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("INSERT INTO products VALUES (1, 'Widget', 9.99, 'Hardware')");
+                await db.ExecuteAsync("INSERT INTO products VALUES (2, 'Gadget', 29.99, 'Electronics')");
+                await db.ExecuteAsync("INSERT INTO products VALUES (3, 'Doohickey', 4.99, 'Hardware')");
+                </code></pre></div>
+                <p>Insert with named columns (unspecified columns get NULL):</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("INSERT INTO products (id, name) VALUES (4, 'Thingamajig')");
+                </code></pre></div>
+                <p>The return value of <code>ExecuteAsync</code> for DML statements includes a <code>RowsAffected</code> count:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">var result = await db.ExecuteAsync("INSERT INTO products VALUES (5, 'Gizmo', 14.99, 'Electronics')");
+                Console.WriteLine($"Inserted {result.RowsAffected} row(s)"); // Inserted 1 row(s)
+                </code></pre></div>
+                <hr/>
+                <h2 id="4-querying-data">4. Querying Data</h2>
+                <h3 id="select-all-rows">SELECT all rows</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync("SELECT * FROM products");
+                
+                await foreach (var row in result.GetRowsAsync())
+                {
+                    long id = row[0].AsInteger;
+                    string name = row[1].AsText;
+                    Console.WriteLine($"  {id}: {name}");
+                }
+                </code></pre></div>
+                <blockquote>
+                <p><strong>Important:</strong> Use <code>await using</code> on SELECT results to properly dispose the underlying operator chain.</p>
+                </blockquote>
+                <h3 id="materialize-all-rows-at-once">Materialize all rows at once</h3>
+                <p>If you want all rows in a list instead of streaming:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync("SELECT * FROM products");
+                var rows = await result.ToListAsync();
+                
+                Console.WriteLine($"Got {rows.Count} products");
+                </code></pre></div>
+                <h3 id="where-clause">WHERE clause</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products WHERE price &gt; 10.0 AND category = 'Electronics'");
+                </code></pre></div>
+                <p>Supported operators in WHERE: <code>=</code>, <code>&lt;&gt;</code>, <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>AND</code>, <code>OR</code>, <code>NOT</code>, <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>LIKE</code>, <code>IN</code>, <code>BETWEEN</code>, <code>IS NULL</code>, <code>IS NOT NULL</code></p>
+                <h3 id="like-pattern-matching">LIKE pattern matching</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">// % matches any sequence, _ matches any single character
+                await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products WHERE name LIKE 'Gad%'");
+                </code></pre></div>
+                <h3 id="in-lists">IN lists</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products WHERE category IN ('Hardware', 'Electronics')");
+                </code></pre></div>
+                <h3 id="between-ranges">BETWEEN ranges</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products WHERE price BETWEEN 5.0 AND 20.0");
+                </code></pre></div>
+                <h3 id="order-by">ORDER BY</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products ORDER BY price DESC");
+                </code></pre></div>
+                <p>You can sort by multiple columns and mix <code>ASC</code>/<code>DESC</code>:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products ORDER BY category ASC, price DESC");
+                </code></pre></div>
+                <h3 id="limit-and-offset">LIMIT and OFFSET</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products ORDER BY price DESC LIMIT 3");
+                
+                // Skip the first 5, then take the next 10
+                await using var paged = await db.ExecuteAsync(
+                    "SELECT * FROM products ORDER BY id LIMIT 10 OFFSET 5");
+                </code></pre></div>
+                <h3 id="select-specific-columns">Select specific columns</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT name, price FROM products WHERE price &gt; 5.0");
+                </code></pre></div>
+                <h3 id="system-catalog-metadata-sys">System catalog metadata (<code>sys.*</code>)</h3>
+                <p>You can inspect tables, columns, indexes, foreign keys, views, triggers, and object inventory with SQL:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var tables = await db.ExecuteAsync(
+                    "SELECT table_name, column_count, primary_key_column FROM sys.tables ORDER BY table_name");
+                
+                await using var columns = await db.ExecuteAsync(
+                    "SELECT column_name, data_type, is_nullable FROM sys.columns " +
+                    "WHERE table_name = 'products' ORDER BY ordinal_position");
+                
+                await using var objects = await db.ExecuteAsync(
+                    "SELECT object_name, object_type, parent_table_name FROM sys.objects ORDER BY object_type, object_name");
+                </code></pre></div>
+                <p>Catalog sources:</p>
+                <ul>
+                <li><code>sys.tables</code></li>
+                <li><code>sys.columns</code></li>
+                <li><code>sys.indexes</code></li>
+                <li><code>sys.foreign_keys</code></li>
+                <li><code>sys.views</code></li>
+                <li><code>sys.triggers</code></li>
+                <li><code>sys.objects</code></li>
+                <li><code>sys.saved_queries</code></li>
+                </ul>
+                <p>Underscored aliases are also available (<code>sys_tables</code>, <code>sys_columns</code>, etc.).</p>
+                <hr/>
+                <h2 id="5-aggregate-functions">5. Aggregate Functions</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">// COUNT
+                await using var r1 = await db.ExecuteAsync("SELECT COUNT(*) FROM products");
+                
+                // SUM, AVG, MIN, MAX
+                await using var r2 = await db.ExecuteAsync(
+                    "SELECT category, COUNT(*), AVG(price), MIN(price), MAX(price) FROM products GROUP BY category");
+                
+                // HAVING
+                await using var r3 = await db.ExecuteAsync(
+                    "SELECT category, COUNT(*) as cnt FROM products GROUP BY category HAVING cnt &gt; 1");
+                </code></pre></div>
+                <p>Supported aggregate functions: <code>COUNT(*)</code>, <code>COUNT(col)</code>, <code>COUNT(DISTINCT col)</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code></p>
+                <hr/>
+                <h2 id="6-joins">6. JOINs</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("CREATE TABLE orders (id INTEGER, product_id INTEGER, qty INTEGER)");
+                await db.ExecuteAsync("INSERT INTO orders VALUES (1, 1, 10)");
+                await db.ExecuteAsync("INSERT INTO orders VALUES (2, 2, 5)");
+                
+                // INNER JOIN
+                await using var result = await db.ExecuteAsync(@"
+                    SELECT p.name, o.qty
+                    FROM products p
+                    INNER JOIN orders o ON p.id = o.product_id");
+                
+                // LEFT JOIN (all products, even those without orders)
+                await using var result2 = await db.ExecuteAsync(@"
+                    SELECT p.name, o.qty
+                    FROM products p
+                    LEFT JOIN orders o ON p.id = o.product_id");
+                </code></pre></div>
+                <p>Supported join types: <code>INNER JOIN</code>, <code>LEFT JOIN</code>, <code>RIGHT JOIN</code>, <code>CROSS JOIN</code></p>
+                <hr/>
+                <h2 id="7-updating-rows">7. Updating Rows</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">var result = await db.ExecuteAsync(
+                    "UPDATE products SET price = 12.99 WHERE name = 'Widget'");
+                
+                Console.WriteLine($"Updated {result.RowsAffected} row(s)");
+                </code></pre></div>
+                <p>You can update multiple columns at once:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync(
+                    "UPDATE products SET price = 19.99, category = 'Premium' WHERE id = 2");
+                </code></pre></div>
+                <hr/>
+                <h2 id="8-deleting-rows">8. Deleting Rows</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">var result = await db.ExecuteAsync("DELETE FROM products WHERE category = 'Hardware'");
+                Console.WriteLine($"Deleted {result.RowsAffected} row(s)");
+                </code></pre></div>
+                <p>Delete all rows (no WHERE clause):</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("DELETE FROM products");
+                </code></pre></div>
+                <hr/>
+                <h2 id="9-working-with-null">9. Working with NULL</h2>
+                <p>Insert a NULL value explicitly:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("INSERT INTO products VALUES (10, 'Mystery', NULL, NULL)");
+                </code></pre></div>
+                <p>Check for NULL when reading:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync("SELECT * FROM products");
+                await foreach (var row in result.GetRowsAsync())
+                {
+                    if (row[2].IsNull)
+                        Console.WriteLine($"{row[1].AsText}: no price set");
+                    else
+                        Console.WriteLine($"{row[1].AsText}: ${row[2].AsReal}");
+                }
+                </code></pre></div>
+                <p>Filter with IS NULL / IS NOT NULL:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(
+                    "SELECT * FROM products WHERE price IS NOT NULL");
+                </code></pre></div>
+                <hr/>
+                <h2 id="10-transactions">10. Transactions</h2>
+                <p>By default, each DML/DDL statement auto-commits. For multi-statement atomicity, use explicit transactions:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.BeginTransactionAsync();
+                try
+                {
+                    await db.ExecuteAsync("INSERT INTO products VALUES (20, 'Item A', 5.00, 'Batch')");
+                    await db.ExecuteAsync("INSERT INTO products VALUES (21, 'Item B', 7.50, 'Batch')");
+                    await db.ExecuteAsync("INSERT INTO products VALUES (22, 'Item C', 3.25, 'Batch')");
+                
+                    await db.CommitAsync(); // All three inserts are now durable
+                }
+                catch
+                {
+                    await db.RollbackAsync(); // None of the inserts are persisted
+                    throw;
+                }
+                </code></pre></div>
+                <p>Transactions also improve performance for bulk inserts since dirty pages are written to the WAL only once rather than per-statement.</p>
+                <h3 id="rollback-example">Rollback example</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.BeginTransactionAsync();
+                await db.ExecuteAsync("DELETE FROM products"); // All rows deleted in memory
+                await db.RollbackAsync();                      // Changes discarded — all rows restored
+                </code></pre></div>
+                <hr/>
+                <h2 id="11-indexes">11. Indexes</h2>
+                <p>Create indexes to speed up equality lookups:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">// Regular index
+                await db.ExecuteAsync("CREATE INDEX idx_category ON products (category)");
+                
+                // Unique index (enforces uniqueness)
+                await db.ExecuteAsync("CREATE UNIQUE INDEX idx_name ON products (name)");
+                </code></pre></div>
+                <p>When a WHERE clause contains <code>column = value</code> on an indexed column, the query planner automatically uses the index instead of a full table scan.</p>
+                <hr/>
+                <h2 id="12-alter-table">12. ALTER TABLE</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">// Add a column
+                await db.ExecuteAsync("ALTER TABLE products ADD COLUMN weight REAL");
+                
+                // Drop a column
+                await db.ExecuteAsync("ALTER TABLE products DROP COLUMN weight");
+                
+                // Drop a foreign key constraint by name
+                await db.ExecuteAsync("ALTER TABLE child_orders DROP CONSTRAINT fk_child_orders_parent_id_abcd1234");
+                
+                // Rename a column
+                await db.ExecuteAsync("ALTER TABLE products RENAME COLUMN category TO department");
+                
+                // Rename a table
+                await db.ExecuteAsync("ALTER TABLE products RENAME TO inventory");
+                </code></pre></div>
+                <p>Use <code>sys.foreign_keys</code> to discover generated foreign key names before dropping one:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var foreignKeys = await db.ExecuteAsync(
+                    "SELECT constraint_name, table_name, column_name FROM sys.foreign_keys ORDER BY table_name, column_name");
+                </code></pre></div>
+                <h3 id="retrofitting-foreign-keys-onto-older-databases">Retrofitting foreign keys onto older databases</h3>
+                <p>If you already have tables on disk without <code>REFERENCES</code> metadata, opening the database on a newer engine does not add foreign keys automatically. Use the maintenance migration workflow when you want to validate and then persist FK metadata onto existing tables:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using CSharpDB.Client;
+                using CSharpDB.Client.Models;
+                
+                await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+                {
+                    DataSource = "myapp.db"
+                });
+                
+                var spec =
+                    new[]
+                    {
+                        new ForeignKeyMigrationConstraintSpec
+                        {
+                            TableName = "orders",
+                            ColumnName = "customer_id",
+                            ReferencedTableName = "customers",
+                            ReferencedColumnName = "id",
+                            OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                        },
+                    };
+                
+                var preview = await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+                {
+                    ValidateOnly = true,
+                    ViolationSampleLimit = 100,
+                    Constraints = spec,
+                });
+                
+                if (!preview.Succeeded)
+                {
+                    foreach (var violation in preview.Violations)
+                        Console.WriteLine($"{violation.TableName}.{violation.ColumnName}: {violation.Reason}");
+                }
+                else
+                {
+                    await client.MigrateForeignKeysAsync(new ForeignKeyMigrationRequest
+                    {
+                        BackupDestinationPath = "pre-fk.backup.db",
+                        Constraints = spec,
+                    });
+                }
+                </code></pre></div>
+                <p>Notes:</p>
+                <ul>
+                <li><code>ValidateOnly = true</code> previews the migration without changing schema or data.</li>
+                <li><code>BackupDestinationPath</code> is optional but recommended for apply mode.</li>
+                <li>The same operation is available through HTTP, gRPC, the CLI, and the Admin Storage tab.</li>
+                </ul>
+                <h3 id="schema-migration-pattern-primary-key-identity-changes">Schema migration pattern (PRIMARY KEY / IDENTITY changes)</h3>
+                <p><code>ALTER TABLE</code> does not currently support changing an existing column to/from <code>PRIMARY KEY</code> or <code>IDENTITY</code>.
+                Use a create-copy-swap migration:</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">BEGIN TRANSACTION;
+                
+                -- 1) Create target schema
+                CREATE TABLE users_v2 (
+                    id INTEGER PRIMARY KEY IDENTITY,
+                    name TEXT NOT NULL,
+                    email TEXT NOT NULL
+                );
+                
+                -- 2) Copy data
+                -- For small tables, insert explicit values:
+                INSERT INTO users_v2 (id, name, email) VALUES (1, 'Alice', 'alice@acme.io');
+                INSERT INTO users_v2 (id, name, email) VALUES (2, 'Bob', 'bob@acme.io');
+                
+                -- 3) Swap tables
+                DROP TABLE users;
+                ALTER TABLE users_v2 RENAME TO users;
+                
+                COMMIT;
+                </code></pre></div>
+                <p>Notes:</p>
+                <ul>
+                <li>Explicit identity values are allowed, so preserving old IDs is supported.</li>
+                <li>If you omit <code>id</code> during insert, CSharpDB auto-generates identity values.</li>
+                <li>Bulk <code>INSERT INTO ... SELECT ...</code> copy is not yet supported, so large-table copy should be done via application code (read rows, then insert into the new table).</li>
+                </ul>
+                <hr/>
+                <h2 id="13-views">13. Views</h2>
+                <p>Views are named, reusable queries:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync(@"
+                    CREATE VIEW expensive_products AS
+                    SELECT name, price FROM products WHERE price &gt; 20.0");
+                
+                // Query the view like a table
+                await using var result = await db.ExecuteAsync("SELECT * FROM expensive_products");
+                </code></pre></div>
+                <hr/>
+                <h2 id="14-common-table-expressions-ctes">14. Common Table Expressions (CTEs)</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var result = await db.ExecuteAsync(@"
+                    WITH high_value AS (
+                        SELECT * FROM products WHERE price &gt; 10.0
+                    )
+                    SELECT name, price FROM high_value ORDER BY price DESC");
+                </code></pre></div>
+                <hr/>
+                <h2 id="15-triggers">15. Triggers</h2>
+                <p>Triggers execute SQL automatically when data changes:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("CREATE TABLE audit_log (action TEXT, product_name TEXT)");
+                
+                await db.ExecuteAsync(@"
+                    CREATE TRIGGER log_insert
+                    AFTER INSERT ON products
+                    BEGIN
+                        INSERT INTO audit_log VALUES ('INSERT', NEW.name);
+                    END");
+                
+                // Now inserting into products automatically logs to audit_log
+                await db.ExecuteAsync("INSERT INTO products VALUES (50, 'Auto-logged', 9.99, 'Test')");
+                </code></pre></div>
+                <p>Supported trigger types:</p>
+                <ul>
+                <li><code>BEFORE INSERT</code>, <code>AFTER INSERT</code></li>
+                <li><code>BEFORE UPDATE</code>, <code>AFTER UPDATE</code></li>
+                <li><code>BEFORE DELETE</code>, <code>AFTER DELETE</code></li>
+                </ul>
+                <p>Use <code>NEW.column</code> in INSERT/UPDATE triggers and <code>OLD.column</code> in UPDATE/DELETE triggers.</p>
+                <hr/>
+                <h2 id="16-concurrent-readers">16. Concurrent Readers</h2>
+                <p>Create reader sessions for snapshot-isolated reads that don't block writes:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">// Take a snapshot of the current database state
+                using var reader = db.CreateReaderSession();
+                
+                // Writer can continue modifying data — reader won't see changes
+                await db.ExecuteAsync("INSERT INTO products VALUES (99, 'New item', 1.0, 'Test')");
+                
+                // Reader sees the database as it was when the snapshot was taken
+                await using var result = await reader.ExecuteReadAsync("SELECT COUNT(*) FROM products");
+                </code></pre></div>
+                <p>Multiple reader sessions can be active simultaneously.</p>
+                <hr/>
+                <h2 id="17-dropping-tables">17. Dropping Tables</h2>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("DROP TABLE products");
+                </code></pre></div>
+                <p>Use <code>IF EXISTS</code> to avoid errors:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await db.ExecuteAsync("DROP TABLE IF EXISTS products");
+                </code></pre></div>
+                <hr/>
+                <h2 id="18-error-handling">18. Error Handling</h2>
+                <p>CSharpDB throws <code>CSharpDbException</code> with a typed <code>ErrorCode</code>:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using CSharpDB.Primitives;
+                
+                try
+                {
+                    await db.ExecuteAsync("SELECT * FROM nonexistent");
+                }
+                catch (CSharpDbException ex) when (ex.Code == ErrorCode.TableNotFound)
+                {
+                    Console.WriteLine($"Table not found: {ex.Message}");
+                }
+                catch (CSharpDbException ex) when (ex.Code == ErrorCode.SyntaxError)
+                {
+                    Console.WriteLine($"SQL syntax error: {ex.Message}");
+                }
+                </code></pre></div>
+                <p>Error codes:</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Code</th>
+                <th>Meaning</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>TableNotFound</code></td>
+                <td>Referenced table doesn't exist</td>
+                </tr>
+                <tr>
+                <td><code>TableAlreadyExists</code></td>
+                <td>CREATE TABLE on an existing table (without IF NOT EXISTS)</td>
+                </tr>
+                <tr>
+                <td><code>ColumnNotFound</code></td>
+                <td>Referenced column doesn't exist in the table</td>
+                </tr>
+                <tr>
+                <td><code>DuplicateKey</code></td>
+                <td>INSERT with a rowid that already exists</td>
+                </tr>
+                <tr>
+                <td><code>SyntaxError</code></td>
+                <td>Invalid SQL syntax</td>
+                </tr>
+                <tr>
+                <td><code>TypeMismatch</code></td>
+                <td>Value type doesn't match expected type</td>
+                </tr>
+                <tr>
+                <td><code>ConstraintViolation</code></td>
+                <td>NOT NULL, UNIQUE, or other constraint violated</td>
+                </tr>
+                <tr>
+                <td><code>IoError</code></td>
+                <td>File system read/write failure</td>
+                </tr>
+                <tr>
+                <td><code>CorruptDatabase</code></td>
+                <td>Database file structure is invalid</td>
+                </tr>
+                <tr>
+                <td><code>WalError</code></td>
+                <td>Error reading/writing the WAL file</td>
+                </tr>
+                <tr>
+                <td><code>Busy</code></td>
+                <td>Could not acquire write lock (another writer is active)</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="19-using-the-ado-net-provider">19. Using the ADO.NET Provider</h2>
+                <p>For standard .NET data access patterns, use the <code>CSharpDB.Data</code> package:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using CSharpDB.Data;
+                
+                await using var conn = new CSharpDbConnection("Data Source=myapp.db");
+                await conn.OpenAsync();
+                
+                // Parameterized queries
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT * FROM products WHERE price &gt; @minPrice";
+                cmd.Parameters.AddWithValue("@minPrice", 10.0);
+                
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    long id = reader.GetInt64(0);
+                    string name = reader.GetString(1);
+                    double price = reader.GetDouble(2);
+                    Console.WriteLine($"{id}: {name} (${price})");
+                }
+                </code></pre></div>
+                <p>The current provider routes ordinary embedded and daemon-backed usage through
+                the same authoritative <code>CSharpDB.Client</code> layer used by the other host surfaces.
+                That means you keep one provider API shape while choosing either a local
+                embedded database or a remote daemon endpoint in the connection string.</p>
+                <h3 id="executescalar">ExecuteScalar</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">cmd.CommandText = "SELECT COUNT(*) FROM products";
+                var count = await cmd.ExecuteScalarAsync();
+                </code></pre></div>
+                <h3 id="executenonquery">ExecuteNonQuery</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">cmd.CommandText = "INSERT INTO products VALUES (100, 'New', 5.99, 'Test')";
+                int rowsAffected = await cmd.ExecuteNonQueryAsync();
+                </code></pre></div>
+                <h3 id="transactions-via-ado-net">Transactions via ADO.NET</h3>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var txn = await conn.BeginTransactionAsync();
+                try
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.Transaction = (CSharpDbTransaction)txn;
+                    cmd.CommandText = "INSERT INTO products VALUES (200, 'Txn Item', 1.0, 'Test')";
+                    await cmd.ExecuteNonQueryAsync();
+                    await txn.CommitAsync();
+                }
+                catch
+                {
+                    await txn.RollbackAsync();
+                    throw;
+                }
+                </code></pre></div>
+                <h3 id="daemon-backed-ado-net">Daemon-Backed ADO.NET</h3>
+                <p>If you want the same ADO.NET surface against a long-lived <code>CSharpDB.Daemon</code>
+                process, change only the connection string:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using CSharpDB.Data;
+                
+                await using var conn = new CSharpDbConnection(
+                    "Transport=Grpc;Endpoint=http://localhost:5820");
+                await conn.OpenAsync();
+                
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT COUNT(*) FROM products";
+                var count = (long)(await cmd.ExecuteScalarAsync() ?? 0L);
+                </code></pre></div>
+                <p>Notes:</p>
+                <ul>
+                <li>embedded/local mode uses <code>Data Source=...</code></li>
+                <li>daemon-backed mode uses <code>Transport=Grpc;Endpoint=http://...</code></li>
+                <li>named shared in-memory connections such as <code>Data Source=:memory:shared</code> are process-local and do not cross the daemon boundary</li>
+                <li><code>NamedPipes</code> is not implemented end to end yet, so use <code>Grpc</code> for daemon access</li>
+                </ul>
+                <hr/>
+                <h2 id="20-data-persistence">20. Data Persistence</h2>
+                <p>Data survives application restarts — it's written to disk via the WAL on commit:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">// Session 1: Create and populate
+                await using (var db = await Database.OpenAsync("persistent.db"))
+                {
+                    await db.ExecuteAsync("CREATE TABLE notes (id INTEGER, text TEXT)");
+                    await db.ExecuteAsync("INSERT INTO notes VALUES (1, 'Remember this')");
+                }
+                
+                // Session 2: Data is still there
+                await using (var db = await Database.OpenAsync("persistent.db"))
+                {
+                    await using var result = await db.ExecuteAsync("SELECT * FROM notes");
+                    var rows = await result.ToListAsync();
+                    Console.WriteLine(rows[0][1].AsText); // "Remember this"
+                }
+                </code></pre></div>
+                <hr/>
+                <h2 id="next-steps">Next Steps</h2>
+                <ul>
+                <li><a href="../architecture-reference.html">Architecture Guide</a> — How the engine works layer by layer</li>
+                <li><a href="https://csharpdb.com/docs/internals.html">Internals &amp; Contributing</a> — How to extend the engine, testing strategy</li>
+                <li><a href="https://csharpdb.com/docs/rest-api.html">REST API Reference</a> — Use CSharpDB over HTTP from any language</li>
+                <li><a href="https://csharpdb.com/docs/mcp-server.html">MCP Server Reference</a> — Connect AI assistants to your database</li>
+                <li><a href="https://csharpdb.com/docs/cli.html">CLI Reference</a> — Interactive REPL with meta-commands</li>
+                <li><a href="faq.html">FAQ</a> — Common setup and troubleshooting answers</li>
+                <li><a href="../roadmap-reference.html">Roadmap</a> — Planned features and project direction</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

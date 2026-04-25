@@ -1,94 +1,127 @@
 # What's New
 
-## v3.3.0
+## v3.4.0
 
-This release starts from `bf954f788cc4a4c5915af2a9a68b66bc7c06f126`
-(`Checkpoint hot-right-edge recovery and add plans 4/5`) and is current
-through `8d11653c81e690849f462cb376872d901eabfeb6`
-(`Refresh benchmark release docs and guardrails`).
+v3.4.0 focuses on daemon packaging, cross-platform deployment, and remote host
+consolidation without changing SQL, storage, WAL, query planning, or the gRPC
+client contract.
 
-v3.3.0 focuses on durable write performance, storage tuning for embedded
-ADO.NET and EF Core usage, same-runner SQLite comparisons, and a cleaner
-release benchmark process. The main benchmark story is now promoted from the
-April 21, 2026 release-core run with guardrails passing at
-`PASS=185, WARN=0, SKIP=0, FAIL=0`.
+### Remote Host Consolidation
 
-### Durable Write and Indexing Performance
+- `CSharpDB.Daemon` now hosts both the existing REST `/api` surface and gRPC
+  from one long-running process.
+- REST and gRPC requests share the same warm daemon-hosted database client, so
+  remote users no longer need separate REST and gRPC host processes for the
+  same database.
+- Plain `http://` daemon endpoints support `Transport = Grpc` through
+  gRPC-Web compatibility so gRPC and REST can share the default service URL.
+  HTTPS and custom test clients can continue using native gRPC.
+- REST is enabled in the daemon by default and can be disabled with
+  `CSharpDB__Daemon__EnableRestApi=false`.
+- The standalone `CSharpDB.Api` REST host remains supported for REST-only
+  deployments.
+- Release archive smoke validation now calls the daemon REST `/api/info`
+  endpoint and a gRPC `GetInfoAsync` client after extracting and starting each
+  daemon binary.
 
-- Added append-optimized index storage paths for row-id chains and hashed
-  payloads, including appendable payload codecs, overflow-store improvements,
-  and focused tests for the new insert-maintenance paths.
-- Optimized indexed insert maintenance for monotonic and append-heavy
-  workloads, including hot right-edge recovery, insert sequence context, and
-  expanded B-tree/index diagnostics for commit-path investigation.
-- Added trailing-integer support for composite grouped aggregate planning while
-  tightening SQL index metadata defaults so multi-column indexes no longer
-  receive trailing-integer hash options unless explicitly requested.
-- Expanded record encoding and serialization support used by the optimized
-  storage paths and added compatibility coverage for hashed index payloads,
-  append-only row-id chains, record encoding, collation metadata, and SQL index
-  behavior.
+### Admin Warm Local Database Hosting
 
-### Embedded ADO.NET and EF Core Storage Tuning
+- `CSharpDB.Admin` direct local mode keeps a warm in-process database instance
+  and now opens it through hybrid incremental-durable database options by
+  default.
+- Admin startup and database switching both use the same host database option
+  builder, so opening a different database from the UI keeps the same warm
+  local database behavior.
+- Admin remote mode still uses `CSharpDB:Transport` plus `CSharpDB:Endpoint`
+  without attaching local direct/hybrid options.
+- Set `CSharpDB__HostDatabase__OpenMode=Direct` to opt back into the older
+  plain direct open path for local Admin runs.
+- Admin table data filters now support contains, starts-with, and ends-with
+  `LIKE` placement plus exact `=` match mode per column.
+- The Admin SQL query editor now has homegrown guided completions for SQL
+  keywords, table/view selection, select-list columns, qualified alias columns,
+  and stored procedure names without adding a third-party editor dependency.
 
-- Added storage tuning presets for embedded ADO.NET and EF Core users,
-  including `CSharpDbStoragePreset`, embedded open modes, connection-string
-  builder support, and configuration resolution for shared file-backed usage.
-- Updated the EF Core provider option validation and relational connection
-  setup so storage mode and connection behavior are explicit for embedded
-  workloads.
-- Added comparative ADO.NET and EF Core smoke coverage plus embedded storage
-  tuning tests for the new configuration surface.
-- Updated package references across the CLI, EF Core sample/provider, tests,
-  and benchmark projects.
+### Daemon Service Packaging
 
-### Benchmarks and SQLite Comparisons
+- Added Windows Service and systemd host integration to `CSharpDB.Daemon`.
+  These hooks are no-ops for normal console and `dotnet run` execution.
+- Added Windows service install/uninstall scripts with defaults for
+  `CSharpDBDaemon`, `C:\Program Files\CSharpDB\Daemon`,
+  `C:\ProgramData\CSharpDB`, and `http://127.0.0.1:5820`.
+- Added Linux systemd service template plus install/uninstall scripts with
+  defaults for `/opt/csharpdb-daemon`, `/var/lib/csharpdb`, service user
+  `csharpdb`, and `http://127.0.0.1:5820`.
+- Added macOS launchd plist template plus install/uninstall scripts with
+  defaults for `/usr/local/lib/csharpdb-daemon`,
+  `/usr/local/var/csharpdb`, and `http://127.0.0.1:5820`.
 
-- Added durable SQLite comparison coverage, including SQLite C API helpers,
-  concurrent SQLite C API benchmarks, concurrent ADO.NET comparison
-  benchmarks, strict insert comparison rows, and EF Core comparison benchmarks.
-- Added CSharpDB-versus-SQLite performance guidance and blog content under
-  `docs/query-and-durable-write-performance`, with website and sitemap updates
-  for the new comparison material.
-- Replaced the older programmatic insert planning docs with the current
-  ADO.NET/EF storage tuning guide and release-core benchmark story.
+### Release Archives
 
-### Release Benchmark Process
+- Added `scripts/Publish-CSharpDbDaemonRelease.ps1` for self-contained,
+  single-file, non-trimmed daemon release archives.
+- Added release archive coverage for `win-x64`, `linux-x64`, and `osx-arm64`.
+- Added checksum generation through `SHA256SUMS.txt`.
+- Updated the GitHub Release workflow to build daemon archives on native
+  Windows, Linux, and macOS runners, verify each archive, smoke-start the
+  extracted daemon, and attach the archives plus combined checksums to the
+  GitHub Release.
 
-- Redesigned `tests/CSharpDB.Benchmarks/README.md` into a compact,
-  user-facing benchmark contract with a generated core scorecard, current
-  results, benchmark map, and run/promote instructions.
-- Added `BENCHMARK_CATALOG.md`, `HISTORY.md`, `SQLITE_COMPARISON.md`,
-  `release-core-manifest.json`, and
-  `scripts/Update-BenchmarkReadme.ps1` so published numbers come from an
-  explicit manifest and only the generated region is rewritten.
-- Added the `--release-core` benchmark command to run the balanced core suite:
-  master-table, durable SQL batching, concurrent durable writes, hybrid storage
-  mode, resident hot-set reads, cold open, and SQLite comparison.
-- Updated release guardrail comparison logic to support structural `ExtraInfo`
-  checks and row-specific tolerances for known volatile microbenchmark rows.
+### Docs
 
-### Docs, Package READMEs, and Website
-
-- Refreshed the root README with the current promoted performance numbers:
-  `1.67M` collection gets/sec, `10.77M` concurrent reader-burst reads/sec,
-  `798.25K` durable InsertBatch B10000 rows/sec, and `1.04K` concurrent
-  durable commits/sec.
-- Added or refreshed package-local READMEs for Admin, Forms, Reports, CLI,
-  MCP, Native, API, Data, Engine, EF Core, and the aggregate package surface.
-- Updated documentation routes, titles, sitemap entries, and website pages,
-  including moving public docs under the current `www/docs` structure and
-  removing unused legacy JavaScript files.
+- Updated the daemon README with archive installation, service installation,
+  upgrade, uninstall, and configuration override guidance.
+- Updated the Admin README with warm in-process local database behavior, hybrid
+  local hosting defaults, and the direct open-mode opt-out.
+- Updated the scripts README with daemon packaging and service installer
+  references.
+- Updated the roadmap to mark daemon service packaging done and scoped
+  cross-platform daemon archive deployment in progress.
+- Added a new blog post covering the C# launcher pattern for
+  `CSharpDB.Admin`, including syntax-highlighted examples for the launcher
+  executable flow.
+- Migrated the remaining source-heavy markdown docs into companion reference
+  pages under `www` for architecture, getting started, performance, SQL query
+  execution pipeline, SQL reference, storage engine, roadmap, and the
+  CSharpDB-versus-SQLite benchmarking article so the full original content now
+  stays published on the website.
+- Updated the curated docs/blog pages and sitemap to point at the new source
+  reference routes when users need the full original long-form content.
+- Removed the duplicated markdown copies of the CLI, REST API, MCP server,
+  internals, and storage inspector guides after their website versions were
+  audited and verified.
 
 ### Validation
 
-- `dotnet build .\CSharpDB.slnx -c Release --no-restore` completed
-  successfully.
-- `dotnet build .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-restore`
-  completed successfully during release prep.
-- `dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro`
-  completed and produced the promoted April 21, 2026 release-core artifacts.
-- Final release guardrail comparison passed with
-  `PASS=185, WARN=0, SKIP=0, FAIL=0`.
-- The benchmark README generator was run twice and verified stable on the
-  second dry run.
+- PowerShell parser validation passed for the daemon release publisher and
+  Windows install/uninstall scripts.
+- `bash -n` passed for Linux and macOS service install/uninstall scripts.
+- `dotnet restore CSharpDB.slnx` completed successfully.
+- `dotnet build CSharpDB.slnx -c Release` completed successfully.
+- `dotnet build CSharpDB.slnx -c Release --no-restore` completed successfully.
+- `dotnet test tests\CSharpDB.Api.Tests\CSharpDB.Api.Tests.csproj -c Release --no-build`
+  passed with `15` tests.
+- `dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release --no-build`
+  passed with `18` tests.
+- `dotnet test tests\CSharpDB.Admin.Forms.Tests\CSharpDB.Admin.Forms.Tests.csproj -c Release --no-build`
+  passed with `211` tests.
+- Content audit confirmed the new source-reference pages preserve the migrated
+  markdown coverage (100% heading coverage and 99.7-100% token overlap across
+  the migrated set).
+- `python -c "import xml.etree.ElementTree as ET; ET.parse('www/sitemap.xml')"`
+  passed for the updated site map.
+- Repo scan found no remaining references to the deleted duplicated markdown
+  docs.
+- `.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.4.0 -Runtime win-x64 -OutputRoot artifacts\daemon-release-local`
+  created `csharpdb-daemon-v3.4.0-win-x64.zip` and `SHA256SUMS.txt`.
+- The extracted `win-x64` daemon archive smoke-started successfully, served
+  `/api/info`, and accepted a gRPC `GetInfoAsync` client call on the same base
+  URL with a temporary database.
+- `dotnet run --project src\CSharpDB.Api\CSharpDB.Api.csproj --configuration Release --no-build --no-launch-profile`
+  smoke-started successfully and served `/api/info` with a temporary database.
+- `dotnet run --project src\CSharpDB.Daemon\CSharpDB.Daemon.csproj --configuration Release --no-build --no-launch-profile`
+  smoke-started successfully, served `/api/info`, and accepted a gRPC
+  `GetInfoAsync` client call on the same base URL with a temporary database.
+- `dotnet run --project src\CSharpDB.Admin\CSharpDB.Admin.csproj --configuration Release --no-build --no-launch-profile`
+  smoke-started successfully in direct hybrid incremental-durable mode with a
+  temporary database.

@@ -113,6 +113,9 @@
                 </div>
 
                 <div class="blog-post-content">
+                    <div class="callout callout-info">
+                        <strong>Need the full long-form article?</strong> The original markdown version is preserved as <a href="csharpdb-vs-sqlite-benchmarking-reference.html">CSharpDB vs SQLite Benchmarking Source Reference</a>.
+                    </div>
                     <p>Both CSharpDB and SQLite are excellent embedded databases for .NET, and "which one is faster?" is the wrong question. The right question is: for each workload, which <em>API</em> on which engine gets you the best number? Sometimes that's SQLite through ADO.NET. Sometimes it's CSharpDB through the direct engine API. Sometimes the gap between the two engines is smaller than the gap between a good API choice and a bad one on either side.</p>
                     <p>This post walks through four paired benchmarks on .NET 10 — bulk inserts, point lookups, concurrent writers, and EF Core — and shows the compilable code that produced each number. Everything in this post runs end-to-end with <code>dotnet run -c Release</code>.</p>
 

@@ -721,9 +721,9 @@ await using (var db = await Database.OpenAsync("persistent.db"))
 ## Next Steps
 
 - [Architecture Guide](architecture.md) — How the engine works layer by layer
-- [Internals & Contributing](internals.md) — How to extend the engine, testing strategy
-- [REST API Reference](rest-api.md) — Use CSharpDB over HTTP from any language
-- [MCP Server Reference](mcp-server.md) — Connect AI assistants to your database
-- [CLI Reference](cli.md) — Interactive REPL with meta-commands
+- [Internals & Contributing](https://csharpdb.com/docs/internals.html) — How to extend the engine, testing strategy
+- [REST API Reference](https://csharpdb.com/docs/rest-api.html) — Use CSharpDB over HTTP from any language
+- [MCP Server Reference](https://csharpdb.com/docs/mcp-server.html) — Connect AI assistants to your database
+- [CLI Reference](https://csharpdb.com/docs/cli.html) — Interactive REPL with meta-commands
 - [FAQ](faq.md) — Common setup and troubleshooting answers
 - [Roadmap](roadmap.md) — Planned features and project direction

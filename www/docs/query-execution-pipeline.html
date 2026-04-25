@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Query Execution Pipeline Source Reference — CSharpDB</title>
+    <meta name="description" content="Full migrated source reference for the original SQL query execution pipeline markdown guide.">
+    <link rel="canonical" href="https://csharpdb.com/docs/query-execution-pipeline.html">
+    <meta property="og:title" content="Query Execution Pipeline Source Reference — CSharpDB">
+    <meta property="og:description" content="Full migrated source reference for the original SQL query execution pipeline markdown guide.">
+    <meta property="og:url" content="https://csharpdb.com/docs/query-execution-pipeline.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Query Execution Pipeline Source Reference",
+        "description": "Full migrated source reference for the original SQL query execution pipeline markdown guide.",
+        "url": "https://csharpdb.com/docs/query-execution-pipeline.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Query Execution Pipeline Source Reference',
+        description: 'Full migrated source reference for the original SQL query execution pipeline markdown guide.',
+        keywords: 'CSharpDB source reference, migrated markdown, archival reference',
+        canonicalPath: 'docs/query-execution-pipeline.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#pipeline-overview">Pipeline Overview</a></li>
+                        <li><a href="#1-tokenization">1. Tokenization</a></li>
+                        <li><a href="#2-parsing">2. Parsing</a></li>
+                        <li class="toc-child"><a href="#ast-node-categories">AST Node Categories</a></li>
+                        <li class="toc-child"><a href="#parser-fast-paths">Parser Fast Paths</a></li>
+                        <li><a href="#3-query-planning">3. Query Planning</a></li>
+                        <li class="toc-child"><a href="#cardinality-estimation">Cardinality Estimation</a></li>
+                        <li class="toc-child"><a href="#index-selection">Index Selection</a></li>
+                        <li class="toc-child"><a href="#join-operator-selection">Join Operator Selection</a></li>
+                        <li class="toc-child"><a href="#join-reordering">Join Reordering</a></li>
+                        <li><a href="#4-execution">4. Execution</a></li>
+                        <li class="toc-child"><a href="#iterator-model">Iterator Model</a></li>
+                        <li class="toc-child"><a href="#batch-execution">Batch Execution</a></li>
+                        <li class="toc-child"><a href="#expression-evaluation">Expression Evaluation</a></li>
+                        <li class="toc-child"><a href="#operator-catalog">Operator Catalog</a></li>
+                        <li class="toc-child"><a href="#optimization-interfaces">Optimization Interfaces</a></li>
+                        <li><a href="#5-worked-example">5. Worked Example</a></li>
+                        <li><a href="#constants">Constants</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/query-execution-pipeline.md</code>. For the shorter curated page, see <a href="pipelines.html">ETL Pipelines</a>.</div>
+                <h1 id="query-execution-pipeline">Query Execution Pipeline</h1>
+                <p class="lead">This document describes how CSharpDB processes a SQL query from text to results. It is
+                intended for contributors and advanced users who want to understand how the engine makes
+                planning decisions.</p>
+                <hr/>
+                <h2 id="pipeline-overview">Pipeline Overview</h2>
+                <div class="code-block" data-title="Code"><pre><code>SQL Text
+                  │
+                  ▼
+                ┌──────────────┐
+                │  Tokenizer   │  CSharpDB.Sql/Tokenizer.cs
+                └──────┬───────┘
+                       │ Token stream
+                       ▼
+                ┌──────────────┐
+                │   Parser     │  CSharpDB.Sql/Parser.cs
+                └──────┬───────┘
+                       │ Abstract Syntax Tree (AST)
+                       ▼
+                ┌──────────────┐
+                │Query Planner │  CSharpDB.Execution/QueryPlanner.cs
+                │              │  CSharpDB.Execution/CardinalityEstimator.cs
+                └──────┬───────┘
+                       │ Physical operator tree
+                       ▼
+                ┌──────────────┐
+                │  Execution   │  CSharpDB.Execution/Operators.cs
+                └──────┬───────┘
+                       │ Row-at-a-time or batched iteration
+                       ▼
+                   Query Result
+                </code></pre></div>
+                <hr/>
+                <h2 id="1-tokenization">1. Tokenization</h2>
+                <p>The tokenizer (<code>Tokenizer.cs</code>) performs a single pass over the SQL string, producing a
+                stream of <code>Token(TokenType, string value, int position)</code> objects.</p>
+                <ul>
+                <li>120+ token types covering keywords, literals, operators, identifiers, and punctuation</li>
+                <li>Case-insensitive keyword matching via dictionary lookup</li>
+                <li>Handles SQL comments (<code>-- ...</code>), string escaping (<code>''</code>), and parameter tokens (<code>@name</code>)</li>
+                <li>Classifies numeric literals as <code>IntegerLiteral</code> or <code>RealLiteral</code></li>
+                </ul>
+                <hr/>
+                <h2 id="2-parsing">2. Parsing</h2>
+                <p>The parser (<code>Parser.cs</code>) is a recursive-descent parser that consumes tokens and builds a
+                typed AST.</p>
+                <h3 id="ast-node-categories">AST Node Categories</h3>
+                <p><strong>Statements</strong> — top-level SQL commands:</p>
+                <ul>
+                <li>DDL: <code>CreateTableStatement</code>, <code>AlterTableStatement</code>, <code>DropTableStatement</code>,
+                <code>CreateIndexStatement</code>, <code>DropIndexStatement</code>, <code>CreateViewStatement</code>, <code>DropViewStatement</code>,
+                <code>CreateTriggerStatement</code>, <code>DropTriggerStatement</code>, <code>AnalyzeStatement</code></li>
+                <li>DML: <code>InsertStatement</code>, <code>UpdateStatement</code>, <code>DeleteStatement</code></li>
+                <li>Query: <code>SelectStatement</code>, <code>CompoundSelectStatement</code> (set operations), <code>WithStatement</code> (CTEs)</li>
+                </ul>
+                <p><strong>Table references:</strong></p>
+                <ul>
+                <li><code>SimpleTableRef(TableName, Alias)</code> — single table or view</li>
+                <li><code>JoinTableRef(Left, Right, JoinType, Condition)</code> — binary join tree</li>
+                </ul>
+                <p><strong>Expressions:</strong></p>
+                <ul>
+                <li><code>LiteralExpression</code>, <code>ParameterExpression</code>, <code>ColumnRefExpression</code></li>
+                <li><code>BinaryExpression</code> — arithmetic, comparison, logical operators</li>
+                <li><code>UnaryExpression</code> — <code>NOT</code>, unary minus</li>
+                <li><code>FunctionCallExpression</code> — aggregates and scalar functions</li>
+                <li><code>LikeExpression</code>, <code>InExpression</code>, <code>BetweenExpression</code>, <code>IsNullExpression</code></li>
+                <li><code>ScalarSubqueryExpression</code>, <code>InSubqueryExpression</code>, <code>ExistsExpression</code></li>
+                <li><code>CollateExpression</code></li>
+                </ul>
+                <h3 id="parser-fast-paths">Parser Fast Paths</h3>
+                <p>The parser detects common query shapes and produces lightweight metadata instead of a full
+                AST, skipping unnecessary allocation:</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Fast Path</th>
+                <th>Pattern Detected</th>
+                <th>Benefit</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td>Simple SELECT</td>
+                <td>Single table, simple WHERE</td>
+                <td>Skips full AST construction</td>
+                </tr>
+                <tr>
+                <td>Primary key lookup</td>
+                <td><code>SELECT ... WHERE pk = value</code></td>
+                <td>Direct lookup metadata</td>
+                </tr>
+                <tr>
+                <td>Simple INSERT</td>
+                <td><code>INSERT INTO ... VALUES (...)</code></td>
+                <td>Lightweight insert path</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="3-query-planning">3. Query Planning</h2>
+                <p>The <code>QueryPlanner</code> dispatches statements to type-specific handlers. For <code>SELECT</code> queries,
+                it classifies the query into a <code>SelectPlanKind</code> to choose an execution strategy:</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Plan Kind</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>FastPrimaryKeyLookup</code></td>
+                <td>Direct integer PK lookup — fastest path</td>
+                </tr>
+                <tr>
+                <td><code>FastIndexedLookup</code></td>
+                <td>Equality lookup via index</td>
+                </tr>
+                <tr>
+                <td><code>FastSimpleTableScan</code></td>
+                <td>Full scan with basic filtering</td>
+                </tr>
+                <tr>
+                <td><code>SimpleCountStar</code></td>
+                <td><code>COUNT(*)</code> using cached row count (no scan)</td>
+                </tr>
+                <tr>
+                <td><code>SimpleScalarAggregateColumn</code></td>
+                <td>Single aggregate on a column</td>
+                </tr>
+                <tr>
+                <td><code>SimpleGroupedIndexAggregate</code></td>
+                <td>GROUP BY on indexed column (streaming)</td>
+                </tr>
+                <tr>
+                <td><code>General</code></td>
+                <td>Full operator tree for complex queries</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>Plan classifications are cached (up to 1024 entries) so repeated queries skip re-analysis.</p>
+                <h3 id="cardinality-estimation">Cardinality Estimation</h3>
+                <p>When <code>ANALYZE</code> has been run on a table, the <code>CardinalityEstimator</code> uses collected statistics
+                to estimate result sizes and guide operator selection.</p>
+                <p><strong>Statistics collected by ANALYZE:</strong></p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Statistic</th>
+                <th>Scope</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td>Distinct count</td>
+                <td>Per column</td>
+                <td>Number of unique values</td>
+                </tr>
+                <tr>
+                <td>Non-NULL count</td>
+                <td>Per column</td>
+                <td>Number of non-NULL values</td>
+                </tr>
+                <tr>
+                <td>Min / Max value</td>
+                <td>Per column</td>
+                <td>Value range</td>
+                </tr>
+                <tr>
+                <td>Frequent values</td>
+                <td>Per column</td>
+                <td>Top 8 values by occurrence</td>
+                </tr>
+                <tr>
+                <td>Histogram buckets</td>
+                <td>Per column</td>
+                <td>16 quantile-based buckets for range estimation</td>
+                </tr>
+                <tr>
+                <td>Prefix distinct counts</td>
+                <td>Per index</td>
+                <td>Distinct values for each prefix of a composite index</td>
+                </tr>
+                </tbody>
+                </table>
+                <p><strong>Estimation methods:</strong></p>
+                <ul>
+                <li><strong>Lookup selectivity:</strong> <code>tableRows / distinctCount</code> for uniform distribution, adjusted
+                for skew when the lookup value matches a known frequent value</li>
+                <li><strong>Filter selectivity:</strong> Per-column selectivity multiplied across AND-conjuncts. Supports
+                equality, range, NULL, and discrete value list predicates.</li>
+                <li><strong>Join cardinality:</strong> <code>(leftRows × rightRows) / max(leftDistinct, rightDistinct)</code>,
+                adjusted by non-NULL fraction and outer join semantics.</li>
+                </ul>
+                <p>Without statistics, the planner uses heuristic fallback estimates.</p>
+                <h3 id="index-selection">Index Selection</h3>
+                <p>For each AND-separated predicate in the WHERE clause, the planner checks whether an
+                available index can satisfy it:</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Candidate</th>
+                <th style="text-align:center">Rank</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td>Integer primary key equality</td>
+                <td style="text-align:center">0</td>
+                <td>Best — direct B-tree lookup</td>
+                </tr>
+                <tr>
+                <td>Unique index equality</td>
+                <td style="text-align:center">1</td>
+                <td>Single-row guarantee</td>
+                </tr>
+                <tr>
+                <td>Non-unique index equality</td>
+                <td style="text-align:center">2</td>
+                <td>Accepted only if estimated rows ≤ 25% of table</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>When multiple candidates match, the planner picks the lowest rank. Ties are broken by
+                estimated row count (fewer is better). Composite indexes are used when equality predicates
+                match the index prefix columns.</p>
+                <h3 id="join-operator-selection">Join Operator Selection</h3>
+                <p>The planner tries join operators in preference order:</p>
+                <p><strong>1. Index Nested-Loop Join</strong></p>
+                <p>Requirements: INNER or LEFT join, right side is a simple table, equi-join condition exists,
+                and the right table has an index on the join key.</p>
+                <p>Cost decision (when statistics are available):</p>
+                <ul>
+                <li>Unique index: use if <code>leftRows ≤ rightRows × 8</code> (PK) or <code>leftRows ≤ rightRows × 2</code>
+                (unique)</li>
+                <li>Non-unique index: use if estimated lookup cost &lt; hash join cost</li>
+                </ul>
+                <p>Produces <code>IndexNestedLoopJoinOperator</code> (integer PK) or <code>HashedIndexNestedLoopJoinOperator</code>
+                (text/composite keys).</p>
+                <p><strong>2. Hash Join</strong></p>
+                <p>Requirements: equi-join condition with extractable key columns.</p>
+                <p>Build side selection: for INNER joins, builds the smaller estimated side. For LEFT/RIGHT
+                joins, respects outer table preservation.</p>
+                <p><strong>3. Nested-Loop Join (fallback)</strong></p>
+                <p>Cartesian product with join condition filtering. Used when no index or equi-join condition
+                is available.</p>
+                <h3 id="join-reordering">Join Reordering</h3>
+                <p>For queries joining 4–6 tables, the planner applies dynamic-programming-based join
+                reordering to find the lowest-cardinality ordering. Results are cached per query shape.
+                Views, CTEs, and system tables are excluded from reordering.</p>
+                <hr/>
+                <h2 id="4-execution">4. Execution</h2>
+                <h3 id="iterator-model">Iterator Model</h3>
+                <p>Operators implement a pull-based iterator protocol:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">interface IOperator : IAsyncDisposable
+                {
+                    ColumnDefinition[] OutputSchema { get; }
+                    ValueTask OpenAsync();
+                    ValueTask&lt;bool&gt; MoveNextAsync();
+                    DbValue[] Current { get; }
+                }
+                </code></pre></div>
+                <p>The root operator is opened, then <code>MoveNextAsync</code> is called repeatedly until it returns
+                <code>false</code>. Results flow from leaf operators (scans) upward through the tree.</p>
+                <h3 id="batch-execution">Batch Execution</h3>
+                <p>Performance-critical operators also implement <code>IBatchOperator</code>, which yields <code>RowBatch</code>
+                objects containing up to 64 rows per batch. This enables SIMD-friendly memory layout and
+                reduces per-row overhead.</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">interface IBatchOperator : IAsyncDisposable
+                {
+                    ValueTask OpenAsync();
+                    ValueTask&lt;bool&gt; MoveNextBatchAsync();
+                    RowBatch CurrentBatch { get; }
+                }
+                </code></pre></div>
+                <h3 id="expression-evaluation">Expression Evaluation</h3>
+                <p>Expressions are evaluated through two paths:</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Path</th>
+                <th>Used When</th>
+                <th>How</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td>Interpreter</td>
+                <td>One-off evaluation</td>
+                <td>Recursive AST walk with per-row schema lookups</td>
+                </tr>
+                <tr>
+                <td>Compiled</td>
+                <td>Hot paths (filters, projections)</td>
+                <td>AST compiled to <code>Func&lt;DbValue[], DbValue&gt;</code> delegate with bound column indices. Cached (up to 4096 entries).</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="operator-catalog">Operator Catalog</h3>
+                <h4>Scan Operators</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>TableScanOperator</code></td>
+                <td>Sequential B+tree scan. Supports pre-decode filtering and projection pushdown.</td>
+                </tr>
+                <tr>
+                <td><code>IndexScanOperator</code></td>
+                <td>Ordered index scan with optional range bounds.</td>
+                </tr>
+                <tr>
+                <td><code>IndexOrderedScanOperator</code></td>
+                <td>Prefix scan with secondary range filtering.</td>
+                </tr>
+                <tr>
+                <td><code>PrimaryKeyLookupOperator</code></td>
+                <td>Direct row lookup by integer PK. Fastest scan path.</td>
+                </tr>
+                <tr>
+                <td><code>UniqueIndexLookupOperator</code></td>
+                <td>Single-row lookup via unique index.</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>Projection variants (<code>PrimaryKeyProjectionLookupOperator</code>,
+                <code>IndexScanProjectionOperator</code>, etc.) fuse column selection into the scan to skip
+                unnecessary deserialization.</p>
+                <h4>Join Operators</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>HashJoinOperator</code></td>
+                <td>Hash table on build side, probed by probe side. Supports INNER, LEFT, RIGHT, CROSS.</td>
+                </tr>
+                <tr>
+                <td><code>IndexNestedLoopJoinOperator</code></td>
+                <td>Probes right table via integer PK index for each left row.</td>
+                </tr>
+                <tr>
+                <td><code>HashedIndexNestedLoopJoinOperator</code></td>
+                <td>Probes via hash-based index (text/composite keys).</td>
+                </tr>
+                <tr>
+                <td><code>NestedLoopJoinOperator</code></td>
+                <td>Cartesian product with condition filtering.</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Filter and Projection</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>FilterOperator</code></td>
+                <td>Applies WHERE predicates. Optional compiled filter for hot paths.</td>
+                </tr>
+                <tr>
+                <td><code>ProjectionOperator</code></td>
+                <td>Column selection and expression evaluation.</td>
+                </tr>
+                <tr>
+                <td><code>FilterProjectionOperator</code></td>
+                <td>Fused filter + projection in a single pass.</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Aggregation</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>HashAggregateOperator</code></td>
+                <td>Grouped aggregation via hash table (GROUP BY).</td>
+                </tr>
+                <tr>
+                <td><code>ScalarAggregateOperator</code></td>
+                <td>Single-row aggregation (no GROUP BY).</td>
+                </tr>
+                <tr>
+                <td><code>IndexGroupedAggregateOperator</code></td>
+                <td>Streaming GROUP BY on indexed column (no hash table).</td>
+                </tr>
+                <tr>
+                <td><code>CompositeIndexGroupedAggregateOperator</code></td>
+                <td>Streaming GROUP BY on composite index prefix.</td>
+                </tr>
+                <tr>
+                <td><code>CountStarTableOperator</code></td>
+                <td>Returns cached row count — no scan needed.</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>Additional specialized variants exist for specific aggregate patterns
+                (<code>ScalarAggregateLookupOperator</code>, <code>FilteredScalarAggregateTableOperator</code>, etc.).</p>
+                <h4>Sort and Limit</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>SortOperator</code></td>
+                <td>Full sort (in-memory for small sets, merge sort for larger).</td>
+                </tr>
+                <tr>
+                <td><code>TopNSortOperator</code></td>
+                <td>Heap-based top-N for <code>ORDER BY ... LIMIT N</code> — avoids full sort.</td>
+                </tr>
+                <tr>
+                <td><code>LimitOperator</code></td>
+                <td>Truncates output after N rows.</td>
+                </tr>
+                <tr>
+                <td><code>OffsetOperator</code></td>
+                <td>Skips first N rows.</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Other</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>DistinctOperator</code></td>
+                <td>Removes duplicates via hash set.</td>
+                </tr>
+                <tr>
+                <td><code>MaterializedOperator</code></td>
+                <td>Wraps pre-materialized rows (CTEs, subquery results).</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="optimization-interfaces">Optimization Interfaces</h3>
+                <p>Operators expose capability interfaces that enable cross-operator optimization:</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Interface</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>IPreDecodeFilterSupport</code></td>
+                <td>Push equality filters into the decode layer, eliminating rows before full deserialization</td>
+                </tr>
+                <tr>
+                <td><code>IProjectionPushdownTarget</code></td>
+                <td>Declare needed output columns so scans skip unused columns</td>
+                </tr>
+                <tr>
+                <td><code>IEstimatedRowCountProvider</code></td>
+                <td>Expose cardinality to parent operators for cost decisions</td>
+                </tr>
+                <tr>
+                <td><code>IRowBufferReuseController</code></td>
+                <td>Control whether row buffers are reused or cloned</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="5-worked-example">5. Worked Example</h2>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT c.name, SUM(o.amount) AS total
+                FROM customers c
+                LEFT JOIN orders o ON o.cust_id = c.id
+                WHERE c.country = 'USA'
+                GROUP BY c.id, c.name
+                ORDER BY total DESC
+                LIMIT 10;
+                </code></pre></div>
+                <p><strong>Planning decisions:</strong></p>
+                <ol>
+                <li>
+                <p><strong>Index check on <code>customers.country</code>:</strong> Non-unique index found. Estimated 300K rows out
+                of 1M — selectivity passes the 25% threshold → use <code>IndexScanOperator</code>.</p>
+                </li>
+                <li>
+                <p><strong>Join strategy:</strong> Index exists on <code>orders.cust_id</code>. Estimated left rows (300K) ≤
+                right rows × 8 → use <code>IndexNestedLoopJoinOperator</code>.</p>
+                </li>
+                <li>
+                <p><strong>Aggregation:</strong> GROUP BY columns not aligned with an index → <code>HashAggregateOperator</code>.</p>
+                </li>
+                <li>
+                <p><strong>Sort + limit:</strong> <code>ORDER BY total DESC LIMIT 10</code> → <code>TopNSortOperator</code> (heap of size 10,
+                avoids sorting all groups).</p>
+                </li>
+                </ol>
+                <p><strong>Resulting operator tree:</strong></p>
+                <div class="code-block" data-title="Code"><pre><code>LimitOperator (10)
+                  └─ TopNSortOperator (total DESC, N=10)
+                       └─ HashAggregateOperator (GROUP BY c.id, c.name; SUM(o.amount))
+                            └─ IndexNestedLoopJoinOperator (LEFT, o.cust_id = c.id)
+                                 ├─ IndexScanOperator (customers, country = 'USA')
+                                 └─ orders.cust_id index
+                </code></pre></div>
+                <p><strong>Execution:</strong></p>
+                <ol>
+                <li><code>IndexScanOperator</code> iterates the <code>country</code> index for <code>'USA'</code> entries, yielding customer
+                rows in batches of 64.</li>
+                <li>For each customer, <code>IndexNestedLoopJoinOperator</code> probes the orders index on <code>cust_id</code>,
+                yielding joined rows (or a NULL-padded row for LEFT JOIN when no orders exist).</li>
+                <li><code>HashAggregateOperator</code> accumulates <code>SUM(amount)</code> per <code>(id, name)</code> group in a hash
+                table, then emits all groups.</li>
+                <li><code>TopNSortOperator</code> maintains a min-heap of 10 entries by <code>total DESC</code>, discarding rows
+                below the current 10th largest.</li>
+                <li><code>LimitOperator</code> yields the final 10 rows to the caller.</li>
+                </ol>
+                <hr/>
+                <h2 id="constants">Constants</h2>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Constant</th>
+                <th>Value</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td>Default batch size</td>
+                <td>64 rows</td>
+                <td><code>RowBatch</code> capacity</td>
+                </tr>
+                <tr>
+                <td>Expression cache</td>
+                <td>4096 entries</td>
+                <td>Compiled expression delegate cache</td>
+                </tr>
+                <tr>
+                <td>Plan cache</td>
+                <td>1024 entries</td>
+                <td>SELECT plan classification cache</td>
+                </tr>
+                <tr>
+                <td>Histogram buckets</td>
+                <td>16</td>
+                <td>Quantile buckets per column in ANALYZE</td>
+                </tr>
+                <tr>
+                <td>Frequent values</td>
+                <td>8</td>
+                <td>Top-N tracked per column in ANALYZE</td>
+                </tr>
+                <tr>
+                <td>Max join reorder leaves</td>
+                <td>6</td>
+                <td>DP-based reordering table limit</td>
+                </tr>
+                <tr>
+                <td>Max trigger depth</td>
+                <td>16</td>
+                <td>Recursive trigger invocation limit</td>
+                </tr>
+                <tr>
+                <td>Max FK cascade depth</td>
+                <td>64</td>
+                <td>Foreign key cascade recursion limit</td>
+                </tr>
+                </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

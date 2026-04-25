@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>SQL Source Reference — CSharpDB</title>
+    <meta name="description" content="Full migrated source reference for the original CSharpDB SQL markdown guide.">
+    <link rel="canonical" href="https://csharpdb.com/docs/sql-reference.html">
+    <meta property="og:title" content="SQL Source Reference — CSharpDB">
+    <meta property="og:description" content="Full migrated source reference for the original CSharpDB SQL markdown guide.">
+    <meta property="og:url" content="https://csharpdb.com/docs/sql-reference.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "SQL Source Reference",
+        "description": "Full migrated source reference for the original CSharpDB SQL markdown guide.",
+        "url": "https://csharpdb.com/docs/sql-reference.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'SQL Source Reference',
+        description: 'Full migrated source reference for the original CSharpDB SQL markdown guide.',
+        keywords: 'CSharpDB source reference, migrated markdown, archival reference',
+        canonicalPath: 'docs/sql-reference.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#data-types">Data Types</a></li>
+                        <li><a href="#statements">Statements</a></li>
+                        <li class="toc-child"><a href="#create-table">CREATE TABLE</a></li>
+                        <li class="toc-child"><a href="#alter-table">ALTER TABLE</a></li>
+                        <li class="toc-child"><a href="#drop-table">DROP TABLE</a></li>
+                        <li class="toc-child"><a href="#create-index">CREATE INDEX</a></li>
+                        <li class="toc-child"><a href="#drop-index">DROP INDEX</a></li>
+                        <li class="toc-child"><a href="#create-view">CREATE VIEW</a></li>
+                        <li class="toc-child"><a href="#drop-view">DROP VIEW</a></li>
+                        <li class="toc-child"><a href="#create-trigger">CREATE TRIGGER</a></li>
+                        <li class="toc-child"><a href="#drop-trigger">DROP TRIGGER</a></li>
+                        <li class="toc-child"><a href="#analyze">ANALYZE</a></li>
+                        <li><a href="#data-manipulation">Data Manipulation</a></li>
+                        <li class="toc-child"><a href="#insert">INSERT</a></li>
+                        <li class="toc-child"><a href="#update">UPDATE</a></li>
+                        <li class="toc-child"><a href="#delete">DELETE</a></li>
+                        <li class="toc-child"><a href="#select">SELECT</a></li>
+                        <li><a href="#common-table-expressions-ctes">Common Table Expressions (CTEs)</a></li>
+                        <li><a href="#set-operations">Set Operations</a></li>
+                        <li><a href="#expressions-and-operators">Expressions and Operators</a></li>
+                        <li class="toc-child"><a href="#arithmetic">Arithmetic</a></li>
+                        <li class="toc-child"><a href="#comparison">Comparison</a></li>
+                        <li class="toc-child"><a href="#logical">Logical</a></li>
+                        <li class="toc-child"><a href="#special-expressions">Special Expressions</a></li>
+                        <li><a href="#functions">Functions</a></li>
+                        <li class="toc-child"><a href="#aggregate-functions">Aggregate Functions</a></li>
+                        <li class="toc-child"><a href="#scalar-functions">Scalar Functions</a></li>
+                        <li><a href="#parameters">Parameters</a></li>
+                        <li><a href="#collations">Collations</a></li>
+                        <li><a href="#limitations">Limitations</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/sql-reference.md</code>. For the shorter curated page, see <a href="sql.html">SQL Reference</a>.</div>
+                <h1 id="sql-reference">SQL Reference</h1>
+                <p class="lead">Complete reference for the SQL dialect supported by CSharpDB.</p>
+                <hr/>
+                <h2 id="data-types">Data Types</h2>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Type</th>
+                <th>Aliases</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>INTEGER</code></td>
+                <td><code>INT</code></td>
+                <td>64-bit signed integer</td>
+                </tr>
+                <tr>
+                <td><code>REAL</code></td>
+                <td><code>FLOAT</code>, <code>DOUBLE</code></td>
+                <td>64-bit IEEE 754 floating point</td>
+                </tr>
+                <tr>
+                <td><code>TEXT</code></td>
+                <td><code>VARCHAR</code></td>
+                <td>UTF-8 Unicode string</td>
+                </tr>
+                <tr>
+                <td><code>BLOB</code></td>
+                <td>—</td>
+                <td>Raw binary data</td>
+                </tr>
+                <tr>
+                <td><code>NULL</code></td>
+                <td>—</td>
+                <td>Explicit NULL value (any column unless constrained <code>NOT NULL</code>)</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>CSharpDB uses a flexible type system. Arithmetic operators perform implicit coercion
+                between numeric types where needed.</p>
+                <hr/>
+                <h2 id="statements">Statements</h2>
+                <h3 id="create-table">CREATE TABLE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TABLE [IF NOT EXISTS] table_name (
+                    column_name type [PRIMARY KEY] [IDENTITY | AUTOINCREMENT] [NOT NULL]
+                                     [COLLATE collation_name]
+                                     [REFERENCES other_table(column) [ON DELETE CASCADE | RESTRICT]],
+                    ...
+                );
+                </code></pre></div>
+                <p><strong>Constraints:</strong></p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Constraint</th>
+                <th>Scope</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>PRIMARY KEY</code></td>
+                <td>Column</td>
+                <td>Designates the row identity column (integer)</td>
+                </tr>
+                <tr>
+                <td><code>IDENTITY</code> / <code>AUTOINCREMENT</code></td>
+                <td>Column</td>
+                <td>Auto-incrementing integer primary key</td>
+                </tr>
+                <tr>
+                <td><code>NOT NULL</code></td>
+                <td>Column</td>
+                <td>Rejects NULL values on insert/update</td>
+                </tr>
+                <tr>
+                <td><code>COLLATE</code></td>
+                <td>Column</td>
+                <td>Sets collation for TEXT comparisons (see <a href="#collations">Collations</a>)</td>
+                </tr>
+                <tr>
+                <td><code>REFERENCES</code></td>
+                <td>Column</td>
+                <td>Foreign key referencing another table's column</td>
+                </tr>
+                <tr>
+                <td><code>ON DELETE CASCADE</code></td>
+                <td>Foreign key</td>
+                <td>Deletes child rows when parent is deleted</td>
+                </tr>
+                <tr>
+                <td><code>ON DELETE RESTRICT</code></td>
+                <td>Foreign key</td>
+                <td>Prevents deletion of parent row while children exist</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="alter-table">ALTER TABLE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">ALTER TABLE table_name ADD COLUMN column_name type [constraints];
+                ALTER TABLE table_name DROP COLUMN column_name;
+                ALTER TABLE table_name DROP CONSTRAINT constraint_name;
+                ALTER TABLE table_name RENAME TO new_name;
+                ALTER TABLE table_name RENAME COLUMN old_name TO new_name;
+                </code></pre></div>
+                <h3 id="drop-table">DROP TABLE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP TABLE [IF EXISTS] table_name;
+                </code></pre></div>
+                <h3 id="create-index">CREATE INDEX</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE [UNIQUE] INDEX [IF NOT EXISTS] index_name
+                ON table_name (column1 [, column2, ...]);
+                </code></pre></div>
+                <h3 id="drop-index">DROP INDEX</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP INDEX [IF EXISTS] index_name;
+                </code></pre></div>
+                <h3 id="create-view">CREATE VIEW</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE VIEW [IF NOT EXISTS] view_name AS select_statement;
+                </code></pre></div>
+                <h3 id="drop-view">DROP VIEW</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP VIEW [IF EXISTS] view_name;
+                </code></pre></div>
+                <h3 id="create-trigger">CREATE TRIGGER</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TRIGGER [IF NOT EXISTS] trigger_name
+                {BEFORE | AFTER} {INSERT | UPDATE | DELETE}
+                ON table_name
+                [FOR EACH ROW]
+                [WHEN condition]
+                BEGIN
+                    statement1;
+                    [statement2;]
+                    ...
+                END;
+                </code></pre></div>
+                <p>Triggers can reference <code>NEW</code> and <code>OLD</code> row aliases in their body and <code>WHEN</code> condition:</p>
+                <ul>
+                <li><code>INSERT</code> triggers: <code>NEW</code> is available</li>
+                <li><code>DELETE</code> triggers: <code>OLD</code> is available</li>
+                <li><code>UPDATE</code> triggers: both <code>NEW</code> and <code>OLD</code> are available</li>
+                </ul>
+                <h3 id="drop-trigger">DROP TRIGGER</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP TRIGGER [IF EXISTS] trigger_name;
+                </code></pre></div>
+                <h3 id="analyze">ANALYZE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">ANALYZE table_name;
+                </code></pre></div>
+                <p>Collects per-column statistics (distinct count, min/max, frequency histograms, quantile
+                buckets) and index prefix statistics used by the query planner for cardinality estimation
+                and operator selection. See <a href="query-execution-pipeline.html">Query Execution Pipeline</a> for
+                details on how statistics influence planning.</p>
+                <hr/>
+                <h2 id="data-manipulation">Data Manipulation</h2>
+                <h3 id="insert">INSERT</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">INSERT INTO table_name [(column1, column2, ...)]
+                VALUES (value1, value2, ...);
+                </code></pre></div>
+                <p>Column list is optional when providing values for all columns in declaration order.</p>
+                <h3 id="update">UPDATE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">UPDATE table_name
+                SET column1 = expression1 [, column2 = expression2, ...]
+                [WHERE condition];
+                </code></pre></div>
+                <h3 id="delete">DELETE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DELETE FROM table_name
+                [WHERE condition];
+                </code></pre></div>
+                <h3 id="select">SELECT</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT [DISTINCT] column_list
+                FROM table_reference
+                [JOIN ...]
+                [WHERE condition]
+                [GROUP BY column1 [, column2, ...]]
+                [HAVING condition]
+                [ORDER BY column1 [ASC | DESC] [, ...]]
+                [LIMIT count]
+                [OFFSET skip];
+                </code></pre></div>
+                <h4>Column List</h4>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT *                              -- all columns
+                SELECT column_name                    -- single column
+                SELECT column_name AS alias           -- aliased column
+                SELECT table.column_name              -- qualified column
+                SELECT expression                     -- computed value
+                SELECT aggregate_function(...)        -- aggregate
+                </code></pre></div>
+                <h4>FROM and JOIN</h4>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FROM table_name [AS alias]
+                
+                -- Join types
+                INNER JOIN table_name ON condition
+                LEFT  JOIN table_name ON condition
+                RIGHT JOIN table_name ON condition
+                CROSS JOIN table_name
+                </code></pre></div>
+                <p>All join types except <code>CROSS JOIN</code> require an <code>ON</code> condition.</p>
+                <h4>Subqueries</h4>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">-- Scalar subquery (must return a single value)
+                SELECT (SELECT MAX(age) FROM users) AS max_age;
+                
+                -- IN subquery
+                WHERE column IN (SELECT id FROM other_table)
+                WHERE column NOT IN (SELECT id FROM other_table)
+                
+                -- EXISTS subquery
+                WHERE EXISTS (SELECT 1 FROM other_table WHERE condition)
+                </code></pre></div>
+                <hr/>
+                <h2 id="common-table-expressions-ctes">Common Table Expressions (CTEs)</h2>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">WITH cte_name [(column1, column2, ...)] AS (
+                    select_statement
+                )
+                [, another_cte AS (...)]
+                SELECT ... FROM cte_name ...;
+                </code></pre></div>
+                <p>Multiple CTEs can be chained with commas. Optional column name lists rename the CTE's
+                output columns.</p>
+                <blockquote>
+                <p><strong>Note:</strong> The <code>RECURSIVE</code> keyword is parsed but recursive CTE execution is not yet
+                implemented.</p>
+                </blockquote>
+                <hr/>
+                <h2 id="set-operations">Set Operations</h2>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">select_statement UNION     select_statement
+                select_statement INTERSECT select_statement
+                select_statement EXCEPT    select_statement
+                </code></pre></div>
+                <p>Compound queries support trailing <code>ORDER BY</code>, <code>LIMIT</code>, and <code>OFFSET</code> applied to the
+                combined result.</p>
+                <hr/>
+                <h2 id="expressions-and-operators">Expressions and Operators</h2>
+                <h3 id="arithmetic">Arithmetic</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>+</code></td>
+                <td>Addition</td>
+                </tr>
+                <tr>
+                <td><code>-</code></td>
+                <td>Subtraction (also unary negation)</td>
+                </tr>
+                <tr>
+                <td><code>*</code></td>
+                <td>Multiplication</td>
+                </tr>
+                <tr>
+                <td><code>/</code></td>
+                <td>Division (error on division by zero)</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="comparison">Comparison</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>=</code></td>
+                <td>Equal</td>
+                </tr>
+                <tr>
+                <td><code>&lt;&gt;</code> or <code>!=</code></td>
+                <td>Not equal</td>
+                </tr>
+                <tr>
+                <td><code>&lt;</code></td>
+                <td>Less than</td>
+                </tr>
+                <tr>
+                <td><code>&gt;</code></td>
+                <td>Greater than</td>
+                </tr>
+                <tr>
+                <td><code>&lt;=</code></td>
+                <td>Less than or equal</td>
+                </tr>
+                <tr>
+                <td><code>&gt;=</code></td>
+                <td>Greater than or equal</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="logical">Logical</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>AND</code></td>
+                <td>Logical conjunction</td>
+                </tr>
+                <tr>
+                <td><code>OR</code></td>
+                <td>Logical disjunction</td>
+                </tr>
+                <tr>
+                <td><code>NOT</code></td>
+                <td>Logical negation</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="special-expressions">Special Expressions</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Expression</th>
+                <th>Example</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>BETWEEN ... AND ...</code></td>
+                <td><code>WHERE age BETWEEN 18 AND 65</code></td>
+                </tr>
+                <tr>
+                <td><code>IN (...)</code></td>
+                <td><code>WHERE status IN ('active', 'pending')</code></td>
+                </tr>
+                <tr>
+                <td><code>NOT IN (...)</code></td>
+                <td><code>WHERE id NOT IN (1, 2, 3)</code></td>
+                </tr>
+                <tr>
+                <td><code>LIKE</code></td>
+                <td><code>WHERE name LIKE 'J%'</code></td>
+                </tr>
+                <tr>
+                <td><code>LIKE ... ESCAPE</code></td>
+                <td><code>WHERE code LIKE '100\%%' ESCAPE '\'</code></td>
+                </tr>
+                <tr>
+                <td><code>IS NULL</code></td>
+                <td><code>WHERE email IS NULL</code></td>
+                </tr>
+                <tr>
+                <td><code>IS NOT NULL</code></td>
+                <td><code>WHERE email IS NOT NULL</code></td>
+                </tr>
+                </tbody>
+                </table>
+                <p><strong>LIKE wildcards:</strong></p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Wildcard</th>
+                <th>Matches</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>%</code></td>
+                <td>Zero or more characters</td>
+                </tr>
+                <tr>
+                <td><code>_</code></td>
+                <td>Exactly one character</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="functions">Functions</h2>
+                <h3 id="aggregate-functions">Aggregate Functions</h3>
+                <p>Used with or without <code>GROUP BY</code>. All except <code>COUNT(*)</code> ignore NULL values.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Function</th>
+                <th>Description</th>
+                <th style="text-align:center">Supports DISTINCT</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>COUNT(*)</code></td>
+                <td>Number of rows</td>
+                <td style="text-align:center">—</td>
+                </tr>
+                <tr>
+                <td><code>COUNT(expr)</code></td>
+                <td>Number of non-NULL values</td>
+                <td style="text-align:center">Yes</td>
+                </tr>
+                <tr>
+                <td><code>SUM(expr)</code></td>
+                <td>Sum of numeric values</td>
+                <td style="text-align:center">Yes</td>
+                </tr>
+                <tr>
+                <td><code>AVG(expr)</code></td>
+                <td>Average of numeric values</td>
+                <td style="text-align:center">Yes</td>
+                </tr>
+                <tr>
+                <td><code>MIN(expr)</code></td>
+                <td>Minimum value</td>
+                <td style="text-align:center">—</td>
+                </tr>
+                <tr>
+                <td><code>MAX(expr)</code></td>
+                <td>Maximum value</td>
+                <td style="text-align:center">—</td>
+                </tr>
+                </tbody>
+                </table>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT COUNT(DISTINCT status), AVG(age) FROM users;
+                </code></pre></div>
+                <h3 id="scalar-functions">Scalar Functions</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Function</th>
+                <th>Arguments</th>
+                <th>Returns</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>TEXT(expr)</code></td>
+                <td>1</td>
+                <td>TEXT</td>
+                <td>Converts any value to its text representation</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="parameters">Parameters</h2>
+                <p>Named parameters are supported in value positions using the <code>@</code> prefix:</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">SELECT * FROM users WHERE name = @name AND age &gt; @minAge;
+                INSERT INTO users (name, age) VALUES (@name, @age);
+                UPDATE users SET name = @name WHERE id = @id;
+                DELETE FROM users WHERE id = @id;
+                </code></pre></div>
+                <p>Parameters cannot be used in identifier positions (table names, column names).</p>
+                <hr/>
+                <h2 id="collations">Collations</h2>
+                <p>Collations control how TEXT values are compared and sorted. They can be specified at the
+                column level in <code>CREATE TABLE</code> or at the expression level using the <code>COLLATE</code> operator.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Collation</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>BINARY</code></td>
+                <td>Byte-for-byte comparison (default)</td>
+                </tr>
+                <tr>
+                <td><code>NOCASE</code></td>
+                <td>Case-insensitive comparison</td>
+                </tr>
+                <tr>
+                <td><code>NOCASE_AI</code></td>
+                <td>Case-insensitive and accent-insensitive comparison</td>
+                </tr>
+                <tr>
+                <td><code>ICU:&lt;locale&gt;</code></td>
+                <td>Unicode ICU-based comparison with locale support</td>
+                </tr>
+                </tbody>
+                </table>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">-- Column-level collation
+                CREATE TABLE products (
+                    name TEXT COLLATE NOCASE
+                );
+                
+                -- Expression-level collation
+                SELECT * FROM products ORDER BY name COLLATE NOCASE_AI;
+                </code></pre></div>
+                <hr/>
+                <h2 id="limitations">Limitations</h2>
+                <p>The following SQL features are <strong>not currently supported</strong>:</p>
+                <ul>
+                <li><code>CASE</code> / <code>WHEN</code> expressions</li>
+                <li><code>CAST</code> expressions (implicit coercion only)</li>
+                <li><code>DEFAULT</code> column values</li>
+                <li><code>CHECK</code> constraints</li>
+                <li><code>RETURNING</code> clause on INSERT/UPDATE/DELETE</li>
+                <li><code>UPSERT</code> / <code>ON CONFLICT</code> / <code>INSERT OR REPLACE</code></li>
+                <li>Recursive CTE execution (<code>WITH RECURSIVE</code> is parsed but not evaluated)</li>
+                <li>String functions (<code>UPPER</code>, <code>LOWER</code>, <code>LENGTH</code>, <code>SUBSTR</code>, <code>TRIM</code>)</li>
+                <li>Date/time functions (<code>DATE</code>, <code>TIME</code>, <code>DATETIME</code>, <code>STRFTIME</code>)</li>
+                <li>Math functions (<code>ABS</code>, <code>ROUND</code>, <code>CEIL</code>, <code>FLOOR</code>)</li>
+                <li>Window functions (<code>OVER</code>, <code>PARTITION BY</code>, <code>ROW_NUMBER</code>, etc.)</li>
+                <li>Stored procedures</li>
+                <li>Composite primary keys / composite foreign keys</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
