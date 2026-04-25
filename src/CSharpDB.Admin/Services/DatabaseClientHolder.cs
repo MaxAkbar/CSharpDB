@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CSharpDB.Admin.Configuration;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.Storage.Diagnostics;
@@ -13,22 +14,21 @@ namespace CSharpDB.Admin.Services;
 public sealed class DatabaseClientHolder : ICSharpDbClient
 {
     private ICSharpDbClient _inner;
+    private readonly AdminHostDatabaseOptions _hostDatabaseOptions;
     private readonly object _lock = new();
 
     public event Action? DatabaseChanged;
 
-    public DatabaseClientHolder(ICSharpDbClient initial)
+    public DatabaseClientHolder(ICSharpDbClient initial, AdminHostDatabaseOptions hostDatabaseOptions)
     {
         _inner = initial;
+        _hostDatabaseOptions = hostDatabaseOptions;
     }
 
     public async Task SwitchAsync(string databasePath)
     {
-        var newClient = CSharpDbClient.Create(new CSharpDbClientOptions
-        {
-            Transport = CSharpDbTransport.Direct,
-            DataSource = databasePath,
-        });
+        var newClient = CSharpDbClient.Create(
+            AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions));
 
         // Verify the new database is accessible before swapping.
         await newClient.GetInfoAsync();

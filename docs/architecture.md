@@ -692,7 +692,7 @@ The current daemon default host shape is:
 - `UseWriteOptimizedPreset = true`
 - optional hot-table / hot-collection preload hints through `CSharpDB:HostDatabase`
 
-See the [REST API Reference](rest-api.md) for HTTP details and the [Daemon README](../src/CSharpDB.Daemon/README.md) for the gRPC host design.
+See the [REST API Reference](https://csharpdb.com/docs/rest-api.html) for HTTP details and the [Daemon README](../src/CSharpDB.Daemon/README.md) for the gRPC host design.
 
 ---
 
@@ -767,7 +767,7 @@ Each row flows upward through the operator chain, transformed at each stage, unt
 ## See Also
 
 - [Getting Started Tutorial](getting-started.md) — Step-by-step walkthrough with code examples
-- [Internals & Contributing](internals.md) — How to extend the engine, add SQL statements, create operators
-- [REST API Reference](rest-api.md) — HTTP endpoint documentation
+- [Internals & Contributing](https://csharpdb.com/docs/internals.html) — How to extend the engine, add SQL statements, create operators
+- [REST API Reference](https://csharpdb.com/docs/rest-api.html) — HTTP endpoint documentation
 - [Roadmap](roadmap.md) — Planned features and project direction
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data across all engine layers

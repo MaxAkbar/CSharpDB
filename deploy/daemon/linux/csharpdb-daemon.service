@@ -1,0 +1,19 @@
+[Unit]
+Description=CSharpDB Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WorkingDirectory={{INSTALL_DIR}}
+ExecStart={{INSTALL_DIR}}/CSharpDB.Daemon
+EnvironmentFile={{ENV_FILE}}
+Restart=on-failure
+RestartSec=5
+User={{SERVICE_USER}}
+Group={{SERVICE_GROUP}}
+KillSignal=SIGINT
+SyslogIdentifier={{SERVICE_NAME}}
+
+[Install]
+WantedBy=multi-user.target

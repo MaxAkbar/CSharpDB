@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preload" href="js/csharpdb.bundle.js" as="script">
+    <title>Architecture Source Reference — CSharpDB</title>
+    <meta name="description" content="Full migrated source reference for the original CSharpDB architecture markdown guide.">
+    <link rel="canonical" href="https://csharpdb.com/architecture-reference.html">
+    <meta property="og:title" content="Architecture Source Reference — CSharpDB">
+    <meta property="og:description" content="Full migrated source reference for the original CSharpDB architecture markdown guide.">
+    <meta property="og:url" content="https://csharpdb.com/architecture-reference.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Architecture Source Reference",
+        "description": "Full migrated source reference for the original CSharpDB architecture markdown guide.",
+        "url": "https://csharpdb.com/architecture-reference.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'architecture';
+    window.pageConfig = {
+        title: 'Architecture Source Reference',
+        description: 'Full migrated source reference for the original CSharpDB architecture markdown guide.',
+        keywords: 'CSharpDB source reference, migrated markdown, archival reference',
+        canonicalPath: 'architecture-reference.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#layer-overview">Layer Overview</a></li>
+                        <li><a href="#layer-1-primitives-csharpdb-primitives">Layer 1: Primitives ( CSharpDB.Primitives )</a></li>
+                        <li class="toc-child"><a href="#dbvalue">DbValue</a></li>
+                        <li><a href="#layer-2-storage-csharpdb-storage">Layer 2: Storage ( CSharpDB.Storage )</a></li>
+                        <li class="toc-child"><a href="#file-i-o">File I/O</a></li>
+                        <li class="toc-child"><a href="#page-system">Page System</a></li>
+                        <li class="toc-child"><a href="#write-ahead-log-wal">Write-Ahead Log (WAL)</a></li>
+                        <li class="toc-child"><a href="#b-tree">B+Tree</a></li>
+                        <li class="toc-child"><a href="#record-encoding">Record Encoding</a></li>
+                        <li class="toc-child"><a href="#schema-catalog">Schema Catalog</a></li>
+                        <li><a href="#layer-3-sql-frontend-csharpdb-sql">Layer 3: SQL Frontend ( CSharpDB.Sql )</a></li>
+                        <li class="toc-child"><a href="#supported-statements">Supported Statements</a></li>
+                        <li class="toc-child"><a href="#parsing-pipeline">Parsing Pipeline</a></li>
+                        <li><a href="#layer-4-execution-csharpdb-execution">Layer 4: Execution ( CSharpDB.Execution )</a></li>
+                        <li class="toc-child"><a href="#iterator-model">Iterator Model</a></li>
+                        <li class="toc-child"><a href="#operator-catalog">Operator Catalog</a></li>
+                        <li class="toc-child"><a href="#query-planning">Query Planning</a></li>
+                        <li class="toc-child"><a href="#expression-evaluator">Expression Evaluator</a></li>
+                        <li><a href="#layer-5-engine-csharpdb-engine">Layer 5: Engine ( CSharpDB.Engine )</a></li>
+                        <li><a href="#layer-6-pipelines-csharpdb-pipelines">Layer 6: Pipelines ( CSharpDB.Pipelines )</a></li>
+                        <li><a href="#layer-7-unified-client-csharpdb-client">Layer 7: Unified Client ( CSharpDB.Client )</a></li>
+                        <li class="toc-child"><a href="#pipeline-integration-through-the-client">Pipeline Integration Through The Client</a></li>
+                        <li><a href="#layer-8-ado-net-provider-csharpdb-data">Layer 8: ADO.NET Provider ( CSharpDB.Data )</a></li>
+                        <li><a href="#layer-9-remote-hosts-csharpdb-api-csharpdb-daemon">Layer 9: Remote Hosts ( CSharpDB.Api + CSharpDB.Daemon )</a></li>
+                        <li class="toc-child"><a href="#rest-api-csharpdb-api">REST API ( CSharpDB.Api )</a></li>
+                        <li class="toc-child"><a href="#grpc-host-csharpdb-daemon">gRPC Host ( CSharpDB.Daemon )</a></li>
+                        <li><a href="#layer-10-admin-dashboard-csharpdb-admin">Layer 10: Admin Dashboard ( CSharpDB.Admin )</a></li>
+                        <li><a href="#layer-11-cli-and-mcp-hosts">Layer 11: CLI And MCP Hosts</a></li>
+                        <li><a href="#end-to-end-life-of-a-query">End-to-End: Life of a Query</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/architecture.md</code>. For the shorter curated page, see <a href="architecture.html">Architecture</a>.</div>
+                <h1 id="csharpdb-architecture">CSharpDB Architecture</h1>
+                <p class="lead">CSharpDB is a layered embedded database engine inspired by SQLite's architecture.
+                The core engine layers have clear responsibilities and mostly communicate with
+                adjacent layers. Above the engine, CSharpDB now exposes multiple consumer-facing
+                entry points, with <code>CSharpDB.Client</code> as the authoritative database API. It also
+                ships a reusable package-driven ETL pipeline runtime in <code>CSharpDB.Pipelines</code>
+                that is reused by the client, API, CLI, and Admin surfaces.</p>
+                <h2 id="layer-overview">Layer Overview</h2>
+                <div class="code-block" data-title="Code"><pre><code>
+                ┌────────────────────────────────────────────────────────────────────┐
+                │ Hosts / Applications                                               │
+                │ CSharpDB.Api   CSharpDB.Daemon   CSharpDB.Admin   CSharpDB.Cli     │
+                │ CSharpDB.Mcp                                                       │
+                ├────────────────────────────────────────────────────────────────────┤
+                │ Consumer Access Layer                                              │
+                │ CSharpDB.Client                     CSharpDB.Data                  │
+                │ ICSharpDbClient                     ADO.NET Provider               │
+                ├────────────────────────────────────────────────────────────────────┤
+                │ Data Movement Layer                                                │
+                │ CSharpDB.Pipelines                                                 │
+                │ Package Models / Validation / Orchestrator / Serialization         │
+                ├────────────────────────────────────────────────────────────────────┤
+                │ CSharpDB.Engine                                                    │
+                │ Database.OpenAsync / ExecuteAsync / Transactions / ReaderSession   │
+                ├────────────────────────────────────────────────────────────────────┤
+                │ CSharpDB.Execution                                                 │
+                │ QueryPlanner, Operators, ExpressionEvaluator                       │
+                ├───────────────────────────────┬────────────────────────────────────┤
+                │ CSharpDB.Sql                  │ CSharpDB.Storage                   │
+                │ Tokenizer, Parser, AST        │ Pager, B+Tree, WAL, RecordCodec    │
+                ├───────────────────────────────┴────────────────────────────────────┤
+                │ CSharpDB.Primitives                                                │
+                │ DbValue, DbType, Schema, ErrorCodes                                │
+                └────────────────────────────────────────────────────────────────────┘
+                </code></pre></div>
+                <p><strong>Dependency graph:</strong></p>
+                <div class="code-block" data-title="Code"><pre><code>Api     → Client
+                Daemon  → Client
+                Admin   → Client
+                Cli     → Client
+                Cli     → Engine              (local-only helpers)
+                Cli     → Sql
+                Cli     → Storage.Diagnostics
+                Cli     → Pipelines
+                Mcp     → Client
+                Data    → Client
+                Data    → Engine            (named shared-memory host + internal session types)
+                Client  → Engine
+                Client  → Pipelines
+                Client  → Sql
+                Client  → Storage.Diagnostics
+                Pipelines → Sql
+                Engine  → Execution → Sql
+                                    → Storage → Primitives
+                          Execution → Primitives
+                Engine  → Storage
+                Engine  → Sql
+                Engine  → Primitives
+                </code></pre></div>
+                <hr/>
+                <h2 id="layer-1-primitives-csharpdb-primitives">Layer 1: Primitives (<code>CSharpDB.Primitives</code>)</h2>
+                <p>Shared types used by every other layer. No dependencies.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>DbType.cs</code></td>
+                <td>Enum: <code>Null</code>, <code>Integer</code>, <code>Real</code>, <code>Text</code>, <code>Blob</code></td>
+                </tr>
+                <tr>
+                <td><code>DbValue.cs</code></td>
+                <td>Discriminated union value type with comparison, equality, truthiness</td>
+                </tr>
+                <tr>
+                <td><code>Schema.cs</code></td>
+                <td><code>ColumnDefinition</code>, <code>TableSchema</code>, <code>IndexSchema</code>, <code>TriggerSchema</code>, and related metadata types</td>
+                </tr>
+                <tr>
+                <td><code>CSharpDbException.cs</code></td>
+                <td>Exception with <code>ErrorCode</code> enum (IoError, TableNotFound, SyntaxError, DuplicateKey, WalError, Busy, etc.)</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="dbvalue">DbValue</h3>
+                <p><code>DbValue</code> is a <code>readonly struct</code> that can hold any of the five database types. It uses a compact internal layout — a <code>long</code> for integers, a <code>double</code> for reals, and an <code>object?</code> reference for strings and byte arrays. The <code>Type</code> property indicates which field is active.</p>
+                <p>Key behaviors:</p>
+                <ul>
+                <li><strong>Comparison</strong>: NULLs sort first. Integer and Real are cross-comparable via promotion to double. Text uses ordinal string comparison. Blob uses byte-by-byte comparison.</li>
+                <li><strong>Truthiness</strong>: NULL and zero are falsy. Non-zero numbers, all strings, and all blobs are truthy. Used by WHERE clause evaluation.</li>
+                </ul>
+                <hr/>
+                <h2 id="layer-2-storage-csharpdb-storage">Layer 2: Storage (<code>CSharpDB.Storage</code>)</h2>
+                <p>The storage layer manages all on-disk data structures. It handles file I/O, page caching, crash-safe transactions via WAL, B+tree operations, secondary indexes, and record encoding.</p>
+                <h3 id="file-i-o">File I/O</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>IStorageDevice.cs</code></td>
+                <td>Abstract async interface: <code>ReadAsync</code>, <code>WriteAsync</code>, <code>FlushAsync</code>, <code>SetLengthAsync</code></td>
+                </tr>
+                <tr>
+                <td><code>FileStorageDevice.cs</code></td>
+                <td>Implementation using <code>System.IO.RandomAccess</code> with <code>FileOptions.Asynchronous</code></td>
+                </tr>
+                </tbody>
+                </table>
+                <p>The storage device abstraction means the engine could be backed by any byte-addressable store (memory, network, encrypted file).</p>
+                <h3 id="page-system">Page System</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>PageConstants.cs</code></td>
+                <td>Page size (4096 bytes), file header layout, page types, WAL format constants</td>
+                </tr>
+                <tr>
+                <td><code>SlottedPage.cs</code></td>
+                <td>Structured access to slotted page layout (cells, pointers, free space)</td>
+                </tr>
+                <tr>
+                <td><code>Pager.cs</code></td>
+                <td>Page I/O, buffer pool, dirty tracking, page allocation/freelist, transaction lifecycle, WAL integration, snapshot readers</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Database File Format</h4>
+                <p>The database is a sequence of 4096-byte pages. Page 0 contains the file header:</p>
+                <div class="code-block" data-title="Code"><pre><code>
+                Offset  Size  Field
+                ──────  ────  ─────
+                0       4     Magic bytes: "CSDB"
+                4       4     Format version (1)
+                8       4     Page size (4096)
+                12      4     Total page count
+                16      4     Schema catalog B+tree root page ID
+                20      4     Freelist head page ID (0 = empty)
+                24      4     Change counter
+                28      72    Reserved (zeroed)
+                100     ...   Page 0 content area (usable for B+tree data)
+                </code></pre></div>
+                <h4>Slotted Page Layout</h4>
+                <p>Each B+tree page uses a slotted page format:</p>
+                <div class="code-block" data-title="Code"><pre><code>
+                ┌───────────────────────────────────────────────────────────┐
+                │ Page Header (9 bytes)                                     │
+                │  [PageType:1] [CellCount:2] [ContentStart:2] [RightPtr:4] │
+                ├───────────────────────────────────────────────────────────┤
+                │ Cell Pointer Array (2 bytes each, grows forward →)        │
+                │  [ptr0] [ptr1] [ptr2] ...                                 │
+                ├───────────────────────────────────────────────────────────┤
+                │                    Free Space                             │
+                ├───────────────────────────────────────────────────────────┤
+                │ Cell Content Area (grows ← backward from page end)        │
+                │  ... [cell2] [cell1] [cell0]                              │
+                └───────────────────────────────────────────────────────────┘
+                </code></pre></div>
+                <p>The cell pointer array and cell content area grow toward each other. When they meet, the page is full and must be split.</p>
+                <h4>Pager</h4>
+                <p>The <code>Pager</code> is the central coordinator for page-level operations:</p>
+                <ul>
+                <li><strong>Page cache</strong>: In-memory <code>Dictionary&lt;uint, byte[]&gt;</code> of loaded pages</li>
+                <li><strong>Dirty tracking</strong>: <code>HashSet&lt;uint&gt;</code> of modified pages that need flushing</li>
+                <li><strong>Allocation</strong>: Pages are allocated from a freelist (linked list of free page IDs) or by extending the page count</li>
+                <li><strong>Transactions</strong>: Begin/Commit/Rollback lifecycle with WAL integration</li>
+                <li><strong>Writer lock</strong>: <code>SemaphoreSlim(1,1)</code> ensures single-writer access</li>
+                <li><strong>Snapshot readers</strong>: <code>CreateSnapshotReader(snapshot)</code> creates read-only pagers that see a frozen point-in-time view of the database</li>
+                </ul>
+                <h3 id="write-ahead-log-wal">Write-Ahead Log (WAL)</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>WriteAheadLog.cs</code></td>
+                <td>WAL file I/O — frame-based append, commit, rollback, checkpoint, crash recovery</td>
+                </tr>
+                <tr>
+                <td><code>WalIndex.cs</code></td>
+                <td>In-memory index mapping <code>pageId → WAL file offset</code>, plus immutable snapshots</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>CSharpDB uses a Write-Ahead Log for crash recovery and concurrent reader support. Modified pages are appended to a <code>.wal</code> file during commit, while the main <code>.db</code> file retains old data until checkpoint.</p>
+                <h4>WAL File Format</h4>
+                <div class="code-block" data-title="Code"><pre><code>
+                ┌──────────────────────────────────────────────────────┐
+                │ WAL Header (32 bytes)                                │
+                │  [magic:"CWAL"] [version:4] [pageSize:4]             │
+                │  [dbPageCount:4] [salt1:4] [salt2:4]                 │
+                │  [checksumSeed:4] [reserved:4]                       │
+                ├──────────────────────────────────────────────────────┤
+                │ Frame 0 (4120 bytes)                                 │
+                │  [pageId:4] [dbPageCount:4] [salt1:4] [salt2:4]      │
+                │  [headerChecksum:4] [dataChecksum:4]                 │
+                │  [page data: 4096 bytes]                             │
+                ├──────────────────────────────────────────────────────┤
+                │ Frame 1 ...                                          │
+                ├──────────────────────────────────────────────────────┤
+                │ Frame N (commit frame: dbPageCount &gt; 0)           │
+                └──────────────────────────────────────────────────────┘
+                </code></pre></div>
+                <h4>Transaction Lifecycle (WAL Mode)</h4>
+                <div class="code-block" data-title="Code"><pre><code>1. BEGIN TRANSACTION
+                   └── Acquire writer lock (SemaphoreSlim)
+                   └── Record WAL position
+                
+                2. MODIFY PAGES
+                   └── Track dirty pages in memory
+                   └── Pages are modified in the page cache
+                
+                3a. COMMIT
+                    └── Append all dirty pages as WAL frames
+                    └── Mark last frame as commit (dbPageCount &gt; 0)
+                    └── Flush WAL according to configured durability policy (commit point)
+                    └── Update in-memory WAL index
+                    └── Release writer lock
+                    └── Auto-checkpoint if WAL exceeds threshold (default: 1000 frames)
+                
+                3b. ROLLBACK (or CRASH)
+                    └── Truncate WAL back to pre-transaction position
+                    └── Clear page cache
+                    └── Release writer lock
+                </code></pre></div>
+                <h4>WAL Durability Modes</h4>
+                <p>File-backed storage now exposes explicit WAL durability modes through
+                <code>StorageEngineOptions.DurabilityMode</code>:</p>
+                <ul>
+                <li><strong><code>Durable</code></strong>: flushes managed buffers and forces the OS-backed WAL flush
+                before commit success is reported. This is the crash-safe default and is
+                analogous to SQLite WAL <code>FULL</code>.</li>
+                <li><strong><code>Buffered</code></strong>: flushes managed buffers into the OS, but does not force an
+                OS-buffer flush on every commit. This is the higher-throughput mode and is
+                analogous to SQLite WAL <code>NORMAL</code>.</li>
+                </ul>
+                <p>Internally, <code>WriteAheadLog</code> routes commit completion through an explicit
+                <code>IWalFlushPolicy</code> (<code>DurableWalFlushPolicy</code> or <code>BufferedWalFlushPolicy</code>) so the
+                durability tradeoff is visible at the storage boundary instead of being an
+                implicit side effect of file-stream behavior.</p>
+                <p>Durable commits also support grouped completion: when multiple writers reach the
+                flush boundary together, they can share one durable flush sequence. The pager's
+                commit wait is no longer held under the writer lock, which keeps single-writer
+                correctness intact while reducing unnecessary durable-commit contention.</p>
+                <h4>Crash Recovery</h4>
+                <p>On database open, if a <code>.wal</code> file exists, the WAL is scanned frame-by-frame. Committed transactions (those with a valid commit frame) are replayed into the WAL index, and a checkpoint copies all committed pages to the DB file.</p>
+                <h4>Concurrent Readers</h4>
+                <p>Readers acquire a <strong>snapshot</strong> — a frozen copy of the WAL index at a point in time. Each snapshot reader gets its own <code>Pager</code> instance that routes page reads through the snapshot. This means:</p>
+                <ul>
+                <li>Readers see a consistent point-in-time view</li>
+                <li>Writers do not block readers</li>
+                <li>Multiple readers can be active simultaneously</li>
+                <li>Checkpoint is skipped while readers are active (their snapshots reference WAL data)</li>
+                </ul>
+                <h3 id="b-tree">B+Tree</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>BTree.cs</code></td>
+                <td>B+tree keyed by <code>long</code> rowid — insert, delete, find, split</td>
+                </tr>
+                <tr>
+                <td><code>BTreeCursor.cs</code></td>
+                <td>Forward-only cursor for sequential scans and seeks</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>Each table's data is stored in a B+tree where the key is an auto-generated rowid and the value is an encoded row. Secondary indexes also use B+trees.</p>
+                <p><strong>Leaf page cell format:</strong></p>
+                <div class="code-block" data-title="Code"><pre><code>[totalSize:varint] [key:8 bytes] [payload bytes...]
+                </code></pre></div>
+                <p><strong>Interior page cell format:</strong></p>
+                <div class="code-block" data-title="Code"><pre><code>[totalSize:varint] [leftChild:4 bytes] [key:8 bytes]
+                </code></pre></div>
+                <p>Interior pages also store a "rightmost child" pointer in the page header. Leaf pages are linked via a "next leaf" pointer for efficient sequential scans.</p>
+                <p><strong>Operations:</strong></p>
+                <ul>
+                <li><strong>Insert</strong>: Descend to the correct leaf, insert the cell. If the leaf overflows, split it and propagate the split key upward. If the root splits, create a new root.</li>
+                <li><strong>Delete</strong>: Descend to the leaf, remove the cell, rebalance underflowed pages by borrowing or merging when needed, and collapse an empty interior root back to its child.</li>
+                <li><strong>Find</strong>: Descend from root to leaf following routing keys in interior pages.</li>
+                <li><strong>Scan</strong>: The <code>BTreeCursor</code> starts at the leftmost leaf and follows next-leaf pointers.</li>
+                </ul>
+                <h3 id="record-encoding">Record Encoding</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>RecordEncoder.cs</code></td>
+                <td>Serialize/deserialize <code>DbValue[]</code> rows to compact binary format</td>
+                </tr>
+                <tr>
+                <td><code>Varint.cs</code></td>
+                <td>LEB128 variable-length integer encoding</td>
+                </tr>
+                <tr>
+                <td><code>SchemaSerializer.cs</code></td>
+                <td>Serialize/deserialize <code>TableSchema</code> for the schema catalog</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>Row encoding format:</p>
+                <div class="code-block" data-title="Code"><pre><code>[columnCount:varint] [type1:1 byte] [type2:1 byte] ... [data1] [data2] ...
+                </code></pre></div>
+                <p>Where each data field is:</p>
+                <ul>
+                <li><strong>Null</strong>: nothing (0 bytes)</li>
+                <li><strong>Integer</strong>: varint-encoded <code>long</code></li>
+                <li><strong>Real</strong>: 8 bytes (IEEE 754 double)</li>
+                <li><strong>Text</strong>: [length:varint] [UTF-8 bytes]</li>
+                <li><strong>Blob</strong>: [length:varint] [raw bytes]</li>
+                </ul>
+                <h3 id="schema-catalog">Schema Catalog</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>SchemaCatalog.cs</code></td>
+                <td>In-memory cache of table/index/view/trigger schemas, backed by dedicated B+trees</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>The schema catalog stores all database metadata in B+trees:</p>
+                <ul>
+                <li><strong>Table schemas</strong>: table name, column definitions, root page ID</li>
+                <li><strong>Index schemas</strong>: index name, table name, columns, uniqueness, root page ID</li>
+                <li><strong>View definitions</strong>: view name → SQL text</li>
+                <li><strong>Trigger definitions</strong>: trigger name, table, timing, event, body SQL</li>
+                </ul>
+                <p>On database open, all schemas are loaded into in-memory dictionaries for fast lookups. When objects are created or dropped, both the in-memory cache and the on-disk B+trees are updated.</p>
+                <hr/>
+                <h2 id="layer-3-sql-frontend-csharpdb-sql">Layer 3: SQL Frontend (<code>CSharpDB.Sql</code>)</h2>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>TokenType.cs</code></td>
+                <td>Enum of all token types (keywords, operators, literals, punctuation)</td>
+                </tr>
+                <tr>
+                <td><code>Token.cs</code></td>
+                <td>Token struct: <code>Type</code>, <code>Value</code> (string), <code>Position</code> (int)</td>
+                </tr>
+                <tr>
+                <td><code>Tokenizer.cs</code></td>
+                <td>Hand-rolled lexical scanner with keyword lookup table</td>
+                </tr>
+                <tr>
+                <td><code>Ast.cs</code></td>
+                <td>AST node classes for all statement and expression types</td>
+                </tr>
+                <tr>
+                <td><code>Parser.cs</code></td>
+                <td>Recursive descent parser with precedence climbing for expressions</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="supported-statements">Supported Statements</h3>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Category</th>
+                <th>Statements</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><strong>DDL</strong></td>
+                <td><code>CREATE TABLE</code>, <code>DROP TABLE</code>, <code>ALTER TABLE</code> (ADD/DROP COLUMN, RENAME TABLE/COLUMN)</td>
+                </tr>
+                <tr>
+                <td><strong>DML</strong></td>
+                <td><code>INSERT INTO</code>, <code>SELECT</code>, <code>UPDATE</code>, <code>DELETE</code></td>
+                </tr>
+                <tr>
+                <td><strong>Indexes</strong></td>
+                <td><code>CREATE INDEX</code>, <code>DROP INDEX</code> (with <code>UNIQUE</code>, <code>IF NOT EXISTS</code>/<code>IF EXISTS</code>, composite multi-column)</td>
+                </tr>
+                <tr>
+                <td><strong>Views</strong></td>
+                <td><code>CREATE VIEW</code>, <code>DROP VIEW</code></td>
+                </tr>
+                <tr>
+                <td><strong>Triggers</strong></td>
+                <td><code>CREATE TRIGGER</code>, <code>DROP TRIGGER</code> (BEFORE/AFTER, INSERT/UPDATE/DELETE)</td>
+                </tr>
+                <tr>
+                <td><strong>CTEs</strong></td>
+                <td><code>WITH ... AS (...) SELECT ...</code></td>
+                </tr>
+                <tr>
+                <td><strong>Set operations</strong></td>
+                <td><code>UNION</code>, <code>INTERSECT</code>, <code>EXCEPT</code> (inside top-level queries, views, and CTE bodies)</td>
+                </tr>
+                <tr>
+                <td><strong>Subqueries</strong></td>
+                <td>Scalar subqueries, <code>IN (SELECT ...)</code>, <code>EXISTS (SELECT ...)</code>, correlated evaluation in <code>WHERE</code>, non-aggregate projection, <code>UPDATE</code>/<code>DELETE</code> expressions</td>
+                </tr>
+                <tr>
+                <td><strong>Statistics</strong></td>
+                <td><code>ANALYZE [table]</code> — refreshes <code>sys.table_stats</code> and <code>sys.column_stats</code></td>
+                </tr>
+                <tr>
+                <td><strong>Identity</strong></td>
+                <td><code>INTEGER PRIMARY KEY IDENTITY</code> — auto-increment columns with persisted high-water mark</td>
+                </tr>
+                <tr>
+                <td><strong>Distinct</strong></td>
+                <td><code>SELECT DISTINCT</code>, <code>DISTINCT</code> inside aggregates</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="parsing-pipeline">Parsing Pipeline</h3>
+                <div class="code-block" data-title="Code"><pre><code>SQL string → Tokenizer → Token[] → Parser → AST (Statement tree)
+                </code></pre></div>
+                <p>The <strong>tokenizer</strong> scans the input character by character, recognizing keywords (case-insensitive), identifiers, numeric literals (integer and real), string literals (single-quoted with <code>''</code> escaping), operators, and punctuation.</p>
+                <p>The <strong>parser</strong> is a recursive descent parser. Each SQL statement type has its own parsing method. Expression parsing uses precedence climbing to correctly handle operator precedence:</p>
+                <div class="code-block" data-title="Code"><pre><code>
+                Precedence (low to high):
+                  OR
+                  AND
+                  NOT (unary)
+                  =, &lt;&gt;, &lt;, &gt;, &lt;=, &gt;=, LIKE, IN, BETWEEN, IS NULL
+                  +, -
+                  *, /
+                  - (unary)
+                </code></pre></div>
+                <hr/>
+                <h2 id="layer-4-execution-csharpdb-execution">Layer 4: Execution (<code>CSharpDB.Execution</code>)</h2>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>IOperator.cs</code></td>
+                <td>Iterator interface: <code>OpenAsync</code>, <code>MoveNextAsync</code>, <code>Current</code></td>
+                </tr>
+                <tr>
+                <td><code>Operators.cs</code></td>
+                <td>Physical operators: TableScan, IndexScan, Filter, Projection, Sort, Limit, Aggregate, Join, etc.</td>
+                </tr>
+                <tr>
+                <td><code>ExpressionEvaluator.cs</code></td>
+                <td>Evaluates expression AST against a row (including LIKE, IN, BETWEEN, IS NULL, aggregates)</td>
+                </tr>
+                <tr>
+                <td><code>QueryPlanner.cs</code></td>
+                <td>Converts AST statements into executable operator trees or DML/DDL actions</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="iterator-model">Iterator Model</h3>
+                <p>Query execution follows the Volcano/iterator model. Each operator implements <code>IOperator</code>:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">
+                public interface IOperator : IAsyncDisposable
+                {
+                    ColumnDefinition[] OutputSchema { get; }
+                    ValueTask OpenAsync(CancellationToken ct = default);
+                    ValueTask&lt;bool&gt; MoveNextAsync(CancellationToken ct = default);
+                    DbValue[] Current { get; }
+                }
+                </code></pre></div>
+                <p>Operators form a tree. The root operator pulls rows upward by calling <code>MoveNextAsync</code> on its child, which in turn calls its child, and so on down to the leaf scan operator.</p>
+                <h3 id="operator-catalog">Operator Catalog</h3>
+                <h4>Scan and Lookup Operators</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>TableScanOperator</code></td>
+                <td>Full table scan via <code>BTreeCursor</code> — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>IndexScanOperator</code></td>
+                <td>Index-based lookup with base-row fetch — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>IndexOrderedScanOperator</code></td>
+                <td>Ordered index range scan — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>UniqueIndexLookupOperator</code></td>
+                <td>Single-row unique index probe</td>
+                </tr>
+                <tr>
+                <td><code>PrimaryKeyLookupOperator</code></td>
+                <td>Direct rowid B+tree lookup fast path</td>
+                </tr>
+                <tr>
+                <td><code>PrimaryKeyProjectionLookupOperator</code></td>
+                <td>PK lookup with projection pushdown</td>
+                </tr>
+                <tr>
+                <td><code>UniqueIndexProjectionLookupOperator</code></td>
+                <td>Unique index lookup with projection pushdown</td>
+                </tr>
+                <tr>
+                <td><code>HashedIndexProjectionLookupOperator</code></td>
+                <td>Hashed index lookup with projection pushdown</td>
+                </tr>
+                <tr>
+                <td><code>IndexScanProjectionOperator</code></td>
+                <td>Index scan with index-only projection</td>
+                </tr>
+                <tr>
+                <td><code>IndexOrderedProjectionScanOperator</code></td>
+                <td>Ordered index scan with index-only projection</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Filter and Projection Operators</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>FilterOperator</code></td>
+                <td>Applies a WHERE predicate — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>ProjectionOperator</code></td>
+                <td>Selects/reorders columns, evaluates expressions — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>FilterProjectionOperator</code></td>
+                <td>Fused filter + projection for lower materialization</td>
+                </tr>
+                <tr>
+                <td><code>CompactTableScanProjectionOperator</code></td>
+                <td>Compact scan with fused filter/projection over encoded rows</td>
+                </tr>
+                <tr>
+                <td><code>CompactPayloadProjectionOperator</code></td>
+                <td>Compact projection over encoded index/table payloads</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Join Operators</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>HashJoinOperator</code></td>
+                <td>Hash-based join with projection pushdown</td>
+                </tr>
+                <tr>
+                <td><code>IndexNestedLoopJoinOperator</code></td>
+                <td>Index-probed nested loop join</td>
+                </tr>
+                <tr>
+                <td><code>HashedIndexNestedLoopJoinOperator</code></td>
+                <td>Hashed index probe nested loop join</td>
+                </tr>
+                <tr>
+                <td><code>NestedLoopJoinOperator</code></td>
+                <td>Generic INNER, LEFT, RIGHT, and CROSS JOINs</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Aggregate Operators</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>HashAggregateOperator</code></td>
+                <td>GROUP BY with hash-based grouping</td>
+                </tr>
+                <tr>
+                <td><code>ScalarAggregateOperator</code></td>
+                <td>Single-group aggregate (no GROUP BY)</td>
+                </tr>
+                <tr>
+                <td><code>IndexKeyAggregateOperator</code></td>
+                <td>Index-backed single-key aggregate fast path</td>
+                </tr>
+                <tr>
+                <td><code>IndexGroupedAggregateOperator</code></td>
+                <td>Index-backed grouped aggregate</td>
+                </tr>
+                <tr>
+                <td><code>CompositeIndexGroupedAggregateOperator</code></td>
+                <td>Composite index grouped aggregate</td>
+                </tr>
+                <tr>
+                <td><code>TableKeyAggregateOperator</code></td>
+                <td>Table-key aggregate fast path</td>
+                </tr>
+                <tr>
+                <td><code>ScalarAggregateLookupOperator</code></td>
+                <td>Scalar aggregate over lookup result</td>
+                </tr>
+                <tr>
+                <td><code>ScalarAggregateTableOperator</code></td>
+                <td>Scalar aggregate over full table scan</td>
+                </tr>
+                <tr>
+                <td><code>FilteredScalarAggregateTableOperator</code></td>
+                <td>Filtered scalar aggregate fast path</td>
+                </tr>
+                <tr>
+                <td><code>CountStarTableOperator</code></td>
+                <td>Optimized <code>COUNT(*)</code> over table metadata</td>
+                </tr>
+                </tbody>
+                </table>
+                <h4>Sort, Distinct, and Limit Operators</h4>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Operator</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>SortOperator</code></td>
+                <td>Materializes all input, sorts by ORDER BY — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>TopNSortOperator</code></td>
+                <td>Heap-based ORDER BY + LIMIT without full materialization</td>
+                </tr>
+                <tr>
+                <td><code>DistinctOperator</code></td>
+                <td>Hash-based <code>SELECT DISTINCT</code> — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>OffsetOperator</code></td>
+                <td>Skips N rows — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>LimitOperator</code></td>
+                <td>Caps output at N rows — batch-capable</td>
+                </tr>
+                <tr>
+                <td><code>MaterializedOperator</code></td>
+                <td>Pre-materialized row set (used for CTEs and subqueries)</td>
+                </tr>
+                </tbody>
+                </table>
+                <h3 id="query-planning">Query Planning</h3>
+                <p>For <strong>SELECT</strong>, the planner builds an operator tree:</p>
+                <div class="code-block" data-title="Code"><pre><code>TableScan/IndexScan → [Filter] → [Join] → [Aggregate] → [Having] → [Sort] → [Projection] → [Limit]
+                </code></pre></div>
+                <p>The planner includes <strong>index selection</strong> with multiple strategies: equality lookups on indexed columns, ordered range scans on integer indexes, composite index matching, covering-index projection pushdown, and statistics-guided non-unique lookup selection via <code>sys.column_stats</code>.</p>
+                <p>For <strong>DML</strong> (INSERT, UPDATE, DELETE) and <strong>DDL</strong> (CREATE/DROP/ALTER TABLE, CREATE/DROP INDEX, CREATE/DROP VIEW, CREATE/DROP TRIGGER), the planner executes the operation directly against the B+tree and schema catalog, returning a row-count result.</p>
+                <p><strong>Triggers</strong> are fired automatically during INSERT, UPDATE, and DELETE operations. The planner checks for BEFORE and AFTER triggers on the affected table and executes their body SQL statements. A recursion guard prevents infinite trigger chains (max depth: 16).</p>
+                <p><strong>Views</strong> are expanded inline during query planning — a reference to a view in a FROM clause is replaced with the view's SQL definition, parsed and planned recursively.</p>
+                <p><strong>CTEs</strong> (<code>WITH</code> clause) are materialized eagerly — the CTE query is executed first and its results are stored in memory, then referenced by the main query.</p>
+                <h3 id="expression-evaluator">Expression Evaluator</h3>
+                <p>The <code>ExpressionEvaluator</code> is a static class that recursively evaluates an <code>Expression</code> AST node against a current row. It handles:</p>
+                <ul>
+                <li><strong>Column references</strong> — look up by column name (or qualified <code>table.column</code>) in the schema</li>
+                <li><strong>Literals</strong> — integer, real, text, null</li>
+                <li><strong>Binary operators</strong> — arithmetic (+, -, *, /), comparison (=, &lt;&gt;, &lt;, &gt;, &lt;=, &gt;=), logical (AND, OR)</li>
+                <li><strong>Unary operators</strong> — NOT, negation</li>
+                <li><strong>LIKE</strong> — pattern matching with <code>%</code> and <code>_</code> wildcards, optional ESCAPE character</li>
+                <li><strong>IN</strong> — membership test against a list of values or <code>IN (SELECT ...)</code></li>
+                <li><strong>BETWEEN</strong> — range check (inclusive)</li>
+                <li><strong>IS NULL / IS NOT NULL</strong> — null testing</li>
+                <li><strong>Aggregate functions</strong> — COUNT, SUM, AVG, MIN, MAX (with DISTINCT support)</li>
+                <li><strong>Scalar functions</strong> — <code>TEXT(expr)</code> for filter-friendly text coercion</li>
+                <li><strong>Scalar subqueries</strong> — single-value subquery evaluation, including correlated cases</li>
+                <li><strong>EXISTS (SELECT ...)</strong> — existence test subquery evaluation</li>
+                </ul>
+                <hr/>
+                <h2 id="layer-5-engine-csharpdb-engine">Layer 5: Engine (<code>CSharpDB.Engine</code>)</h2>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>Database.cs</code></td>
+                <td>Top-level API: file-backed, in-memory, and hybrid open modes; execute SQL; manage transactions, checkpoints, and reader sessions</td>
+                </tr>
+                <tr>
+                <td><code>Collection.cs</code></td>
+                <td>Typed document collection API backed by storage-engine B+trees</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>The <code>Database</code> class ties all layers together:</p>
+                <ol>
+                <li><strong>Open</strong>: Opens the database in file-backed, fully in-memory, or hybrid lazy-resident mode. Supports opt-in memory-mapped main-file reads, storage tuning presets (<code>UseLookupOptimizedPreset</code>, <code>UseWriteOptimizedPreset</code>), bounded WAL read caching, and background sliced auto-checkpointing. Runs crash recovery if a WAL file exists and loads the schema catalog.</li>
+                <li><strong>ExecuteAsync</strong>: Parses SQL → dispatches to QueryPlanner → returns <code>QueryResult</code></li>
+                <li><strong>Auto-commit</strong>: Non-SELECT statements automatically begin and commit a transaction if none is active</li>
+                <li><strong>Explicit transactions</strong>: <code>BeginTransactionAsync</code> / <code>CommitAsync</code> / <code>RollbackAsync</code> for the legacy single-handle transaction shape, plus <code>BeginWriteTransactionAsync(...)</code> / <code>RunWriteTransactionAsync(...)</code> for isolated multi-writer work with conflict detection and retry</li>
+                <li><strong>CheckpointAsync</strong>: Manually triggers a WAL checkpoint (copies committed WAL pages to DB file)</li>
+                <li><strong>CreateReaderSession</strong>: Returns an independent <code>ReaderSession</code> that sees a snapshot of the database at the current point in time. Multiple reader sessions can coexist with an active writer.</li>
+                <li><strong>Collections</strong>: <code>GetCollectionAsync&lt;T&gt;</code> exposes the typed document path beside SQL with binary direct-payload storage, path-based indexing (<code>EnsureIndexAsync</code>, <code>FindByPathAsync</code>, <code>FindByPathRangeAsync</code>), and direct binary hydration</li>
+                <li><strong>Dispose</strong>: Rolls back any uncommitted transaction, checkpoints, deletes WAL file, and closes the pager</li>
+                </ol>
+                <hr/>
+                <h2 id="layer-6-pipelines-csharpdb-pipelines">Layer 6: Pipelines (<code>CSharpDB.Pipelines</code>)</h2>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>Models/PipelinePackageDefinition.cs</code></td>
+                <td>Package model for sources, transforms, destinations, execution options, and incremental settings</td>
+                </tr>
+                <tr>
+                <td><code>Models/PipelineRuntimeModels.cs</code></td>
+                <td>Run request/result, metrics, checkpoints, rejects, and execution context</td>
+                </tr>
+                <tr>
+                <td><code>Validation/PipelinePackageValidator.cs</code></td>
+                <td>Validates package completeness and supported configuration combinations</td>
+                </tr>
+                <tr>
+                <td><code>Runtime/PipelineOrchestrator.cs</code></td>
+                <td>Executes validate, dry-run, run, and resume flows</td>
+                </tr>
+                <tr>
+                <td><code>Runtime/BuiltIns/*</code></td>
+                <td>Built-in CSV/JSON file sources and destinations plus built-in transforms</td>
+                </tr>
+                <tr>
+                <td><code>Serialization/PipelinePackageSerializer.cs</code></td>
+                <td>JSON persistence for package files and stored package payloads</td>
+                </tr>
+                </tbody>
+                </table>
+                <p><code>CSharpDB.Pipelines</code> is the reusable ETL pipeline runtime. It is intentionally
+                separate from the storage engine so package validation, orchestration, and
+                connector/transform logic can be reused from local and remote hosts without
+                mixing ETL concerns into the SQL execution pipeline.</p>
+                <p>Current responsibilities:</p>
+                <ol>
+                <li><strong>Package model</strong>: defines JSON-serializable pipeline packages with metadata,
+                source, transforms, destination, execution options, and optional incremental
+                settings.</li>
+                <li><strong>Validation</strong>: validates package completeness and returns structured
+                validation errors before runtime execution starts.</li>
+                <li><strong>Execution modes</strong>: supports <code>Validate</code>, <code>DryRun</code>, <code>Run</code>, and <code>Resume</code>.</li>
+                <li><strong>Batch orchestration</strong>: opens the source, reads row batches, applies the
+                ordered transform chain, writes destination batches, and updates run metrics.</li>
+                <li><strong>Checkpoint and run logging contracts</strong>: persists pipeline progress and run
+                status through <code>IPipelineCheckpointStore</code> and <code>IPipelineRunLogger</code>.</li>
+                <li><strong>Built-in file connectors</strong>: includes CSV/JSON file sources and CSV/JSON
+                file destinations in the core runtime.</li>
+                </ol>
+                <p>The pipeline runtime is package- and batch-oriented, not a general DAG
+                scheduler. The current shipping model is a linear source -&gt; transforms -&gt;
+                destination flow with resumable batch checkpoints and reject tracking.</p>
+                <hr/>
+                <h2 id="layer-7-unified-client-csharpdb-client">Layer 7: Unified Client (<code>CSharpDB.Client</code>)</h2>
+                <p><code>CSharpDB.Client</code> is the authoritative database API for CSharpDB consumers.</p>
+                <p>It owns the public client contract and transport selection boundary used by the
+                CLI, Web API, Admin dashboard, and future external consumers. Transport details
+                stay behind this layer.</p>
+                <p>Key pieces:</p>
+                <ul>
+                <li><code>ICSharpDbClient</code> — transport-agnostic database contract</li>
+                <li><code>CSharpDbClientOptions</code> — endpoint / data source / connection string options</li>
+                <li><code>CSharpDbTransport</code> — public transport selector</li>
+                <li><code>AddCSharpDbClient(...)</code> — DI registration helper</li>
+                </ul>
+                <p>Current direction:</p>
+                <ul>
+                <li><strong>Direct transport is implemented today</strong> and is backed by <code>CSharpDB.Engine</code></li>
+                <li><strong>HTTP transport is implemented</strong> and targets <code>CSharpDB.Api</code></li>
+                <li><strong>gRPC transport is implemented</strong> and targets <code>CSharpDB.Daemon</code></li>
+                <li><strong>Named Pipes is part of the public transport model</strong> but is not implemented yet</li>
+                <li><strong>The client does not depend on <code>CSharpDB.Data</code></strong></li>
+                <li><strong>New database-facing functionality should be added here first</strong></li>
+                </ul>
+                <p>Current surface includes:</p>
+                <ul>
+                <li>database info and metadata</li>
+                <li>table schemas, browse, CRUD, and table/column DDL</li>
+                <li>indexes, views, and triggers</li>
+                <li>saved queries</li>
+                <li>procedures and procedure execution</li>
+                <li>SQL execution</li>
+                <li>client-managed transactions</li>
+                <li>document collections</li>
+                <li>pipeline catalog, package storage, pipeline execution, resume, checkpoints, and rejects</li>
+                <li>checkpoint and storage diagnostics</li>
+                <li>backup and restore (<code>BackupAsync</code>, <code>RestoreAsync</code>)</li>
+                <li>maintenance (reindex, vacuum, maintenance report)</li>
+                </ul>
+                <p>Implementation dependencies:</p>
+                <ul>
+                <li><code>CSharpDB.Engine</code></li>
+                <li><code>CSharpDB.Pipelines</code></li>
+                <li><code>CSharpDB.Sql</code></li>
+                <li><code>CSharpDB.Storage.Diagnostics</code></li>
+                </ul>
+                <p>This means the current direct client is a high-level engine-backed API, not an
+                ADO.NET wrapper.</p>
+                <hr/>
+                <h3 id="pipeline-integration-through-the-client">Pipeline Integration Through The Client</h3>
+                <p>Pipeline management and execution are layered on top of <code>ICSharpDbClient</code>:</p>
+                <ul>
+                <li><code>CSharpDbPipelineRunner</code> wraps the reusable <code>PipelineOrchestrator</code></li>
+                <li><code>CSharpDbPipelineComponentFactory</code> adds CSharpDB-backed table and SQL-query
+                connectors on top of the runtime's built-in file connectors</li>
+                <li><code>CSharpDbPipelineCatalogClient</code> persists packages, revisions, runs,
+                checkpoints, and rejects in catalog tables such as <code>_etl_pipelines</code>,
+                <code>_etl_pipeline_versions</code>, <code>_etl_runs</code>, <code>_etl_checkpoints</code>, and <code>_etl_rejects</code></li>
+                </ul>
+                <p>This keeps ETL transport-agnostic: the same package/run/catalog flow works
+                through direct, HTTP, and gRPC clients because the persistence and execution
+                path are built on the same client contract.</p>
+                <hr/>
+                <h2 id="layer-8-ado-net-provider-csharpdb-data">Layer 8: ADO.NET Provider (<code>CSharpDB.Data</code>)</h2>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>File</th>
+                <th>Purpose</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><code>CSharpDbConnection.cs</code></td>
+                <td><code>DbConnection</code> implementation — open, close, connection string parsing</td>
+                </tr>
+                <tr>
+                <td><code>CSharpDbCommand.cs</code></td>
+                <td><code>DbCommand</code> implementation — parameterized SQL execution</td>
+                </tr>
+                <tr>
+                <td><code>CSharpDbDataReader.cs</code></td>
+                <td><code>DbDataReader</code> implementation — forward-only row iteration with typed accessors</td>
+                </tr>
+                <tr>
+                <td><code>CSharpDbParameter.cs</code></td>
+                <td><code>DbParameter</code> / <code>DbParameterCollection</code> for parameterized queries</td>
+                </tr>
+                <tr>
+                <td><code>CSharpDbTransaction.cs</code></td>
+                <td><code>DbTransaction</code> for explicit transaction control</td>
+                </tr>
+                <tr>
+                <td><code>CSharpDbFactory.cs</code></td>
+                <td><code>DbProviderFactory</code> for ADO.NET provider registration</td>
+                </tr>
+                <tr>
+                <td><code>SqlParameterBinder.cs</code></td>
+                <td>Binds <code>@param</code> placeholders in SQL to parameter values</td>
+                </tr>
+                <tr>
+                <td><code>TypeMapper.cs</code></td>
+                <td>Maps between CSharpDB types and .NET CLR types</td>
+                </tr>
+                </tbody>
+                </table>
+                <p>The ADO.NET provider allows CSharpDB to be used with the standard <code>System.Data.Common</code> APIs, making it compatible with ORMs and existing .NET data access code:</p>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">
+                await using var conn = new CSharpDbConnection("Data Source=myapp.db");
+                await conn.OpenAsync();
+                
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT * FROM users WHERE age &gt; @age";
+                cmd.Parameters.AddWithValue("@age", 25);
+                
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    Console.WriteLine(reader.GetString(1));
+                }
+                </code></pre></div>
+                <p>Today the provider sits mostly above <code>CSharpDB.Client</code>, not beside it:</p>
+                <ul>
+                <li>ordinary file-backed direct connections route through <code>CSharpDB.Client</code></li>
+                <li>private <code>:memory:</code> connections route through <code>CSharpDB.Client</code></li>
+                <li>daemon-backed <code>Transport=Grpc;Endpoint=...</code> connections route through <code>CSharpDB.Client</code></li>
+                <li>named shared <code>:memory:name</code> stays as the one internal engine-assisted exception for now because that host is process-local state inside the provider</li>
+                </ul>
+                <p>That means ADO.NET is now primarily a provider-shaped facade over the same
+                authoritative client contract used by the other host surfaces.</p>
+                <hr/>
+                <h2 id="layer-9-remote-hosts-csharpdb-api-csharpdb-daemon">Layer 9: Remote Hosts (<code>CSharpDB.Api</code> + <code>CSharpDB.Daemon</code>)</h2>
+                <p>The remote host split is intentional today:</p>
+                <ul>
+                <li><code>CSharpDB.Api</code> is the REST/HTTP host</li>
+                <li><code>CSharpDB.Daemon</code> is the gRPC host</li>
+                </ul>
+                <p>Both inject <code>ICSharpDbClient</code> directly and stay above the authoritative
+                <code>CSharpDB.Client</code> contract instead of exposing engine internals.</p>
+                <h3 id="rest-api-csharpdb-api">REST API (<code>CSharpDB.Api</code>)</h3>
+                <p>The REST API exposes the full database feature set over HTTP using ASP.NET Core Minimal APIs. It enables cross-language interoperability — any language with an HTTP client can work with CSharpDB.</p>
+                <p>Components:</p>
+                <ul>
+                <li><strong>Endpoints</strong> — organized by resource (tables, rows, indexes, views, triggers, procedures, SQL, pipelines, info, inspection)</li>
+                <li><strong>DTOs</strong> — Request/response records for type-safe serialization</li>
+                <li><strong>JSON helpers</strong> — Coerce <code>System.Text.Json</code> <code>JsonElement</code> values to CLR primitives for the client</li>
+                <li><strong>Exception middleware</strong> — Maps <code>CSharpDbException</code> error codes to HTTP status codes (404, 409, 422, etc.)</li>
+                <li><strong>OpenAPI + Scalar</strong> — Auto-generated API spec with interactive documentation at <code>/scalar</code></li>
+                </ul>
+                <p>The API now injects <code>ICSharpDbClient</code> directly. It does not depend on
+                <code>CSharpDB.Data</code> or engine internals directly.</p>
+                <h3 id="grpc-host-csharpdb-daemon">gRPC Host (<code>CSharpDB.Daemon</code>)</h3>
+                <p>The daemon exposes explicit generated gRPC methods over the same client-facing
+                contract. It is a thin transport host, not a separate database engine.</p>
+                <p>Components:</p>
+                <ul>
+                <li><strong>Generated protobuf contract</strong> — <code>csharpdb_rpc.proto</code> in <code>CSharpDB.Client</code></li>
+                <li><strong>GrpcTransportClient</strong> — remote client implementation in <code>CSharpDB.Client</code></li>
+                <li><strong>CSharpDbRpcService</strong> — gRPC method host in <code>CSharpDB.Daemon</code></li>
+                <li><strong>Startup validation</strong> — resolves <code>ICSharpDbClient</code> and validates the configured database during host startup</li>
+                </ul>
+                <p>The current daemon default host shape is:</p>
+                <ul>
+                <li>direct transport internally</li>
+                <li>hybrid incremental-durable open mode</li>
+                <li><code>ImplicitInsertExecutionMode = ConcurrentWriteTransactions</code></li>
+                <li><code>UseWriteOptimizedPreset = true</code></li>
+                <li>optional hot-table / hot-collection preload hints through <code>CSharpDB:HostDatabase</code></li>
+                </ul>
+                <p>See the <a href="https://csharpdb.com/docs/rest-api.html">REST API Reference</a> for HTTP details and the Daemon README for the gRPC host design.</p>
+                <hr/>
+                <h2 id="layer-10-admin-dashboard-csharpdb-admin">Layer 10: Admin Dashboard (<code>CSharpDB.Admin</code>)</h2>
+                <p>A Blazor Server application that provides a web-based UI for database administration. Features:</p>
+                <ul>
+                <li>Tab-based interface for browsing tables, views, indexes, and triggers</li>
+                <li>Paginated data grid with column headers</li>
+                <li>SQL execution panel</li>
+                <li>Procedure editing and execution</li>
+                <li>Pipeline designer and execution workflows</li>
+                <li>Storage inspection</li>
+                <li>Schema introspection (columns, types, constraints)</li>
+                </ul>
+                <p>The Admin dashboard now injects <code>ICSharpDbClient</code> directly. It uses an
+                admin-local change notification service to refresh UI state after mutations.
+                Its pipeline UI works with package JSON plus a designer surface for source,
+                transform, destination, and execution-option editing, then routes execution and
+                catalog operations through the client-backed pipeline services.</p>
+                <hr/>
+                <h2 id="layer-11-cli-and-mcp-hosts">Layer 11: CLI And MCP Hosts</h2>
+                <p>Two additional host applications sit above the consumer access layer:</p>
+                <ul>
+                <li><strong><code>CSharpDB.Cli</code></strong> — the interactive shell and local tooling entrypoint. It
+                now routes normal database access through <code>CSharpDB.Client</code>, while still
+                keeping a few local-only direct helpers for engine- and diagnostics-specific
+                features. It also exposes pipeline commands for validate, dry-run, run,
+                resume, import/export, and catalog inspection.</li>
+                <li><strong><code>CSharpDB.Mcp</code></strong> — the MCP server host. It resolves <code>ICSharpDbClient</code>
+                directly and shares the same client configuration model as the other hosts.</li>
+                </ul>
+                <hr/>
+                <h2 id="end-to-end-life-of-a-query">End-to-End: Life of a Query</h2>
+                <p>Here's what happens when you call <code>db.ExecuteAsync("SELECT name FROM users WHERE age &gt; 25 ORDER BY name")</code>:</p>
+                <div class="code-block" data-title="Code"><pre><code>1. Parser.Parse(sql)
+                   ├── Tokenizer: "SELECT" "name" "FROM" "users" "WHERE" "age" "&gt;" "25" "ORDER" "BY" "name"
+                   └── Parser: SelectStatement { Columns=[name], Table=users, Where=age&gt;25, OrderBy=[name ASC] }
+                
+                2. QueryPlanner.ExecuteSelect(stmt)
+                   ├── Resolve "users" → TableSchema (from SchemaCatalog)
+                   ├── Check for usable index on WHERE columns
+                   ├── Build: TableScanOperator(users_btree) or IndexScanOperator if applicable
+                   ├── Wrap:  FilterOperator(scan, "age &gt; 25")
+                   ├── Wrap:  SortOperator(filter, [name ASC])
+                   └── Wrap:  ProjectionOperator(sort, [name])
+                   └── Return: QueryResult(projectionOp)
+                
+                3. User calls result.GetRowsAsync()
+                   └── Opens operator chain top-down
+                       └── ProjectionOp.MoveNextAsync()
+                           └── SortOp.MoveNextAsync()  [materializes all matching rows, sorts]
+                               └── FilterOp.MoveNextAsync()  [skips rows where age &lt;= 25]
+                                   └── TableScanOp.MoveNextAsync()
+                                       └── BTreeCursor.MoveNextAsync()
+                                           └── Pager.GetPageAsync(leafPageId)
+                                               ├── Check page cache
+                                               ├── Check WAL index for latest version
+                                               └── Fall through to FileStorageDevice.ReadAsync(offset)
+                </code></pre></div>
+                <p>Each row flows upward through the operator chain, transformed at each stage, until it reaches the caller.</p>
+                <hr/>
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                <li><a href="docs/getting-started-reference.html">Getting Started Tutorial</a> — Step-by-step walkthrough with code examples</li>
+                <li><a href="https://csharpdb.com/docs/internals.html">Internals &amp; Contributing</a> — How to extend the engine, add SQL statements, create operators</li>
+                <li><a href="https://csharpdb.com/docs/rest-api.html">REST API Reference</a> — HTTP endpoint documentation</li>
+                <li><a href="roadmap-reference.html">Roadmap</a> — Planned features and project direction</li>
+                <li>Benchmark Suite — Performance data across all engine layers</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

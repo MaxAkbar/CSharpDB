@@ -138,6 +138,23 @@
                             <span class="news-badge news-badge-release">Release</span>
                             <span class="news-date">April 2026</span>
                         </div>
+                        <h3>v3.4.0 — Admin Runtime, Fulfillment Hub Sample &amp; Docs Polish</h3>
+                        <p>Focuses on making CSharpDB easier to explore locally: a richer Admin experience, a complete Fulfillment Hub sample database, a run-only forms web host, and clearer docs for launching and learning from the project:</p>
+                        <ul>
+                            <li><strong>Fulfillment Hub sample</strong> — New end-to-end sample that seeds a working database with tables, views, stored procedures, forms, reports, pipelines, collections, and full-text search data. The walkthrough shows how to generate the database and open it through CSharpDB Admin.</li>
+                            <li><strong>Admin query workflow polish</strong> — Query autocomplete now handles <code>LIMIT</code>, <code>UPDATE ... SET</code>, <code>WHERE</code> column suggestions, and <code>INSERT INTO ... columns ... VALUES</code> flow more reliably.</li>
+                            <li><strong>Designer usability fixes</strong> — Form designer property fields now respect the current light/dark theme, and Query Designer views include resizable split bars so long SQL previews and result grids can be adjusted without losing context.</li>
+                            <li><strong>Forms-only web host</strong> — Added a run-only Forms Web project path for displaying saved forms from a CSharpDB database without exposing design mode. Static assets, shared styling, and the themed home screen now load correctly when started through the provided script.</li>
+                            <li><strong>Local Admin launcher guidance</strong> — New blog documentation explains how to create a small C# launcher executable that starts <code>CSharpDB.Admin.exe</code>, waits for the ASP.NET Core endpoint, and opens the default browser.</li>
+                            <li><strong>Website documentation polish</strong> — Added the Fulfillment Hub sample blog post, improved tutorial code color-coding across the static docs pages, refreshed release/PR notes, and kept the sitemap/blog index aligned with the new content.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">April 2026</span>
+                        </div>
                         <h3>v3.3.0 — Durable Write Performance &amp; Embedded Storage Tuning</h3>
                         <p>Focused on durable write throughput, a new storage-tuning surface for embedded users, and release-stable benchmark publishing. Promoted from the April 21, 2026 release-core run after a clean guardrail compare (<code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>):</p>
                         <ul>

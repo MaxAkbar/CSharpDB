@@ -306,6 +306,20 @@
     box-sizing: border-box;
 }
 
+.pi-static-value {
+    width: 100%;
+    min-height: 30px;
+    padding: 6px 8px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .pi-field input[type="text"]:focus,
 .pi-field input[type="number"]:focus,
 .pi-field select:focus {
@@ -422,6 +436,13 @@
     background: #fff;
     cursor: pointer;
     font-size: 12px;
+}
+
+.de-btn-link {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+    color: inherit;
 }
 
 .de-btn:hover { background: #e8e8e8; }
@@ -1782,6 +1803,21 @@
 .designer-cell-select:focus {
     background: var(--fd-bg-tertiary);
     color: var(--fd-text-secondary);
+}
+
+.pi-static-value {
+    background: var(--fd-bg-elevated);
+    color: var(--fd-text);
+    border-color: var(--fd-border);
+}
+
+.pi-id-value {
+    background: color-mix(in srgb, var(--fd-bg-elevated) 88%, var(--fd-accent-soft));
+    color: var(--fd-text);
+    font-family: var(--font-mono, "JetBrains Mono", "Fira Code", monospace);
+    letter-spacing: 0;
+    border-color: color-mix(in srgb, var(--fd-accent) 40%, var(--fd-border));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fd-accent) 14%, transparent);
 }
 
 .toolbox-item,

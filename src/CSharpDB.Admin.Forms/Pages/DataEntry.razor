@@ -9,6 +9,10 @@
 
 <div class="data-entry-layout" @ref="_layoutRef">
     <div class="de-toolbar">
+        @if (!string.IsNullOrWhiteSpace(BackHref))
+        {
+            <a class="de-btn de-btn-link" href="@BackHref">@BackLabel</a>
+        }
         <span class="de-toolbar-title">@(_form?.Name ?? "Loading...")</span>
         @if (IsReadOnlySource)
         {
@@ -51,7 +55,10 @@
             <span class="de-error-count">@_validationErrors.Count error(s)</span>
         }
         <button class="de-btn" @onclick="PrintRecord" title="Print current record">&#x1F5B6; Print</button>
-        <button class="de-btn" @onclick="OpenDesigner" title="Open in designer">Edit Form</button>
+        @if (CanOpenDesigner)
+        {
+            <button class="de-btn" @onclick="OpenDesigner" title="Open in designer">Edit Form</button>
+        }
     </div>
 
     @if (_error is not null)
@@ -187,6 +194,9 @@
 @code {
     [Parameter] public string FormId { get; set; } = string.Empty;
     [Parameter] public EventCallback<string> OnOpenDesigner { get; set; }
+    [Parameter] public bool ShowDesignerButton { get; set; } = true;
+    [Parameter] public string? BackHref { get; set; }
+    [Parameter] public string BackLabel { get; set; } = "Forms";
 
     private FormDefinition? _form;
     private FormTableDefinition? _table;
@@ -223,6 +233,7 @@
     private const int RecordPaneMinWidth = 320;
     private const int RecordPaneMaxWidth = 720;
 
+    private bool CanOpenDesigner => ShowDesignerButton && OnOpenDesigner.HasDelegate;
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRecords / (double)_pageSize));
     private int CurrentRecordOrdinal => _isNew || _recordPageIndex < 0 ? 0 : ((_page - 1) * _pageSize) + _recordPageIndex + 1;
     private bool HasActiveSearch => !string.IsNullOrWhiteSpace(_activeSearchColumnName) && !string.IsNullOrWhiteSpace(_activeSearchValue);

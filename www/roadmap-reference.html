@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preload" href="js/csharpdb.bundle.js" as="script">
+    <title>Roadmap Source Reference — CSharpDB</title>
+    <meta name="description" content="Full migrated source reference for the original CSharpDB roadmap markdown guide.">
+    <link rel="canonical" href="https://csharpdb.com/roadmap-reference.html">
+    <meta property="og:title" content="Roadmap Source Reference — CSharpDB">
+    <meta property="og:description" content="Full migrated source reference for the original CSharpDB roadmap markdown guide.">
+    <meta property="og:url" content="https://csharpdb.com/roadmap-reference.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": "Roadmap Source Reference",
+        "description": "Full migrated source reference for the original CSharpDB roadmap markdown guide.",
+        "url": "https://csharpdb.com/roadmap-reference.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'roadmap';
+    window.pageConfig = {
+        title: 'Roadmap Source Reference',
+        description: 'Full migrated source reference for the original CSharpDB roadmap markdown guide.',
+        keywords: 'CSharpDB source reference, migrated markdown, archival reference',
+        canonicalPath: 'roadmap-reference.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#near-term">Near-Term</a></li>
+                        <li><a href="#mid-term">Mid-Term</a></li>
+                        <li><a href="#long-term">Long-Term</a></li>
+                        <li><a href="#current-limitations">Current Limitations</a></li>
+                        <li><a href="#completed-milestones">Completed Milestones</a></li>
+                        <li><a href="#see-also">See Also</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/roadmap.md</code>. For the shorter curated page, see <a href="roadmap.html">Roadmap</a>.</div>
+                <h1 id="csharpdb-roadmap">CSharpDB Roadmap</h1>
+                <p class="lead">This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current <code>v3.4.0</code> state of the repo.</p>
+                <hr/>
+                <h2 id="near-term">Near-Term</h2>
+                <p>Recently completed improvements to query performance, storage/runtime behavior, maintenance workflows, and developer ergonomics.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Feature</th>
+                <th>Description</th>
+                <th>Status</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><strong><code>DISTINCT</code> keyword</strong></td>
+                <td>Deduplicate rows in SELECT output</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Composite indexes</strong></td>
+                <td>Multi-column indexes for covering more query patterns</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Index range scans</strong></td>
+                <td>Use indexes for <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>BETWEEN</code> — not just equality</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Prepared statement cache</strong></td>
+                <td>Cache parsed ASTs and query plans to avoid re-parsing identical SQL</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Cached max rowid</strong></td>
+                <td>Avoid repeated O(n) scans when generating row IDs on insert (in-memory + persisted high-water mark)</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>B+tree delete rebalancing</strong></td>
+                <td>Merge underflowed pages on delete to reclaim space</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>In-memory database mode</strong></td>
+                <td>Open a database fully in memory, load a disk database into memory, and save a committed snapshot back to disk</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Shared in-memory ADO.NET mode</strong></td>
+                <td>Support <code>Data Source=:memory:</code> and named shared in-memory databases with explicit save/load</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Collection field indexes</strong></td>
+                <td>Equality-based secondary indexes for <code>Collection&lt;T&gt;</code> via <code>EnsureIndexAsync</code> / <code>FindByIndexAsync</code></td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Reader session reuse</strong></td>
+                <td>Reuse snapshot pager and query planner inside <code>ReaderSession</code> for burst concurrent reads</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Architecture enforcement</strong></td>
+                <td><code>CSharpDB.Client</code> is now the main caller-facing interaction layer across local and remote scenarios; ADO.NET now routes ordinary direct and daemon-backed access through that layer, with only named shared in-memory provider state still retaining an internal engine dependency</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Database administration</strong></td>
+                <td>Maintenance report, reindex (database/table/index/collection), VACUUM/compact, fragmentation analysis, database size report</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Dedicated gRPC daemon</strong></td>
+                <td><code>CSharpDB.Daemon</code> host plus <code>CSharpDB.Client</code> gRPC coverage for SQL, schema, procedures, collections, and maintenance</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Storage tuning presets</strong></td>
+                <td><code>UseLookupOptimizedPreset()</code> and <code>UseWriteOptimizedPreset()</code> for file-backed workloads</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Memory-mapped main-file reads</strong></td>
+                <td>Opt-in mapped clean-page reads plus copy-on-write materialization for mutable access on file-backed databases</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Background WAL checkpointing</strong></td>
+                <td>Incremental/sliced auto-checkpointing to move work off the triggering commit</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>SQL executor/read-path fast paths</strong></td>
+                <td>Compact scan and indexed-range projections, broader join lookup/covered paths, grouped/composite index aggregates, correlated subquery filter fast paths, and lower row materialization overhead</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Table/index statistics</strong></td>
+                <td>ANALYZE command with persisted row counts, column NDV/min/max, stale tracking, and initial stats-guided index selection in the query planner</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Collection binary payloads</strong></td>
+                <td>Binary direct-payload format with faster hydration, direct field/path extraction, and richer path-based indexing</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Collection path indexes</strong></td>
+                <td>Nested scalar, array-element, nested array-object, Guid, temporal, and ordered text path indexes with <code>FindByPathAsync</code> / <code>FindByPathRangeAsync</code></td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Hybrid storage mode</strong></td>
+                <td>Lazy-resident durable storage with gRPC tunable file-cache configuration; Admin direct local hosting keeps a warm in-process database instance and uses hybrid incremental-durable options by default</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Client backup/restore</strong></td>
+                <td><code>BackupAsync</code> / <code>RestoreAsync</code> as first-class <code>ICSharpDbClient</code> operations across direct, HTTP, gRPC, CLI, and Admin</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Older DB foreign-key retrofit migration</strong></td>
+                <td>Validate/apply maintenance workflow that rewrites existing child tables with persisted FK metadata across direct, HTTP, gRPC, CLI, and Admin</td>
+                <td>Done</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="mid-term">Mid-Term</h2>
+                <p>SQL feature parity, provider/tooling compatibility, and ecosystem expansion.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Feature</th>
+                <th>Description</th>
+                <th>Status</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><strong>User-defined functions</strong></td>
+                <td>Broader built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Subqueries</strong></td>
+                <td>Scalar subqueries, <code>IN (SELECT ...)</code>, <code>EXISTS (SELECT ...)</code>, including correlated evaluation in <code>WHERE</code>, non-aggregate projection, and <code>UPDATE</code>/<code>DELETE</code> expressions</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong><code>UNION</code> / <code>INTERSECT</code> / <code>EXCEPT</code></strong></td>
+                <td>Set operations across SELECT results, including use in top-level queries, views, and CTE query bodies</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Window functions</strong></td>
+                <td><code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, <code>LEAD()</code>, <code>LAG()</code></td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong><code>DEFAULT</code> column values</strong></td>
+                <td>Allow default expressions in column definitions</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong><code>CHECK</code> constraints</strong></td>
+                <td>Arbitrary expression-based constraints per column or per table</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Foreign key constraints</strong></td>
+                <td>v1 support for single-column, column-level <code>REFERENCES</code> with optional <code>ON DELETE CASCADE</code>, plus <code>sys.foreign_keys</code> and metadata/tooling surfaces</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Remote host consolidation</strong></td>
+                <td><code>CSharpDB.Daemon</code> now hosts the existing REST/HTTP <code>/api</code> surface and gRPC from one long-running process backed by the same warm daemon-hosted client; standalone <code>CSharpDB.Api</code> remains supported for REST-only hosting</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Remote host security</strong></td>
+                <td>Add built-in authentication, authorization, and transport-security options for remote HTTP and gRPC access, including API keys, protected admin endpoints, and TLS/mTLS deployment support</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Daemon service packaging</strong></td>
+                <td>Package the existing <code>CSharpDB.Daemon</code> host as a persistent background service across systemd, Windows Service, and launchd</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Cross-platform deployment</strong></td>
+                <td>Self-contained daemon archives and install scripts ship for Windows, Linux, and macOS; dotnet tool, Docker, Homebrew, and winget distribution remain future work</td>
+                <td>In Progress</td>
+                </tr>
+                <tr>
+                <td><strong>NuGet package</strong></td>
+                <td>Publish and maintain <code>CSharpDB.Engine</code>, <code>CSharpDB.Data</code>, <code>CSharpDB.Client</code>, and <code>CSharpDB.Primitives</code> as the primary NuGet packages</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Connection pooling</strong></td>
+                <td>Pool underlying direct embedded sessions behind <code>CSharpDbConnection</code> to amortize open/close cost</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Admin dashboard improvements</strong></td>
+                <td>Richer SQL editor UX, query history, deeper diagnostics, and integrated Forms/Reports tooling beyond the core schema/procedure/storage surface</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Visual query designer</strong></td>
+                <td>Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>ETL pipelines</strong></td>
+                <td>Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>VS Code extension</strong></td>
+                <td>Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>ADO.NET <code>GetSchema</code> collections</strong></td>
+                <td>Implement <code>DbConnection.GetSchema()</code> for standard metadata collections (MetaDataCollections, Tables, Columns, Indexes, Views, ForeignKeys) to support ORMs and tooling that discover schema through ADO.NET</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Multilingual text support</strong></td>
+                <td><code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and built-in <code>ICU:&lt;locale&gt;</code> collation now work across SQL schema/query semantics, metadata surfaces, and collection path indexes; dedicated ordered SQL text index optimization remains planned</td>
+                <td>Done</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="long-term">Long-Term</h2>
+                <p>Advanced features and fundamental architecture enhancements.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Feature</th>
+                <th>Description</th>
+                <th>Status</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><strong>Full-text search</strong></td>
+                <td>Inverted index with tokenization, stemming, and relevance ranking</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>JSON path querying</strong></td>
+                <td>Query into JSON document fields in the Collection API (e.g., <code>$.address.city</code>) via <code>FindByPathAsync</code> / <code>FindByPathRangeAsync</code></td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Advanced collection storage path</strong></td>
+                <td>Binary direct-payload format with direct binary hydration, path-based field extraction, and richer expression/path indexes</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>SQL batched row transport</strong></td>
+                <td>Internal row-batch transport serves as the batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Source-generated collection fast path</strong></td>
+                <td>In progress: <code>GetGeneratedCollectionAsync&lt;T&gt;(...)</code>, generated field descriptors/index bindings, analyzer-packaged collection model/codecs, trim/NativeAOT smoke coverage, and a dedicated sample are now in place while broader package ergonomics and remaining generator coverage continue</td>
+                <td>In Progress</td>
+                </tr>
+                <tr>
+                <td><strong>Page-level compression</strong></td>
+                <td>Compress cell content within pages to reduce I/O and storage</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>At-rest encryption</strong></td>
+                <td>Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths</td>
+                <td>Research</td>
+                </tr>
+                <tr>
+                <td><strong>Advanced cost-based query optimizer</strong></td>
+                <td>In progress: phase-2 stats-guided costing is now in place through internal equi-depth histograms, heavy hitters, composite-index prefix distinct-count summaries, skew-aware lookup/filter estimates, correlation-aware composite equality filters/joins, and bounded DP reordering for small inner-join chains; adaptive re-optimization and public histogram inspection remain future work</td>
+                <td>In Progress</td>
+                </tr>
+                <tr>
+                <td><strong>Async I/O batching</strong></td>
+                <td>In progress: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities now cover the main storage and maintenance write paths; remaining auditing is outside the WAL hot path</td>
+                <td>In Progress</td>
+                </tr>
+                <tr>
+                <td><strong>Low-latency durable writes</strong></td>
+                <td>Done in <code>v2.9.0</code>: advisory planner-stat persistence can stay deferred without weakening committed-row durability, and <code>sys.table_stats.row_count_is_exact</code> now makes exact versus estimated row-count semantics explicit to planner and <code>COUNT(*)</code> fast paths</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Group commit / deferred WAL flush</strong></td>
+                <td>Done in <code>v2.9.0</code>: opt-in <code>UseDurableCommitBatchWindow(...)</code> batches durable WAL flushes across contending in-process transactions and remains an expert measure-first knob rather than default behavior</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Initial multi-writer support</strong></td>
+                <td>Explicit <code>WriteTransaction</code> conflict-detected retry flow, shared auto-commit non-insert isolation, and opt-in <code>ConcurrentWriteTransactions</code> for shared implicit inserts</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Broader multi-writer insert optimization</strong></td>
+                <td>Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path</td>
+                <td>Research</td>
+                </tr>
+                <tr>
+                <td><strong>Replication / change feed</strong></td>
+                <td>Stream committed changes for read replicas or event-driven architectures</td>
+                <td>Research</td>
+                </tr>
+                <tr>
+                <td><strong>WebAssembly sandboxed UDFs</strong></td>
+                <td>Execute untrusted user-submitted functions in a WASM sandbox with resource limits (fuel, memory caps) via Wasmtime</td>
+                <td>Research</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="current-limitations">Current Limitations</h2>
+                <p>These are known simplifications in the current implementation:</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Area</th>
+                <th>Limitation</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td><strong>Functions</strong></td>
+                <td>Very limited scalar function surface today: built-in <code>TEXT(expr)</code> plus aggregate functions; no broader built-in function library or user-defined functions yet</td>
+                </tr>
+                <tr>
+                <td><strong>Query</strong></td>
+                <td>Scalar/<code>IN</code>/<code>EXISTS</code> subqueries are supported, including correlated cases in <code>WHERE</code>, non-aggregate projection, and <code>UPDATE</code>/<code>DELETE</code> expressions; correlated subqueries are not yet supported in <code>JOIN ON</code>, <code>GROUP BY</code>, <code>HAVING</code>, <code>ORDER BY</code>, or aggregate projections</td>
+                </tr>
+                <tr>
+                <td><strong>Query</strong></td>
+                <td><code>UNION</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are supported; <code>UNION ALL</code> is not implemented yet</td>
+                </tr>
+                <tr>
+                <td><strong>Query</strong></td>
+                <td>No window functions</td>
+                </tr>
+                <tr>
+                <td><strong>Schema</strong></td>
+                <td>No SQL <code>DEFAULT</code> column values or <code>CHECK</code> constraints yet. Foreign keys are currently v1 only: single-column, column-level <code>REFERENCES</code> with optional <code>ON DELETE CASCADE</code>; table-level/composite/deferred foreign keys and <code>ON UPDATE</code> actions are not implemented</td>
+                </tr>
+                <tr>
+                <td><strong>Indexes</strong></td>
+                <td>Equality lookups support current <code>INTEGER</code>/<code>TEXT</code> indexes, but ordered range-scan pushdown is still limited to single-column <code>INTEGER</code> index paths</td>
+                </tr>
+                <tr>
+                <td><strong>RowId</strong></td>
+                <td>Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert</td>
+                </tr>
+                <tr>
+                <td><strong>Collections</strong></td>
+                <td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates</td>
+                </tr>
+                <tr>
+                <td><strong>Networking</strong></td>
+                <td><code>CSharpDB.Daemon</code> now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today</td>
+                </tr>
+                <tr>
+                <td><strong>Security</strong></td>
+                <td>Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned</td>
+                </tr>
+                <tr>
+                <td><strong>Text / Multilingual</strong></td>
+                <td>Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned</td>
+                </tr>
+                <tr>
+                <td><strong>Concurrency</strong></td>
+                <td>The physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains still depend on conflict shape and whether shared auto-commit <code>INSERT</code> is left on the default serialized path</td>
+                </tr>
+                <tr>
+                <td><strong>Storage</strong></td>
+                <td>No page-level compression</td>
+                </tr>
+                <tr>
+                <td><strong>Storage</strong></td>
+                <td>No at-rest encryption for database/WAL files; on-disk storage is plaintext only</td>
+                </tr>
+                <tr>
+                <td><strong>Storage</strong></td>
+                <td>Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path</td>
+                </tr>
+                <tr>
+                <td><strong>Storage</strong></td>
+                <td>By default, durable auto-commit single-row writes still pay a physical WAL flush per commit; opt-in <code>UseDurableCommitBatchWindow(...)</code> can trade some commit latency for higher throughput across contending in-process writers, but default behavior remains per-commit durable</td>
+                </tr>
+                <tr>
+                <td><strong>Query</strong></td>
+                <td>Phase-2 cost-based planning is largely in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, internal histograms/heavy hitters/prefix stats, and bounded small-chain join reordering now feed join/access-path costing; remaining work is adaptive re-optimization and public histogram/diagnostic surfacing rather than missing core stats-guided costing</td>
+                </tr>
+                <tr>
+                <td><strong>Query</strong></td>
+                <td>Internal row-batch transport is now the default scan-heavy execution foundation across batch-capable scans, joins, aggregates, and result boundaries; remaining work is broader kernel specialization and optional SIMD-style tuning rather than missing core batch coverage</td>
+                </tr>
+                </tbody>
+                </table>
+                <hr/>
+                <h2 id="completed-milestones">Completed Milestones</h2>
+                <p>Major features already implemented:</p>
+                <ul>
+                <li>Single-file database with 4 KB page-oriented storage</li>
+                <li>B+tree-backed tables and secondary indexes</li>
+                <li>Write-Ahead Log with crash recovery and auto-checkpoint</li>
+                <li>Concurrent snapshot-isolated readers via WAL-based MVCC</li>
+                <li>Full SQL pipeline: tokenizer, parser, query planner, operator tree</li>
+                <li>JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, GROUP BY, HAVING, CTEs</li>
+                <li>Set operations: <code>UNION</code>, <code>INTERSECT</code>, <code>EXCEPT</code></li>
+                <li><code>SELECT DISTINCT</code> and DISTINCT aggregates</li>
+                <li>Scalar subqueries, <code>IN (SELECT ...)</code>, and <code>EXISTS (SELECT ...)</code>, including correlated evaluation in filters, non-aggregate projections, and <code>UPDATE</code>/<code>DELETE</code> expressions</li>
+                <li>Scalar <code>TEXT(expr)</code> for filter-friendly text coercion</li>
+                <li>Composite (multi-column) indexes</li>
+                <li>Ordered integer index range scans (<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>BETWEEN</code>) in the fast lookup path</li>
+                <li><code>ANALYZE</code>, persisted <code>sys.table_stats</code> / <code>sys.column_stats</code>, and stale-aware column-stat refresh</li>
+                <li>Phase-2 cost-based query planning: statistics-guided access-path selection, join method choice, hash build-side choice, histogram/heavy-hitter/cardinality estimation, composite-prefix correlation modeling, and bounded small-chain inner-join reordering</li>
+                <li>SQL statement and SELECT plan caching</li>
+                <li>First-class <code>IDENTITY</code> / <code>AUTOINCREMENT</code> support for <code>INTEGER PRIMARY KEY</code> columns</li>
+                <li>Persisted table <code>NextRowId</code> high-water mark with compatibility fallback for legacy metadata</li>
+                <li>Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)</li>
+                <li>Foreign key constraints: single-column, column-level <code>REFERENCES</code> with optional <code>ON DELETE CASCADE</code></li>
+                <li>Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin</li>
+                <li>ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)</li>
+                <li>ADO.NET <code>GetSchema()</code> metadata collections for <code>MetaDataCollections</code>, <code>Tables</code>, <code>Columns</code>, <code>Indexes</code>, <code>Views</code>, and <code>ForeignKeys</code></li>
+                <li>ADO.NET connection pooling with <code>ClearPool</code> / <code>ClearAllPools</code></li>
+                <li>In-memory database mode with explicit load-from-disk and save-to-disk APIs</li>
+                <li>Shared/private in-memory ADO.NET connections with named shared-memory hosts</li>
+                <li>Document Collection API (NoSQL) with typed Put/Get/Delete/Scan/Find</li>
+                <li>Collection UTF-8 payload fast path with compatibility for legacy backing rows</li>
+                <li>Collection secondary field indexes via <code>EnsureIndexAsync</code> / <code>FindByIndexAsync</code></li>
+                <li>Maintenance report, <code>REINDEX</code>, and <code>VACUUM</code> flows across client, CLI, API, and Admin UI</li>
+                <li>Dedicated <code>CSharpDB.Daemon</code> gRPC host for remote <code>CSharpDB.Client</code> access</li>
+                <li>Remote host consolidation in <code>CSharpDB.Daemon</code>, with REST <code>/api</code> and gRPC sharing the same warm hosted database client</li>
+                <li>Storage tuning presets, bounded WAL read caching, memory-mapped main-file reads, and sliced background WAL auto-checkpointing</li>
+                <li>SQL executor/read-path fast paths for compact projections, broader join/index coverage, grouped aggregates, and correlated subquery filters</li>
+                <li>Batch-first SQL row-batch execution foundation with batch-aware scan/index/join roots, shared predicate/projection kernels, and batch-native generic aggregate paths</li>
+                <li>Interactive CLI with meta-commands and file execution</li>
+                <li>REST API with 34 endpoints and OpenAPI/Scalar documentation</li>
+                <li>Blazor Server admin dashboard</li>
+                <li>Integrated Admin Forms and Reports designers with runtime preview/entry, database-backed metadata persistence, and print-ready report output</li>
+                <li>B+tree delete rebalancing with underflow handling (borrow/merge + interior collapse path)</li>
+                <li>Reusable snapshot reader sessions for higher concurrent-read throughput</li>
+                <li>Comprehensive benchmark suite (micro, macro, stress, scaling, in-memory, shared-memory)</li>
+                <li>Binary direct-payload collection storage with direct hydration and field/path extraction</li>
+                <li>Collection path indexes: nested scalar, array-element, nested array-object, Guid, temporal, ordered text</li>
+                <li>Collection path query APIs: <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code></li>
+                <li>Source-generated typed collection fast path foundations: generated collection models/codecs/field descriptors, trim-safe <code>GetGeneratedCollectionAsync&lt;T&gt;(...)</code>, generator diagnostics, NativeAOT trim-smoke validation, and a dedicated sample</li>
+                <li>Full-text search with tokenization, stemming, and relevance ranking</li>
+                <li>Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache</li>
+                <li>Client-wide <code>BackupAsync</code> / <code>RestoreAsync</code> across direct, HTTP, gRPC, CLI, and Admin</li>
+                <li><code>ReplaceAsync</code> for index stores</li>
+                <li>Package-driven ETL pipelines with validation, dry-run, execute/resume, persisted run history, and Admin visual designer support</li>
+                </ul>
+                <hr/>
+                <h2 id="see-also">See Also</h2>
+                <ul>
+                <li><a href="architecture-reference.html">Architecture Guide</a> — How the engine is structured</li>
+                <li><a href="https://csharpdb.com/docs/internals.html">Internals &amp; Contributing</a> — How to extend the engine</li>
+                <li>Deployment &amp; Installation Plan — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts</li>
+                <li>Multi-Writer Follow-Up Plan — Post-initial multi-writer roadmap, insert-path gaps, and release criteria for broader completion</li>
+                <li>Query And Durable Write Performance Plan — Combined optimizer phase-2 plus durable-write completion plan, shipped state, and remaining benchmark/future-work boundaries</li>
+                <li><a href="https://csharpdb.com/docs/collation-support.html">Multilingual Text Support Plan</a> — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and <code>COLLATE</code> clause support for queries and index definitions</li>
+                <li>Database Encryption Plan — Encrypted storage format, key management, migration, and managed-surface rollout</li>
+                <li><a href="docs/storage-engine-reference.html">Storage Engine Guide</a> — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog</li>
+                <li>Native FFI Tutorials — Python and Node.js examples using the NativeAOT shared library</li>
+                <li>User-Defined Functions Plan — C# library functions callable by the database, native plugin extensions, and WASM sandboxing</li>
+                <li>Pub/Sub Change Events Plan — Engine-level change events with channel-based delivery for real-time data subscriptions</li>
+                <li>Benchmark Suite — Performance data informing optimization priorities</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

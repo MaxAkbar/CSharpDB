@@ -14,6 +14,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `procurement-analytics/` | Query expansion + planner stats workbook | `schema.sql`, `procedures.json`, `queries.sql` |
 | `feature-tour/` | Northstar Field Services | `schema.sql`, `procedures.json`, `queries.sql` |
 | `platform-showcase/` | Broad relational feature tour + optional API demo | `schema.sql`, `procedures.json`, `queries.sql`, `.csproj`, `Program.cs` |
+| `fulfillment-hub/` | Full-stack operations showcase with forms, reports, pipelines, collections, and full-text search | `schema.sql`, `procedures.json`, `saved-queries.json`, `queries.sql`, `pipelines/`, `imports/`, `.csproj`, `Program.cs`, `README.md` |
 | `csv-bulk-import/` | Runnable CSV-to-table bulk ingest walkthrough | `.csproj`, `Program.cs`, `README.md`, `events.csv` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
@@ -78,6 +79,18 @@ Root-level helpers:
 - Demo: [PlatformShowcaseSample.csproj](platform-showcase/PlatformShowcaseSample.csproj)
 - Domain: subscriptions, orders, support operations, inventory, knowledge articles, and dashboard presets
 - Good for: foreign keys, collations, unique + composite indexes, views, triggers, `IDENTITY` audit rows, joins, CTEs, subqueries, set operations, `TEXT(...)`, `ANALYZE`, full-text search, and `Collection<T>`
+
+### Fulfillment Hub
+
+- SQL: [schema.sql](fulfillment-hub/schema.sql)
+- Procedures: [procedures.json](fulfillment-hub/procedures.json)
+- Saved Queries: [saved-queries.json](fulfillment-hub/saved-queries.json)
+- Queries: [queries.sql](fulfillment-hub/queries.sql)
+- Pipelines: [pipelines/](fulfillment-hub/pipelines)
+- Demo: [FulfillmentHubSample.csproj](fulfillment-hub/FulfillmentHubSample.csproj)
+- Docs: [README.md](fulfillment-hub/README.md)
+- Domain: local-first warehouse, order fulfillment, receiving, shipment, and returns operations
+- Good for: end-to-end admin workflows, stored procedures, saved queries, reports, forms, CSV/JSON pipelines, typed collections with path indexes, and full-text search
 
 ### Bulk Import / CSV To Table
 
@@ -218,6 +231,14 @@ dotnet run --project samples/efcore-provider/EfCoreProviderSample.csproj
 
 This sample is the quickest way to validate the embedded EF Core provider, `UseCSharpDb(...)`, navigation loading, and the design-time context setup used by `dotnet ef`.
 
+### Option 9: Run the Fulfillment Hub Sample
+
+```bash
+dotnet run --project samples/fulfillment-hub/FulfillmentHubSample.csproj
+```
+
+This is the broadest runnable operations sample in the repo. It rebuilds a fresh database, seeds the relational schema and snapshot data, stores procedures and saved queries, persists admin forms and reports, saves and runs pipelines, seeds collections, and creates a full-text index over operational playbooks.
+
 ## v2.2.0 API Examples
 
 The SQL samples above cover the relational surface. The following snippets show v2.2.0 features that are accessed through the `CSharpDB.Client` and `CSharpDB.Engine` C# APIs.
@@ -306,5 +327,5 @@ The `native-ffi/` folder contains wrappers and examples for calling CSharpDB fro
 
 - [Getting Started Tutorial](../docs/getting-started.md)
 - [CSharpDB.Client README](../src/CSharpDB.Client/README.md)
-- [REST API Reference](../docs/rest-api.md)
-- [CLI Reference](../docs/cli.md)
+- [REST API Reference](https://csharpdb.com/docs/rest-api.html)
+- [CLI Reference](https://csharpdb.com/docs/cli.html)

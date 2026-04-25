@@ -1,6 +1,21 @@
 <Solution>
   <Folder Name="/scripts/">
+    <File Path="scripts/Publish-CSharpDbDaemonRelease.ps1" />
     <File Path="scripts/Start-CSharpDbAdminAndDaemon.ps1" />
+  </Folder>
+  <Folder Name="/deploy/daemon/windows/">
+    <File Path="deploy/daemon/windows/install-csharpdb-daemon.ps1" />
+    <File Path="deploy/daemon/windows/uninstall-csharpdb-daemon.ps1" />
+  </Folder>
+  <Folder Name="/deploy/daemon/linux/">
+    <File Path="deploy/daemon/linux/csharpdb-daemon.service" />
+    <File Path="deploy/daemon/linux/install-csharpdb-daemon.sh" />
+    <File Path="deploy/daemon/linux/uninstall-csharpdb-daemon.sh" />
+  </Folder>
+  <Folder Name="/deploy/daemon/macos/">
+    <File Path="deploy/daemon/macos/com.csharpdb.daemon.plist" />
+    <File Path="deploy/daemon/macos/install-csharpdb-daemon.sh" />
+    <File Path="deploy/daemon/macos/uninstall-csharpdb-daemon.sh" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/collection-indexing/CollectionIndexingSample.csproj" />

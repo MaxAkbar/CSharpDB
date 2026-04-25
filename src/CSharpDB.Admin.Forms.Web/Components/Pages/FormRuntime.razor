@@ -1,0 +1,9 @@
+@page "/forms/{FormId}"
+
+<PageTitle>Form Runtime</PageTitle>
+
+<DataEntry FormId="@FormId" ShowDesignerButton="false" BackHref="/" BackLabel="All Forms" />
+
+@code {
+    [Parameter] public string FormId { get; set; } = string.Empty;
+}

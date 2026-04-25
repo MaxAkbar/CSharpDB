@@ -4,6 +4,7 @@ using CSharpDB.Client.Models;
 using CSharpDB.Storage.Diagnostics;
 using Grpc.Core;
 using Grpc.Net.Client;
+using Grpc.Net.Client.Web;
 using CoreDbException = CSharpDB.Primitives.CSharpDbException;
 using CoreErrorCode = CSharpDB.Primitives.ErrorCode;
 using Empty = Google.Protobuf.WellKnownTypes.Empty;
@@ -29,6 +30,14 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         {
             channelOptions.HttpClient = httpClient;
             channelOptions.DisposeHttpClient = false;
+        }
+        else if (endpoint.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            channelOptions.HttpHandler = new GrpcWebHandler(
+                GrpcWebMode.GrpcWeb,
+                new HttpClientHandler());
+            channelOptions.HttpVersion = System.Net.HttpVersion.Version11;
+            channelOptions.HttpVersionPolicy = HttpVersionPolicy.RequestVersionExact;
         }
 
         _channel = GrpcChannel.ForAddress(endpoint, channelOptions);

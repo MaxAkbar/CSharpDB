@@ -1,3 +1,4 @@
+using CSharpDB.Admin.Configuration;
 using CSharpDB.Admin.Components;
 using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Admin.Reports.Services;
@@ -9,32 +10,22 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+builder.Services.AddSingleton(sp =>
+    AdminClientOptionsBuilder.BindHostDatabaseOptions(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
+    var hostDatabaseOptions = sp.GetRequiredService<AdminHostDatabaseOptions>();
     string? endpoint = configuration["CSharpDB:Endpoint"];
     CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
 
-    CSharpDbClientOptions options;
-    if (!string.IsNullOrWhiteSpace(endpoint))
-    {
-        options = new CSharpDbClientOptions
-        {
-            Transport = transport,
-            Endpoint = endpoint,
-        };
-    }
-    else
-    {
-        options = new CSharpDbClientOptions
-        {
-            Transport = transport,
-            ConnectionString = configuration.GetConnectionString("CSharpDB")
-                ?? "Data Source=csharpdb.db",
-        };
-    }
+    CSharpDbClientOptions options = AdminClientOptionsBuilder.Build(
+        configuration,
+        hostDatabaseOptions,
+        transport,
+        endpoint);
 
-    return new DatabaseClientHolder(CSharpDbClient.Create(options));
+    return new DatabaseClientHolder(CSharpDbClient.Create(options), hostDatabaseOptions);
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddScoped<TabManagerService>();
@@ -47,7 +38,7 @@ builder.Services.AddCSharpDbAdminReports();
 
 var app = builder.Build();
 
-// Open the database connection at startup (before any requests arrive)
+// Warm the in-process database instance before any requests arrive.
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var dbClient = scope.ServiceProvider.GetRequiredService<ICSharpDbClient>();

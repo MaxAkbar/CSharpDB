@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v3.0.0` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v3.4.0` state of the repo.
 
 ---
 
@@ -30,7 +30,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Table/index statistics** | ANALYZE command with persisted row counts, column NDV/min/max, stale tracking, and initial stats-guided index selection in the query planner | Done |
 | **Collection binary payloads** | Binary direct-payload format with faster hydration, direct field/path extraction, and richer path-based indexing | Done |
 | **Collection path indexes** | Nested scalar, array-element, nested array-object, Guid, temporal, and ordered text path indexes with `FindByPathAsync` / `FindByPathRangeAsync` | Done |
-| **Hybrid storage mode** | Lazy-resident durable storage with gRPC tunable file-cache configuration | Done |
+| **Hybrid storage mode** | Lazy-resident durable storage with gRPC tunable file-cache configuration; Admin direct local hosting keeps a warm in-process database instance and uses hybrid incremental-durable options by default | Done |
 | **Client backup/restore** | `BackupAsync` / `RestoreAsync` as first-class `ICSharpDbClient` operations across direct, HTTP, gRPC, CLI, and Admin | Done |
 | **Older DB foreign-key retrofit migration** | Validate/apply maintenance workflow that rewrites existing child tables with persisted FK metadata across direct, HTTP, gRPC, CLI, and Admin | Done |
 
@@ -49,10 +49,10 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **`DEFAULT` column values** | Allow default expressions in column definitions | Planned |
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
 | **Foreign key constraints** | v1 support for single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`, plus `sys.foreign_keys` and metadata/tooling surfaces | Done |
-| **Remote host consolidation** | Fold the current `CSharpDB.Api` REST/HTTP surface into `CSharpDB.Daemon` so one long-running server host can serve REST, gRPC, and future local transports from a shared warm `Database` instance | Planned |
+| **Remote host consolidation** | `CSharpDB.Daemon` now hosts the existing REST/HTTP `/api` surface and gRPC from one long-running process backed by the same warm daemon-hosted client; standalone `CSharpDB.Api` remains supported for REST-only hosting | Done |
 | **Remote host security** | Add built-in authentication, authorization, and transport-security options for remote HTTP and gRPC access, including API keys, protected admin endpoints, and TLS/mTLS deployment support | Planned |
-| **Daemon service packaging** | Package the existing `CSharpDB.Daemon` host as a persistent background service across systemd, Windows Service, and launchd | Planned |
-| **Cross-platform deployment** | dotnet tool, self-contained binaries, Docker, Homebrew, winget, install scripts | Planned |
+| **Daemon service packaging** | Package the existing `CSharpDB.Daemon` host as a persistent background service across systemd, Windows Service, and launchd | Done |
+| **Cross-platform deployment** | Self-contained daemon archives and install scripts ship for Windows, Linux, and macOS; dotnet tool, Docker, Homebrew, and winget distribution remain future work | In Progress |
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
 | **Connection pooling** | Pool underlying direct embedded sessions behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Richer SQL editor UX, query history, deeper diagnostics, and integrated Forms/Reports tooling beyond the core schema/procedure/storage surface | Done |
@@ -102,7 +102,7 @@ These are known simplifications in the current implementation:
 | **Indexes** | Equality lookups support current `INTEGER`/`TEXT` indexes, but ordered range-scan pushdown is still limited to single-column `INTEGER` index paths |
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
-| **Networking** | The current shipping model still splits remote access between `CSharpDB.Api` for HTTP and `CSharpDB.Daemon` for gRPC; host consolidation plus named pipes remain planned and are not implemented yet |
+| **Networking** | `CSharpDB.Daemon` now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
 | **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned |
 | **Concurrency** | The physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains still depend on conflict shape and whether shared auto-commit `INSERT` is left on the default serialized path |
@@ -149,6 +149,7 @@ Major features already implemented:
 - Collection secondary field indexes via `EnsureIndexAsync` / `FindByIndexAsync`
 - Maintenance report, `REINDEX`, and `VACUUM` flows across client, CLI, API, and Admin UI
 - Dedicated `CSharpDB.Daemon` gRPC host for remote `CSharpDB.Client` access
+- Remote host consolidation in `CSharpDB.Daemon`, with REST `/api` and gRPC sharing the same warm hosted database client
 - Storage tuning presets, bounded WAL read caching, memory-mapped main-file reads, and sliced background WAL auto-checkpointing
 - SQL executor/read-path fast paths for compact projections, broader join/index coverage, grouped aggregates, and correlated subquery filters
 - Batch-first SQL row-batch execution foundation with batch-aware scan/index/join roots, shared predicate/projection kernels, and batch-native generic aggregate paths
@@ -174,7 +175,7 @@ Major features already implemented:
 ## See Also
 
 - [Architecture Guide](architecture.md) — How the engine is structured
-- [Internals & Contributing](internals.md) — How to extend the engine
+- [Internals & Contributing](https://csharpdb.com/docs/internals.html) — How to extend the engine
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Multi-Writer Follow-Up Plan](multi-writer-follow-up-plan.md) — Post-initial multi-writer roadmap, insert-path gaps, and release criteria for broader completion
 - [Query And Durable Write Performance Plan](query-and-durable-write-performance/README.md) — Combined optimizer phase-2 plus durable-write completion plan, shipped state, and remaining benchmark/future-work boundaries

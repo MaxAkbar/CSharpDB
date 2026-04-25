@@ -12,6 +12,7 @@ tmp/
 *.userosscache
 *.sln.docstates
 .dotnet-cli/
+.playwright-mcp/
 
 ## VS / Rider IDE
 .vs/

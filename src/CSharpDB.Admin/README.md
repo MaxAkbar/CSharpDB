@@ -10,9 +10,10 @@ database objects.
 
 - object explorer for user tables, system tables, forms, reports, views,
   triggers, saved queries, and procedures
-- table browsing with insert, update, delete, and schema views
+- table browsing with insert, update, delete, per-column `LIKE` placement and `=` filters,
+  and schema views
 - table designer for creating tables
-- SQL query tabs with paged results
+- SQL query tabs with paged results and guided SQL completions
 - procedure editor and execution surface
 - storage inspection and maintenance views
 - ETL pipeline designer, JSON package editor, stored pipeline catalog, and run
@@ -26,7 +27,9 @@ The host registers one `ICSharpDbClient` through `DatabaseClientHolder`.
 
 Configuration supports two shapes:
 
-- direct embedded database access through `ConnectionStrings:CSharpDB`
+- direct embedded database access through `ConnectionStrings:CSharpDB`; local
+  direct mode keeps a warm in-process database instance and opens it with
+  hybrid incremental-durable options by default
 - remote access through `CSharpDB:Transport` plus `CSharpDB:Endpoint`
 
 Default `appsettings.json` uses direct mode:
@@ -34,7 +37,14 @@ Default `appsettings.json` uses direct mode:
 ```json
 {
   "CSharpDB": {
-    "Transport": "direct"
+    "Transport": "direct",
+    "HostDatabase": {
+      "OpenMode": "HybridIncrementalDurable",
+      "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
+      "UseWriteOptimizedPreset": true,
+      "HotTableNames": [],
+      "HotCollectionNames": []
+    }
   },
   "ConnectionStrings": {
     "CSharpDB": "Data Source=relational.db"
@@ -42,9 +52,16 @@ Default `appsettings.json` uses direct mode:
 }
 ```
 
+In this Admin context, hybrid means a warm in-process database instance that
+stays alive for the Admin app lifetime. It is still durable and persists to the
+configured data source; it is not an in-memory-only mode. Set
+`CSharpDB:HostDatabase:OpenMode` to `Direct` to use the plain direct open path
+instead of `Database.OpenHybridAsync`.
+
 The app opens the configured database during startup by calling
 `ICSharpDbClient.GetInfoAsync()`, so invalid configuration fails before the UI
-accepts requests.
+accepts requests. The same database instance is reused until the Admin app
+shuts down or the user switches to a different database.
 
 ## Running Locally
 
@@ -59,11 +76,20 @@ The development launch profile uses:
 
 ## Configuration Examples
 
-Direct file-backed database:
+Direct local warm database:
 
 ```powershell
 $env:ConnectionStrings__CSharpDB = "Data Source=C:\data\app.db"
 $env:CSharpDB__Transport = "direct"
+dotnet run --project src/CSharpDB.Admin/CSharpDB.Admin.csproj
+```
+
+Plain direct file-open opt-out:
+
+```powershell
+$env:ConnectionStrings__CSharpDB = "Data Source=C:\data\app.db"
+$env:CSharpDB__Transport = "direct"
+$env:CSharpDB__HostDatabase__OpenMode = "Direct"
 dotnet run --project src/CSharpDB.Admin/CSharpDB.Admin.csproj
 ```
 

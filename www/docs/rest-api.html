@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>REST API Reference — CSharpDB</title>
-    <meta name="description" content="CSharpDB REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.">
+    <meta name="description" content="CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.">
     <link rel="canonical" href="https://csharpdb.com/docs/rest-api.html">
     <meta property="og:title" content="REST API Reference — CSharpDB">
-    <meta property="og:description" content="CSharpDB REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.">
+    <meta property="og:description" content="CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.">
     <meta property="og:url" content="https://csharpdb.com/docs/rest-api.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "REST API Reference",
-        "description": "CSharpDB REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.",
+        "description": "CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.",
         "url": "https://csharpdb.com/docs/rest-api.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,8 +33,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'REST API Reference',
-        description: 'CSharpDB REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.',
-        keywords: 'CSharpDB REST API, HTTP endpoints, tables, rows, indexes, views, triggers, SQL execution, procedures',
+        description: 'CSharpDB daemon-hosted REST API reference — all HTTP endpoints for database info, storage inspection, tables, rows, indexes, views, triggers, SQL execution, and procedures.',
+        keywords: 'CSharpDB REST API, CSharpDB Daemon, HTTP endpoints, tables, rows, indexes, views, triggers, SQL execution, procedures',
         canonicalPath: 'docs/rest-api.html',
         ogType: 'article',
     };
@@ -71,21 +71,42 @@
 
             <div class="doc-content">
                 <h1>CSharpDB REST API Reference</h1>
-                <p>The CSharpDB REST API exposes the full database feature set over HTTP, enabling cross-language interoperability. Built with ASP.NET Core Minimal APIs, it includes OpenAPI documentation and an interactive Scalar UI.</p>
+                <p>The CSharpDB REST API is now hosted by <code>CSharpDB.Daemon</code> by default. The daemon exposes the existing HTTP <code>/api</code> surface and the gRPC service from one long-running process backed by the same warm database client.</p>
+                <p>The REST surface enables cross-language interoperability over JSON/HTTP. Built with ASP.NET Core Minimal APIs, it includes OpenAPI documentation and an interactive Scalar UI when the daemon runs in Development mode.</p>
 
                 <h2 id="running-the-api">Running the API</h2>
-                <div class="code-block" data-title="Bash"><pre><code>dotnet run --project src/CSharpDB.Api</code></pre></div>
-                <p>The API starts on <code>http://localhost:61818</code> (HTTP) and <code>https://localhost:61819</code> (HTTPS).</p>
-                <p><strong>Interactive documentation:</strong> Open <code>http://localhost:61818/scalar/v1</code> in a browser to explore and test endpoints with the Scalar API explorer.</p>
+                <p>Run the combined daemon host from source:</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></div>
+                <p>The daemon launch profile starts on <code>https://localhost:49995</code> and <code>http://localhost:49996</code>. REST endpoints are available under <code>/api</code>, and gRPC endpoints are available from the same host.</p>
+                <p><strong>Interactive documentation:</strong> In Development mode, open <code>https://localhost:49995/scalar/v1</code> or <code>http://localhost:49996/scalar/v1</code> in a browser to explore and test endpoints with the Scalar API explorer.</p>
+                <p>For a stable local HTTP port, set <code>ASPNETCORE_URLS</code> explicitly before starting the daemon:</p>
+                <div class="code-block" data-title="PowerShell"><pre><code>$env:ConnectionStrings__CSharpDB = "Data Source=C:\data\sample.db"
+$env:ASPNETCORE_URLS = "http://localhost:5820"
+dotnet run --project src/CSharpDB.Daemon/CSharpDB.Daemon.csproj</code></pre></div>
+                <p>With that override, the REST base URL is <code>http://localhost:5820/api</code> and Scalar is available at <code>http://localhost:5820/scalar/v1</code>.</p>
 
                 <h2 id="configuration">Configuration</h2>
-                <p>The default database path is configured in <code>src/CSharpDB.Api/appsettings.json</code>:</p>
+                <p>The current default database path and daemon host behavior are configured in <code>src/CSharpDB.Daemon/appsettings.json</code>:</p>
                 <div class="code-block" data-title="JSON"><pre><code>{
   "ConnectionStrings": {
     "CSharpDB": "Data Source=csharpdb.db"
+  },
+  "CSharpDB": {
+    "Daemon": {
+      "EnableRestApi": true
+    },
+    "HostDatabase": {
+      "OpenMode": "HybridIncrementalDurable",
+      "ImplicitInsertExecutionMode": "ConcurrentWriteTransactions",
+      "UseWriteOptimizedPreset": true,
+      "HotTableNames": [],
+      "HotCollectionNames": []
+    }
   }
 }</code></pre></div>
+                <p><code>CSharpDB:Daemon:EnableRestApi</code> controls whether the daemon maps the REST <code>/api</code> surface. The default is <code>true</code>. Set it to <code>false</code> only when the daemon should expose gRPC without REST.</p>
                 <p>CORS is enabled for all origins by default (development convenience). JSON responses use camelCase naming and omit null values.</p>
+                <p>The standalone <code>CSharpDB.Api</code> project remains available for REST-only hosting, but the recommended remote host is <code>CSharpDB.Daemon</code> so REST and gRPC clients share the same warm database process.</p>
 
                 <h2 id="endpoints">Endpoints</h2>
                 <p>All endpoints are prefixed with <code>/api</code>.</p>
@@ -197,7 +218,7 @@
                 <ul>
                     <li><code>validateOnly = true</code> previews the migration without mutating schema or data.</li>
                     <li><code>backupDestinationPath</code> is optional and is only used during apply mode.</li>
-                    <li>Paths are resolved on the API host machine, not on the caller.</li>
+                    <li>Paths are resolved on the daemon host machine, not on the caller.</li>
                 </ul>
 
                 <h3 id="tables">Tables</h3>
@@ -525,6 +546,7 @@
                 <h2 id="see-also">See Also</h2>
                 <ul>
                     <li><a href="getting-started.html">Getting Started Tutorial</a> — Engine API walkthrough</li>
+                    <li><a href="tutorials/multi-writer-daemon-grpc.html">Multi-Writer gRPC Daemon</a> — Daemon runtime model and remote-host guidance</li>
                     <li><a href="storage-architecture.html">Storage Architecture Deep Dive</a> — How the engine works internally</li>
                     <li><a href="cli.html">CLI Reference</a> — Interactive REPL commands</li>
                     <li><a href="samples.html">Sample Datasets</a> — Ready-to-run SQL scripts</li>

@@ -6,17 +6,22 @@ It is a thin ASP.NET Core layer over `CSharpDB.Client`. Requests are handled
 through `ICSharpDbClient`, which currently uses the direct engine-backed client
 under the hood.
 
-gRPC is not hosted here. The dedicated gRPC host lives in
-`CSharpDB.Daemon`.
+The standalone API host remains supported for REST-only deployments. For new
+remote deployments that need both REST and gRPC, prefer
+[`CSharpDB.Daemon`](../CSharpDB.Daemon/README.md), which now hosts the same
+REST `/api` surface and gRPC from one warm database instance.
 
 ## What This Project Is For
 
 Use this project when you want to:
 
-- expose a local CSharpDB database over HTTP
+- expose a local CSharpDB database over HTTP without running the daemon
 - test the database through a browser-based API UI
 - integrate with tools that prefer REST over direct embedded access
 - inspect database, WAL, and index state remotely
+
+Use `CSharpDB.Daemon` when REST and gRPC clients should share one long-running
+remote database host.
 
 Use `CSharpDB.Client` directly when you are writing an in-process consumer and do
 not need HTTP.
@@ -30,6 +35,8 @@ The API host is intentionally thin:
 - `ICSharpDbClient` is registered at startup from configuration
 - the client is warmed up during startup with `GetInfoAsync()` so configuration
   and database initialization failures happen early
+- the route/middleware setup is shared with `CSharpDB.Daemon` so both hosts
+  expose the same REST API surface
 
 Current request flow:
 
@@ -446,8 +453,10 @@ Current status mapping:
 - the API is currently mapped under `/api`, not `/api/v1`
 - there is no dedicated endpoint yet for creating tables outside raw SQL
 - the API uses the same authoritative client contract as other consumers
-- the API host is suitable for local development and integration testing, but it
-  is not yet production-hardened
+- the standalone API host is suitable for local development, REST-only hosting,
+  and integration testing, but it is not yet production-hardened
+- use `CSharpDB.Daemon` when REST should share a warm hosted database instance
+  with gRPC
 
 ## Useful Commands
 

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CSharpDB.Admin.Forms\CSharpDB.Admin.Forms.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Admin.Reports\CSharpDB.Admin.Reports.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Pipelines\CSharpDB.Pipelines.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="schema.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="procedures.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="saved-queries.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="queries.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="imports\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="pipelines\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

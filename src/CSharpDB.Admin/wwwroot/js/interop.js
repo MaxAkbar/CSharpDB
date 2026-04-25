@@ -67,6 +67,13 @@ window.resizeInterop = {
     _formEntryMin: 320,
     _formEntryMax: 720,
     _formEntryLayout: null,
+    _queryEditorActive: false,
+    _queryEditorStartY: 0,
+    _queryEditorStartHeight: 0,
+    _queryEditorMin: 120,
+    _queryEditorMax: 560,
+    _queryEditorLayout: null,
+    _queryEditorDotNetRef: null,
 
     initSidebar: (dotNetRef, minWidth, maxWidth) => {
         window.resizeInterop._dotNetRef = dotNetRef;
@@ -158,6 +165,77 @@ window.resizeInterop = {
         document.body.style.userSelect = '';
         document.removeEventListener('mousemove', window.resizeInterop._onFormEntryMove);
         document.removeEventListener('mouseup', window.resizeInterop._onFormEntryUp);
+    },
+
+    initQueryEditorPane: (layout, fallbackHeight, minHeight, maxHeight) => {
+        if (!layout) return fallbackHeight || 220;
+
+        const min = minHeight || 120;
+        const configuredMax = maxHeight || 560;
+        const layoutMax = Math.max(min, layout.clientHeight - 140);
+        const max = Math.max(min, Math.min(configuredMax, layoutMax));
+
+        const storedHeight = parseInt(localStorage.getItem('csharpdb-query-editor-height') || '', 10);
+        const baseHeight = Number.isFinite(storedHeight) ? storedHeight : (fallbackHeight || 220);
+        const resolvedHeight = Math.max(min, Math.min(max, baseHeight));
+
+        layout.style.setProperty('--query-editor-height', resolvedHeight + 'px');
+        return resolvedHeight;
+    },
+
+    startQueryEditorResize: (e, layout, currentHeight, minHeight, maxHeight, dotNetRef) => {
+        if (!layout) return;
+
+        window.resizeInterop._queryEditorActive = true;
+        window.resizeInterop._queryEditorStartY = e.clientY;
+        window.resizeInterop._queryEditorStartHeight = currentHeight || 220;
+        window.resizeInterop._queryEditorMin = minHeight || 120;
+        window.resizeInterop._queryEditorMax = maxHeight || 560;
+        window.resizeInterop._queryEditorLayout = layout;
+        window.resizeInterop._queryEditorDotNetRef = dotNetRef || null;
+
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+
+        document.addEventListener('mousemove', window.resizeInterop._onQueryEditorMove);
+        document.addEventListener('mouseup', window.resizeInterop._onQueryEditorUp);
+    },
+
+    _onQueryEditorMove: (e) => {
+        if (!window.resizeInterop._queryEditorActive || !window.resizeInterop._queryEditorLayout) return;
+
+        const dy = e.clientY - window.resizeInterop._queryEditorStartY;
+        const min = window.resizeInterop._queryEditorMin;
+        const configuredMax = window.resizeInterop._queryEditorMax;
+        const layoutMax = Math.max(min, window.resizeInterop._queryEditorLayout.clientHeight - 140);
+        const max = Math.max(min, Math.min(configuredMax, layoutMax));
+        let nextHeight = window.resizeInterop._queryEditorStartHeight + dy;
+        nextHeight = Math.max(min, Math.min(max, nextHeight));
+
+        window.resizeInterop._queryEditorLayout.style.setProperty('--query-editor-height', nextHeight + 'px');
+    },
+
+    _onQueryEditorUp: () => {
+        const layout = window.resizeInterop._queryEditorLayout;
+        const dotNetRef = window.resizeInterop._queryEditorDotNetRef;
+
+        if (layout) {
+            const value = parseInt(getComputedStyle(layout).getPropertyValue('--query-editor-height') || '', 10);
+            if (Number.isFinite(value)) {
+                localStorage.setItem('csharpdb-query-editor-height', value + 'px');
+                if (dotNetRef) {
+                    dotNetRef.invokeMethodAsync('OnQueryEditorHeightChanged', value);
+                }
+            }
+        }
+
+        window.resizeInterop._queryEditorActive = false;
+        window.resizeInterop._queryEditorLayout = null;
+        window.resizeInterop._queryEditorDotNetRef = null;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', window.resizeInterop._onQueryEditorMove);
+        document.removeEventListener('mouseup', window.resizeInterop._onQueryEditorUp);
     }
 };
 
@@ -240,16 +318,162 @@ window.designerInterop = {
         document.body.style.userSelect = 'none';
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
+    },
+
+    startPreviewSplitterDrag: (e, previewElement, dotNetRef, currentHeight) => {
+        const preview = previewElement;
+        if (!preview) return;
+
+        const startY = e.clientY;
+        const startH = currentHeight || preview.offsetHeight || 132;
+
+        const onMove = (ev) => {
+            const dy = ev.clientY - startY;
+            const newH = Math.max(96, Math.min(320, startH + dy));
+            preview.style.height = newH + 'px';
+        };
+
+        const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            const finalH = parseFloat(preview.style.height) || startH;
+            dotNetRef.invokeMethodAsync('OnSqlPreviewHeightMoved', Math.round(finalH));
+        };
+
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
     }
 };
 
 // SQL editor scroll sync
 window.editorInterop = {
+    _editors: new Map(),
+
+    initSqlEditor: (editorId, dotNetRef) => {
+        const textarea = document.getElementById(editorId);
+        if (!textarea) return;
+
+        window.editorInterop.disposeSqlEditor(editorId);
+
+        const keydown = (e) => {
+            if (e.ctrlKey && e.key === ' ') {
+                e.preventDefault();
+                dotNetRef.invokeMethodAsync('OnSqlEditorShortcut', 'Complete');
+                return;
+            }
+
+            const completionOpen = !!textarea
+                .closest('.sql-editor-area')
+                ?.querySelector('.sql-completion-popup');
+
+            if (!completionOpen) return;
+
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') {
+                e.preventDefault();
+                dotNetRef.invokeMethodAsync('OnSqlEditorCompletionKey', e.key);
+            }
+        };
+
+        textarea.addEventListener('keydown', keydown);
+        window.editorInterop._editors.set(editorId, { keydown });
+    },
+
+    disposeSqlEditor: (editorId) => {
+        const registration = window.editorInterop._editors.get(editorId);
+        if (!registration) return;
+
+        const textarea = document.getElementById(editorId);
+        if (textarea) {
+            textarea.removeEventListener('keydown', registration.keydown);
+        }
+
+        window.editorInterop._editors.delete(editorId);
+    },
+
+    getEditorState: (editorId) => {
+        const textarea = document.getElementById(editorId);
+        if (!textarea) return { value: '', selectionStart: 0, selectionEnd: 0 };
+
+        return {
+            value: textarea.value,
+            selectionStart: textarea.selectionStart || 0,
+            selectionEnd: textarea.selectionEnd || 0
+        };
+    },
+
+    replaceEditorText: (editorId, start, end, insertText, caretPosition) => {
+        const textarea = document.getElementById(editorId);
+        if (!textarea) return { value: '', selectionStart: 0, selectionEnd: 0 };
+
+        const value = textarea.value || '';
+        const safeStart = Math.max(0, Math.min(start || 0, value.length));
+        const safeEnd = Math.max(safeStart, Math.min(end || safeStart, value.length));
+        const nextValue = value.slice(0, safeStart) + (insertText || '') + value.slice(safeEnd);
+        const nextCaret = Math.max(0, Math.min(caretPosition ?? (safeStart + (insertText || '').length), nextValue.length));
+
+        textarea.value = nextValue;
+        textarea.focus();
+        textarea.setSelectionRange(nextCaret, nextCaret);
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+        return {
+            value: nextValue,
+            selectionStart: nextCaret,
+            selectionEnd: nextCaret
+        };
+    },
+
+    getCaretCoordinates: (editorId) => {
+        const textarea = document.getElementById(editorId);
+        if (!textarea) return { left: 12, top: 30 };
+
+        const style = window.getComputedStyle(textarea);
+        const mirror = document.createElement('div');
+        mirror.style.position = 'absolute';
+        mirror.style.visibility = 'hidden';
+        mirror.style.whiteSpace = 'pre-wrap';
+        mirror.style.wordWrap = 'break-word';
+        mirror.style.overflowWrap = 'break-word';
+        mirror.style.boxSizing = style.boxSizing;
+        mirror.style.width = textarea.clientWidth + 'px';
+        mirror.style.font = style.font;
+        mirror.style.fontFamily = style.fontFamily;
+        mirror.style.fontSize = style.fontSize;
+        mirror.style.fontWeight = style.fontWeight;
+        mirror.style.lineHeight = style.lineHeight;
+        mirror.style.letterSpacing = style.letterSpacing;
+        mirror.style.padding = style.padding;
+        mirror.style.border = style.border;
+        mirror.style.left = '-9999px';
+        mirror.style.top = '0';
+
+        const before = (textarea.value || '').slice(0, textarea.selectionStart || 0);
+        mirror.appendChild(document.createTextNode(before));
+        const marker = document.createElement('span');
+        marker.textContent = '\u200b';
+        mirror.appendChild(marker);
+        document.body.appendChild(mirror);
+
+        const lineHeight = parseFloat(style.lineHeight) || 19.2;
+        const area = textarea.closest('.sql-editor-area');
+        const areaWidth = area?.clientWidth || textarea.clientWidth;
+        const left = Math.min(Math.max(marker.offsetLeft - textarea.scrollLeft, 8), Math.max(8, areaWidth - 280));
+        const top = marker.offsetTop - textarea.scrollTop + lineHeight + 4;
+
+        document.body.removeChild(mirror);
+
+        return { left, top };
+    },
+
     syncScroll: (editorId) => {
         const textarea = document.getElementById(editorId);
         if (!textarea) return;
         const overlay = textarea.previousElementSibling;
-        const lineNums = textarea.parentElement?.querySelector('.sql-line-numbers');
+        const lineNums = textarea.closest('.sql-editor-wrapper')?.querySelector('.sql-line-numbers');
         if (overlay) {
             overlay.scrollTop = textarea.scrollTop;
             overlay.scrollLeft = textarea.scrollLeft;

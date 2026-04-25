@@ -135,6 +135,118 @@
         });
     }
 
+    function escapeHtml(value) {
+        return value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function inferCodeLanguage(code) {
+        const blockTitle = code.closest('.code-block')?.dataset.title?.toLowerCase() || '';
+        const className = code.className.toLowerCase();
+        const text = code.textContent || '';
+
+        if (blockTitle.includes('sql') || className.includes('language-sql')) return 'sql';
+        if (blockTitle.includes('json') || className.includes('language-json') || /^\s*[{[]/.test(text)) return 'json';
+        if (blockTitle.includes('powershell') || /\$env:|set-location|resolve-path/i.test(text)) return 'powershell';
+        if (blockTitle.includes('bash') || className.includes('language-bash') || /(^|\n)\s*(dotnet|npm|node|cd|export)\b/.test(text)) return 'shell';
+        if (blockTitle.includes('javascript') || className.includes('language-js') || /\b(import|const|let|function|await)\b[\s\S]*(from|require|console\.)/.test(text)) return 'javascript';
+        if (blockTitle.includes('python') || className.includes('language-python') || /\b(def|from|import|with|None|True|False)\b/.test(text)) return 'python';
+        if (blockTitle.includes('c#') || blockTitle.includes('program.cs') || className.includes('language-csharp')) return 'csharp';
+        if (/\b(await|using|namespace|public|private|class|record|new|var|async|Task|Database|DbValue)\b/.test(text)) return 'csharp';
+
+        return 'text';
+    }
+
+    function tokenClass(token, language) {
+        const csharpKeywords = new Set([
+            'abstract', 'as', 'async', 'await', 'base', 'bool', 'break', 'byte', 'case', 'catch',
+            'class', 'const', 'continue', 'decimal', 'default', 'do', 'double', 'else', 'enum',
+            'false', 'finally', 'float', 'for', 'foreach', 'if', 'in', 'int', 'interface',
+            'internal', 'is', 'long', 'namespace', 'new', 'null', 'object', 'out', 'override',
+            'private', 'protected', 'public', 'readonly', 'record', 'return', 'sealed', 'short',
+            'static', 'string', 'struct', 'switch', 'this', 'throw', 'true', 'try', 'uint',
+            'using', 'var', 'void', 'while'
+        ]);
+        const jsKeywords = new Set([
+            'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'default', 'else',
+            'export', 'false', 'finally', 'for', 'from', 'function', 'if', 'import', 'let', 'new',
+            'null', 'return', 'throw', 'true', 'try', 'undefined', 'var', 'while'
+        ]);
+        const pythonKeywords = new Set([
+            'as', 'async', 'await', 'break', 'class', 'def', 'elif', 'else', 'except', 'False',
+            'finally', 'for', 'from', 'if', 'import', 'in', 'is', 'None', 'return', 'True', 'try',
+            'with', 'while'
+        ]);
+        const sqlKeywords = new Set([
+            'ADD', 'ALTER', 'AND', 'AS', 'ASC', 'BEGIN', 'BY', 'COMMIT', 'COUNT', 'CREATE',
+            'DELETE', 'DESC', 'DISTINCT', 'DROP', 'EXEC', 'FROM', 'GROUP', 'INDEX', 'INSERT',
+            'INTO', 'JOIN', 'KEY', 'LIMIT', 'NOT', 'NULL', 'ON', 'OR', 'ORDER', 'PRIMARY',
+            'REAL', 'ROLLBACK', 'SELECT', 'SET', 'TABLE', 'TEXT', 'UPDATE', 'VALUES', 'VIEW',
+            'WHERE'
+        ]);
+        const shellKeywords = new Set(['cd', 'dotnet', 'export', 'node', 'npm', 'python', 'set']);
+        const tokenUpper = token.toUpperCase();
+
+        if (/^(\/\/|\/\*)/.test(token)) return 'cm';
+        if (token.startsWith('#') && (language === 'shell' || language === 'powershell' || language === 'python')) return 'cm';
+        if (token.startsWith('--') && language === 'sql') return 'cm';
+        if (/^(@?["']|"""|''')/.test(token)) return 'str';
+        if (/^\d/.test(token)) return 'num';
+        if (/^--[\w-]+$/.test(token) || /^\$[\w:]+$/.test(token)) return 'tp';
+
+        if (language === 'sql' && sqlKeywords.has(tokenUpper)) return 'kw';
+        if (language === 'shell' && shellKeywords.has(token)) return 'kw';
+        if (language === 'powershell' && (/^[A-Z][A-Za-z]+-[A-Za-z]+$/.test(token) || /^\$[\w:]+$/.test(token))) return 'kw';
+        if (language === 'javascript' && jsKeywords.has(token)) return 'kw';
+        if (language === 'python' && pythonKeywords.has(token)) return 'kw';
+        if (language === 'json' && /^(true|false|null)$/i.test(token)) return 'kw';
+        if (language === 'csharp' && csharpKeywords.has(token)) return 'kw';
+        if (language === 'csharp' && /^[A-Z][A-Za-z0-9_]*$/.test(token)) return 'tp';
+
+        return '';
+    }
+
+    function highlightCodeText(source, language) {
+        if (language === 'text') return escapeHtml(source);
+
+        const commentPatterns = ['\\/\\*[\\s\\S]*?\\*\\/'];
+        if (language === 'csharp' || language === 'javascript') commentPatterns.push('\\/\\/[^\\n]*');
+        if (language === 'shell' || language === 'powershell' || language === 'python') commentPatterns.push('#[^\\n]*');
+        if (language === 'sql') commentPatterns.push('--[^\\n]*');
+
+        const tokenPattern = new RegExp(
+            `(${commentPatterns.join('|')}|"""[\\s\\S]*?"""|'''[\\s\\S]*?'''|@?"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\\$[\\w:]+|--[\\w-]+|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_][A-Za-z0-9_]*\\b)`,
+            'g'
+        );
+        let html = '';
+        let index = 0;
+
+        source.replace(tokenPattern, (token, _unused, offset) => {
+            html += escapeHtml(source.slice(index, offset));
+            const cls = tokenClass(token, language);
+            const escaped = escapeHtml(token);
+            html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
+            index = offset + token.length;
+            return token;
+        });
+
+        html += escapeHtml(source.slice(index));
+        return html;
+    }
+
+    function initCodeHighlighting() {
+        document.querySelectorAll('.doc-content pre code, .blog-post pre code').forEach(code => {
+            if (code.dataset.highlighted === 'true') return;
+            const language = inferCodeLanguage(code);
+            code.innerHTML = highlightCodeText(code.textContent || '', language);
+            code.dataset.highlighted = 'true';
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         renderNav();
         renderFooter();
@@ -142,6 +254,7 @@
         initMobile();
         initNavScroll();
         initCopyButtons();
+        initCodeHighlighting();
     });
 })();
 

@@ -1,6 +1,7 @@
 @inject IJSRuntime JS
+@implements IAsyncDisposable
 
-<div class="sql-editor-container" style="height: @(Height)px;">
+<div class="sql-editor-container" style="height: @Height;">
     <div class="sql-editor-wrapper">
         <div class="sql-line-numbers" id="@(_lineNumId)">
             @for (int i = 1; i <= _lineCount; i++)
@@ -19,6 +20,24 @@
                       @onscroll="SyncScroll"
                       spellcheck="false"
                       placeholder="@Placeholder"></textarea>
+            @if (_completionResult.Suggestions.Count > 0)
+            {
+                <div class="sql-completion-popup"
+                     style="left: @(_completionLeftPx.ToString(System.Globalization.CultureInfo.InvariantCulture))px; top: @(_completionTopPx.ToString(System.Globalization.CultureInfo.InvariantCulture))px;">
+                    @for (int i = 0; i < _completionResult.Suggestions.Count; i++)
+                    {
+                        var index = i;
+                        var suggestion = _completionResult.Suggestions[i];
+                        <button type="button"
+                                class="sql-completion-item @(index == _selectedCompletionIndex ? "active" : "")"
+                                @onmousedown:preventDefault
+                                @onclick="() => AcceptCompletionAsync(index)">
+                            <span class="sql-completion-label">@suggestion.Label</span>
+                            <span class="sql-completion-detail">@suggestion.Detail</span>
+                        </button>
+                    }
+                </div>
+            }
         </div>
     </div>
 </div>
@@ -27,24 +46,45 @@
     [Parameter] public string Value { get; set; } = string.Empty;
     [Parameter] public EventCallback<string> ValueChanged { get; set; }
     [Parameter] public EventCallback OnExecute { get; set; }
-    [Parameter] public int Height { get; set; } = 200;
+    [Parameter] public string Height { get; set; } = "200px";
     [Parameter] public string Placeholder { get; set; } = "Enter SQL query...";
+    [Parameter] public SqlCompletionCatalog CompletionCatalog { get; set; } = SqlCompletionCatalog.Empty;
+    [Parameter] public bool EnableCompletions { get; set; } = true;
 
     private string _highlighted = string.Empty;
     private int _lineCount = 1;
     private readonly string _editorId = $"sql-editor-{Guid.NewGuid():N}";
     private readonly string _overlayId = $"sql-overlay-{Guid.NewGuid():N}";
     private readonly string _lineNumId = $"sql-lines-{Guid.NewGuid():N}";
+    private SqlCompletionResult _completionResult = SqlCompletionResult.Empty;
+    private int _selectedCompletionIndex;
+    private double _completionLeftPx = 12;
+    private double _completionTopPx = 30;
+    private DotNetObjectReference<SqlEditor>? _dotNetRef;
 
     protected override void OnParametersSet()
     {
         UpdateHighlight();
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        try
+        {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("editorInterop.initSqlEditor", _editorId, _dotNetRef);
+        }
+        catch { /* circuit disconnect */ }
+    }
+
     private async Task OnInput()
     {
         UpdateHighlight();
         await ValueChanged.InvokeAsync(Value);
+        await RefreshCompletionsAsync(explicitTrigger: false);
     }
 
     private void UpdateHighlight()
@@ -57,9 +97,124 @@
     {
         if (e.CtrlKey && e.Key == "Enter")
         {
+            CloseCompletions();
             await OnExecute.InvokeAsync();
         }
         // Tab key support handled by browser default for textarea
+    }
+
+    [JSInvokable]
+    public async Task OnSqlEditorShortcut(string action)
+    {
+        if (action == "Complete")
+            await RefreshCompletionsAsync(explicitTrigger: true);
+    }
+
+    [JSInvokable]
+    public async Task OnSqlEditorCompletionKey(string key)
+    {
+        if (_completionResult.Suggestions.Count == 0)
+            return;
+
+        switch (key)
+        {
+            case "ArrowDown":
+                _selectedCompletionIndex = (_selectedCompletionIndex + 1) % _completionResult.Suggestions.Count;
+                StateHasChanged();
+                break;
+            case "ArrowUp":
+                _selectedCompletionIndex = (_selectedCompletionIndex - 1 + _completionResult.Suggestions.Count) % _completionResult.Suggestions.Count;
+                StateHasChanged();
+                break;
+            case "Enter":
+            case "Tab":
+                await AcceptCompletionAsync(_selectedCompletionIndex);
+                break;
+            case "Escape":
+                CloseCompletions();
+                StateHasChanged();
+                break;
+        }
+    }
+
+    private async Task RefreshCompletionsAsync(bool explicitTrigger)
+    {
+        if (!EnableCompletions)
+        {
+            CloseCompletions();
+            return;
+        }
+
+        EditorState state;
+        try
+        {
+            state = await JS.InvokeAsync<EditorState>("editorInterop.getEditorState", _editorId);
+        }
+        catch
+        {
+            CloseCompletions();
+            return;
+        }
+
+        string sql = state.Value ?? Value ?? string.Empty;
+        int caret = Math.Clamp(state.SelectionStart, 0, sql.Length);
+        var result = SqlCompletionProvider.GetCompletions(sql, caret, CompletionCatalog, explicitTrigger);
+
+        _completionResult = result;
+        _selectedCompletionIndex = 0;
+
+        if (_completionResult.Suggestions.Count > 0)
+            await UpdateCompletionPositionAsync();
+
+        StateHasChanged();
+    }
+
+    private async Task UpdateCompletionPositionAsync()
+    {
+        try
+        {
+            var coordinates = await JS.InvokeAsync<EditorCaretCoordinates>("editorInterop.getCaretCoordinates", _editorId);
+            _completionLeftPx = Math.Max(8, coordinates.Left);
+            _completionTopPx = Math.Max(8, coordinates.Top);
+        }
+        catch
+        {
+            _completionLeftPx = 12;
+            _completionTopPx = 30;
+        }
+    }
+
+    private async Task AcceptCompletionAsync(int index)
+    {
+        if (index < 0 || index >= _completionResult.Suggestions.Count)
+            return;
+
+        var suggestion = _completionResult.Suggestions[index];
+        try
+        {
+            var state = await JS.InvokeAsync<EditorState>(
+                "editorInterop.replaceEditorText",
+                _editorId,
+                suggestion.ReplacementStart,
+                suggestion.ReplacementEnd,
+                suggestion.InsertText,
+                suggestion.CaretPosition);
+
+            Value = state.Value ?? string.Empty;
+            UpdateHighlight();
+            await ValueChanged.InvokeAsync(Value);
+            await RefreshCompletionsAsync(explicitTrigger: false);
+        }
+        catch
+        {
+            CloseCompletions();
+        }
+    }
+
+    private void CloseCompletions()
+    {
+        _completionResult = SqlCompletionResult.Empty;
+        _selectedCompletionIndex = 0;
     }
 
     private async Task SyncScroll()
@@ -78,5 +233,29 @@
             await JS.InvokeVoidAsync("editorInterop.focus", _editorId);
         }
         catch { /* circuit disconnect */ }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("editorInterop.disposeSqlEditor", _editorId);
+        }
+        catch { /* circuit disconnect */ }
+
+        _dotNetRef?.Dispose();
+    }
+
+    private sealed class EditorState
+    {
+        public string? Value { get; set; }
+        public int SelectionStart { get; set; }
+        public int SelectionEnd { get; set; }
+    }
+
+    private sealed class EditorCaretCoordinates
+    {
+        public double Left { get; set; }
+        public double Top { get; set; }
     }
 }

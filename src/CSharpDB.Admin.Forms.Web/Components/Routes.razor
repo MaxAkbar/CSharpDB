@@ -1,0 +1,18 @@
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(MainLayout)" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(MainLayout)">
+            <div class="forms-home">
+                <div class="forms-home__header">
+                    <div>
+                        <h1>Forms Runtime</h1>
+                        <p>Route not found.</p>
+                    </div>
+                    <a class="forms-home__action" href="/">All forms</a>
+                </div>
+            </div>
+        </LayoutView>
+    </NotFound>
+</Router>

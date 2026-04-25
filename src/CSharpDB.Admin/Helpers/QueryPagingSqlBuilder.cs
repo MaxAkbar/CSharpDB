@@ -1,4 +1,5 @@
 using System.Globalization;
+using CSharpDB.Admin.Models;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Admin.Helpers;
@@ -12,6 +13,8 @@ internal sealed class QueryPagingPlan
     private readonly QueryStatement _baseQuery;
     private readonly SelectStatement? _baseSelect;
     private readonly string _resultCteName;
+    private static readonly IReadOnlyDictionary<int, DataGridFilterMatchMode> EmptyFilterModes =
+        new Dictionary<int, DataGridFilterMatchMode>();
 
     private QueryPagingPlan(
         string originalSql,
@@ -77,19 +80,29 @@ internal sealed class QueryPagingPlan
         int pageSize,
         int page,
         string[] displayColumns)
+        => BuildPageSql(filters, EmptyFilterModes, sortColumn, sortAscending, pageSize, page, displayColumns);
+
+    public string BuildPageSql(
+        IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
+        int? sortColumn,
+        bool sortAscending,
+        int pageSize,
+        int page,
+        string[] displayColumns)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
 
         bool hasInteractiveTransforms = HasActiveFilters(filters) || sortColumn is not null;
         if (hasInteractiveTransforms
-            && TryBuildDirectTransforms(displayColumns, filters, sortColumn, sortAscending, out var filterExpression, out var orderBy))
+            && TryBuildDirectTransforms(displayColumns, filters, filterModes, sortColumn, sortAscending, out var filterExpression, out var orderBy))
         {
             return SerializeStatement(BuildDirectPageStatement(pageSize, page, filterExpression, orderBy));
         }
 
         if (hasInteractiveTransforms)
-            return SerializeStatement(BuildWrappedPageStatement(pageSize, page, filters, sortColumn, sortAscending, displayColumns));
+            return SerializeStatement(BuildWrappedPageStatement(pageSize, page, filters, filterModes, sortColumn, sortAscending, displayColumns));
 
         return SerializeStatement(BuildDirectPageStatement(pageSize, page, filterExpression: null, orderBy: null));
     }
@@ -97,8 +110,14 @@ internal sealed class QueryPagingPlan
     public QueryCountPlan BuildCountPlan(
         IReadOnlyDictionary<int, string> filters,
         string[] displayColumns)
+        => BuildCountPlan(filters, EmptyFilterModes, displayColumns);
+
+    public QueryCountPlan BuildCountPlan(
+        IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
+        string[] displayColumns)
     {
-        if (CanUseFastCount(filters, displayColumns, out var directFilter))
+        if (CanUseFastCount(filters, filterModes, displayColumns, out var directFilter))
         {
             return new QueryCountPlan
             {
@@ -109,7 +128,7 @@ internal sealed class QueryPagingPlan
 
         return new QueryCountPlan
         {
-            Sql = SerializeStatement(BuildWrappedCountStatement(filters, displayColumns)),
+            Sql = SerializeStatement(BuildWrappedCountStatement(filters, filterModes, displayColumns)),
             ApplyBasePagination = false,
         };
     }
@@ -128,6 +147,7 @@ internal sealed class QueryPagingPlan
 
     private bool CanUseFastCount(
         IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
         string[] displayColumns,
         out Expression? directFilter)
     {
@@ -144,7 +164,7 @@ internal sealed class QueryPagingPlan
         if (!HasActiveFilters(filters))
             return true;
 
-        return TryBuildDirectFilterExpression(displayColumns, filters, out directFilter);
+        return TryBuildDirectFilterExpression(displayColumns, filters, filterModes, out directFilter);
     }
 
     private Statement BuildFastCountStatement(Expression? directFilter)
@@ -221,6 +241,7 @@ internal sealed class QueryPagingPlan
         int pageSize,
         int page,
         IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
         int? sortColumn,
         bool sortAscending,
         string[] displayColumns)
@@ -233,7 +254,7 @@ internal sealed class QueryPagingPlan
             IsDistinct = false,
             Columns = [new SelectColumn { IsStar = true }],
             From = new SimpleTableRef { TableName = _resultCteName },
-            Where = BuildWrappedFilterExpression(filters, internalColumns),
+            Where = BuildWrappedFilterExpression(filters, filterModes, internalColumns),
             GroupBy = null,
             Having = null,
             OrderBy = BuildWrappedOrderBy(sortColumn, sortAscending, internalColumns),
@@ -246,6 +267,7 @@ internal sealed class QueryPagingPlan
 
     private Statement BuildWrappedCountStatement(
         IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
         string[] displayColumns)
     {
         string[]? internalColumns = HasActiveFilters(filters) ? BuildInternalColumns(displayColumns) : null;
@@ -265,7 +287,7 @@ internal sealed class QueryPagingPlan
                 }
             ],
             From = new SimpleTableRef { TableName = _resultCteName },
-            Where = internalColumns is null ? null : BuildWrappedFilterExpression(filters, internalColumns),
+            Where = internalColumns is null ? null : BuildWrappedFilterExpression(filters, filterModes, internalColumns),
             GroupBy = null,
             Having = null,
             OrderBy = null,
@@ -306,6 +328,7 @@ internal sealed class QueryPagingPlan
     private bool TryBuildDirectTransforms(
         string[] displayColumns,
         IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
         int? sortColumn,
         bool sortAscending,
         out Expression? filterExpression,
@@ -326,7 +349,7 @@ internal sealed class QueryPagingPlan
         }
 
         if (HasActiveFilters(filters)
-            && !TryBuildDirectFilterExpression(displayColumns, filters, out filterExpression))
+            && !TryBuildDirectFilterExpression(displayColumns, filters, filterModes, out filterExpression))
         {
             return false;
         }
@@ -351,6 +374,7 @@ internal sealed class QueryPagingPlan
     private bool TryBuildDirectFilterExpression(
         string[] displayColumns,
         IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
         out Expression? filterExpression)
     {
         filterExpression = null;
@@ -363,7 +387,7 @@ internal sealed class QueryPagingPlan
             if (!TryGetDirectColumnExpression(displayColumns, filter.Key, out var sourceExpression))
                 return false;
 
-            var predicate = BuildContainsPredicate(sourceExpression, filter.Value);
+            var predicate = BuildFilterPredicate(sourceExpression, filter.Value, GetFilterMode(filterModes, filter.Key));
             filterExpression = filterExpression is null
                 ? predicate
                 : new BinaryExpression
@@ -406,28 +430,43 @@ internal sealed class QueryPagingPlan
         return true;
     }
 
-    private static Expression BuildContainsPredicate(Expression sourceExpression, string filterValue)
-    {
-        return new LikeExpression
+    private static Expression BuildFilterPredicate(
+        Expression sourceExpression,
+        string filterValue,
+        DataGridFilterMatchMode mode)
+        => mode == DataGridFilterMatchMode.Exact
+            ? new BinaryExpression
+            {
+                Op = BinaryOp.Equals,
+                Left = BuildTextExpression(sourceExpression),
+                Right = new LiteralExpression
+                {
+                    Value = filterValue,
+                    LiteralType = TokenType.StringLiteral,
+                },
+            }
+            : new LikeExpression
+            {
+                Operand = BuildTextExpression(sourceExpression),
+                Pattern = new LiteralExpression
+                {
+                    Value = BuildLikePattern(filterValue, mode),
+                    LiteralType = TokenType.StringLiteral,
+                },
+                EscapeChar = new LiteralExpression
+                {
+                    Value = "!",
+                    LiteralType = TokenType.StringLiteral,
+                },
+            };
+
+    private static FunctionCallExpression BuildTextExpression(Expression sourceExpression)
+        => new()
         {
-            Operand = new FunctionCallExpression
-            {
-                FunctionName = "TEXT",
-                Arguments = [sourceExpression],
-                IsStarArg = false,
-            },
-            Pattern = new LiteralExpression
-            {
-                Value = $"%{EscapeLikePattern(filterValue)}%",
-                LiteralType = TokenType.StringLiteral,
-            },
-            EscapeChar = new LiteralExpression
-            {
-                Value = "!",
-                LiteralType = TokenType.StringLiteral,
-            },
+            FunctionName = "TEXT",
+            Arguments = [sourceExpression],
+            IsStarArg = false,
         };
-    }
 
     private static Expression? CombineAnd(Expression? left, Expression? right)
     {
@@ -469,6 +508,7 @@ internal sealed class QueryPagingPlan
 
     private static Expression? BuildWrappedFilterExpression(
         IReadOnlyDictionary<int, string> filters,
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
         string[] internalColumns)
     {
         Expression? filterExpression = null;
@@ -481,9 +521,10 @@ internal sealed class QueryPagingPlan
             if (filter.Key < 0 || filter.Key >= internalColumns.Length)
                 continue;
 
-            var predicate = BuildContainsPredicate(
+            var predicate = BuildFilterPredicate(
                 new ColumnRefExpression { ColumnName = internalColumns[filter.Key] },
-                filter.Value);
+                filter.Value,
+                GetFilterMode(filterModes, filter.Key));
 
             filterExpression = filterExpression is null
                 ? predicate
@@ -566,11 +607,29 @@ internal sealed class QueryPagingPlan
     private static bool HasActiveFilters(IReadOnlyDictionary<int, string> filters)
         => filters.Values.Any(value => !string.IsNullOrWhiteSpace(value));
 
+    private static DataGridFilterMatchMode GetFilterMode(
+        IReadOnlyDictionary<int, DataGridFilterMatchMode> filterModes,
+        int columnIndex)
+        => filterModes.TryGetValue(columnIndex, out var mode)
+            ? mode
+            : DataGridFilterMatchMode.Contains;
+
     private static string EscapeLikePattern(string value)
         => value
             .Replace("!", "!!", StringComparison.Ordinal)
             .Replace("%", "!%", StringComparison.Ordinal)
             .Replace("_", "!_", StringComparison.Ordinal);
+
+    private static string BuildLikePattern(string filterValue, DataGridFilterMatchMode mode)
+    {
+        string escapedFilterValue = EscapeLikePattern(filterValue);
+        return mode switch
+        {
+            DataGridFilterMatchMode.StartsWith => $"{escapedFilterValue}%",
+            DataGridFilterMatchMode.EndsWith => $"%{escapedFilterValue}",
+            _ => $"%{escapedFilterValue}%",
+        };
+    }
 
     private static string BuildUniqueResultCteName(IEnumerable<CteDefinition> ctes)
     {

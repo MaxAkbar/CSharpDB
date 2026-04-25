@@ -131,7 +131,10 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Roadmap</h1>
-                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v3.0.0 state.</p>
+                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v3.4.0 state.</p>
+                <div class="callout callout-info">
+                    <strong>Need the full source guide?</strong> The original long-form markdown version is preserved as <a href="roadmap-reference.html">Roadmap Source Reference</a>.
+                </div>
 
                 <!-- ════════ NEAR-TERM ════════ -->
                 <div class="roadmap-section">
@@ -311,9 +314,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Remote Host Consolidation</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Fold REST/HTTP into CSharpDB.Daemon so one server host serves REST, gRPC, and future transports from a shared warm Database instance.</p>
+                            <p><code>CSharpDB.Daemon</code> now hosts the existing REST/HTTP <code>/api</code> surface and gRPC from one long-running process backed by the same warm daemon-hosted client. Standalone <code>CSharpDB.Api</code> remains supported for REST-only hosting.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -325,16 +328,16 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Daemon Service Packaging</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Package CSharpDB.Daemon as a persistent background service across systemd, Windows Service, and launchd.</p>
+                            <p><code>CSharpDB.Daemon</code> can be packaged as a persistent background service across systemd, Windows Service, and launchd.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Cross-Platform Distribution</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-planned">In Progress</span>
                             </div>
-                            <p>dotnet tool, self-contained binaries, Docker, Homebrew, winget, and install scripts.</p>
+                            <p>Self-contained daemon archives and install scripts ship for Windows, Linux, and macOS; dotnet tool, Docker, Homebrew, and winget distribution remain future work.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -485,8 +488,8 @@
                             <tr><td>Indexes</td><td>Equality lookups support current INTEGER/TEXT indexes, but ordered range-scan pushdown is still limited to single-column INTEGER index paths</td></tr>
                             <tr><td>RowId</td><td>Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert</td></tr>
                             <tr><td>Collections</td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates</td></tr>
-                            <tr><td>Networking</td><td>Remote access split between CSharpDB.Api (HTTP) and CSharpDB.Daemon (gRPC); host consolidation plus named pipes remain planned</td></tr>
-                            <tr><td>Security</td><td>No built-in authentication/authorization or TLS/mTLS; relies on external network controls or front-end TLS termination</td></tr>
+                            <tr><td>Networking</td><td><code>CSharpDB.Daemon</code> now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today</td></tr>
+                            <tr><td>Security</td><td>Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned</td></tr>
                             <tr><td>Collation</td><td>Default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented for SQL and collection indexes; dedicated ordered SQL text index optimization remains planned</td></tr>
                             <tr><td>Concurrency</td><td>Physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains depend on conflict shape and whether shared auto-commit INSERT is left on the default serialized path</td></tr>
                             <tr><td>Storage</td><td>No page-level compression</td></tr>
@@ -538,6 +541,8 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ReplaceAsync for index stores</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Maintenance report, REINDEX, and VACUUM flows across client, CLI, API, and Admin UI</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Dedicated gRPC daemon host</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Remote host consolidation in CSharpDB.Daemon, with REST /api and gRPC sharing one warm hosted database client</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Daemon service packaging with self-contained archives and service install assets</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Storage tuning presets, bounded WAL read caching, memory-mapped reads, and sliced background checkpointing</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> SQL executor/read-path fast paths for compact projections, broader join/index coverage, and correlated subquery filters</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> REST API with 34+ endpoints and OpenAPI/Scalar documentation</div>

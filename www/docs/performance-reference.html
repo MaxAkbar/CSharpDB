@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Performance Guide Source Reference — CSharpDB</title>
+    <meta name="description" content="Full migrated source reference for the original CSharpDB performance markdown guide.">
+    <link rel="canonical" href="https://csharpdb.com/docs/performance-reference.html">
+    <meta property="og:title" content="Performance Guide Source Reference — CSharpDB">
+    <meta property="og:description" content="Full migrated source reference for the original CSharpDB performance markdown guide.">
+    <meta property="og:url" content="https://csharpdb.com/docs/performance-reference.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Performance Guide Source Reference",
+        "description": "Full migrated source reference for the original CSharpDB performance markdown guide.",
+        "url": "https://csharpdb.com/docs/performance-reference.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Performance Guide Source Reference',
+        description: 'Full migrated source reference for the original CSharpDB performance markdown guide.',
+        keywords: 'CSharpDB source reference, migrated markdown, archival reference',
+        canonicalPath: 'docs/performance-reference.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#benchmark-basis">Benchmark Basis</a></li>
+                        <li><a href="#start-here">Start Here</a></li>
+                        <li><a href="#the-biggest-levers">The Biggest Levers</a></li>
+                        <li><a href="#scenario-1-hot-point-reads-in-a-local-embedded-app">Scenario 1: Hot Point Reads In A Local Embedded App</a></li>
+                        <li class="toc-child"><a href="#what-to-do">What to do</a></li>
+                        <li class="toc-child"><a href="#why">Why</a></li>
+                        <li class="toc-child"><a href="#when-to-use-collection-t">When to use Collection<T></a></li>
+                        <li><a href="#scenario-2-burst-sql-reads-while-writes-continue">Scenario 2: Burst SQL Reads While Writes Continue</a></li>
+                        <li class="toc-child"><a href="#what-to-do-2">What to do</a></li>
+                        <li class="toc-child"><a href="#why-2">Why</a></li>
+                        <li><a href="#scenario-3-ordered-and-range-sql-queries">Scenario 3: Ordered And Range SQL Queries</a></li>
+                        <li class="toc-child"><a href="#what-to-do-3">What to do</a></li>
+                        <li class="toc-child"><a href="#why-3">Why</a></li>
+                        <li class="toc-child"><a href="#practical-rule">Practical rule</a></li>
+                        <li><a href="#scenario-4-reporting-joins-and-selective-filters">Scenario 4: Reporting, Joins, And Selective Filters</a></li>
+                        <li class="toc-child"><a href="#what-to-do-4">What to do</a></li>
+                        <li class="toc-child"><a href="#why-4">Why</a></li>
+                        <li><a href="#scenario-5-durable-write-heavy-ingest">Scenario 5: Durable Write-Heavy Ingest</a></li>
+                        <li class="toc-child"><a href="#what-to-do-5">What to do</a></li>
+                        <li class="toc-child"><a href="#why-5">Why</a></li>
+                        <li class="toc-child"><a href="#preset-guidance">Preset guidance</a></li>
+                        <li><a href="#scenario-6-multi-writer-durable-contention">Scenario 6: Multi-Writer Durable Contention</a></li>
+                        <li class="toc-child"><a href="#what-to-do-6">What to do</a></li>
+                        <li class="toc-child"><a href="#why-6">Why</a></li>
+                        <li><a href="#scenario-7-cold-file-reads-tooling-and-cache-pressured-workloads">Scenario 7: Cold File Reads, Tooling, And Cache-Pressured Workloads</a></li>
+                        <li class="toc-child"><a href="#what-to-do-7">What to do</a></li>
+                        <li class="toc-child"><a href="#why-7">Why</a></li>
+                        <li class="toc-child"><a href="#what-not-to-do">What not to do</a></li>
+                        <li><a href="#scenario-8-known-hot-set-with-durable-backing">Scenario 8: Known Hot Set With Durable Backing</a></li>
+                        <li class="toc-child"><a href="#what-to-do-8">What to do</a></li>
+                        <li class="toc-child"><a href="#why-8">Why</a></li>
+                        <li class="toc-child"><a href="#constraints">Constraints</a></li>
+                        <li><a href="#scenario-9-in-memory-database-as-a-performance-tool">Scenario 9: In-Memory Database As A Performance Tool</a></li>
+                        <li class="toc-child"><a href="#what-to-do-9">What to do</a></li>
+                        <li class="toc-child"><a href="#why-9">Why</a></li>
+                        <li><a href="#scenario-10-collection-and-document-workloads">Scenario 10: Collection And Document Workloads</a></li>
+                        <li class="toc-child"><a href="#what-to-do-10">What to do</a></li>
+                        <li class="toc-child"><a href="#why-10">Why</a></li>
+                        <li class="toc-child"><a href="#practical-rule-2">Practical rule</a></li>
+                        <li><a href="#scenario-11-ado-net-heavy-apps">Scenario 11: ADO.NET-Heavy Apps</a></li>
+                        <li class="toc-child"><a href="#what-to-do-11">What to do</a></li>
+                        <li class="toc-child"><a href="#why-11">Why</a></li>
+                        <li><a href="#what-usually-hurts">What Usually Hurts</a></li>
+                        <li><a href="#recommended-workflow">Recommended Workflow</a></li>
+                        <li><a href="#source-map">Source Map</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/performance.md</code>. For the shorter curated page, see <a href="performance.html">Performance Guide</a>.</div>
+                <h1 id="csharpdb-performance-guide">CSharpDB Performance Guide</h1>
+                <p class="lead">This guide is about getting real performance out of CSharpDB, not just turning knobs.
+                It is organized by workload scenario and grounded in the current benchmark and documentation set in this repo.</p>
+                <h2 id="benchmark-basis">Benchmark Basis</h2>
+                <p>This guide uses the latest current sources:</p>
+                <ul>
+                <li>The latest perf guardrail report on March 29, 2026 passed <code>184/184</code> checks on the benchmark runner.</li>
+                <li>The broader macro, direct-client, and hybrid comparison captures were refreshed on March 28, 2026.</li>
+                <li>The published micro spot checks in <code>tests/CSharpDB.Benchmarks/README.md</code> and <code>BenchmarkDotNet.Artifacts/results/</code> provide the query-shape details used below.</li>
+                <li>The benchmark README still includes some earlier March 29 narrative from a failing midday rerun; this guide uses the latest passing guardrail report as the current benchmark status.</li>
+                </ul>
+                <p>Benchmark environment for the published numbers:</p>
+                <ul>
+                <li>CPU: Intel Core i9-11900K</li>
+                <li>OS: Windows 11 (<code>10.0.26300</code> benchmark runner)</li>
+                <li>Runtime: .NET 10</li>
+                <li>Disk: NVMe SSD</li>
+                </ul>
+                <p>Treat the numbers here as directional for decision-making, then rerun the benchmark suite on your hardware before locking in a tuning choice.</p>
+                <h2 id="start-here">Start Here</h2>
+                <p>Use this table first. Most CSharpDB performance wins come from choosing the right mode and access path before touching advanced settings.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Scenario</th>
+                <th>Start with</th>
+                <th>Why</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td>Durable local app, mostly point reads</td>
+                <td>File-backed + <code>UseDirectLookupOptimizedPreset()</code></td>
+                <td>Best simple baseline for hot local reads</td>
+                </tr>
+                <tr>
+                <td>Durable app with a known hot working set</td>
+                <td>Hybrid incremental-durable + <code>HotTableNames</code> / <code>HotCollectionNames</code></td>
+                <td>Best when you can pay open cost once and then hammer the same hot objects</td>
+                </tr>
+                <tr>
+                <td>Ephemeral cache or periodic snapshot workflow</td>
+                <td>In-memory + <code>SaveToFileAsync</code> when needed</td>
+                <td>Biggest write throughput win by far</td>
+                </tr>
+                <tr>
+                <td>Burst of related SQL reads</td>
+                <td>Reuse one <code>ReaderSession</code> per reader burst</td>
+                <td>Snapshot reuse is much cheaper than per-query session creation</td>
+                </tr>
+                <tr>
+                <td>Ordered/range SQL queries</td>
+                <td>Build indexes for the filter/sort columns and project only what you need</td>
+                <td>Covered and compact paths are major wins</td>
+                </tr>
+                <tr>
+                <td>Join/reporting workload</td>
+                <td>Add join indexes and run <code>ANALYZE</code> after bulk changes</td>
+                <td>Planner can use histograms, heavy hitters, composite-prefix stats, build-side choice, selective lookups, and bounded small-chain reordering</td>
+                </tr>
+                <tr>
+                <td>Write-heavy ingest</td>
+                <td><code>UseWriteOptimizedPreset()</code> plus explicit transaction batching</td>
+                <td>Batching is the biggest durable-write lever in the current suite</td>
+                </tr>
+                <tr>
+                <td>Document/path queries</td>
+                <td><code>Collection&lt;T&gt;</code> + <code>EnsureIndexAsync(...)</code> on fields and paths you query</td>
+                <td>Indexed collection paths are fast; unindexed predicate scans are not</td>
+                </tr>
+                <tr>
+                <td>ADO.NET app with frequent opens</td>
+                <td>Enable pooling explicitly</td>
+                <td>Pooling dominates open/close overhead in the current provider benchmarks</td>
+                </tr>
+                </tbody>
+                </table>
+                <h2 id="the-biggest-levers">The Biggest Levers</h2>
+                <p>If you remember only a few rules, use these:</p>
+                <ol>
+                <li>Choose the right storage mode first.</li>
+                <li>Batch durable writes instead of auto-committing row-by-row.</li>
+                <li>Reuse <code>ReaderSession</code> for bursts of related SQL reads.</li>
+                <li>Create indexes that match the filter, join, and <code>ORDER BY</code> shape.</li>
+                <li>Prefer covered or narrow projections over <code>SELECT *</code>.</li>
+                <li>Run <code>ANALYZE</code> after bulk loads or major data-distribution changes.</li>
+                <li>Measure before enabling advanced knobs like caching indexes, durable batch windows, or WAL preallocation.</li>
+                </ol>
+                <h2 id="scenario-1-hot-point-reads-in-a-local-embedded-app">Scenario 1: Hot Point Reads In A Local Embedded App</h2>
+                <p>This is the default "application database" scenario: the app is already open, the database is local, and the hot path is <code>GetAsync</code>, primary-key lookups, or small indexed reads.</p>
+                <h3 id="what-to-do">What to do</h3>
+                <ul>
+                <li>Start file-backed with <code>UseDirectLookupOptimizedPreset()</code>.</li>
+                <li>Use <code>Collection&lt;T&gt;.GetAsync(...)</code> for pure key/document access.</li>
+                <li>Use <code>SELECT ... WHERE id = ...</code> or equivalent indexed equality lookups for relational paths.</li>
+                <li>Reuse a <code>ReaderSession</code> when you are doing many related reads from the same snapshot.</li>
+                </ul>
+                <h3 id="why">Why</h3>
+                <p>Current published steady-state numbers are already strong without exotic tuning:</p>
+                <ul>
+                <li>File-backed SQL point lookups in the hot steady-state harness were about <code>1.10M</code> ops/sec.</li>
+                <li>File-backed collection point gets were about <code>1.78M</code> ops/sec.</li>
+                <li>Hot-cache micro references in the benchmark README still reach roughly <code>4.16M</code> SQL PK lookups/sec and <code>2.63M</code> collection gets/sec on the benchmark runner.</li>
+                </ul>
+                <p>For direct file-backed opens, the benchmark README's current recommendation is:</p>
+                <ul>
+                <li><code>builder.UseDirectLookupOptimizedPreset()</code> for hot local lookup workloads</li>
+                </ul>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using CSharpDB.Engine;
+                
+                var options = new DatabaseOptions()
+                    .ConfigureStorageEngine(builder =&gt; builder.UseDirectLookupOptimizedPreset());
+                
+                await using var db = await Database.OpenAsync("app.db", options);
+                
+                await using var result = await db.ExecuteAsync(
+                    "SELECT id, name FROM users WHERE id = 42");
+                </code></pre></div>
+                <h3 id="when-to-use-collection-t">When to use <code>Collection&lt;T&gt;</code></h3>
+                <p>Use the collection API when the workload is fundamentally:</p>
+                <ul>
+                <li>key by id</li>
+                <li>document get/put/delete</li>
+                <li>indexed field equality</li>
+                <li>indexed path equality/range</li>
+                </ul>
+                <p>That path skips the SQL front door entirely.</p>
+                <h2 id="scenario-2-burst-sql-reads-while-writes-continue">Scenario 2: Burst SQL Reads While Writes Continue</h2>
+                <p>This is the common local service pattern: a writer is active, but readers want a stable snapshot and tend to issue several related queries together.</p>
+                <h3 id="what-to-do-2">What to do</h3>
+                <ul>
+                <li>Create one <code>ReaderSession</code> per concurrent reader.</li>
+                <li>Reuse that session for a burst of related reads.</li>
+                <li>Dispose each <code>QueryResult</code> before issuing the next query on the same session.</li>
+                </ul>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using var reader = db.CreateReaderSession();
+                
+                await using (var users = await reader.ExecuteReadAsync(
+                    "SELECT id, name FROM users WHERE tier = 'gold'"))
+                {
+                    while (await users.MoveNextAsync())
+                    {
+                    }
+                }
+                
+                await using (var orders = await reader.ExecuteReadAsync(
+                    "SELECT id, total FROM orders WHERE customer_id = 42"))
+                {
+                    while (await orders.MoveNextAsync())
+                    {
+                    }
+                }
+                </code></pre></div>
+                <h3 id="why-2">Why</h3>
+                <p>The current dedicated <code>ReaderSessionBenchmarks</code> show the setup penalty clearly:</p>
+                <ul>
+                <li>per-query reader-session point lookups are roughly <code>3x</code> slower than reused-session lookups</li>
+                <li>reused reader-session lookups are effectively at the same floor as direct <code>ExecuteAsync</code></li>
+                </ul>
+                <p>The practical reading is simple:</p>
+                <ul>
+                <li><code>ReaderSession</code> is the right tool for concurrent snapshot reads.</li>
+                <li>Reusing it is almost always better than recreating it for every small query.</li>
+                </ul>
+                <h2 id="scenario-3-ordered-and-range-sql-queries">Scenario 3: Ordered And Range SQL Queries</h2>
+                <p>This is where query shape matters a lot. The main question is whether the engine can stay on index data, or whether it has to keep fetching wide base rows.</p>
+                <h3 id="what-to-do-3">What to do</h3>
+                <ul>
+                <li>Index the filter or sort column.</li>
+                <li>If possible, project only the indexed columns plus the row id.</li>
+                <li>Prefer narrow projections over <code>SELECT *</code>.</li>
+                <li>For multi-column filters, use composite indexes that match the left-to-right predicate shape.</li>
+                </ul>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE INDEX idx_orders_created_at ON orders(created_at);
+                
+                SELECT id, created_at
+                FROM orders
+                WHERE created_at BETWEEN @from AND @to
+                ORDER BY created_at
+                LIMIT 100;
+                </code></pre></div>
+                <h3 id="why-3">Why</h3>
+                <p>The current <code>OrderByIndexBenchmarks</code> and README spot checks show large wins when the query stays on index data:</p>
+                <ul>
+                <li><code>ORDER BY value LIMIT 100</code> on <code>100K</code> rows:
+                <ul>
+                <li>index-order scan: about <code>64.79 us</code></li>
+                <li>covered index-order scan: about <code>23.17 us</code></li>
+                </ul>
+                </li>
+                <li><code>WHERE value BETWEEN ...</code> on <code>100K</code> rows:
+                <ul>
+                <li>row fetch path: about <code>59.48 ms</code></li>
+                <li>covered projection: about <code>18.49 ms</code></li>
+                </ul>
+                </li>
+                <li>Composite covered projection on <code>100K</code> rows:
+                <ul>
+                <li>about <code>2.523 us</code></li>
+                </ul>
+                </li>
+                </ul>
+                <p>This is one of the clearest themes in the repo's benchmarks:</p>
+                <ul>
+                <li>the engine is fast at finding qualifying rows</li>
+                <li>the expensive part is often row fetch and materialization</li>
+                <li>covered and compact projections are a major lever</li>
+                </ul>
+                <h3 id="practical-rule">Practical rule</h3>
+                <p>If the business endpoint only needs <code>id</code>, <code>status</code>, and <code>created_at</code>, do not ask CSharpDB to materialize twelve more columns.</p>
+                <h2 id="scenario-4-reporting-joins-and-selective-filters">Scenario 4: Reporting, Joins, And Selective Filters</h2>
+                <p>This is the "real SQL" scenario: non-trivial joins, selective predicates, and planner choice starts to matter.</p>
+                <h3 id="what-to-do-4">What to do</h3>
+                <ul>
+                <li>Create indexes on join keys and on selective filter columns.</li>
+                <li>Run <code>ANALYZE</code> after bulk loads and after major distribution changes.</li>
+                <li>Inspect <code>sys.table_stats</code> and <code>sys.column_stats</code> when a plan is not behaving as expected.</li>
+                </ul>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE INDEX idx_orders_customer ON orders(customer_id);
+                CREATE INDEX idx_order_items_order ON order_items(order_id);
+                
+                ANALYZE;
+                
+                SELECT * FROM sys.table_stats ORDER BY table_name;
+                SELECT * FROM sys.column_stats ORDER BY table_name, ordinal_position;
+                </code></pre></div>
+                <h3 id="why-4">Why</h3>
+                <p>Current planner work already uses persisted stats for:</p>
+                <ul>
+                <li>selective lookup choice</li>
+                <li>join method choice</li>
+                <li>hash build-side choice</li>
+                <li>limited inner-join reordering</li>
+                </ul>
+                <p>The benchmarks show this matters:</p>
+                <ul>
+                <li><code>INNER JOIN 1Kx20K (planner swap build side)</code>: about <code>7.16 ms</code></li>
+                <li><code>INNER JOIN 1Kx20K (no swap via view)</code>: about <code>11.43 ms</code></li>
+                <li><code>INNER JOIN on right PK (index nested-loop)</code>: about <code>482.70 us</code></li>
+                <li><code>INNER JOIN on right PK (forced hash)</code>: about <code>833.54 us</code></li>
+                </ul>
+                <p>The practical rule:</p>
+                <ul>
+                <li>if a reporting or join workload matters, index it and analyze it</li>
+                <li>if you skip <code>ANALYZE</code>, you are leaving planner quality on the table</li>
+                </ul>
+                <h2 id="scenario-5-durable-write-heavy-ingest">Scenario 5: Durable Write-Heavy Ingest</h2>
+                <p>This is where the wrong default usage hurts most. If you write one durable row at a time, the fixed WAL/fsync cost dominates.</p>
+                <h3 id="what-to-do-5">What to do</h3>
+                <ul>
+                <li>Start with <code>UseWriteOptimizedPreset()</code>.</li>
+                <li>Batch writes in explicit transactions.</li>
+                <li>Measure with your real batch size before touching advanced durable-write knobs.</li>
+                </ul>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">using CSharpDB.Engine;
+                
+                var options = new DatabaseOptions()
+                    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+                
+                await using var db = await Database.OpenAsync("ingest.db", options);
+                
+                await db.BeginTransactionAsync();
+                try
+                {
+                    foreach (var row in rows)
+                    {
+                        await db.ExecuteAsync(
+                            $"INSERT INTO events VALUES ({row.Id}, {row.TimestampTicks})");
+                    }
+                
+                    await db.CommitAsync();
+                }
+                catch
+                {
+                    await db.RollbackAsync();
+                    throw;
+                }
+                </code></pre></div>
+                <h3 id="why-5">Why</h3>
+                <p>The current durable batching benchmarks show that batching is the largest lever in the repo:</p>
+                <ul>
+                <li>auto-commit single-row SQL: about <code>270.5</code> ops/sec</li>
+                <li>explicit transaction, <code>10</code> rows/commit: about <code>2,695.8</code> rows/sec</li>
+                <li>explicit transaction, <code>100</code> rows/commit: about <code>26,999.5</code> rows/sec</li>
+                <li>explicit transaction, <code>1000</code> rows/commit: about <code>197,256.9</code> rows/sec</li>
+                </ul>
+                <p>That is the core write-performance message for CSharpDB:</p>
+                <ul>
+                <li>if you can batch, batch</li>
+                <li>if you cannot batch, expect durable single-row throughput to be much lower</li>
+                </ul>
+                <h3 id="preset-guidance">Preset guidance</h3>
+                <p>Current repo guidance is:</p>
+                <ul>
+                <li>start with <code>UseWriteOptimizedPreset()</code></li>
+                <li>do not assume <code>UseLowLatencyDurableWritePreset()</code> is faster on your workload</li>
+                </ul>
+                <p>On the current benchmark runner:</p>
+                <ul>
+                <li>analyzed <code>UseWriteOptimizedPreset()</code>: about <code>267.8</code> ops/sec</li>
+                <li>analyzed <code>UseLowLatencyDurableWritePreset()</code>: about <code>261.4</code> ops/sec</li>
+                </ul>
+                <p>So the "low latency" preset is measure-first, not the default recommendation.</p>
+                <h2 id="scenario-6-multi-writer-durable-contention">Scenario 6: Multi-Writer Durable Contention</h2>
+                <p>This is narrower than normal ingest: several writer tasks are hitting the same shared <code>Database</code> instance.</p>
+                <h3 id="what-to-do-6">What to do</h3>
+                <ul>
+                <li>Keep the baseline at <code>UseWriteOptimizedPreset()</code>.</li>
+                <li>For <code>8</code> in-process writers, benchmark WAL preallocation first.</li>
+                <li>For <code>4</code> in-process writers, benchmark a small durable batch window first.</li>
+                <li>Do not cargo-cult batch-window tuning from the shared-writer case into the single-writer case.</li>
+                </ul>
+                <h3 id="why-6">Why</h3>
+                <p>The current concurrent write diagnostics say:</p>
+                <ul>
+                <li>best <code>8</code>-writer row: <code>W8_Batch0_Prealloc1MiB</code> at about <code>1078.6</code> commits/sec</li>
+                <li>close followers: <code>W8_Batch250us</code> at <code>1070.4</code>, <code>W8_Batch0</code> at <code>1068.2</code></li>
+                <li>best <code>4</code>-writer row: <code>W4_Batch250us</code> at about <code>553.4</code> commits/sec</li>
+                </ul>
+                <p>But the single-writer durable diagnostics say the opposite for batch windows:</p>
+                <ul>
+                <li><code>BatchWindow(250us)</code>: about <code>267.2</code> ops/sec</li>
+                <li><code>BatchWindow(1ms)</code>: about <code>65.8</code> ops/sec</li>
+                </ul>
+                <p>So:</p>
+                <ul>
+                <li>shared-writer contention can justify small wait windows or preallocation</li>
+                <li>single-writer durable paths usually cannot</li>
+                </ul>
+                <h2 id="scenario-7-cold-file-reads-tooling-and-cache-pressured-workloads">Scenario 7: Cold File Reads, Tooling, And Cache-Pressured Workloads</h2>
+                <p>This is the "open a big local file and probe around" scenario: admin tools, inspection tools, one-shot analytics, or workloads that do not stay hot.</p>
+                <h3 id="what-to-do-7">What to do</h3>
+                <ul>
+                <li>Start with <code>UseDirectColdFileLookupPreset()</code> for direct file-backed opens.</li>
+                <li>If your hot pages are still living in the WAL, benchmark a small WAL read cache.</li>
+                <li>For deliberately bounded-cache workloads, start around <code>UseHybridFileCachePreset(2048)</code> scale rather than tiny caches.</li>
+                </ul>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">var options = new DatabaseOptions()
+                    .ConfigureStorageEngine(builder =&gt; builder.UseDirectColdFileLookupPreset());
+                
+                await using var db = await Database.OpenAsync("cold.db", options);
+                </code></pre></div>
+                <h3 id="why-7">Why</h3>
+                <p>The current cold-read benchmarks show:</p>
+                <ul>
+                <li>SQL cold lookup, copy-based path: <code>28.704 us</code></li>
+                <li>SQL cold lookup, WAL-backed with <code>128</code>-page WAL cache: <code>19.83 us</code></li>
+                </ul>
+                <p>The current file-backed collection tuning matrix also shows cache size matters:</p>
+                <ul>
+                <li>indexed collection lookup at <code>16</code> pages: <code>54.15 us</code></li>
+                <li>indexed collection lookup at <code>2048</code> pages: <code>20.57 us</code></li>
+                </ul>
+                <p>Two practical takeaways:</p>
+                <ul>
+                <li>cold local reads benefit from the mapped-file read path</li>
+                <li>tiny bounded caches are expensive unless the workload is truly memory-constrained</li>
+                </ul>
+                <h3 id="what-not-to-do">What not to do</h3>
+                <p>Do not assume caching indexes are automatically a win.</p>
+                <p>The current tuning matrix found <code>UseCachingIndexes</code> neutral-to-negative on these lookup workloads, including a case where a reused reader-session SQL lookup worsened from <code>41.36 us</code> to <code>212.94 us</code>.</p>
+                <h2 id="scenario-8-known-hot-set-with-durable-backing">Scenario 8: Known Hot Set With Durable Backing</h2>
+                <p>This is the hybrid-mode sweet spot: the database must stay durable on disk, but the same tables or collections are hot enough that prewarming them once is worth it.</p>
+                <h3 id="what-to-do-8">What to do</h3>
+                <ul>
+                <li>Use <code>OpenHybridAsync(...)</code> with <code>IncrementalDurable</code>.</li>
+                <li>Set <code>HotTableNames</code> and/or <code>HotCollectionNames</code> for the truly hot objects.</li>
+                <li>Use this only when the process is long-lived enough to amortize open cost.</li>
+                </ul>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var db = await Database.OpenHybridAsync(
+                    "app.db",
+                    new DatabaseOptions(),
+                    new HybridDatabaseOptions
+                    {
+                        PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+                        HotTableNames = ["users", "orders"],
+                        HotCollectionNames = ["sessions"]
+                    });
+                </code></pre></div>
+                <h3 id="why-8">Why</h3>
+                <p>In the dedicated resident hot-set harness:</p>
+                <ul>
+                <li>hybrid hot-set incremental-durable SQL burst: <code>625.76K</code> ops/sec</li>
+                <li>hybrid hot-set incremental-durable collection burst: <code>707.38K</code> ops/sec</li>
+                </ul>
+                <p>But the trade-off is open cost:</p>
+                <ul>
+                <li>hybrid hot-set SQL open only: about <code>87.39 ms</code></li>
+                <li>hybrid hot-set collection open only: about <code>128.59 ms</code></li>
+                </ul>
+                <p>This mode is excellent when:</p>
+                <ul>
+                <li>open happens once</li>
+                <li>the process stays up</li>
+                <li>the same objects stay hot</li>
+                </ul>
+                <p>It is a bad fit when:</p>
+                <ul>
+                <li>open latency is user-visible and frequent</li>
+                <li>the hot set is not stable</li>
+                </ul>
+                <h3 id="constraints">Constraints</h3>
+                <p>Current hot-set warming is intentionally narrow:</p>
+                <ul>
+                <li>supported only for <code>IncrementalDurable</code></li>
+                <li>rejected for snapshot mode</li>
+                <li>rejected for bounded caches and custom page-cache factories</li>
+                </ul>
+                <h2 id="scenario-9-in-memory-database-as-a-performance-tool">Scenario 9: In-Memory Database As A Performance Tool</h2>
+                <p>This is the right answer when durability is optional during the hot path and you can snapshot explicitly.</p>
+                <h3 id="what-to-do-9">What to do</h3>
+                <ul>
+                <li>Use <code>OpenInMemoryAsync()</code> for new ephemeral stores.</li>
+                <li>Use <code>LoadIntoMemoryAsync()</code> when you want to import a file, work in memory, then save back later.</li>
+                <li>Use <code>SaveToFileAsync()</code> at explicit persistence boundaries.</li>
+                </ul>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">await using var db = await Database.OpenInMemoryAsync();
+                
+                // hot path
+                await db.ExecuteAsync("INSERT INTO cache VALUES (1, 'hot')");
+                
+                // persistence boundary
+                await db.SaveToFileAsync("cache.db");
+                </code></pre></div>
+                <h3 id="why-9">Why</h3>
+                <p>In-memory mode is the strongest write-throughput lever in the repo:</p>
+                <ul>
+                <li>hot steady-state in-memory SQL single insert: roughly <code>315K</code> ops/sec</li>
+                <li>hot steady-state in-memory collection single put: roughly <code>294K</code> ops/sec</li>
+                <li>in-memory batched SQL rows/sec is far above file-backed durable mode in the current macro suite</li>
+                </ul>
+                <p>Use it when the workflow is:</p>
+                <ul>
+                <li>cache</li>
+                <li>local-first scratch workspace</li>
+                <li>import, process, export</li>
+                <li>periodically checkpointed embedded store</li>
+                </ul>
+                <p>Do not use it when every commit must already be durable before control returns.</p>
+                <h2 id="scenario-10-collection-and-document-workloads">Scenario 10: Collection And Document Workloads</h2>
+                <p>The collection API can be very fast, but only if you use the indexed surfaces when the workload needs them.</p>
+                <h3 id="what-to-do-10">What to do</h3>
+                <ul>
+                <li>Use <code>GetAsync</code> for key lookups.</li>
+                <li>Use <code>EnsureIndexAsync(...)</code> for fields or paths that you query repeatedly.</li>
+                <li>Use <code>FindByIndexAsync(...)</code>, <code>FindByPathAsync(...)</code>, and <code>FindByPathRangeAsync(...)</code> for indexed access.</li>
+                <li>Keep the number of indexes honest; every extra index adds write maintenance cost.</li>
+                </ul>
+                <div class="code-block" data-title="C#"><pre><code class="language-csharp">var users = await db.GetCollectionAsync&lt;User&gt;("users");
+                
+                await users.EnsureIndexAsync(x =&gt; x.Email);
+                await users.EnsureIndexAsync("$.address.city");
+                await users.EnsureIndexAsync("$.tags[]");
+                
+                await foreach (var match in users.FindByPathAsync("$.address.city", "Seattle"))
+                {
+                }
+                </code></pre></div>
+                <h3 id="why-10">Why</h3>
+                <p>Current indexed collection path numbers are strong:</p>
+                <ul>
+                <li><code>FindByPath("$.address.city")</code>: about <code>568.9 ns</code></li>
+                <li><code>FindByPath("$.tags[]")</code>: about <code>474.8 ns</code></li>
+                <li><code>FindByPath("$.orders[].sku")</code>: about <code>599.3 ns</code></li>
+                <li>integer path range with <code>1024</code> matches: about <code>552.79 us</code></li>
+                <li>text path range with <code>1000</code> matches: about <code>545.69 us</code></li>
+                </ul>
+                <p>But writes do pay for indexes:</p>
+                <ul>
+                <li><code>PutAsync</code> with secondary indexes, insert case: about <code>12.453 us</code></li>
+                <li><code>PutAsync</code> with secondary indexes, update case: about <code>29.079 us</code></li>
+                <li><code>DeleteAsync</code> with secondary indexes: about <code>47.314 us</code></li>
+                </ul>
+                <h3 id="practical-rule-2">Practical rule</h3>
+                <p><code>FindAsync(predicate)</code> is convenient, but it is still a scan.
+                If the predicate matters to latency, promote it to an indexed field or indexed path.</p>
+                <h2 id="scenario-11-ado-net-heavy-apps">Scenario 11: ADO.NET-Heavy Apps</h2>
+                <p>This is the integration scenario: existing .NET data-access code, ORMs, utilities, or apps that open and close connections frequently.</p>
+                <h3 id="what-to-do-11">What to do</h3>
+                <ul>
+                <li>Turn pooling on explicitly if you open and close connections often.</li>
+                <li>Use private <code>:memory:</code> when you do not need cross-connection sharing.</li>
+                <li>Use named shared <code>:memory:name</code> only when you actually need multiple live connections against the same in-process memory database.</li>
+                <li>Reuse command objects when it keeps your application code cleaner, but do not expect command preparation alone to be your biggest win.</li>
+                </ul>
+                <div class="code-block" data-title="Text"><pre><code class="language-text">Data Source=myapp.db;Pooling=true;Max Pool Size=16
+                </code></pre></div>
+                <div class="code-block" data-title="Text"><pre><code class="language-text">Data Source=:memory:
+                </code></pre></div>
+                <div class="code-block" data-title="Text"><pre><code class="language-text">Data Source=:memory:shared-cache
+                </code></pre></div>
+                <h3 id="why-11">Why</h3>
+                <p>The current ADO.NET benchmark results are clear:</p>
+                <ul>
+                <li>open+close with pooling off: about <code>8.9 ms</code></li>
+                <li>open+close with pooling on: about <code>1.9 us</code></li>
+                </ul>
+                <p>That is the main provider-level lever.</p>
+                <p>For in-memory ADO.NET:</p>
+                <ul>
+                <li><code>ExecuteScalar</code> on private <code>:memory:</code>: <code>238.7 ns</code></li>
+                <li><code>ExecuteScalar</code> on named shared <code>:memory:name</code>: <code>347.1 ns</code></li>
+                <li>insert on private <code>:memory:</code>: <code>2.722 us</code></li>
+                <li>insert on named shared <code>:memory:name</code>: <code>2.903 us</code></li>
+                </ul>
+                <p>Prepared commands were roughly neutral in the current provider microbenchmarks:</p>
+                <ul>
+                <li>parameterized select: about <code>298.1 us</code></li>
+                <li>prepared select with reused command: about <code>296.7 us</code></li>
+                </ul>
+                <p>So for most ADO.NET apps:</p>
+                <ul>
+                <li>pooling matters a lot</li>
+                <li>memory mode choice matters a little</li>
+                <li>command preparation is not the first lever to chase</li>
+                </ul>
+                <h2 id="what-usually-hurts">What Usually Hurts</h2>
+                <p>These are the common ways to leave performance on the floor in CSharpDB:</p>
+                <ul>
+                <li>Auto-committing every durable row when batching is possible.</li>
+                <li>Recreating a <code>ReaderSession</code> for every small read.</li>
+                <li>Using <code>SELECT *</code> on range and ordered queries that could be covered or at least narrow.</li>
+                <li>Skipping <code>ANALYZE</code> after bulk loads, then blaming the planner.</li>
+                <li>Using <code>FindAsync(...)</code> on large collections for fields that should be indexed.</li>
+                <li>Turning on advanced knobs like caching indexes, durable batch windows, or WAL preallocation without measuring the exact scenario they are meant for.</li>
+                <li>Paying hybrid hot-set open cost for short-lived processes.</li>
+                <li>Using named shared <code>:memory:</code> when private <code>:memory:</code> would do.</li>
+                </ul>
+                <h2 id="recommended-workflow">Recommended Workflow</h2>
+                <p>When tuning a real CSharpDB workload, use this order:</p>
+                <ol>
+                <li>Pick the storage mode: file-backed, hybrid, or in-memory.</li>
+                <li>Pick the API surface: SQL, collection API, or ADO.NET.</li>
+                <li>Add the right indexes.</li>
+                <li>Shape queries so they stay narrow and covered when possible.</li>
+                <li>Run <code>ANALYZE</code>.</li>
+                <li>Reuse <code>ReaderSession</code> or pooled connections where appropriate.</li>
+                <li>Batch writes.</li>
+                <li>Only then benchmark advanced knobs.</li>
+                </ol>
+                <h2 id="source-map">Source Map</h2>
+                <p>Primary references for this guide:</p>
+                <ul>
+                <li>Benchmark Suite</li>
+                <li>Latest Guardrail Report</li>
+                <li>Engine README</li>
+                <li>ADO.NET Provider README</li>
+                <li><a href="../architecture-reference.html">Architecture Guide</a></li>
+                <li><a href="../roadmap-reference.html">Roadmap</a></li>
+                </ul>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

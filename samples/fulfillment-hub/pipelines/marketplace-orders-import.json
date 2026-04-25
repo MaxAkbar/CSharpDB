@@ -1,0 +1,92 @@
+{
+  "name": "marketplace-orders-import",
+  "version": "1.0.0",
+  "description": "Imports marketplace order payloads into a staging table for review and conversion.",
+  "source": {
+    "kind": "jsonFile",
+    "path": "__SAMPLE_DIR__/imports/marketplace-orders.json"
+  },
+  "transforms": [
+    {
+      "kind": "rename",
+      "renameMappings": [
+        {
+          "source": "externalOrderId",
+          "target": "external_order_id"
+        },
+        {
+          "source": "customerEmail",
+          "target": "customer_email"
+        },
+        {
+          "source": "customerName",
+          "target": "customer_name"
+        },
+        {
+          "source": "warehouseCode",
+          "target": "warehouse_code"
+        },
+        {
+          "source": "orderDate",
+          "target": "order_date"
+        },
+        {
+          "source": "unitPrice",
+          "target": "unit_price"
+        },
+        {
+          "source": "salesChannel",
+          "target": "sales_channel"
+        },
+        {
+          "source": "status",
+          "target": "import_status"
+        }
+      ]
+    },
+    {
+      "kind": "cast",
+      "castMappings": [
+        {
+          "column": "quantity",
+          "targetType": "integer"
+        },
+        {
+          "column": "unit_price",
+          "targetType": "real"
+        }
+      ]
+    },
+    {
+      "kind": "filter",
+      "filterExpression": "import_status == 'ready'"
+    },
+    {
+      "kind": "derive",
+      "derivedColumns": [
+        {
+          "name": "channel_snapshot",
+          "expression": "sales_channel"
+        }
+      ]
+    },
+    {
+      "kind": "deduplicate",
+      "deduplicateKeys": [
+        "external_order_id",
+        "sku"
+      ]
+    }
+  ],
+  "destination": {
+    "kind": "cSharpDbTable",
+    "tableName": "marketplace_orders_stage",
+    "overwrite": true
+  },
+  "options": {
+    "batchSize": 100,
+    "errorMode": "skipBadRows",
+    "checkpointInterval": 50,
+    "maxRejects": 10
+  }
+}

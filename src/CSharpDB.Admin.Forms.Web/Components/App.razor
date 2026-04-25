@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <title>CSharpDB Forms</title>
+    <script>
+        (() => {
+            const theme = localStorage.getItem('csharpdb-theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
+    <link rel="stylesheet" href="_content/CSharpDB.Admin.Forms/css/designer.css" />
+    <link rel="stylesheet" href="css/app.css" />
+    <HeadOutlet />
+</head>
+<body>
+    <Routes @rendermode="InteractiveServer" />
+    <script src="_framework/blazor.web.js"></script>
+    <script src="js/forms-host.js"></script>
+</body>
+</html>

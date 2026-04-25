@@ -41,6 +41,150 @@ public sealed class DataGridTests
     }
 
     [Fact]
+    public void BuildWhereClause_DefaultFilterModeUsesContainsLikePredicate()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Name" });
+        GetFilters(component)[0] = "Ali";
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE TEXT(Name) LIKE '%Ali%' ESCAPE '!'", whereClause);
+    }
+
+    [Fact]
+    public void BuildWhereClause_StartsWithFilterModeUsesRightWildcardOnly()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Name" });
+        GetFilters(component)[0] = "Ali";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.StartsWith;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE TEXT(Name) LIKE 'Ali%' ESCAPE '!'", whereClause);
+    }
+
+    [Fact]
+    public void BuildWhereClause_EndsWithFilterModeUsesLeftWildcardOnly()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Name" });
+        GetFilters(component)[0] = "ice";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.EndsWith;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE TEXT(Name) LIKE '%ice' ESCAPE '!'", whereClause);
+    }
+
+    [Fact]
+    public void BuildWhereClause_ExactTextFilterModeUsesSargableColumnPredicate()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Name" });
+        SetProperty(component, nameof(DataGrid.ColumnTypes), new[] { "TEXT" });
+        GetFilters(component)[0] = "Alice";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.Exact;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE Name = 'Alice'", whereClause);
+    }
+
+    [Fact]
+    public void BuildWhereClause_ExactIntegerFilterModeUsesSargableNumericPredicate()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Id" });
+        SetProperty(component, nameof(DataGrid.ColumnTypes), new[] { "INTEGER" });
+        GetFilters(component)[0] = "42";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.Exact;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE Id = 42", whereClause);
+    }
+
+    [Fact]
+    public void BuildWhereClause_ExactIntegerFilterModeRejectsNonCanonicalDisplayValue()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Id" });
+        SetProperty(component, nameof(DataGrid.ColumnTypes), new[] { "INTEGER" });
+        GetFilters(component)[0] = "042";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.Exact;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE 0 = 1", whereClause);
+    }
+
+    [Fact]
+    public void BuildWhereClause_ExactFilterModeWithUnknownTypeFallsBackToTextPredicate()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Name" });
+        GetFilters(component)[0] = "Alice";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.Exact;
+
+        string whereClause = (string)InvokeNonPublic(component, "BuildWhereClause")!;
+
+        Assert.Equal(" WHERE TEXT(Name) = 'Alice'", whereClause);
+    }
+
+    [Fact]
+    public void ApplyFiltersAndSort_ExactFilterModeRequiresFullValue()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Name" });
+        SetField(component, "_loadedAllRows", true);
+        GetAllRows(component).AddRange(
+        [
+            new DataGridRow(["Alice"]),
+            new DataGridRow(["Alicia"]),
+            new DataGridRow(["alice"]),
+        ]);
+        GetFilters(component)[0] = "Alice";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.Exact;
+
+        InvokeNonPublic(component, "ApplyFiltersAndSort");
+
+        var rows = GetRows(component);
+        Assert.Single(rows);
+        Assert.Equal("Alice", rows[0].CurrentValues[0]);
+    }
+
+    [Fact]
+    public void ApplyFiltersAndSort_LikePlacementModesMatchExpectedSide()
+    {
+        var component = new DataGrid();
+        SetProperty(component, nameof(DataGrid.Columns), new[] { "Name" });
+        SetField(component, "_loadedAllRows", true);
+        GetAllRows(component).AddRange(
+        [
+            new DataGridRow(["Alice"]),
+            new DataGridRow(["Malice"]),
+            new DataGridRow(["Alicia"]),
+        ]);
+        GetFilters(component)[0] = "Ali";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.StartsWith;
+
+        InvokeNonPublic(component, "ApplyFiltersAndSort");
+
+        var rows = GetRows(component);
+        Assert.Equal(["Alice", "Alicia"], rows.Select(row => (string)row.CurrentValues[0]!).ToArray());
+
+        GetFilters(component)[0] = "ice";
+        GetFilterModes(component)[0] = DataGridFilterMatchMode.EndsWith;
+
+        InvokeNonPublic(component, "ApplyFiltersAndSort");
+
+        rows = GetRows(component);
+        Assert.Equal(["Alice", "Malice"], rows.Select(row => (string)row.CurrentValues[0]!).ToArray());
+    }
+
+    [Fact]
     public void QueryPagingWithoutExactTotal_ShowsRangeAndKeepsNextEnabled()
     {
         var component = new DataGrid();
@@ -102,6 +246,9 @@ public sealed class DataGridTests
 
     private static Dictionary<int, string> GetFilterInputs(DataGrid component)
         => GetField<Dictionary<int, string>>(component, "_filterInputs");
+
+    private static Dictionary<int, DataGridFilterMatchMode> GetFilterModes(DataGrid component)
+        => GetField<Dictionary<int, DataGridFilterMatchMode>>(component, "_filterModes");
 
     private static List<DataGridRow> GetAllRows(DataGrid component)
         => GetField<List<DataGridRow>>(component, "_allRows");
