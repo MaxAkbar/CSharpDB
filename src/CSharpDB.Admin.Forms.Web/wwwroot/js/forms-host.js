@@ -1,3 +1,40 @@
+window.formsTheme = {
+    get: () => localStorage.getItem('csharpdb-theme') || 'dark',
+
+    set: (theme) => {
+        const nextTheme = theme === 'light' ? 'light' : 'dark';
+        localStorage.setItem('csharpdb-theme', nextTheme);
+        document.documentElement.setAttribute('data-theme', nextTheme);
+        window.formsTheme.updateControls();
+    },
+
+    toggle: () => {
+        window.formsTheme.set(window.formsTheme.get() === 'dark' ? 'light' : 'dark');
+    },
+
+    updateControls: () => {
+        const theme = window.formsTheme.get();
+        const label = theme === 'dark' ? 'Dark' : 'Light';
+        const icon = theme === 'dark' ? 'D' : 'L';
+
+        document.querySelectorAll('[data-theme-label]').forEach(element => {
+            element.textContent = label;
+        });
+
+        document.querySelectorAll('[data-theme-icon]').forEach(element => {
+            element.textContent = icon;
+        });
+    },
+
+    init: () => {
+        window.formsTheme.set(window.formsTheme.get());
+    }
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    window.formsTheme.init();
+});
+
 window.resizeInterop = {
     _formEntryActive: false,
     _formEntryStartX: 0,
