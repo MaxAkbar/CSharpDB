@@ -206,7 +206,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 
 | | |
 |---|---|
-| [Getting Started](https://csharpdb.com/getting-started.html) | Step-by-step walkthrough |
+| [Getting Started](https://csharpdb.com/docs/getting-started.html) | Step-by-step walkthrough |
 | [Architecture Guide](https://csharpdb.com/architecture.html) | Engine design deep dive |
 | [Tools & Ecosystem](https://csharpdb.com/docs/ecosystem.html) | APIs, hosts, designers, and integrations |
 | [EF Core Provider](https://csharpdb.com/docs/entity-framework-core.html) | Embedded EF Core 10 provider guide |
