@@ -67,6 +67,7 @@
                         <a href="${prefix}docs/index.html">Documentation</a>
                         <a href="${prefix}architecture.html">Architecture</a>
                         <a href="${prefix}docs/api-reference.html">API Reference</a>
+                        <a href="${prefix}docs/entity-framework-core.html">EF Core Provider</a>
                         <a href="${prefix}docs/performance.html">Performance Guide</a>
                         <a href="${prefix}roadmap.html">Roadmap</a>
                     </div>

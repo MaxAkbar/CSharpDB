@@ -42,4 +42,4 @@ The sample includes `BloggingContextFactory`, so `dotnet ef` can create the cont
 - Runtime only: private `:memory:` when you supply and keep open a `CSharpDbConnection`
 - Unsupported in v1: pooled connections, named shared-memory databases, endpoint/daemon transports, schemas, defaults/checks/computed columns, standalone FK alterations, and `decimal` without an explicit converter
 
-For the full provider guide and supported-feature matrix, see [docs/entity-framework-core.md](../../docs/entity-framework-core.md).
+For the full provider guide and supported-feature matrix, see the [EF Core Provider guide](https://csharpdb.com/docs/entity-framework-core.html).

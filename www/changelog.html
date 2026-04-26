@@ -180,7 +180,7 @@
                             <li><strong>Parser and planner support for EF-emitted shapes</strong> — Extended tokenizer, parser, query planner, and result handling plus ADO.NET command/parameter plumbing so the provider can execute the required EF query and command shapes cleanly.</li>
                             <li><strong>Scalar aggregate lookup optimization</strong> — Simple indexed and primary-key-backed <code>COUNT(...)</code> and <code>SUM(...)</code> cases now reuse lightweight lookup plans instead of materializing full scans. Focused baseline refresh checked in at <code>tests/CSharpDB.Benchmarks/baselines/focused-validation/20260418-185724</code>.</li>
                             <li><strong>Benchmark guardrail stabilization</strong> — Scenario selection, durable SQL batching coverage, and guardrail scripting hardened for repeat runs. Internal cleanup removed the unused <code>FlushBufferedWritesAsync</code> method from <code>IWalFlushPolicy</code> to align with the current commit/flush contract.</li>
-                            <li><strong>New docs</strong> — <code>docs/entity-framework-core.md</code>, <code>docs/ado-ef-storage-tuning/README.md</code>, the programmatic insert performance planning set, and a benchmark-driven CSharpDB-versus-SQLite guide.</li>
+                            <li><strong>New docs</strong> — the <a href="docs/entity-framework-core.html">EF Core provider guide</a>, <code>docs/ado-ef-storage-tuning/README.md</code>, the programmatic insert performance planning set, and a benchmark-driven CSharpDB-versus-SQLite guide.</li>
                         </ul>
                     </div>
 

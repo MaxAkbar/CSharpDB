@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Entity Framework Core Provider - CSharpDB</title>
+    <meta name="description" content="CSharpDB Entity Framework Core provider guide - configure UseCSharpDb, migrations, embedded storage tuning, supported LINQ surface, and current limitations.">
+    <link rel="canonical" href="https://csharpdb.com/docs/entity-framework-core.html">
+    <meta property="og:title" content="Entity Framework Core Provider - CSharpDB">
+    <meta property="og:description" content="CSharpDB Entity Framework Core provider guide - configure UseCSharpDb, migrations, embedded storage tuning, supported LINQ surface, and current limitations.">
+    <meta property="og:url" content="https://csharpdb.com/docs/entity-framework-core.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Entity Framework Core Provider",
+        "description": "CSharpDB Entity Framework Core provider guide - configure UseCSharpDb, migrations, embedded storage tuning, supported LINQ surface, and current limitations.",
+        "url": "https://csharpdb.com/docs/entity-framework-core.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Entity Framework Core Provider',
+        description: 'CSharpDB Entity Framework Core provider guide - configure UseCSharpDb, migrations, embedded storage tuning, supported LINQ surface, and current limitations.',
+        keywords: 'CSharpDB EF Core, Entity Framework Core provider, UseCSharpDb, DbContext, migrations, LINQ, .NET 10',
+        canonicalPath: 'docs/entity-framework-core.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#install">Install</a></li>
+                        <li><a href="#basic-usage">Basic Usage</a></li>
+                        <li><a href="#connections">Connections</a></li>
+                        <li><a href="#tuning">Storage Tuning</a></li>
+                        <li><a href="#migrations">Migrations</a></li>
+                        <li><a href="#supported-surface">Supported Surface</a></li>
+                        <li><a href="#limitations">Limitations</a></li>
+                        <li><a href="#ddl-surface">DDL Surface</a></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <div class="doc-content">
+                <h1>Entity Framework Core Provider</h1>
+                <p class="lead"><code>CSharpDB.EntityFrameworkCore</code> is an embedded-only Entity Framework Core 10 provider built on top of <code>CSharpDB.Data</code>. Use standard EF Core <code>DbContext</code>, migrations, change tracking, and LINQ patterns against local CSharpDB databases.</p>
+
+                <div class="callout callout-info">
+                    <strong>Scope:</strong> the provider supports file-backed databases and private in-memory databases. It does not target daemon, client, endpoint, or pooled connection transports.
+                </div>
+
+                <h2 id="install">Install</h2>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet add package CSharpDB.EntityFrameworkCore
+dotnet add package Microsoft.EntityFrameworkCore.Design</code></pre>
+                </div>
+                <p><code>Microsoft.EntityFrameworkCore.Design</code> is recommended in the application project so <code>dotnet ef</code> can run design-time commands cleanly.</p>
+
+                <h2 id="basic-usage">Basic Usage</h2>
+                <p>Configure your context with <code>UseCSharpDb(...)</code>.</p>
+                <div class="code-block" data-title="BloggingContext.cs">
+                    <pre><code>using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+public sealed class BloggingContext : DbContext
+{
+    private readonly string? _connectionString;
+
+    public BloggingContext(string databasePath)
+        =&gt; _connectionString = $"Data Source={databasePath}";
+
+    public BloggingContext(DbContextOptions&lt;BloggingContext&gt; options)
+        : base(options)
+    {
+    }
+
+    public DbSet&lt;Blog&gt; Blogs =&gt; Set&lt;Blog&gt;();
+    public DbSet&lt;Post&gt; Posts =&gt; Set&lt;Post&gt;();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        if (!optionsBuilder.IsConfigured &amp;&amp; _connectionString is not null)
+            optionsBuilder.UseCSharpDb(_connectionString);
+    }
+}
+
+public sealed class Blog
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public List&lt;Post&gt; Posts { get; set; } = [];
+}
+
+public sealed class Post
+{
+    public int Id { get; set; }
+    public int BlogId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public Blog Blog { get; set; } = null!;
+}</code></pre>
+                </div>
+
+                <p>Then use EF Core as usual.</p>
+                <div class="code-block" data-title="Program.cs">
+                    <pre><code>await using var db = new BloggingContext("blogging.db");
+await db.Database.EnsureCreatedAsync();
+
+db.Blogs.Add(new Blog
+{
+    Name = "Engineering",
+    Posts = [new Post { Title = "Hello from CSharpDB EF Core" }]
+});
+
+await db.SaveChangesAsync();
+
+var blogs = await db.Blogs
+    .Include(blog =&gt; blog.Posts)
+    .OrderBy(blog =&gt; blog.Name)
+    .ToListAsync();</code></pre>
+                </div>
+
+                <h2 id="connections">Existing Connections and In-Memory Databases</h2>
+                <p>You can pass an existing <code>CSharpDbConnection</code>. This is required for a private <code>:memory:</code> database because the database lives as long as the connection stays open.</p>
+                <div class="code-block" data-title="Private :memory:">
+                    <pre><code>using CSharpDB.Data;
+using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+await using var connection = new CSharpDbConnection("Data Source=:memory:");
+await connection.OpenAsync();
+
+var options = new DbContextOptionsBuilder&lt;BloggingContext&gt;()
+    .UseCSharpDb(connection)
+    .Options;
+
+await using var db = new BloggingContext(options);
+await db.Database.EnsureCreatedAsync();</code></pre>
+                </div>
+
+                <h2 id="tuning">Embedded Storage Tuning</h2>
+                <p>The EF Core provider can pass embedded engine tuning down into the <code>CSharpDbConnection</code> it creates. Use named presets and embedded open modes when you want discoverable, compile-checked settings.</p>
+                <div class="code-block" data-title="EF Core Storage Tuning">
+                    <pre><code>using CSharpDB.Data;
+using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+var options = new DbContextOptionsBuilder&lt;BloggingContext&gt;()
+    .UseCSharpDb(
+        "Data Source=blogging.db",
+        csharpdb =&gt;
+        {
+            csharpdb.UseStoragePreset(CSharpDbStoragePreset.WriteOptimized);
+            csharpdb.UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode.HybridIncrementalDurable);
+        })
+    .Options;</code></pre>
+                </div>
+
+                <p>Use full engine options when you need exact storage composition.</p>
+                <div class="code-block" data-title="Direct Engine Options">
+                    <pre><code>using CSharpDB.Engine;
+using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+var directOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+
+var options = new DbContextOptionsBuilder&lt;BloggingContext&gt;()
+    .UseCSharpDb(
+        "Data Source=blogging.db",
+        csharpdb =&gt; csharpdb.UseDirectDatabaseOptions(directOptions))
+    .Options;</code></pre>
+                </div>
+
+                <h3>Provider Builder Methods</h3>
+                <ul>
+                    <li><code>UseDirectDatabaseOptions(DatabaseOptions)</code></li>
+                    <li><code>UseHybridDatabaseOptions(HybridDatabaseOptions)</code></li>
+                    <li><code>UseStoragePreset(CSharpDbStoragePreset)</code></li>
+                    <li><code>UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode)</code></li>
+                </ul>
+                <p>Explicit <code>DirectDatabaseOptions</code> override <code>Storage Preset</code>. Explicit <code>HybridDatabaseOptions</code> override <code>Embedded Open Mode</code>. When EF Core is given an existing <code>CSharpDbConnection</code>, provider builder tuning is validated against that connection instead of mutating it.</p>
+                <p>For the full ADO.NET and EF Core tuning surface, see <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/docs/ado-ef-storage-tuning/README.md">ADO.NET and EF storage tuning notes</a>.</p>
+
+                <h2 id="migrations">Migrations</h2>
+                <p>For file-backed databases, the normal EF Core design-time workflow is supported.</p>
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet ef migrations add InitialCreate
+dotnet ef database update
+dotnet ef migrations script</code></pre>
+                </div>
+                <p><code>Database.Migrate()</code> is supported for file-backed databases. <code>EnsureCreated()</code> is supported for file-backed and private in-memory databases. Migrations use the standard <code>__EFMigrationsHistory</code> table plus a simple <code>__EFMigrationsLock</code> row to serialize concurrent migration runs across processes.</p>
+
+                <h2 id="supported-surface">Supported Surface</h2>
+                <table class="doc-table">
+                    <thead><tr><th>Area</th><th>Supported</th><th>Notes</th></tr></thead>
+                    <tbody>
+                        <tr><td>Embedded runtime provider</td><td>Yes</td><td>No daemon or remote transports</td></tr>
+                        <tr><td>File-backed databases</td><td>Yes</td><td>Primary supported runtime and migration mode</td></tr>
+                        <tr><td>Private <code>:memory:</code> runtime</td><td>Yes</td><td>Requires an open <code>CSharpDbConnection</code></td></tr>
+                        <tr><td><code>EnsureCreated()</code></td><td>Yes</td><td>File-backed and private in-memory</td></tr>
+                        <tr><td><code>Database.Migrate()</code></td><td>Yes</td><td>File-backed only</td></tr>
+                        <tr><td><code>dotnet ef migrations add</code></td><td>Yes</td><td>Use the app project with <code>Microsoft.EntityFrameworkCore.Design</code></td></tr>
+                        <tr><td><code>dotnet ef database update</code></td><td>Yes</td><td>File-backed only</td></tr>
+                        <tr><td><code>dotnet ef migrations script</code></td><td>Yes</td><td>Non-idempotent scripts only</td></tr>
+                        <tr><td>CRUD + change tracking</td><td>Yes</td><td>Includes affected-row concurrency checks</td></tr>
+                        <tr><td>Integer identity propagation</td><td>Yes</td><td>Single-column integer primary keys</td></tr>
+                        <tr><td>Basic LINQ/query subset</td><td>Yes</td><td><code>Where</code>, ordering, pagination, scalar projections, <code>First</code>/<code>Single</code>, <code>Any</code>, <code>Count</code>, null checks, <code>Contains</code>, and simple navigation-loading joins</td></tr>
+                        <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>byte[]</code></td></tr>
+                    </tbody>
+                </table>
+
+                <h2 id="limitations">Current Limitations</h2>
+                <ul>
+                    <li><code>decimal</code> requires an explicit value converter.</li>
+                    <li>Schemas are unsupported in runtime and migrations.</li>
+                    <li>Defaults, computed columns, check constraints, and rowversion are unsupported.</li>
+                    <li>Pooled connections are rejected by the EF Core provider.</li>
+                    <li>Named shared-memory databases (<code>:memory:&lt;name&gt;</code>) are rejected.</li>
+                    <li>Endpoint, daemon, and non-direct transports are rejected.</li>
+                    <li>Standalone foreign-key alteration migrations are unsupported.</li>
+                    <li>Idempotent migration scripts are unsupported in v1.</li>
+                    <li>Broad table-rebuild migration emulation is not implemented; unsupported operations fail explicitly.</li>
+                </ul>
+
+                <h2 id="ddl-surface">DDL Surface</h2>
+                <p>The migrations SQL generator currently supports <code>CreateTable</code>, <code>DropTable</code>, <code>RenameTable</code>, <code>AddColumn</code>, <code>RenameColumn</code>, <code>DropColumn</code>, <code>CreateIndex</code>, and <code>DropIndex</code>. Foreign keys are supported only when emitted inline during <code>CreateTable</code>, and only for the current single-column shape supported by the engine.</p>
+
+                <div class="next-steps">
+                    <h2>Next Steps</h2>
+                    <div class="next-steps-grid">
+                        <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/efcore-provider" class="next-step-card">
+                            <h4>EF Core Sample</h4>
+                            <p>Run the minimal provider sample and design-time context factory</p>
+                        </a>
+                        <a href="ecosystem.html" class="next-step-card">
+                            <h4>Tools &amp; Ecosystem</h4>
+                            <p>See how the provider fits with ADO.NET, Client SDK, REST, and gRPC</p>
+                        </a>
+                        <a href="performance.html" class="next-step-card">
+                            <h4>Performance Guide</h4>
+                            <p>Choose storage modes, presets, and access paths for your workload</p>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

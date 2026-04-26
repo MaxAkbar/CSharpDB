@@ -12,7 +12,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "Tools & Ecosystem",
-        "description": "CSharpDB ecosystem — embedded APIs, REST and gRPC hosts, Admin UI, pipelines, forms, reports, AI integrations, and cross-language tooling.",
+        "description": "CSharpDB ecosystem — embedded APIs, EF Core, REST and gRPC hosts, Admin UI, pipelines, forms, reports, AI integrations, and cross-language tooling.",
         "url": "https://csharpdb.com/docs/ecosystem.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -27,8 +27,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'Tools & Ecosystem',
-        description: 'CSharpDB ecosystem \u2014 embedded APIs, REST and gRPC hosts, Admin UI, pipelines, forms, reports, AI integrations, and cross-language tooling.',
-        keywords: 'CSharpDB tools, CLI, Admin UI, REST API, gRPC, Client SDK, ADO.NET, MCP server, VS Code, pipelines, forms, reports',
+        description: 'CSharpDB ecosystem \u2014 embedded APIs, EF Core, REST and gRPC hosts, Admin UI, pipelines, forms, reports, AI integrations, and cross-language tooling.',
+        keywords: 'CSharpDB tools, CLI, Admin UI, REST API, gRPC, Client SDK, ADO.NET, EF Core, MCP server, VS Code, pipelines, forms, reports',
         canonicalPath: 'docs/ecosystem.html',
         ogType: 'article',
     };
@@ -73,6 +73,21 @@ cmd.Parameters.Add(<span class="kw">new</span> <span class="tp">CSharpDbParamete
 <span class="kw">await</span> tx.CommitAsync();</code></pre>
                 </div>
                 <p>Features: parameter binding, connection pooling, transaction support, type mapping.</p>
+
+                <h3>Entity Framework Core Provider</h3>
+                <p>The <code>CSharpDB.EntityFrameworkCore</code> package layers EF Core 10 <code>DbContext</code>, migrations, change tracking, and a focused LINQ surface over the embedded ADO.NET provider.</p>
+                <div class="code-block" data-title="EF Core">
+                    <pre><code>using CSharpDB.Data;
+using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+var options = new DbContextOptionsBuilder&lt;BloggingContext&gt;()
+    .UseCSharpDb(
+        "Data Source=blogging.db",
+        csharpdb =&gt; csharpdb.UseStoragePreset(CSharpDbStoragePreset.WriteOptimized))
+    .Options;</code></pre>
+                </div>
+                <p>For setup, migrations, tuning, and supported features, see the <a href="entity-framework-core.html">EF Core Provider guide</a>.</p>
 
                 <h3>Client SDK</h3>
                 <p>A unified C# client with pluggable transports. Use the same <code>ICSharpDbClient</code> interface whether connecting locally, over HTTP, or via gRPC.</p>
