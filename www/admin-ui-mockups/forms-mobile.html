@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Elastic Forms — CSharpDB Studio Mockup</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link rel="stylesheet" href="styles.css">
+<style>
+    body { overflow: auto; }
+
+    /* ─── Page wrapper ───────────────────────── */
+    .page {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 32px 28px 80px;
+    }
+
+    h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 6px; }
+    .crumb { color: var(--text-muted); font-size: 12px; margin-bottom: 4px; }
+    .lede { color: var(--text-secondary); font-size: 13px; max-width: 760px; margin-bottom: 20px; }
+
+    h2 {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.7px;
+        color: var(--text-muted);
+        margin: 32px 0 12px;
+    }
+
+    /* ─── Designer toolbar mock ──────────────── */
+    .designer-shell {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+    }
+
+    .d-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-color);
+        flex-wrap: wrap;
+    }
+    .d-toolbar .grp {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding-right: 12px;
+        border-right: 1px solid var(--border-color);
+    }
+    .d-toolbar .grp:last-child { border-right: none; }
+    .d-toolbar .label {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .seg {
+        display: flex;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+    }
+    .seg button {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        font-size: 11px;
+        padding: 5px 12px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+    .seg button:hover { color: var(--text-primary); }
+    .seg button.active {
+        color: var(--accent-blue);
+        background: var(--bg-active);
+        font-weight: 600;
+    }
+    .seg button:not(:last-child) { border-right: 1px solid var(--border-color); }
+
+    .d-toolbar .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 10px;
+        font-size: 11px;
+        background: rgba(122,162,247,0.12);
+        color: var(--accent-blue);
+        border-radius: 999px;
+        font-weight: 600;
+    }
+    .d-toolbar .pill.warn { background: rgba(224,175,104,0.12); color: var(--accent-yellow); }
+
+    /* ─── Canvas with device frame ────────────── */
+    .canvas-area {
+        background: var(--bg-tertiary);
+        padding: 28px;
+        display: flex;
+        justify-content: center;
+        min-height: 580px;
+    }
+
+    /* Device frame: phone */
+    .device {
+        background: var(--bg-primary);
+        border: 1px solid var(--border-color);
+        border-radius: 18px;
+        box-shadow: 0 24px 48px rgba(0,0,0,0.4);
+        padding: 18px 14px;
+        position: relative;
+        flex-shrink: 0;
+    }
+    .device .notch {
+        position: absolute;
+        top: 6px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 50px;
+        height: 4px;
+        background: var(--border-light);
+        border-radius: 4px;
+    }
+    .device.phone { width: 380px; }
+    .device.tablet { width: 720px; }
+    .device.desktop {
+        width: 100%;
+        max-width: 980px;
+        border-radius: 8px;
+        padding: 20px;
+    }
+    .device-meta {
+        position: absolute;
+        bottom: -22px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 10px;
+        color: var(--text-muted);
+        white-space: nowrap;
+    }
+
+    /* The actual form viewport inside the device */
+    .form-viewport {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        padding: 14px;
+        min-height: 460px;
+        position: relative;
+    }
+    .form-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 4px;
+    }
+    .form-sub {
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-bottom: 14px;
+    }
+
+    /* Field styles common */
+    .fld { display: flex; flex-direction: column; gap: 4px; }
+    .fld label {
+        font-size: 11px;
+        color: var(--text-secondary);
+        font-weight: 600;
+    }
+    .fld input, .fld select, .fld textarea {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        padding: 7px 10px;
+        color: var(--text-primary);
+        font-size: 12px;
+        font-family: var(--font-ui);
+        width: 100%;
+    }
+    .fld textarea { min-height: 60px; resize: vertical; }
+    .fld input:focus { outline: 2px solid var(--accent-blue); }
+    .fld .req { color: var(--accent-red); }
+    .fld .help { font-size: 10px; color: var(--text-muted); }
+
+    /* ─── DESKTOP layout: pixel-positioned (current behavior) ─── */
+    .layout-desktop {
+        position: relative;
+        height: 420px;
+        background-image:
+                linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+        background-size: 16px 16px;
+    }
+    .layout-desktop .fld { position: absolute; }
+
+    /* ─── ELASTIC layout: 12-col grid that collapses ─── */
+    .layout-grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 10px 12px;
+    }
+    /* Tablet: 8-col */
+    .layout-grid.cols-8 { grid-template-columns: repeat(8, 1fr); gap: 10px; }
+    /* Mobile: 4-col with auto-stack */
+    .layout-grid.cols-4 { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+
+    /* Field span helpers */
+    .col-12 { grid-column: span 12; }
+    .col-8 { grid-column: span 8; }
+    .col-6 { grid-column: span 6; }
+    .col-4 { grid-column: span 4; }
+    .col-3 { grid-column: span 3; }
+
+    /* Mobile: force every field to full row & big touch target */
+    .layout-grid.cols-4 .fld { grid-column: 1 / -1 !important; }
+    .layout-grid.cols-4 .fld input,
+    .layout-grid.cols-4 .fld select,
+    .layout-grid.cols-4 .fld textarea { padding: 12px 14px; font-size: 14px; }
+    .layout-grid.cols-4 .fld label { font-size: 12px; }
+    .layout-grid.cols-4 .actions button { padding: 12px 18px; font-size: 14px; min-height: 44px; }
+
+    /* Action row */
+    .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 14px;
+        flex-wrap: wrap;
+    }
+    .actions button {
+        padding: 7px 14px;
+        font-size: 12px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 5px;
+        color: var(--text-primary);
+        cursor: pointer;
+    }
+    .actions button.primary {
+        background: var(--accent-blue);
+        color: #0a0b13;
+        border-color: var(--accent-blue);
+        font-weight: 600;
+    }
+
+    /* ─── Side-by-side device row ────────────── */
+    .device-row {
+        display: flex;
+        gap: 28px;
+        justify-content: center;
+        align-items: flex-start;
+        padding: 28px 28px 50px;
+        background: var(--bg-tertiary);
+        overflow-x: auto;
+    }
+
+    /* Property inspector style "Layout settings" panel */
+    .inspector {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 16px 18px;
+        font-size: 12.5px;
+    }
+    .inspector h3 {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .inspector .row {
+        display: grid;
+        grid-template-columns: 140px 1fr;
+        align-items: center;
+        gap: 12px;
+        padding: 6px 0;
+        border-bottom: 1px dashed var(--border-color);
+    }
+    .inspector .row:last-of-type { border-bottom: none; }
+    .inspector .row .k { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .inspector .row .v { color: var(--text-primary); }
+    .inspector input[type=text], .inspector input[type=number], .inspector select {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        padding: 4px 8px;
+        color: var(--text-primary);
+        font-size: 12px;
+        font-family: var(--font-ui);
+        width: 100%;
+    }
+    .inspector .swatch {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .inspector .swatch i { font-size: 13px; }
+
+    .toggle {
+        position: relative;
+        width: 38px; height: 20px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 10px;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .toggle::after {
+        content: "";
+        position: absolute;
+        top: 1px;
+        left: 1px;
+        width: 16px; height: 16px;
+        background: var(--text-muted);
+        border-radius: 50%;
+        transition: 120ms ease;
+    }
+    .toggle.on { background: rgba(122,162,247,0.3); border-color: var(--accent-blue); }
+    .toggle.on::after { left: 19px; background: var(--accent-blue); }
+
+    .two-col {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        gap: 18px;
+    }
+
+    /* Responsive shrink */
+    @media (max-width: 1080px) {
+        .two-col { grid-template-columns: 1fr; }
+    }
+</style>
+</head>
+<body>
+<div class="page">
+
+    <div class="crumb">CSharpDB.Admin.Forms · UI proposal</div>
+    <h1>Make forms mobile-friendly with an "Elastic" layout mode</h1>
+    <p class="lede">
+        Today every form rendered by <code>FormRenderer.razor</code> uses absolute pixel coordinates
+        — controls have a fixed <code>X / Y / W / H</code> from <code>Rect</code>, and on a phone the
+        form simply scrolls horizontally. The <code>LayoutDefinition</code> model already carries a
+        <code>Breakpoints</code> list and <code>ControlDefinition</code> already has
+        <code>RendererHints</code>, so the schema is responsive-ready. This proposal adds a designer
+        switch and a runtime that uses them.
+    </p>
+
+    <!-- ════════ Section 1: Designer-side switch ════════ -->
+    <h2>1 · Designer · new "Layout mode" switch</h2>
+
+    <div class="two-col">
+        <div class="designer-shell">
+            <div class="d-toolbar">
+                <div class="grp">
+                    <span class="label">Layout mode</span>
+                    <div class="seg">
+                        <button><i class="bi bi-pin-map"></i> Fixed pixels</button>
+                        <button class="active"><i class="bi bi-aspect-ratio"></i> Elastic</button>
+                    </div>
+                </div>
+                <div class="grp">
+                    <span class="label">Preview</span>
+                    <div class="seg">
+                        <button><i class="bi bi-display"></i> Desktop</button>
+                        <button class="active"><i class="bi bi-tablet"></i> Tablet</button>
+                        <button><i class="bi bi-phone"></i> Mobile</button>
+                    </div>
+                </div>
+                <div class="grp">
+                    <span class="pill"><i class="bi bi-grid-3x3-gap"></i> 12-col grid · 8 px gutter</span>
+                </div>
+                <div style="flex: 1"></div>
+                <div class="grp">
+                    <span class="pill warn"><i class="bi bi-exclamation-triangle"></i> 2 controls overflow at Mobile</span>
+                </div>
+            </div>
+
+            <div class="canvas-area" style="padding: 28px 18px;">
+                <div class="device tablet">
+                    <div class="form-viewport">
+                        <div class="form-title">Customer · CST-00142</div>
+                        <div class="form-sub">vw_customer_form · tablet preview · 720 × auto</div>
+
+                        <div class="layout-grid cols-8">
+                            <div class="fld col-4">
+                                <label>First name <span class="req">*</span></label>
+                                <input value="Alice" />
+                            </div>
+                            <div class="fld col-4">
+                                <label>Last name <span class="req">*</span></label>
+                                <input value="Smith" />
+                            </div>
+                            <div class="fld col-8">
+                                <label>Email</label>
+                                <input value="alice@example.com" />
+                            </div>
+                            <div class="fld col-3">
+                                <label>Status</label>
+                                <select><option>active</option></select>
+                            </div>
+                            <div class="fld col-3">
+                                <label>Tier</label>
+                                <select><option>Gold</option></select>
+                            </div>
+                            <div class="fld col-2">
+                                <label>Active</label>
+                                <select><option>Yes</option></select>
+                            </div>
+                            <div class="fld col-8">
+                                <label>Notes</label>
+                                <textarea>VIP customer — handle with care.</textarea>
+                            </div>
+                        </div>
+
+                        <div class="actions">
+                            <button>Cancel</button>
+                            <button class="primary">Save</button>
+                        </div>
+                    </div>
+                    <div class="device-meta">tablet · 768 px breakpoint</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Property inspector showing the Layout settings -->
+        <div class="inspector">
+            <h3><i class="bi bi-sliders" style="color: var(--accent-blue);"></i> Layout settings</h3>
+
+            <div class="row">
+                <span class="k">Mode</span>
+                <span class="v"><b>Elastic</b> · 12-col grid</span>
+            </div>
+            <div class="row">
+                <span class="k">Auto-stack on mobile</span>
+                <span class="v"><div class="toggle on"></div></span>
+            </div>
+            <div class="row">
+                <span class="k">Touch targets</span>
+                <span class="v">≥ 44 px on mobile</span>
+            </div>
+
+            <h3 style="margin-top: 16px;"><i class="bi bi-aspect-ratio" style="color: var(--accent-blue);"></i> Breakpoints</h3>
+
+            <div class="row">
+                <span class="k swatch"><i class="bi bi-display" style="color: var(--accent-green);"></i> Desktop</span>
+                <span class="v">≥ 1024 px · 12 cols</span>
+            </div>
+            <div class="row">
+                <span class="k swatch"><i class="bi bi-tablet" style="color: var(--accent-yellow);"></i> Tablet</span>
+                <span class="v">≥ 640 px · 8 cols</span>
+            </div>
+            <div class="row">
+                <span class="k swatch"><i class="bi bi-phone" style="color: var(--accent-magenta);"></i> Mobile</span>
+                <span class="v">&lt; 640 px · stacked</span>
+            </div>
+
+            <h3 style="margin-top: 16px;"><i class="bi bi-magic" style="color: var(--accent-blue);"></i> Auto-elastic</h3>
+            <div class="row">
+                <span class="k">For legacy forms</span>
+                <span class="v"><div class="toggle on"></div></span>
+            </div>
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 8px; line-height: 1.5;">
+                When a form has no breakpoint overrides, the renderer infers a 12-col grid from the
+                pixel layout (X/W → column span, Y → row order) so existing forms get a sensible
+                mobile view without redesign.
+            </p>
+        </div>
+    </div>
+
+    <!-- ════════ Section 2: Side-by-side device preview ════════ -->
+    <h2>2 · Same form at three breakpoints</h2>
+    <p class="lede" style="margin-top: -6px;">
+        One form definition, three viewport sizes. Designer can switch between them with the toolbar
+        Preview segmented control; users see the right one based on their screen.
+    </p>
+
+    <div class="device-row">
+        <!-- Desktop -->
+        <div class="device desktop" style="max-width: 540px;">
+            <div class="form-viewport">
+                <div class="form-title">Customer · CST-00142</div>
+                <div class="form-sub">desktop · 12-col</div>
+
+                <div class="layout-grid">
+                    <div class="fld col-3">
+                        <label>First name <span class="req">*</span></label>
+                        <input value="Alice" />
+                    </div>
+                    <div class="fld col-3">
+                        <label>Last name <span class="req">*</span></label>
+                        <input value="Smith" />
+                    </div>
+                    <div class="fld col-6">
+                        <label>Email</label>
+                        <input value="alice@example.com" />
+                    </div>
+                    <div class="fld col-3">
+                        <label>Status</label>
+                        <select><option>active</option></select>
+                    </div>
+                    <div class="fld col-3">
+                        <label>Tier</label>
+                        <select><option>Gold</option></select>
+                    </div>
+                    <div class="fld col-3">
+                        <label>Active</label>
+                        <select><option>Yes</option></select>
+                    </div>
+                    <div class="fld col-3">
+                        <label>Created</label>
+                        <input type="date" value="2026-01-12" />
+                    </div>
+                    <div class="fld col-12">
+                        <label>Notes</label>
+                        <textarea>VIP — handle with care.</textarea>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button>Cancel</button>
+                    <button class="primary">Save</button>
+                </div>
+            </div>
+            <div class="device-meta">desktop · ≥ 1024 px</div>
+        </div>
+
+        <!-- Tablet -->
+        <div class="device tablet" style="width: 460px;">
+            <div class="form-viewport">
+                <div class="form-title">Customer · CST-00142</div>
+                <div class="form-sub">tablet · 8-col</div>
+
+                <div class="layout-grid cols-8">
+                    <div class="fld col-4">
+                        <label>First name <span class="req">*</span></label>
+                        <input value="Alice" />
+                    </div>
+                    <div class="fld col-4">
+                        <label>Last name <span class="req">*</span></label>
+                        <input value="Smith" />
+                    </div>
+                    <div class="fld col-8">
+                        <label>Email</label>
+                        <input value="alice@example.com" />
+                    </div>
+                    <div class="fld col-3">
+                        <label>Status</label>
+                        <select><option>active</option></select>
+                    </div>
+                    <div class="fld col-3">
+                        <label>Tier</label>
+                        <select><option>Gold</option></select>
+                    </div>
+                    <div class="fld col-2">
+                        <label>Active</label>
+                        <select><option>Y</option></select>
+                    </div>
+                    <div class="fld col-8">
+                        <label>Notes</label>
+                        <textarea>VIP — handle with care.</textarea>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button>Cancel</button>
+                    <button class="primary">Save</button>
+                </div>
+            </div>
+            <div class="device-meta">tablet · ≥ 640 px</div>
+        </div>
+
+        <!-- Mobile -->
+        <div class="device phone">
+            <div class="notch"></div>
+            <div class="form-viewport">
+                <div class="form-title">Customer · CST-00142</div>
+                <div class="form-sub">mobile · stacked</div>
+
+                <div class="layout-grid cols-4">
+                    <div class="fld">
+                        <label>First name <span class="req">*</span></label>
+                        <input value="Alice" />
+                    </div>
+                    <div class="fld">
+                        <label>Last name <span class="req">*</span></label>
+                        <input value="Smith" />
+                    </div>
+                    <div class="fld">
+                        <label>Email</label>
+                        <input value="alice@example.com" />
+                    </div>
+                    <div class="fld">
+                        <label>Status</label>
+                        <select><option>active</option></select>
+                    </div>
+                    <div class="fld">
+                        <label>Notes</label>
+                        <textarea>VIP — handle with care.</textarea>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="primary" style="width:100%;">Save</button>
+                </div>
+            </div>
+            <div class="device-meta">mobile · &lt; 640 px</div>
+        </div>
+    </div>
+
+    <!-- ════════ Section 3: Today vs. Elastic on a phone ════════ -->
+    <h2>3 · Today vs. Elastic on a 380 px phone</h2>
+
+    <div class="device-row" style="background: var(--bg-secondary);">
+        <!-- Today: pixel layout, horizontal scroll -->
+        <div class="device phone" style="overflow: hidden;">
+            <div class="notch"></div>
+            <div class="form-viewport" style="padding: 0; overflow: auto;">
+                <div style="padding: 14px;">
+                    <div class="form-title">Customer · CST-00142</div>
+                    <div class="form-sub" style="color: var(--accent-red);">
+                        TODAY · pixel-positioned · 800 px wide
+                    </div>
+                </div>
+                <div class="layout-desktop" style="width: 800px; height: 360px; padding: 14px;">
+                    <div class="fld" style="left:14px; top: 4px; width: 180px;">
+                        <label>First name</label>
+                        <input value="Alice" />
+                    </div>
+                    <div class="fld" style="left: 210px; top: 4px; width: 180px;">
+                        <label>Last name</label>
+                        <input value="Smith" />
+                    </div>
+                    <div class="fld" style="left: 410px; top: 4px; width: 360px;">
+                        <label>Email</label>
+                        <input value="alice@example.com" />
+                    </div>
+                    <div class="fld" style="left: 14px; top: 80px; width: 180px;">
+                        <label>Status</label>
+                        <select><option>active</option></select>
+                    </div>
+                    <div class="fld" style="left: 210px; top: 80px; width: 180px;">
+                        <label>Tier</label>
+                        <select><option>Gold</option></select>
+                    </div>
+                    <div class="fld" style="left: 410px; top: 80px; width: 360px;">
+                        <label>Notes</label>
+                        <textarea>VIP — handle with care.</textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="device-meta" style="color: var(--accent-red);">Horizontal scroll · cramped · no save button visible</div>
+        </div>
+
+        <!-- Elastic on the same phone -->
+        <div class="device phone">
+            <div class="notch"></div>
+            <div class="form-viewport">
+                <div class="form-title">Customer · CST-00142</div>
+                <div class="form-sub" style="color: var(--accent-green);">
+                    ELASTIC · auto-stacked · 380 px
+                </div>
+
+                <div class="layout-grid cols-4">
+                    <div class="fld">
+                        <label>First name <span class="req">*</span></label>
+                        <input value="Alice" />
+                    </div>
+                    <div class="fld">
+                        <label>Last name <span class="req">*</span></label>
+                        <input value="Smith" />
+                    </div>
+                    <div class="fld">
+                        <label>Email</label>
+                        <input value="alice@example.com" />
+                    </div>
+                    <div class="fld">
+                        <label>Status</label>
+                        <select><option>active</option></select>
+                    </div>
+                    <div class="fld">
+                        <label>Tier</label>
+                        <select><option>Gold</option></select>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="primary" style="width:100%;">Save</button>
+                </div>
+            </div>
+            <div class="device-meta" style="color: var(--accent-green);">Single-column · 44 px touch targets · primary action visible</div>
+        </div>
+    </div>
+
+    <!-- ════════ Section 4: Notes ════════ -->
+    <h2>4 · Implementation notes (no code changed)</h2>
+
+    <div class="inspector" style="padding: 18px 22px;">
+        <ul style="list-style: none; padding: 0;">
+            <li style="padding: 8px 0; border-bottom: 1px dashed var(--border-color);">
+                <span style="color: var(--accent-blue);">●</span>
+                <b>Schema is already responsive-ready.</b>
+                <code>LayoutDefinition</code> has <code>Breakpoints</code> and
+                <code>ControlDefinition</code> has <code>RendererHints</code>. Per-breakpoint
+                geometry can ride in <code>RendererHints["breakpoint:mobile"] = { x, y, w, h, hidden }</code>
+                with no model migration. <code>DesignerState.IsVisibleAtBreakpoint</code> and
+                <code>GetEffectiveRect</code> already handle this design-side.
+            </li>
+            <li style="padding: 8px 0; border-bottom: 1px dashed var(--border-color);">
+                <span style="color: var(--accent-blue);">●</span>
+                <b>Add a <code>LayoutMode</code> field to <code>LayoutDefinition</code></b>
+                — values: <code>FixedPixel</code> (today's behavior) and <code>Elastic</code>.
+                Existing forms default to <code>FixedPixel</code>, so nothing changes for them.
+            </li>
+            <li style="padding: 8px 0; border-bottom: 1px dashed var(--border-color);">
+                <span style="color: var(--accent-blue);">●</span>
+                <b>Runtime <code>FormRenderer.razor</code> picks the layout</b> using
+                a CSS container query (or a one-time <code>window.matchMedia</code> probe) and emits
+                either:
+                <br>—  <code>position: absolute; left/top/width/height</code> (FixedPixel, today),
+                <br>—  CSS Grid with <code>grid-column: span N</code> per control (Elastic).
+            </li>
+            <li style="padding: 8px 0; border-bottom: 1px dashed var(--border-color);">
+                <span style="color: var(--accent-blue);">●</span>
+                <b>Auto-elastic for legacy forms</b> — when a form is <code>FixedPixel</code> but the
+                viewport is below the tablet breakpoint, the renderer can synthesize a column span
+                from the original <code>Rect.Width / canvasWidth × 12</code> and order by
+                <code>Rect.Y</code>. Doesn't require redesigning every form.
+            </li>
+            <li style="padding: 8px 0; border-bottom: 1px dashed var(--border-color);">
+                <span style="color: var(--accent-blue);">●</span>
+                <b>Designer changes</b> — toolbar gains a Layout-mode segmented control and a
+                Preview-device segmented control. The existing 8 px snap-to-grid stays. Property
+                inspector grows a "Span at desktop / tablet / mobile" row per control. The "2
+                controls overflow at Mobile" pill is a lint warning that links to the offenders.
+            </li>
+            <li style="padding: 8px 0; border-bottom: 1px dashed var(--border-color);">
+                <span style="color: var(--accent-blue);">●</span>
+                <b>Runtime niceties</b> — touch targets ≥ 44 px on mobile, primary action sticks to
+                the bottom of the viewport, the toolbar ([DataEntry.razor toolbar](../../src/CSharpDB.Admin.Forms/Pages/DataEntry.razor)) becomes a <code>flex-wrap</code> row that
+                collapses Print/Edit-Form behind a "⋯" overflow on small screens. Print stylesheet
+                ignores breakpoints and renders the desktop layout as today.
+            </li>
+            <li style="padding: 8px 0;">
+                <span style="color: var(--accent-blue);">●</span>
+                <b>Out of scope for this proposal</b> — touch-drag in the designer (designer can
+                stay desktop-only), mobile-specific control variants (e.g. native date picker), and
+                an offline data-entry mode.
+            </li>
+        </ul>
+    </div>
+
+    <p style="font-size: 12px; color: var(--text-muted); margin-top: 28px;">
+        Back to <a href="index.html">all mockups</a>.
+    </p>
+</div>
+</body>
+</html>
