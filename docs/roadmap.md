@@ -56,6 +56,8 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
 | **Connection pooling** | Pool underlying direct embedded sessions behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Richer SQL editor UX, query history, deeper diagnostics, and integrated Forms/Reports tooling beyond the core schema/procedure/storage surface | Done |
+| **Admin Forms Access parity** | Close the highest-impact Access-style form gaps: runtime responsive layouts, full inferred validation enforcement, richer record-source/filter/sort models, Layout View, form modes, command/action events, and broader control coverage | Planned |
+| **Admin Reports Access parity** | Close the highest-impact Access-style report gaps: bounded saved-query previews, full report rendering/export, parameter/filter prompts, richer grouping/totals options, Layout View, conditional formatting, subreports, and broader report controls | Planned |
 | **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
 | **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
 | **VS Code extension** | Schema explorer, SQL editor with IntelliSense, data browser, table designer, storage diagnostics | Done |
@@ -104,6 +106,8 @@ These are known simplifications in the current implementation:
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
 | **Networking** | `CSharpDB.Daemon` now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
+| **Admin Forms** | The Forms designer/runtime supports the core generated-form and data-entry path, but still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, command/action events, advanced filtering/sorting, and broader controls |
+| **Admin Reports** | The Reports designer/runtime supports the core banded preview path, but still needs Access-parity work for bounded saved-query previews, full report output/export, parameters, richer grouping and totals semantics, conditional formatting, subreports, and broader controls |
 | **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned |
 | **Concurrency** | The physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains still depend on conflict shape and whether shared auto-commit `INSERT` is left on the default serialized path |
 | **Storage** | No page-level compression |
@@ -185,4 +189,6 @@ Major features already implemented:
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
 - [User-Defined Functions Plan](user-defined-functions/README.md) — C# library functions callable by the database, native plugin extensions, and WASM sandboxing
 - [Pub/Sub Change Events Plan](pub-sub-events/README.md) — Engine-level change events with channel-based delivery for real-time data subscriptions
+- [Admin Forms Access Parity Plan](admin-forms-access-parity/README.md) — Microsoft Access parity review findings and forms roadmap
+- [Admin Reports Access Parity Plan](admin-reports-access-parity/README.md) — Microsoft Access parity review findings and reports roadmap
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities

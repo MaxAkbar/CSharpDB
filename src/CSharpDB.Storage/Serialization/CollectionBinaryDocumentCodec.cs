@@ -116,17 +116,35 @@ internal static class CollectionBinaryDocumentCodec
         return TryReadValueFromObject(payload, 0, pathSegmentsUtf8, out value);
     }
 
+    public static bool TryReadValue(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> pathSegmentUtf8, out DbValue value)
+        => TryReadValueFromObject(payload, pathSegmentUtf8, out value);
+
     public static bool TryReadInt64(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, out long value)
     {
         ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
         return TryReadInt64FromObject(payload, 0, pathSegmentsUtf8, out value);
     }
 
+    public static bool TryReadInt64(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> pathSegmentUtf8, out long value)
+        => TryReadInt64FromObject(payload, pathSegmentUtf8, out value);
+
     public static bool TryReadString(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, out string? value)
     {
         ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
         return TryReadStringFromObject(payload, 0, pathSegmentsUtf8, out value);
     }
+
+    public static bool TryReadString(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> pathSegmentUtf8, out string? value)
+        => TryReadStringFromObject(payload, pathSegmentUtf8, out value);
+
+    public static bool TryReadStringUtf8(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, out ReadOnlySpan<byte> value)
+    {
+        ArgumentNullException.ThrowIfNull(pathSegmentsUtf8);
+        return TryReadStringUtf8FromObject(payload, 0, pathSegmentsUtf8, out value);
+    }
+
+    public static bool TryReadStringUtf8(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> pathSegmentUtf8, out ReadOnlySpan<byte> value)
+        => TryReadStringUtf8FromObject(payload, pathSegmentUtf8, out value);
 
     public static bool TryReadBoolean(ReadOnlySpan<byte> payload, byte[][] pathSegmentsUtf8, out bool value)
     {
@@ -180,6 +198,12 @@ internal static class CollectionBinaryDocumentCodec
         return TryTextEqualsFromObject(payload, 0, pathSegmentsUtf8, expectedValue);
     }
 
+    public static bool TryTextEquals(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> pathSegmentUtf8, string expectedValue)
+    {
+        ArgumentNullException.ThrowIfNull(expectedValue);
+        return TryTextEqualsFromObject(payload, pathSegmentUtf8, expectedValue);
+    }
+
     public static byte[] EncodeJsonUtf8(ReadOnlySpan<byte> payload)
     {
         var output = new ArrayBufferWriter<byte>();
@@ -208,6 +232,20 @@ internal static class CollectionBinaryDocumentCodec
         return TryConvertValue(tag, payload.Slice(valueStart, valueLength), out value);
     }
 
+    private static bool TryReadValueFromObject(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> pathSegmentUtf8,
+        out DbValue value)
+    {
+        if (!TryFindValue(payload, pathSegmentUtf8, out byte tag, out int valueStart, out int valueLength))
+        {
+            value = default;
+            return false;
+        }
+
+        return TryConvertValue(tag, payload.Slice(valueStart, valueLength), out value);
+    }
+
     private static bool TryTextEqualsFromObject(
         ReadOnlySpan<byte> payload,
         int pathIndex,
@@ -218,6 +256,15 @@ internal static class CollectionBinaryDocumentCodec
                TryTextEquals(tag, payload.Slice(valueStart, valueLength), expectedValue);
     }
 
+    private static bool TryTextEqualsFromObject(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> pathSegmentUtf8,
+        string expectedValue)
+    {
+        return TryFindValue(payload, pathSegmentUtf8, out byte tag, out int valueStart, out int valueLength) &&
+               TryTextEquals(tag, payload.Slice(valueStart, valueLength), expectedValue);
+    }
+
     private static bool TryReadInt64FromObject(
         ReadOnlySpan<byte> payload,
         int pathIndex,
@@ -225,6 +272,23 @@ internal static class CollectionBinaryDocumentCodec
         out long value)
     {
         if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
+            tag != IntegerTag ||
+            valueLength != sizeof(long))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(valueStart, valueLength));
+        return true;
+    }
+
+    private static bool TryReadInt64FromObject(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> pathSegmentUtf8,
+        out long value)
+    {
+        if (!TryFindValue(payload, pathSegmentUtf8, out byte tag, out int valueStart, out int valueLength) ||
             tag != IntegerTag ||
             valueLength != sizeof(long))
         {
@@ -250,6 +314,55 @@ internal static class CollectionBinaryDocumentCodec
         }
 
         value = Encoding.UTF8.GetString(payload.Slice(valueStart, valueLength));
+        return true;
+    }
+
+    private static bool TryReadStringFromObject(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> pathSegmentUtf8,
+        out string? value)
+    {
+        if (!TryFindValue(payload, pathSegmentUtf8, out byte tag, out int valueStart, out int valueLength) ||
+            tag != StringTag)
+        {
+            value = null;
+            return false;
+        }
+
+        value = Encoding.UTF8.GetString(payload.Slice(valueStart, valueLength));
+        return true;
+    }
+
+    private static bool TryReadStringUtf8FromObject(
+        ReadOnlySpan<byte> payload,
+        int pathIndex,
+        byte[][] pathSegmentsUtf8,
+        out ReadOnlySpan<byte> value)
+    {
+        if (!TryFindValue(payload, pathIndex, pathSegmentsUtf8, out byte tag, out int valueStart, out int valueLength) ||
+            tag != StringTag)
+        {
+            value = default;
+            return false;
+        }
+
+        value = payload.Slice(valueStart, valueLength);
+        return true;
+    }
+
+    private static bool TryReadStringUtf8FromObject(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> pathSegmentUtf8,
+        out ReadOnlySpan<byte> value)
+    {
+        if (!TryFindValue(payload, pathSegmentUtf8, out byte tag, out int valueStart, out int valueLength) ||
+            tag != StringTag)
+        {
+            value = default;
+            return false;
+        }
+
+        value = payload.Slice(valueStart, valueLength);
         return true;
     }
 
@@ -542,6 +655,14 @@ internal static class CollectionBinaryDocumentCodec
         return false;
     }
 
+    private static bool TryFindValue(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> pathSegmentUtf8,
+        out byte tag,
+        out int valueStart,
+        out int valueLength)
+        => TryFindCurrentValue(payload, pathSegmentUtf8, out tag, out valueStart, out valueLength);
+
     private static bool TryFindCurrentValue(
         ReadOnlySpan<byte> payload,
         int pathIndex,
@@ -556,6 +677,35 @@ internal static class CollectionBinaryDocumentCodec
         {
             ReadOnlySpan<byte> fieldName = ReadLengthPrefixedBytes(payload, ref position);
             if (!fieldName.SequenceEqual(pathSegmentsUtf8[pathIndex]))
+            {
+                if (!TrySkipValue(payload, ref position))
+                    break;
+
+                continue;
+            }
+
+            return TryReadValuePayload(payload, ref position, out tag, out valueStart, out valueLength);
+        }
+
+        tag = default;
+        valueStart = 0;
+        valueLength = 0;
+        return false;
+    }
+
+    private static bool TryFindCurrentValue(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> pathSegmentUtf8,
+        out byte tag,
+        out int valueStart,
+        out int valueLength)
+    {
+        int position = 0;
+        ulong fieldCount = ReadVarint(payload, ref position);
+        for (ulong i = 0; i < fieldCount; i++)
+        {
+            ReadOnlySpan<byte> fieldName = ReadLengthPrefixedBytes(payload, ref position);
+            if (!fieldName.SequenceEqual(pathSegmentUtf8))
             {
                 if (!TrySkipValue(payload, ref position))
                     break;

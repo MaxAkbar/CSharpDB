@@ -7,7 +7,135 @@ This file preserves the benchmark release logs, failed-run notes, investigation 
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current main README is promoted from the April 21, 2026 release-core run and the April 22, 2026 UTC guardrail compare. Earlier April 21 release-prep failures are retained below as investigation history, not as the current published state.
+The current main README is promoted from the April 26, 2026 release-core run and the April 27, 2026 UTC guardrail compare. Earlier release-prep failures are retained below as investigation history, not as the current published state.
+
+## April 26-27, 2026 Release-Core Promotion
+
+The stable README was refreshed after the collection binary payload work from a balanced release-core run, not from the diagnostic collection-only sweep.
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Run-Perf-Guardrails.ps1 -Mode release
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
+  -ThresholdsPath .\tests\CSharpDB.Benchmarks\perf-thresholds.json `
+  -CurrentMicroResultsDir .\tests\CSharpDB.Benchmarks\results\.tmp-current-micro-run `
+  -ReportPath .\tests\CSharpDB.Benchmarks\results\perf-guardrails-last.md
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Update-BenchmarkReadme.ps1 -RunManifest .\tests\CSharpDB.Benchmarks\release-core-manifest.json
+```
+
+| Item | Result |
+|------|--------|
+| Release-core status | `completed` |
+| Release-core completion | `Sunday, April 26, 2026 about 4:03 PM PT` |
+| Release-core duration | `about 68 minutes` |
+| Initial guardrail wrapper compare | `Compared 185 rows against baseline. PASS=174, WARN=0, SKIP=0, FAIL=11` |
+| Final guardrail compare | `Compared 185 rows against baseline. PASS=185, WARN=0, SKIP=0, FAIL=0` |
+| Final guardrail report | `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md` |
+| Final compare timestamp | `2026-04-27 01:18:39Z` |
+| Runner | `Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7` |
+| Commit | `b7cb52ee2c30f31538e96480b6d055ff52439c26 plus uncommitted collection binary payload and benchmark updates` |
+
+The first release guardrail wrapper completed benchmark collection but failed the compare with volatile samples in `CollationIndexBenchmarks`, `CollectionIndexBenchmarks`, and `CompositeIndexBenchmarks`. A focused retry refreshed only those three micro CSVs, then the official compare passed with `PASS=185, WARN=0, SKIP=0, FAIL=0`. The release-core source artifacts were not replaced by targeted micro runs.
+
+| Artifact | Path |
+|----------|------|
+| Durable master comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260426-215529-median-of-3.csv` |
+| Durable SQL batching | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260426-221413-median-of-3.csv` |
+| Concurrent durable write | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260426-223659-median-of-3.csv` |
+| Hybrid storage mode | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260426-224331-median-of-3.csv` |
+| Hybrid hot-set read | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260426-225908-median-of-3.csv` |
+| Hybrid cold open | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260426-225949-median-of-3.csv` |
+| SQLite comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260426-230045-median-of-3.csv` |
+
+## April 26, 2026 Collection Binary Payload Fast-Path Investigation
+
+This was a focused diagnostic and recovery run for collection binary payload work. It was not a release-core promotion and does not update the stable README scorecard.
+
+The work investigated regressions seen after source-generated collection fast paths, generated record payload encoding, and targeted UTF-8 span plumbing for text index/read/compare paths. A same-machine HEAD baseline worktree was created at `.tmp/baseline-head-collection-20260426`, and the full `*Collection*` benchmark filter was run against both HEAD and the working tree.
+
+Initial collection comparison:
+
+| Item | Result |
+|------|--------|
+| Current rows | `70` |
+| Matched HEAD baseline rows | `60` |
+| Faster matched rows | `50` |
+| Slower matched rows | `10` |
+| Median matched speedup | `+4.1%` |
+| Mean matched speedup | `+4.8%` |
+| Comparison CSV | `.tmp/collection-benchmark-comparison-current-vs-head-20260426.csv` |
+
+The most actionable regressions were small direct payload/header and unbound field-reader paths:
+
+| Benchmark | HEAD baseline | Before recovery | Notes |
+|-----------|--------------:|----------------:|-------|
+| Collection field read (missing field) | `201.81 ns` | `223.22 ns` | Allocations unchanged in the first comparison; path shared header parsing and per-call property-name metadata. |
+| Collection decode (direct payload) | `317.90 ns` | `333.80 ns` | Error bars overlapped, but the direct payload decode path parsed the same header twice through `DecodeKey` and `DecodeDocument`. |
+| Collection cold get (file-backed, cache-pressured) | `51.588 us` | `57.036 us` | Treated as noisy file/cache/async behavior, not directly tied to the codec path. |
+
+Recovery changes:
+
+- `CollectionDocumentCodec<T>.Decode` now parses direct payload headers once and decodes the key/document from that single header.
+- `CollectionIndexedFieldReader` now uses stack/rented UTF-8 spans for top-level string-property reads instead of allocating a `byte[]` plus `byte[][]` per call.
+- `CollectionBinaryDocumentCodec` now has single-segment `ReadOnlySpan<byte>` lookup overloads for top-level binary document field access.
+- `CollectionPayloadCodec` fast header parsing was adjusted for the common binary payload marker first.
+
+Focused recovery benchmark comparison:
+
+| Benchmark | HEAD baseline | Before recovery | After recovery | After vs before | After vs baseline | Allocation after |
+|-----------|--------------:|----------------:|---------------:|----------------:|------------------:|-----------------:|
+| Collection field read (missing field) | `201.81 ns` | `223.22 ns` | `136.73 ns` | `+38.7%` | `+32.2%` | `0 B` |
+| Collection decode (direct payload) | `317.90 ns` | `333.80 ns` | `155.20 ns` | `+53.5%` | `+51.2%` | `328 B` |
+| Collection field read (early field) | `120.07 ns` | `108.60 ns` | `49.77 ns` | `+54.2%` | `+58.5%` | `48 B` |
+| Collection field read (middle field) | `107.15 ns` | `95.52 ns` | `67.96 ns` | `+28.9%` | `+36.6%` | `0 B` |
+| Collection field read (late field) | `158.71 ns` | `146.20 ns` | `112.27 ns` | `+23.2%` | `+29.3%` | `0 B` |
+| Collection field compare (late text field) | `187.12 ns` | `159.55 ns` | `97.60 ns` | `+38.8%` | `+47.8%` | `0 B` |
+| Collection field compare (late text field, bound accessor) | `160.29 ns` | `128.03 ns` | `92.83 ns` | `+27.5%` | `+42.1%` | `0 B` |
+
+Collection path-index follow-up:
+
+The April 7 path-index spot-check table remains a historical snapshot and was not overwritten. After the recovery changes, the focused `*CollectionIndexBenchmarks*` filter was rerun on the final working tree to cover the same path-index area. This is still diagnostic data, not a release-core promotion; read it against the April 26 same-machine HEAD artifact, not as a replacement for the April 7 dated snapshot.
+
+| Benchmark | April 26 HEAD baseline | April 26 final | Final vs baseline | Allocation final |
+|-----------|-----------------------:|---------------:|------------------:|-----------------:|
+| Collection FindByIndex nested path equality | `2,408.209 us` | `1,116.247 us` | `+53.6%` | `754.83 KB` |
+| Collection FindByPath nested path equality | `2,485.552 us` | `1,096.847 us` | `+55.9%` | `754.83 KB` |
+| Collection FindByIndex array path equality | `2,720.115 us` | `1,303.300 us` | `+52.1%` | `1254.25 KB` |
+| Collection FindByPath array path equality | `2,706.758 us` | `1,310.859 us` | `+51.6%` | `1254.25 KB` |
+| Collection FindByPath nested array path equality | `4,211.142 us` | `2,176.966 us` | `+48.3%` | `1742.67 KB` |
+| Collection FindByPath integer range | `1,017.047 us` | `587.753 us` | `+42.2%` | `307.28 KB` |
+| Collection FindByPath text range | `1,103.269 us` | `632.086 us` | `+42.7%` | `499.5 KB` |
+| Collection FindByPath Guid equality | `12.388 us` | `5.034 us` | `+59.4%` | `15.26 KB` |
+| Collection FindByPath DateOnly range | `2,176.684 us` | `1,093.622 us` | `+49.8%` | `835.63 KB` |
+
+Artifacts:
+
+| Artifact | Path |
+|----------|------|
+| Preserved April 26 HEAD benchmark reports | `.tmp/baseline-head-collection-20260426-results` |
+| Final collection index rerun report | `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.CollectionIndexBenchmarks-report.csv` |
+
+Commands run:
+
+```powershell
+dotnet run -c Release --project tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --filter "*Collection*"
+dotnet run -c Release --project tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --filter "*CollectionFieldExtractionBenchmarks*"
+dotnet run -c Release --project tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --filter "*CollectionPayloadBenchmarks*"
+dotnet run -c Release --project tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --filter "*CollectionIndexBenchmarks*"
+dotnet build CSharpDB.slnx -c Release --no-restore
+dotnet test CSharpDB.slnx -c Release --no-build -m:1 -- RunConfiguration.DisableParallelization=true
+```
+
+Verification:
+
+| Check | Result |
+|-------|--------|
+| Release build | `passed` |
+| Non-parallel unit tests | `passed: 1,652 tests` |
+| Focused field extraction benchmarks | `completed` |
+| Focused payload benchmarks | `completed` |
+| Focused collection index benchmarks | `completed` |
+| Recovery comparison CSV | `.tmp/collection-recovery-comparison-20260426.csv` |
 
 ## April 21-22, 2026 Release-Core Promotion
 
@@ -787,6 +915,8 @@ Source: `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.WalCoreBenc
 The important result for async I/O batching is still the staged-vs-direct comparison: the repeated-`AppendFrameAsync(...)` path stays close to the direct batched WAL path instead of collapsing into one durable write per page before commit, while manual checkpoint cost rises sharply as the frame threshold grows.
 
 ### Collection Path Index Spot Checks (April 7, 2026)
+
+This April 7 table is retained unchanged as a dated historical spot check. See the April 26 collection binary payload investigation above for the newer diagnostic path-index rerun; the two sections should not be treated as a release-to-release promotion comparison.
 
 | Metric | Mean | Allocated | Notes |
 |--------|------|-----------|-------|

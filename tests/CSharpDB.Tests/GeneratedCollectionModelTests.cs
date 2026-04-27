@@ -1,7 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text;
 using System.Diagnostics.CodeAnalysis;
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
 using CSharpDB.Storage.Serialization;
 
 namespace CSharpDB.Tests;
@@ -25,6 +27,134 @@ public sealed class GeneratedCollectionModelTests
         Assert.Single(matches);
         Assert.Equal("u1", matches[0].Key);
         Assert.Equal("alpha@example.com", matches[0].Value.Email);
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_EncodesGeneratedDirectPayloadsAsBinary()
+    {
+        var codec = new CollectionDocumentCodec<GeneratedUser>(new DefaultRecordSerializer());
+        var expected = new GeneratedUser("alpha@example.com", 30);
+
+        byte[] payload = codec.Encode("u1", expected);
+        var actual = codec.Decode(payload);
+
+        Assert.True(CollectionPayloadCodec.IsDirectPayload(payload));
+        Assert.True(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal("u1", actual.Key);
+        Assert.Equal(expected, actual.Document);
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_BinaryPayloadUsesCompactRecordFormat()
+    {
+        var codec = new CollectionDocumentCodec<GeneratedUser>(new DefaultRecordSerializer());
+        var expected = new GeneratedUser("alpha@example.com", 30);
+
+        byte[] payload = codec.Encode("u1", expected);
+        ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetBinaryDocumentPayload(payload);
+
+        Assert.Equal(0xD0, documentPayload[0]);
+        Assert.Equal(0xF0, documentPayload[1]);
+        Assert.Equal(0x01, documentPayload[2]);
+        Assert.True(documentPayload.Length < 32);
+        Assert.Equal(expected, codec.DecodeDocument(payload));
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_PayloadMatchesKey_UsesDirectUtf8KeyComparison()
+    {
+        var codec = new CollectionDocumentCodec<GeneratedUser>(new DefaultRecordSerializer());
+
+        byte[] payload = codec.Encode("u:é", new GeneratedUser("alpha@example.com", 30));
+
+        Assert.True(codec.PayloadMatchesKey(payload, "u:é"));
+        Assert.False(codec.PayloadMatchesKey(payload, "u:e"));
+        Assert.True(CollectionPayloadCodec.TryDirectPayloadKeyEquals(payload, "u:é", out bool equals));
+        Assert.True(equals);
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_GeneratedFieldsReadDirectBinaryPayloads()
+    {
+        var codec = new CollectionDocumentCodec<GeneratedUser>(new DefaultRecordSerializer());
+        byte[] payload = codec.Encode("u1", new GeneratedUser("alpha@example.com", 30));
+
+        Assert.True(GeneratedUser.Collection.Age.TryReadPayloadInt64(payload, out long age));
+        Assert.Equal(30, age);
+        Assert.True(GeneratedUser.Collection.Age.TryReadPayloadValue(payload, out DbValue ageValue));
+        Assert.Equal(DbType.Integer, ageValue.Type);
+        Assert.Equal(30, ageValue.AsInteger);
+
+        Assert.True(GeneratedUser.Collection.Email.TryReadPayloadString(payload, out string? email));
+        Assert.Equal("alpha@example.com", email);
+        Assert.True(GeneratedUser.Collection.Email.TryReadPayloadStringUtf8(payload, out ReadOnlySpan<byte> emailUtf8));
+        Assert.Equal("alpha@example.com", Encoding.UTF8.GetString(emailUtf8));
+        Assert.True(GeneratedUser.Collection.Email.TryReadPayloadValue(payload, out DbValue emailValue));
+        Assert.Equal(DbType.Text, emailValue.Type);
+        Assert.Equal("alpha@example.com", emailValue.AsText);
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_GeneratedNestedFieldsReadDirectBinaryPayloads()
+    {
+        var codec = new CollectionDocumentCodec<NestedGeneratedUser>(new DefaultRecordSerializer());
+        byte[] payload = codec.Encode("u1", new NestedGeneratedUser("Alice", new NestedGeneratedAddress("Seattle", 98101)));
+
+        Assert.True(NestedGeneratedUser.Collection.Address_ZipCode.TryReadPayloadInt64(payload, out long zipCode));
+        Assert.Equal(98101, zipCode);
+        Assert.True(NestedGeneratedUser.Collection.Address_City.TryReadPayloadString(payload, out string? city));
+        Assert.Equal("Seattle", city);
+        Assert.True(NestedGeneratedUser.Collection.Address_City.TryReadPayloadStringUtf8(payload, out ReadOnlySpan<byte> cityUtf8));
+        Assert.Equal("Seattle", Encoding.UTF8.GetString(cityUtf8));
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_BinaryPayloadHonorsJsonPropertyNameAttributes()
+    {
+        var codec = new CollectionDocumentCodec<RenamedGeneratedUser>(new DefaultRecordSerializer());
+
+        byte[] payload = codec.Encode("u1", new RenamedGeneratedUser("alpha@example.com", 24));
+        var actual = codec.DecodeDocument(payload);
+
+        Assert.True(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal("alpha@example.com", actual.Email);
+        Assert.Equal(24, actual.Age);
+        Assert.True(RenamedGeneratedUser.Collection.Email.TryReadPayloadString(payload, out string? email));
+        Assert.Equal("alpha@example.com", email);
+        Assert.True(RenamedGeneratedUser.Collection.Age.TryReadPayloadInt64(payload, out long age));
+        Assert.Equal(24, age);
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_KeepsJsonPayloadForUnsupportedBinaryShapes()
+    {
+        var codec = new CollectionDocumentCodec<DateTimeGeneratedUser>(new DefaultRecordSerializer());
+        var expected = new DateTimeGeneratedUser(
+            "alpha@example.com",
+            new DateTime(2026, 4, 26, 12, 30, 0, DateTimeKind.Utc));
+
+        byte[] payload = codec.Encode("u1", expected);
+        var actual = codec.Decode(payload);
+
+        Assert.True(CollectionPayloadCodec.IsDirectPayload(payload));
+        Assert.False(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal("u1", actual.Key);
+        Assert.Equal(expected, actual.Document);
+    }
+
+    [Fact]
+    public void GeneratedCollectionModel_KeepsJsonPayloadForSinglePassEnumerableShapes()
+    {
+        var codec = new CollectionDocumentCodec<EnumerableGeneratedUser>(new DefaultRecordSerializer());
+
+        byte[] payload = codec.Encode("u1", new EnumerableGeneratedUser("Alice", ["alpha", "beta"]));
+        var actual = codec.Decode(payload);
+
+        Assert.True(CollectionPayloadCodec.IsDirectPayload(payload));
+        Assert.False(CollectionPayloadCodec.IsBinaryPayload(payload));
+        Assert.Equal("u1", actual.Key);
+        Assert.Equal("Alice", actual.Document.Name);
+        Assert.Equal(["alpha", "beta"], actual.Document.Tags);
     }
 
     [Fact]
@@ -449,6 +579,11 @@ internal sealed partial record GeneratedUser(string Email, int Age);
 
 internal sealed record UnannotatedGeneratedCollectionUser(string Email);
 
+#pragma warning disable CDBGEN007
+[CollectionModel(typeof(DateTimeGeneratedUserJsonContext))]
+internal sealed partial record DateTimeGeneratedUser(string Email, DateTime UpdatedAt);
+#pragma warning restore CDBGEN007
+
 [CollectionModel(typeof(RenamedGeneratedUserJsonContext))]
 internal sealed partial record RenamedGeneratedUser(
     [property: JsonPropertyName("email_address")] string Email,
@@ -456,6 +591,9 @@ internal sealed partial record RenamedGeneratedUser(
 
 [CollectionModel(typeof(TaggedGeneratedUserJsonContext))]
 internal sealed partial record TaggedGeneratedUser(string Name, IReadOnlyList<string> Tags);
+
+[CollectionModel(typeof(EnumerableGeneratedUserJsonContext))]
+internal sealed partial record EnumerableGeneratedUser(string Name, IEnumerable<string> Tags);
 
 [CollectionModel(typeof(NestedGeneratedUserJsonContext))]
 internal sealed partial record NestedGeneratedUser(string Name, NestedGeneratedAddress Address);
@@ -481,12 +619,20 @@ internal sealed partial record ManualLinkedUser(string Name, ManualLinkedUser? N
 internal sealed partial class GeneratedUserGeneratedJsonContext : JsonSerializerContext;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(DateTimeGeneratedUser))]
+internal sealed partial class DateTimeGeneratedUserJsonContext : JsonSerializerContext;
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(RenamedGeneratedUser))]
 internal sealed partial class RenamedGeneratedUserJsonContext : JsonSerializerContext;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(TaggedGeneratedUser))]
 internal sealed partial class TaggedGeneratedUserJsonContext : JsonSerializerContext;
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(EnumerableGeneratedUser))]
+internal sealed partial class EnumerableGeneratedUserJsonContext : JsonSerializerContext;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(NestedGeneratedUser))]

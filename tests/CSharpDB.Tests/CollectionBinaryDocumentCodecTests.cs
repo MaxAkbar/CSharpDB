@@ -198,6 +198,12 @@ public sealed class CollectionBinaryDocumentCodecTests
                 [System.Text.Encoding.UTF8.GetBytes("city")],
                 out string? city));
         Assert.Equal("Seattle", city);
+        Assert.True(
+            CollectionBinaryDocumentCodec.TryReadStringUtf8(
+                nestedDocument,
+                [System.Text.Encoding.UTF8.GetBytes("city")],
+                out ReadOnlySpan<byte> cityUtf8));
+        Assert.Equal("Seattle", System.Text.Encoding.UTF8.GetString(cityUtf8));
     }
 
     [Fact]

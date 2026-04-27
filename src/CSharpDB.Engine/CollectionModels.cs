@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using CSharpDB.Primitives;
 using CSharpDB.Storage.Serialization;
 
 namespace CSharpDB.Engine;
@@ -152,6 +153,18 @@ public abstract class CollectionField<TDocument>
 
     internal object? ReadValue(TDocument document) => ReadValueCore(document);
 
+    public virtual bool TryReadPayloadValue(ReadOnlySpan<byte> payload, out DbValue value)
+        => _payloadAccessor.TryReadValue(payload, out value);
+
+    public virtual bool TryReadPayloadInt64(ReadOnlySpan<byte> payload, out long value)
+        => _payloadAccessor.TryReadInt64(payload, out value);
+
+    public virtual bool TryReadPayloadString(ReadOnlySpan<byte> payload, out string? value)
+        => _payloadAccessor.TryReadString(payload, out value);
+
+    public virtual bool TryReadPayloadStringUtf8(ReadOnlySpan<byte> payload, out ReadOnlySpan<byte> value)
+        => _payloadAccessor.TryReadStringUtf8(payload, out value);
+
     protected abstract object? ReadValueCore(TDocument document);
 
     private static string NormalizeFieldPath(string fieldPath, out bool targetsArrayElements)
@@ -208,7 +221,7 @@ public abstract class CollectionField<TDocument>
 /// <summary>
 /// Strongly typed collection field descriptor for generated collection APIs.
 /// </summary>
-public sealed class CollectionField<TDocument, TField> : CollectionField<TDocument>
+public class CollectionField<TDocument, TField> : CollectionField<TDocument>
 {
     private readonly Func<TDocument, object?> _accessor;
 
