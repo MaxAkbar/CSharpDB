@@ -149,6 +149,30 @@ await using var result = await db.ExecuteAsync("""
     """);
 ```
 
+### VS Code Host Project Workflow
+
+For a runnable C# host project, open
+`samples/trusted-csharp-host` in VS Code. The sample includes `.vscode` launch
+and task files so a developer can press `F5`, set breakpoints inside the
+registered callbacks, and watch SQL and Admin Forms automation invoke ordinary
+C# code.
+
+```powershell
+dotnet run --project samples\trusted-csharp-host\TrustedCSharpHostSample.csproj
+```
+
+The sample demonstrates:
+
+- `DatabaseOptions.ConfigureFunctions(...)` for a trusted scalar function.
+- SQL calling the function by name.
+- `DbCommandRegistry` for a trusted host command.
+- An Admin Forms `DbActionSequence` that sets a field and then runs the
+  command.
+
+The VS Code story stays host-owned: VS Code is the editor/debugger for the C#
+host project, while database metadata stores names and declarative action data
+only.
+
 ---
 
 ## Registration Rules

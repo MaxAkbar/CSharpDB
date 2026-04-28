@@ -21,6 +21,7 @@
     <Project Path="samples/collection-indexing/CollectionIndexingSample.csproj" />
     <Project Path="samples/csv-bulk-import/CsvBulkImportSample.csproj" />
     <Project Path="samples/efcore-provider/EfCoreProviderSample.csproj" />
+    <Project Path="samples/trusted-csharp-host/TrustedCSharpHostSample.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/CSharpDB/CSharpDB.csproj" />

@@ -80,6 +80,16 @@ calculated text, and pipeline filter/derive expressions.
   errors are appended to the failed run summary instead of recursively
   dispatching more failure hooks.
 
+### Developer Experience
+
+- Added `samples/trusted-csharp-host`, a VS Code-ready C# host project for
+  writing and debugging trusted C# callbacks in ordinary application code.
+- The sample registers a trusted scalar function, calls it from SQL, registers
+  a trusted command, and runs an Admin Forms action sequence that sets a field
+  before invoking that command.
+- The sample includes local `.vscode` launch/tasks files so developers can open
+  the sample folder, press `F5`, and set breakpoints inside callback code.
+
 ### Behavior And Safety
 
 - Function names are case-insensitive SQL identifiers, and registration rejects
