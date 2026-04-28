@@ -42,7 +42,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **User-defined functions and commands** | Trusted in-process C# scalar functions are implemented for SQL, triggers/procedures, direct clients, Admin Forms/Reports, and pipelines; trusted commands now back the first Admin Forms event bindings; broader built-in scalar functions, native plugin extensions, aggregate/table-valued UDFs, macro actions, control events, and sandboxed UDFs remain future work | Partial |
+| **User-defined functions and commands** | Trusted in-process C# scalar functions are implemented for SQL, triggers/procedures, direct clients, Admin Forms/Reports, and pipelines; trusted commands now back Admin Forms event bindings and command-button clicks; broader built-in scalar functions, native plugin extensions, aggregate/table-valued UDFs, macro action scripts, broader control events, and sandboxed UDFs remain future work | Partial |
 | **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, including correlated evaluation in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions | Done |
 | **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results, including use in top-level queries, views, and CTE query bodies | Done |
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
@@ -56,7 +56,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
 | **Connection pooling** | Pool underlying direct embedded sessions behind `CSharpDbConnection` to amortize open/close cost | Done |
 | **Admin dashboard improvements** | Richer SQL editor UX, query history, deeper diagnostics, and integrated Forms/Reports tooling beyond the core schema/procedure/storage surface | Done |
-| **Admin Forms Access parity** | Close the highest-impact Access-style form gaps: runtime responsive layouts, full inferred validation enforcement, richer record-source/filter/sort models, Layout View, form modes, command/action events, and broader control coverage | Planned |
+| **Admin Forms Access parity** | Close the highest-impact Access-style form gaps: runtime responsive layouts, full inferred validation enforcement, richer record-source/filter/sort models, Layout View, form modes, broader action/event coverage, and broader control coverage; trusted command-backed form events and command buttons are now started | Partial |
 | **Admin Reports Access parity** | Close the highest-impact Access-style report gaps: bounded saved-query previews, full report rendering/export, parameter/filter prompts, richer grouping/totals options, Layout View, conditional formatting, subreports, and broader report controls | Planned |
 | **Visual query designer** | Classic Admin query builder with source canvas, join editing, design grid, SQL preview, and saved designer layouts | Done |
 | **ETL pipelines** | Built-in package-driven pipeline runtime with validation, dry-run, execute/resume flows, API/CLI/client coverage, run history, and Admin visual designer support | Done |
@@ -96,7 +96,7 @@ These are known simplifications in the current implementation:
 
 | Area | Limitation |
 |------|-----------|
-| **Functions and automation** | Trusted in-process C# scalar functions are supported when registered by the host, and Admin Forms can invoke trusted host commands from initial form-level events; broader built-in scalar functions, aggregate/table-valued UDFs, stored C# modules, remote delegate serialization, control-level form events, macro actions, and sandboxed UDFs are not implemented |
+| **Functions and automation** | Trusted in-process C# scalar functions are supported when registered by the host, and Admin Forms can invoke trusted host commands from form-level events and command buttons; broader built-in scalar functions, aggregate/table-valued UDFs, stored C# modules, remote delegate serialization, broader control-level form events, macro action scripts, and sandboxed UDFs are not implemented |
 | **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions; correlated subqueries are not yet supported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, or aggregate projections |
 | **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |
@@ -106,7 +106,7 @@ These are known simplifications in the current implementation:
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
 | **Networking** | `CSharpDB.Daemon` now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today |
 | **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
-| **Admin Forms** | The Forms designer/runtime supports the core generated-form and data-entry path, but still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, command/action events, advanced filtering/sorting, and broader controls |
+| **Admin Forms** | The Forms designer/runtime supports the core generated-form and data-entry path plus initial trusted command-backed automation, but still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, a broader action model and control events, advanced filtering/sorting, and broader controls |
 | **Admin Reports** | The Reports designer/runtime supports the core banded preview path, but still needs Access-parity work for bounded saved-query previews, full report output/export, parameters, richer grouping and totals semantics, conditional formatting, subreports, and broader controls |
 | **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned |
 | **Concurrency** | The physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains still depend on conflict shape and whether shared auto-commit `INSERT` is left on the default serialized path |

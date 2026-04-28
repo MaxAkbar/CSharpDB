@@ -15,6 +15,7 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - record paging, search, create, update, and delete services
 - validation rule inference and validation override support
 - child table/tab support for related records
+- trusted command-backed form events and command buttons
 
 ## Main Components
 
@@ -39,6 +40,15 @@ using CSharpDB.Admin.Forms.Services;
 builder.Services.AddCSharpDbAdminForms();
 ```
 
+Trusted command callbacks can be registered with the overload:
+
+```csharp
+builder.Services.AddCSharpDbAdminForms(commands =>
+{
+    commands.AddCommand("AuditFormOpen", context => DbCommandResult.Success());
+});
+```
+
 The extension registers:
 
 - `IFormRepository`
@@ -46,6 +56,8 @@ The extension registers:
 - `IFormRecordService`
 - `IFormGenerator`
 - `IValidationInferenceService`
+- `IFormEventDispatcher`
+- `DbCommandRegistry`
 
 ## Core Contracts
 
@@ -70,7 +82,8 @@ public sealed record FormDefinition(
     string SourceSchemaSignature,
     LayoutDefinition Layout,
     IReadOnlyList<ControlDefinition> Controls,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<FormEventBinding>? EventBindings = null);
 ```
 
 Controls are stored as `ControlDefinition` records with geometry, binding,

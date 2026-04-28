@@ -86,6 +86,15 @@
     </div>
 
     <div class="toolbox-group">
+        <div class="toolbox-group-label">Automation</div>
+        <button class="@ToolClass(ToolCommandButton)"
+                @onclick="@(() => SetTool(ToolCommandButton))"
+                title="Runs a trusted command">
+            <span class="toolbox-icon">&#x25B6;</span> Button
+        </button>
+    </div>
+
+    <div class="toolbox-group">
         <div class="toolbox-group-label">Clipboard</div>
         <button class="toolbox-item" @onclick="State.CopySelected"
                 disabled="@(State.SelectedIds.Count == 0)" title="Copy (Ctrl+C)">
@@ -159,6 +168,7 @@
     private const string ToolChildTabs = "childtabs";
     private const string ToolLookup = "lookup";
     private const string ToolComputed = "computed";
+    private const string ToolCommandButton = "commandButton";
 
     protected override void OnInitialized() => State.OnChange += OnStateChanged;
     public void Dispose() => State.OnChange -= OnStateChanged;

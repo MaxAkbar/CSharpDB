@@ -224,6 +224,27 @@
     pointer-events: none;
 }
 
+.preview-command-button,
+.fr-command-button {
+    width: 100%;
+    height: 100%;
+    border: 1px solid #c0c0c0;
+    border-radius: 4px;
+    background: #fff;
+    color: #1a1a1a;
+    font: inherit;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.preview-command-button:disabled,
+.fr-command-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 /* ===== Resize Handles ===== */
 .resize-handle {
     position: absolute;
@@ -296,7 +317,8 @@
 
 .pi-field input[type="text"],
 .pi-field input[type="number"],
-.pi-field select {
+.pi-field select,
+.pi-field textarea {
     width: 100%;
     padding: 4px 6px;
     border: 1px solid #d0d0d0;
@@ -322,7 +344,8 @@
 
 .pi-field input[type="text"]:focus,
 .pi-field input[type="number"]:focus,
-.pi-field select:focus {
+.pi-field select:focus,
+.pi-field textarea:focus {
     outline: none;
     border-color: #1a73e8;
     box-shadow: 0 0 0 2px rgba(26,115,232,0.15);
@@ -330,6 +353,20 @@
 
 .pi-field input[type="checkbox"] {
     margin: 4px 0;
+}
+
+.pi-textarea,
+.feb-arguments {
+    min-height: 68px;
+    resize: vertical;
+    font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.pi-field-error,
+.feb-error {
+    color: #d32f2f;
+    font-size: 11px;
+    margin-top: 4px;
 }
 
 .pi-readonly {
@@ -1375,6 +1412,87 @@
     background: #d2e3fc;
 }
 
+/* ===== Form Event Binding Editor ===== */
+.feb-container {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.feb-empty {
+    color: #999;
+    font-size: 11px;
+    font-style: italic;
+}
+
+.feb-entry {
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 8px;
+    background: #fafafa;
+}
+
+.feb-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.feb-field {
+    flex: 1;
+    margin-bottom: 6px;
+}
+
+.feb-field label {
+    display: block;
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 2px;
+}
+
+.feb-field input[type="text"],
+.feb-field select,
+.feb-field textarea {
+    width: 100%;
+    padding: 3px 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    font-size: 11px;
+    background: #fff;
+    box-sizing: border-box;
+}
+
+.feb-btn {
+    padding: 2px 8px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 11px;
+    color: #333;
+}
+
+.feb-btn:hover {
+    background: #e8e8e8;
+}
+
+.feb-btn-remove {
+    flex: 0 0 auto;
+    margin-top: 18px;
+}
+
+.feb-btn-add {
+    align-self: flex-start;
+    background: #e8f0fe;
+    border-color: #c4d9f5;
+    color: #1a73e8;
+    font-weight: 500;
+}
+
+.feb-btn-add:hover {
+    background: #d2e3fc;
+}
+
 /* ===== Layers Panel ===== */
 .layers-panel {
     flex: 1;
@@ -1627,12 +1745,19 @@
 .pi-field input[type="text"],
 .pi-field input[type="number"],
 .pi-field select,
+.pi-field textarea,
 .de-search-select,
 .de-search-input,
 .fr-input,
+.fr-command-button,
+.preview-command-button,
 .cdg-cell-input,
 .tce-field input[type="text"],
-.tce-field select {
+.tce-field select,
+.feb-field input[type="text"],
+.feb-field select,
+.feb-field textarea,
+.feb-btn {
     background: var(--fd-bg-elevated);
     color: var(--fd-text);
     border-color: var(--fd-border);
@@ -1643,13 +1768,15 @@
 .pi-btn:hover,
 .cdg-btn:hover,
 .tce-btn:hover,
+.feb-btn:hover,
 .breakpoint-switcher button:hover,
 .page-btn:hover,
 .toolbox-item:hover,
 .layer-row:hover,
 .de-record-row:hover,
 .ctp-tab:hover,
-.cdg-cell:hover {
+.cdg-cell:hover,
+.fr-command-button:hover {
     background: var(--fd-bg-hover);
     color: var(--fd-text);
 }
@@ -1667,12 +1794,18 @@
 .pi-field input[type="text"],
 .pi-field input[type="number"],
 .pi-field select,
+.pi-field textarea,
 .de-search-select,
 .de-search-input,
 .fr-input,
+.fr-command-button,
+.preview-command-button,
 .cdg-cell-input,
 .tce-field input[type="text"],
-.tce-field select {
+.tce-field select,
+.feb-field input[type="text"],
+.feb-field select,
+.feb-field textarea {
     outline: none;
     box-shadow: none;
 }
@@ -1683,12 +1816,17 @@
 .pi-field input[type="text"]:focus,
 .pi-field input[type="number"]:focus,
 .pi-field select:focus,
+.pi-field textarea:focus,
 .de-search-select:focus,
 .de-search-input:focus,
 .fr-input:focus,
+.fr-command-button:focus,
 .cdg-cell-input:focus,
 .tce-field input[type="text"]:focus,
-.tce-field select:focus {
+.tce-field select:focus,
+.feb-field input[type="text"]:focus,
+.feb-field select:focus,
+.feb-field textarea:focus {
     border-color: var(--fd-accent);
     box-shadow: 0 0 0 2px var(--fd-accent-soft);
 }
@@ -1780,6 +1918,8 @@
 
 .preview-input,
 .fr-input,
+.fr-command-button,
+.preview-command-button,
 .cdg-cell-input,
 .designer-cell-input,
 .designer-cell-select {
@@ -1791,6 +1931,8 @@
 .preview-input::placeholder,
 .de-toolbar-input::placeholder,
 .de-search-input::placeholder,
+.pi-textarea::placeholder,
+.feb-arguments::placeholder,
 .designer-cell-input::placeholder,
 .toolbar-title-input::placeholder {
     color: var(--fd-text-muted);
@@ -1827,6 +1969,7 @@
 .preview-childtabs-tab,
 .pi-field label,
 .tce-field label,
+.feb-field label,
 .property-label,
 .cdg-table thead th,
 .table-designer-grid thead th {
@@ -1887,6 +2030,7 @@
 .toolbox-group,
 .pi-section,
 .tce-tab-entry,
+.feb-entry,
 .table-designer-grid tbody tr,
 .table-designer-grid td {
     border-color: var(--fd-border-light);
@@ -1913,8 +2057,10 @@
 .cdg-cell,
 .de-record-summary,
 .tce-btn,
+.feb-btn,
 .pi-field input[type="checkbox"],
-.tce-field input[type="checkbox"] {
+.tce-field input[type="checkbox"],
+.feb-field input[type="checkbox"] {
     color: var(--fd-text);
 }
 

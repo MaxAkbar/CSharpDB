@@ -46,6 +46,11 @@ calculated text, and pipeline filter/derive expressions.
   event name.
 - `AddCSharpDbAdminForms(...)` now has a command-registration overload for
   trusted host applications.
+- The Admin Forms designer preserves and edits form-level event bindings
+  instead of dropping automation metadata during save.
+- Added a command button control that invokes a trusted host command on click,
+  passing current record fields, optional configured arguments, and form
+  metadata to the command callback.
 
 ### Behavior And Safety
 
@@ -76,6 +81,8 @@ calculated text, and pipeline filter/derive expressions.
 - Added command-registry, form-event dispatcher, event JSON round-trip, and
   Forms data-entry tests for create/update/delete event dispatch and
   before-event cancellation.
+- Added designer-state and command-button tests covering event binding
+  preservation and registered command invocation from rendered forms.
 - Same-machine affected benchmark comparison against the pre-feature HEAD
   baseline showed no material regression in the main write/query guardrails:
 

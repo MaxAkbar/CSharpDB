@@ -330,6 +330,30 @@ Supported form-level events in this slice are:
 
 Command context arguments include the current record fields converted to `DbValue`. Static arguments configured on the event binding override same-named record fields. Metadata includes `surface`, `formId`, `formName`, `tableName`, and `event`.
 
+The Admin Forms designer preserves form event bindings and exposes them in the property inspector when no control is selected. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer.
+
+Admin Forms also include a command button control. Command buttons store a display label, a command name, and optional JSON arguments in the form definition. At runtime, clicking the button invokes the registered host command with the current record fields plus the configured arguments.
+
+```csharp
+var button = new ControlDefinition(
+    "btn-ship",
+    "commandButton",
+    new Rect(24, 320, 160, 34),
+    Binding: null,
+    Props: new PropertyBag(new Dictionary<string, object?>
+    {
+        ["text"] = "Ship Order",
+        ["commandName"] = "ShipOrder",
+        ["commandArguments"] = new Dictionary<string, object?>
+        {
+            ["source"] = "form-button",
+        },
+    }),
+    ValidationOverride: null);
+```
+
+Command button metadata includes the same form metadata as lifecycle events, plus `event = "Click"`, `controlId`, and `controlType`.
+
 ---
 
 ## Admin Reports
@@ -477,5 +501,5 @@ V1 does not support:
 - Passing a database handle into the function context.
 - Sending delegates over HTTP, gRPC, or pipeline package files.
 - Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.
-- Control-level form events such as button `OnClick`.
+- Broader control-level form events beyond command-button clicks.
 - Stored macro/action scripts.

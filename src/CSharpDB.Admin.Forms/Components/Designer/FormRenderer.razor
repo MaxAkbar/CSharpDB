@@ -1,4 +1,6 @@
 @using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Primitives
+@inject DbCommandRegistry Commands
 
 <div class="form-renderer" style="position: relative; min-height: 500px;">
     @foreach (var control in Form.Controls)
@@ -122,6 +124,16 @@
                            readonly
                            tabindex="@tabIdx" />
                     break;
+                case "commandButton":
+                    var isExecuting = _executingCommandButtons.Contains(c.ControlId);
+                    <button type="button"
+                            class="fr-command-button"
+                            tabindex="@tabIdx"
+                            disabled="@isExecuting"
+                            @onclick="@(() => InvokeCommandButtonAsync(c))">
+                        @GetProp(c, "text", "Button")
+                    </button>
+                    break;
                 case "datagrid":
                     var dgChildTable = GetProp(c, "childTable", "");
                     var dgFkField = GetProp(c, "foreignKeyField", "");
@@ -191,6 +203,9 @@
     [Parameter] public Dictionary<string, string>? ValidationErrors { get; set; }
     [Parameter] public IReadOnlyDictionary<string, FormTableDefinition>? ChildFormTableDefinitions { get; set; }
     [Parameter] public EventCallback OnChildRowsChanged { get; set; }
+    [Parameter] public EventCallback<string> OnCommandError { get; set; }
+
+    private readonly HashSet<string> _executingCommandButtons = [];
 
     private string GetFieldValue(string? fieldName)
     {
@@ -241,6 +256,55 @@
         Record[fieldName] = value;
         OnFieldChanged.InvokeAsync(fieldName);
     }
+
+    private async Task InvokeCommandButtonAsync(ControlDefinition control)
+    {
+        string commandName = GetProp(control, "commandName", string.Empty);
+        if (string.IsNullOrWhiteSpace(commandName))
+        {
+            await ReportCommandErrorAsync("Command button has no command name.");
+            return;
+        }
+
+        if (!Commands.TryGetCommand(commandName, out DbCommandDefinition definition))
+        {
+            await ReportCommandErrorAsync($"Unknown form command '{commandName}'.");
+            return;
+        }
+
+        _executingCommandButtons.Add(control.ControlId);
+        try
+        {
+            control.Props.Values.TryGetValue("commandArguments", out object? configuredArguments);
+            Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(
+                Record,
+                FormCommandInvocation.ReadArgumentsProperty(configuredArguments));
+            Dictionary<string, string> metadata = FormCommandInvocation.BuildMetadata(Form);
+            metadata["event"] = "Click";
+            metadata["controlId"] = control.ControlId;
+            metadata["controlType"] = control.ControlType;
+
+            DbCommandResult result = await definition.InvokeAsync(arguments, metadata);
+            if (!result.Succeeded)
+            {
+                string message = string.IsNullOrWhiteSpace(result.Message)
+                    ? $"Form command '{definition.Name}' failed."
+                    : result.Message;
+                await ReportCommandErrorAsync(message);
+            }
+        }
+        catch (Exception ex)
+        {
+            await ReportCommandErrorAsync($"Form command '{definition.Name}' failed: {ex.Message}");
+        }
+        finally
+        {
+            _executingCommandButtons.Remove(control.ControlId);
+        }
+    }
+
+    private Task ReportCommandErrorAsync(string message)
+        => OnCommandError.HasDelegate ? OnCommandError.InvokeAsync(message) : Task.CompletedTask;
 
     private FormFieldDefinition? GetFieldDefinition(string? fieldName)
         => fieldName is null

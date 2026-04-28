@@ -1,7 +1,11 @@
+@using System.Text.Json
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Admin.Forms.Components.Designer
 @using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Admin.Forms.Serialization
+@using CSharpDB.Primitives
 @inject ISchemaProvider SchemaProvider
+@inject DbCommandRegistry CommandRegistry
 @implements IDisposable
 
 <div class="property-inspector">
@@ -16,8 +20,13 @@
             }
             else
             {
-                <p>Select a control to edit its properties</p>
+                <p>Form properties</p>
             }
+        </div>
+        <div class="pi-section">
+            <div class="pi-section-label">Events</div>
+            <FormEventBindingsEditor EventBindings="State.EventBindings"
+                                     EventBindingsChanged="OnEventBindingsChanged" />
         </div>
     }
     else
@@ -37,6 +46,7 @@
                     <option value="select">Select</option>
                     <option value="lookup">Lookup</option>
                     <option value="computed">Computed</option>
+                    <option value="commandButton">Command Button</option>
                     <option value="datagrid">DataGrid</option>
                     <option value="childtabs">Child Tabs</option>
                 </select>
@@ -220,6 +230,57 @@
             </div>
         }
 
+        @if (_selected.ControlType == "commandButton")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Command Button</div>
+                <div class="pi-field">
+                    <label>Text</label>
+                    <input type="text" value="@GetProp(PropText, string.Empty)"
+                           @onchange="@(e => OnPropChanged(PropText, e.Value))" />
+                </div>
+                <div class="pi-field">
+                    <label>Command</label>
+                    @if (RegisteredCommands.Count > 0)
+                    {
+                        <select value="@GetProp(PropCommandName, string.Empty)" @onchange="@(e => OnPropChanged(PropCommandName, e.Value?.ToString() ?? string.Empty))">
+                            <option value="">-- Select command --</option>
+                            @if (ShouldRenderMissingCommand(GetProp(PropCommandName, string.Empty)))
+                            {
+                                var missingCommand = GetProp(PropCommandName, string.Empty);
+                                <option value="@missingCommand">@($"{missingCommand} (missing)")</option>
+                            }
+                            @foreach (DbCommandDefinition command in RegisteredCommands)
+                            {
+                                <option value="@command.Name">@command.Name</option>
+                            }
+                        </select>
+                    }
+                    else
+                    {
+                        <input type="text" value="@GetProp(PropCommandName, string.Empty)"
+                               @onchange="@(e => OnPropChanged(PropCommandName, e.Value?.ToString() ?? string.Empty))" />
+                    }
+                </div>
+                <div class="pi-field">
+                    <label>Arguments</label>
+                    <textarea class="pi-textarea"
+                              value="@GetCommandArgumentsText()"
+                              placeholder="{&quot;reason&quot;:&quot;manual&quot;}"
+                              @onchange="@(e => OnCommandArgumentsChanged(e.Value?.ToString() ?? string.Empty))"></textarea>
+                    @if (!string.IsNullOrWhiteSpace(_commandArgumentError))
+                    {
+                        <div class="pi-field-error">@_commandArgumentError</div>
+                    }
+                </div>
+                <div class="pi-field">
+                    <label>Tab Order</label>
+                    <input type="number" value="@GetProp(PropTabIndex, string.Empty)" min="0"
+                           @onchange="@(e => OnPropChanged(PropTabIndex, ParseLong(e.Value)))" />
+                </div>
+            </div>
+        }
+
         @if (_selected.ControlType == "datagrid")
         {
             <div class="pi-section">
@@ -386,6 +447,8 @@
     private const string PropValueField = "valueField";
     private const string PropFormula = "formula";
     private const string PropFormat = "format";
+    private const string PropCommandName = "commandName";
+    private const string PropCommandArguments = "commandArguments";
 
     private enum RectPart { X, Y, W, H }
 
@@ -400,6 +463,11 @@
 
     // ChildTabs configuration state
     private List<ChildTabConfig> _currentTabs = [];
+    private string? _loadedCommandArgumentControlId;
+    private string _commandArgumentText = string.Empty;
+    private string? _commandArgumentError;
+
+    private IReadOnlyList<DbCommandDefinition> RegisteredCommands => CommandRegistry.Commands.ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -462,6 +530,13 @@
 
         if (_selected?.ControlType != "lookup")
             _lookupTableDef = null;
+
+        if (_selected?.ControlType != "commandButton")
+        {
+            _loadedCommandArgumentControlId = null;
+            _commandArgumentText = string.Empty;
+            _commandArgumentError = null;
+        }
 
         await InvokeAsync(StateHasChanged);
     }
@@ -680,6 +755,60 @@
     {
         _currentTabs = tabs;
         OnPropChanged("tabs", ChildTabConfigMapper.ToPropertyBag(tabs));
+    }
+
+    private string GetCommandArgumentsText()
+    {
+        if (_selected is null)
+            return string.Empty;
+
+        if (string.Equals(_loadedCommandArgumentControlId, _selected.ControlId, StringComparison.Ordinal))
+            return _commandArgumentText;
+
+        _loadedCommandArgumentControlId = _selected.ControlId;
+        _commandArgumentError = null;
+        _commandArgumentText = _selected.Props.Values.TryGetValue(PropCommandArguments, out object? value)
+            ? FormatArguments(FormCommandInvocation.ReadArgumentsProperty(value))
+            : string.Empty;
+        return _commandArgumentText;
+    }
+
+    private void OnCommandArgumentsChanged(string text)
+    {
+        _commandArgumentText = text;
+        _commandArgumentError = null;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            OnPropChanged(PropCommandArguments, null);
+            return;
+        }
+
+        try
+        {
+            IReadOnlyDictionary<string, object?>? arguments =
+                JsonSerializer.Deserialize<IReadOnlyDictionary<string, object?>>(text, JsonDefaults.Options);
+            OnPropChanged(PropCommandArguments, arguments);
+        }
+        catch (JsonException ex)
+        {
+            _commandArgumentError = $"Invalid arguments JSON: {ex.Message}";
+        }
+    }
+
+    private bool ShouldRenderMissingCommand(string commandName)
+        => !string.IsNullOrWhiteSpace(commandName)
+            && RegisteredCommands.All(command => !string.Equals(command.Name, commandName, StringComparison.OrdinalIgnoreCase));
+
+    private static string FormatArguments(IReadOnlyDictionary<string, object?>? arguments)
+        => arguments is null || arguments.Count == 0
+            ? string.Empty
+            : JsonSerializer.Serialize(arguments, new JsonSerializerOptions(JsonDefaults.Options) { WriteIndented = true });
+
+    private Task OnEventBindingsChanged(IReadOnlyList<FormEventBinding> bindings)
+    {
+        State.UpdateEventBindings(bindings);
+        return Task.CompletedTask;
     }
 
     private async Task<FormTableDefinition?> LoadTableDefinitionAsync(string? tableName)

@@ -22,6 +22,9 @@ The current forms surface already includes:
 - schema-change warnings
 - designer undo/redo, copy/paste, duplicate, layers, alignment, tab order, and
   mobile/tablet/desktop breakpoint editing
+- trusted host command registration for form lifecycle events
+- designer editing for form-level event bindings
+- command button controls that invoke trusted host commands
 
 ## Added Review Findings
 
@@ -96,9 +99,9 @@ Expected fix:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Command button control | Planned | Add buttons that can run form actions. |
+| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands; built-in form actions remain future work. |
 | Action model | Planned | Support actions such as open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, and show message. |
-| Event hooks | Planned | Add form/control events such as on load, before save, after save, before field change, after field change, and button click. |
+| Event hooks | Partial | Form lifecycle events and command-button clicks can call trusted commands; field/control event coverage remains future work. |
 | Conditional UI rules | Planned | Add visible/enabled/read-only expressions for controls. |
 
 ### Phase 5: Broader Control and Property Coverage

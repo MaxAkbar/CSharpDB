@@ -5,6 +5,7 @@ namespace CSharpDB.Admin.Forms.Components.Designer;
 public class DesignerState
 {
     private readonly List<ControlDefinition> _controls = [];
+    private readonly List<FormEventBinding> _eventBindings = [];
     private readonly Stack<List<ControlDefinition>> _undoStack = new();
     private readonly Stack<List<ControlDefinition>> _redoStack = new();
 
@@ -16,6 +17,7 @@ public class DesignerState
     public LayoutDefinition Layout { get; private set; } = new("absolute", 8, true, [new Breakpoint("md", 0, null)]);
 
     public IReadOnlyList<ControlDefinition> Controls => _controls;
+    public IReadOnlyList<FormEventBinding> EventBindings => _eventBindings;
     public HashSet<string> SelectedIds { get; } = [];
 
     // Active tool from toolbox (null = select mode)
@@ -58,6 +60,8 @@ public class DesignerState
     {
         _controls.Clear();
         _controls.AddRange(form.Controls);
+        _eventBindings.Clear();
+        _eventBindings.AddRange(form.EventBindings ?? []);
         _undoStack.Clear();
         _redoStack.Clear();
         SelectedIds.Clear();
@@ -82,7 +86,14 @@ public class DesignerState
     {
         return new FormDefinition(
             FormId, FormName, TableName, DefinitionVersion, SourceSchemaSignature,
-            Layout, _controls.ToList());
+            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList());
+    }
+
+    public void UpdateEventBindings(IReadOnlyList<FormEventBinding> bindings)
+    {
+        _eventBindings.Clear();
+        _eventBindings.AddRange(bindings);
+        NotifyChanged();
     }
 
     public void PushUndo()

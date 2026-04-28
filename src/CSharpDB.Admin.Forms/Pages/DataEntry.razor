@@ -90,6 +90,7 @@
                           Choices="_choices"
                           ValidationErrors="_validationErrors"
                           ChildFormTableDefinitions="_childTableDefs"
+                          OnCommandError="OnCommandError"
                           OnChildRowsChanged="OnChildRowsChanged" />
         </div>
     }
@@ -584,6 +585,11 @@
     {
         _undoStack.Push(CloneRecord(_currentRecord));
         _redoStack.Clear();
+    }
+
+    private void OnCommandError(string message)
+    {
+        _error = message;
     }
 
     private async Task OnFieldChanged(string fieldName)

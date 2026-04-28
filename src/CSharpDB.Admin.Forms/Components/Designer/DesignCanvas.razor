@@ -32,7 +32,7 @@
                  @onpointerdown="e => OnItemPointerDown(e, c)"
                  @onpointerdown:stopPropagation="true">
 
-                @if (State.ShowTabOrder && c.Binding is not null)
+                @if (State.ShowTabOrder && IsTabOrderControl(c))
                 {
                     var tabIdx = GetTabIndex(c);
                     @if (tabIdx > 0)
@@ -78,6 +78,9 @@
                             <input type="text" class="preview-input preview-computed"
                                    placeholder="@(string.IsNullOrEmpty(formula) ? "Computed" : formula)"
                                    disabled />
+                            break;
+                        case "commandButton":
+                            <button class="preview-command-button" disabled>@GetProp(c, "text", "Button")</button>
                             break;
                         case "textarea":
                             <textarea class="preview-input" style="resize: none;" placeholder="@GetProp(c, "placeholder", "Text area")" disabled></textarea>
@@ -252,6 +255,7 @@
             "radio" => (200.0, 80.0),
             "datagrid" => (560.0, 200.0),
             "childtabs" => (600.0, 280.0),
+            "commandButton" => (160.0, 34.0),
             _ => (320.0, 34.0)
         };
 
@@ -287,12 +291,17 @@
             props["formula"] = "";
             props["format"] = "";
         }
+        if (controlType == "commandButton")
+        {
+            props["text"] = "Button";
+            props["commandName"] = "";
+        }
 
         var control = new ControlDefinition(
             ControlId: Guid.NewGuid().ToString("N"),
             ControlType: controlType,
             Rect: new Rect(x, y, width, height),
-            Binding: (controlType is "label" or "datagrid" or "childtabs") ? null : new BindingDefinition("", "TwoWay"),
+            Binding: (controlType is "label" or "datagrid" or "childtabs" or "commandButton") ? null : new BindingDefinition("", "TwoWay"),
             Props: new PropertyBag(props),
             ValidationOverride: null);
 
@@ -411,6 +420,9 @@
         }
         return 0;
     }
+
+    private static bool IsTabOrderControl(ControlDefinition c)
+        => c.ControlType is not ("label" or "datagrid" or "childtabs");
 
     private void ApplyResize(PointerEventArgs e)
     {
