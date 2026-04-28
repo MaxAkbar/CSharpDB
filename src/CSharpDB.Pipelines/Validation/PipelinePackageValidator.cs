@@ -179,6 +179,10 @@ public static class PipelinePackageValidator
                     {
                         errors.Add(Error("pipeline.transform.filter.expression.required", $"{path}.filterExpression", "Filter transforms require an expression."));
                     }
+                    else
+                    {
+                        ValidateFunctionSyntax(transform.FilterExpression, $"{path}.filterExpression", errors);
+                    }
                     break;
 
                 case PipelineTransformKind.Derive:
@@ -195,6 +199,10 @@ public static class PipelinePackageValidator
                         {
                             errors.Add(Error("pipeline.transform.derive.column.invalid", $"{path}.derivedColumns[{derivedIndex}]", "Derived columns require both a name and an expression."));
                         }
+                        else
+                        {
+                            ValidateFunctionSyntax(derived.Expression, $"{path}.derivedColumns[{derivedIndex}].expression", errors);
+                        }
                     }
                     break;
 
@@ -207,6 +215,121 @@ public static class PipelinePackageValidator
             }
         }
     }
+
+    private static void ValidateFunctionSyntax(string expression, string path, List<PipelineValidationIssue> errors)
+    {
+        bool inString = false;
+        for (int i = 0; i < expression.Length; i++)
+        {
+            if (expression[i] == '\'')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+                continue;
+
+            if (!IsIdentifierStart(expression[i]))
+                continue;
+
+            int nameStart = i;
+            i++;
+            while (i < expression.Length && IsIdentifierPart(expression[i]))
+                i++;
+
+            int cursor = i;
+            while (cursor < expression.Length && char.IsWhiteSpace(expression[cursor]))
+                cursor++;
+
+            if (cursor >= expression.Length || expression[cursor] != '(')
+                continue;
+
+            if (!TryValidateFunctionArguments(expression, cursor, out int closeParen))
+            {
+                errors.Add(Error(
+                    "pipeline.expression.function.syntax",
+                    path,
+                    $"Function call '{expression[nameStart..Math.Min(expression.Length, cursor + 1)]}...' is malformed."));
+                return;
+            }
+
+            i = closeParen;
+        }
+    }
+
+    private static bool TryValidateFunctionArguments(string expression, int openParen, out int closeParen)
+    {
+        closeParen = -1;
+        int depth = 0;
+        bool inString = false;
+        bool expectingArgument = true;
+        bool sawArgument = false;
+
+        for (int i = openParen; i < expression.Length; i++)
+        {
+            char ch = expression[i];
+            if (ch == '\'')
+            {
+                inString = !inString;
+                expectingArgument = false;
+                sawArgument = true;
+                continue;
+            }
+
+            if (inString)
+                continue;
+
+            if (ch == '(')
+            {
+                depth++;
+                if (depth > 1)
+                {
+                    expectingArgument = false;
+                    sawArgument = true;
+                }
+                continue;
+            }
+
+            if (ch == ')')
+            {
+                depth--;
+                if (depth < 0)
+                    return false;
+
+                if (depth == 0)
+                {
+                    closeParen = i;
+                    return !inString && (!expectingArgument || !sawArgument);
+                }
+
+                continue;
+            }
+
+            if (ch == ',' && depth == 1)
+            {
+                if (expectingArgument)
+                    return false;
+
+                expectingArgument = true;
+                continue;
+            }
+
+            if (!char.IsWhiteSpace(ch))
+            {
+                expectingArgument = false;
+                sawArgument = true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsIdentifierStart(char value)
+        => char.IsLetter(value) || value == '_';
+
+    private static bool IsIdentifierPart(char value)
+        => char.IsLetterOrDigit(value) || value == '_';
 
     private static PipelineValidationIssue Error(string code, string path, string message) => new()
     {

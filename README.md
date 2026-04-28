@@ -210,6 +210,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [Architecture Guide](https://csharpdb.com/architecture.html) | Engine design deep dive |
 | [Tools & Ecosystem](https://csharpdb.com/docs/ecosystem.html) | APIs, hosts, designers, and integrations |
 | [EF Core Provider](https://csharpdb.com/docs/entity-framework-core.html) | Embedded EF Core 10 provider guide |
+| [Trusted C# Scalar Functions](docs/trusted-csharp-functions/README.md) | Register in-process C# functions for SQL, forms, reports, and pipelines |
 | [Admin UI Guide](https://csharpdb.com/docs/admin-ui.html) | Querying, schema, pipelines, forms, reports, and storage |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API and transports |
 | [Pipelines](https://csharpdb.com/docs/pipelines.html) | ETL package model and visual designer |

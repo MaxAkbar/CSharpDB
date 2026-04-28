@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Forms.Evaluation;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Tests.Evaluation;
 
@@ -76,6 +77,25 @@ public class FormulaEvaluatorTests
             _ => null
         });
         Assert.Equal(50.0, result);
+    }
+
+    [Fact]
+    public void RegisteredScalarFunction()
+    {
+        var registry = DbFunctionRegistry.Create(functions =>
+            functions.AddScalar(
+                "Markup",
+                2,
+                new DbScalarFunctionOptions(DbType.Real, IsDeterministic: true, NullPropagating: true),
+                static (_, args) => DbValue.FromReal(args[0].AsReal * args[1].AsReal)));
+
+        var result = FormulaEvaluator.Evaluate("=Markup(Price, 1.25)", field => field switch
+        {
+            "Price" => 10.0,
+            _ => null,
+        }, registry);
+
+        Assert.Equal(12.5, result);
     }
 
     [Fact]

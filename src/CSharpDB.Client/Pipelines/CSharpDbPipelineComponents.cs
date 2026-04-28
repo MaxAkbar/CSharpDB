@@ -4,17 +4,19 @@ using CSharpDB.Pipelines.Runtime;
 using CSharpDB.Pipelines.Runtime.BuiltIns;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using DbFunctionRegistry = CSharpDB.Primitives.DbFunctionRegistry;
 
 namespace CSharpDB.Client.Pipelines;
 
 public sealed class CSharpDbPipelineComponentFactory : IPipelineComponentFactory
 {
     private readonly ICSharpDbClient _client;
-    private readonly DefaultPipelineComponentFactory _fallback = new();
+    private readonly DefaultPipelineComponentFactory _fallback;
 
-    public CSharpDbPipelineComponentFactory(ICSharpDbClient client)
+    public CSharpDbPipelineComponentFactory(ICSharpDbClient client, DbFunctionRegistry? functions = null)
     {
         _client = client;
+        _fallback = new DefaultPipelineComponentFactory(functions);
     }
 
     public IPipelineSource CreateSource(PipelineSourceDefinition definition) => definition.Kind switch

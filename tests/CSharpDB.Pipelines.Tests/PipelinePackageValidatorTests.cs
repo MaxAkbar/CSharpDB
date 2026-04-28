@@ -157,6 +157,39 @@ public sealed class PipelinePackageValidatorTests
     }
 
     [Fact]
+    public void Validate_ReturnsError_WhenFunctionSyntaxIsMalformed()
+    {
+        var validPackage = CreateValidPackage();
+        var package = new PipelinePackageDefinition
+        {
+            Name = validPackage.Name,
+            Version = validPackage.Version,
+            Source = validPackage.Source,
+            Destination = validPackage.Destination,
+            Options = validPackage.Options,
+            Transforms =
+            [
+                new PipelineTransformDefinition
+                {
+                    Kind = PipelineTransformKind.Derive,
+                    DerivedColumns =
+                    [
+                        new PipelineDerivedColumn
+                        {
+                            Name = "slug",
+                            Expression = "Slugify(name",
+                        },
+                    ],
+                },
+            ],
+        };
+
+        PipelineValidationResult result = PipelinePackageValidator.Validate(package);
+
+        Assert.Contains(result.Errors, e => e.Code == "pipeline.expression.function.syntax");
+    }
+
+    [Fact]
     public void Validate_ReturnsMultipleErrors_ForCompoundInvalidPackage()
     {
         var package = new PipelinePackageDefinition

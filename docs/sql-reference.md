@@ -313,6 +313,11 @@ SELECT COUNT(DISTINCT status), AVG(age) FROM users;
 |----------|-----------|---------|-------------|
 | `TEXT(expr)` | 1 | TEXT | Converts any value to its text representation |
 
+Host applications can also register trusted in-process C# scalar functions and call
+them from SQL expression positions such as `SELECT`, `WHERE`, `ORDER BY`,
+`INSERT`, `UPDATE`, trigger bodies, and SQL procedure bodies. See
+[Trusted C# Scalar Functions](trusted-csharp-functions/README.md).
+
 ---
 
 ## Parameters

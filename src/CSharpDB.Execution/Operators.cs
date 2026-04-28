@@ -817,8 +817,8 @@ public sealed class FilterOperator : IOperator, IBatchOperator, IRowBufferReuseC
     public DbValue[] Current => _source.Current;
     IOperator IUnaryOperatorSource.Source => _source;
 
-    public FilterOperator(IOperator source, Expression predicate, TableSchema schema)
-        : this(source, ExpressionCompiler.CompileSpan(predicate, schema))
+    public FilterOperator(IOperator source, Expression predicate, TableSchema schema, DbFunctionRegistry? functions = null)
+        : this(source, ExpressionCompiler.CompileSpan(predicate, schema, functions))
     {
     }
 
@@ -1042,7 +1042,13 @@ public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferRe
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     IOperator IUnaryOperatorSource.Source => _source;
 
-    public ProjectionOperator(IOperator source, int[] columnIndices, ColumnDefinition[] outputSchema, TableSchema schema, Expression[]? expressions = null)
+    public ProjectionOperator(
+        IOperator source,
+        int[] columnIndices,
+        ColumnDefinition[] outputSchema,
+        TableSchema schema,
+        Expression[]? expressions = null,
+        DbFunctionRegistry? functions = null)
     {
         _source = source;
         _columnIndices = columnIndices;
@@ -1050,7 +1056,7 @@ public sealed class ProjectionOperator : IOperator, IBatchOperator, IRowBufferRe
         {
             _spanExpressionEvaluators = new SpanExpressionEvaluator[expressions.Length];
             for (int i = 0; i < expressions.Length; i++)
-                _spanExpressionEvaluators[i] = ExpressionCompiler.CompileSpan(expressions[i], schema);
+                _spanExpressionEvaluators[i] = ExpressionCompiler.CompileSpan(expressions[i], schema, functions);
         }
         OutputSchema = outputSchema;
     }
@@ -3615,6 +3621,7 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
     private readonly List<Expression>? _groupByExprs;
     private readonly Expression? _havingExpr;
     private readonly TableSchema _inputSchema;
+    private readonly DbFunctionRegistry _functions;
     private readonly List<FunctionCallExpression> _aggregateFunctions = new();
     private readonly Dictionary<FunctionCallExpression, int> _aggregateIndices = new();
     private readonly SpanExpressionEvaluator[]? _groupByEvaluators;
@@ -3638,17 +3645,19 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         List<Expression>? groupByExprs,
         Expression? havingExpr,
         TableSchema inputSchema,
-        ColumnDefinition[] outputSchema)
+        ColumnDefinition[] outputSchema,
+        DbFunctionRegistry? functions = null)
     {
         _source = source;
         _selectColumns = selectColumns;
         _groupByExprs = groupByExprs;
         _havingExpr = havingExpr;
         _inputSchema = inputSchema;
+        _functions = functions ?? DbFunctionRegistry.Empty;
         OutputSchema = outputSchema;
         if (_groupByExprs is { Count: > 0 })
         {
-            _groupByEvaluators = BuildGroupByEvaluators(_groupByExprs, _inputSchema);
+            _groupByEvaluators = BuildGroupByEvaluators(_groupByExprs, _inputSchema, _functions);
             _groupByIsConstant = _groupByExprs.All(e => e is LiteralExpression);
         }
 
@@ -4175,7 +4184,7 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
     {
         var states = new AggregateState[_aggregateFunctions.Count];
         for (int i = 0; i < states.Length; i++)
-            states[i] = new AggregateState(_aggregateFunctions[i], _inputSchema);
+            states[i] = new AggregateState(_aggregateFunctions[i], _inputSchema, _functions);
         return states;
     }
 
@@ -4216,17 +4225,17 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         return new GroupKey(values, hash.ToHashCode());
     }
 
-    private static SpanExpressionEvaluator[] BuildGroupByEvaluators(List<Expression> expressions, TableSchema schema)
+    private static SpanExpressionEvaluator[] BuildGroupByEvaluators(List<Expression> expressions, TableSchema schema, DbFunctionRegistry functions)
     {
         var evaluators = new SpanExpressionEvaluator[expressions.Count];
         for (int i = 0; i < expressions.Count; i++)
-            evaluators[i] = BuildGroupByEvaluator(expressions[i], schema);
+            evaluators[i] = BuildGroupByEvaluator(expressions[i], schema, functions);
         return evaluators;
     }
 
-    private static SpanExpressionEvaluator BuildGroupByEvaluator(Expression expr, TableSchema schema)
+    private static SpanExpressionEvaluator BuildGroupByEvaluator(Expression expr, TableSchema schema, DbFunctionRegistry functions)
     {
-        return ExpressionCompiler.CompileSpan(expr, schema);
+        return ExpressionCompiler.CompileSpan(expr, schema, functions);
     }
 
     private static Func<DbValue[], DbValue> BuildColumnEvaluator(ColumnRefExpression col, TableSchema schema)
@@ -4273,12 +4282,12 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         {
             FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
                 ? EvaluateAggregate(func, group)
-                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, group)),
+                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, group), _functions),
             BinaryExpression bin => EvalBinaryWithAgg(bin, group),
             UnaryExpression un => EvalUnaryWithAgg(un, group),
             CollateExpression collate => EvalWithAggregates(collate.Operand, group),
             _ => group.FirstRow != null
-                ? ExpressionEvaluator.Evaluate(expr, group.FirstRow, _inputSchema)
+                ? ExpressionEvaluator.Evaluate(expr, group.FirstRow, _inputSchema, _functions)
                 : DbValue.Null,
         };
     }
@@ -4415,10 +4424,10 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         private bool _hasAny;
         private DbValue? _best;
 
-        public AggregateState(FunctionCallExpression func, TableSchema schema)
+        public AggregateState(FunctionCallExpression func, TableSchema schema, DbFunctionRegistry functions)
         {
             _name = func.FunctionName;
-            _argumentEvaluator = BuildAggregateArgumentEvaluator(func, schema);
+            _argumentEvaluator = BuildAggregateArgumentEvaluator(func, schema, functions);
             _isDistinct = func.IsDistinct;
             _isStarArg = func.IsStarArg;
             _directColumnIndex = TryResolveDirectColumnIndex(func, schema);
@@ -4604,12 +4613,12 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         private static DbValue GetValue(ReadOnlySpan<DbValue> row, int columnIndex)
             => (uint)columnIndex < (uint)row.Length ? row[columnIndex] : DbValue.Null;
 
-        private static SpanExpressionEvaluator? BuildAggregateArgumentEvaluator(FunctionCallExpression func, TableSchema schema)
+        private static SpanExpressionEvaluator? BuildAggregateArgumentEvaluator(FunctionCallExpression func, TableSchema schema, DbFunctionRegistry functions)
         {
             if (func.IsStarArg || func.Arguments.Count == 0)
                 return null;
 
-            return ExpressionCompiler.CompileSpan(func.Arguments[0], schema);
+            return ExpressionCompiler.CompileSpan(func.Arguments[0], schema, functions);
         }
 
         private static int TryResolveDirectColumnIndex(FunctionCallExpression func, TableSchema schema)
@@ -4721,6 +4730,7 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
     private readonly List<SelectColumn> _selectColumns;
     private readonly Expression? _havingExpr;
     private readonly TableSchema _inputSchema;
+    private readonly DbFunctionRegistry _functions;
     private readonly Dictionary<FunctionCallExpression, AggregateState> _aggregateStates = new();
     private readonly List<FunctionCallExpression> _aggregateFunctions = new();
     private readonly AggregateState[] _aggregateStateList;
@@ -4739,12 +4749,14 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
         List<SelectColumn> selectColumns,
         Expression? havingExpr,
         TableSchema inputSchema,
-        ColumnDefinition[] outputSchema)
+        ColumnDefinition[] outputSchema,
+        DbFunctionRegistry? functions = null)
     {
         _source = source;
         _selectColumns = selectColumns;
         _havingExpr = havingExpr;
         _inputSchema = inputSchema;
+        _functions = functions ?? DbFunctionRegistry.Empty;
         OutputSchema = outputSchema;
 
         foreach (var col in _selectColumns)
@@ -4760,7 +4772,7 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
         for (int i = 0; i < _aggregateFunctions.Count; i++)
         {
             var func = _aggregateFunctions[i];
-            var state = new AggregateState(func, _inputSchema);
+            var state = new AggregateState(func, _inputSchema, _functions);
             _aggregateStateList[i] = state;
             _aggregateStates[func] = state;
         }
@@ -4900,7 +4912,7 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
                 {
                     if (!_aggregateStates.ContainsKey(func))
                     {
-                        _aggregateStates.Add(func, new AggregateState(func, _inputSchema));
+                        _aggregateStates.Add(func, new AggregateState(func, _inputSchema, _functions));
                         _aggregateFunctions.Add(func);
                     }
                 }
@@ -4929,12 +4941,12 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
         {
             FunctionCallExpression func => ScalarFunctionEvaluator.IsAggregateFunction(func.FunctionName)
                 ? EvaluateAggregate(func)
-                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, firstRow)),
+                : ScalarFunctionEvaluator.Evaluate(func, arg => EvalWithAggregates(arg, firstRow), _functions),
             BinaryExpression bin => EvalBinaryWithAgg(bin, firstRow),
             UnaryExpression un => EvalUnaryWithAgg(un, firstRow),
             CollateExpression collate => EvalWithAggregates(collate.Operand, firstRow),
             _ => firstRow != null
-                ? ExpressionEvaluator.Evaluate(expr, firstRow, _inputSchema)
+                ? ExpressionEvaluator.Evaluate(expr, firstRow, _inputSchema, _functions)
                 : DbValue.Null,
         };
     }
@@ -5009,10 +5021,10 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
         private bool _hasAny;
         private DbValue? _best;
 
-        public AggregateState(FunctionCallExpression func, TableSchema schema)
+        public AggregateState(FunctionCallExpression func, TableSchema schema, DbFunctionRegistry functions)
         {
             _name = func.FunctionName;
-            _argumentEvaluator = BuildAggregateArgumentEvaluator(func, schema);
+            _argumentEvaluator = BuildAggregateArgumentEvaluator(func, schema, functions);
             _isDistinct = func.IsDistinct;
             _isStarArg = func.IsStarArg;
             _directColumnIndex = TryResolveDirectColumnIndex(func, schema);
@@ -5139,12 +5151,12 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
             return _argumentEvaluator!(row);
         }
 
-        private static SpanExpressionEvaluator? BuildAggregateArgumentEvaluator(FunctionCallExpression func, TableSchema schema)
+        private static SpanExpressionEvaluator? BuildAggregateArgumentEvaluator(FunctionCallExpression func, TableSchema schema, DbFunctionRegistry functions)
         {
             if (func.IsStarArg || func.Arguments.Count == 0)
                 return null;
 
-            return ExpressionCompiler.CompileSpan(func.Arguments[0], schema);
+            return ExpressionCompiler.CompileSpan(func.Arguments[0], schema, functions);
         }
 
         private static int TryResolveDirectColumnIndex(FunctionCallExpression func, TableSchema schema)
@@ -5351,11 +5363,11 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _sortedRows?.Count ?? _lateMaterializedRowIds?.Length;
 
-    public SortOperator(IOperator source, List<OrderByClause> orderBy, TableSchema schema)
+    public SortOperator(IOperator source, List<OrderByClause> orderBy, TableSchema schema, DbFunctionRegistry? functions = null)
     {
         _source = source;
         _schema = schema;
-        _compiledOrderBy = CompileOrderBy(orderBy, schema, out _precomputedKeyCount);
+        _compiledOrderBy = CompileOrderBy(orderBy, schema, out _precomputedKeyCount, functions);
         if (_compiledOrderBy.Length == 1)
         {
             var clause = _compiledOrderBy[0];
@@ -5826,7 +5838,11 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
         return 0;
     }
 
-    private static CompiledSortClause[] CompileOrderBy(List<OrderByClause> orderBy, TableSchema schema, out int precomputedKeyCount)
+    private static CompiledSortClause[] CompileOrderBy(
+        List<OrderByClause> orderBy,
+        TableSchema schema,
+        out int precomputedKeyCount,
+        DbFunctionRegistry? functions)
     {
         precomputedKeyCount = 0;
         var compiled = new CompiledSortClause[orderBy.Count];
@@ -5838,7 +5854,7 @@ public sealed class SortOperator : IOperator, IBatchOperator, IBatchBufferReuseC
             int keyIndex = columnIndex >= 0 ? -1 : precomputedKeyCount++;
             string? collation = CollationSupport.ResolveExpressionCollation(clause.Expression, schema);
             Func<DbValue[], DbValue>? keyEvaluator = keyIndex >= 0
-                ? ExpressionCompiler.Compile(clause.Expression, schema)
+                ? ExpressionCompiler.Compile(clause.Expression, schema, functions)
                 : null;
             compiled[i] = new CompiledSortClause(clause.Expression, columnIndex, keyIndex, clause.Descending, collation, keyEvaluator);
         }
@@ -6371,10 +6387,15 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
     public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
     public int? EstimatedRowCount => _topN;
 
-    public TopNSortOperator(IOperator source, List<OrderByClause> orderBy, TableSchema schema, int topN)
+    public TopNSortOperator(
+        IOperator source,
+        List<OrderByClause> orderBy,
+        TableSchema schema,
+        int topN,
+        DbFunctionRegistry? functions = null)
     {
         _source = source;
-        _compiledOrderBy = CompileOrderBy(orderBy, schema, out _precomputedKeyCount);
+        _compiledOrderBy = CompileOrderBy(orderBy, schema, out _precomputedKeyCount, functions);
         _singleComputedKeyClauseIndex = FindSingleComputedKeyClauseIndex(_compiledOrderBy, _precomputedKeyCount);
         _singleComputedKeyFastPath = _singleComputedKeyClauseIndex >= 0;
         _topN = Math.Max(0, topN);
@@ -6814,7 +6835,11 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
             : new RankedRow((DbValue[])row.Row.Clone(), row.Keys);
     }
 
-    private static CompiledSortClause[] CompileOrderBy(List<OrderByClause> orderBy, TableSchema schema, out int precomputedKeyCount)
+    private static CompiledSortClause[] CompileOrderBy(
+        List<OrderByClause> orderBy,
+        TableSchema schema,
+        out int precomputedKeyCount,
+        DbFunctionRegistry? functions)
     {
         precomputedKeyCount = 0;
         var compiled = new CompiledSortClause[orderBy.Count];
@@ -6831,7 +6856,7 @@ public sealed class TopNSortOperator : IOperator, IBatchOperator, IBatchBufferRe
             int keyIndex = columnIndex >= 0 ? -1 : precomputedKeyCount++;
             string? collation = CollationSupport.ResolveExpressionCollation(clause.Expression, schema);
             Func<DbValue[], DbValue>? keyEvaluator = keyIndex >= 0
-                ? ExpressionCompiler.Compile(clause.Expression, schema)
+                ? ExpressionCompiler.Compile(clause.Expression, schema, functions)
                 : null;
             compiled[i] = new CompiledSortClause(
                 clause.Expression,
@@ -6970,6 +6995,7 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
     private readonly int[] _rightKeyIndices;
     private readonly Expression? _residualConditionExpression;
     private readonly TableSchema _compositeSchema;
+    private readonly DbFunctionRegistry _functions;
     private readonly JoinSpanExpressionEvaluator? _residualPredicate;
     private JoinSpanExpressionEvaluator? _compactedResidualPredicate;
     private readonly int _leftColCount;
@@ -7022,7 +7048,8 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         int[] rightKeyIndices,
         bool buildRightSide = true,
         int? buildRowCapacityHint = null,
-        int? estimatedOutputRowCount = null)
+        int? estimatedOutputRowCount = null,
+        DbFunctionRegistry? functions = null)
     {
         _left = left;
         _right = right;
@@ -7032,8 +7059,9 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
         _rightKeyIndices = rightKeyIndices;
         _residualConditionExpression = residualCondition;
         _compositeSchema = compositeSchema;
+        _functions = functions ?? DbFunctionRegistry.Empty;
         _residualPredicate = residualCondition != null
-            ? ExpressionCompiler.CompileJoinSpan(residualCondition, compositeSchema, leftColCount)
+            ? ExpressionCompiler.CompileJoinSpan(residualCondition, compositeSchema, leftColCount, _functions)
             : null;
         _compactedResidualPredicate = null;
         _leftColCount = leftColCount;
@@ -7119,7 +7147,8 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
                 _compositeSchema,
                 _leftColCount,
                 leftColumnMap: _buildRightSide ? null : _buildColumnToCompactIndexMap,
-                rightColumnMap: _buildRightSide ? _buildColumnToCompactIndexMap : null);
+                rightColumnMap: _buildRightSide ? _buildColumnToCompactIndexMap : null,
+                functions: _functions);
         }
 
         await ConsumeBuildRowsAsync(ct);
@@ -8615,7 +8644,8 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBa
         Expression? residualCondition,
         TableSchema compositeSchema,
         IRecordSerializer? recordSerializer = null,
-        int? estimatedOutputRowCount = null)
+        int? estimatedOutputRowCount = null,
+        DbFunctionRegistry? functions = null)
     {
         _outer = outer;
         _innerTableTree = innerTableTree;
@@ -8628,7 +8658,7 @@ public sealed class IndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBa
         _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
         _residualConditionExpression = residualCondition;
         _residualPredicate = residualCondition != null
-            ? ExpressionCompiler.CompileJoinSpan(residualCondition, compositeSchema, leftColCount)
+            ? ExpressionCompiler.CompileJoinSpan(residualCondition, compositeSchema, leftColCount, functions)
             : null;
         _compositeSchema = compositeSchema;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
@@ -9478,7 +9508,8 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         SqlIndexStorageMode storageMode = SqlIndexStorageMode.Hashed,
         bool usesOrderedTextPayload = false,
         IRecordSerializer? recordSerializer = null,
-        int? estimatedOutputRowCount = null)
+        int? estimatedOutputRowCount = null,
+        DbFunctionRegistry? functions = null)
     {
         _outer = outer;
         _innerTableTree = innerTableTree;
@@ -9494,7 +9525,7 @@ public sealed class HashedIndexNestedLoopJoinOperator : IOperator, IBatchOperato
         _rightPrimaryKeyColumnIndex = rightPrimaryKeyColumnIndex;
         _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
         _residualPredicate = residualCondition != null
-            ? ExpressionCompiler.CompileJoinSpan(residualCondition, compositeSchema, leftColCount)
+            ? ExpressionCompiler.CompileJoinSpan(residualCondition, compositeSchema, leftColCount, functions)
             : null;
         _recordSerializer = recordSerializer ?? new DefaultRecordSerializer();
         OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
@@ -10481,14 +10512,15 @@ public sealed class NestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBa
         TableSchema compositeSchema,
         int leftColCount, int rightColCount,
         int? estimatedOutputRowCount = null,
-        int? rightRowCapacityHint = null)
+        int? rightRowCapacityHint = null,
+        DbFunctionRegistry? functions = null)
     {
         _left = left;
         _right = right;
         _joinType = joinType;
         _conditionExpression = condition;
         _conditionEvaluator = condition != null
-            ? ExpressionCompiler.CompileJoinSpan(condition, compositeSchema, leftColCount)
+            ? ExpressionCompiler.CompileJoinSpan(condition, compositeSchema, leftColCount, functions)
             : null;
         _compositeSchema = compositeSchema;
         _leftColCount = leftColCount;

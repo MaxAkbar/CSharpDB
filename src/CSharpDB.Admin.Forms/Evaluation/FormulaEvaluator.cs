@@ -1,3 +1,5 @@
+using CSharpDB.Primitives;
+
 namespace CSharpDB.Admin.Forms.Evaluation;
 
 /// <summary>
@@ -18,6 +20,12 @@ public static class FormulaEvaluator
     /// Returns null if any referenced field is null, formula is invalid, or division by zero.
     /// </summary>
     public static double? Evaluate(string? formula, Func<string, double?> fieldResolver)
+        => Evaluate(formula, fieldResolver, DbFunctionRegistry.Empty);
+
+    public static double? Evaluate(
+        string? formula,
+        Func<string, double?> fieldResolver,
+        DbFunctionRegistry? functions)
     {
         if (string.IsNullOrWhiteSpace(formula)) return null;
 
@@ -28,7 +36,7 @@ public static class FormulaEvaluator
 
         try
         {
-            var parser = new Parser(expr, fieldResolver);
+            var parser = new Parser(expr, fieldResolver, functions ?? DbFunctionRegistry.Empty);
             var result = parser.ParseExpression();
             // Ensure we consumed all input
             if (parser.Position < parser.Input.Length)
@@ -115,12 +123,14 @@ public static class FormulaEvaluator
         public ReadOnlySpan<char> Input;
         public int Position;
         private readonly Func<string, double?> _fieldResolver;
+        private readonly DbFunctionRegistry _functions;
 
-        public Parser(string input, Func<string, double?> fieldResolver)
+        public Parser(string input, Func<string, double?> fieldResolver, DbFunctionRegistry functions)
         {
             Input = input.AsSpan();
             Position = 0;
             _fieldResolver = fieldResolver;
+            _functions = functions;
         }
 
         public double? ParseExpression()
@@ -234,10 +244,73 @@ public static class FormulaEvaluator
                 while (Position < Input.Length && (char.IsLetterOrDigit(Input[Position]) || Input[Position] == '_'))
                     Position++;
                 var fieldName = Input[start..Position].ToString();
+                SkipWhitespace();
+                if (Position < Input.Length && Input[Position] == '(')
+                    return ParseFunctionCall(fieldName);
+
                 return _fieldResolver(fieldName);
             }
 
             return null; // Unexpected character
+        }
+
+        private double? ParseFunctionCall(string functionName)
+        {
+            Position++;
+            var arguments = new List<DbValue>();
+            SkipWhitespace();
+            if (Position < Input.Length && Input[Position] == ')')
+            {
+                Position++;
+                return InvokeFunction(functionName, arguments);
+            }
+
+            while (Position < Input.Length)
+            {
+                double? argument = ParseExpression();
+                arguments.Add(argument.HasValue ? DbValue.FromReal(argument.Value) : DbValue.Null);
+
+                SkipWhitespace();
+                if (Position < Input.Length && Input[Position] == ',')
+                {
+                    Position++;
+                    continue;
+                }
+
+                if (Position < Input.Length && Input[Position] == ')')
+                {
+                    Position++;
+                    return InvokeFunction(functionName, arguments);
+                }
+
+                return null;
+            }
+
+            return null;
+        }
+
+        private double? InvokeFunction(string functionName, List<DbValue> arguments)
+        {
+            if (!_functions.TryGetScalar(functionName, arguments.Count, out var definition))
+                return null;
+
+            if (definition.Options.NullPropagating && arguments.Any(static argument => argument.IsNull))
+                return null;
+
+            try
+            {
+                DbValue value = definition.Invoke(arguments.ToArray());
+                return value.Type switch
+                {
+                    DbType.Integer => value.AsInteger,
+                    DbType.Real => value.AsReal,
+                    _ => null,
+                };
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void SkipWhitespace()

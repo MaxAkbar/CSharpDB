@@ -6,23 +6,29 @@ namespace CSharpDB.Execution;
 public static class ExpressionEvaluator
 {
     public static DbValue Evaluate(Expression expr, DbValue[] row, TableSchema schema)
-        => Evaluate(expr, row.AsSpan(), schema);
+        => Evaluate(expr, row.AsSpan(), schema, DbFunctionRegistry.Empty);
+
+    public static DbValue Evaluate(Expression expr, DbValue[] row, TableSchema schema, DbFunctionRegistry? functions)
+        => Evaluate(expr, row.AsSpan(), schema, functions);
 
     public static DbValue Evaluate(Expression expr, ReadOnlySpan<DbValue> row, TableSchema schema)
+        => Evaluate(expr, row, schema, DbFunctionRegistry.Empty);
+
+    public static DbValue Evaluate(Expression expr, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
         return expr switch
         {
             LiteralExpression lit => EvalLiteral(lit),
             ParameterExpression param => EvalParameter(param),
             ColumnRefExpression col => EvalColumn(col, row, schema),
-            BinaryExpression bin => EvalBinary(bin, row, schema),
-            UnaryExpression un => EvalUnary(un, row, schema),
-            CollateExpression collate => Evaluate(collate.Operand, row, schema),
-            FunctionCallExpression func => EvalFunction(func, row, schema),
-            LikeExpression like => EvalLike(like, row, schema),
-            InExpression inExpr => EvalIn(inExpr, row, schema),
-            BetweenExpression bet => EvalBetween(bet, row, schema),
-            IsNullExpression isNull => EvalIsNull(isNull, row, schema),
+            BinaryExpression bin => EvalBinary(bin, row, schema, functions),
+            UnaryExpression un => EvalUnary(un, row, schema, functions),
+            CollateExpression collate => Evaluate(collate.Operand, row, schema, functions),
+            FunctionCallExpression func => EvalFunction(func, row, schema, functions),
+            LikeExpression like => EvalLike(like, row, schema, functions),
+            InExpression inExpr => EvalIn(inExpr, row, schema, functions),
+            BetweenExpression bet => EvalBetween(bet, row, schema, functions),
+            IsNullExpression isNull => EvalIsNull(isNull, row, schema, functions),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown expression type: {expr.GetType().Name}"),
         };
     }
@@ -63,10 +69,10 @@ public static class ExpressionEvaluator
         return idx < row.Length ? row[idx] : DbValue.Null;
     }
 
-    private static DbValue EvalBinary(BinaryExpression bin, ReadOnlySpan<DbValue> row, TableSchema schema)
+    private static DbValue EvalBinary(BinaryExpression bin, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
-        var left = Evaluate(bin.Left, row, schema);
-        var right = Evaluate(bin.Right, row, schema);
+        var left = Evaluate(bin.Left, row, schema, functions);
+        var right = Evaluate(bin.Right, row, schema, functions);
         string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, schema);
 
         return bin.Op switch
@@ -87,9 +93,9 @@ public static class ExpressionEvaluator
         };
     }
 
-    private static DbValue EvalUnary(UnaryExpression un, ReadOnlySpan<DbValue> row, TableSchema schema)
+    private static DbValue EvalUnary(UnaryExpression un, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
-        var operand = Evaluate(un.Operand, row, schema);
+        var operand = Evaluate(un.Operand, row, schema, functions);
         return un.Op switch
         {
             TokenType.Not => BoolToDb(!operand.IsTruthy),
@@ -103,17 +109,17 @@ public static class ExpressionEvaluator
         };
     }
 
-    private static DbValue EvalFunction(FunctionCallExpression func, ReadOnlySpan<DbValue> row, TableSchema schema)
+    private static DbValue EvalFunction(FunctionCallExpression func, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
         string functionName = func.FunctionName.ToUpperInvariant();
         if (ScalarFunctionEvaluator.IsAggregateFunction(functionName))
             throw new CSharpDbException(ErrorCode.Unknown, $"Aggregate function '{func.FunctionName}' requires aggregate context.");
 
-        return functionName switch
-        {
-            "TEXT" => EvalTextFunction(func, row, schema),
-            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown scalar function: {func.FunctionName}"),
-        };
+        var materializedRow = row.ToArray();
+        return ScalarFunctionEvaluator.Evaluate(
+            func,
+            arg => Evaluate(arg, materializedRow, schema, functions),
+            functions);
     }
 
     private static DbValue BoolToDb(bool value) => DbValue.FromInteger(value ? 1 : 0);
@@ -135,24 +141,16 @@ public static class ExpressionEvaluator
     private static Exception DivZero() =>
         new CSharpDbException(ErrorCode.Unknown, "Division by zero.");
 
-    private static DbValue EvalTextFunction(FunctionCallExpression func, ReadOnlySpan<DbValue> row, TableSchema schema)
+    private static DbValue EvalLike(LikeExpression like, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
-        if (func.IsStarArg || func.IsDistinct || func.Arguments.Count != 1)
-            throw new CSharpDbException(ErrorCode.SyntaxError, "TEXT() requires exactly one argument.");
-
-        return ScalarFunctionEvaluator.EvaluateTextValue(Evaluate(func.Arguments[0], row, schema));
-    }
-
-    private static DbValue EvalLike(LikeExpression like, ReadOnlySpan<DbValue> row, TableSchema schema)
-    {
-        var operand = Evaluate(like.Operand, row, schema);
-        var pattern = Evaluate(like.Pattern, row, schema);
+        var operand = Evaluate(like.Operand, row, schema, functions);
+        var pattern = Evaluate(like.Pattern, row, schema, functions);
         if (operand.IsNull || pattern.IsNull) return DbValue.Null;
 
         char? escape = null;
         if (like.EscapeChar != null)
         {
-            var esc = Evaluate(like.EscapeChar, row, schema);
+            var esc = Evaluate(like.EscapeChar, row, schema, functions);
             if (!esc.IsNull)
             {
                 string escStr = esc.AsText;
@@ -164,9 +162,9 @@ public static class ExpressionEvaluator
         return BoolToDb(like.Negated ? !match : match);
     }
 
-    private static DbValue EvalIn(InExpression inExpr, ReadOnlySpan<DbValue> row, TableSchema schema)
+    private static DbValue EvalIn(InExpression inExpr, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
-        var operand = Evaluate(inExpr.Operand, row, schema);
+        var operand = Evaluate(inExpr.Operand, row, schema, functions);
         if (operand.IsNull) return DbValue.Null;
 
         string? collation = CollationSupport.ResolveExpressionCollation(inExpr.Operand, schema);
@@ -174,7 +172,7 @@ public static class ExpressionEvaluator
         bool hasNull = false;
         foreach (var valExpr in inExpr.Values)
         {
-            var val = Evaluate(valExpr, row, schema);
+            var val = Evaluate(valExpr, row, schema, functions);
             if (val.IsNull) { hasNull = true; continue; }
             if (CollationSupport.Compare(operand, val, collation) == 0) { found = true; break; }
         }
@@ -184,11 +182,11 @@ public static class ExpressionEvaluator
         return BoolToDb(inExpr.Negated);
     }
 
-    private static DbValue EvalBetween(BetweenExpression bet, ReadOnlySpan<DbValue> row, TableSchema schema)
+    private static DbValue EvalBetween(BetweenExpression bet, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
-        var operand = Evaluate(bet.Operand, row, schema);
-        var low = Evaluate(bet.Low, row, schema);
-        var high = Evaluate(bet.High, row, schema);
+        var operand = Evaluate(bet.Operand, row, schema, functions);
+        var low = Evaluate(bet.Low, row, schema, functions);
+        var high = Evaluate(bet.High, row, schema, functions);
         if (operand.IsNull || low.IsNull || high.IsNull) return DbValue.Null;
 
         string? collation = CollationSupport.ResolveExpressionCollation(bet.Operand, schema);
@@ -197,9 +195,9 @@ public static class ExpressionEvaluator
         return BoolToDb(bet.Negated ? !inRange : inRange);
     }
 
-    private static DbValue EvalIsNull(IsNullExpression isNull, ReadOnlySpan<DbValue> row, TableSchema schema)
+    private static DbValue EvalIsNull(IsNullExpression isNull, ReadOnlySpan<DbValue> row, TableSchema schema, DbFunctionRegistry? functions)
     {
-        var operand = Evaluate(isNull.Operand, row, schema);
+        var operand = Evaluate(isNull.Operand, row, schema, functions);
         bool result = operand.IsNull;
         return BoolToDb(isNull.Negated ? !result : result);
     }

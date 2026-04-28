@@ -36,6 +36,7 @@ public sealed class Database : IAsyncDisposable
     private readonly IIndexProvider _indexProvider;
     private readonly ICatalogStore _catalogStore;
     private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
+    private readonly DbFunctionRegistry _functions;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
@@ -90,6 +91,7 @@ public sealed class Database : IAsyncDisposable
         ICatalogStore catalogStore,
         AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
         ImplicitInsertExecutionMode implicitInsertExecutionMode = ImplicitInsertExecutionMode.Serialized,
+        DbFunctionRegistry? functions = null,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
         _pager = pager;
@@ -99,6 +101,7 @@ public sealed class Database : IAsyncDisposable
         _indexProvider = indexProvider;
         _catalogStore = catalogStore;
         _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
+        _functions = functions ?? DbFunctionRegistry.Empty;
         _implicitInsertExecutionMode = implicitInsertExecutionMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
         _planner = new QueryPlanner(
@@ -107,7 +110,8 @@ public sealed class Database : IAsyncDisposable
             _recordSerializer,
             nextRowIdHintProvider: TryGetSharedNextRowIdHint,
             nextRowIdReservationProvider: ReserveSharedNextRowId,
-            nextRowIdObservationProvider: ObserveSharedNextRowId);
+            nextRowIdObservationProvider: ObserveSharedNextRowId,
+            functions: _functions);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -139,7 +143,8 @@ public sealed class Database : IAsyncDisposable
                 nextRowIdHintProvider: TryGetSharedNextRowIdHint,
                 nextRowIdReservationProvider: ReserveSharedNextRowId,
                 nextRowIdObservationProvider: ObserveSharedNextRowId,
-                useTransientNextRowIdHints: true)
+                useTransientNextRowIdHints: true,
+                functions: _functions)
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
@@ -462,7 +467,8 @@ public sealed class Database : IAsyncDisposable
             context.IndexProvider,
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
-            options.ImplicitInsertExecutionMode);
+            options.ImplicitInsertExecutionMode,
+            options.Functions);
     }
 
     /// <summary>
@@ -525,6 +531,7 @@ public sealed class Database : IAsyncDisposable
                 snapshotContext.CatalogStore,
                 snapshotContext.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
+                options.Functions,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
             return snapshotDatabase;
         }
@@ -538,7 +545,8 @@ public sealed class Database : IAsyncDisposable
             context.IndexProvider,
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
-            options.ImplicitInsertExecutionMode);
+            options.ImplicitInsertExecutionMode,
+            options.Functions);
         try
         {
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
@@ -596,7 +604,8 @@ public sealed class Database : IAsyncDisposable
             context.IndexProvider,
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
-            options.ImplicitInsertExecutionMode);
+            options.ImplicitInsertExecutionMode,
+            options.Functions);
     }
 
     /// <summary>
@@ -618,7 +627,8 @@ public sealed class Database : IAsyncDisposable
             context.IndexProvider,
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
-            options.ImplicitInsertExecutionMode);
+            options.ImplicitInsertExecutionMode,
+            options.Functions);
     }
 
     /// <summary>
@@ -1014,6 +1024,7 @@ public sealed class Database : IAsyncDisposable
             _recordSerializer,
             snapshot,
             _statementCache,
+            _functions,
             snapshotRowCounts);
     }
 
@@ -1845,6 +1856,7 @@ public sealed class Database : IAsyncDisposable
         private readonly SchemaCatalog _catalog;
         private readonly IRecordSerializer _recordSerializer;
         private readonly IRecordSerializer? _collectionReadSerializer;
+        private readonly DbFunctionRegistry _functions;
         private readonly Func<ValueTask> _releaseActiveQueryCallback;
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
@@ -1862,6 +1874,7 @@ public sealed class Database : IAsyncDisposable
             IRecordSerializer recordSerializer,
             WalSnapshot snapshot,
             StatementCache statementCache,
+            DbFunctionRegistry functions,
             IReadOnlyDictionary<string, long> snapshotRowCounts)
         {
             _pager = pager;
@@ -1870,6 +1883,7 @@ public sealed class Database : IAsyncDisposable
             _collectionReadSerializer = recordSerializer is DefaultRecordSerializer
                 ? new CollectionAwareRecordSerializer(recordSerializer)
                 : null;
+            _functions = functions;
             _releaseActiveQueryCallback = ReleaseActiveQueryAsync;
             _statementCache = statementCache;
             _snapshot = snapshot;
@@ -1944,7 +1958,7 @@ public sealed class Database : IAsyncDisposable
                     }
                 }
 
-                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer, functions: _functions);
                 ValueTask<QueryResult> plannerTask = _planner.ExecuteAsync(stmt, ct);
                 if (plannerTask.IsCompletedSuccessfully)
                 {
@@ -1992,7 +2006,7 @@ public sealed class Database : IAsyncDisposable
                     return fastLookupResult;
                 }
 
-                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer);
+                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer, functions: _functions);
                 QueryResult plannerResult = await _planner.ExecuteAsync(stmt, ct);
                 plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
                 return plannerResult;

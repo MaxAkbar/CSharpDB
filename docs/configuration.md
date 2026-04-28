@@ -45,6 +45,7 @@ await using var db = await Database.OpenHybridAsync("mydata.db",
 ```
 DatabaseOptions
 ├── ImplicitInsertExecutionMode
+├── Functions
 ├── StorageEngineOptions
 │   ├── DurabilityMode
 │   ├── DurableGroupCommit
@@ -86,6 +87,7 @@ Top-level database composition and execution-shape configuration.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `ImplicitInsertExecutionMode` | `ImplicitInsertExecutionMode` | `Serialized` | Controls whether shared auto-commit `INSERT` statements stay behind the legacy database write gate or run as isolated `WriteTransaction` commits. This does not disable the explicit multi-writer `WriteTransaction` APIs. |
+| `Functions` | `DbFunctionRegistry` | `DbFunctionRegistry.Empty` | Trusted in-process scalar functions available to SQL and embedded expression surfaces. See [Trusted C# Scalar Functions](trusted-csharp-functions/README.md). |
 | `StorageEngineOptions` | `StorageEngineOptions` | default instance | Storage engine durability, pager, WAL, and checkpoint settings |
 | `StorageEngineFactory` | `IStorageEngineFactory` | `DefaultStorageEngineFactory` | Factory used to compose the backing storage engine |
 

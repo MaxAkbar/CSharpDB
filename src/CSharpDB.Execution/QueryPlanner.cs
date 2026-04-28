@@ -203,6 +203,7 @@ public sealed class QueryPlanner
     private readonly SchemaCatalog _catalog;
     private readonly IRecordSerializer _recordSerializer;
     private readonly IRecordSerializer? _collectionReadSerializer;
+    private readonly DbFunctionRegistry _functions;
     private readonly Func<string, long?>? _tableRowCountProvider;
 
     /// <summary>
@@ -358,7 +359,8 @@ public sealed class QueryPlanner
         Func<string, long?>? nextRowIdHintProvider = null,
         Func<string, long, long>? nextRowIdReservationProvider = null,
         Action<string, long>? nextRowIdObservationProvider = null,
-        bool useTransientNextRowIdHints = false)
+        bool useTransientNextRowIdHints = false,
+        DbFunctionRegistry? functions = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -366,6 +368,7 @@ public sealed class QueryPlanner
         _collectionReadSerializer = _recordSerializer is DefaultRecordSerializer
             ? new CollectionAwareRecordSerializer(_recordSerializer)
             : null;
+        _functions = functions ?? DbFunctionRegistry.Empty;
         _tableRowCountProvider = tableRowCountProvider;
         _nextRowIdHintProvider = nextRowIdHintProvider;
         _nextRowIdReservationProvider = nextRowIdReservationProvider;
@@ -2814,11 +2817,11 @@ public sealed class QueryPlanner
             var outputCols = BuildAggregateOutputSchema(stmt.Columns, sourceSchema);
             if (stmt.GroupBy is { Count: > 0 })
             {
-                op = new HashAggregateOperator(op, stmt.Columns, stmt.GroupBy, stmt.Having, sourceSchema, outputCols);
+                op = new HashAggregateOperator(op, stmt.Columns, stmt.GroupBy, stmt.Having, sourceSchema, outputCols, _functions);
             }
             else
             {
-                op = new ScalarAggregateOperator(op, stmt.Columns, stmt.Having, sourceSchema, outputCols);
+                op = new ScalarAggregateOperator(op, stmt.Columns, stmt.Having, sourceSchema, outputCols, _functions);
             }
 
             var aggregateSchema = new TableSchema
@@ -3038,11 +3041,11 @@ public sealed class QueryPlanner
         CancellationToken ct)
     {
         if (!ContainsSubqueries(expression))
-            return ExpressionEvaluator.Evaluate(expression, row, schema);
+            return ExpressionEvaluator.Evaluate(expression, row, schema, _functions);
 
         var correlationScopes = CreateCorrelationScopes(row, schema, outerScopes);
         var rewritten = await RewriteCorrelatedExpressionAsync(expression, correlationScopes, ct);
-        return ExpressionEvaluator.Evaluate(rewritten, row, schema);
+        return ExpressionEvaluator.Evaluate(rewritten, row, schema, _functions);
     }
 
     private async ValueTask<bool?> TryEvaluateExistsFilterFastAsync(
@@ -3069,7 +3072,7 @@ public sealed class QueryPlanner
         if (ContainsSubqueries(boundOperand))
             return null;
 
-        var operandValue = ExpressionEvaluator.Evaluate(boundOperand, row, schema);
+        var operandValue = ExpressionEvaluator.Evaluate(boundOperand, row, schema, _functions);
         if (operandValue.IsNull)
             return false;
 
@@ -3093,7 +3096,7 @@ public sealed class QueryPlanner
             while (await source.MoveNextAsync(ct))
             {
                 if (residualPredicate == null ||
-                    ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                    ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema, _functions).IsTruthy)
                 {
                     return true;
                 }
@@ -3165,7 +3168,7 @@ public sealed class QueryPlanner
             while (await source.MoveNextAsync(ct))
             {
                 if (residualPredicate != null &&
-                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema).IsTruthy)
+                    !ExpressionEvaluator.Evaluate(residualPredicate, source.Current, sourceSchema, _functions).IsTruthy)
                 {
                     continue;
                 }
@@ -3706,12 +3709,12 @@ public sealed class QueryPlanner
             if (hasGroupBy)
             {
                 op = new HashAggregateOperator(
-                    op, stmt.Columns, stmt.GroupBy, stmt.Having, schema, outputCols);
+                    op, stmt.Columns, stmt.GroupBy, stmt.Having, schema, outputCols, _functions);
             }
             else
             {
                 op = new ScalarAggregateOperator(
-                    op, stmt.Columns, stmt.Having, schema, outputCols);
+                    op, stmt.Columns, stmt.Having, schema, outputCols, _functions);
             }
 
             // After aggregate, we need a synthetic schema for Sort to work with
@@ -3894,7 +3897,7 @@ public sealed class QueryPlanner
         return topN >= int.MaxValue ? int.MaxValue : (int)topN;
     }
 
-    private static IOperator ApplyOrdering(
+    private IOperator ApplyOrdering(
         IOperator source,
         List<OrderByClause>? orderBy,
         TableSchema schema,
@@ -3904,9 +3907,9 @@ public sealed class QueryPlanner
             return source;
 
         if (topN.HasValue)
-            return new TopNSortOperator(source, orderBy, schema, topN.Value);
+            return new TopNSortOperator(source, orderBy, schema, topN.Value, _functions);
 
-        return new SortOperator(source, orderBy, schema);
+        return new SortOperator(source, orderBy, schema, _functions);
     }
 
     private static bool TryPushDownColumnProjection(
@@ -6119,7 +6122,7 @@ public sealed class QueryPlanner
                         schema,
                         Array.Empty<CorrelationScope>(),
                         ct)
-                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema);
+                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema, _functions);
                 if (!result.IsTruthy) continue;
             }
             rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
@@ -6208,7 +6211,7 @@ public sealed class QueryPlanner
                         schema,
                         Array.Empty<CorrelationScope>(),
                         ct)
-                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema);
+                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema, _functions);
                 if (!result.IsTruthy) continue;
             }
 
@@ -6226,7 +6229,7 @@ public sealed class QueryPlanner
                         schema,
                         Array.Empty<CorrelationScope>(),
                         ct)
-                    : ExpressionEvaluator.Evaluate(set.Value, scan.Current, schema);
+                    : ExpressionEvaluator.Evaluate(set.Value, scan.Current, schema, _functions);
             }
             updates.Add((scan.CurrentRowId, oldRow, newRow));
         }
@@ -6400,12 +6403,12 @@ public sealed class QueryPlanner
                         if (hasGroupBy)
                         {
                             viewOp = new HashAggregateOperator(
-                                viewOp, viewStmt.Columns, viewStmt.GroupBy, viewStmt.Having, viewSchema, outputCols);
+                                viewOp, viewStmt.Columns, viewStmt.GroupBy, viewStmt.Having, viewSchema, outputCols, _functions);
                         }
                         else
                         {
                             viewOp = new ScalarAggregateOperator(
-                                viewOp, viewStmt.Columns, viewStmt.Having, viewSchema, outputCols);
+                                viewOp, viewStmt.Columns, viewStmt.Having, viewSchema, outputCols, _functions);
                         }
 
                         viewSchema = new TableSchema
@@ -6594,7 +6597,8 @@ public sealed class QueryPlanner
                         rightSchema.Columns.Count,
                         leftSchema.Columns.Count,
                         swappedEstimatedOutputRowCount,
-                        swappedRightRowCapacityHint);
+                        swappedRightRowCapacityHint,
+                        _functions);
                 }
 
                 // Swapped execution produces [original right | original left];
@@ -6640,7 +6644,7 @@ public sealed class QueryPlanner
             var joinOp = new NestedLoopJoinOperator(
                 leftOp, rightOp, join.JoinType, join.Condition,
                 compositeSchema, leftSchema.Columns.Count, rightSchema.Columns.Count,
-                estimatedOutputRowCount, rightRowCapacityHint);
+                estimatedOutputRowCount, rightRowCapacityHint, _functions);
 
             return (joinOp, compositeSchema);
         }
@@ -7927,7 +7931,8 @@ public sealed class QueryPlanner
                 residualCondition,
                 compositeSchema,
                 GetReadSerializer(rightSchema),
-                estimatedOutputRowCount);
+                estimatedOutputRowCount,
+                _functions);
         }
         else
         {
@@ -7947,7 +7952,8 @@ public sealed class QueryPlanner
                 storageMode: lookupStorageMode,
                 usesOrderedTextPayload: usesOrderedTextLookupPayload,
                 recordSerializer: GetReadSerializer(rightSchema),
-                estimatedOutputRowCount: estimatedOutputRowCount);
+                estimatedOutputRowCount: estimatedOutputRowCount,
+                functions: _functions);
         }
 
         return true;
@@ -8208,7 +8214,8 @@ public sealed class QueryPlanner
             rightKeyIndices,
             buildRightSide,
             buildRowCapacityHint,
-            estimatedOutputRowCount);
+            estimatedOutputRowCount,
+            _functions);
 
         return true;
     }
@@ -12779,7 +12786,7 @@ public sealed class QueryPlanner
             _requiresQualifiedMappingCache.Clear();
         }
 
-        evaluator = ExpressionCompiler.Compile(expression, schema);
+        evaluator = ExpressionCompiler.Compile(expression, schema, _functions);
         _compiledExpressionCache[key] = evaluator;
         return evaluator;
     }
@@ -12811,7 +12818,7 @@ public sealed class QueryPlanner
             _requiresQualifiedMappingCache.Clear();
         }
 
-        evaluator = ExpressionCompiler.CompileSpan(expression, schema);
+        evaluator = ExpressionCompiler.CompileSpan(expression, schema, _functions);
         _compiledSpanExpressionCache[key] = evaluator;
         return evaluator;
     }
@@ -14184,12 +14191,12 @@ public sealed class QueryPlanner
         }
     }
 
-    private static DbValue ResolveInsertValue(Expression valueExpression, TableSchema schema)
+    private DbValue ResolveInsertValue(Expression valueExpression, TableSchema schema)
     {
         if (valueExpression is LiteralExpression literal)
             return ResolveInsertLiteral(literal);
 
-        return ExpressionEvaluator.Evaluate(valueExpression, Array.Empty<DbValue>(), schema);
+        return ExpressionEvaluator.Evaluate(valueExpression, Array.Empty<DbValue>(), schema, _functions);
     }
 
     private static DbValue ResolveInsertLiteral(LiteralExpression literal)
