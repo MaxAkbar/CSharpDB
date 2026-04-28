@@ -464,7 +464,7 @@ var shipButton = existingButton with
 };
 ```
 
-The initial action set is intentionally small:
+The action set is intentionally small and form-focused:
 
 | Action | Behavior |
 | --- | --- |
@@ -472,6 +472,13 @@ The initial action set is intentionally small:
 | `SetFieldValue` | Updates a target field in the current mutable form record. |
 | `ShowMessage` | Sends a message when the current Forms surface provides a command/message callback. |
 | `Stop` | Ends the current sequence successfully. |
+| `NewRecord` | Starts a new record in the rendered form. |
+| `SaveRecord` | Saves the current rendered record through the normal form save path. |
+| `DeleteRecord` | Deletes the current persisted rendered record through the normal form delete path. |
+| `RefreshRecords` | Reloads the current record/page while preserving the current primary key when possible. |
+| `PreviousRecord` | Moves the rendered form to the previous record. |
+| `NextRecord` | Moves the rendered form to the next record. |
+| `GoToRecord` | Navigates to a primary-key value from `Value`, `Arguments["value"]`, `Arguments["recordId"]`, `Arguments["primaryKey"]`, or the field named by `Target`. |
 
 Action sequences can be attached to form lifecycle bindings or selected-control
 bindings. A binding can contain only a command, only an action sequence, or a
@@ -498,7 +505,7 @@ var form = existingForm with
 
 The Admin Forms property inspector exposes action sequences with a visual
 editor on form-level and selected-control event bindings. Designers can add a
-sequence, name it, add `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop`
+sequence, name it, add command, field, message, stop, and built-in record
 steps, reorder or remove steps, choose registered commands when available, and
 toggle per-step `StopOnFailure`. JSON editing remains only for optional binding
 or `RunCommand` step argument payloads.
@@ -516,13 +523,17 @@ Older form JSON without automation metadata is backfilled when it is loaded.
 
 `SetFieldValue` can update mutable records in form lifecycle events such as
 `BeforeInsert` and `BeforeUpdate`, and it can update the current rendered record
-from control events or command-button clicks. It does not add built-in database
-operations by itself; use `RunCommand` for host-owned work.
+from control events or command-button clicks.
+
+Built-in record actions require a rendered Admin Forms data-entry runtime.
+They are intended for command buttons and selected-control events. Headless
+form lifecycle dispatch can still run `SetFieldValue`, `ShowMessage`, `Stop`,
+and `RunCommand`, but it reports a failure if a sequence asks for rendered-form
+navigation or save/delete actions.
 
 V1 action sequences do not include conditions, loops, stored C# source,
-database-owned plugins, built-in navigation actions, built-in save/delete
-actions, direct SQL/procedure execution actions, or remote delegate
-serialization.
+database-owned plugins, direct SQL/procedure execution actions, or remote
+delegate serialization.
 
 ---
 

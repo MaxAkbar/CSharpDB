@@ -1,5 +1,6 @@
 @using System.Globalization
 @using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Primitives
 @implements IDisposable
 @inject IFormRepository FormRepository
 @inject IFormRecordService RecordService
@@ -91,6 +92,7 @@
                           ValidationErrors="_validationErrors"
                           ChildFormTableDefinitions="_childTableDefs"
                           OnCommandError="OnCommandError"
+                          OnBuiltInAction="ExecuteBuiltInFormActionAsync"
                           OnChildRowsChanged="OnChildRowsChanged" />
         </div>
     }
@@ -418,6 +420,7 @@
         if (!SupportsWriteOperations)
             return;
 
+        _error = null;
         ExitFocusedNavigation();
         _currentRecord = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         _isNew = true;
@@ -630,6 +633,152 @@
     }
 
     private Task PrintRecord() => JS.InvokeVoidAsync("window.print").AsTask();
+
+    private async Task<FormEventDispatchResult> ExecuteBuiltInFormActionAsync(DbActionStep step, CancellationToken ct)
+    {
+        try
+        {
+            return await ExecuteBuiltInFormActionCoreAsync(step, ct);
+        }
+        finally
+        {
+            await RefreshDataEntryStateAsync();
+        }
+    }
+
+    private async Task<FormEventDispatchResult> ExecuteBuiltInFormActionCoreAsync(DbActionStep step, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        _error = null;
+
+        switch (step.Kind)
+        {
+            case DbActionKind.NewRecord:
+                if (!SupportsWriteOperations)
+                    return FormEventDispatchResult.Failure("NewRecord action requires a writable form source.");
+
+                NewRecord();
+                return FormEventDispatchResult.Success();
+
+            case DbActionKind.SaveRecord:
+                if (!SupportsWriteOperations)
+                    return FormEventDispatchResult.Failure("SaveRecord action requires a writable form source.");
+
+                await SaveRecord();
+                return ToActionResult("SaveRecord");
+
+            case DbActionKind.DeleteRecord:
+                if (!SupportsWriteOperations)
+                    return FormEventDispatchResult.Failure("DeleteRecord action requires a writable form source.");
+
+                if (!HasPersistedCurrentRecord)
+                    return FormEventDispatchResult.Failure("DeleteRecord action requires a persisted current record.");
+
+                await DeleteRecord();
+                return ToActionResult("DeleteRecord");
+
+            case DbActionKind.RefreshRecords:
+                await RefreshCurrentRecordsAsync();
+                return ToActionResult("RefreshRecords");
+
+            case DbActionKind.PreviousRecord:
+                if (!CanGoPreviousRecord)
+                    return FormEventDispatchResult.Failure("PreviousRecord action cannot move before the first record.");
+
+                await PrevRecord();
+                return ToActionResult("PreviousRecord");
+
+            case DbActionKind.NextRecord:
+                if (!CanGoNextRecord)
+                    return FormEventDispatchResult.Failure("NextRecord action cannot move past the last record.");
+
+                await NextRecord();
+                return ToActionResult("NextRecord");
+
+            case DbActionKind.GoToRecord:
+                return await ExecuteGoToRecordActionAsync(step);
+
+            default:
+                return FormEventDispatchResult.Failure($"Unsupported built-in form action '{step.Kind}'.");
+        }
+    }
+
+    private async Task RefreshDataEntryStateAsync()
+    {
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("render handle", StringComparison.OrdinalIgnoreCase))
+        {
+            // Private unit-test invocations can run before Blazor assigns a render handle.
+        }
+    }
+
+    private FormEventDispatchResult ToActionResult(string actionName)
+        => string.IsNullOrWhiteSpace(_error)
+            ? FormEventDispatchResult.Success()
+            : FormEventDispatchResult.Failure($"{actionName} action failed: {_error}");
+
+    private async Task<FormEventDispatchResult> ExecuteGoToRecordActionAsync(DbActionStep step)
+    {
+        if (_table is null)
+            return FormEventDispatchResult.Failure("GoToRecord action requires a loaded form source.");
+
+        FormFieldDefinition? primaryKeyField = GetPrimaryKeyField();
+        if (primaryKeyField is null)
+            return FormEventDispatchResult.Failure("GoToRecord action requires a form source with a single primary key column.");
+
+        object? requestedValue = ReadActionValue(step);
+        if (requestedValue is null && !string.IsNullOrWhiteSpace(step.Target))
+            TryGetFieldValue(_currentRecord, step.Target, out requestedValue);
+
+        if (requestedValue is null)
+            return FormEventDispatchResult.Failure("GoToRecord action requires a record value.");
+
+        string rawValue = requestedValue.ToString() ?? string.Empty;
+        if (!TryParseFieldValue(primaryKeyField, rawValue, out object? parsedValue, out string? validationError))
+            return FormEventDispatchResult.Failure(validationError ?? $"'{rawValue}' is not a valid {GetPrimaryKeyLabel()} value.");
+
+        if (parsedValue is null)
+            return FormEventDispatchResult.Failure($"'{rawValue}' is not a valid {GetPrimaryKeyLabel()} value.");
+
+        ClearSearchState(clearPendingValue: true);
+        await NavigateToRecordAsync(parsedValue);
+        return ToActionResult("GoToRecord");
+    }
+
+    private async Task RefreshCurrentRecordsAsync()
+    {
+        if (_table is null)
+            return;
+
+        object? currentPk = TryGetPrimaryKeyValue(_currentRecord, out object? pkValue) ? pkValue : null;
+        if (currentPk is not null)
+        {
+            await NavigateToRecordAsync(currentPk);
+            return;
+        }
+
+        await LoadRecordPageAsync(_page, preserveCurrentRecordWhenEmpty: _currentRecord.Count > 0 || _isNew);
+    }
+
+    private static object? ReadActionValue(DbActionStep step)
+    {
+        if (step.Value is not null)
+            return step.Value;
+
+        if (step.Arguments is null)
+            return null;
+
+        if (step.Arguments.TryGetValue("value", out object? value))
+            return value;
+
+        if (step.Arguments.TryGetValue("recordId", out object? recordId))
+            return recordId;
+
+        return step.Arguments.TryGetValue("primaryKey", out object? primaryKey) ? primaryKey : null;
+    }
 
     private async Task<bool> DispatchFormEventAsync(
         FormEventKind eventKind,

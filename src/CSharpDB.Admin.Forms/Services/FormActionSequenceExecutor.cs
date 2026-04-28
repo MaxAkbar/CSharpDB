@@ -16,6 +16,7 @@ internal static class FormActionSequenceExecutor
         IReadOnlyDictionary<string, string> metadata,
         Func<string, object?, Task>? setFieldValue = null,
         Func<string, Task>? showMessage = null,
+        Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(sequence);
@@ -38,6 +39,7 @@ internal static class FormActionSequenceExecutor
                 metadata,
                 setFieldValue,
                 showMessage,
+                executeBuiltInFormAction,
                 ct);
 
             if (!result.Succeeded && step.StopOnFailure)
@@ -64,6 +66,7 @@ internal static class FormActionSequenceExecutor
         IReadOnlyDictionary<string, string> metadata,
         Func<string, object?, Task>? setFieldValue,
         Func<string, Task>? showMessage,
+        Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
         CancellationToken ct)
     {
         try
@@ -74,6 +77,13 @@ internal static class FormActionSequenceExecutor
                 DbActionKind.SetFieldValue => await SetFieldValueAsync(step, record, setFieldValue),
                 DbActionKind.ShowMessage => await ShowMessageAsync(step, showMessage),
                 DbActionKind.Stop => FormEventDispatchResult.Success(ReadMessage(step)),
+                DbActionKind.NewRecord or
+                DbActionKind.SaveRecord or
+                DbActionKind.DeleteRecord or
+                DbActionKind.RefreshRecords or
+                DbActionKind.PreviousRecord or
+                DbActionKind.NextRecord or
+                DbActionKind.GoToRecord => await ExecuteBuiltInFormActionAsync(step, executeBuiltInFormAction, ct),
                 _ => FormEventDispatchResult.Failure($"Unsupported form action kind '{step.Kind}'."),
             };
         }
@@ -87,6 +97,15 @@ internal static class FormActionSequenceExecutor
                 $"Form action '{step.Kind}' failed: {ex.Message}");
         }
     }
+
+    private static Task<FormEventDispatchResult> ExecuteBuiltInFormActionAsync(
+        DbActionStep step,
+        Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
+        CancellationToken ct)
+        => executeBuiltInFormAction is null
+            ? Task.FromResult(FormEventDispatchResult.Failure(
+                $"Form action '{step.Kind}' requires a rendered form runtime."))
+            : executeBuiltInFormAction(step, ct);
 
     private static async Task<FormEventDispatchResult> RunCommandAsync(
         DbActionSequence sequence,

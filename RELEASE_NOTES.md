@@ -68,9 +68,13 @@ calculated text, and pipeline filter/derive expressions.
   `SetFieldValue`, `ShowMessage`, and `Stop` steps for Admin Forms automation.
   Form and control event bindings can now be command-only,
   action-sequence-only, or a command followed by an action sequence.
+- Added built-in rendered-form actions for `NewRecord`, `SaveRecord`,
+  `DeleteRecord`, `RefreshRecords`, `PreviousRecord`, `NextRecord`, and
+  `GoToRecord`, so command buttons and control events can drive common form
+  workflows without host C# callbacks.
 - The form-event and selected-control event editors now include a visual
   action-sequence editor for adding, ordering, removing, and configuring
-  `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop` steps.
+  command, field, message, stop, and built-in record actions.
 - The action-sequence editor uses registered-command pickers when commands are
   available, preserves missing command names for portable form metadata, and
   keeps JSON editing limited to optional argument payloads.
@@ -164,6 +168,8 @@ calculated text, and pipeline filter/derive expressions.
   import/export, and stale package metadata validation.
 - Added async command and timeout coverage for the command registry, Admin
   Forms dispatcher, Admin Reports dispatcher, and pipeline hook orchestration.
+- Added Forms built-in action tests covering rendered command-button dispatch,
+  next/previous/go-to navigation, and create/save/refresh/delete workflows.
 - Same-machine affected benchmark comparison against the pre-feature HEAD
   baseline showed no material regression in the main write/query guardrails:
 
@@ -201,6 +207,10 @@ otherwise neutral to improved.
   `dotnet build CSharpDB.slnx --no-restore -m:1` and
   `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
   - Debug non-parallel unit test run passed with `1,709` tests.
+- Phase 6B built-in form action validation used
+  `dotnet build CSharpDB.slnx --no-restore -m:1` and
+  `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
+  - Debug non-parallel unit test run passed with `1,712` tests.
 - `dotnet pack` smoke for the release workflow packages with
   `-p:Version=3.6.0`
   - Produced `11` local packages:

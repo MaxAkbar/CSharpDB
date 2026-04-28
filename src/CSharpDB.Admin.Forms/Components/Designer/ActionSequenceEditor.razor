@@ -95,6 +95,23 @@
                             </div>
                         </div>
                         break;
+                    case DbActionKind.GoToRecord:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Record Value</label>
+                                <input type="text"
+                                       value="@FormatValue(step.Value)"
+                                       @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Value From Field</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       placeholder="Optional field name"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                        </div>
+                        break;
                     case DbActionKind.ShowMessage:
                     case DbActionKind.Stop:
                         <div class="feb-field">
@@ -125,6 +142,13 @@
         <div class="ase-actions">
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunCommand))">+ Command</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SetFieldValue))">+ Set Field</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.NewRecord))">+ New</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SaveRecord))">+ Save</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.DeleteRecord))">+ Delete</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RefreshRecords))">+ Refresh</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.PreviousRecord))">+ Previous</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.NextRecord))">+ Next</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.GoToRecord))">+ Go To</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.ShowMessage))">+ Message</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.Stop))">+ Stop</button>
         </div>
@@ -209,7 +233,7 @@
 
         DbActionStep updated = CreateDefaultStep(kind) with
         {
-            Arguments = step.Arguments,
+            Arguments = kind == DbActionKind.RunCommand ? step.Arguments : null,
             StopOnFailure = step.StopOnFailure,
         };
         return ReplaceStep(index, updated);
@@ -275,6 +299,7 @@
         {
             DbActionKind.RunCommand => new DbActionStep(kind, CommandName: RegisteredCommands.FirstOrDefault()?.Name),
             DbActionKind.SetFieldValue => new DbActionStep(kind, Target: string.Empty, Value: string.Empty),
+            DbActionKind.GoToRecord => new DbActionStep(kind, Value: string.Empty),
             DbActionKind.ShowMessage => new DbActionStep(kind, Message: string.Empty),
             DbActionKind.Stop => new DbActionStep(kind),
             _ => new DbActionStep(kind),
@@ -322,6 +347,13 @@
             DbActionKind.SetFieldValue => "Set Field Value",
             DbActionKind.ShowMessage => "Show Message",
             DbActionKind.Stop => "Stop",
+            DbActionKind.NewRecord => "New Record",
+            DbActionKind.SaveRecord => "Save Record",
+            DbActionKind.DeleteRecord => "Delete Record",
+            DbActionKind.RefreshRecords => "Refresh Records",
+            DbActionKind.PreviousRecord => "Previous Record",
+            DbActionKind.NextRecord => "Next Record",
+            DbActionKind.GoToRecord => "Go To Record",
             _ => kind.ToString(),
         };
 }

@@ -113,10 +113,16 @@ properties, optional validation overrides, optional renderer hints, and optional
 
 Form and control event bindings can reference a trusted command name and can
 optionally include a `DbActionSequence`. Action sequences store declarative
-steps such as `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop`; they do
-not store C# source or serialized delegates. The property inspector exposes a
+steps such as `RunCommand`, `SetFieldValue`, `ShowMessage`, `Stop`, `NewRecord`,
+`SaveRecord`, `DeleteRecord`, `RefreshRecords`, `PreviousRecord`, `NextRecord`,
+and `GoToRecord`; they do not store C# source or serialized delegates. The
+property inspector exposes a
 visual action-sequence editor on form-level and selected-control event bindings;
 JSON editing is limited to optional command argument payloads.
+
+The built-in record actions run only in the rendered Forms data-entry runtime.
+Headless form event dispatch can still run command, field, message, and stop
+steps, but navigation and save/delete actions require a rendered form instance.
 
 `DbFormRepository` regenerates `Automation` on save/load. The manifest records
 trusted command and scalar-function names used by form events, command buttons,

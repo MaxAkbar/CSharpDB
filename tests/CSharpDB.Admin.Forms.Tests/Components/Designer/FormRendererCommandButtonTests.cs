@@ -1,4 +1,5 @@
 using System.Reflection;
+using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Components.Designer;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Primitives;
@@ -173,6 +174,45 @@ public sealed class FormRendererCommandButtonTests
         Assert.Equal("RunCommand", captured.Metadata["actionKind"]);
         Assert.Equal("1", captured.Metadata["actionStep"]);
         Assert.Equal("ShipButtonActions", captured.Metadata["actionSequence"]);
+    }
+
+    [Fact]
+    public async Task CommandButton_ExecutesBuiltInFormAction()
+    {
+        DbActionStep? captured = null;
+        string? error = null;
+        ControlDefinition button = new(
+            "button1",
+            "commandButton",
+            new Rect(10, 20, 120, 34),
+            null,
+            new PropertyBag(new Dictionary<string, object?> { ["text"] = "Next" }),
+            null,
+            EventBindings:
+            [
+                new ControlEventBinding(
+                    ControlEventKind.OnClick,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.NextRecord),
+                    ])),
+            ]);
+        var renderer = CreateRenderer(DbCommandRegistry.Empty, CreateForm(button), message => error = message);
+        SetProperty(
+            renderer,
+            nameof(FormRenderer.OnBuiltInAction),
+            new Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>((step, _) =>
+            {
+                captured = step;
+                return Task.FromResult(FormEventDispatchResult.Success());
+            }));
+
+        await InvokeNonPublicAsync(renderer, "InvokeCommandButtonAsync", button);
+
+        Assert.Null(error);
+        Assert.NotNull(captured);
+        Assert.Equal(DbActionKind.NextRecord, captured!.Kind);
     }
 
     private static FormRenderer CreateRenderer(

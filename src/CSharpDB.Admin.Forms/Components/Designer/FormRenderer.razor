@@ -223,6 +223,7 @@
     [Parameter] public IReadOnlyDictionary<string, FormTableDefinition>? ChildFormTableDefinitions { get; set; }
     [Parameter] public EventCallback OnChildRowsChanged { get; set; }
     [Parameter] public EventCallback<string> OnCommandError { get; set; }
+    [Parameter] public Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? OnBuiltInAction { get; set; }
 
     private readonly HashSet<string> _executingCommandButtons = [];
 
@@ -427,7 +428,8 @@
                     runtimeArguments,
                     metadata,
                     setFieldValue: SetActionFieldValueAsync,
-                    showMessage: ReportCommandErrorAsync);
+                    showMessage: ReportCommandErrorAsync,
+                    executeBuiltInFormAction: OnBuiltInAction);
 
                 if (!actionResult.Succeeded && binding.StopOnFailure)
                 {

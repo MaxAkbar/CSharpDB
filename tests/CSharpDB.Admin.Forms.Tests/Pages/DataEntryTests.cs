@@ -300,6 +300,116 @@ public sealed class DataEntryTests
     }
 
     [Fact]
+    public async Task BuiltInFormActions_NavigateRecordsAndGoToRecord()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Events (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Events VALUES (1, 'Event 1');
+            INSERT INTO Events VALUES (2, 'Event 2');
+            INSERT INTO Events VALUES (3, 'Event 3');
+            """);
+
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("events-form", "Events"),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: new DbFormRecordService(db.Client));
+
+        FormEventDispatchResult result = await InvokeNonPublicAsync<FormEventDispatchResult>(
+            component,
+            "ExecuteBuiltInFormActionAsync",
+            new DbActionStep(DbActionKind.NextRecord),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(2L, ReadCurrentRecord(component)["Id"]);
+
+        result = await InvokeNonPublicAsync<FormEventDispatchResult>(
+            component,
+            "ExecuteBuiltInFormActionAsync",
+            new DbActionStep(DbActionKind.PreviousRecord),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1L, ReadCurrentRecord(component)["Id"]);
+
+        result = await InvokeNonPublicAsync<FormEventDispatchResult>(
+            component,
+            "ExecuteBuiltInFormActionAsync",
+            new DbActionStep(DbActionKind.GoToRecord, Value: 3L),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(3L, ReadCurrentRecord(component)["Id"]);
+    }
+
+    [Fact]
+    public async Task BuiltInFormActions_CreateSaveRefreshAndDelete()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Products VALUES (1, 'Widget');
+            """);
+
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("products-form", "Products"),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: new DbFormRecordService(db.Client));
+
+        FormEventDispatchResult result = await InvokeNonPublicAsync<FormEventDispatchResult>(
+            component,
+            "ExecuteBuiltInFormActionAsync",
+            new DbActionStep(DbActionKind.NewRecord),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True(GetField<bool>(component, "_isNew"));
+
+        Dictionary<string, object?> current = ReadCurrentRecord(component);
+        current["Id"] = 2L;
+        current["Name"] = "Gadget";
+        SetField(component, "_dirty", true);
+
+        result = await InvokeNonPublicAsync<FormEventDispatchResult>(
+            component,
+            "ExecuteBuiltInFormActionAsync",
+            new DbActionStep(DbActionKind.SaveRecord),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(2L, ReadCurrentRecord(component)["Id"]);
+        Assert.Equal(2, (await db.QueryRowsAsync("SELECT * FROM Products")).Count);
+
+        await db.ExecuteAsync("UPDATE Products SET Name = 'Gadget Pro' WHERE Id = 2");
+        result = await InvokeNonPublicAsync<FormEventDispatchResult>(
+            component,
+            "ExecuteBuiltInFormActionAsync",
+            new DbActionStep(DbActionKind.RefreshRecords),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Gadget Pro", ReadCurrentRecord(component)["Name"]);
+
+        result = await InvokeNonPublicAsync<FormEventDispatchResult>(
+            component,
+            "ExecuteBuiltInFormActionAsync",
+            new DbActionStep(DbActionKind.DeleteRecord),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Single(await db.QueryRowsAsync("SELECT * FROM Products"));
+    }
+
+    [Fact]
     public async Task ViewBackedForm_LoadsAndSearchesInReadOnlyMode()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
@@ -410,6 +520,15 @@ public sealed class DataEntryTests
         var task = (Task?)method.Invoke(instance, args)
             ?? throw new InvalidOperationException($"Method '{methodName}' did not return a task.");
         await task;
+    }
+
+    private static async Task<T> InvokeNonPublicAsync<T>(object instance, string methodName, params object?[]? args)
+    {
+        MethodInfo method = instance.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Method '{methodName}' was not found.");
+        var task = (Task<T>?)method.Invoke(instance, args)
+            ?? throw new InvalidOperationException($"Method '{methodName}' did not return a task.");
+        return await task;
     }
 
     private sealed class StaticFormRepository(FormDefinition form) : IFormRepository

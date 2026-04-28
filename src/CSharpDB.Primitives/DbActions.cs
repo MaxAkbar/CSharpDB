@@ -6,6 +6,13 @@ public enum DbActionKind
     SetFieldValue,
     ShowMessage,
     Stop,
+    NewRecord,
+    SaveRecord,
+    DeleteRecord,
+    RefreshRecords,
+    PreviousRecord,
+    NextRecord,
+    GoToRecord,
 }
 
 public sealed record DbActionSequence(

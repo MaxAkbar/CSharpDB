@@ -184,6 +184,8 @@ public class JsonRoundtripTests
                             DbActionKind.RunCommand,
                             CommandName: "AuditAction",
                             Arguments: new Dictionary<string, object?> { ["source"] = "roundtrip" }),
+                        new DbActionStep(DbActionKind.GoToRecord, Value: 123L),
+                        new DbActionStep(DbActionKind.SaveRecord),
                     ],
                     Name: "LoadActions")),
             ]);
@@ -193,13 +195,16 @@ public class JsonRoundtripTests
 
         DbActionSequence sequence = deserialized.EventBindings![0].ActionSequence!;
         Assert.Equal("LoadActions", sequence.Name);
-        Assert.Equal(2, sequence.Steps.Count);
+        Assert.Equal(4, sequence.Steps.Count);
         Assert.Equal(DbActionKind.SetFieldValue, sequence.Steps[0].Kind);
         Assert.Equal("Status", sequence.Steps[0].Target);
         Assert.Equal("Ready", sequence.Steps[0].Value?.ToString());
         Assert.Equal(DbActionKind.RunCommand, sequence.Steps[1].Kind);
         Assert.Equal("AuditAction", sequence.Steps[1].CommandName);
         Assert.Equal("roundtrip", sequence.Steps[1].Arguments!["source"]);
+        Assert.Equal(DbActionKind.GoToRecord, sequence.Steps[2].Kind);
+        Assert.Equal("123", sequence.Steps[2].Value?.ToString());
+        Assert.Equal(DbActionKind.SaveRecord, sequence.Steps[3].Kind);
     }
 
     [Fact]
