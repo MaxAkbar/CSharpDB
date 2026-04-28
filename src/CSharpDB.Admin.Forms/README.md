@@ -18,6 +18,7 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - trusted command-backed form events and command buttons
 - trusted command-backed selected-control events
 - declarative action sequences for form and selected-control events
+- generated automation metadata for import/export host callback requirements
 
 ## Main Components
 
@@ -85,7 +86,8 @@ public sealed record FormDefinition(
     LayoutDefinition Layout,
     IReadOnlyList<ControlDefinition> Controls,
     IReadOnlyDictionary<string, object?>? RendererHints = null,
-    IReadOnlyList<FormEventBinding>? EventBindings = null);
+    IReadOnlyList<FormEventBinding>? EventBindings = null,
+    DbAutomationMetadata? Automation = null);
 ```
 
 Controls are stored as `ControlDefinition` records with geometry, binding,
@@ -99,6 +101,11 @@ steps such as `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop`; they do
 not store C# source or serialized delegates. The property inspector exposes a
 visual action-sequence editor on form-level and selected-control event bindings;
 JSON editing is limited to optional command argument payloads.
+
+`DbFormRepository` regenerates `Automation` on save/load. The manifest records
+trusted command and scalar-function names used by form events, command buttons,
+selected-control events, action sequences, and computed formulas so exported
+form JSON tells a host which callbacks it must register.
 
 ## Build
 

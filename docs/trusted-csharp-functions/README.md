@@ -297,6 +297,7 @@ The practical rule is:
 - Embedded or direct client: register functions in `DatabaseOptions` or `DirectDatabaseOptions`.
 - Remote client: register functions where the daemon, API host, or application server opens the database.
 - Pipeline packages, report definitions, form definitions, procedures, and SQL text store function names and expressions only. They do not store C# function bodies.
+- Admin Forms, Admin Reports, and pipeline packages also store generated `automation` metadata that lists required trusted commands and scalar functions by name, surface, and location. This is an import/export contract for hosts; it is not executable code.
 
 ---
 
@@ -493,6 +494,12 @@ binding arguments, runtime event arguments, and step arguments, with later
 sources overriding earlier ones. Command metadata includes the Forms metadata
 plus `actionKind`, `actionStep`, and optional `actionSequence`.
 
+When forms are saved through `DbFormRepository` or exported through
+`FormAutomationMetadata.NormalizeForExport(...)`, the definition's `automation`
+metadata is regenerated from form events, command buttons, selected-control
+events, action-sequence `RunCommand` steps, and computed-control formulas.
+Older form JSON without automation metadata is backfilled when it is loaded.
+
 `SetFieldValue` can update mutable records in form lifecycle events such as
 `BeforeInsert` and `BeforeUpdate`, and it can update the current rendered record
 from control events or command-button clicks. It does not add built-in database
@@ -558,6 +565,12 @@ Supported report events are:
 | `AfterRender` | After preview pages are produced, before the preview result is returned. |
 
 Command context arguments include render metrics such as `rowCount`, `loadedRowCount`, `rowTruncated`, `pageCount`, `isTruncated`, and `hasSchemaDrift` depending on the event. Static arguments configured on the binding override same-named runtime arguments. Metadata includes `surface = AdminReports`, `reportId`, `reportName`, `sourceKind`, `sourceName`, and `event`.
+
+When reports are saved through `DbReportRepository` or exported through
+`ReportAutomationMetadata.NormalizeForExport(...)`, the definition's
+`automation` metadata is regenerated from report event bindings and calculated
+text expressions. Older report JSON without automation metadata is backfilled
+when it is loaded.
 
 Register report commands through the reports service registration overload:
 
@@ -640,9 +653,9 @@ var package = new PipelinePackageDefinition
 await runner.RunPackageAsync(package);
 ```
 
-Pipeline package JSON stores only expressions such as `NormalizeStatus(status)`. The C# delegate must be registered by the process that runs the package.
+Pipeline package JSON stores expressions such as `NormalizeStatus(status)` plus generated `automation` metadata listing the required scalar function names. The C# delegate must be registered by the process that runs the package.
 
-Pipelines can also invoke trusted commands from run hooks. Hook definitions are serialized with the package, but they store only the hook event, command name, and optional static arguments:
+Pipelines can also invoke trusted commands from run hooks. Hook definitions are serialized with the package, but they store only the hook event, command name, optional static arguments, and generated automation metadata:
 
 ```csharp
 var commands = DbCommandRegistry.Create(builder =>
@@ -699,6 +712,8 @@ Supported pipeline hook events are:
 | `OnRunFailed` | When the orchestrator is about to return a failed `PipelineRunResult`. |
 
 Hook arguments include `runId`, `pipelineName`, `pipelineVersion`, `mode`, `event`, `status`, `rowsRead`, `rowsWritten`, `rowsRejected`, and `batchesCompleted`. Batch hooks also include `batchNumber`, `startingRowNumber`, and `batchRowCount`. Failure hooks include `errorSummary`. Metadata includes `surface = Pipelines`, `pipelineName`, `pipelineVersion`, `runId`, `mode`, and `event`.
+
+`PipelinePackageSerializer` refreshes the `automation` manifest when packages are serialized, saved, deserialized, or loaded from disk. `PipelinePackageValidator` accepts older packages without a manifest, but if a manifest is present and no longer matches the package expressions/hooks, validation reports stale automation metadata so the package can be re-exported.
 
 `Validate` mode does not invoke command hooks, so package validation stays side-effect free. Missing command registration or a failing hook with `StopOnFailure = true` fails the run normally. For `OnRunFailed`, hook failures are appended to the failed run's error summary instead of recursively dispatching more failure hooks.
 

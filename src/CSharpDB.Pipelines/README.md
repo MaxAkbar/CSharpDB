@@ -16,7 +16,8 @@ The built-in runtime can validate packages, serialize them to JSON, execute them
 in batches, capture checkpoints, and report rejects and run metrics.
 Packages can also name trusted host commands for lifecycle hooks; command bodies
 are registered by the process that runs the pipeline and are not serialized into
-the package.
+the package. Package JSON includes generated automation metadata that lists the
+trusted commands and scalar functions a host must register.
 
 Current boundary:
 - Built-in runtime components currently support CSV and JSON file sources/destinations
@@ -33,6 +34,7 @@ Current boundary:
 - **Built-in transforms**: select, rename, cast, filter, derive, deduplicate
 - **Checkpointing hooks**: pluggable checkpoint store and run logger abstractions
 - **Trusted command hooks**: host-registered commands for run started, batch completed, run succeeded, and run failed events
+- **Automation metadata**: generated import/export manifest for trusted command and scalar function names
 - **Batch metrics**: rows read/written/rejected plus batch counts
 
 ## Usage
@@ -211,6 +213,7 @@ The output file contains the active customers only, with duplicate IDs removed:
 - Relative source file paths are searched from the current directory and app base directory; relative output paths are written relative to the current directory
 - `Derive` expressions are intentionally simple today: use a source column name or a literal such as `'csv'`, `123`, `true`, or `null`
 - Trusted command hooks are skipped in `Validate` mode. Missing command registration or a failing hook with `StopOnFailure = true` fails the run through `PipelineRunResult`.
+- `PipelinePackageSerializer` regenerates `Automation` during save/load and string serialization. Validation accepts legacy packages without automation metadata, but reports stale manifests when present.
 
 ## Installation
 

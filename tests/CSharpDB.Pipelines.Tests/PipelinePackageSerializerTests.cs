@@ -18,6 +18,8 @@ public sealed class PipelinePackageSerializerTests
         Assert.Contains("\"kind\": \"csvFile\"", json);
         Assert.Contains("\"targetType\": \"integer\"", json);
         Assert.Contains("\"event\": \"onRunSucceeded\"", json);
+        Assert.Contains("\"automation\"", json);
+        Assert.Contains("\"scalarFunctions\"", json);
     }
 
     [Fact]
@@ -42,6 +44,10 @@ public sealed class PipelinePackageSerializerTests
         Assert.Equal("NotifyImport", hook.CommandName);
         Assert.Equal("ops", Assert.IsType<string>(hook.Arguments!["channel"]));
         Assert.Equal(3, DbCommandArguments.FromObject(hook.Arguments["priority"]).AsInteger);
+        Assert.NotNull(clone.Automation);
+        Assert.Contains(clone.Automation!.Commands!, command => command.Name == "NotifyImport");
+        Assert.Contains(clone.Automation.ScalarFunctions!, function => function.Name == "NormalizeStatus" && function.Arity == 1);
+        Assert.Contains(clone.Automation.ScalarFunctions!, function => function.Name == "Slugify" && function.Arity == 1);
     }
 
     [Fact]
@@ -116,6 +122,23 @@ public sealed class PipelinePackageSerializerTests
                     {
                         Column = "id",
                         TargetType = DbType.Integer,
+                    },
+                ],
+            },
+            new PipelineTransformDefinition
+            {
+                Kind = PipelineTransformKind.Filter,
+                FilterExpression = "NormalizeStatus(status) == 'active'",
+            },
+            new PipelineTransformDefinition
+            {
+                Kind = PipelineTransformKind.Derive,
+                DerivedColumns =
+                [
+                    new PipelineDerivedColumn
+                    {
+                        Name = "slug",
+                        Expression = "Slugify(name)",
                     },
                 ],
             },

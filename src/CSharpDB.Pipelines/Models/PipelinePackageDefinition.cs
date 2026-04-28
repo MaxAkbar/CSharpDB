@@ -13,6 +13,7 @@ public sealed class PipelinePackageDefinition
     public PipelineExecutionOptions Options { get; init; } = new();
     public PipelineIncrementalOptions? Incremental { get; init; }
     public IReadOnlyList<PipelineCommandHookDefinition> Hooks { get; init; } = [];
+    public DbAutomationMetadata? Automation { get; init; }
 }
 
 public enum PipelineCommandHookEvent

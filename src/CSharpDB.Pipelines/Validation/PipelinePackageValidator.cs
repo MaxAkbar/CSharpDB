@@ -1,4 +1,5 @@
 using CSharpDB.Pipelines.Models;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Pipelines.Validation;
 
@@ -26,6 +27,7 @@ public static class PipelinePackageValidator
         ValidateIncremental(package.Incremental, errors);
         ValidateTransforms(package.Transforms, errors);
         ValidateHooks(package.Hooks, errors);
+        ValidateAutomation(package, errors);
 
         return errors.Count == 0
             ? PipelineValidationResult.Success
@@ -245,6 +247,57 @@ public static class PipelinePackageValidator
             }
         }
     }
+
+    private static void ValidateAutomation(PipelinePackageDefinition package, List<PipelineValidationIssue> errors)
+    {
+        DbAutomationMetadata? automation = package.Automation;
+        if (automation is null)
+            return;
+
+        if (automation.MetadataVersion != DbAutomationMetadata.CurrentMetadataVersion)
+        {
+            errors.Add(Error(
+                "pipeline.automation.version.unsupported",
+                "automation.metadataVersion",
+                $"Automation metadata version {automation.MetadataVersion} is not supported."));
+        }
+
+        DbAutomationMetadata expected = PipelineAutomationMetadata.Build(package);
+        HashSet<string> expectedCommands = CommandKeys(expected.Commands);
+        HashSet<string> actualCommands = CommandKeys(automation.Commands);
+        HashSet<string> expectedFunctions = ScalarFunctionKeys(expected.ScalarFunctions);
+        HashSet<string> actualFunctions = ScalarFunctionKeys(automation.ScalarFunctions);
+
+        if (!expectedCommands.SetEquals(actualCommands))
+        {
+            errors.Add(Error(
+                "pipeline.automation.commands.outOfDate",
+                "automation.commands",
+                "Automation command metadata is out of date. Re-export the package to refresh it."));
+        }
+
+        if (!expectedFunctions.SetEquals(actualFunctions))
+        {
+            errors.Add(Error(
+                "pipeline.automation.scalarFunctions.outOfDate",
+                "automation.scalarFunctions",
+                "Automation scalar function metadata is out of date. Re-export the package to refresh it."));
+        }
+    }
+
+    private static HashSet<string> CommandKeys(IReadOnlyList<DbAutomationCommandReference>? commands)
+        => commands is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : commands
+                .Select(static command => $"{command.Name}|{command.Surface}|{command.Location}")
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static HashSet<string> ScalarFunctionKeys(IReadOnlyList<DbAutomationScalarFunctionReference>? functions)
+        => functions is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : functions
+                .Select(static function => $"{function.Name}|{function.Arity}|{function.Surface}|{function.Location}")
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     private static void ValidateFunctionSyntax(string expression, string path, List<PipelineValidationIssue> errors)
     {

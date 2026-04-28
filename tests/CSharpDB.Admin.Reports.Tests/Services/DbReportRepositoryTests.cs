@@ -2,6 +2,7 @@ using CSharpDB.Admin.Reports.Contracts;
 using CSharpDB.Admin.Reports.Models;
 using CSharpDB.Admin.Reports.Services;
 using CSharpDB.Admin.Reports.Serialization;
+using CSharpDB.Primitives;
 using System.Text.Json;
 
 namespace CSharpDB.Admin.Reports.Tests.Services;
@@ -44,6 +45,48 @@ public class DbReportRepositoryTests
         Assert.False(string.IsNullOrWhiteSpace(created.ReportId));
         Assert.Equal("Customers Report", created.Name);
         Assert.Equal(1, created.DefinitionVersion);
+    }
+
+    [Fact]
+    public async Task CreateAsync_StoresGeneratedAutomationMetadata()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        var repository = new DbReportRepository(db.Client);
+
+        ReportDefinition created = await repository.CreateAsync(CreateReport("r-auto", ReportSourceKind.Table, "Orders", "Order Report", "sig:orders:v1") with
+        {
+            EventBindings =
+            [
+                new ReportEventBinding(ReportEventKind.BeforeRender, "PrepareReport"),
+            ],
+            Bands =
+            [
+                new ReportBandDefinition(
+                    "detail",
+                    ReportBandKind.Detail,
+                    28,
+                    null,
+                    [
+                        new ReportControlDefinition(
+                            "total",
+                            ReportControlType.CalculatedText,
+                            "detail",
+                            new Rect(0, 0, 120, 24),
+                            null,
+                            "=FormatTotal(Total)",
+                            null,
+                            new PropertyBag(new Dictionary<string, object?>())),
+                    ]),
+            ],
+        });
+        ReportDefinition loaded = (await repository.GetAsync(created.ReportId))!;
+
+        Assert.NotNull(created.Automation);
+        Assert.NotNull(loaded.Automation);
+        Assert.Contains(loaded.Automation!.Commands!, command => command.Name == "PrepareReport");
+        DbAutomationScalarFunctionReference function = Assert.Single(loaded.Automation.ScalarFunctions!);
+        Assert.Equal("FormatTotal", function.Name);
+        Assert.Equal(1, function.Arity);
     }
 
     [Fact]

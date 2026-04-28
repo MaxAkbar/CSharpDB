@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Admin.Forms.Serialization;
+using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Tests.Serialization;
@@ -199,6 +200,64 @@ public class JsonRoundtripTests
         Assert.Equal(DbActionKind.RunCommand, sequence.Steps[1].Kind);
         Assert.Equal("AuditAction", sequence.Steps[1].CommandName);
         Assert.Equal("roundtrip", sequence.Steps[1].Arguments!["source"]);
+    }
+
+    [Fact]
+    public void FormAutomationMetadata_NormalizeForExport_RoundTrips()
+    {
+        var form = new FormDefinition(
+            "f-automation",
+            "Automation Form",
+            "Orders",
+            1,
+            "orders:v1",
+            new LayoutDefinition("absolute", 8, true, []),
+            [
+                new ControlDefinition(
+                    "ship",
+                    "commandButton",
+                    new Rect(0, 0, 120, 32),
+                    null,
+                    new PropertyBag(new Dictionary<string, object?> { ["commandName"] = "ShipOrder" }),
+                    null),
+                new ControlDefinition(
+                    "score",
+                    "computed",
+                    new Rect(0, 40, 120, 32),
+                    null,
+                    new PropertyBag(new Dictionary<string, object?> { ["formula"] = "=BoostScore(Score)" }),
+                    null,
+                    EventBindings:
+                    [
+                        new ControlEventBinding(
+                            ControlEventKind.OnChange,
+                            "NormalizeScore",
+                            ActionSequence: new DbActionSequence(
+                            [
+                                new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditScore"),
+                            ],
+                            Name: "ScoreActions")),
+                    ]),
+            ],
+            EventBindings:
+            [
+                new FormEventBinding(FormEventKind.BeforeInsert, "ValidateOrder"),
+            ]);
+
+        FormDefinition normalized = FormAutomationMetadata.NormalizeForExport(form);
+        string json = JsonSerializer.Serialize(normalized, Options);
+        FormDefinition deserialized = JsonSerializer.Deserialize<FormDefinition>(json, Options)!;
+
+        Assert.NotNull(deserialized.Automation);
+        Assert.Equal(DbAutomationMetadata.CurrentMetadataVersion, deserialized.Automation!.MetadataVersion);
+        Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "ShipOrder");
+        Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "NormalizeScore");
+        Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "AuditScore");
+        Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "ValidateOrder");
+        DbAutomationScalarFunctionReference function = Assert.Single(deserialized.Automation.ScalarFunctions!);
+        Assert.Equal("BoostScore", function.Name);
+        Assert.Equal(1, function.Arity);
+        Assert.Contains("\"automation\"", json);
     }
 
     [Fact]

@@ -17,6 +17,7 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
   controls
 - preview pagination and simple expression evaluation
 - trusted command-backed preview lifecycle events
+- generated automation metadata for import/export host callback requirements
 
 ## Main Components
 
@@ -88,7 +89,8 @@ public sealed record ReportDefinition(
     IReadOnlyList<ReportSortDefinition> Sorts,
     IReadOnlyList<ReportBandDefinition> Bands,
     IReadOnlyDictionary<string, object?>? RendererHints = null,
-    IReadOnlyList<ReportEventBinding>? EventBindings = null);
+    IReadOnlyList<ReportEventBinding>? EventBindings = null,
+    DbAutomationMetadata? Automation = null);
 ```
 
 Report layout is band-based. Each `ReportBandDefinition` owns a list of
@@ -97,6 +99,9 @@ Report layout is band-based. Each `ReportBandDefinition` owns a list of
 `EventBindings` can reference host-registered commands for `OnOpen`,
 `BeforeRender`, and `AfterRender`. Report JSON stores event names, command
 names, and optional arguments only; C# command bodies stay in the host process.
+`DbReportRepository` regenerates `Automation` on save/load so exported report
+JSON lists required trusted commands and scalar functions from event bindings
+and calculated text expressions.
 
 ## Build
 

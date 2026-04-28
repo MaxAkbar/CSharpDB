@@ -25,7 +25,8 @@ calculated text, and pipeline filter/derive expressions.
 - Admin Forms formulas and Admin Reports calculated expressions can use the
   same registry while preserving existing arithmetic and aggregate behavior.
 - Pipeline filter and derived-column expressions can call registered functions;
-  package definitions continue to store function names and expressions only.
+  package definitions store expressions plus generated automation metadata, but
+  never C# function bodies.
 - Added the usage guide at `docs/trusted-csharp-functions/README.md`.
 
 ### Trusted Commands And Form Events
@@ -79,10 +80,28 @@ calculated text, and pipeline filter/derive expressions.
   trusted host applications.
 - Pipeline packages can now include trusted command hooks for `OnRunStarted`,
   `OnBatchCompleted`, `OnRunSucceeded`, and `OnRunFailed`. Package JSON stores
-  hook names and arguments only; command bodies remain host-registered code.
+  hook names, arguments, and generated automation metadata only; command bodies
+  remain host-registered code.
 - Pipeline hook failures fail the run through `PipelineRunResult`; failure-hook
   errors are appended to the failed run summary instead of recursively
   dispatching more failure hooks.
+
+### Stored Automation Metadata
+
+- Added shared `DbAutomationMetadata`, command references, and scalar-function
+  references so portable definitions can declare the trusted host callbacks
+  they expect without storing C# code.
+- Admin Forms, Admin Reports, and pipeline packages now regenerate automation
+  metadata during repository save/load or package serialization/deserialization.
+  Older JSON without automation metadata is backfilled on read.
+- Form metadata captures trusted form events, command buttons, selected-control
+  events, action-sequence `RunCommand` steps, and computed-formula scalar
+  functions.
+- Report metadata captures preview lifecycle command bindings and calculated
+  text scalar functions.
+- Pipeline package metadata captures command hooks and scalar functions used by
+  filter and derived-column expressions; package validation reports stale
+  automation manifests so packages can be re-exported.
 
 ### Developer Experience
 
@@ -131,6 +150,9 @@ calculated text, and pipeline filter/derive expressions.
 - Added report-event dispatcher and preview lifecycle tests, pipeline hook
   serialization/validation/orchestrator tests, and shared command argument
   conversion tests.
+- Added automation metadata tests covering manifest extraction, JSON
+  round-tripping, repository persistence/backfill, pipeline package
+  import/export, and stale package metadata validation.
 - Same-machine affected benchmark comparison against the pre-feature HEAD
   baseline showed no material regression in the main write/query guardrails:
 
@@ -160,6 +182,10 @@ otherwise neutral to improved.
   - Passed with `0` warnings and `0` errors.
 - `dotnet test CSharpDB.slnx -c Release --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
   - Non-parallel unit test run passed with `1,663` tests.
+- Phase 5 local validation used `dotnet build CSharpDB.slnx --no-restore -m:1`
+  and `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
+  - Debug non-parallel unit test run passed with `1,703` tests after adding
+    automation metadata coverage.
 - `dotnet pack` smoke for the release workflow packages with
   `-p:Version=3.6.0`
   - Produced `11` local packages:

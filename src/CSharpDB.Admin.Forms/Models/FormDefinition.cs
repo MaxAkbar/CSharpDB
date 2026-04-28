@@ -1,3 +1,5 @@
+using CSharpDB.Primitives;
+
 namespace CSharpDB.Admin.Forms.Models;
 
 public sealed record FormDefinition(
@@ -9,4 +11,5 @@ public sealed record FormDefinition(
     LayoutDefinition Layout,
     IReadOnlyList<ControlDefinition> Controls,
     IReadOnlyDictionary<string, object?>? RendererHints = null,
-    IReadOnlyList<FormEventBinding>? EventBindings = null);
+    IReadOnlyList<FormEventBinding>? EventBindings = null,
+    DbAutomationMetadata? Automation = null);

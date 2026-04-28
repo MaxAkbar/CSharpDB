@@ -167,30 +167,33 @@ public sealed class DbFormRepository(ICSharpDbClient dbClient) : IFormRepository
         string json = row["definition_json"]?.ToString()
             ?? throw new InvalidOperationException("Stored form definition is missing JSON.");
 
-        return JsonSerializer.Deserialize<FormDefinition>(json, JsonDefaults.Options)
+        FormDefinition form = JsonSerializer.Deserialize<FormDefinition>(json, JsonDefaults.Options)
             ?? throw new InvalidOperationException("Stored form definition JSON could not be deserialized.");
+        return FormAutomationMetadata.NormalizeForExport(form);
     }
 
     private static FormDefinition NormalizeForCreate(FormDefinition form)
     {
         ValidateForPersistence(form);
-        return form with
+        FormDefinition stored = form with
         {
             FormId = string.IsNullOrWhiteSpace(form.FormId) ? Guid.NewGuid().ToString("N") : form.FormId,
             Name = string.IsNullOrWhiteSpace(form.Name) ? $"{form.TableName} Form" : form.Name.Trim(),
             DefinitionVersion = 1,
         };
+        return FormAutomationMetadata.NormalizeForExport(stored);
     }
 
     private static FormDefinition NormalizeForUpdate(string formId, int expectedVersion, FormDefinition form)
     {
         ValidateForPersistence(form);
-        return form with
+        FormDefinition stored = form with
         {
             FormId = formId,
             Name = string.IsNullOrWhiteSpace(form.Name) ? $"{form.TableName} Form" : form.Name.Trim(),
             DefinitionVersion = expectedVersion + 1,
         };
+        return FormAutomationMetadata.NormalizeForExport(stored);
     }
 
     private static void ValidateForPersistence(FormDefinition form)

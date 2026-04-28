@@ -29,6 +29,7 @@ The current forms surface already includes:
 - declarative form action sequences for run-command, set-field, show-message,
   and stop steps
 - visual designer editing for form and selected-control action sequences
+- generated automation metadata for export/import host callback requirements
 
 ## Added Review Findings
 
@@ -104,7 +105,7 @@ Expected fix:
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Command button control | Partial | Trusted command buttons can invoke host-registered C# commands and action-only click sequences; built-in navigation/save/delete actions remain future work. |
-| Action model | Partial | Declarative action sequences support run-command, set-field, show-message, and stop steps with visual designer editing for form and selected-control events; open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, conditions, and loops remain future work. |
+| Action model | Partial | Declarative action sequences support run-command, set-field, show-message, and stop steps with visual designer editing and generated automation metadata for form and selected-control events; open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, conditions, and loops remain future work. |
 | Event hooks | Partial | Form lifecycle events, command-button clicks, and selected control events can call trusted commands; additional Access-style events remain future work. |
 | Conditional UI rules | Planned | Add visible/enabled/read-only expressions for controls. |
 
