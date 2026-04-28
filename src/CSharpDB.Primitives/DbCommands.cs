@@ -1,0 +1,197 @@
+namespace CSharpDB.Primitives;
+
+public delegate ValueTask<DbCommandResult> DbCommandDelegate(
+    DbCommandContext context,
+    CancellationToken ct);
+
+public sealed record DbCommandContext(
+    string CommandName,
+    IReadOnlyDictionary<string, DbValue> Arguments,
+    IReadOnlyDictionary<string, string> Metadata);
+
+public sealed record DbCommandOptions(string? Description = null);
+
+public sealed record DbCommandResult(
+    bool Succeeded,
+    string? Message = null,
+    DbValue Value = default)
+{
+    public static DbCommandResult Success(string? message = null, DbValue value = default)
+        => new(true, message, value);
+
+    public static DbCommandResult Failure(string message, DbValue value = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        return new(false, message, value);
+    }
+}
+
+public sealed class DbCommandDefinition
+{
+    private readonly DbCommandDelegate _invoke;
+
+    internal DbCommandDefinition(
+        string name,
+        DbCommandOptions options,
+        DbCommandDelegate invoke)
+    {
+        Name = name;
+        Options = options;
+        _invoke = invoke;
+    }
+
+    public string Name { get; }
+
+    public DbCommandOptions Options { get; }
+
+    public ValueTask<DbCommandResult> InvokeAsync(
+        IReadOnlyDictionary<string, DbValue>? arguments = null,
+        IReadOnlyDictionary<string, string>? metadata = null,
+        CancellationToken ct = default)
+    {
+        var context = new DbCommandContext(
+            Name,
+            arguments ?? EmptyDbValueDictionary.Instance,
+            metadata ?? EmptyStringDictionary.Instance);
+        return _invoke(context, ct);
+    }
+
+    private static class EmptyDbValueDictionary
+    {
+        public static readonly IReadOnlyDictionary<string, DbValue> Instance =
+            new Dictionary<string, DbValue>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static class EmptyStringDictionary
+    {
+        public static readonly IReadOnlyDictionary<string, string> Instance =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
+}
+
+public sealed class DbCommandRegistry
+{
+    private readonly Dictionary<string, DbCommandDefinition> _commands;
+    private readonly DbCommandDefinition[] _commandList;
+
+    public static DbCommandRegistry Empty { get; } = new();
+
+    private DbCommandRegistry()
+    {
+        _commands = new Dictionary<string, DbCommandDefinition>(StringComparer.OrdinalIgnoreCase);
+        _commandList = [];
+    }
+
+    internal DbCommandRegistry(Dictionary<string, DbCommandDefinition> commands)
+    {
+        _commands = commands;
+        _commandList = commands.Values
+            .OrderBy(static definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public IReadOnlyCollection<DbCommandDefinition> Commands => _commandList;
+
+    public static DbCommandRegistry Create(Action<DbCommandRegistryBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        var builder = new DbCommandRegistryBuilder();
+        configure(builder);
+        return builder.Build();
+    }
+
+    public bool TryGetCommand(string name, out DbCommandDefinition definition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (_commands.TryGetValue(name, out definition!))
+            return true;
+
+        definition = null!;
+        return false;
+    }
+
+    public bool ContainsCommandName(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return _commands.ContainsKey(name);
+    }
+}
+
+public sealed class DbCommandRegistryBuilder
+{
+    private readonly Dictionary<string, DbCommandDefinition> _commands =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public DbCommandRegistryBuilder AddCommand(
+        string name,
+        DbCommandOptions? options,
+        DbCommandDelegate invoke)
+    {
+        string normalizedName = ValidateCommandName(name);
+        ArgumentNullException.ThrowIfNull(invoke);
+
+        if (_commands.ContainsKey(normalizedName))
+            throw new ArgumentException($"Command '{name}' is already registered.", nameof(name));
+
+        _commands.Add(
+            normalizedName,
+            new DbCommandDefinition(
+                normalizedName,
+                options ?? new DbCommandOptions(),
+                invoke));
+        return this;
+    }
+
+    public DbCommandRegistryBuilder AddCommand(
+        string name,
+        DbCommandDelegate invoke)
+        => AddCommand(name, options: null, invoke);
+
+    public DbCommandRegistryBuilder AddCommand(
+        string name,
+        DbCommandOptions? options,
+        Func<DbCommandContext, DbCommandResult> invoke)
+    {
+        ArgumentNullException.ThrowIfNull(invoke);
+        return AddCommand(
+            name,
+            options,
+            (context, _) => ValueTask.FromResult(invoke(context)));
+    }
+
+    public DbCommandRegistryBuilder AddCommand(
+        string name,
+        Func<DbCommandContext, DbCommandResult> invoke)
+        => AddCommand(name, options: null, invoke);
+
+    public DbCommandRegistry Build()
+    {
+        if (_commands.Count == 0)
+            return DbCommandRegistry.Empty;
+
+        return new DbCommandRegistry(new Dictionary<string, DbCommandDefinition>(_commands, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static string ValidateCommandName(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        string trimmed = name.Trim();
+        if (!IsIdentifierStart(trimmed[0]))
+            throw new ArgumentException($"Command name '{name}' is not a valid identifier.", nameof(name));
+
+        for (int i = 1; i < trimmed.Length; i++)
+        {
+            char ch = trimmed[i];
+            if (!char.IsLetterOrDigit(ch) && ch != '_')
+                throw new ArgumentException($"Command name '{name}' is not a valid identifier.", nameof(name));
+        }
+
+        return trimmed;
+    }
+
+    private static bool IsIdentifierStart(char value)
+        => char.IsLetter(value) || value == '_';
+}

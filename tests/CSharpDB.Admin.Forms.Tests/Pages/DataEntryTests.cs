@@ -3,6 +3,7 @@ using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Admin.Forms.Pages;
 using CSharpDB.Admin.Forms.Services;
+using CSharpDB.Primitives;
 using Microsoft.JSInterop;
 
 namespace CSharpDB.Admin.Forms.Tests.Pages;
@@ -115,6 +116,155 @@ public sealed class DataEntryTests
     }
 
     [Fact]
+    public async Task SaveRecord_CreateDispatchesFormEvents()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            """);
+
+        var calls = new List<string>();
+        DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("CaptureRecord", context =>
+            {
+                calls.Add($"{context.Metadata["event"]}:{context.Arguments["Name"].AsText}");
+                Assert.Equal("products-form", context.Metadata["formId"]);
+                Assert.Equal("Products", context.Metadata["tableName"]);
+                return DbCommandResult.Success();
+            });
+        });
+
+        FormDefinition form = CreateForm("products-form", "Products") with
+        {
+            EventBindings =
+            [
+                new FormEventBinding(FormEventKind.BeforeInsert, "CaptureRecord"),
+                new FormEventBinding(FormEventKind.AfterInsert, "CaptureRecord"),
+            ],
+        };
+
+        DataEntry component = await CreateComponentAsync(
+            form,
+            new DbSchemaProvider(db.Client),
+            new DbFormRecordService(db.Client),
+            new DefaultFormEventDispatcher(commands));
+
+        InvokeNonPublic(component, "NewRecord");
+        Dictionary<string, object?> current = ReadCurrentRecord(component);
+        current["Id"] = 1001L;
+        current["Name"] = "Created";
+        SetField(component, "_dirty", true);
+
+        await InvokeNonPublicAsync(component, "SaveRecord");
+
+        Assert.Equal(["BeforeInsert:Created", "AfterInsert:Created"], calls);
+        Assert.Null(GetField<string?>(component, "_error"));
+        Assert.Equal("Created", ReadCurrentRecord(component)["Name"]);
+    }
+
+    [Fact]
+    public async Task SaveRecord_BeforeInsertFailureCancelsCreate()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            """);
+
+        DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
+            builder.AddCommand("RejectCreate", static _ => DbCommandResult.Failure("Create blocked by command.")));
+
+        FormDefinition form = CreateForm("products-form", "Products") with
+        {
+            EventBindings = [new FormEventBinding(FormEventKind.BeforeInsert, "RejectCreate")],
+        };
+
+        DataEntry component = await CreateComponentAsync(
+            form,
+            new DbSchemaProvider(db.Client),
+            new DbFormRecordService(db.Client),
+            new DefaultFormEventDispatcher(commands));
+
+        InvokeNonPublic(component, "NewRecord");
+        Dictionary<string, object?> current = ReadCurrentRecord(component);
+        current["Id"] = 1001L;
+        current["Name"] = "Created";
+        SetField(component, "_dirty", true);
+
+        await InvokeNonPublicAsync(component, "SaveRecord");
+
+        Assert.Equal("Create blocked by command.", GetField<string?>(component, "_error"));
+        Assert.Empty(await db.QueryRowsAsync("SELECT * FROM Products"));
+        Assert.True(GetField<bool>(component, "_isNew"));
+    }
+
+    [Fact]
+    public async Task SaveAndDeleteRecord_DispatchUpdateAndDeleteEvents()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Products VALUES (1, 'Widget');
+            """);
+
+        var calls = new List<string>();
+        DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("CaptureRecord", context =>
+            {
+                calls.Add($"{context.Metadata["event"]}:{context.Arguments["Name"].AsText}");
+                return DbCommandResult.Success();
+            });
+        });
+
+        FormDefinition form = CreateForm("products-form", "Products") with
+        {
+            EventBindings =
+            [
+                new FormEventBinding(FormEventKind.BeforeUpdate, "CaptureRecord"),
+                new FormEventBinding(FormEventKind.AfterUpdate, "CaptureRecord"),
+                new FormEventBinding(FormEventKind.BeforeDelete, "CaptureRecord"),
+                new FormEventBinding(FormEventKind.AfterDelete, "CaptureRecord"),
+            ],
+        };
+
+        DataEntry component = await CreateComponentAsync(
+            form,
+            new DbSchemaProvider(db.Client),
+            new DbFormRecordService(db.Client),
+            new DefaultFormEventDispatcher(commands));
+
+        Dictionary<string, object?> current = ReadCurrentRecord(component);
+        current["Name"] = "Widget Pro";
+        SetField(component, "_dirty", true);
+
+        await InvokeNonPublicAsync(component, "SaveRecord");
+        await InvokeNonPublicAsync(component, "DeleteRecord");
+
+        Assert.Equal(
+            [
+                "BeforeUpdate:Widget Pro",
+                "AfterUpdate:Widget Pro",
+                "BeforeDelete:Widget Pro",
+                "AfterDelete:Widget Pro",
+            ],
+            calls);
+        Assert.Empty(await db.QueryRowsAsync("SELECT * FROM Products"));
+    }
+
+    [Fact]
     public async Task FocusedNavigation_NextRecordMovesWithinWindowAndAcrossWindowEdge()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
@@ -193,13 +343,15 @@ public sealed class DataEntryTests
     private static async Task<DataEntry> CreateComponentAsync(
         FormDefinition form,
         ISchemaProvider schemaProvider,
-        IFormRecordService recordService)
+        IFormRecordService recordService,
+        IFormEventDispatcher? formEvents = null)
     {
         var component = new DataEntry();
         SetProperty(component, "FormRepository", new StaticFormRepository(form));
         SetProperty(component, "RecordService", recordService);
         SetProperty(component, "SchemaProvider", schemaProvider);
         SetProperty(component, "ValidationService", new PassThroughValidationService());
+        SetProperty(component, "FormEvents", formEvents ?? NullFormEventDispatcher.Instance);
         SetProperty(component, "JS", new StubJsRuntime());
         SetProperty(component, nameof(DataEntry.FormId), form.FormId);
 

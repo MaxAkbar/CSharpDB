@@ -38,6 +38,11 @@ public class JsonRoundtripTests
         Assert.Equal(form.Layout.LayoutMode, deserialized.Layout.LayoutMode);
         Assert.Equal(form.Layout.GridSize, deserialized.Layout.GridSize);
         Assert.Equal(form.Controls.Count, deserialized.Controls.Count);
+        Assert.NotNull(deserialized.EventBindings);
+        Assert.Single(deserialized.EventBindings);
+        Assert.Equal(FormEventKind.AfterUpdate, deserialized.EventBindings[0].Event);
+        Assert.Equal("AuditChange", deserialized.EventBindings[0].CommandName);
+        Assert.Equal("manual", deserialized.EventBindings[0].Arguments!["reason"]);
     }
 
     [Fact]
@@ -284,6 +289,20 @@ public class JsonRoundtripTests
                 new PropertyBag(new Dictionary<string, object?> { ["placeholder"] = "Enter first name" }), null)
         };
 
-        return new FormDefinition("f1", "Customer Form", "Customers", 1, "customers:v1", layout, controls);
+        return new FormDefinition(
+            "f1",
+            "Customer Form",
+            "Customers",
+            1,
+            "customers:v1",
+            layout,
+            controls,
+            EventBindings:
+            [
+                new FormEventBinding(
+                    FormEventKind.AfterUpdate,
+                    "AuditChange",
+                    new Dictionary<string, object?> { ["reason"] = "manual" }),
+            ]);
     }
 }

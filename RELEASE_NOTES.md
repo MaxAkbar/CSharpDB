@@ -28,6 +28,25 @@ calculated text, and pipeline filter/derive expressions.
   package definitions continue to store function names and expressions only.
 - Added the usage guide at `docs/trusted-csharp-functions/README.md`.
 
+### Trusted Commands And Form Events
+
+- Added the shared `DbCommandRegistry`, `DbCommandRegistryBuilder`,
+  `DbCommandDelegate`, `DbCommandContext`, `DbCommandResult`, and
+  `DbCommandOptions` public model in `CSharpDB.Primitives`.
+- Admin Forms can now store form-level event bindings that reference trusted
+  command names instead of storing C# source.
+- The Forms data-entry runtime dispatches `OnOpen`, `OnLoad`, `BeforeInsert`,
+  `AfterInsert`, `BeforeUpdate`, `AfterUpdate`, `BeforeDelete`, and
+  `AfterDelete`.
+- `BeforeInsert`, `BeforeUpdate`, and `BeforeDelete` can cancel the requested
+  write by returning `DbCommandResult.Failure(...)`; after-events report errors
+  without attempting to roll back a completed write.
+- Command context arguments include current record fields converted to
+  `DbValue`; metadata includes the Forms surface, form id/name, table name, and
+  event name.
+- `AddCSharpDbAdminForms(...)` now has a command-registration overload for
+  trusted host applications.
+
 ### Behavior And Safety
 
 - Function names are case-insensitive SQL identifiers, and registration rejects
@@ -54,6 +73,9 @@ calculated text, and pipeline filter/derive expressions.
   SQL procedures.
 - Added direct-client, Admin Forms, Admin Reports, pipeline validation, and
   pipeline runtime tests for registered scalar functions.
+- Added command-registry, form-event dispatcher, event JSON round-trip, and
+  Forms data-entry tests for create/update/delete event dispatch and
+  before-event cancellation.
 - Same-machine affected benchmark comparison against the pre-feature HEAD
   baseline showed no material regression in the main write/query guardrails:
 

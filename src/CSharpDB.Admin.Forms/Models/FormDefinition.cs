@@ -8,4 +8,5 @@ public sealed record FormDefinition(
     string SourceSchemaSignature,
     LayoutDefinition Layout,
     IReadOnlyList<ControlDefinition> Controls,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<FormEventBinding>? EventBindings = null);

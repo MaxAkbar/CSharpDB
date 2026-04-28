@@ -197,6 +197,7 @@
     [Parameter] public bool ShowDesignerButton { get; set; } = true;
     [Parameter] public string? BackHref { get; set; }
     [Parameter] public string BackLabel { get; set; } = "Forms";
+    [Inject] public IFormEventDispatcher FormEvents { get; set; } = NullFormEventDispatcher.Instance;
 
     private FormDefinition? _form;
     private FormTableDefinition? _table;
@@ -322,9 +323,14 @@
             await LoadChildTableDefinitionsAsync(_form);
             CacheComputedControls(_form);
 
+            if (!await DispatchFormEventAsync(FormEventKind.OnOpen))
+                return;
+
             InitializeSearchState();
             _page = 1;
             await LoadRecordPageAsync(_page);
+            if (_error is null)
+                await DispatchFormEventAsync(FormEventKind.OnLoad, _currentRecord);
         }
         catch (Exception ex)
         {
@@ -451,6 +457,9 @@
 
             if (_isNew)
             {
+                if (!await DispatchFormEventAsync(FormEventKind.BeforeInsert, recordToSave))
+                    return;
+
                 Dictionary<string, object?> created = await RecordService.CreateRecordAsync(_table, recordToSave);
                 _currentRecord = CloneRecord(created);
                 _isNew = false;
@@ -463,11 +472,17 @@
                 {
                     await LoadRecordPageAsync(_page);
                 }
+
+                await DispatchFormEventAsync(FormEventKind.AfterInsert, created);
             }
             else if (TryGetPrimaryKeyValue(_currentRecord, out object? pkValue))
             {
+                if (!await DispatchFormEventAsync(FormEventKind.BeforeUpdate, _currentRecord))
+                    return;
+
                 Dictionary<string, object?> updated = await RecordService.UpdateRecordAsync(_table, pkValue!, recordToSave);
                 UpdateVisibleCurrentRecord(updated);
+                await DispatchFormEventAsync(FormEventKind.AfterUpdate, updated);
             }
 
             _dirty = false;
@@ -501,9 +516,14 @@
 
         try
         {
+            var deletedRecord = CloneRecord(_currentRecord);
+            if (!await DispatchFormEventAsync(FormEventKind.BeforeDelete, deletedRecord))
+                return;
+
             int preferredPageIndex = _recordPageIndex;
             await RecordService.DeleteRecordAsync(_table, pkValue!);
             await LoadRecordPageAsync(_page, preferredPageIndex: preferredPageIndex);
+            await DispatchFormEventAsync(FormEventKind.AfterDelete, deletedRecord);
         }
         catch (Exception ex)
         {
@@ -604,6 +624,23 @@
     }
 
     private Task PrintRecord() => JS.InvokeVoidAsync("window.print").AsTask();
+
+    private async Task<bool> DispatchFormEventAsync(
+        FormEventKind eventKind,
+        IReadOnlyDictionary<string, object?>? record = null)
+    {
+        if (_form is null)
+            return true;
+
+        FormEventDispatchResult result = await FormEvents.DispatchAsync(_form, eventKind, record);
+        if (result.Succeeded)
+            return true;
+
+        _error = string.IsNullOrWhiteSpace(result.Message)
+            ? $"Form event '{eventKind}' failed."
+            : result.Message;
+        return false;
+    }
 
     private void OnGoToRecordInput(ChangeEventArgs e) => _goToRecordValue = e.Value?.ToString() ?? string.Empty;
 

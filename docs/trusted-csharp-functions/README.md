@@ -6,6 +6,39 @@ This feature is intentionally trusted and in-process. It does not store C# sourc
 
 ---
 
+## Trusted Commands
+
+CSharpDB also supports trusted host-registered commands for application automation surfaces. Commands are different from scalar functions:
+
+- Scalar functions return a `DbValue` and can be used inside SQL or formulas.
+- Commands return a `DbCommandResult` and are invoked by host-driven events such as Admin Forms lifecycle events.
+
+Commands are intended for Access-style application automation such as auditing, calling application services, sending notifications, refreshing derived state, or coordinating UI workflows. They are trusted in-process callbacks registered by the host application.
+
+```csharp
+using CSharpDB.Admin.Forms.Services;
+using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminForms(commands =>
+{
+    commands.AddCommand(
+        "AuditCustomerChange",
+        new DbCommandOptions("Writes an application audit entry."),
+        static async (context, ct) =>
+        {
+            long customerId = context.Arguments["Id"].AsInteger;
+            string eventName = context.Metadata["event"];
+
+            await WriteAuditAsync(customerId, eventName, ct);
+            return DbCommandResult.Success();
+        });
+});
+```
+
+Command names are case-insensitive identifiers. Duplicate command names are rejected during registration.
+
+---
+
 ## What You Can Register
 
 V1 supports synchronous scalar functions:
@@ -268,6 +301,35 @@ double? tax = FormulaEvaluator.Evaluate(
 
 Forms formulas are numeric formulas. A custom function used from `FormulaEvaluator.Evaluate` should return `INTEGER` or `REAL`; other return types evaluate to `null` in that surface. Existing aggregate formulas such as `=SUM(OrderItems.LineTotal)` remain built-in form behavior and are not replaced by custom scalar functions.
 
+Admin Forms can also bind lifecycle events to trusted commands. Form definitions store event names and command names only; the C# command bodies stay registered in the host process.
+
+```csharp
+var form = existingForm with
+{
+    EventBindings =
+    [
+        new FormEventBinding(FormEventKind.OnOpen, "AuditFormOpen"),
+        new FormEventBinding(FormEventKind.BeforeInsert, "ValidateCustomerCreate"),
+        new FormEventBinding(FormEventKind.AfterUpdate, "AuditCustomerChange"),
+    ],
+};
+```
+
+Supported form-level events in this slice are:
+
+| Event | When it runs |
+| --- | --- |
+| `OnOpen` | After the form definition and source table are resolved, before records load. |
+| `OnLoad` | After the initial record page loads. |
+| `BeforeInsert` | Before a new record is inserted. Returning `DbCommandResult.Failure(...)` cancels the insert. |
+| `AfterInsert` | After a new record is inserted. |
+| `BeforeUpdate` | Before an existing record is updated. Returning failure cancels the update. |
+| `AfterUpdate` | After an existing record is updated. |
+| `BeforeDelete` | Before the current record is deleted. Returning failure cancels the delete. |
+| `AfterDelete` | After the current record is deleted. |
+
+Command context arguments include the current record fields converted to `DbValue`. Static arguments configured on the event binding override same-named record fields. Metadata includes `surface`, `formId`, `formName`, `tableName`, and `event`.
+
 ---
 
 ## Admin Reports
@@ -411,7 +473,9 @@ V1 does not support:
 - Table-valued UDFs.
 - Stored C# source code or database-owned compiled modules.
 - Sandboxed execution.
-- Async delegates.
+- Async scalar delegates.
 - Passing a database handle into the function context.
 - Sending delegates over HTTP, gRPC, or pipeline package files.
 - Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.
+- Control-level form events such as button `OnClick`.
+- Stored macro/action scripts.
