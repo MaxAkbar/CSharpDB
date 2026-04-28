@@ -298,6 +298,7 @@
         }
 
         _executingCommandButtons.Add(control.ControlId);
+        await RefreshCommandButtonStateAsync();
         try
         {
             if (!string.IsNullOrWhiteSpace(commandName))
@@ -334,6 +335,19 @@
         finally
         {
             _executingCommandButtons.Remove(control.ControlId);
+            await RefreshCommandButtonStateAsync();
+        }
+    }
+
+    private async Task RefreshCommandButtonStateAsync()
+    {
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("render handle", StringComparison.OrdinalIgnoreCase))
+        {
+            // Private unit-test invocations can run before Blazor assigns a render handle.
         }
     }
 

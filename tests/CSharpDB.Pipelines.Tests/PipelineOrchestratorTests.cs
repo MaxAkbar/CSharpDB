@@ -372,6 +372,44 @@ public sealed class PipelineOrchestratorTests
         Assert.Contains("Hook rejected run.", result.ErrorSummary);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_CommandHookTimeoutReturnsFailedRun()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var commands = DbCommandRegistry.Create(builder =>
+            builder.AddAsyncCommand(
+                "SlowHook",
+                new DbCommandOptions(Timeout: TimeSpan.FromMilliseconds(10)),
+                static async (_, commandCt) =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), commandCt);
+                    return DbCommandResult.Success();
+                }));
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(new FakeSource([CreateBatch(1, 1)]), new FakeDestination(), []),
+            new RecordingCheckpointStore(),
+            new RecordingRunLogger(),
+            commands);
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(hooks:
+            [
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnRunStarted,
+                    CommandName = "SlowHook",
+                },
+            ]),
+            Mode = PipelineExecutionMode.Run,
+        }, ct);
+
+        Assert.Equal(PipelineRunStatus.Failed, result.Status);
+        Assert.Contains("Step: command-hook", result.ErrorSummary);
+        Assert.Contains("SlowHook", result.ErrorSummary);
+        Assert.Contains("timed out", result.ErrorSummary);
+    }
+
     private static PipelinePackageDefinition CreatePackage(
         PipelineErrorMode errorMode = PipelineErrorMode.SkipBadRows,
         int maxRejects = 10,

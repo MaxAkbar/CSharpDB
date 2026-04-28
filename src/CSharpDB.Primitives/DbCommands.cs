@@ -9,7 +9,10 @@ public sealed record DbCommandContext(
     IReadOnlyDictionary<string, DbValue> Arguments,
     IReadOnlyDictionary<string, string> Metadata);
 
-public sealed record DbCommandOptions(string? Description = null);
+public sealed record DbCommandOptions(
+    string? Description = null,
+    TimeSpan? Timeout = null,
+    bool IsLongRunning = false);
 
 public sealed record DbCommandResult(
     bool Succeeded,
@@ -53,8 +56,40 @@ public sealed class DbCommandDefinition
             Name,
             arguments ?? EmptyDbValueDictionary.Instance,
             metadata ?? EmptyStringDictionary.Instance);
-        return _invoke(context, ct);
+        return Options.Timeout is { } timeout
+            ? InvokeWithTimeoutAsync(context, timeout, ct)
+            : _invoke(context, ct);
     }
+
+    private async ValueTask<DbCommandResult> InvokeWithTimeoutAsync(
+        DbCommandContext context,
+        TimeSpan timeout,
+        CancellationToken ct)
+    {
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+        try
+        {
+            ValueTask<DbCommandResult> invocation = _invoke(context, linkedCts.Token);
+            if (invocation.IsCompletedSuccessfully)
+                return invocation.Result;
+
+            return await invocation.AsTask().WaitAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw CreateTimeoutException(timeout, ex);
+        }
+    }
+
+    private TimeoutException CreateTimeoutException(TimeSpan timeout, Exception inner)
+        => new($"Command '{Name}' timed out after {FormatTimeout(timeout)}.", inner);
+
+    private static string FormatTimeout(TimeSpan timeout)
+        => timeout.TotalMilliseconds < 1000
+            ? $"{timeout.TotalMilliseconds:0.###}ms"
+            : $"{timeout.TotalSeconds:0.###}s";
 
     private static class EmptyDbValueDictionary
     {
@@ -130,6 +165,7 @@ public sealed class DbCommandRegistryBuilder
         DbCommandDelegate invoke)
     {
         string normalizedName = ValidateCommandName(name);
+        ValidateCommandOptions(options);
         ArgumentNullException.ThrowIfNull(invoke);
 
         if (_commands.ContainsKey(normalizedName))
@@ -143,6 +179,23 @@ public sealed class DbCommandRegistryBuilder
                 invoke));
         return this;
     }
+
+    public DbCommandRegistryBuilder AddAsyncCommand(
+        string name,
+        DbCommandOptions? options,
+        Func<DbCommandContext, CancellationToken, Task<DbCommandResult>> invoke)
+    {
+        ArgumentNullException.ThrowIfNull(invoke);
+        return AddCommand(
+            name,
+            options,
+            (context, ct) => new ValueTask<DbCommandResult>(invoke(context, ct)));
+    }
+
+    public DbCommandRegistryBuilder AddAsyncCommand(
+        string name,
+        Func<DbCommandContext, CancellationToken, Task<DbCommandResult>> invoke)
+        => AddAsyncCommand(name, options: null, invoke);
 
     public DbCommandRegistryBuilder AddCommand(
         string name,
@@ -190,6 +243,12 @@ public sealed class DbCommandRegistryBuilder
         }
 
         return trimmed;
+    }
+
+    private static void ValidateCommandOptions(DbCommandOptions? options)
+    {
+        if (options?.Timeout is { } timeout && timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options), timeout, "Command timeout must be greater than zero.");
     }
 
     private static bool IsIdentifierStart(char value)

@@ -48,13 +48,24 @@ using CSharpDB.Primitives;
 
 builder.Services.AddCSharpDbAdminReports(commands =>
 {
-    commands.AddCommand("PublishReportRendered", static context =>
-    {
-        long pageCount = context.Arguments["pageCount"].AsInteger;
-        return DbCommandResult.Success($"Rendered {pageCount} page(s).");
-    });
+    commands.AddAsyncCommand(
+        "PublishReportRendered",
+        new DbCommandOptions(
+            Description: "Publishes report render metrics.",
+            Timeout: TimeSpan.FromSeconds(5),
+            IsLongRunning: true),
+        static async (context, ct) =>
+        {
+            long pageCount = context.Arguments["pageCount"].AsInteger;
+            await PublishReportMetricAsync(context.Metadata["reportName"], pageCount, ct);
+            return DbCommandResult.Success($"Rendered {pageCount} page(s).");
+        });
 });
 ```
+
+Report event dispatch preserves caller cancellation. Command timeouts and other
+callback exceptions are returned as failed preview results with the command name
+included in the message.
 
 The extension registers:
 

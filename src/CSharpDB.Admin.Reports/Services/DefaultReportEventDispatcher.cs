@@ -33,6 +33,10 @@ public sealed class DefaultReportEventDispatcher(DbCommandRegistry commands) : I
             {
                 result = await definition.InvokeAsync(arguments, metadata, ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 return ReportEventDispatchResult.Failure(

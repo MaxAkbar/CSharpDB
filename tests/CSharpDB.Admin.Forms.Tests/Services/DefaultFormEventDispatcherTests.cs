@@ -119,6 +119,35 @@ public sealed class DefaultFormEventDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_ReturnsFailureWhenCommandTimesOut()
+    {
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddAsyncCommand(
+                "SlowAudit",
+                new DbCommandOptions(Timeout: TimeSpan.FromMilliseconds(10)),
+                static async (_, ct) =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    return DbCommandResult.Success();
+                });
+        });
+
+        var dispatcher = new DefaultFormEventDispatcher(commands);
+        var form = CreateForm([new FormEventBinding(FormEventKind.AfterUpdate, "SlowAudit")]);
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.AfterUpdate,
+            new Dictionary<string, object?> { ["Id"] = 7L },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("SlowAudit", result.Message);
+        Assert.Contains("timed out", result.Message);
+    }
+
+    [Fact]
     public async Task DispatchAsync_ExecutesActionSequenceAndMutatesMutableRecord()
     {
         DbCommandContext? captured = null;

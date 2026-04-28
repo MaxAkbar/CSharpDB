@@ -156,13 +156,19 @@ var orchestrator = new PipelineOrchestrator(
     new NullPipelineRunLogger(),
     DbCommandRegistry.Create(commands =>
     {
-        commands.AddCommand("NotifyPipeline", static context =>
-        {
-            string pipelineName = context.Metadata["pipelineName"];
-            long rowsWritten = context.Arguments["rowsWritten"].AsInteger;
-            Console.WriteLine($"{pipelineName}: {rowsWritten} row(s) written.");
-            return DbCommandResult.Success();
-        });
+        commands.AddAsyncCommand(
+            "NotifyPipeline",
+            new DbCommandOptions(
+                Description: "Publishes pipeline run metrics.",
+                Timeout: TimeSpan.FromSeconds(10),
+                IsLongRunning: true),
+            static async (context, ct) =>
+            {
+                string pipelineName = context.Metadata["pipelineName"];
+                long rowsWritten = context.Arguments["rowsWritten"].AsInteger;
+                await NotifyOpsAsync(pipelineName, rowsWritten, ct);
+                return DbCommandResult.Success();
+            });
     }));
 
 PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
@@ -212,7 +218,8 @@ The output file contains the active customers only, with duplicate IDs removed:
 - Use `NullPipelineCheckpointStore` and `NullPipelineRunLogger` when you want a minimal in-process setup
 - Relative source file paths are searched from the current directory and app base directory; relative output paths are written relative to the current directory
 - `Derive` expressions are intentionally simple today: use a source column name or a literal such as `'csv'`, `123`, `true`, or `null`
-- Trusted command hooks are skipped in `Validate` mode. Missing command registration or a failing hook with `StopOnFailure = true` fails the run through `PipelineRunResult`.
+- Trusted command hooks are skipped in `Validate` mode. Missing command registration, a timed-out command, or a failing hook with `StopOnFailure = true` fails the run through `PipelineRunResult`.
+- Pipeline command callbacks receive the run cancellation token; hosts should pass it to async I/O and set `DbCommandOptions.Timeout` for hooks that call external systems.
 - `PipelinePackageSerializer` regenerates `Automation` during save/load and string serialization. Validation accepts legacy packages without automation metadata, but reports stale manifests when present.
 
 ## Installation

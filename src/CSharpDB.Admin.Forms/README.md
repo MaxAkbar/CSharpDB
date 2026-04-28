@@ -48,9 +48,25 @@ Trusted command callbacks can be registered with the overload:
 ```csharp
 builder.Services.AddCSharpDbAdminForms(commands =>
 {
-    commands.AddCommand("AuditFormOpen", context => DbCommandResult.Success());
+    commands.AddAsyncCommand(
+        "AuditFormOpen",
+        new DbCommandOptions(
+            Description: "Writes a form audit entry.",
+            Timeout: TimeSpan.FromSeconds(5),
+            IsLongRunning: true),
+        async (context, ct) =>
+        {
+            await WriteAuditAsync(context.Metadata["formName"], ct);
+            return DbCommandResult.Success();
+        });
 });
 ```
+
+The Forms runtime passes the command cancellation token to trusted callbacks.
+If a command timeout elapses, the runtime reports the timeout through the same
+form-event failure path as other command errors. Command buttons refresh their
+executing state around async callbacks so the clicked button is disabled while
+the callback is in flight.
 
 The extension registers:
 

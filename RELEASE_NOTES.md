@@ -34,6 +34,12 @@ calculated text, and pipeline filter/derive expressions.
 - Added the shared `DbCommandRegistry`, `DbCommandRegistryBuilder`,
   `DbCommandDelegate`, `DbCommandContext`, `DbCommandResult`, and
   `DbCommandOptions` public model in `CSharpDB.Primitives`.
+- `DbCommandOptions` now includes `Timeout` and `IsLongRunning`, and
+  `DbCommandRegistryBuilder.AddAsyncCommand(...)` registers `Task`-based host
+  callbacks without manual `ValueTask` wrapping.
+- Command timeouts cancel the command invocation token and surface as command
+  failures through the existing Forms, Reports, and Pipelines dispatch paths;
+  external cancellation is still propagated as cancellation.
 - Admin Forms can now store form-level event bindings that reference trusted
   command names instead of storing C# source.
 - The Forms data-entry runtime dispatches `OnOpen`, `OnLoad`, `BeforeInsert`,
@@ -85,6 +91,9 @@ calculated text, and pipeline filter/derive expressions.
 - Pipeline hook failures fail the run through `PipelineRunResult`; failure-hook
   errors are appended to the failed run summary instead of recursively
   dispatching more failure hooks.
+- Admin Forms command buttons now refresh their executing/disabled state before
+  and after async command work, so long-running trusted commands give visible
+  runtime feedback in the form surface.
 
 ### Stored Automation Metadata
 
@@ -153,6 +162,8 @@ calculated text, and pipeline filter/derive expressions.
 - Added automation metadata tests covering manifest extraction, JSON
   round-tripping, repository persistence/backfill, pipeline package
   import/export, and stale package metadata validation.
+- Added async command and timeout coverage for the command registry, Admin
+  Forms dispatcher, Admin Reports dispatcher, and pipeline hook orchestration.
 - Same-machine affected benchmark comparison against the pre-feature HEAD
   baseline showed no material regression in the main write/query guardrails:
 
@@ -186,6 +197,10 @@ otherwise neutral to improved.
   and `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
   - Debug non-parallel unit test run passed with `1,703` tests after adding
     automation metadata coverage.
+- Phase 6A async-command hardening validation used
+  `dotnet build CSharpDB.slnx --no-restore -m:1` and
+  `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
+  - Debug non-parallel unit test run passed with `1,709` tests.
 - `dotnet pack` smoke for the release workflow packages with
   `-p:Version=3.6.0`
   - Produced `11` local packages:

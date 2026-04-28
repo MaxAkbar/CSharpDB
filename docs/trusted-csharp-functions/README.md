@@ -1,4 +1,4 @@
-# Trusted C# Scalar Functions
+# Trusted C# Functions And Commands
 
 CSharpDB can call host-registered C# scalar functions from SQL and the embedded expression surfaces that sit on top of the engine. This is the CSharpDB equivalent of an Access-style application function integration: the application owns the C# code, registers it while opening or hosting the database, and users call the function by name in database expressions.
 
@@ -21,9 +21,12 @@ using CSharpDB.Primitives;
 
 builder.Services.AddCSharpDbAdminForms(commands =>
 {
-    commands.AddCommand(
+    commands.AddAsyncCommand(
         "AuditCustomerChange",
-        new DbCommandOptions("Writes an application audit entry."),
+        new DbCommandOptions(
+            Description: "Writes an application audit entry.",
+            Timeout: TimeSpan.FromSeconds(10),
+            IsLongRunning: true),
         static async (context, ct) =>
         {
             long customerId = context.Arguments["Id"].AsInteger;
@@ -36,6 +39,17 @@ builder.Services.AddCSharpDbAdminForms(commands =>
 ```
 
 Command names are case-insensitive identifiers. Duplicate command names are rejected during registration.
+
+Use `AddCommand(...)` for synchronous or `ValueTask`-returning callbacks and
+`AddAsyncCommand(...)` for `Task<DbCommandResult>` callbacks. Every command
+receives a `CancellationToken`; host code should pass it to I/O calls and stop
+work when cancellation is requested.
+
+`DbCommandOptions.Timeout` is optional. When set, CSharpDB cancels the command
+token if the callback does not finish in time and reports a timeout through the
+same surface-specific failure path as other command errors. `IsLongRunning` is
+metadata for hosts and UI surfaces; it does not move the command out of process
+or run it on a separate scheduler.
 
 ---
 
@@ -742,7 +756,7 @@ For SQL write statements, a failing function aborts the statement. If the statem
 
 Admin Forms formulas intentionally return `null` for invalid formulas, unsupported function return types, missing functions, division by zero, or exceptions. Pipeline functions throw runtime errors unless the pipeline error mode handles the affected row.
 
-Trusted command failures are surface-specific. Form before-events can cancel writes, report event failures fail preview rendering, and pipeline hook failures produce a failed `PipelineRunResult` unless the binding sets `StopOnFailure = false`.
+Trusted command failures are surface-specific. Form before-events can cancel writes, report event failures fail preview rendering, and pipeline hook failures produce a failed `PipelineRunResult` unless the binding sets `StopOnFailure = false`. Timed-out commands are reported as command failures; caller-requested cancellation still propagates as cancellation instead of being converted to a failure message.
 
 Forms action-sequence failures follow the same binding-level `StopOnFailure`
 rule. Step-level `StopOnFailure = false` lets a later step continue after that
@@ -759,6 +773,7 @@ For low overhead:
 
 - Prefer `NullPropagating = true` when a function naturally returns null for null input.
 - Avoid database calls, blocking I/O, sleeps, and long network calls inside delegates.
+- For command callbacks that call application services, prefer `AddAsyncCommand(...)`, honor the provided cancellation token, and set a timeout that matches the user-facing workflow.
 - Keep delegates thread-safe. A function may be called by concurrent queries in the same host process.
 - Capture immutable services or thread-safe services in closures when application integration is needed.
 - Use `IsDeterministic = true` for accurate metadata, but do not rely on V1 to optimize from it.

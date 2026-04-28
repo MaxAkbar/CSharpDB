@@ -10,7 +10,7 @@ public sealed class TrustedCommandRegistryTests
         var registry = DbCommandRegistry.Create(commands =>
             commands.AddCommand(
                 "RecalculateInventory",
-                new DbCommandOptions("Rebuilds inventory summaries."),
+                new DbCommandOptions("Rebuilds inventory summaries.", IsLongRunning: true),
                 static context =>
                 {
                     Assert.Equal("RecalculateInventory", context.CommandName);
@@ -21,6 +21,7 @@ public sealed class TrustedCommandRegistryTests
 
         Assert.True(registry.TryGetCommand("recalculateinventory", out DbCommandDefinition definition));
         Assert.Equal("Rebuilds inventory summaries.", definition.Options.Description);
+        Assert.True(definition.Options.IsLongRunning);
 
         DbCommandResult result = await definition.InvokeAsync(
             new Dictionary<string, DbValue>(StringComparer.OrdinalIgnoreCase)
@@ -51,7 +52,7 @@ public sealed class TrustedCommandRegistryTests
     public async Task Registry_InvokesAsyncCommands()
     {
         var registry = DbCommandRegistry.Create(commands =>
-            commands.AddCommand(
+            commands.AddAsyncCommand(
                 "AsyncCommand",
                 static async (context, ct) =>
                 {
@@ -70,6 +71,56 @@ public sealed class TrustedCommandRegistryTests
 
         Assert.True(result.Succeeded);
         Assert.Equal("AfterUpdate", result.Message);
+    }
+
+    [Fact]
+    public async Task Registry_AppliesCommandTimeout()
+    {
+        var registry = DbCommandRegistry.Create(commands =>
+            commands.AddAsyncCommand(
+                "SlowCommand",
+                new DbCommandOptions(Timeout: TimeSpan.FromMilliseconds(10)),
+                static async (_, ct) =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    return DbCommandResult.Success();
+                }));
+
+        Assert.True(registry.TryGetCommand("SlowCommand", out DbCommandDefinition definition));
+
+        TimeoutException ex = await Assert.ThrowsAsync<TimeoutException>(async () =>
+            await definition.InvokeAsync(ct: TestContext.Current.CancellationToken));
+
+        Assert.Contains("SlowCommand", ex.Message);
+        Assert.Contains("timed out", ex.Message);
+    }
+
+    [Fact]
+    public async Task Registry_DoesNotTreatDelegateTimeoutExceptionAsCommandTimeout()
+    {
+        var registry = DbCommandRegistry.Create(commands =>
+            commands.AddAsyncCommand(
+                "ServiceCommand",
+                new DbCommandOptions(Timeout: TimeSpan.FromSeconds(5)),
+                static (_, _) => Task.FromException<DbCommandResult>(
+                    new TimeoutException("Downstream service timeout."))));
+
+        Assert.True(registry.TryGetCommand("ServiceCommand", out DbCommandDefinition definition));
+
+        TimeoutException ex = await Assert.ThrowsAsync<TimeoutException>(async () =>
+            await definition.InvokeAsync(ct: TestContext.Current.CancellationToken));
+
+        Assert.Equal("Downstream service timeout.", ex.Message);
+    }
+
+    [Fact]
+    public void Registry_RejectsNonPositiveCommandTimeout()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => DbCommandRegistry.Create(commands =>
+            commands.AddCommand(
+                "InvalidTimeout",
+                new DbCommandOptions(Timeout: TimeSpan.Zero),
+                static _ => DbCommandResult.Success())));
     }
 
     [Fact]

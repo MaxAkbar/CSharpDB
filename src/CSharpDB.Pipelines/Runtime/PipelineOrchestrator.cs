@@ -344,6 +344,10 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             {
                 result = await definition.InvokeAsync(arguments, metadata, ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 throw new InvalidOperationException(

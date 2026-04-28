@@ -63,6 +63,34 @@ public sealed class DefaultReportEventDispatcherTests
         Assert.Equal("Report rejected.", result.Message);
     }
 
+    [Fact]
+    public async Task DispatchAsync_ReturnsFailureWhenCommandTimesOut()
+    {
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddAsyncCommand(
+                "SlowReport",
+                new DbCommandOptions(Timeout: TimeSpan.FromMilliseconds(10)),
+                static async (_, ct) =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    return DbCommandResult.Success();
+                });
+        });
+        var dispatcher = new DefaultReportEventDispatcher(commands);
+        ReportDefinition report = CreateReport([new ReportEventBinding(ReportEventKind.OnOpen, "SlowReport")]);
+
+        ReportEventDispatchResult result = await dispatcher.DispatchAsync(
+            report,
+            CreateSource(),
+            ReportEventKind.OnOpen,
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("SlowReport", result.Message);
+        Assert.Contains("timed out", result.Message);
+    }
+
     private static ReportDefinition CreateReport(IReadOnlyList<ReportEventBinding> eventBindings)
         => new(
             "sales-report",
