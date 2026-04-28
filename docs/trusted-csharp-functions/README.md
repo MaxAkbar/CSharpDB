@@ -11,9 +11,9 @@ This feature is intentionally trusted and in-process. It does not store C# sourc
 CSharpDB also supports trusted host-registered commands for application automation surfaces. Commands are different from scalar functions:
 
 - Scalar functions return a `DbValue` and can be used inside SQL or formulas.
-- Commands return a `DbCommandResult` and are invoked by host-driven events such as Admin Forms lifecycle events.
+- Commands return a `DbCommandResult` and are invoked by host-driven events such as Admin Forms lifecycle events, Admin Reports render events, and pipeline run hooks.
 
-Commands are intended for Access-style application automation such as auditing, calling application services, sending notifications, refreshing derived state, or coordinating UI workflows. They are trusted in-process callbacks registered by the host application.
+Commands are intended for Access-style application automation such as auditing, calling application services, sending notifications, refreshing derived state, coordinating UI workflows, or publishing operational run events. They are trusted in-process callbacks registered by the host application.
 
 ```csharp
 using CSharpDB.Admin.Forms.Services;
@@ -384,6 +384,51 @@ Calculated text can use a scalar function as the whole expression, including tex
 
 Report aggregate formulas such as `=SUM([Subtotal])` remain built-in report behavior.
 
+Admin Reports can also bind preview-render lifecycle events to trusted commands. Report definitions store event names, command names, and optional static arguments only; the C# command bodies stay registered by the host process.
+
+```csharp
+using CSharpDB.Admin.Reports.Models;
+
+var report = existingReport with
+{
+    EventBindings =
+    [
+        new ReportEventBinding(ReportEventKind.OnOpen, "AuditReportOpen"),
+        new ReportEventBinding(ReportEventKind.BeforeRender, "PrepareReportContext"),
+        new ReportEventBinding(ReportEventKind.AfterRender, "PublishReportRendered"),
+    ],
+};
+```
+
+Supported report events are:
+
+| Event | When it runs |
+| --- | --- |
+| `OnOpen` | After the report source is resolved, before preview rows are loaded. |
+| `BeforeRender` | After preview rows are loaded and capped, before pagination and calculated text rendering. |
+| `AfterRender` | After preview pages are produced, before the preview result is returned. |
+
+Command context arguments include render metrics such as `rowCount`, `loadedRowCount`, `rowTruncated`, `pageCount`, `isTruncated`, and `hasSchemaDrift` depending on the event. Static arguments configured on the binding override same-named runtime arguments. Metadata includes `surface = AdminReports`, `reportId`, `reportName`, `sourceKind`, `sourceName`, and `event`.
+
+Register report commands through the reports service registration overload:
+
+```csharp
+using CSharpDB.Admin.Reports.Services;
+using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminReports(commands =>
+{
+    commands.AddCommand("PublishReportRendered", static context =>
+    {
+        string reportName = context.Metadata["reportName"];
+        long pageCount = context.Arguments["pageCount"].AsInteger;
+
+        PublishReportMetric(reportName, pageCount);
+        return DbCommandResult.Success();
+    });
+});
+```
+
 ---
 
 ## Pipelines
@@ -448,6 +493,66 @@ await runner.RunPackageAsync(package);
 
 Pipeline package JSON stores only expressions such as `NormalizeStatus(status)`. The C# delegate must be registered by the process that runs the package.
 
+Pipelines can also invoke trusted commands from run hooks. Hook definitions are serialized with the package, but they store only the hook event, command name, and optional static arguments:
+
+```csharp
+var commands = DbCommandRegistry.Create(builder =>
+{
+    builder.AddCommand("NotifyPipeline", static context =>
+    {
+        string pipelineName = context.Metadata["pipelineName"];
+        string status = context.Arguments["status"].AsText;
+        long rowsWritten = context.Arguments["rowsWritten"].AsInteger;
+
+        NotifyOps(pipelineName, status, rowsWritten);
+        return DbCommandResult.Success();
+    });
+});
+
+var runner = new CSharpDbPipelineRunner(client, functions, commands);
+
+var package = new PipelinePackageDefinition
+{
+    Name = "active-customers",
+    Version = "1.0.0",
+    Source = new PipelineSourceDefinition
+    {
+        Kind = PipelineSourceKind.CsvFile,
+        Path = "customers.csv",
+    },
+    Destination = new PipelineDestinationDefinition
+    {
+        Kind = PipelineDestinationKind.JsonFile,
+        Path = "active-customers.json",
+    },
+    Hooks =
+    [
+        new PipelineCommandHookDefinition
+        {
+            Event = PipelineCommandHookEvent.OnRunSucceeded,
+            CommandName = "NotifyPipeline",
+            Arguments = new Dictionary<string, object?>
+            {
+                ["channel"] = "ops",
+            },
+        },
+    ],
+};
+```
+
+Supported pipeline hook events are:
+
+| Event | When it runs |
+| --- | --- |
+| `OnRunStarted` | After package validation and run logging, before components are created. |
+| `OnBatchCompleted` | After each source batch is transformed/written, metrics and checkpoints are updated, and reject limits pass. |
+| `OnRunSucceeded` | After destination completion and before the successful run is logged as completed. |
+| `OnRunFailed` | When the orchestrator is about to return a failed `PipelineRunResult`. |
+
+Hook arguments include `runId`, `pipelineName`, `pipelineVersion`, `mode`, `event`, `status`, `rowsRead`, `rowsWritten`, `rowsRejected`, and `batchesCompleted`. Batch hooks also include `batchNumber`, `startingRowNumber`, and `batchRowCount`. Failure hooks include `errorSummary`. Metadata includes `surface = Pipelines`, `pipelineName`, `pipelineVersion`, `runId`, `mode`, and `event`.
+
+`Validate` mode does not invoke command hooks, so package validation stays side-effect free. Missing command registration or a failing hook with `StopOnFailure = true` fails the run normally. For `OnRunFailed`, hook failures are appended to the failed run's error summary instead of recursively dispatching more failure hooks.
+
 ---
 
 ## Error Handling
@@ -472,6 +577,8 @@ functions.AddScalar(
 For SQL write statements, a failing function aborts the statement. If the statement is inside a transaction, normal transaction rollback rules apply.
 
 Admin Forms formulas intentionally return `null` for invalid formulas, unsupported function return types, missing functions, division by zero, or exceptions. Pipeline functions throw runtime errors unless the pipeline error mode handles the affected row.
+
+Trusted command failures are surface-specific. Form before-events can cancel writes, report event failures fail preview rendering, and pipeline hook failures produce a failed `PipelineRunResult` unless the binding sets `StopOnFailure = false`.
 
 ---
 

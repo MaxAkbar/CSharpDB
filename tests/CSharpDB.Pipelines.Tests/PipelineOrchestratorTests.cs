@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using CSharpDB.Pipelines.Models;
 using CSharpDB.Pipelines.Runtime;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Pipelines.Tests;
 
@@ -238,9 +239,143 @@ public sealed class PipelineOrchestratorTests
         Assert.Equal(1, checkpointStore.Saved[0].BatchNumber);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_RunMode_DispatchesCommandHooksWithMetricsAndMetadata()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var source = new FakeSource(
+        [
+            CreateBatch(1, 1, 2),
+            CreateBatch(2, 3),
+        ]);
+        var captured = new List<DbCommandContext>();
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("RecordHook", context =>
+            {
+                captured.Add(context);
+                return DbCommandResult.Success();
+            });
+        });
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(source, new FakeDestination(), []),
+            new RecordingCheckpointStore(),
+            new RecordingRunLogger(),
+            commands);
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(hooks:
+            [
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnRunStarted,
+                    CommandName = "RecordHook",
+                    Arguments = new Dictionary<string, object?> { ["configured"] = "start" },
+                },
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnBatchCompleted,
+                    CommandName = "RecordHook",
+                },
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnRunSucceeded,
+                    CommandName = "RecordHook",
+                },
+            ]),
+            Mode = PipelineExecutionMode.Run,
+        }, ct);
+
+        Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
+        Assert.Equal(["OnRunStarted", "OnBatchCompleted", "OnBatchCompleted", "OnRunSucceeded"], captured.Select(context => context.Metadata["event"]).ToArray());
+        Assert.All(captured, context => Assert.Equal("Pipelines", context.Metadata["surface"]));
+        Assert.Equal("start", captured[0].Arguments["configured"].AsText);
+        Assert.Equal(2, captured[1].Arguments["rowsRead"].AsInteger);
+        Assert.Equal(2, captured[1].Arguments["rowsWritten"].AsInteger);
+        Assert.Equal(1, captured[1].Arguments["batchNumber"].AsInteger);
+        Assert.Equal(3, captured[2].Arguments["rowsRead"].AsInteger);
+        Assert.Equal("Succeeded", captured[3].Arguments["status"].AsText);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_OnRunFailedHookRunsWhenPipelineFails()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var source = new FakeSource([CreateBatch(3, 41, 42)]);
+        var transform = new ThrowingTransform("cast", "Cannot parse integer.");
+        DbCommandContext? captured = null;
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("RecordFailure", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(source, new FakeDestination(), [transform]),
+            new RecordingCheckpointStore(),
+            new RecordingRunLogger(),
+            commands);
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(
+                errorMode: PipelineErrorMode.FailFast,
+                hooks:
+                [
+                    new PipelineCommandHookDefinition
+                    {
+                        Event = PipelineCommandHookEvent.OnRunFailed,
+                        CommandName = "RecordFailure",
+                    },
+                ]),
+            Mode = PipelineExecutionMode.Run,
+        }, ct);
+
+        Assert.Equal(PipelineRunStatus.Failed, result.Status);
+        Assert.NotNull(captured);
+        Assert.Equal("OnRunFailed", captured!.Metadata["event"]);
+        Assert.Equal("Failed", captured.Arguments["status"].AsText);
+        Assert.Contains("Cannot parse integer.", captured.Arguments["errorSummary"].AsText);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CommandHookFailureReturnsFailedRun()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var commands = DbCommandRegistry.Create(builder =>
+            builder.AddCommand("RejectHook", _ => DbCommandResult.Failure("Hook rejected run.")));
+        var orchestrator = new PipelineOrchestrator(
+            new FakeComponentFactory(new FakeSource([CreateBatch(1, 1)]), new FakeDestination(), []),
+            new RecordingCheckpointStore(),
+            new RecordingRunLogger(),
+            commands);
+
+        PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
+        {
+            Package = CreatePackage(hooks:
+            [
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnRunStarted,
+                    CommandName = "RejectHook",
+                },
+            ]),
+            Mode = PipelineExecutionMode.Run,
+        }, ct);
+
+        Assert.Equal(PipelineRunStatus.Failed, result.Status);
+        Assert.Contains("Step: command-hook", result.ErrorSummary);
+        Assert.Contains("Component: OnRunStarted", result.ErrorSummary);
+        Assert.Contains("Hook rejected run.", result.ErrorSummary);
+    }
+
     private static PipelinePackageDefinition CreatePackage(
         PipelineErrorMode errorMode = PipelineErrorMode.SkipBadRows,
-        int maxRejects = 10) => new()
+        int maxRejects = 10,
+        IReadOnlyList<PipelineCommandHookDefinition>? hooks = null) => new()
     {
         Name = "customers-import",
         Version = "1.0.0",
@@ -261,6 +396,7 @@ public sealed class PipelineOrchestratorTests
             ErrorMode = errorMode,
             MaxRejects = errorMode == PipelineErrorMode.SkipBadRows ? maxRejects : 0,
         },
+        Hooks = hooks ?? [],
     };
 
     private static PipelineRowBatch CreateBatch(long batchNumber, params int[] ids) => new()

@@ -8,16 +8,20 @@ namespace CSharpDB.Admin.Reports.Services;
 public sealed class DefaultReportPreviewService(
     ICSharpDbClient dbClient,
     IReportSourceProvider sourceProvider,
-    DbFunctionRegistry? functions = null) : IReportPreviewService
+    DbFunctionRegistry? functions = null,
+    IReportEventDispatcher? reportEvents = null) : IReportPreviewService
 {
     internal const int MaxPreviewRows = 10000;
     internal const int MaxPreviewPages = 250;
     private const double PixelsPerInch = 96.0;
+    private readonly IReportEventDispatcher _reportEvents = reportEvents ?? NullReportEventDispatcher.Instance;
 
     public async Task<ReportPreviewResult> BuildPreviewAsync(ReportDefinition report, CancellationToken ct = default)
     {
         ReportSourceDefinition source = await sourceProvider.GetSourceDefinitionAsync(report.Source)
             ?? throw new InvalidOperationException($"Source '{report.Source.Name}' is no longer available.");
+
+        await DispatchReportEventOrThrowAsync(report, source, ReportEventKind.OnOpen, runtimeArguments: null, ct);
 
         IReadOnlyList<Dictionary<string, object?>> loadedRows = source.Kind switch
         {
@@ -29,11 +33,24 @@ public sealed class DefaultReportPreviewService(
         bool rowTruncated = loadedRows.Count > MaxPreviewRows;
         List<Dictionary<string, object?>> rows = loadedRows.Take(MaxPreviewRows).ToList();
 
+        await DispatchReportEventOrThrowAsync(
+            report,
+            source,
+            ReportEventKind.BeforeRender,
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["rowCount"] = rows.Count,
+                ["loadedRowCount"] = loadedRows.Count,
+                ["rowTruncated"] = rowTruncated,
+                ["maxPreviewRows"] = MaxPreviewRows,
+            },
+            ct);
+
         IReadOnlyList<ReportPreviewPage> pages = Paginate(report, rows, functions ?? DbFunctionRegistry.Empty, out bool pageTruncated);
         bool hasSchemaDrift = !string.Equals(source.SourceSchemaSignature, report.SourceSchemaSignature, StringComparison.Ordinal);
         string? warning = BuildWarning(rowTruncated, pageTruncated, hasSchemaDrift);
 
-        return new ReportPreviewResult(
+        var result = new ReportPreviewResult(
             report,
             source,
             pages,
@@ -42,6 +59,38 @@ public sealed class DefaultReportPreviewService(
             hasSchemaDrift,
             warning,
             DateTime.UtcNow);
+
+        await DispatchReportEventOrThrowAsync(
+            report,
+            source,
+            ReportEventKind.AfterRender,
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["rowCount"] = result.TotalRows,
+                ["pageCount"] = result.Pages.Count,
+                ["isTruncated"] = result.IsTruncated,
+                ["hasSchemaDrift"] = result.HasSchemaDrift,
+            },
+            ct);
+
+        return result;
+    }
+
+    private async Task DispatchReportEventOrThrowAsync(
+        ReportDefinition report,
+        ReportSourceDefinition source,
+        ReportEventKind eventKind,
+        IReadOnlyDictionary<string, object?>? runtimeArguments,
+        CancellationToken ct)
+    {
+        ReportEventDispatchResult dispatchResult = await _reportEvents.DispatchAsync(report, source, eventKind, runtimeArguments, ct);
+        if (!dispatchResult.Succeeded)
+        {
+            string message = string.IsNullOrWhiteSpace(dispatchResult.Message)
+                ? $"Report event '{eventKind}' failed."
+                : dispatchResult.Message;
+            throw new InvalidOperationException(message);
+        }
     }
 
     private static string? BuildWarning(bool rowTruncated, bool pageTruncated, bool hasSchemaDrift)

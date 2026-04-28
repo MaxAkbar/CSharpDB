@@ -71,4 +71,32 @@ public sealed class TrustedCommandRegistryTests
         Assert.True(result.Succeeded);
         Assert.Equal("AfterUpdate", result.Message);
     }
+
+    [Fact]
+    public void CommandArguments_ConvertObjectDictionariesAndLetConfiguredValuesOverrideRuntimeValues()
+    {
+        Dictionary<string, DbValue> arguments = DbCommandArguments.FromObjectDictionary(
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Id"] = 7,
+                ["IsActive"] = true,
+                ["Total"] = 12.5m,
+                ["JsonInteger"] = 3.0d,
+                ["Name"] = "Alice",
+                [""] = "ignored",
+            },
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Name"] = "Override",
+                ["NullValue"] = null,
+            });
+
+        Assert.Equal(7, arguments["Id"].AsInteger);
+        Assert.Equal(1, arguments["IsActive"].AsInteger);
+        Assert.Equal(12.5, arguments["Total"].AsReal);
+        Assert.Equal(3, arguments["JsonInteger"].AsInteger);
+        Assert.Equal("Override", arguments["Name"].AsText);
+        Assert.True(arguments["NullValue"].IsNull);
+        Assert.False(arguments.ContainsKey(""));
+    }
 }

@@ -12,6 +12,23 @@ public sealed class PipelinePackageDefinition
     public PipelineDestinationDefinition Destination { get; init; } = new();
     public PipelineExecutionOptions Options { get; init; } = new();
     public PipelineIncrementalOptions? Incremental { get; init; }
+    public IReadOnlyList<PipelineCommandHookDefinition> Hooks { get; init; } = [];
+}
+
+public enum PipelineCommandHookEvent
+{
+    OnRunStarted,
+    OnBatchCompleted,
+    OnRunSucceeded,
+    OnRunFailed,
+}
+
+public sealed class PipelineCommandHookDefinition
+{
+    public PipelineCommandHookEvent Event { get; init; }
+    public string CommandName { get; init; } = string.Empty;
+    public IReadOnlyDictionary<string, object?>? Arguments { get; init; }
+    public bool StopOnFailure { get; init; } = true;
 }
 
 public enum PipelineSourceKind

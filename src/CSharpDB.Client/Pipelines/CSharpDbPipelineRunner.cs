@@ -9,11 +9,15 @@ public sealed class CSharpDbPipelineRunner
 {
     private readonly IPipelineOrchestrator _orchestrator;
 
-    public CSharpDbPipelineRunner(ICSharpDbClient client, DbFunctionRegistry? functions = null)
+    public CSharpDbPipelineRunner(
+        ICSharpDbClient client,
+        DbFunctionRegistry? functions = null,
+        DbCommandRegistry? commands = null)
         : this(new PipelineOrchestrator(
             new CSharpDbPipelineComponentFactory(client, functions),
             new CSharpDbPipelineCheckpointStore(client),
-            new CSharpDbPipelineRunLogger(client)))
+            new CSharpDbPipelineRunLogger(client),
+            commands))
     {
     }
 

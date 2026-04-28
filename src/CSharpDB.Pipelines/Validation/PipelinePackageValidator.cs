@@ -25,6 +25,7 @@ public static class PipelinePackageValidator
         ValidateOptions(package.Options, errors);
         ValidateIncremental(package.Incremental, errors);
         ValidateTransforms(package.Transforms, errors);
+        ValidateHooks(package.Hooks, errors);
 
         return errors.Count == 0
             ? PipelineValidationResult.Success
@@ -212,6 +213,35 @@ public static class PipelinePackageValidator
                         errors.Add(Error("pipeline.transform.deduplicate.keys.required", $"{path}.deduplicateKeys", "Deduplicate transforms require at least one key column."));
                     }
                     break;
+            }
+        }
+    }
+
+    private static void ValidateHooks(IReadOnlyList<PipelineCommandHookDefinition>? hooks, List<PipelineValidationIssue> errors)
+    {
+        if (hooks is null)
+            return;
+
+        for (int i = 0; i < hooks.Count; i++)
+        {
+            PipelineCommandHookDefinition hook = hooks[i];
+            string path = $"hooks[{i}]";
+
+            if (string.IsNullOrWhiteSpace(hook.CommandName))
+            {
+                errors.Add(Error("pipeline.hook.command.required", $"{path}.commandName", "Pipeline command hooks require a command name."));
+            }
+
+            if (hook.Arguments is null)
+                continue;
+
+            foreach (string key in hook.Arguments.Keys)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    errors.Add(Error("pipeline.hook.argument.name.required", $"{path}.arguments", "Pipeline command hook arguments require non-empty names."));
+                    break;
+                }
             }
         }
     }

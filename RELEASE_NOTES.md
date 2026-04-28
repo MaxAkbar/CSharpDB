@@ -51,6 +51,20 @@ calculated text, and pipeline filter/derive expressions.
 - Added a command button control that invokes a trusted host command on click,
   passing current record fields, optional configured arguments, and form
   metadata to the command callback.
+- Added shared command argument conversion helpers so Forms, Reports, and
+  Pipelines pass host command arguments with the same `DbValue` conversion
+  rules.
+- Admin Reports can now bind `OnOpen`, `BeforeRender`, and `AfterRender`
+  preview lifecycle events to trusted commands. The preview service passes
+  report/source metadata plus row, truncation, page, and schema-drift metrics.
+- `AddCSharpDbAdminReports(...)` now has a command-registration overload for
+  trusted host applications.
+- Pipeline packages can now include trusted command hooks for `OnRunStarted`,
+  `OnBatchCompleted`, `OnRunSucceeded`, and `OnRunFailed`. Package JSON stores
+  hook names and arguments only; command bodies remain host-registered code.
+- Pipeline hook failures fail the run through `PipelineRunResult`; failure-hook
+  errors are appended to the failed run summary instead of recursively
+  dispatching more failure hooks.
 
 ### Behavior And Safety
 
@@ -83,6 +97,9 @@ calculated text, and pipeline filter/derive expressions.
   before-event cancellation.
 - Added designer-state and command-button tests covering event binding
   preservation and registered command invocation from rendered forms.
+- Added report-event dispatcher and preview lifecycle tests, pipeline hook
+  serialization/validation/orchestrator tests, and shared command argument
+  conversion tests.
 - Same-machine affected benchmark comparison against the pre-feature HEAD
   baseline showed no material regression in the main write/query guardrails:
 
@@ -130,9 +147,10 @@ otherwise neutral to improved.
 - Remote hosts must register functions in the daemon/API host process; direct
   clients can register functions locally through `DirectDatabaseOptions`, but
   callback delegates are never serialized over HTTP or gRPC.
-- Admin Forms and Reports use the shared registry, but their formula surfaces
-  remain narrower than SQL: numeric formulas expect numeric returns, while
-  report calculated text supports scalar function expressions as rendered text.
+- Admin Forms and Reports use the shared registries, but their formula and
+  automation surfaces remain narrower than SQL or stored macro systems:
+  formulas stay expression-focused, and command hooks invoke host-owned code by
+  name rather than storing executable scripts in database metadata.
 
 ## v3.5.0
 

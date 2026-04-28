@@ -16,6 +16,7 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - grouping, sorting, bands, bound text, calculated text, labels, lines, and box
   controls
 - preview pagination and simple expression evaluation
+- trusted command-backed preview lifecycle events
 
 ## Main Components
 
@@ -39,11 +40,27 @@ using CSharpDB.Admin.Reports.Services;
 builder.Services.AddCSharpDbAdminReports();
 ```
 
+Hosts that want Access-style report automation can register trusted commands:
+
+```csharp
+using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminReports(commands =>
+{
+    commands.AddCommand("PublishReportRendered", static context =>
+    {
+        long pageCount = context.Arguments["pageCount"].AsInteger;
+        return DbCommandResult.Success($"Rendered {pageCount} page(s).");
+    });
+});
+```
+
 The extension registers:
 
 - `IReportRepository`
 - `IReportSourceProvider`
 - `IReportGenerator`
+- `IReportEventDispatcher`
 - `IReportPreviewService`
 
 ## Core Contracts
@@ -70,11 +87,16 @@ public sealed record ReportDefinition(
     IReadOnlyList<ReportGroupDefinition> Groups,
     IReadOnlyList<ReportSortDefinition> Sorts,
     IReadOnlyList<ReportBandDefinition> Bands,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<ReportEventBinding>? EventBindings = null);
 ```
 
 Report layout is band-based. Each `ReportBandDefinition` owns a list of
 `ReportControlDefinition` records positioned within that band.
+
+`EventBindings` can reference host-registered commands for `OnOpen`,
+`BeforeRender`, and `AfterRender`. Report JSON stores event names, command
+names, and optional arguments only; C# command bodies stay in the host process.
 
 ## Build
 

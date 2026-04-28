@@ -17,6 +17,7 @@ public sealed class PipelinePackageSerializerTests
         Assert.Contains("\"errorMode\": \"skipBadRows\"", json);
         Assert.Contains("\"kind\": \"csvFile\"", json);
         Assert.Contains("\"targetType\": \"integer\"", json);
+        Assert.Contains("\"event\": \"onRunSucceeded\"", json);
     }
 
     [Fact]
@@ -36,6 +37,11 @@ public sealed class PipelinePackageSerializerTests
         Assert.Equal(package.Options.ErrorMode, clone.Options.ErrorMode);
         Assert.Equal(package.Transforms.Count, clone.Transforms.Count);
         Assert.Equal(package.Incremental?.WatermarkColumn, clone.Incremental?.WatermarkColumn);
+        PipelineCommandHookDefinition hook = Assert.Single(clone.Hooks);
+        Assert.Equal(PipelineCommandHookEvent.OnRunSucceeded, hook.Event);
+        Assert.Equal("NotifyImport", hook.CommandName);
+        Assert.Equal("ops", Assert.IsType<string>(hook.Arguments!["channel"]));
+        Assert.Equal(3, DbCommandArguments.FromObject(hook.Arguments["priority"]).AsInteger);
     }
 
     [Fact]
@@ -50,9 +56,10 @@ public sealed class PipelinePackageSerializerTests
             await PipelinePackageSerializer.SaveToFileAsync(package, path, ct);
             PipelinePackageDefinition loaded = await PipelinePackageSerializer.LoadFromFileAsync(path, ct);
 
-            Assert.Equal(package.Name, loaded.Name);
-            Assert.Equal(package.Transforms.Count, loaded.Transforms.Count);
-            Assert.Equal(package.Options.BatchSize, loaded.Options.BatchSize);
+        Assert.Equal(package.Name, loaded.Name);
+        Assert.Equal(package.Transforms.Count, loaded.Transforms.Count);
+        Assert.Equal(package.Options.BatchSize, loaded.Options.BatchSize);
+        Assert.Single(loaded.Hooks);
         }
         finally
         {
@@ -118,5 +125,18 @@ public sealed class PipelinePackageSerializerTests
             WatermarkColumn = "updated_at",
             LastProcessedValue = "2026-01-01T00:00:00Z",
         },
+        Hooks =
+        [
+            new PipelineCommandHookDefinition
+            {
+                Event = PipelineCommandHookEvent.OnRunSucceeded,
+                CommandName = "NotifyImport",
+                Arguments = new Dictionary<string, object?>
+                {
+                    ["channel"] = "ops",
+                    ["priority"] = 3,
+                },
+            },
+        ],
     };
 }

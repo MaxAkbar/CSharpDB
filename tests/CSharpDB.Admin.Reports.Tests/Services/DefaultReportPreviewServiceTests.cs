@@ -1,6 +1,7 @@
 using System.Text;
 using CSharpDB.Admin.Reports.Models;
 using CSharpDB.Admin.Reports.Services;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Reports.Tests.Services;
 
@@ -68,6 +69,74 @@ public class DefaultReportPreviewServiceTests
         Assert.Equal(250, result.Pages.Count);
         Assert.Equal(604, result.TotalRows);
         Assert.Contains("250 pages", result.WarningMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task BuildPreviewAsync_DispatchesReportLifecycleEvents()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await CreateSalesSchemaAsync(db);
+        var provider = new DbReportSourceProvider(db.Client);
+        var generator = new DefaultReportGenerator();
+        var source = (await provider.GetSourceDefinitionAsync(new ReportSourceReference(ReportSourceKind.Table, "Sales")))!;
+        var captured = new List<DbCommandContext>();
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("RecordReportEvent", context =>
+            {
+                captured.Add(context);
+                return DbCommandResult.Success();
+            });
+        });
+        var previewService = new DefaultReportPreviewService(
+            db.Client,
+            provider,
+            reportEvents: new DefaultReportEventDispatcher(commands));
+
+        ReportDefinition report = generator.GenerateDefault(source) with
+        {
+            EventBindings =
+            [
+                new ReportEventBinding(ReportEventKind.OnOpen, "RecordReportEvent"),
+                new ReportEventBinding(ReportEventKind.BeforeRender, "RecordReportEvent", new Dictionary<string, object?> { ["configured"] = "yes" }),
+                new ReportEventBinding(ReportEventKind.AfterRender, "RecordReportEvent"),
+            ],
+        };
+
+        ReportPreviewResult result = await previewService.BuildPreviewAsync(report, TestContext.Current.CancellationToken);
+
+        Assert.Equal(4, result.TotalRows);
+        Assert.Equal(["OnOpen", "BeforeRender", "AfterRender"], captured.Select(context => context.Metadata["event"]).ToArray());
+        Assert.All(captured, context => Assert.Equal("AdminReports", context.Metadata["surface"]));
+        Assert.Equal(4, captured[1].Arguments["rowCount"].AsInteger);
+        Assert.Equal("yes", captured[1].Arguments["configured"].AsText);
+        Assert.Equal(result.Pages.Count, captured[2].Arguments["pageCount"].AsInteger);
+        Assert.Equal(0, captured[2].Arguments["hasSchemaDrift"].AsInteger);
+    }
+
+    [Fact]
+    public async Task BuildPreviewAsync_FailsWhenReportEventCommandFails()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await CreateSalesSchemaAsync(db);
+        var provider = new DbReportSourceProvider(db.Client);
+        var generator = new DefaultReportGenerator();
+        var source = (await provider.GetSourceDefinitionAsync(new ReportSourceReference(ReportSourceKind.Table, "Sales")))!;
+        var commands = DbCommandRegistry.Create(builder =>
+            builder.AddCommand("RejectReport", _ => DbCommandResult.Failure("Rejected by host command.")));
+        var previewService = new DefaultReportPreviewService(
+            db.Client,
+            provider,
+            reportEvents: new DefaultReportEventDispatcher(commands));
+
+        ReportDefinition report = generator.GenerateDefault(source) with
+        {
+            EventBindings = [new ReportEventBinding(ReportEventKind.OnOpen, "RejectReport")],
+        };
+
+        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => previewService.BuildPreviewAsync(report, TestContext.Current.CancellationToken));
+        Assert.Contains("Rejected by host command.", ex.Message);
     }
 
     private static async Task CreateSalesSchemaAsync(TestDatabaseScope db)

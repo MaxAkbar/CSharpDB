@@ -13,6 +13,7 @@ public static class PipelinePackageSerializer
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         Converters =
         {
+            new ObjectDictionaryConverter(),
             new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
         },
     };

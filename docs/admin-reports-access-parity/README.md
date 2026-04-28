@@ -23,6 +23,8 @@ The current reports surface already includes:
 - preview pagination with page headers and footers
 - print support through the browser
 - schema-drift warnings
+- trusted command-backed preview lifecycle events for `OnOpen`,
+  `BeforeRender`, and `AfterRender`
 
 ## Added Review Findings
 
@@ -120,7 +122,7 @@ Expected fix:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Email/report delivery | Planned | Export and attach reports, with host-provided delivery hooks. |
+| Email/report delivery | Planned | Export and attach reports; trusted `AfterRender` commands provide an initial host callback but not a full delivery pipeline. |
 | Scheduled reports | Research | Run recurring reports and store generated artifacts. |
 | Report artifact history | Research | Store generated report snapshots for auditing and re-download. |
 | Large-report cancellation | Planned | Add cancellation/progress for long render/export jobs. |

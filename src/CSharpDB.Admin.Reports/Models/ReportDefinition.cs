@@ -10,4 +10,5 @@ public sealed record ReportDefinition(
     IReadOnlyList<ReportGroupDefinition> Groups,
     IReadOnlyList<ReportSortDefinition> Sorts,
     IReadOnlyList<ReportBandDefinition> Bands,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<ReportEventBinding>? EventBindings = null);

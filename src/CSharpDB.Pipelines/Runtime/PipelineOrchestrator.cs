@@ -1,5 +1,6 @@
 using CSharpDB.Pipelines.Models;
 using CSharpDB.Pipelines.Validation;
+using CSharpDB.Primitives;
 using System.Text.Json;
 
 namespace CSharpDB.Pipelines.Runtime;
@@ -9,15 +10,18 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     private readonly IPipelineComponentFactory _componentFactory;
     private readonly IPipelineCheckpointStore _checkpointStore;
     private readonly IPipelineRunLogger _runLogger;
+    private readonly DbCommandRegistry _commands;
 
     public PipelineOrchestrator(
         IPipelineComponentFactory componentFactory,
         IPipelineCheckpointStore checkpointStore,
-        IPipelineRunLogger runLogger)
+        IPipelineRunLogger runLogger,
+        DbCommandRegistry? commands = null)
     {
         _componentFactory = componentFactory;
         _checkpointStore = checkpointStore;
         _runLogger = runLogger;
+        _commands = commands ?? DbCommandRegistry.Empty;
     }
 
     public async Task<PipelineRunResult> ExecuteAsync(PipelineRunRequest request, CancellationToken ct = default)
@@ -86,6 +90,16 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 await _runLogger.RunCompletedAsync(validateResult, ct);
                 return validateResult;
             }
+
+            currentStep = "command-hook";
+            currentComponent = PipelineCommandHookEvent.OnRunStarted.ToString();
+            await DispatchHooksAsync(
+                request.Package,
+                PipelineCommandHookEvent.OnRunStarted,
+                context,
+                metrics,
+                status: PipelineRunStatus.Running.ToString(),
+                ct: ct);
 
             var source = _componentFactory.CreateSource(request.Package.Source);
             var transforms = _componentFactory.CreateTransforms(request.Package.Transforms);
@@ -208,6 +222,18 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                         $"Pipeline rejected {metrics.RowsRejected} row(s), exceeding MaxRejects={request.Package.Options.MaxRejects}.");
                 }
 
+                currentStep = "command-hook";
+                currentComponent = PipelineCommandHookEvent.OnBatchCompleted.ToString();
+                currentBatch = sourceBatch;
+                await DispatchHooksAsync(
+                    request.Package,
+                    PipelineCommandHookEvent.OnBatchCompleted,
+                    context,
+                    metrics,
+                    sourceBatch,
+                    PipelineRunStatus.Running.ToString(),
+                    ct: ct);
+
                 await _runLogger.StatusChangedAsync(runId, PipelineRunStatus.Running, metrics, ct);
             }
 
@@ -230,6 +256,17 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 Checkpoint = latestCheckpoint,
             };
 
+            currentStep = "command-hook";
+            currentComponent = PipelineCommandHookEvent.OnRunSucceeded.ToString();
+            currentBatch = null;
+            await DispatchHooksAsync(
+                request.Package,
+                PipelineCommandHookEvent.OnRunSucceeded,
+                context,
+                metrics,
+                status: PipelineRunStatus.Succeeded.ToString(),
+                ct: ct);
+
             await _runLogger.RunCompletedAsync(result, ct);
             return result;
         }
@@ -239,6 +276,27 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
         }
         catch (Exception ex)
         {
+            string errorSummary = FormatErrorSummary(currentStep, currentComponent, currentBatch, ex);
+            try
+            {
+                await DispatchHooksAsync(
+                    request.Package,
+                    PipelineCommandHookEvent.OnRunFailed,
+                    context,
+                    metrics,
+                    currentBatch,
+                    PipelineRunStatus.Failed.ToString(),
+                    errorSummary,
+                    ct);
+            }
+            catch (Exception hookEx)
+            {
+                errorSummary = string.Join(
+                    Environment.NewLine,
+                    errorSummary,
+                    $"Run-failed hook error: {hookEx.Message}");
+            }
+
             var failedResult = new PipelineRunResult
             {
                 RunId = runId,
@@ -249,13 +307,113 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 CompletedUtc = DateTimeOffset.UtcNow,
                 Metrics = metrics,
                 Checkpoint = latestCheckpoint,
-                ErrorSummary = FormatErrorSummary(currentStep, currentComponent, currentBatch, ex),
+                ErrorSummary = errorSummary,
             };
 
             await _runLogger.RunCompletedAsync(failedResult, ct);
             return failedResult;
         }
     }
+
+    private async Task DispatchHooksAsync(
+        PipelinePackageDefinition package,
+        PipelineCommandHookEvent eventKind,
+        PipelineExecutionContext context,
+        PipelineRunMetrics metrics,
+        PipelineRowBatch? batch = null,
+        string? status = null,
+        string? errorSummary = null,
+        CancellationToken ct = default)
+    {
+        IReadOnlyList<PipelineCommandHookDefinition> hooks = package.Hooks ?? [];
+        foreach (PipelineCommandHookDefinition hook in hooks.Where(hook => hook.Event == eventKind))
+        {
+            if (string.IsNullOrWhiteSpace(hook.CommandName))
+                throw new InvalidOperationException($"Pipeline hook '{eventKind}' has an empty command name.");
+
+            if (!_commands.TryGetCommand(hook.CommandName, out DbCommandDefinition definition))
+                throw new InvalidOperationException($"Unknown pipeline command '{hook.CommandName}' for hook '{eventKind}'.");
+
+            Dictionary<string, DbValue> arguments = DbCommandArguments.FromObjectDictionary(
+                BuildHookArguments(package, eventKind, context.RunId, context.Mode, metrics, batch, status, errorSummary),
+                hook.Arguments);
+            Dictionary<string, string> metadata = BuildHookMetadata(package, eventKind, context.RunId, context.Mode);
+
+            DbCommandResult result;
+            try
+            {
+                result = await definition.InvokeAsync(arguments, metadata, ct);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Pipeline hook '{eventKind}' command '{definition.Name}' failed: {ex.Message}",
+                    ex);
+            }
+
+            if (!result.Succeeded && hook.StopOnFailure)
+            {
+                string message = string.IsNullOrWhiteSpace(result.Message)
+                    ? $"Pipeline hook '{eventKind}' command '{definition.Name}' failed."
+                    : result.Message;
+                throw new InvalidOperationException(message);
+            }
+        }
+    }
+
+    private static Dictionary<string, object?> BuildHookArguments(
+        PipelinePackageDefinition package,
+        PipelineCommandHookEvent eventKind,
+        string runId,
+        PipelineExecutionMode mode,
+        PipelineRunMetrics metrics,
+        PipelineRowBatch? batch,
+        string? status,
+        string? errorSummary)
+    {
+        var arguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["runId"] = runId,
+            ["pipelineName"] = package.Name,
+            ["pipelineVersion"] = package.Version,
+            ["mode"] = mode.ToString(),
+            ["event"] = eventKind.ToString(),
+            ["rowsRead"] = metrics.RowsRead,
+            ["rowsWritten"] = metrics.RowsWritten,
+            ["rowsRejected"] = metrics.RowsRejected,
+            ["batchesCompleted"] = metrics.BatchesCompleted,
+        };
+
+        if (!string.IsNullOrWhiteSpace(status))
+            arguments["status"] = status;
+
+        if (!string.IsNullOrWhiteSpace(errorSummary))
+            arguments["errorSummary"] = errorSummary;
+
+        if (batch is not null)
+        {
+            arguments["batchNumber"] = batch.BatchNumber;
+            arguments["startingRowNumber"] = batch.StartingRowNumber;
+            arguments["batchRowCount"] = batch.Rows.Count;
+        }
+
+        return arguments;
+    }
+
+    private static Dictionary<string, string> BuildHookMetadata(
+        PipelinePackageDefinition package,
+        PipelineCommandHookEvent eventKind,
+        string runId,
+        PipelineExecutionMode mode)
+        => new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["surface"] = "Pipelines",
+            ["pipelineName"] = package.Name,
+            ["pipelineVersion"] = package.Version,
+            ["runId"] = runId,
+            ["mode"] = mode.ToString(),
+            ["event"] = eventKind.ToString(),
+        };
 
     private static string FormatErrorSummary(string step, string? component, PipelineRowBatch? batch, Exception exception)
     {
