@@ -42,7 +42,7 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **User-defined functions** | Broader built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions | Planned |
+| **User-defined functions** | Trusted in-process C# scalar functions are implemented for SQL, triggers/procedures, direct clients, Admin Forms/Reports, and pipelines; broader built-in scalar functions, native plugin extensions, aggregate/table-valued UDFs, and sandboxed UDFs remain future work | Partial |
 | **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, including correlated evaluation in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions | Done |
 | **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results, including use in top-level queries, views, and CTE query bodies | Done |
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
@@ -96,7 +96,7 @@ These are known simplifications in the current implementation:
 
 | Area | Limitation |
 |------|-----------|
-| **Functions** | Very limited scalar function surface today: built-in `TEXT(expr)` plus aggregate functions; no broader built-in function library or user-defined functions yet |
+| **Functions** | Trusted in-process C# scalar functions are supported when registered by the host; broader built-in scalar functions, aggregate/table-valued UDFs, stored C# modules, remote delegate serialization, and sandboxed UDFs are not implemented |
 | **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions; correlated subqueries are not yet supported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, or aggregate projections |
 | **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |

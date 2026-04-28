@@ -1,5 +1,110 @@
 # What's New
 
+## v3.6.0
+
+v3.6.0 adds trusted, in-process C# scalar functions across CSharpDB's
+user-facing expression surfaces. Host applications can now register C#
+delegates when opening or hosting a database, then call those functions from
+SQL, SQL-backed triggers and procedures, Admin Forms formulas, Admin Reports
+calculated text, and pipeline filter/derive expressions.
+
+### Trusted C# Scalar Functions
+
+- Added the shared `DbFunctionRegistry`, `DbFunctionRegistryBuilder`,
+  `DbScalarFunctionDelegate`, and `DbScalarFunctionOptions` public model in
+  `CSharpDB.Primitives`.
+- Added `DatabaseOptions.Functions` plus `ConfigureFunctions(...)` so embedded
+  hosts can register scalar functions when opening file-backed, in-memory, or
+  hybrid databases.
+- SQL expression evaluation now resolves registered scalar functions in
+  projections, filters, ordering expressions, `INSERT`/`UPDATE` expressions,
+  trigger bodies, and stored SQL procedure bodies.
+- Direct clients can pass trusted functions through `DirectDatabaseOptions`;
+  HTTP and gRPC clients still do not serialize delegates and can only call
+  functions registered inside the remote host process.
+- Admin Forms formulas and Admin Reports calculated expressions can use the
+  same registry while preserving existing arithmetic and aggregate behavior.
+- Pipeline filter and derived-column expressions can call registered functions;
+  package definitions continue to store function names and expressions only.
+- Added the usage guide at `docs/trusted-csharp-functions/README.md`.
+
+### Behavior And Safety
+
+- Function names are case-insensitive SQL identifiers, and registration rejects
+  duplicate user names or collisions with reserved built-ins such as `TEXT`,
+  `COUNT`, `SUM`, `AVG`, `MIN`, and `MAX`.
+- Arity is validated before invocation, missing SQL functions fail with the
+  existing unknown scalar function path, and thrown delegate exceptions are
+  wrapped with the function name before normal statement/transaction rollback.
+- `NullPropagating = true` returns `NULL` without invoking the delegate when
+  any argument is `NULL`; otherwise `DbValue.Null` is passed explicitly.
+- V1 remains scalar-only, synchronous, trusted, and in-process. It does not
+  persist C# source, sandbox code, load database-owned plugin assemblies,
+  marshal delegates over HTTP/gRPC, or add aggregate/table-valued/procedure
+  UDFs.
+- Query planning keeps custom functions on the residual expression path in V1:
+  no index pushdown, generated columns, constant folding, or cost assumptions
+  are inferred from user functions.
+
+### Tests And Benchmarks
+
+- Added registry and SQL coverage for case-insensitive lookup, duplicate and
+  built-in collision rejection, null propagation, deterministic metadata,
+  missing functions, thrown functions, rollback behavior, triggers, and stored
+  SQL procedures.
+- Added direct-client, Admin Forms, Admin Reports, pipeline validation, and
+  pipeline runtime tests for registered scalar functions.
+- Same-machine affected benchmark comparison against the pre-feature HEAD
+  baseline showed no material regression in the main write/query guardrails:
+
+| Suite | Worst current change | Best current change |
+|-------|---------------------:|--------------------:|
+| Insert | `+3.76%` | `-3.38%` |
+| Join | `+6.65%` | `-6.93%` |
+| PointLookup | `+5.15%` | `-9.25%` |
+| QueryPlanCache | `+1.62%` | `-4.45%` |
+| ScanProjection | `+0.20%` | `-18.12%` |
+| TriggerDispatch | `+0.77%` | `-4.52%` |
+| BatchEvaluation | `+10.53%` | `-10.36%` |
+
+The one notable row was the synthetic BatchEvaluation delegate
+filter/projection case at `+10.53%`; its paired specialized path improved by
+`-10.36%`, allocations were unchanged, and the affected guardrail suites were
+otherwise neutral to improved.
+
+### Validation
+
+- `git status --short --branch`
+- `dotnet restore CSharpDB.slnx`
+- `.\scripts\Test-NoLegacyCoreReferences.ps1`
+  - Passed through the script's PowerShell fallback after the local packaged
+    `rg.exe` could not be launched normally in this desktop environment.
+- `dotnet build CSharpDB.slnx -c Release --no-restore`
+  - Passed with `0` warnings and `0` errors.
+- `dotnet test CSharpDB.slnx -c Release --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
+  - Non-parallel unit test run passed with `1,663` tests.
+- `dotnet pack` smoke for the release workflow packages with
+  `-p:Version=3.6.0`
+  - Produced `11` local packages:
+    `CSharpDB`, `CSharpDB.Client`, `CSharpDB.Data`, `CSharpDB.Engine`,
+    `CSharpDB.EntityFrameworkCore`, `CSharpDB.Execution`,
+    `CSharpDB.Pipelines`, `CSharpDB.Primitives`, `CSharpDB.Sql`,
+    `CSharpDB.Storage`, and `CSharpDB.Storage.Diagnostics`.
+- `.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.6.0 -Runtime win-x64 -OutputRoot artifacts\daemon-release-local`
+  - Produced `csharpdb-daemon-v3.6.0-win-x64.zip` and `SHA256SUMS.txt`.
+
+### Review Notes
+
+- The highest-risk runtime changes are in expression evaluation and planner
+  plumbing: custom functions are intentionally kept off the index-pushdown and
+  batch-fast-path planning assumptions in V1.
+- Remote hosts must register functions in the daemon/API host process; direct
+  clients can register functions locally through `DirectDatabaseOptions`, but
+  callback delegates are never serialized over HTTP or gRPC.
+- Admin Forms and Reports use the shared registry, but their formula surfaces
+  remain narrower than SQL: numeric formulas expect numeric returns, while
+  report calculated text supports scalar function expressions as rendered text.
+
 ## v3.5.0
 
 v3.5.0 focuses on the collection binary payload fast path, generated
