@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Serialization;
@@ -6,6 +7,8 @@ namespace CSharpDB.Engine;
 
 internal static class CollectionIndexedFieldReader
 {
+    private const int StackallocPropertyNameThreshold = 256;
+
     public static bool TryReadInt64(ReadOnlySpan<byte> payload, CollectionFieldAccessor accessor, out long value)
     {
         ArgumentNullException.ThrowIfNull(accessor);
@@ -15,8 +18,70 @@ internal static class CollectionIndexedFieldReader
     public static bool TryReadInt64(ReadOnlySpan<byte> payload, string jsonPropertyName, out long value)
     {
         ArgumentNullException.ThrowIfNull(jsonPropertyName);
-        byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
-        return TryReadInt64(payload, pathSegments, out value);
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                int byteCount = System.Text.Encoding.UTF8.GetByteCount(jsonPropertyName);
+                byte[]? rented = null;
+                Span<byte> propertyNameUtf8 = byteCount <= StackallocPropertyNameThreshold
+                    ? stackalloc byte[StackallocPropertyNameThreshold]
+                    : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
+
+                try
+                {
+                    int written = System.Text.Encoding.UTF8.GetBytes(jsonPropertyName.AsSpan(), propertyNameUtf8);
+                    return CollectionBinaryDocumentCodec.TryReadInt64(
+                        documentPayload,
+                        propertyNameUtf8[..written],
+                        out value);
+                }
+                finally
+                {
+                    if (rented is not null)
+                    {
+                        propertyNameUtf8[..byteCount].Clear();
+                        ArrayPool<byte>.Shared.Return(rented);
+                    }
+                }
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
+                    continue;
+
+                if (!reader.ValueTextEquals(jsonPropertyName.AsSpan()))
+                    continue;
+
+                if (!reader.Read())
+                    break;
+
+                if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out value))
+                    return true;
+
+                break;
+            }
+
+            value = default;
+            return false;
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            value = default;
+            return false;
+        }
     }
 
     public static bool TryReadString(ReadOnlySpan<byte> payload, CollectionFieldAccessor accessor, out string? value)
@@ -25,11 +90,82 @@ internal static class CollectionIndexedFieldReader
         return TryReadString(payload, accessor.JsonPathSegmentsUtf8, out value);
     }
 
+    public static bool TryReadStringUtf8(ReadOnlySpan<byte> payload, CollectionFieldAccessor accessor, out ReadOnlySpan<byte> value)
+    {
+        ArgumentNullException.ThrowIfNull(accessor);
+        return TryReadStringUtf8(payload, accessor.JsonPathSegmentsUtf8, out value);
+    }
+
     public static bool TryReadString(ReadOnlySpan<byte> payload, string jsonPropertyName, out string? value)
     {
         ArgumentNullException.ThrowIfNull(jsonPropertyName);
-        byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
-        return TryReadString(payload, pathSegments, out value);
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+            {
+                value = null;
+                return false;
+            }
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            {
+                int byteCount = System.Text.Encoding.UTF8.GetByteCount(jsonPropertyName);
+                byte[]? rented = null;
+                Span<byte> propertyNameUtf8 = byteCount <= StackallocPropertyNameThreshold
+                    ? stackalloc byte[StackallocPropertyNameThreshold]
+                    : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
+
+                try
+                {
+                    int written = System.Text.Encoding.UTF8.GetBytes(jsonPropertyName.AsSpan(), propertyNameUtf8);
+                    return CollectionBinaryDocumentCodec.TryReadString(
+                        documentPayload,
+                        propertyNameUtf8[..written],
+                        out value);
+                }
+                finally
+                {
+                    if (rented is not null)
+                    {
+                        propertyNameUtf8[..byteCount].Clear();
+                        ArrayPool<byte>.Shared.Return(rented);
+                    }
+                }
+            }
+
+            var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1)
+                    continue;
+
+                if (!reader.ValueTextEquals(jsonPropertyName.AsSpan()))
+                    continue;
+
+                if (!reader.Read())
+                    break;
+
+                if (reader.TokenType == JsonTokenType.String)
+                {
+                    value = reader.GetString();
+                    return true;
+                }
+
+                break;
+            }
+
+            value = null;
+            return false;
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            value = null;
+            return false;
+        }
     }
 
     public static bool TryReadBoolean(ReadOnlySpan<byte> payload, CollectionFieldAccessor accessor, out bool value)
@@ -77,11 +213,28 @@ internal static class CollectionIndexedFieldReader
             ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
             if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
             {
-                byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
-                return CollectionBinaryDocumentCodec.TryReadValue(
-                    documentPayload,
-                    pathSegments,
-                    out value);
+                int byteCount = System.Text.Encoding.UTF8.GetByteCount(jsonPropertyName);
+                byte[]? rented = null;
+                Span<byte> propertyNameUtf8 = byteCount <= StackallocPropertyNameThreshold
+                    ? stackalloc byte[StackallocPropertyNameThreshold]
+                    : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
+
+                try
+                {
+                    int written = System.Text.Encoding.UTF8.GetBytes(jsonPropertyName.AsSpan(), propertyNameUtf8);
+                    return CollectionBinaryDocumentCodec.TryReadValue(
+                        documentPayload,
+                        propertyNameUtf8[..written],
+                        out value);
+                }
+                finally
+                {
+                    if (rented is not null)
+                    {
+                        propertyNameUtf8[..byteCount].Clear();
+                        ArrayPool<byte>.Shared.Return(rented);
+                    }
+                }
             }
 
             var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
@@ -138,11 +291,28 @@ internal static class CollectionIndexedFieldReader
             ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
             if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
             {
-                byte[][] pathSegments = [System.Text.Encoding.UTF8.GetBytes(jsonPropertyName)];
-                return CollectionBinaryDocumentCodec.TryTextEquals(
-                    documentPayload,
-                    pathSegments,
-                    expectedValue);
+                int byteCount = System.Text.Encoding.UTF8.GetByteCount(jsonPropertyName);
+                byte[]? rented = null;
+                Span<byte> propertyNameUtf8 = byteCount <= StackallocPropertyNameThreshold
+                    ? stackalloc byte[StackallocPropertyNameThreshold]
+                    : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
+
+                try
+                {
+                    int written = System.Text.Encoding.UTF8.GetBytes(jsonPropertyName.AsSpan(), propertyNameUtf8);
+                    return CollectionBinaryDocumentCodec.TryTextEquals(
+                        documentPayload,
+                        propertyNameUtf8[..written],
+                        expectedValue);
+                }
+                finally
+                {
+                    if (rented is not null)
+                    {
+                        propertyNameUtf8[..byteCount].Clear();
+                        ArrayPool<byte>.Shared.Return(rented);
+                    }
+                }
             }
 
             var reader = new Utf8JsonReader(documentPayload, isFinalBlock: true, state: default);
@@ -241,6 +411,33 @@ internal static class CollectionIndexedFieldReader
         catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
         {
             value = null;
+            return false;
+        }
+    }
+
+    private static bool TryReadStringUtf8(ReadOnlySpan<byte> payload, byte[][] jsonPathSegmentsUtf8, out ReadOnlySpan<byte> value)
+    {
+        if (!CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            if (!CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        try
+        {
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+                return CollectionBinaryDocumentCodec.TryReadStringUtf8(documentPayload, jsonPathSegmentsUtf8, out value);
+
+            value = default;
+            return false;
+        }
+        catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+        {
+            value = default;
             return false;
         }
     }

@@ -32,11 +32,19 @@ internal static class OrderedTextIndexKeyCodec
         }
 
 Pack:
+        return PackUtf8Prefix(utf8Prefix, totalByteCount);
+    }
+
+    public static long ComputeKey(ReadOnlySpan<byte> utf8)
+        => PackUtf8Prefix(utf8, utf8.Length);
+
+    private static long PackUtf8Prefix(ReadOnlySpan<byte> utf8, int totalByteCount)
+    {
         int symbolCount = Math.Min(totalByteCount, MaxPrefixBytes);
         ulong packed = 0;
 
         for (int i = 0; i < symbolCount; i++)
-            packed = (packed << BitsPerSymbol) | (uint)(utf8Prefix[i] + 1);
+            packed = (packed << BitsPerSymbol) | (uint)(utf8[i] + 1);
 
         if (totalByteCount < MaxPrefixBytes)
             packed <<= BitsPerSymbol;

@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Object Explorer — CSharpDB Studio Mockup</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link rel="stylesheet" href="styles.css">
+<style>
+    .body { grid-template-columns: 320px 1fr; }
+
+    /* New sidebar */
+    .sidebar { display: flex; flex-direction: column; }
+
+    .sb-head {
+        padding: 10px 14px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.7px;
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .sb-head .actions { display: flex; gap: 2px; }
+    .sb-mini-btn {
+        width: 24px; height: 22px;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+    }
+    .sb-mini-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .sb-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .sb-search input {
+        flex: 1;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: var(--text-primary);
+        font-size: 12px;
+    }
+    .sb-search .clear {
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 11px;
+    }
+
+    .sb-toolbar {
+        display: flex;
+        gap: 4px;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--border-color);
+        align-items: center;
+    }
+    .sb-tool-chip {
+        padding: 2px 8px;
+        font-size: 10px;
+        border-radius: 999px;
+        color: var(--text-muted);
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .sb-tool-chip:hover { color: var(--text-primary); }
+    .sb-tool-chip.active { background: rgba(122,162,247,0.15); color: var(--accent-blue); border-color: transparent; }
+
+    .sb-tree {
+        flex: 1;
+        overflow-y: auto;
+        padding: 4px 0 24px;
+    }
+
+    .group {
+        margin-bottom: 2px;
+    }
+    .group-hdr {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+    }
+    .group-hdr:hover { background: var(--bg-hover); }
+    .group-hdr .chev { font-size: 9px; width: 12px; color: var(--text-muted); }
+    .group-hdr .label { display: flex; align-items: center; gap: 6px; }
+    .group-hdr .count {
+        margin-left: auto;
+        font-size: 10px;
+        background: rgba(255,255,255,0.06);
+        padding: 1px 6px;
+        border-radius: 999px;
+        color: var(--text-muted);
+        font-weight: 500;
+    }
+    .group-hdr .add {
+        margin-left: 4px;
+        opacity: 0;
+        width: 18px; height: 18px;
+        display: grid; place-items: center;
+        border-radius: 4px;
+        color: var(--text-muted);
+    }
+    .group-hdr:hover .add { opacity: 1; }
+    .group-hdr .add:hover { color: var(--accent-blue); background: var(--bg-active); }
+
+    .item {
+        display: grid;
+        grid-template-columns: 18px 18px 1fr 18px 18px;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 12px 5px 30px;
+        font-size: 12.5px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        border-left: 2px solid transparent;
+    }
+    .item:hover { color: var(--text-primary); background: var(--bg-hover); }
+    .item.active { color: var(--text-primary); background: rgba(122,162,247,0.1); border-left-color: var(--accent-blue); }
+    .item .star, .item .more { opacity: 0; color: var(--text-muted); font-size: 12px; text-align: center; }
+    .item:hover .star, .item:hover .more { opacity: 1; }
+    .item .star.on { opacity: 1; color: var(--accent-yellow); }
+    .item .star:hover { color: var(--accent-yellow); }
+    .item .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .item .hint { color: var(--text-muted); font-size: 10.5px; margin-left: auto; padding-right: 4px; opacity: 0.65; }
+
+    /* nested children: columns under a table */
+    .item.nested {
+        padding-left: 50px;
+        font-size: 11.5px;
+        color: var(--text-muted);
+        grid-template-columns: 14px 1fr 38px;
+    }
+    .item.nested .lbl { color: var(--text-secondary); }
+    .item.nested .type {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--accent-cyan);
+        text-align: right;
+    }
+    .child-group { padding: 2px 0 4px; background: rgba(255,255,255,0.015); border-left: 2px solid var(--bg-tertiary); margin-left: 22px; }
+
+    /* small headers inside table drill-down */
+    .child-head {
+        padding: 4px 12px 2px 38px;
+        color: var(--text-muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.7px;
+    }
+
+    /* main content placeholder */
+    .placeholder {
+        flex: 1;
+        display: grid;
+        place-items: center;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+    .placeholder div { text-align: center; }
+    .placeholder .bi { font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block; }
+</style>
+</head>
+<body>
+<div class="app">
+
+    <div class="titlebar">
+        <div class="brand">
+            <div class="logo">C#</div>
+            <span>CSharpDB Studio</span>
+            <span class="dbname">— relational.db</span>
+        </div>
+        <button class="db-switcher"><i class="bi bi-database"></i> relational.db <i class="bi bi-caret-down-fill"></i></button>
+        <button class="palette-launcher"><i class="bi bi-search"></i> Search anything… <span class="kbd">Ctrl K</span></button>
+        <div class="spacer"></div>
+        <span class="conn-pill"><span class="dot"></span> Connected</span>
+        <button class="tb-btn icon-only"><i class="bi bi-moon-stars"></i></button>
+        <button class="tb-btn icon-only"><i class="bi bi-layout-sidebar-inset"></i></button>
+    </div>
+
+    <div class="body">
+        <aside class="sidebar">
+            <div class="sb-head">
+                <span>Object Explorer</span>
+                <div class="actions">
+                    <button class="sb-mini-btn" title="Sort"><i class="bi bi-sort-alpha-down"></i></button>
+                    <button class="sb-mini-btn" title="Collapse all"><i class="bi bi-arrows-collapse"></i></button>
+                    <button class="sb-mini-btn" title="Refresh"><i class="bi bi-arrow-clockwise"></i></button>
+                </div>
+            </div>
+
+            <div class="sb-search">
+                <i class="bi bi-search" style="color: var(--text-muted); font-size: 12px;"></i>
+                <input value="cust" placeholder="Filter objects…" />
+                <span class="clear"><i class="bi bi-x-lg"></i></span>
+            </div>
+
+            <div class="sb-toolbar">
+                <span class="sb-tool-chip active">All</span>
+                <span class="sb-tool-chip">Tables</span>
+                <span class="sb-tool-chip">Forms</span>
+                <span class="sb-tool-chip">Reports</span>
+                <span class="sb-tool-chip">More <i class="bi bi-three-dots"></i></span>
+            </div>
+
+            <div class="sb-tree">
+
+                <!-- Pinned -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-down chev"></i>
+                        <span class="label"><i class="bi bi-pin-angle-fill" style="color: var(--accent-yellow);"></i> Pinned</span>
+                        <span class="count">3</span>
+                    </div>
+                    <div class="item active">
+                        <i class="bi bi-table icon-table"></i>
+                        <i class="bi bi-star-fill star on"></i>
+                        <span class="lbl">Customers</span>
+                        <i class="bi bi-three-dots more"></i>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-table icon-table"></i>
+                        <i class="bi bi-star-fill star on"></i>
+                        <span class="lbl">Orders</span>
+                        <i class="bi bi-three-dots more"></i>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-ui-checks-grid icon-form"></i>
+                        <i class="bi bi-star-fill star on"></i>
+                        <span class="lbl">Customer Form</span>
+                        <i class="bi bi-three-dots more"></i>
+                    </div>
+                </div>
+
+                <!-- Recent -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-down chev"></i>
+                        <span class="label"><i class="bi bi-clock-history" style="color: var(--accent-cyan);"></i> Recent</span>
+                        <span class="count">5</span>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-table icon-table"></i>
+                        <i class="bi bi-star star"></i>
+                        <span class="lbl">Invoices</span>
+                        <span class="hint">2m</span>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-terminal" style="color: var(--accent-blue);"></i>
+                        <i class="bi bi-star star"></i>
+                        <span class="lbl">Query 1 — Active customers</span>
+                        <span class="hint">14m</span>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-gear-wide-connected icon-trigger"></i>
+                        <i class="bi bi-star star"></i>
+                        <span class="lbl">recalc_invoices</span>
+                        <span class="hint">1h</span>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-eye icon-view"></i>
+                        <i class="bi bi-star star"></i>
+                        <span class="lbl">vw_active_customers</span>
+                        <span class="hint">3h</span>
+                    </div>
+                </div>
+
+                <!-- Tables (with drill-down) -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-down chev"></i>
+                        <span class="label"><i class="bi bi-table icon-table"></i> Tables</span>
+                        <span class="count">24</span>
+                        <span class="add" title="New table"><i class="bi bi-plus-lg"></i></span>
+                    </div>
+
+                    <div class="item">
+                        <i class="bi bi-chevron-down chev" style="font-size:9px;"></i>
+                        <i class="bi bi-table icon-table"></i>
+                        <span class="lbl"><b>Cust</b>omers</span>
+                        <i class="bi bi-star-fill star on"></i>
+                        <i class="bi bi-three-dots more"></i>
+                    </div>
+                    <div class="child-group">
+                        <div class="child-head">Columns · 8</div>
+                        <div class="item nested">
+                            <i class="bi bi-key" style="color: var(--accent-yellow);"></i>
+                            <span class="lbl">id</span>
+                            <span class="type">int</span>
+                        </div>
+                        <div class="item nested">
+                            <i class="bi bi-fonts" style="color: var(--accent-cyan);"></i>
+                            <span class="lbl">name</span>
+                            <span class="type">text(120)</span>
+                        </div>
+                        <div class="item nested">
+                            <i class="bi bi-fonts" style="color: var(--accent-cyan);"></i>
+                            <span class="lbl">email</span>
+                            <span class="type">text(255)</span>
+                        </div>
+                        <div class="item nested">
+                            <i class="bi bi-toggle-on" style="color: var(--accent-magenta);"></i>
+                            <span class="lbl">status</span>
+                            <span class="type">enum</span>
+                        </div>
+                        <div class="item nested">
+                            <i class="bi bi-calendar3" style="color: var(--accent-orange);"></i>
+                            <span class="lbl">created_at</span>
+                            <span class="type">datetime</span>
+                        </div>
+                        <div class="child-head">Indexes · 2</div>
+                        <div class="item nested">
+                            <i class="bi bi-lightning icon-index"></i>
+                            <span class="lbl">ix_customers_email</span>
+                            <span class="type">unique</span>
+                        </div>
+                        <div class="item nested">
+                            <i class="bi bi-lightning icon-index"></i>
+                            <span class="lbl">ix_customers_status</span>
+                            <span class="type"></span>
+                        </div>
+                        <div class="child-head">Triggers · 1</div>
+                        <div class="item nested">
+                            <i class="bi bi-lightning-charge icon-trigger"></i>
+                            <span class="lbl">trg_customers_audit</span>
+                            <span class="type">AFTER</span>
+                        </div>
+                    </div>
+
+                    <div class="item">
+                        <i class="bi bi-chevron-right chev" style="font-size:9px;"></i>
+                        <i class="bi bi-table icon-table"></i>
+                        <span class="lbl"><b>Cust</b>omerAddresses</span>
+                        <i class="bi bi-star star"></i>
+                        <i class="bi bi-three-dots more"></i>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-chevron-right chev" style="font-size:9px;"></i>
+                        <i class="bi bi-table icon-table"></i>
+                        <span class="lbl"><b>Cust</b>omerNotes</span>
+                        <i class="bi bi-star star"></i>
+                        <i class="bi bi-three-dots more"></i>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-chevron-right chev" style="font-size:9px;"></i>
+                        <i class="bi bi-table icon-table"></i>
+                        <span class="lbl">Orders</span>
+                        <i class="bi bi-star-fill star on"></i>
+                        <i class="bi bi-three-dots more"></i>
+                    </div>
+                </div>
+
+                <!-- Forms -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-down chev"></i>
+                        <span class="label"><i class="bi bi-ui-checks-grid icon-form"></i> Forms</span>
+                        <span class="count">8</span>
+                        <span class="add" title="New form"><i class="bi bi-plus-lg"></i></span>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-chevron-right chev" style="font-size:9px;"></i>
+                        <i class="bi bi-ui-checks-grid icon-form"></i>
+                        <span class="lbl"><b>Cust</b>omer Form</span>
+                        <span class="hint">Customers</span>
+                    </div>
+                </div>
+
+                <!-- Reports -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-down chev"></i>
+                        <span class="label"><i class="bi bi-file-earmark-richtext icon-report"></i> Reports</span>
+                        <span class="count">5</span>
+                        <span class="add" title="New report"><i class="bi bi-plus-lg"></i></span>
+                    </div>
+                    <div class="item">
+                        <i class="bi bi-chevron-right chev" style="font-size:9px;"></i>
+                        <i class="bi bi-file-earmark-richtext icon-report"></i>
+                        <span class="lbl"><b>Cust</b>omer Sales</span>
+                        <span class="hint">vw_customer…</span>
+                    </div>
+                </div>
+
+                <!-- Procedures -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-right chev"></i>
+                        <span class="label"><i class="bi bi-gear-wide-connected icon-trigger"></i> Procedures</span>
+                        <span class="count">11</span>
+                        <span class="add" title="New procedure"><i class="bi bi-plus-lg"></i></span>
+                    </div>
+                </div>
+
+                <!-- Views -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-right chev"></i>
+                        <span class="label"><i class="bi bi-eye icon-view"></i> Views</span>
+                        <span class="count">6</span>
+                    </div>
+                </div>
+
+                <!-- System -->
+                <div class="group">
+                    <div class="group-hdr">
+                        <i class="bi bi-chevron-right chev"></i>
+                        <span class="label"><i class="bi bi-hdd-stack icon-system"></i> System</span>
+                        <span class="count">17</span>
+                    </div>
+                </div>
+
+            </div>
+        </aside>
+
+        <div class="content">
+            <div class="tabstrip">
+                <div class="tab active"><i class="bi bi-table icon-table"></i> Customers <i class="bi bi-x"></i></div>
+            </div>
+            <div class="placeholder">
+                <div>
+                    <i class="bi bi-list-nested"></i>
+                    <p>Hover items in the sidebar to see star &amp; "more" actions.</p>
+                    <p style="margin-top: 4px; font-size: 11px;">Click a chevron next to a table to drill into its columns, indexes, and triggers.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="statusbar">
+        <span class="pill ok"><span class="dot"></span> Connected</span>
+        <span class="pill"><i class="bi bi-database"></i> relational.db</span>
+        <span class="pill">24 tables · 6 views · 11 procs</span>
+        <div style="flex:1"></div>
+        <span class="pill warn"><i class="bi bi-hdd"></i> 2.4 GB / 3.5 GB</span>
+    </div>
+</div>
+
+<!-- Annotations -->
+<div class="notes">
+    <header><i class="bi bi-lightbulb"></i> Reality check vs. the live screen</header>
+    <ul>
+        <li><b style="color: var(--accent-green);">ALREADY EXISTS</b> — Object Explorer header with Collapse-All button, search/filter input, expandable groups (User Tables, System Tables, Forms, Reports, System Catalog, Views, Indexes, Triggers, Procedures), per-item count badges, active-tab highlight, right-click context menus for tables / forms / reports / views / indexes / triggers / procedures, drag-resize handle.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Pinned section</b> — any item can be starred and persists at the top across sessions. Today there's no concept of pinning.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Recent section</b> — last few opened objects with relative timestamps.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Type filter chips</b> (All / Tables / Forms / Reports / More) for quick narrowing.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Drill-down under each table</b> — a chevron expands columns (with type icons), indexes, and triggers as nested rows. Today indexes/triggers are scattered across separate top-level groups; columns require switching to the Schema view.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-magenta);">RESTYLE: Per-item hover actions</b> — star + "⋯" appear on hover. The same operations are available today but only via right-click, which is undiscoverable for new users.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-magenta);">RESTYLE: Per-group "+" quick-add</b> on hover (New Table, New Form, etc.) — same as the existing right-click "New …" items.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-magenta);">RESTYLE: Compact sort &amp; refresh icons</b> next to Collapse-All in the header. Refresh exists today but only on context menus.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Match highlighting</b> in filter results (bold "<b>Cust</b>omers"). Today filter is text-substring match without highlighting.</li>
+    </ul>
+</div>
+</body>
+</html>

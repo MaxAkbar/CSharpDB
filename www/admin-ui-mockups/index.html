@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CSharpDB Admin — UI Improvement Mockups</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link rel="stylesheet" href="styles.css">
+<style>
+    body { overflow: auto; }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 56px 32px 80px; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.02em; }
+    .lede { color: var(--text-secondary); font-size: 14px; max-width: 760px; margin-bottom: 8px; }
+    .scope { color: var(--text-muted); font-size: 12px; margin-bottom: 36px; }
+    h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.7px; color: var(--text-muted); margin: 36px 0 14px; }
+
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 16px;
+    }
+    .card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        transition: border-color 120ms ease, transform 120ms ease;
+    }
+    .card:hover { border-color: var(--border-light); transform: translateY(-1px); }
+    .card-thumb {
+        height: 130px;
+        background: var(--bg-tertiary);
+        position: relative;
+        overflow: hidden;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .card-thumb .glyph {
+        position: absolute;
+        font-size: 64px;
+        color: var(--accent-blue);
+        opacity: 0.25;
+        right: 16px;
+        bottom: -8px;
+    }
+    .card-thumb .preview {
+        position: absolute;
+        inset: 14px;
+        border-radius: 6px;
+        background: var(--bg-primary);
+        border: 1px solid var(--border-color);
+        padding: 8px;
+        font-size: 9px;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        overflow: hidden;
+    }
+    .card-thumb .preview .row { display: block; padding: 1px 0; }
+    .card-thumb .preview .row.head { color: var(--accent-blue); font-weight: 700; }
+    .card-thumb .preview .row.dim { color: var(--text-muted); opacity: 0.5; }
+
+    .card-body { padding: 14px 16px; flex: 1; display: flex; flex-direction: column; }
+    .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .card p { font-size: 12px; color: var(--text-secondary); flex: 1; }
+    .card-footer {
+        padding: 10px 16px;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+    }
+    .badge {
+        font-size: 10px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: rgba(122,162,247,0.12);
+        color: var(--accent-blue);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 600;
+    }
+    .badge.green { background: rgba(158,206,106,0.12); color: var(--accent-green); }
+    .badge.yellow { background: rgba(224,175,104,0.12); color: var(--accent-yellow); }
+    .badge.magenta { background: rgba(187,154,247,0.12); color: var(--accent-magenta); }
+    .badge.red { background: rgba(247,118,142,0.12); color: var(--accent-red); }
+
+    .summary {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 18px 22px;
+        margin-bottom: 8px;
+    }
+    .summary ul { list-style: none; }
+    .summary li { padding: 6px 0; color: var(--text-secondary); font-size: 13px; display: flex; gap: 10px; }
+    .summary li::before { content: "→"; color: var(--accent-blue); flex-shrink: 0; }
+    .summary li b { color: var(--text-primary); font-weight: 600; }
+
+    .legend {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        padding: 14px 18px;
+        margin-bottom: 26px;
+        display: flex;
+        gap: 20px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        flex-wrap: wrap;
+    }
+    .legend .item { display: inline-flex; align-items: center; gap: 8px; }
+    .legend .swatch {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .legend .new { background: rgba(122,162,247,0.12); color: var(--accent-blue); }
+    .legend .restyle { background: rgba(187,154,247,0.12); color: var(--accent-magenta); }
+    .legend .exists { background: rgba(158,206,106,0.12); color: var(--accent-green); }
+    .legend .gap { background: rgba(247,118,142,0.12); color: var(--accent-red); }
+
+    table.delta {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        font-size: 12.5px;
+    }
+    table.delta th, table.delta td {
+        padding: 10px 14px;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+        vertical-align: top;
+    }
+    table.delta th {
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+    }
+    table.delta tr:last-child td { border-bottom: none; }
+    table.delta td.area { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+
+    .tag {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 600;
+        margin-right: 4px;
+    }
+    .tag.new { background: rgba(122,162,247,0.12); color: var(--accent-blue); }
+    .tag.restyle { background: rgba(187,154,247,0.12); color: var(--accent-magenta); }
+    .tag.exists { background: rgba(158,206,106,0.12); color: var(--accent-green); }
+    .tag.gap { background: rgba(247,118,142,0.12); color: var(--accent-red); }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <h1>CSharpDB Admin · UI Improvement Mockups</h1>
+    <p class="lede">Static HTML previews of proposed enhancements to the Blazor Server admin
+        (<code>src/CSharpDB.Admin</code>). Nothing here is wired to the live app — these are visual
+        proposals for discussion, now reconciled against the actual current screens.</p>
+    <p class="scope">Open each file directly in a browser to see the mocked screen with annotations.</p>
+
+    <div class="legend">
+        <div class="item"><span class="swatch new">NEW</span> Capability that doesn't exist today</div>
+        <div class="item"><span class="swatch restyle">RESTYLE</span> Existing feature, reorganized or visually refreshed</div>
+        <div class="item"><span class="swatch exists">EXISTS</span> Already in the live admin (don't propose as new)</div>
+        <div class="item"><span class="swatch gap">GAP</span> Missing today, this mockup adds it</div>
+    </div>
+
+    <h2>The big ideas at a glance</h2>
+    <div class="summary">
+        <ul>
+            <li><b>Replace the sparse Welcome tab</b> with a real database dashboard: stat cards, top tables with sparklines, recent activity feed, pinned objects, quick actions, and a consolidated health panel.</li>
+            <li><b>Add a command palette</b> (Ctrl+K) — there is no global search today; users must navigate the sidebar tree or right-click for actions.</li>
+            <li><b>Sidebar gains Pinned + Recent + drill-down</b> under each table. The existing search/filter and right-click context menus stay; pin star and per-group "+" become discoverable.</li>
+            <li><b>Data tab refresh</b> is mostly visual — most "features" I first proposed (per-column filters, sortable headers, type badges, pagination, inline edit, row selection, save/discard) <i>already exist</i>. The genuine adds are: breadcrumb header, filter summary chips, schema sub-tabs, export/import, bulk-edit / copy-as-INSERT, status-bar table facts.</li>
+            <li><b>Query tab gains result sub-tabs</b> (Results / Plan / Messages / Stats), an Explain Plan button, a Cancel button, and a query-history rail. Run / Format / Save / Designer mode / autocomplete / completions popup all already exist.</li>
+            <li><b>Heavy tabs (Storage / Pipeline / Procedure)</b> currently stack 4–11 sections in one long scroll. Replace with a vertical sub-nav rail and a Summary screen so users land on something useful.</li>
+            <li><b>Forms reflow on mobile</b> via a new Elastic layout mode in <code>CSharpDB.Admin.Forms</code> — today every control is absolute-positioned in pixels, so phone users get horizontal scroll. Schema already has <code>Breakpoints</code> and <code>RendererHints</code>; the runtime just doesn't use them.</li>
+            <li><b>Reports get a Reader view</b> in <code>CSharpDB.Admin.Reports</code> — paper layout stays untouched (it's supposed to look like paper, and Print/PDF need it), but a derived Reader view turns bands into sections and repeated detail rows into cards. Phone defaults to Reader.</li>
+            <li><b>Report designer surfaces the Reader view</b> via a Paper / Reader / Split toolbar toggle, a live phone-sized preview pane, a Reader-hint subsection in the Selection inspector, an "Auto-derive all hints" action, and a Reader-lint panel — so the runtime view never drifts from designer intent.</li>
+            <li><b>Title bar gains a database switcher</b> (recent databases dropdown) and a search-style command-palette launcher. Today there's just an "Open Database" button that opens a path prompt.</li>
+        </ul>
+    </div>
+
+    <h2>Mockups</h2>
+    <div class="grid">
+
+        <a class="card" href="dashboard.html">
+            <div class="card-thumb">
+                <div class="preview">
+                    <span class="row head">DASHBOARD · relational.db</span>
+                    <span class="row">┌─ Tables ──┬─ Views ──┬─ Procs ──┐</span>
+                    <span class="row">│   24      │    6     │    11    │</span>
+                    <span class="row">└───────────┴──────────┴──────────┘</span>
+                    <span class="row dim">Top tables  ▮▮▮▮▮▮▮▮ Customers</span>
+                    <span class="row dim">            ▮▮▮▮▮▮   Orders</span>
+                    <span class="row dim">            ▮▮▮▮     Invoices</span>
+                </div>
+                <i class="bi bi-grid-1x2 glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Database Dashboard</h3>
+                <p>Replaces the sparse Welcome tab. Stats, top tables with sparklines, recent activity, pinned objects, quick actions, health panel. Mostly net-new content.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge">High impact · mostly new</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="command-palette.html">
+            <div class="card-thumb">
+                <div class="preview" style="display:flex; flex-direction:column; justify-content:center; padding: 18px;">
+                    <span class="row head" style="text-align:center;">⌘  Search anything</span>
+                    <span class="row dim" style="margin: 6px 0;">────────────────────────────</span>
+                    <span class="row">▶ Open table: Customers</span>
+                    <span class="row dim">  Run: Select Top 50</span>
+                    <span class="row dim">  New Form for Customers</span>
+                </div>
+                <i class="bi bi-command glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Command Palette (Ctrl+K)</h3>
+                <p>One keystroke to fuzzy-find tables, forms, reports, procedures, or actions. There is no global search in the app today — this is purely additive.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge magenta">Fully new</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="sidebar.html">
+            <div class="card-thumb">
+                <div class="preview">
+                    <span class="row head">★ PINNED</span>
+                    <span class="row dim">  ▦ Customers   ▦ Orders</span>
+                    <span class="row head" style="margin-top:4px;">⏱ RECENT</span>
+                    <span class="row dim">  ▦ Invoices    ◫ Customer Form</span>
+                    <span class="row head" style="margin-top:4px;">▾ TABLES <span style="color:var(--text-muted)">24</span> +</span>
+                    <span class="row dim">  ▦ Customers</span>
+                    <span class="row dim">  ▦ Orders</span>
+                </div>
+                <i class="bi bi-list-nested glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Improved Object Explorer</h3>
+                <p>Pinned + Recent sections, type filter chips, drill-down under tables (columns / indexes / triggers as nested rows). The base tree, search, and right-click menus already exist.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge green">High value · adds + restyle</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="data-tab.html">
+            <div class="card-thumb">
+                <div class="preview">
+                    <span class="row head">tables / Customers · 1,247 rows</span>
+                    <span class="row dim">[Data] Schema  Indexes  Triggers</span>
+                    <span class="row dim">▼ status = active   ▼ created &gt; 2026-01</span>
+                    <span class="row" style="color: var(--accent-blue);">  id │ name      │ email     │ status</span>
+                    <span class="row dim">───┼───────────┼───────────┼───────</span>
+                    <span class="row dim">  1│ A. Smith  │ as@e.com  │ active</span>
+                    <span class="row dim">  2│ B. Lee    │ bl@e.com  │ active</span>
+                </div>
+                <i class="bi bi-table glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Data Tab refresh</h3>
+                <p>Most filter / sort / pagination / type-badge / inline-edit features <i>already exist</i>. Real adds: breadcrumb, filter chip summary, schema sub-tabs, export, bulk action bar.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge yellow">Mostly visual + gap-fill</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="query-tab.html">
+            <div class="card-thumb">
+                <div class="preview">
+                    <span class="row head">▶ Run · Format · Explain · SQL</span>
+                    <span class="row" style="color: var(--accent-magenta);">SELECT</span><span class="row"> c.id, c.name, COUNT(o.id)</span>
+                    <span class="row"><span style="color: var(--accent-magenta);">FROM</span> Customers c …</span>
+                    <span class="row dim">─────────────────────────────</span>
+                    <span class="row dim">[Results · 1247] Plan  Messages</span>
+                    <span class="row dim">  id │ name        │ orders</span>
+                    <span class="row dim">  1  │ Alice Smith │ 12</span>
+                </div>
+                <i class="bi bi-terminal glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Query Tab refresh</h3>
+                <p>Result sub-tabs (Results / Plan / Messages / Stats), Explain &amp; Cancel buttons, query-history rail. Run / Format / Save / Designer / autocomplete already exist.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge">Adds + restyle</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="forms-mobile.html">
+            <div class="card-thumb">
+                <div class="preview" style="display:flex; gap:6px; padding:10px;">
+                    <div style="flex:1; border:1px solid var(--border-color); border-radius:3px; padding:4px; font-size:8px;">
+                        <span class="row head">DESKTOP</span>
+                        <span class="row dim">[ first ][ last ][ email     ]</span>
+                        <span class="row dim">[ status ][ tier ][ created  ]</span>
+                        <span class="row dim">[ notes ────────────────────  ]</span>
+                    </div>
+                    <div style="width:60px; border:1px solid var(--border-color); border-radius:8px; padding:4px; font-size:8px;">
+                        <span class="row head" style="text-align:center;">📱</span>
+                        <span class="row dim">[first ]</span>
+                        <span class="row dim">[last  ]</span>
+                        <span class="row dim">[email ]</span>
+                        <span class="row dim">[status]</span>
+                        <span class="row dim">[ Save ]</span>
+                    </div>
+                </div>
+                <i class="bi bi-phone glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Elastic Forms (mobile-friendly)</h3>
+                <p>Forms render with absolute pixel coords today and don't reflow on phones. Add an Elastic layout mode + auto-stack so the same form works on desktop, tablet, and mobile — schema is already responsive-ready.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge magenta">Mobile · forms project</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="reports-mobile.html">
+            <div class="card-thumb">
+                <div class="preview" style="display:flex; gap:6px; padding:10px;">
+                    <div style="flex:1; border:1px solid var(--border-color); border-radius:3px; padding:4px; font-size:8px; background:#fff; color:#222;">
+                        <span class="row" style="color:#000; font-weight:700;">PAPER · Letter</span>
+                        <span class="row" style="color:#444;">ID │ Cust │ Orders │ Total</span>
+                        <span class="row" style="color:#444;">━━━━━━━━━━━━━━━━━━━━━━</span>
+                        <span class="row" style="color:#444;">1  │ A.S. │ 12     │ 4,950</span>
+                        <span class="row" style="color:#444;">4  │ D.S. │ 7      │ 2,723</span>
+                    </div>
+                    <div style="width:60px; border:1px solid var(--border-color); border-radius:8px; padding:4px; font-size:8px;">
+                        <span class="row head" style="text-align:center;">📱 Reader</span>
+                        <span class="row dim">▾ Tier·Gold</span>
+                        <span class="row dim">▦ Alice S.</span>
+                        <span class="row dim">  12 · $4,950</span>
+                        <span class="row dim">▦ David S.</span>
+                    </div>
+                </div>
+                <i class="bi bi-file-earmark-richtext glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Mobile-friendly Reports (Reader view)</h3>
+                <p>Reports are paper-shaped and shouldn't reflow. Add a derived Reader view: bands → sections, repeated rows → cards, group footers → summary lines. Phone defaults to Reader; Print &amp; PDF stay on Paper.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge magenta">Mobile · reports project</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="reports-designer.html">
+            <div class="card-thumb">
+                <div class="preview" style="display:flex; gap:4px; padding:8px; font-size:7px;">
+                    <div style="width:30px; border:1px solid var(--border-color); border-radius:2px; padding:3px;">
+                        <span class="row dim">Tools</span>
+                        <span class="row dim">▦</span>
+                        <span class="row dim">T</span>
+                    </div>
+                    <div style="flex:1; border:1px solid var(--border-color); border-radius:2px; padding:3px; background:#fff; color:#222;">
+                        <span class="row" style="color:#000; font-weight:700;">Detail band</span>
+                        <span class="row" style="color:#444;">{id} {name} {total}</span>
+                        <span class="row" style="color:var(--accent-blue);">    [title][field]</span>
+                    </div>
+                    <div style="width:50px; border:1px solid var(--accent-blue); border-radius:5px; padding:3px;">
+                        <span class="row head" style="font-size:6px;">📱 Reader</span>
+                        <span class="row dim">▦ Alice</span>
+                        <span class="row dim">$4,950</span>
+                    </div>
+                </div>
+                <i class="bi bi-layout-split glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Report Designer · Reader-view support</h3>
+                <p>Paper / Reader / Split toggle in the toolbar, live phone preview alongside the paper canvas, Reader-hint subsection in the Selection inspector, and a one-click "Auto-derive all hints" + lint panel.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge magenta">Designer · reports project</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+        <a class="card" href="heavy-tab.html">
+            <div class="card-thumb">
+                <div class="preview">
+                    <span class="row head">▾ Storage</span>
+                    <span class="row" style="color: var(--accent-blue);">► Summary</span>
+                    <span class="row dim">  Database header</span>
+                    <span class="row dim">  WAL</span>
+                    <span class="row dim">  Space usage</span>
+                    <span class="row dim">  Integrity issues  ⚠ 3</span>
+                    <span class="row dim">  Vacuum / Reindex</span>
+                    <span class="row dim">  Backup &amp; Restore</span>
+                </div>
+                <i class="bi bi-hdd-stack glyph"></i>
+            </div>
+            <div class="card-body">
+                <h3>Heavy tabs → vertical sub-nav</h3>
+                <p>Storage, Pipeline, and Procedure tabs each stack 4–11 long sections. Add a left rail with a Summary screen so users land on something useful and can jump without scrolling.</p>
+            </div>
+            <div class="card-footer">
+                <span class="badge green">Pattern fix · cross-cutting</span>
+                <span>Open mockup →</span>
+            </div>
+        </a>
+
+    </div>
+
+    <h2>Reality check: what's actually in the live admin today</h2>
+    <p class="lede" style="margin-bottom: 14px;">After reading the actual tab components, the picture is more mature than my first pass assumed. Here's the delta per area.</p>
+
+    <table class="delta">
+        <thead>
+        <tr>
+            <th style="width:18%;">Area</th>
+            <th style="width:42%;">Already exists in the live admin</th>
+            <th style="width:40%;">Genuinely missing / proposed here</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr>
+            <td class="area">Welcome / first-run</td>
+            <td>App icon, name, four shortcut hints, table-card grid with optional row counts.</td>
+            <td><span class="tag new">NEW</span> Stat cards, top tables with sparklines, recent activity, pinned grid, quick actions, health panel.</td>
+        </tr>
+        <tr>
+            <td class="area">Object Explorer</td>
+            <td>Tree of Tables / Forms / Reports / System Catalog / Views / Indexes / Triggers / Procedures with counts; text filter; right-click menus on every kind; collapse-all; resize handle; active-tab highlighting.</td>
+            <td>
+                <span class="tag new">NEW</span> Pinned &amp; Recent sections, type filter chips, drill-down under each table (columns / indexes / triggers nested), match highlighting in filter results.<br>
+                <span class="tag restyle">RESTYLE</span> per-item star + ⋯, per-group "+" on hover.
+            </td>
+        </tr>
+        <tr>
+            <td class="area">Data tab</td>
+            <td>Data ↔ Schema view switcher, Add Row / Delete (with count) / Save / Discard / Refresh, per-column filter row with Contains/StartsWith/EndsWith/Exact, sort indicators, type badges, PK badges, pagination, inline edit, row selection, NULL/BLOB rendering, modified-cell styling, right-click context menu.</td>
+            <td>
+                <span class="tag new">NEW</span> Breadcrumb header, filter summary chips, schema sub-tabs, export/import, bulk-edit + copy-as-INSERT, status-bar table facts.<br>
+                <span class="tag restyle">RESTYLE</span> column type icons (vs text badges), enum status pills, value-type cell coloring.
+            </td>
+        </tr>
+        <tr>
+            <td class="area">Query tab</td>
+            <td>Run / Analyze / Clear / Format / Save buttons, saved-query dropdown, Stats shortcuts, SQL ↔ Designer mode toggle, resizable editor with persisted height, line numbers, syntax highlighting, autocomplete popup with arrow-key nav, Ctrl+Enter, EXEC procedure parsing with named args.</td>
+            <td><span class="tag new">NEW</span> Result sub-tabs (Results / Plan / Messages / Stats), Explain Plan button, Cancel button, query-history rail per-tab and global.</td>
+        </tr>
+        <tr>
+            <td class="area">Storage tab</td>
+            <td>11 stacked sections: DB header, WAL, Space usage, Fragmentation, Maintenance (Reindex / Vacuum), Backup / Restore, FK migration, Page-type histogram, Index checks, Integrity issues, Page drill-down. Refresh, hex dump toggle.</td>
+            <td><span class="tag new">NEW</span> Vertical sub-nav rail, default Summary screen, status badges in nav, recent-maintenance recap.</td>
+        </tr>
+        <tr>
+            <td class="area">Pipeline tab</td>
+            <td>Visual designer + JSON mode, Validate / Dry Run / Run / Save / Reset, stored pipelines list with revisions, recent runs with metrics, run inspector with rejects, resume.</td>
+            <td><span class="tag new">NEW</span> Sub-nav rail to navigate Designer / Run Result / Stored / History / Rejects without scrolling. (Same pattern as Storage.)</td>
+        </tr>
+        <tr>
+            <td class="area">Procedure tab</td>
+            <td>Definition (name / desc / enabled / body SQL), parameters table (name/type/required/default/desc), execution panel with args JSON, per-statement results.</td>
+            <td><span class="tag new">NEW</span> Sub-nav rail or sub-tabs for Definition / Parameters / Run / Results so the body editor isn't competing with the args panel.</td>
+        </tr>
+        <tr>
+            <td class="area">Forms (Admin.Forms)</td>
+            <td>Visual form designer with grid + snap, toolbox, layers panel, property inspector, child tabs, validation overrides, default form generation from a table schema, undo/redo, navigation, print, child datagrids. Schema model already has <code>LayoutDefinition.Breakpoints</code> and <code>ControlDefinition.RendererHints</code>; <code>DesignerState</code> already exposes <code>IsVisibleAtBreakpoint</code> and <code>GetEffectiveRect</code>.</td>
+            <td>
+                <span class="tag new">NEW</span> <code>LayoutMode = Elastic</code> on <code>LayoutDefinition</code>; runtime <code>FormRenderer</code> that emits CSS Grid spans (instead of <code>position: absolute</code> in pixels) and picks a breakpoint based on viewport.<br>
+                <span class="tag new">NEW</span> Designer toolbar gains Layout-mode + Device-preview segmented controls; property inspector gains per-breakpoint span / hidden flags; "controls overflow at this breakpoint" lint pill.<br>
+                <span class="tag new">NEW</span> Auto-elastic fallback for legacy forms — synthesize a 12-col span from the existing <code>Rect.Width / canvasWidth</code> so old forms get a usable mobile view without a redesign.
+            </td>
+        </tr>
+        <tr>
+            <td class="area">Reports (Admin.Reports)</td>
+            <td>Visual report designer with bands (ReportHeader / PageHeader / GroupHeader / Detail / GroupFooter / PageFooter / ReportFooter); Label / BoundText / CalculatedText / Line / Box controls; pixel-positioned within bands; preview pagination at fixed Letter 816 × 1056 px page; <code>overflow-x: auto</code> on the page surface; print stylesheet that hides toolbar; Export PDF; default report generation from a source schema; <code>RendererHints</code> on <code>ReportDefinition</code> and a <code>PropertyBag</code> on each control already available for extension.</td>
+            <td>
+                <span class="tag new">NEW</span> Reader view — derived from the same <code>ReportPreviewResult</code>; bands become collapsible sections, repeated Detail rows become cards, GroupFooter becomes a summary row. Auto-pick on phones; user toggle persists per report.<br>
+                <span class="tag new">NEW</span> Per-control reader hints in <code>Props["readerHint"]</code> (role: title / subtitle / field / hidden, custom label, showOnPhone). No schema migration.<br>
+                <span class="tag new">NEW</span> Paper-view zoom controls (Fit-width / 100% / 150% / 200%) and a sticky page pager so Paper is still tolerable on a phone when the user explicitly wants it.<br>
+                <span class="tag exists">EXISTS</span> Print and Export PDF continue to use Paper unchanged.
+            </td>
+        </tr>
+        <tr>
+            <td class="area">Reports designer</td>
+            <td>3-column layout: Toolbox (Pointer / Label / BoundText / Calculated / Line / Box) + Groups + Sorts on the left; per-band paper canvas with absolute pixel positions and pointer drag-resize in the center; Page Settings (Paper / Orientation / 4 margins) + Selection inspector (X/Y/W/H, type-specific props, Bring/Send/Delete) on the right. Pointer-driven; no touch affordances.</td>
+            <td>
+                <span class="tag new">NEW</span> Toolbar Paper / Reader / Split view toggle + Reader-device toggle (Tablet / Phone). Split mode shows the live Reader projection beside the paper canvas.<br>
+                <span class="tag new">NEW</span> Selection inspector grows a Reader-view subsection (Role: title / subtitle / field / hidden, custom label, "show on phone", quick-action buttons). Stored in <code>Props["readerHint"]</code> — no schema migration.<br>
+                <span class="tag new">NEW</span> Tiny role badges on canvas controls show what the Reader pickup will be.<br>
+                <span class="tag new">NEW</span> "Auto-derive all hints" action seeds hints from inference rules; Reader-lint panel surfaces issues with one-click fixes.<br>
+                <span class="tag exists">DELIBERATE NON-GOAL</span> The designer chrome itself stays desktop-only — the 3-column pointer-driven UI is right for building paper reports; only the Reader <i>preview</i> goes mobile-sized.
+            </td>
+        </tr>
+        <tr>
+            <td class="area">Title / status bars</td>
+            <td>Logo + db name, Open Database (path prompt), New Query / Table / Form / Procedure / Pipeline / Storage buttons, theme toggle, sidebar toggle, keyboard-shortcuts modal. Status bar shows connection, db path, table/view/proc counts.</td>
+            <td><span class="tag new">NEW</span> Database switcher dropdown with recent databases, command-palette launcher, status-bar storage pressure / background-job ticker / notification counter.</td>
+        </tr>
+        <tr>
+            <td class="area">Modals / toasts</td>
+            <td>Confirm modal with danger styling, prompt modal, toast container with success / warning / error, context menu with separators and danger items.</td>
+            <td><span class="tag new">NEW</span> Side drawers for non-blocking edits (e.g. column properties); rolling notification log accessible from the status bar.</td>
+        </tr>
+        </tbody>
+    </table>
+
+    <h2>Smaller wins worth doing</h2>
+    <div class="summary">
+        <ul>
+            <li><b>Tab strip</b>: dirty-dot indicator (already mocked), middle-click to close, overflow dropdown when there are too many tabs.</li>
+            <li><b>Density toggle</b> (Compact / Comfortable) so the same screens work on a 13" laptop and a 27" monitor.</li>
+            <li><b>Empty states with calls-to-action</b> — every empty list should suggest the next step ("No saved queries yet — press Ctrl+S in any query tab").</li>
+            <li><b>Inline help</b>: a "?" button per tab that opens a side-panel cheat-sheet for the active tab, instead of a single global keyboard-shortcut modal.</li>
+            <li><b>Toast → inbox</b>: keep a rolling notification log accessible from the status bar so users can re-read what happened.</li>
+        </ul>
+    </div>
+</div>
+</body>
+</html>

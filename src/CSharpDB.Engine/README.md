@@ -309,6 +309,9 @@ through `JsonPropertyName` without changing the public descriptor names.
 `GetGeneratedCollectionAsync<T>(...)` requires a generated or manually
 registered collection model and exposes only the descriptor-based collection
 surface. That keeps the call path off the reflection-based collection APIs.
+For supported document graphs, generated codecs write the binary direct-payload
+format; generated models with unsupported binary member shapes continue to use
+the source-generated JSON payload path.
 
 Generated collections also require existing collection indexes on that
 collection to resolve through registered generated descriptors. If a collection

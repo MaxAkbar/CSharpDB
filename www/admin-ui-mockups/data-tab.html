@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Data Tab — CSharpDB Studio Mockup</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link rel="stylesheet" href="styles.css">
+<style>
+    .sidebar { padding: 10px; font-size: 12px; color: var(--text-secondary); }
+    .sidebar .grp { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; padding: 8px 6px 4px; }
+    .sidebar .it { padding: 4px 6px; display: flex; align-items: center; gap: 6px; border-radius: 4px; cursor: pointer; }
+    .sidebar .it:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .sidebar .it.active { background: rgba(122,162,247,0.1); color: var(--text-primary); border-left: 2px solid var(--accent-blue); padding-left: 4px; }
+
+    /* Toolbar */
+    .data-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border-color);
+        background: var(--bg-secondary);
+        flex-shrink: 0;
+    }
+    .crumb {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+    }
+    .crumb a { color: var(--text-muted); }
+    .crumb a:hover { color: var(--text-primary); text-decoration: none; }
+    .crumb .sep { color: var(--text-muted); }
+    .crumb .obj { color: var(--text-primary); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+
+    .views {
+        display: flex;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+    }
+    .views button {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        font-size: 11px;
+        padding: 5px 12px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+    .views button:not(:last-child) { border-right: 1px solid var(--border-color); }
+    .views button:hover { color: var(--text-primary); }
+    .views button.active { color: var(--accent-blue); background: var(--bg-active); font-weight: 600; }
+
+    .toolbar-group {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 8px;
+        border-left: 1px solid var(--border-color);
+    }
+    .toolbar-group:first-of-type { border-left: none; padding-left: 0; }
+    .tg-btn {
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--text-secondary);
+        font-size: 11px;
+        padding: 5px 10px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+    .tg-btn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-color); }
+    .tg-btn.primary { background: var(--accent-blue); color: #0a0b13; font-weight: 600; }
+    .tg-btn.primary:hover { filter: brightness(1.08); }
+
+    .pager {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-left: auto;
+    }
+    .pager .nums { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+    .pager button {
+        width: 24px; height: 24px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+    }
+    .pager button:hover { color: var(--text-primary); }
+    .pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Filter chip bar */
+    .filter-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--border-color);
+        background: var(--bg-primary);
+        flex-wrap: wrap;
+    }
+    .filter-bar .lbl {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+    }
+    .fchip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 4px 3px 10px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--text-primary);
+    }
+    .fchip .col { color: var(--accent-blue); font-weight: 600; }
+    .fchip .op { color: var(--text-muted); font-family: var(--font-mono); }
+    .fchip .val { font-family: var(--font-mono); color: var(--accent-green); }
+    .fchip .x {
+        margin-left: 2px;
+        width: 18px; height: 18px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 10px;
+    }
+    .fchip .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .add-filter {
+        background: transparent;
+        border: 1px dashed var(--border-color);
+        color: var(--text-muted);
+        padding: 3px 10px;
+        font-size: 11px;
+        border-radius: 999px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+    .add-filter:hover { color: var(--text-primary); border-color: var(--border-light); }
+
+    /* Data grid */
+    .grid-wrap { flex: 1; overflow: auto; }
+    table.grid {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        font-family: var(--font-mono);
+    }
+    table.grid thead th {
+        position: sticky;
+        top: 0;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-color);
+        padding: 8px 10px;
+        text-align: left;
+        color: var(--text-secondary);
+        font-family: var(--font-ui);
+        font-weight: 600;
+        font-size: 11px;
+        white-space: nowrap;
+    }
+    table.grid thead th .col-icon {
+        font-size: 10px;
+        margin-right: 5px;
+        color: var(--text-muted);
+    }
+    table.grid thead th .col-icon.int { color: var(--accent-orange); }
+    table.grid thead th .col-icon.text { color: var(--accent-cyan); }
+    table.grid thead th .col-icon.enum { color: var(--accent-magenta); }
+    table.grid thead th .col-icon.date { color: var(--accent-yellow); }
+    table.grid thead th .col-icon.bool { color: var(--accent-green); }
+    table.grid thead th .col-icon.key { color: var(--accent-yellow); }
+
+    table.grid thead th .sort {
+        margin-left: 4px;
+        opacity: 0.4;
+        font-size: 10px;
+    }
+    table.grid thead th.sorted .sort { opacity: 1; color: var(--accent-blue); }
+
+    table.grid tbody td {
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border-color);
+        white-space: nowrap;
+        color: var(--text-primary);
+    }
+    table.grid tbody tr:hover td { background: var(--bg-hover); }
+    table.grid tbody tr.selected td { background: rgba(122,162,247,0.12); }
+    table.grid tbody td .pill-status {
+        padding: 1px 8px;
+        border-radius: 999px;
+        font-size: 10.5px;
+        font-family: var(--font-ui);
+    }
+    table.grid tbody td .pill-status.active { background: rgba(158,206,106,0.12); color: var(--accent-green); }
+    table.grid tbody td .pill-status.inactive { background: rgba(120,130,169,0.12); color: var(--text-muted); }
+    table.grid tbody td .pill-status.pending { background: rgba(224,175,104,0.12); color: var(--accent-yellow); }
+    table.grid tbody td.num { text-align: right; color: var(--accent-orange); }
+    table.grid tbody td.dt { color: var(--accent-yellow); }
+    table.grid tbody td.null { color: var(--text-muted); font-style: italic; }
+    table.grid tbody td.id { color: var(--accent-blue); font-weight: 600; }
+    .row-check { width: 28px; padding: 0 0 0 10px; }
+    .row-check input { width: 13px; height: 13px; accent-color: var(--accent-blue); }
+
+    /* Bulk action bar (when rows selected) */
+    .bulk-bar {
+        position: sticky;
+        bottom: 0;
+        background: var(--bg-elevated);
+        border-top: 1px solid var(--border-light);
+        padding: 10px 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 12px;
+        box-shadow: 0 -8px 24px rgba(0,0,0,0.3);
+        z-index: 5;
+    }
+    .bulk-bar .count {
+        background: var(--accent-blue);
+        color: #0a0b13;
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-weight: 600;
+    }
+    .bulk-bar .actions { display: flex; gap: 6px; margin-left: auto; }
+</style>
+</head>
+<body>
+<div class="app">
+
+    <div class="titlebar">
+        <div class="brand">
+            <div class="logo">C#</div>
+            <span>CSharpDB Studio</span>
+            <span class="dbname">— relational.db</span>
+        </div>
+        <button class="db-switcher"><i class="bi bi-database"></i> relational.db <i class="bi bi-caret-down-fill"></i></button>
+        <button class="palette-launcher"><i class="bi bi-search"></i> Search anything… <span class="kbd">Ctrl K</span></button>
+        <div class="spacer"></div>
+        <span class="conn-pill"><span class="dot"></span> Connected</span>
+        <button class="tb-btn icon-only"><i class="bi bi-moon-stars"></i></button>
+        <button class="tb-btn icon-only"><i class="bi bi-layout-sidebar-inset"></i></button>
+    </div>
+
+    <div class="body">
+        <aside class="sidebar">
+            <div class="grp">★ Pinned</div>
+            <div class="it active"><i class="bi bi-table icon-table"></i> Customers</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Orders</div>
+            <div class="grp">⏱ Recent</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Invoices</div>
+            <div class="grp">▾ Tables · 24</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Customers</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> CustomerAddresses</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> CustomerNotes</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Orders</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> OrderItems</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Invoices</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Products</div>
+        </aside>
+
+        <div class="content">
+            <div class="tabstrip">
+                <div class="tab"><i class="bi bi-grid-1x2 icon-table"></i> Dashboard</div>
+                <div class="tab active"><i class="bi bi-table icon-table"></i> Customers <i class="bi bi-x"></i></div>
+                <div class="tab dirty"><i class="bi bi-terminal icon-system"></i> Query 1 <i class="bi bi-x"></i></div>
+                <button class="tab-new"><i class="bi bi-plus"></i></button>
+            </div>
+
+            <!-- Toolbar -->
+            <div class="data-toolbar">
+                <div class="crumb">
+                    <a href="#"><i class="bi bi-table"></i> tables</a>
+                    <span class="sep">/</span>
+                    <span class="obj"><i class="bi bi-table icon-table"></i> Customers</span>
+                </div>
+
+                <div class="views">
+                    <button class="active"><i class="bi bi-grid-3x3-gap"></i> Data</button>
+                    <button><i class="bi bi-list-columns"></i> Schema</button>
+                    <button><i class="bi bi-lightning"></i> Indexes <span style="opacity:0.5;">2</span></button>
+                    <button><i class="bi bi-lightning-charge"></i> Triggers <span style="opacity:0.5;">1</span></button>
+                </div>
+
+                <div class="toolbar-group">
+                    <button class="tg-btn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                    <button class="tg-btn primary"><i class="bi bi-plus-lg"></i> Insert row</button>
+                </div>
+
+                <div class="toolbar-group">
+                    <button class="tg-btn"><i class="bi bi-funnel"></i> Filter</button>
+                    <button class="tg-btn"><i class="bi bi-sort-down"></i> Sort</button>
+                    <button class="tg-btn"><i class="bi bi-eye"></i> Columns</button>
+                </div>
+
+                <div class="toolbar-group">
+                    <button class="tg-btn"><i class="bi bi-download"></i> Export ▾</button>
+                    <button class="tg-btn"><i class="bi bi-upload"></i> Import</button>
+                </div>
+
+                <div class="pager">
+                    <span>Rows <span class="nums">1–25</span> of <span class="nums">1,247</span></span>
+                    <button disabled><i class="bi bi-chevron-left"></i></button>
+                    <button><i class="bi bi-chevron-right"></i></button>
+                </div>
+            </div>
+
+            <!-- Filter chip bar -->
+            <div class="filter-bar">
+                <span class="lbl">Filters:</span>
+                <span class="fchip">
+                    <span class="col">status</span>
+                    <span class="op">=</span>
+                    <span class="val">'active'</span>
+                    <span class="x"><i class="bi bi-x"></i></span>
+                </span>
+                <span class="fchip">
+                    <span class="col">created_at</span>
+                    <span class="op">≥</span>
+                    <span class="val">2026-01-01</span>
+                    <span class="x"><i class="bi bi-x"></i></span>
+                </span>
+                <span class="fchip">
+                    <span class="col">name</span>
+                    <span class="op">LIKE</span>
+                    <span class="val">'%Smith%'</span>
+                    <span class="x"><i class="bi bi-x"></i></span>
+                </span>
+                <button class="add-filter"><i class="bi bi-plus-lg"></i> Add filter</button>
+                <span style="margin-left: auto; font-size: 11px; color: var(--text-muted);">
+                    Showing <b style="color: var(--text-primary);">42</b> of 1,247 rows
+                </span>
+            </div>
+
+            <!-- Grid -->
+            <div class="grid-wrap">
+                <table class="grid">
+                    <thead>
+                    <tr>
+                        <th class="row-check"><input type="checkbox"></th>
+                        <th class="sorted"><i class="bi bi-key col-icon key"></i>id <i class="bi bi-arrow-down sort"></i></th>
+                        <th><i class="bi bi-fonts col-icon text"></i>name</th>
+                        <th><i class="bi bi-envelope col-icon text"></i>email</th>
+                        <th><i class="bi bi-toggle-on col-icon enum"></i>status</th>
+                        <th><i class="bi bi-calendar3 col-icon date"></i>created_at</th>
+                        <th><i class="bi bi-hash col-icon int"></i>order_count</th>
+                        <th><i class="bi bi-fonts col-icon text"></i>notes</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr class="selected">
+                        <td class="row-check"><input type="checkbox" checked></td>
+                        <td class="id">1</td>
+                        <td>Alice Smith</td>
+                        <td>alice@example.com</td>
+                        <td><span class="pill-status active">active</span></td>
+                        <td class="dt">2026-01-12 09:14</td>
+                        <td class="num">12</td>
+                        <td class="null">NULL</td>
+                    </tr>
+                    <tr class="selected">
+                        <td class="row-check"><input type="checkbox" checked></td>
+                        <td class="id">2</td>
+                        <td>Bob Lee</td>
+                        <td>bob@example.com</td>
+                        <td><span class="pill-status active">active</span></td>
+                        <td class="dt">2026-01-14 11:02</td>
+                        <td class="num">3</td>
+                        <td>VIP — handle with care</td>
+                    </tr>
+                    <tr>
+                        <td class="row-check"><input type="checkbox"></td>
+                        <td class="id">3</td>
+                        <td>Carol Smith</td>
+                        <td>carol@example.com</td>
+                        <td><span class="pill-status pending">pending</span></td>
+                        <td class="dt">2026-02-03 16:48</td>
+                        <td class="num">0</td>
+                        <td class="null">NULL</td>
+                    </tr>
+                    <tr>
+                        <td class="row-check"><input type="checkbox"></td>
+                        <td class="id">4</td>
+                        <td>David Smith</td>
+                        <td>dsmith@example.com</td>
+                        <td><span class="pill-status active">active</span></td>
+                        <td class="dt">2026-02-19 08:22</td>
+                        <td class="num">7</td>
+                        <td>Net 30 terms</td>
+                    </tr>
+                    <tr>
+                        <td class="row-check"><input type="checkbox"></td>
+                        <td class="id">5</td>
+                        <td>Eve Smithers</td>
+                        <td>eve@example.com</td>
+                        <td><span class="pill-status inactive">inactive</span></td>
+                        <td class="dt">2026-03-01 14:10</td>
+                        <td class="num">22</td>
+                        <td>Migrated from legacy</td>
+                    </tr>
+                    <tr>
+                        <td class="row-check"><input type="checkbox"></td>
+                        <td class="id">6</td>
+                        <td>Frank Smithy</td>
+                        <td>frank@example.com</td>
+                        <td><span class="pill-status active">active</span></td>
+                        <td class="dt">2026-03-12 10:55</td>
+                        <td class="num">1</td>
+                        <td class="null">NULL</td>
+                    </tr>
+                    <tr>
+                        <td class="row-check"><input type="checkbox"></td>
+                        <td class="id">7</td>
+                        <td>Grace Smith-Jones</td>
+                        <td>grace@example.com</td>
+                        <td><span class="pill-status active">active</span></td>
+                        <td class="dt">2026-03-22 09:17</td>
+                        <td class="num">5</td>
+                        <td>Refer-a-friend</td>
+                    </tr>
+                    <tr>
+                        <td class="row-check"><input type="checkbox"></td>
+                        <td class="id">8</td>
+                        <td>Henry Smithfield</td>
+                        <td>hank@example.com</td>
+                        <td><span class="pill-status pending">pending</span></td>
+                        <td class="dt">2026-04-02 12:38</td>
+                        <td class="num">0</td>
+                        <td class="null">NULL</td>
+                    </tr>
+                    </tbody>
+                </table>
+
+                <!-- Bulk action bar appears when rows are selected -->
+                <div class="bulk-bar">
+                    <span class="count">2 selected</span>
+                    <span style="color: var(--text-secondary);">Apply an action to the selected rows:</span>
+                    <div class="actions">
+                        <button class="tg-btn"><i class="bi bi-pencil"></i> Bulk edit…</button>
+                        <button class="tg-btn"><i class="bi bi-clipboard"></i> Copy as INSERT</button>
+                        <button class="tg-btn"><i class="bi bi-download"></i> Export</button>
+                        <button class="tg-btn" style="color: var(--accent-red); border-color: rgba(247,118,142,0.3);"><i class="bi bi-trash3"></i> Delete</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="statusbar">
+        <span class="pill ok"><span class="dot"></span> Connected</span>
+        <span class="pill"><i class="bi bi-database"></i> relational.db</span>
+        <span class="pill"><i class="bi bi-table icon-table"></i> Customers · 1,247 rows</span>
+        <span class="pill"><i class="bi bi-funnel"></i> 3 filters · 42 visible</span>
+        <div style="flex:1"></div>
+        <span class="pill action"><i class="bi bi-clock"></i> Last refresh 2s ago</span>
+        <span class="pill warn"><i class="bi bi-hdd"></i> 2.4 GB / 3.5 GB</span>
+    </div>
+</div>
+
+<!-- Annotations -->
+<div class="notes">
+    <header><i class="bi bi-lightbulb"></i> Reality check vs. the live screen</header>
+    <ul>
+        <li><b style="color: var(--accent-green);">ALREADY EXISTS</b> — Data/Schema view switcher, Add Row, Delete (with selection count), Save, Discard, Refresh, Drop Table buttons in toolbar. Per-column filter row with Contains/StartsWith/EndsWith/Exact mode selector. Sortable headers with ↑↓ indicators. Type badges (INTEGER/TEXT/REAL/BLOB). PK badges. Pagination bar with page-size dropdown and first/prev/next/last. Inline cell editing on double-click. Right-click context menu for row actions. NULL and BLOB cell rendering.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Breadcrumb header</b> ("tables / Customers") — today the object name is right-aligned in the toolbar info area.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Filter summary chip strip</b> — a recap of all active filters as removable pills. The per-column filter row stays; this adds an overview that's currently missing.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Schema sub-tabs</b> — split the Schema view's three stacked sections (Columns, Indexes, Triggers) into sub-tabs so users don't scroll past the first section.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Export / Import</b> buttons — no export today.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Bulk action bar at bottom</b> when rows are selected — Bulk edit, Copy as INSERT, Export, Delete. Delete exists today via toolbar/context menu, but Bulk edit and Copy as INSERT are new.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-magenta);">RESTYLE</b> — type icons in column headers (replacing or supplementing the existing text badges). Status pills for enum-ish columns. Right-aligned numbers, distinct date coloring. Visual polish on top of features that already work.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Status-bar pills</b> for table-specific facts (row count, active filter count, last refresh).</li>
+    </ul>
+</div>
+</body>
+</html>

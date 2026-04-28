@@ -5,6 +5,8 @@ Source generator for CSharpDB generated collection models.
 Use this package with `CSharpDB.Engine` when you want:
 
 - generated collection codecs backed by a `System.Text.Json` source-generated context
+- generated binary direct-payload writes for supported document graphs, with
+  source-generated JSON fallback for unsupported binary shapes
 - generated `CollectionField<,>` descriptors such as `User.Collection.Email`
 - flattened nested descriptors such as `User.Collection.Address_City` and `User.Collection.Orders_Sku`
 - trim-safe typed collection access through `Database.GetGeneratedCollectionAsync<T>(...)`
@@ -41,6 +43,10 @@ renamed with `JsonPropertyName`.
 
 Unsupported public members are ignored with a build warning (`CDBGEN007`) so
 generator coverage gaps fail loudly instead of silently omitting descriptors.
+When every serialized public member in the document graph maps to the supported
+binary collection payload shape, generated collections write the binary
+direct-payload format. If a member does not fit that binary shape, generated
+collections keep the existing source-generated JSON payload path.
 
 At runtime, `GetGeneratedCollectionAsync<T>(...)` also expects existing
 collection indexes for that document type to bind through registered generated

@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\src\CSharpDB.Data\CSharpDB.Data.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.EntityFrameworkCore\CSharpDB.EntityFrameworkCore.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Execution\CSharpDB.Execution.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Generators\CSharpDB.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage\CSharpDB.Storage.csproj" />
   </ItemGroup>

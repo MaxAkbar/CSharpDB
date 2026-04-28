@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Command Palette — CSharpDB Studio Mockup</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link rel="stylesheet" href="styles.css">
+<style>
+    .sidebar { padding: 10px; font-size: 12px; color: var(--text-secondary); filter: blur(2px); opacity: 0.6; }
+    .sidebar .grp { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; padding: 8px 6px 4px; }
+    .sidebar .it { padding: 4px 6px; display: flex; align-items: center; gap: 6px; }
+
+    /* dim the rest of the app while palette is open */
+    .titlebar, .tabstrip, .body, .statusbar { filter: blur(2px); }
+    .body { pointer-events: none; }
+    .scrim {
+        position: fixed; inset: 0;
+        background: rgba(10, 11, 19, 0.55);
+        z-index: 90;
+    }
+
+    /* Palette modal */
+    .palette {
+        position: fixed;
+        top: 14vh;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(640px, 92vw);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-light);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-popup);
+        z-index: 100;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        max-height: 70vh;
+    }
+
+    .palette-search {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .palette-search .bi-search { color: var(--text-muted); font-size: 16px; }
+    .palette-search input {
+        flex: 1;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: var(--text-primary);
+        font-size: 15px;
+        font-family: var(--font-ui);
+    }
+    .palette-search input::placeholder { color: var(--text-muted); }
+    .palette-search .esc { color: var(--text-muted); font-size: 11px; }
+
+    /* Filter chips */
+    .chips {
+        display: flex;
+        gap: 6px;
+        padding: 10px 18px;
+        border-bottom: 1px solid var(--border-color);
+        flex-wrap: wrap;
+    }
+    .chip {
+        padding: 3px 10px;
+        font-size: 11px;
+        border: 1px solid var(--border-color);
+        border-radius: 999px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+    .chip:hover { border-color: var(--border-light); color: var(--text-primary); }
+    .chip.active {
+        background: rgba(122,162,247,0.12);
+        border-color: rgba(122,162,247,0.4);
+        color: var(--accent-blue);
+        font-weight: 600;
+    }
+
+    /* Result groups */
+    .results {
+        overflow-y: auto;
+        padding: 8px 0 12px;
+        flex: 1;
+    }
+    .group-label {
+        padding: 8px 18px 4px;
+        color: var(--text-muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.7px;
+    }
+    .res {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        align-items: center;
+        gap: 12px;
+        padding: 9px 18px;
+        cursor: pointer;
+    }
+    .res:hover { background: var(--bg-hover); }
+    .res.selected {
+        background: rgba(122,162,247,0.12);
+        border-left: 2px solid var(--accent-blue);
+        padding-left: 16px;
+    }
+    .res .ico {
+        width: 24px; height: 24px;
+        border-radius: 6px;
+        display: grid; place-items: center;
+        font-size: 12px;
+        background: var(--bg-tertiary);
+    }
+    .res .label { font-size: 13px; color: var(--text-primary); }
+    .res .label .hint { color: var(--text-muted); font-size: 11px; margin-left: 6px; font-family: var(--font-mono); }
+    .res .label mark {
+        background: rgba(122,162,247,0.18);
+        color: var(--accent-blue);
+        padding: 0 2px;
+        border-radius: 2px;
+    }
+    .res .right { display: flex; gap: 4px; align-items: center; }
+    .res .badge {
+        font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px;
+        padding: 2px 6px; border-radius: 4px;
+        background: rgba(122,162,247,0.12); color: var(--accent-blue);
+        font-weight: 600;
+    }
+    .res .badge.action { background: rgba(187,154,247,0.12); color: var(--accent-magenta); }
+    .res .badge.form { background: rgba(187,154,247,0.12); color: var(--accent-magenta); }
+    .res .badge.report { background: rgba(125,207,255,0.12); color: var(--accent-cyan); }
+    .res .badge.proc { background: rgba(255,158,100,0.12); color: var(--accent-orange); }
+
+    /* Footer */
+    .palette-foot {
+        padding: 10px 18px;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        gap: 16px;
+        font-size: 11px;
+        color: var(--text-muted);
+        background: var(--bg-secondary);
+    }
+    .palette-foot .group { display: inline-flex; align-items: center; gap: 5px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+    <!-- TITLEBAR (dimmed background) -->
+    <div class="titlebar">
+        <div class="brand">
+            <div class="logo">C#</div>
+            <span>CSharpDB Studio</span>
+            <span class="dbname">— relational.db</span>
+        </div>
+        <button class="db-switcher"><i class="bi bi-database"></i> relational.db <i class="bi bi-caret-down-fill"></i></button>
+        <button class="palette-launcher"><i class="bi bi-search"></i> Search anything… <span class="kbd">Ctrl K</span></button>
+        <div class="spacer"></div>
+        <span class="conn-pill"><span class="dot"></span> Connected</span>
+    </div>
+
+    <div class="body">
+        <aside class="sidebar">
+            <div class="grp">★ Pinned</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Customers</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Orders</div>
+            <div class="grp">▾ Tables · 24</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Customers</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Orders</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Invoices</div>
+        </aside>
+        <div class="content">
+            <div class="tabstrip">
+                <div class="tab active"><i class="bi bi-grid-1x2 icon-table"></i> Dashboard</div>
+                <div class="tab"><i class="bi bi-table icon-table"></i> Customers <i class="bi bi-x"></i></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="statusbar">
+        <span class="pill ok"><span class="dot"></span> Connected</span>
+    </div>
+</div>
+
+<!-- Scrim overlay -->
+<div class="scrim"></div>
+
+<!-- Command palette modal -->
+<div class="palette">
+    <div class="palette-search">
+        <i class="bi bi-search"></i>
+        <input value="cust" placeholder="Search tables, forms, reports, procedures, or actions…" />
+        <span class="esc kbd">Esc</span>
+    </div>
+
+    <div class="chips">
+        <span class="chip active">All</span>
+        <span class="chip"><i class="bi bi-lightning"></i> Actions</span>
+        <span class="chip"><i class="bi bi-table icon-table"></i> Tables · 4</span>
+        <span class="chip"><i class="bi bi-eye icon-view"></i> Views · 1</span>
+        <span class="chip"><i class="bi bi-ui-checks-grid icon-form"></i> Forms · 2</span>
+        <span class="chip"><i class="bi bi-file-earmark-richtext icon-report"></i> Reports · 1</span>
+        <span class="chip"><i class="bi bi-gear-wide-connected icon-trigger"></i> Procedures · 1</span>
+    </div>
+
+    <div class="results">
+
+        <div class="group-label">Tables</div>
+        <div class="res selected">
+            <div class="ico"><i class="bi bi-table icon-table"></i></div>
+            <div class="label"><mark>Cust</mark>omers <span class="hint">1,247 rows</span></div>
+            <div class="right">
+                <span class="badge">Open</span>
+                <span class="kbd">↵</span>
+            </div>
+        </div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-table icon-table"></i></div>
+            <div class="label"><mark>Cust</mark>omerAddresses <span class="hint">2,109 rows</span></div>
+            <div class="right"><span class="badge">Open</span></div>
+        </div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-table icon-table"></i></div>
+            <div class="label"><mark>Cust</mark>omerNotes <span class="hint">514 rows</span></div>
+            <div class="right"><span class="badge">Open</span></div>
+        </div>
+
+        <div class="group-label">Forms</div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-ui-checks-grid icon-form"></i></div>
+            <div class="label"><mark>Cust</mark>omer Form <span class="hint">→ Customers</span></div>
+            <div class="right"><span class="badge form">Form</span></div>
+        </div>
+
+        <div class="group-label">Reports</div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-file-earmark-richtext icon-report"></i></div>
+            <div class="label"><mark>Cust</mark>omer Sales Report <span class="hint">→ vw_customer_sales</span></div>
+            <div class="right"><span class="badge report">Report</span></div>
+        </div>
+
+        <div class="group-label">Procedures</div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-gear-wide-connected icon-trigger"></i></div>
+            <div class="label">recalc_<mark>cust</mark>omer_balances</div>
+            <div class="right"><span class="badge proc">Proc</span></div>
+        </div>
+
+        <div class="group-label">Actions</div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-terminal" style="color: var(--accent-blue);"></i></div>
+            <div class="label">Run: <code style="font-family: var(--font-mono); color: var(--accent-green);">SELECT * FROM Customers LIMIT 50</code></div>
+            <div class="right">
+                <span class="badge action">Action</span>
+                <span class="kbd">Ctrl ↵</span>
+            </div>
+        </div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-plus-lg" style="color: var(--accent-magenta);"></i></div>
+            <div class="label">New Form for <b>Customers</b></div>
+            <div class="right"><span class="badge action">Action</span></div>
+        </div>
+        <div class="res">
+            <div class="ico"><i class="bi bi-trash3" style="color: var(--accent-red);"></i></div>
+            <div class="label">Drop table <b>Customers</b><span class="hint">requires confirm</span></div>
+            <div class="right"><span class="badge action" style="background: rgba(247,118,142,0.12); color: var(--accent-red);">Danger</span></div>
+        </div>
+
+    </div>
+
+    <div class="palette-foot">
+        <span class="group"><span class="kbd">↑</span><span class="kbd">↓</span> Navigate</span>
+        <span class="group"><span class="kbd">↵</span> Open</span>
+        <span class="group"><span class="kbd">Ctrl ↵</span> Open in new tab</span>
+        <span class="group"><span class="kbd">Tab</span> Filter by type</span>
+        <span class="group"><span class="kbd">Esc</span> Dismiss</span>
+        <div style="flex:1"></div>
+        <span>9 results in 3 ms</span>
+    </div>
+</div>
+
+<!-- Annotations -->
+<div class="notes">
+    <header><i class="bi bi-lightbulb"></i> Reality check vs. the live screen</header>
+    <ul>
+        <li><b style="color: var(--accent-green);">ALREADY EXISTS</b> — sidebar text-filter input that narrows the visible tree (case-insensitive substring match), keyboard shortcuts Ctrl+N (new query) / Ctrl+B (toggle sidebar) / Ctrl+Enter (run query) / Ctrl+W (close tab) / Ctrl+Shift+L (theme), right-click context menus on every object kind with "Open / Design / Select Top 50 / Drop" actions, modal confirm for danger ops, autocomplete inside the SQL editor.</li>
+        <li><b style="color: var(--accent-red);">DOES NOT EXIST TODAY</b> — there is no Ctrl+K palette or any global "search anything" entry point. Users must locate items via the sidebar tree or open them from a tab.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Ctrl+K palette</b> — fuzzy search across tables, views, forms, reports, procedures, and saved queries in one input.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Action items inline</b> — "Run: SELECT TOP 50 FROM X", "New Form for X", "Drop X". Surfaces what's currently buried in right-click menus.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Type filter chips</b> with keyboard Tab cycling.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Title-bar launcher</b> ("Search anything…") for discoverability.</li>
+        <li><span class="pin"></span> Danger actions still route through the existing <code>Modal.ConfirmAsync</code> with <code>isDanger:true</code> — reuses what's there.</li>
+    </ul>
+</div>
+</body>
+</html>

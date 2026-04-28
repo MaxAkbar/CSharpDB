@@ -1,49 +1,49 @@
 {
   "schemaVersion": 1,
   "metadata": {
-    "Published snapshot": "April 21, 2026 release-core snapshot",
-    "Run date": "Release-core artifacts captured April 21, 2026; release guardrail compare captured April 22, 2026 UTC",
-    "Promotion status": "Promoted after release-core suite and release guardrail compare passed",
+    "Published snapshot": "April 26, 2026 release-core snapshot",
+    "Run date": "Release-core artifacts captured April 26, 2026 PT; release guardrail compare captured April 27, 2026 UTC",
+    "Promotion status": "Promoted after release-core suite and release guardrail compare passed; focused micro retry replaced volatile guardrail samples",
     "Latest release guardrail": "PASS=185, WARN=0, SKIP=0, FAIL=0",
-    "Runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.202, .NET runtime 10.0.6",
+    "Runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7",
     "Repro mode": "priority=High, affinity=0xFF when captured with --repro",
-    "Commit": "4e12bbe6eed58ffa7b7cf85371093008c292ec13 plus uncommitted release-prep fixes"
+    "Commit": "b7cb52ee2c30f31538e96480b6d055ff52439c26 plus uncommitted collection binary payload and benchmark updates"
   },
   "artifacts": [
     {
       "id": "master",
       "command": "--master-table --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260421-212338-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260426-215529-median-of-3.csv"
     },
     {
       "id": "batching",
       "command": "--durable-sql-batching --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260421-214227-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260426-221413-median-of-3.csv"
     },
     {
       "id": "concurrent",
       "command": "--concurrent-write-diagnostics --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260421-220505-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260426-223659-median-of-3.csv"
     },
     {
       "id": "storage",
       "command": "--hybrid-storage-mode --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260421-221135-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260426-224331-median-of-3.csv"
     },
     {
       "id": "hotset",
       "command": "--hybrid-hot-set-read --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260421-222712-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260426-225908-median-of-3.csv"
     },
     {
       "id": "coldopen",
       "command": "--hybrid-cold-open --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260421-222743-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260426-225949-median-of-3.csv"
     },
     {
       "id": "sqlite",
       "command": "--sqlite-compare --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260421-222824-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260426-230045-median-of-3.csv"
     }
   ],
   "sections": [
@@ -59,7 +59,7 @@
             { "value": "Release health" },
             { "value": "Latest guardrail compare" },
             { "value": "PASS: PASS=185, FAIL=0" },
-            { "value": "`Run-Perf-Guardrails.ps1 -Mode release`" }
+            { "value": "`Compare-Baseline.ps1` after focused micro retry" }
           ]
         },
         {

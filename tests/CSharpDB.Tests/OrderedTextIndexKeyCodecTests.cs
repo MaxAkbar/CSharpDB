@@ -25,6 +25,7 @@ public sealed class OrderedTextIndexKeyCodecTests
         long expected = ComputeReferenceKey(text);
 
         Assert.Equal(expected, OrderedTextIndexKeyCodec.ComputeKey(text));
+        Assert.Equal(expected, OrderedTextIndexKeyCodec.ComputeKey(Encoding.UTF8.GetBytes(text)));
     }
 
     private static long ComputeReferenceKey(string text)

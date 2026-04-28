@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Text;
 using CSharpDB.Primitives;
 
@@ -12,6 +14,9 @@ public static class CollectionPayloadCodec
     internal const byte LegacyJsonFormatMarker = 0xC1;
     internal const byte BinaryFormatMarker = 0xC2;
     internal const byte BinaryFormatVersion = 0x01;
+    internal const byte GeneratedRecordFormatMarker = 0xD0;
+    internal const byte GeneratedRecordFormatMagic = 0xF0;
+    internal const byte GeneratedRecordFormatVersion = 0x01;
 
     public static bool IsDirectPayload(ReadOnlySpan<byte> payload)
         => TryReadHeader(payload, out _);
@@ -24,20 +29,19 @@ public static class CollectionPayloadCodec
 
     internal static bool TryReadFastHeader(ReadOnlySpan<byte> payload, out Header header)
     {
+        if (TryReadFastHeaderFields(
+                payload,
+                out CollectionPayloadFormat format,
+                out int keyStart,
+                out int keyByteCount,
+                out int documentStart))
+        {
+            header = new Header(format, keyStart, keyByteCount, documentStart);
+            return true;
+        }
+
         header = default;
-
-        try
-        {
-            if (TryReadLegacyHeader(payload, out header))
-                return HasPlausibleJsonPayload(payload[header.DocumentStart..]);
-
-            return TryReadBinaryHeader(payload, out header);
-        }
-        catch (Exception ex) when (ex is CSharpDbException or ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException)
-        {
-            header = default;
-            return false;
-        }
+        return false;
     }
 
     internal static ReadOnlySpan<byte> GetKeyUtf8(ReadOnlySpan<byte> payload, Header header)
@@ -104,6 +108,129 @@ public static class CollectionPayloadCodec
         return payload;
     }
 
+    public static byte[] EncodeBinary<TState>(
+        string key,
+        int documentPayloadLength,
+        SpanAction<byte, TState> writeDocumentPayload,
+        TState state)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(writeDocumentPayload);
+        ArgumentOutOfRangeException.ThrowIfNegative(documentPayloadLength);
+
+        int keyByteCount = Encoding.UTF8.GetByteCount(key);
+        int keyLengthSize = Varint.SizeOf((ulong)keyByteCount);
+        byte[] payload = GC.AllocateUninitializedArray<byte>(2 + keyLengthSize + keyByteCount + documentPayloadLength);
+        payload[0] = BinaryFormatMarker;
+        payload[1] = BinaryFormatVersion;
+
+        int position = 2;
+        position += Varint.Write(payload.AsSpan(position), (ulong)keyByteCount);
+        position += Encoding.UTF8.GetBytes(key.AsSpan(), payload.AsSpan(position, keyByteCount));
+        writeDocumentPayload(payload.AsSpan(position, documentPayloadLength), state);
+        return payload;
+    }
+
+    public static byte[] EncodeBinary(
+        string key,
+        int documentPayloadLength,
+        out int documentPayloadStart)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentOutOfRangeException.ThrowIfNegative(documentPayloadLength);
+
+        int keyByteCount = Encoding.UTF8.GetByteCount(key);
+        int keyLengthSize = Varint.SizeOf((ulong)keyByteCount);
+        byte[] payload = GC.AllocateUninitializedArray<byte>(2 + keyLengthSize + keyByteCount + documentPayloadLength);
+        payload[0] = BinaryFormatMarker;
+        payload[1] = BinaryFormatVersion;
+
+        int position = 2;
+        position += Varint.Write(payload.AsSpan(position), (ulong)keyByteCount);
+        position += Encoding.UTF8.GetBytes(key.AsSpan(), payload.AsSpan(position, keyByteCount));
+        documentPayloadStart = position;
+        return payload;
+    }
+
+    public static bool TryDecodeDirectPayloadKey(ReadOnlySpan<byte> payload, out string key)
+    {
+        if (TryReadFastHeaderFields(
+                payload,
+                out _,
+                out int keyStart,
+                out int keyByteCount,
+                out _))
+        {
+            key = Encoding.UTF8.GetString(payload.Slice(keyStart, keyByteCount));
+            return true;
+        }
+
+        key = string.Empty;
+        return false;
+    }
+
+    public static bool TryDirectPayloadKeyEquals(
+        ReadOnlySpan<byte> payload,
+        ReadOnlySpan<byte> expectedKeyUtf8,
+        out bool equals)
+    {
+        if (TryReadFastHeaderFields(
+                payload,
+                out _,
+                out int keyStart,
+                out int keyByteCount,
+                out _))
+        {
+            equals = payload.Slice(keyStart, keyByteCount).SequenceEqual(expectedKeyUtf8);
+            return true;
+        }
+
+        equals = false;
+        return false;
+    }
+
+    public static bool TryDirectPayloadKeyEquals(
+        ReadOnlySpan<byte> payload,
+        string expectedKey,
+        out bool equals)
+    {
+        ArgumentNullException.ThrowIfNull(expectedKey);
+
+        if (TryReadFastHeaderFields(
+                payload,
+                out _,
+                out int keyStart,
+                out int keyByteCount,
+                out _))
+        {
+            equals = KeyUtf8EqualsString(payload.Slice(keyStart, keyByteCount), expectedKey);
+            return true;
+        }
+
+        equals = false;
+        return false;
+    }
+
+    public static bool TryGetBinaryDocumentPayload(
+        ReadOnlySpan<byte> payload,
+        out ReadOnlySpan<byte> documentPayload)
+    {
+        if (TryReadFastHeaderFields(
+                payload,
+                out CollectionPayloadFormat format,
+                out _,
+                out _,
+                out int documentStart) &&
+            format == CollectionPayloadFormat.Binary)
+        {
+            documentPayload = payload[documentStart..];
+            return true;
+        }
+
+        documentPayload = default;
+        return false;
+    }
+
     public static bool KeyEquals(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> expectedKeyUtf8)
     {
         var header = ReadHeader(payload);
@@ -119,9 +246,18 @@ public static class CollectionPayloadCodec
     public static string DecodeJson(ReadOnlySpan<byte> payload)
     {
         var header = ReadHeader(payload);
-        return header.Format == CollectionPayloadFormat.LegacyJson
-            ? Encoding.UTF8.GetString(payload[header.DocumentStart..])
-            : CollectionBinaryDocumentCodec.DecodeJson(payload[header.DocumentStart..]);
+        if (header.Format == CollectionPayloadFormat.LegacyJson)
+            return Encoding.UTF8.GetString(payload[header.DocumentStart..]);
+
+        ReadOnlySpan<byte> documentPayload = payload[header.DocumentStart..];
+        if (IsGeneratedRecordDocumentPayload(documentPayload))
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                "Generated record collection payloads require their generated collection codec for JSON conversion.");
+        }
+
+        return CollectionBinaryDocumentCodec.DecodeJson(documentPayload);
     }
 
     public static bool JsonEquals(ReadOnlySpan<byte> payload, ReadOnlySpan<byte> expectedUtf8)
@@ -130,7 +266,9 @@ public static class CollectionPayloadCodec
         if (header.Format == CollectionPayloadFormat.LegacyJson)
             return payload[header.DocumentStart..].SequenceEqual(expectedUtf8);
 
-        return CollectionBinaryDocumentCodec.EncodeJsonUtf8(payload[header.DocumentStart..]).AsSpan().SequenceEqual(expectedUtf8);
+        ReadOnlySpan<byte> documentPayload = payload[header.DocumentStart..];
+        return !IsGeneratedRecordDocumentPayload(documentPayload) &&
+               CollectionBinaryDocumentCodec.EncodeJsonUtf8(documentPayload).AsSpan().SequenceEqual(expectedUtf8);
     }
 
     public static ReadOnlySpan<byte> GetJsonUtf8(ReadOnlySpan<byte> payload)
@@ -177,7 +315,7 @@ public static class CollectionPayloadCodec
                 return HasPlausibleJsonPayload(payload[header.DocumentStart..]);
 
             if (TryReadBinaryHeader(payload, out header))
-                return CollectionBinaryDocumentCodec.IsValidDocument(payload[header.DocumentStart..]);
+                return IsKnownBinaryDocumentPayload(payload[header.DocumentStart..]);
 
             return false;
         }
@@ -185,6 +323,61 @@ public static class CollectionPayloadCodec
         {
             return false;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryReadFastHeaderFields(
+        ReadOnlySpan<byte> payload,
+        out CollectionPayloadFormat format,
+        out int keyStart,
+        out int keyByteCount,
+        out int documentStart)
+    {
+        int lengthOffset;
+        if (payload.Length >= 3 &&
+            payload[0] == BinaryFormatMarker &&
+            payload[1] == BinaryFormatVersion)
+        {
+            format = CollectionPayloadFormat.Binary;
+            lengthOffset = 2;
+        }
+        else if (payload.Length >= 2 && payload[0] == LegacyJsonFormatMarker)
+        {
+            format = CollectionPayloadFormat.LegacyJson;
+            lengthOffset = 1;
+        }
+        else
+        {
+            return FailFastHeaderFields(out format, out keyStart, out keyByteCount, out documentStart);
+        }
+
+        if (!TryReadInt32Varint(payload, lengthOffset, out keyByteCount, out int keyLengthBytes))
+            return FailFastHeaderFields(out format, out keyStart, out keyByteCount, out documentStart);
+
+        keyStart = lengthOffset + keyLengthBytes;
+        if (keyByteCount > payload.Length - keyStart)
+            return FailFastHeaderFields(out format, out keyStart, out keyByteCount, out documentStart);
+
+        documentStart = keyStart + keyByteCount;
+        if (documentStart >= payload.Length)
+            return FailFastHeaderFields(out format, out keyStart, out keyByteCount, out documentStart);
+
+        return format != CollectionPayloadFormat.LegacyJson ||
+               HasPlausibleJsonPayload(payload[documentStart..]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool FailFastHeaderFields(
+        out CollectionPayloadFormat format,
+        out int keyStart,
+        out int keyByteCount,
+        out int documentStart)
+    {
+        format = default;
+        keyStart = 0;
+        keyByteCount = 0;
+        documentStart = 0;
+        return false;
     }
 
     private static bool TryReadLegacyHeader(ReadOnlySpan<byte> payload, out Header header)
@@ -219,6 +412,16 @@ public static class CollectionPayloadCodec
         return true;
     }
 
+    private static bool IsKnownBinaryDocumentPayload(ReadOnlySpan<byte> payload)
+        => IsGeneratedRecordDocumentPayload(payload) ||
+           CollectionBinaryDocumentCodec.IsValidDocument(payload);
+
+    private static bool IsGeneratedRecordDocumentPayload(ReadOnlySpan<byte> payload)
+        => payload.Length >= 3 &&
+           payload[0] == GeneratedRecordFormatMarker &&
+           payload[1] == GeneratedRecordFormatMagic &&
+           payload[2] == GeneratedRecordFormatVersion;
+
     private static bool HasPlausibleJsonPayload(ReadOnlySpan<byte> jsonUtf8)
     {
         for (int i = 0; i < jsonUtf8.Length; i++)
@@ -238,6 +441,89 @@ public static class CollectionPayloadCodec
         }
 
         return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryReadInt32Varint(
+        ReadOnlySpan<byte> payload,
+        int offset,
+        out int value,
+        out int bytesRead)
+    {
+        ulong result = 0;
+        int shift = 0;
+
+        for (int i = 0; i < 5; i++)
+        {
+            int index = offset + i;
+            if ((uint)index >= (uint)payload.Length)
+                break;
+
+            byte b = payload[index];
+            result |= (ulong)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0)
+            {
+                if (result > int.MaxValue)
+                    break;
+
+                value = (int)result;
+                bytesRead = i + 1;
+                return true;
+            }
+
+            shift += 7;
+        }
+
+        value = 0;
+        bytesRead = 0;
+        return false;
+    }
+
+    private static bool KeyUtf8EqualsString(ReadOnlySpan<byte> keyUtf8, string expectedKey)
+    {
+        if (keyUtf8.Length == expectedKey.Length)
+        {
+            bool ascii = true;
+            for (int i = 0; i < expectedKey.Length; i++)
+            {
+                char c = expectedKey[i];
+                if (c > 0x7F)
+                {
+                    ascii = false;
+                    break;
+                }
+
+                if (keyUtf8[i] != (byte)c)
+                    return false;
+            }
+
+            if (ascii)
+                return true;
+        }
+
+        int byteCount = Encoding.UTF8.GetByteCount(expectedKey);
+        if (byteCount != keyUtf8.Length)
+            return false;
+
+        const int StackallocKeyThreshold = 256;
+        byte[]? rented = null;
+        Span<byte> expectedKeyUtf8 = byteCount <= StackallocKeyThreshold
+            ? stackalloc byte[StackallocKeyThreshold]
+            : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
+
+        try
+        {
+            int written = Encoding.UTF8.GetBytes(expectedKey.AsSpan(), expectedKeyUtf8);
+            return keyUtf8.SequenceEqual(expectedKeyUtf8[..written]);
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                expectedKeyUtf8[..byteCount].Clear();
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
     }
 
     internal enum CollectionPayloadFormat : byte

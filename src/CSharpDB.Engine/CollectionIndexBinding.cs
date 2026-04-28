@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq.Expressions;
@@ -16,6 +17,7 @@ internal sealed class CollectionIndexBinding<
 {
     private readonly Func<T, object?> _fieldAccessor;
     private readonly CollectionFieldAccessor _payloadAccessor;
+    private readonly CollectionField<T>? _fieldDescriptor;
     private readonly CollectionIndexDataKind _valueKind;
     private readonly string? _collation;
 
@@ -26,13 +28,15 @@ internal sealed class CollectionIndexBinding<
         Func<T, object?> fieldAccessor,
         CollectionFieldAccessor payloadAccessor,
         CollectionIndexDataKind valueKind,
-        string? collation)
+        string? collation,
+        CollectionField<T>? fieldDescriptor = null)
     {
         FieldPath = fieldPath;
         IndexName = indexName;
         IndexStore = indexStore;
         _fieldAccessor = fieldAccessor;
         _payloadAccessor = payloadAccessor;
+        _fieldDescriptor = fieldDescriptor;
         _valueKind = valueKind;
         _collation = ValidateCollationForValueKind(valueKind, collation, fieldPath);
     }
@@ -181,7 +185,8 @@ internal sealed class CollectionIndexBinding<
             field.ReadValue,
             field.PayloadAccessor,
             field.DataKind,
-            collation);
+            collation,
+            field);
     }
 
     internal static Func<T, object?> CreateFieldAccessor(string fieldPath)
@@ -250,14 +255,21 @@ internal sealed class CollectionIndexBinding<
         indexKey = 0;
         if (_valueKind == CollectionIndexDataKind.Integer)
         {
-            if (!_payloadAccessor.TryReadInt64(payload, out long integerValue))
+            if (!TryReadPayloadInt64(payload, out long integerValue))
                 return false;
 
             indexKey = integerValue;
             return true;
         }
 
-        if (!_payloadAccessor.TryReadString(payload, out string? textValue) || textValue == null)
+        if (CollationSupport.IsBinaryOrDefault(_collation) &&
+            TryReadPayloadStringUtf8(payload, out ReadOnlySpan<byte> textUtf8))
+        {
+            indexKey = OrderedTextIndexKeyCodec.ComputeKey(textUtf8);
+            return true;
+        }
+
+        if (!TryReadPayloadString(payload, out string? textValue) || textValue == null)
             return false;
 
         return TryBuildKey(DbValue.FromText(textValue), out indexKey);
@@ -271,7 +283,7 @@ internal sealed class CollectionIndexBinding<
         if (!UsesTextKey || IsMultiValueArray)
             return false;
 
-        if (!_payloadAccessor.TryReadString(payload, out string? rawText) || rawText == null)
+        if (!TryReadPayloadString(payload, out string? rawText) || rawText == null)
             return false;
 
         textValue = NormalizeTextForIndex(rawText);
@@ -317,7 +329,7 @@ internal sealed class CollectionIndexBinding<
 
         if (!IsMultiValueArray)
         {
-            if (_payloadAccessor.TryReadString(payload, out string? textValue) && textValue != null)
+            if (TryReadPayloadString(payload, out string? textValue) && textValue != null)
                 textValues.Add(NormalizeTextForIndex(textValue));
 
             return textValues.Count != startCount;
@@ -340,6 +352,14 @@ internal sealed class CollectionIndexBinding<
     {
         if (!IsMultiValueArray)
         {
+            if (UsesTextKey &&
+                value.Type == DbType.Text &&
+                CollationSupport.IsBinaryOrDefault(_collation) &&
+                TryDirectPayloadTextEqualsBinary(payload, value.AsText, out bool textEquals))
+            {
+                return textEquals;
+            }
+
             if (!TryReadComparableValue(payload, out var actualValue))
                 return false;
 
@@ -475,7 +495,7 @@ internal sealed class CollectionIndexBinding<
         value = DbValue.Null;
 
         if (!IsMultiValueArray)
-            return _payloadAccessor.TryReadValue(payload, out value);
+            return TryReadPayloadValue(payload, out value);
 
         var values = new List<DbValue>();
         if (!_payloadAccessor.TryReadIndexValues(payload, values))
@@ -490,6 +510,50 @@ internal sealed class CollectionIndexBinding<
             }
         }
 
+        return false;
+    }
+
+    private bool TryReadPayloadValue(ReadOnlySpan<byte> payload, out DbValue value)
+    {
+        if (_fieldDescriptor is not null)
+            return _fieldDescriptor.TryReadPayloadValue(payload, out value);
+
+        return _payloadAccessor.TryReadValue(payload, out value);
+    }
+
+    private bool TryReadPayloadInt64(ReadOnlySpan<byte> payload, out long value)
+    {
+        if (_fieldDescriptor is not null)
+            return _fieldDescriptor.TryReadPayloadInt64(payload, out value);
+
+        return _payloadAccessor.TryReadInt64(payload, out value);
+    }
+
+    private bool TryReadPayloadString(ReadOnlySpan<byte> payload, out string? value)
+    {
+        if (_fieldDescriptor is not null)
+            return _fieldDescriptor.TryReadPayloadString(payload, out value);
+
+        return _payloadAccessor.TryReadString(payload, out value);
+    }
+
+    private bool TryReadPayloadStringUtf8(ReadOnlySpan<byte> payload, out ReadOnlySpan<byte> value)
+    {
+        if (_fieldDescriptor is not null)
+            return _fieldDescriptor.TryReadPayloadStringUtf8(payload, out value);
+
+        return _payloadAccessor.TryReadStringUtf8(payload, out value);
+    }
+
+    private bool TryDirectPayloadTextEqualsBinary(ReadOnlySpan<byte> payload, string expectedText, out bool equals)
+    {
+        if (TryReadPayloadStringUtf8(payload, out ReadOnlySpan<byte> textUtf8))
+        {
+            equals = Utf8EqualsString(textUtf8, expectedText);
+            return true;
+        }
+
+        equals = false;
         return false;
     }
 
@@ -520,6 +584,53 @@ internal sealed class CollectionIndexBinding<
 
     private string NormalizeTextForIndex(string text)
         => CollationSupport.NormalizeText(text, _collation);
+
+    private static bool Utf8EqualsString(ReadOnlySpan<byte> utf8, string text)
+    {
+        if (utf8.Length == text.Length)
+        {
+            bool ascii = true;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char ch = text[i];
+                if (ch > 0x7F)
+                {
+                    ascii = false;
+                    break;
+                }
+
+                if (utf8[i] != (byte)ch)
+                    return false;
+            }
+
+            if (ascii)
+                return true;
+        }
+
+        int byteCount = Encoding.UTF8.GetByteCount(text);
+        if (byteCount != utf8.Length)
+            return false;
+
+        const int StackallocTextThreshold = 256;
+        byte[]? rented = null;
+        Span<byte> expected = byteCount <= StackallocTextThreshold
+            ? stackalloc byte[StackallocTextThreshold]
+            : (rented = ArrayPool<byte>.Shared.Rent(byteCount));
+
+        try
+        {
+            int written = Encoding.UTF8.GetBytes(text.AsSpan(), expected);
+            return utf8.SequenceEqual(expected[..written]);
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                expected[..byteCount].Clear();
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
+    }
 
     private static MemberInfo[] ResolveMemberPath(string[] segments, bool[] arraySegments, string fieldPath)
     {

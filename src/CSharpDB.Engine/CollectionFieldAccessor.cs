@@ -112,6 +112,9 @@ internal sealed class CollectionFieldAccessor
     internal bool TryReadString(ReadOnlySpan<byte> payload, out string? value)
         => CollectionIndexedFieldReader.TryReadString(payload, this, out value);
 
+    internal bool TryReadStringUtf8(ReadOnlySpan<byte> payload, out ReadOnlySpan<byte> value)
+        => CollectionIndexedFieldReader.TryReadStringUtf8(payload, this, out value);
+
     internal bool TryReadBoolean(ReadOnlySpan<byte> payload, out bool value)
         => CollectionIndexedFieldReader.TryReadBoolean(payload, this, out value);
 

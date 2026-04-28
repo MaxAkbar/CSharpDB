@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Query Tab — CSharpDB Studio Mockup</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link rel="stylesheet" href="styles.css">
+<style>
+    .sidebar { padding: 10px; font-size: 12px; color: var(--text-secondary); }
+    .sidebar .grp { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; padding: 8px 6px 4px; }
+    .sidebar .it { padding: 4px 6px; display: flex; align-items: center; gap: 6px; border-radius: 4px; cursor: pointer; }
+    .sidebar .it:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .qt {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+
+    /* Top toolbar (mirrors current QueryTab toolbar) */
+    .qt-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-color);
+        flex-shrink: 0;
+    }
+    .tb {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 11px;
+        background: transparent;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        color: var(--text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+    }
+    .tb:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .tb.primary { background: var(--accent-blue); color: #0a0b13; border-color: var(--accent-blue); font-weight: 600; }
+    .tb.danger { color: var(--accent-red); }
+    .sep { width: 1px; height: 18px; background: var(--border-color); margin: 0 4px; }
+    .qt-mode {
+        display: flex;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+    }
+    .qt-mode button {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        font-size: 11px;
+        padding: 5px 11px;
+        cursor: pointer;
+    }
+    .qt-mode button.active { color: var(--accent-blue); background: var(--bg-active); font-weight: 600; }
+
+    .qt-info {
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .qt-info b { color: var(--text-primary); font-weight: 600; }
+
+    /* Saved queries / stats secondary bar (already exists in app, mocked for context) */
+    .secondary-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 14px;
+        background: var(--bg-primary);
+        border-bottom: 1px solid var(--border-color);
+        font-size: 11px;
+        color: var(--text-muted);
+        flex-wrap: wrap;
+    }
+    .secondary-bar .label {
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-right: 4px;
+    }
+    .secondary-bar input[type=text], .secondary-bar select {
+        padding: 3px 8px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        color: var(--text-primary);
+        font-size: 11px;
+        font-family: var(--font-ui);
+    }
+    .secondary-bar input[type=text] { width: 160px; }
+    .secondary-bar select { width: 200px; }
+
+    /* Workspace: editor on top, results panel on bottom; right rail with history */
+    .workspace {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 280px;
+        min-height: 0;
+    }
+
+    .work-main {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    /* SQL editor block (mocked) */
+    .editor {
+        flex: 0 0 220px;
+        display: flex;
+        background: var(--bg-primary);
+        border-bottom: 1px solid var(--border-color);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.6;
+        overflow: hidden;
+        position: relative;
+    }
+    .editor .gutter {
+        background: var(--bg-tertiary);
+        border-right: 1px solid var(--border-color);
+        color: var(--text-muted);
+        padding: 10px 8px;
+        text-align: right;
+        user-select: none;
+        min-width: 36px;
+    }
+    .editor .gutter span { display: block; }
+    .editor pre {
+        flex: 1;
+        padding: 10px 14px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        margin: 0;
+    }
+    .kw { color: var(--accent-magenta); }
+    .fn { color: var(--accent-cyan); }
+    .str { color: var(--accent-green); }
+    .num { color: var(--accent-orange); }
+    .com { color: var(--text-muted); font-style: italic; }
+    .op { color: var(--accent-yellow); }
+
+    /* Resize handle */
+    .splitter {
+        height: 6px;
+        background: var(--bg-secondary);
+        cursor: row-resize;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-shrink: 0;
+    }
+    .splitter::after {
+        content: "";
+        width: 32px; height: 3px;
+        background: var(--border-light);
+        border-radius: 2px;
+    }
+
+    /* Result panel with tab strip */
+    .results {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        background: var(--bg-primary);
+    }
+    .res-tabs {
+        display: flex;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-color);
+        flex-shrink: 0;
+    }
+    .res-tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 8px 14px;
+        font-size: 11.5px;
+        color: var(--text-muted);
+        border-right: 1px solid var(--border-color);
+        border-top: 2px solid transparent;
+        cursor: pointer;
+        background: transparent;
+        border-bottom: none;
+        border-left: none;
+    }
+    .res-tab:hover { color: var(--text-primary); background: var(--bg-hover); }
+    .res-tab.active {
+        color: var(--text-primary);
+        background: var(--bg-primary);
+        border-top-color: var(--accent-blue);
+    }
+    .res-tab .badge {
+        font-size: 9px;
+        padding: 1px 5px;
+        border-radius: 999px;
+        background: rgba(122,162,247,0.15);
+        color: var(--accent-blue);
+    }
+    .res-tab.active .badge { background: rgba(122,162,247,0.25); }
+    .res-tabs-meta {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 14px;
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+    .res-tabs-meta b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+    .res-tabs-meta button {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 14px;
+    }
+    .res-tabs-meta button:hover { color: var(--text-primary); }
+
+    /* Result body */
+    .res-body {
+        flex: 1;
+        overflow: auto;
+        position: relative;
+    }
+    table.grid {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        font-family: var(--font-mono);
+    }
+    table.grid thead th {
+        position: sticky;
+        top: 0;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-color);
+        padding: 7px 10px;
+        text-align: left;
+        color: var(--text-secondary);
+        font-family: var(--font-ui);
+        font-weight: 600;
+        font-size: 11px;
+        white-space: nowrap;
+    }
+    table.grid tbody td {
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border-color);
+        white-space: nowrap;
+        color: var(--text-primary);
+    }
+    table.grid tbody tr:hover td { background: var(--bg-hover); }
+    table.grid td.id { color: var(--accent-blue); font-weight: 600; }
+    table.grid td.num { color: var(--accent-orange); text-align: right; }
+    table.grid td.dt { color: var(--accent-yellow); }
+
+    /* Plan view (placeholder when "Plan" tab is active — but we show Results active) */
+    .messages {
+        padding: 14px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+    .messages .ok { color: var(--accent-green); }
+
+    /* Right rail: history */
+    .rail {
+        background: var(--bg-secondary);
+        border-left: 1px solid var(--border-color);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+    .rail-head {
+        padding: 10px 14px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.7px;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .rail-tabs {
+        display: flex;
+        gap: 4px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .rail-tab {
+        padding: 3px 9px;
+        font-size: 10.5px;
+        border-radius: 999px;
+        color: var(--text-muted);
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        cursor: pointer;
+    }
+    .rail-tab.active {
+        color: var(--accent-blue);
+        background: rgba(122,162,247,0.12);
+        border-color: transparent;
+        font-weight: 600;
+    }
+
+    .hist-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+    .hist-item {
+        padding: 9px 12px 9px 14px;
+        border-bottom: 1px solid var(--border-color);
+        cursor: pointer;
+        font-size: 11.5px;
+    }
+    .hist-item:hover { background: var(--bg-hover); }
+    .hist-item .meta {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        color: var(--text-muted);
+        margin-bottom: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .hist-item .meta .ok { color: var(--accent-green); }
+    .hist-item .meta .err { color: var(--accent-red); }
+    .hist-item .sql {
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 11px;
+    }
+    .hist-item .sql .kw { color: var(--accent-magenta); }
+    .hist-item .actions {
+        display: none;
+        gap: 6px;
+        margin-top: 6px;
+    }
+    .hist-item:hover .actions { display: flex; }
+    .hist-action {
+        font-size: 10px;
+        padding: 2px 7px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        color: var(--text-secondary);
+        cursor: pointer;
+    }
+    .hist-action:hover { color: var(--text-primary); border-color: var(--border-light); }
+
+    /* Plan / Messages tab examples kept off-screen but visible if user wants - use details for clarity */
+
+    /* Highlight a "completion popup" in editor for visual interest */
+    .completion {
+        position: absolute;
+        left: 220px;
+        top: 92px;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-light);
+        border-radius: 6px;
+        box-shadow: var(--shadow-popup);
+        padding: 4px 0;
+        min-width: 220px;
+        z-index: 5;
+    }
+    .completion .ci {
+        display: flex;
+        justify-content: space-between;
+        padding: 5px 12px;
+        font-size: 11.5px;
+        color: var(--text-secondary);
+        font-family: var(--font-ui);
+        gap: 12px;
+    }
+    .completion .ci.active { background: rgba(122,162,247,0.15); color: var(--accent-blue); }
+    .completion .ci .det { color: var(--text-muted); font-size: 10.5px; }
+
+</style>
+</head>
+<body>
+<div class="app">
+
+    <div class="titlebar">
+        <div class="brand">
+            <div class="logo">C#</div>
+            <span>CSharpDB Studio</span>
+            <span class="dbname">— relational.db</span>
+        </div>
+        <button class="db-switcher"><i class="bi bi-database"></i> relational.db <i class="bi bi-caret-down-fill"></i></button>
+        <button class="palette-launcher"><i class="bi bi-search"></i> Search anything… <span class="kbd">Ctrl K</span></button>
+        <div class="spacer"></div>
+        <span class="conn-pill"><span class="dot"></span> Connected</span>
+    </div>
+
+    <div class="body">
+        <aside class="sidebar">
+            <div class="grp">★ Pinned</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Customers</div>
+            <div class="grp">▾ Tables · 24</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Customers</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Orders</div>
+            <div class="it"><i class="bi bi-table icon-table"></i> Invoices</div>
+        </aside>
+
+        <div class="content" style="overflow: hidden;">
+            <div class="tabstrip">
+                <div class="tab"><i class="bi bi-grid-1x2 icon-table"></i> Dashboard</div>
+                <div class="tab"><i class="bi bi-table icon-table"></i> Customers <i class="bi bi-x"></i></div>
+                <div class="tab active dirty"><i class="bi bi-terminal" style="color: var(--accent-blue);"></i> Active customers <i class="bi bi-x"></i></div>
+                <button class="tab-new"><i class="bi bi-plus"></i></button>
+            </div>
+
+            <div class="qt">
+                <!-- Top toolbar -->
+                <div class="qt-toolbar">
+                    <button class="tb primary"><i class="bi bi-play-fill"></i> Run <span class="kbd">Ctrl ↵</span></button>
+                    <button class="tb danger"><i class="bi bi-stop-fill"></i> Cancel</button>
+                    <span class="sep"></span>
+                    <button class="tb"><i class="bi bi-bar-chart-line"></i> Analyze</button>
+                    <button class="tb"><i class="bi bi-eraser"></i> Clear</button>
+                    <button class="tb"><i class="bi bi-code-slash"></i> Format</button>
+                    <button class="tb"><i class="bi bi-diagram-2"></i> Explain Plan</button>
+                    <span class="sep"></span>
+                    <div class="qt-mode">
+                        <button class="active"><i class="bi bi-terminal"></i> SQL</button>
+                        <button><i class="bi bi-diagram-3"></i> Designer</button>
+                    </div>
+                    <div class="qt-info">
+                        <span><b>1,247</b> rows · <b>18.4</b> ms · page 1</span>
+                    </div>
+                </div>
+
+                <!-- Saved bar (already exists today; included for context) -->
+                <div class="secondary-bar">
+                    <span class="label"><i class="bi bi-bookmark-star"></i> Saved</span>
+                    <input type="text" placeholder="Query name…" value="Active customers" />
+                    <button class="tb" style="padding: 3px 9px;"><i class="bi bi-save"></i> Save</button>
+                    <select>
+                        <option>Load saved query…</option>
+                    </select>
+                    <button class="tb" style="padding: 3px 8px;"><i class="bi bi-download"></i> Load</button>
+                    <span class="sep"></span>
+                    <span class="label"><i class="bi bi-bar-chart-line"></i> Stats</span>
+                    <button class="tb" style="padding: 3px 9px;"><i class="bi bi-table"></i> Table Stats</button>
+                    <button class="tb" style="padding: 3px 9px;"><i class="bi bi-list-columns"></i> Column Stats</button>
+                </div>
+
+                <!-- Workspace -->
+                <div class="workspace">
+                    <div class="work-main">
+                        <!-- Editor -->
+                        <div class="editor">
+                            <div class="gutter">
+                                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span>
+                            </div>
+                            <pre><span class="com">-- Pull active customers with recent orders</span>
+<span class="kw">SELECT</span>  c.id,
+        c.name,
+        c.email,
+        <span class="fn">COUNT</span>(o.id) <span class="kw">AS</span> order_count
+<span class="kw">FROM</span> Customers <span class="kw">AS</span> c
+<span class="kw">LEFT JOIN</span> Orders <span class="kw">AS</span> o <span class="kw">ON</span> o.customer_id <span class="op">=</span> c.<span class="kw">i</span></pre>
+                            <!-- Completion popup (already exists in app) -->
+                            <div class="completion">
+                                <div class="ci active"><span>id</span><span class="det">int · pk</span></div>
+                                <div class="ci"><span>image_url</span><span class="det">text</span></div>
+                                <div class="ci"><span>is_active</span><span class="det">int (bool)</span></div>
+                                <div class="ci"><span>imported_at</span><span class="det">datetime</span></div>
+                            </div>
+                        </div>
+
+                        <div class="splitter"></div>
+
+                        <!-- Results panel with sub-tabs -->
+                        <div class="results">
+                            <div class="res-tabs">
+                                <button class="res-tab active"><i class="bi bi-grid-3x3"></i> Results <span class="badge">1,247</span></button>
+                                <button class="res-tab"><i class="bi bi-diagram-2"></i> Plan</button>
+                                <button class="res-tab"><i class="bi bi-chat-left-text"></i> Messages <span class="badge">2</span></button>
+                                <button class="res-tab"><i class="bi bi-info-circle"></i> Stats</button>
+                                <div class="res-tabs-meta">
+                                    <span>Rows <b>1–25</b> of <b>1,247</b></span>
+                                    <button title="Export"><i class="bi bi-download"></i></button>
+                                    <button title="Copy as JSON"><i class="bi bi-clipboard"></i></button>
+                                    <button title="Pop out results"><i class="bi bi-box-arrow-up-right"></i></button>
+                                </div>
+                            </div>
+
+                            <div class="res-body">
+                                <table class="grid">
+                                    <thead>
+                                    <tr>
+                                        <th>id</th>
+                                        <th>name</th>
+                                        <th>email</th>
+                                        <th style="text-align:right;">order_count</th>
+                                        <th>last_order_at</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody>
+                                    <tr><td class="id">1</td><td>Alice Smith</td><td>alice@example.com</td><td class="num">12</td><td class="dt">2026-04-22 09:14</td></tr>
+                                    <tr><td class="id">2</td><td>Bob Lee</td><td>bob@example.com</td><td class="num">3</td><td class="dt">2026-04-12 11:02</td></tr>
+                                    <tr><td class="id">3</td><td>Carol Smith</td><td>carol@example.com</td><td class="num">9</td><td class="dt">2026-04-19 16:48</td></tr>
+                                    <tr><td class="id">4</td><td>David Smith</td><td>dsmith@example.com</td><td class="num">7</td><td class="dt">2026-04-19 08:22</td></tr>
+                                    <tr><td class="id">5</td><td>Eve Smithers</td><td>eve@example.com</td><td class="num">22</td><td class="dt">2026-04-21 14:10</td></tr>
+                                    <tr><td class="id">6</td><td>Frank Smithy</td><td>frank@example.com</td><td class="num">1</td><td class="dt">2026-03-12 10:55</td></tr>
+                                    <tr><td class="id">7</td><td>Grace Smith-Jones</td><td>grace@example.com</td><td class="num">5</td><td class="dt">2026-04-22 09:17</td></tr>
+                                    <tr><td class="id">8</td><td>Henry Smithfield</td><td>hank@example.com</td><td class="num">0</td><td class="dt">—</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right rail: query history + scratchpad chips -->
+                    <div class="rail">
+                        <div class="rail-head">
+                            <span><i class="bi bi-clock-history"></i> History</span>
+                            <button style="background:transparent; border:none; color:var(--text-muted); cursor:pointer;"><i class="bi bi-funnel"></i></button>
+                        </div>
+                        <div class="rail-tabs">
+                            <span class="rail-tab active">This tab</span>
+                            <span class="rail-tab">All</span>
+                            <span class="rail-tab">Errors</span>
+                        </div>
+                        <div class="hist-list">
+                            <div class="hist-item">
+                                <div class="meta"><span class="ok">✓ 18 ms · 1,247 rows</span><span>just now</span></div>
+                                <div class="sql"><span class="kw">SELECT</span> c.id, c.name, c.email, <span class="kw">COUNT</span>(o.id)…</div>
+                                <div class="actions">
+                                    <span class="hist-action"><i class="bi bi-arrow-90deg-up"></i> Restore</span>
+                                    <span class="hist-action"><i class="bi bi-bookmark"></i> Save</span>
+                                    <span class="hist-action"><i class="bi bi-clipboard"></i> Copy</span>
+                                </div>
+                            </div>
+                            <div class="hist-item">
+                                <div class="meta"><span class="ok">✓ 4 ms · 1 row</span><span>2m</span></div>
+                                <div class="sql"><span class="kw">SELECT COUNT</span>(*) <span class="kw">FROM</span> Customers</div>
+                            </div>
+                            <div class="hist-item">
+                                <div class="meta"><span class="err">✗ syntax error</span><span>5m</span></div>
+                                <div class="sql"><span class="kw">SELECT</span> * <span class="kw">FROMM</span> Orders</div>
+                            </div>
+                            <div class="hist-item">
+                                <div class="meta"><span class="ok">✓ 32 ms · 8,912 rows</span><span>11m</span></div>
+                                <div class="sql"><span class="kw">SELECT</span> * <span class="kw">FROM</span> Orders <span class="kw">WHERE</span> created_at > '2026-01-01'</div>
+                            </div>
+                            <div class="hist-item">
+                                <div class="meta"><span class="ok">✓ 9 ms · 6 rows</span><span>34m</span></div>
+                                <div class="sql"><span class="kw">SELECT</span> * <span class="kw">FROM</span> sys.table_stats</div>
+                            </div>
+                            <div class="hist-item">
+                                <div class="meta"><span class="ok">✓ 145 ms · 24,310 rows</span><span>1h</span></div>
+                                <div class="sql"><span class="kw">SELECT</span> * <span class="kw">FROM</span> OrderItems <span class="kw">WHERE</span> qty > 5</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="statusbar">
+        <span class="pill ok"><span class="dot"></span> Connected</span>
+        <span class="pill"><i class="bi bi-database"></i> relational.db</span>
+        <span class="pill"><i class="bi bi-terminal" style="color: var(--accent-blue);"></i> Active customers · dirty</span>
+        <span class="pill"><i class="bi bi-clock"></i> Last run 18 ms</span>
+        <div style="flex:1"></div>
+        <span class="pill action"><i class="bi bi-clock-history"></i> 87 queries today</span>
+    </div>
+</div>
+
+<!-- Annotations -->
+<div class="notes">
+    <header><i class="bi bi-lightbulb"></i> Reality check vs. the live screen</header>
+    <ul>
+        <li><b style="color: var(--accent-green);">ALREADY EXISTS</b> — Run / Analyze / Clear / Format buttons, SQL ↔ Designer mode toggle (a Visual Designer panel exists today!), saved-query name input + Save + Load dropdown + Refresh, Stats shortcuts (Table Stats / Column Stats), per-tab SQL persistence, resizable editor splitter with persisted height, line-numbered editor with syntax highlighting, autocomplete popup with arrow-key nav (Ctrl-Space to trigger explicitly), Ctrl+Enter to run, EXEC procedure parsing with named args, paged results that over-fetch one row to avoid blocking COUNT(*).</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Result sub-tabs</b> — Results / Plan / Messages / Stats. Today the result panel only shows rows. Plan would expose the existing query plan; Messages would collect non-query notices; Stats would show the existing elapsed/rows breakdown plus per-statement timings.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Explain Plan button</b> in toolbar — runs the query in plan-only mode and switches to the Plan sub-tab.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Cancel button</b> for in-flight queries.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: History rail</b> on the right — per-tab and global recent-queries list with status (✓/✗), elapsed, and row count. Hover reveals Restore / Save / Copy. Today there's no query history.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-blue);">NEW: Result toolbar</b> in the result tab strip — Export, Copy as JSON, Pop out results.</li>
+        <li><span class="pin"></span> <b style="color: var(--accent-magenta);">RESTYLE</b> — toolbar visually groups primary action (Run) + cancel + secondary tools + view mode + result summary, instead of the current single flat row.</li>
+    </ul>
+</div>
+</body>
+</html>

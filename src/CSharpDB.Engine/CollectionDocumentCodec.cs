@@ -78,6 +78,26 @@ internal sealed class CollectionDocumentCodec<T>
         if (_generatedCodec is not null)
             return _generatedCodec.Decode(payload);
 
+        if (UsesDirectPayloadFormat &&
+            CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
+        {
+            string key = Encoding.UTF8.GetString(CollectionPayloadCodec.GetKeyUtf8(payload, header));
+            ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
+
+            try
+            {
+                T document = header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary
+                    ? CollectionBinaryDocumentCodec.Decode<T>(documentPayload)
+                    : JsonSerializer.Deserialize<T>(documentPayload, s_jsonOptions)!;
+
+                return (key, document);
+            }
+            catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
+            {
+                // Fall through to the existing slower path for marker collisions or corrupt direct payloads.
+            }
+        }
+
         return (DecodeKey(payload), DecodeDocument(payload));
     }
 
