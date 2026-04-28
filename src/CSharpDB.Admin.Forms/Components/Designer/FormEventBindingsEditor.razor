@@ -70,10 +70,8 @@
 
             <div class="feb-field">
                 <label>Action Sequence</label>
-                <textarea class="feb-arguments"
-                          value="@GetActionSequenceText(idx, binding)"
-                          placeholder="{&quot;name&quot;:&quot;LoadActions&quot;,&quot;steps&quot;:[{&quot;kind&quot;:&quot;showMessage&quot;,&quot;message&quot;:&quot;Loaded&quot;}]}"
-                          @onchange="@(e => UpdateActionSequence(idx, binding, e.Value?.ToString() ?? string.Empty))"></textarea>
+                <ActionSequenceEditor ActionSequence="binding.ActionSequence"
+                                      ActionSequenceChanged="@(sequence => UpdateActionSequence(idx, binding, sequence))" />
             </div>
         </div>
     }
@@ -81,10 +79,6 @@
     @if (!string.IsNullOrWhiteSpace(_argumentError))
     {
         <div class="feb-error">@_argumentError</div>
-    }
-    @if (!string.IsNullOrWhiteSpace(_actionSequenceError))
-    {
-        <div class="feb-error">@_actionSequenceError</div>
     }
 
     <button class="feb-btn feb-btn-add" @onclick="AddBinding">+ Add Event</button>
@@ -95,9 +89,7 @@
     [Parameter] public EventCallback<IReadOnlyList<FormEventBinding>> EventBindingsChanged { get; set; }
 
     private readonly Dictionary<int, string> _argumentText = [];
-    private readonly Dictionary<int, string> _actionSequenceText = [];
     private string? _argumentError;
-    private string? _actionSequenceError;
 
     private static readonly FormEventKind[] EventKinds = Enum.GetValues<FormEventKind>();
 
@@ -106,15 +98,10 @@
     protected override void OnParametersSet()
     {
         for (int i = 0; i < EventBindings.Count; i++)
-        {
             _argumentText.TryAdd(i, FormatArguments(EventBindings[i].Arguments));
-            _actionSequenceText.TryAdd(i, FormatActionSequence(EventBindings[i].ActionSequence));
-        }
 
         foreach (int staleIndex in _argumentText.Keys.Where(index => index >= EventBindings.Count).ToList())
             _argumentText.Remove(staleIndex);
-        foreach (int staleIndex in _actionSequenceText.Keys.Where(index => index >= EventBindings.Count).ToList())
-            _actionSequenceText.Remove(staleIndex);
     }
 
     private async Task AddBinding()
@@ -124,7 +111,6 @@
             .Append(new FormEventBinding(FormEventKind.OnLoad, commandName))
             .ToList();
         _argumentText[updated.Count - 1] = string.Empty;
-        _actionSequenceText[updated.Count - 1] = string.Empty;
         await EventBindingsChanged.InvokeAsync(updated);
     }
 
@@ -136,7 +122,6 @@
 
         updated.RemoveAt(index);
         RebuildArgumentText(updated);
-        RebuildActionSequenceText(updated);
         await EventBindingsChanged.InvokeAsync(updated);
     }
 
@@ -177,27 +162,8 @@
         }
     }
 
-    private async Task UpdateActionSequence(int index, FormEventBinding binding, string text)
-    {
-        _actionSequenceText[index] = text;
-        _actionSequenceError = null;
-
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            await ReplaceBinding(index, binding with { ActionSequence = null });
-            return;
-        }
-
-        try
-        {
-            DbActionSequence? actionSequence = JsonSerializer.Deserialize<DbActionSequence>(text, JsonDefaults.Options);
-            await ReplaceBinding(index, binding with { ActionSequence = actionSequence });
-        }
-        catch (JsonException ex)
-        {
-            _actionSequenceError = $"Invalid action sequence JSON: {ex.Message}";
-        }
-    }
+    private Task UpdateActionSequence(int index, FormEventBinding binding, DbActionSequence? actionSequence)
+        => ReplaceBinding(index, binding with { ActionSequence = actionSequence });
 
     private async Task ReplaceBinding(int index, FormEventBinding binding)
     {
@@ -219,28 +185,11 @@
         return text;
     }
 
-    private string GetActionSequenceText(int index, FormEventBinding binding)
-    {
-        if (_actionSequenceText.TryGetValue(index, out string? text))
-            return text;
-
-        text = FormatActionSequence(binding.ActionSequence);
-        _actionSequenceText[index] = text;
-        return text;
-    }
-
     private void RebuildArgumentText(IReadOnlyList<FormEventBinding> updated)
     {
         _argumentText.Clear();
         for (int i = 0; i < updated.Count; i++)
             _argumentText[i] = FormatArguments(updated[i].Arguments);
-    }
-
-    private void RebuildActionSequenceText(IReadOnlyList<FormEventBinding> updated)
-    {
-        _actionSequenceText.Clear();
-        for (int i = 0; i < updated.Count; i++)
-            _actionSequenceText[i] = FormatActionSequence(updated[i].ActionSequence);
     }
 
     private bool ShouldRenderMissingCommand(string commandName)
@@ -251,9 +200,4 @@
         => arguments is null || arguments.Count == 0
             ? string.Empty
             : JsonSerializer.Serialize(arguments, new JsonSerializerOptions(JsonDefaults.Options) { WriteIndented = true });
-
-    private static string FormatActionSequence(DbActionSequence? actionSequence)
-        => actionSequence is null
-            ? string.Empty
-            : JsonSerializer.Serialize(actionSequence, new JsonSerializerOptions(JsonDefaults.Options) { WriteIndented = true });
 }

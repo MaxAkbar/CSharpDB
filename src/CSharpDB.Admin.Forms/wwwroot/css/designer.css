@@ -1493,6 +1493,31 @@
     background: #d2e3fc;
 }
 
+.ase-container {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ase-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.ase-step {
+    border: 1px solid #e4e4e4;
+    border-radius: 4px;
+    padding: 6px;
+    background: #fff;
+}
+
+.ase-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
 /* ===== Layers Panel ===== */
 .layers-panel {
     flex: 1;

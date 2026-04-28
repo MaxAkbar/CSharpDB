@@ -96,8 +96,9 @@ properties, optional validation overrides, optional renderer hints, and optional
 Form and control event bindings can reference a trusted command name and can
 optionally include a `DbActionSequence`. Action sequences store declarative
 steps such as `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop`; they do
-not store C# source or serialized delegates. The property inspector exposes the
-sequence as JSON on form-level and selected-control event bindings.
+not store C# source or serialized delegates. The property inspector exposes a
+visual action-sequence editor on form-level and selected-control event bindings;
+JSON editing is limited to optional command argument payloads.
 
 ## Build
 

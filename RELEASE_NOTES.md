@@ -61,8 +61,12 @@ calculated text, and pipeline filter/derive expressions.
   `SetFieldValue`, `ShowMessage`, and `Stop` steps for Admin Forms automation.
   Form and control event bindings can now be command-only,
   action-sequence-only, or a command followed by an action sequence.
-- The existing form-event and selected-control event editors now expose an
-  action-sequence JSON field so designers can edit the stored sequence metadata.
+- The form-event and selected-control event editors now include a visual
+  action-sequence editor for adding, ordering, removing, and configuring
+  `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop` steps.
+- The action-sequence editor uses registered-command pickers when commands are
+  available, preserves missing command names for portable form metadata, and
+  keeps JSON editing limited to optional argument payloads.
 - Action sequences store names, arguments, field targets, and literal values
   only. They do not store C# source, serialize delegates, or run untrusted code.
 - Added shared command argument conversion helpers so Forms, Reports, and
@@ -119,8 +123,9 @@ calculated text, and pipeline filter/derive expressions.
 - Added command-registry, form-event dispatcher, event JSON round-trip, and
   Forms data-entry tests for create/update/delete event dispatch and
   before-event cancellation.
-- Added designer-state, command-button, and control-event tests covering event
-  binding preservation and registered command invocation from rendered forms.
+- Added designer-state tests for action sequences, plus command-button and
+  control-event tests covering event binding preservation and registered
+  command invocation from rendered forms.
 - Added Forms action-sequence tests for event dispatch, mutable record updates,
   command button action-only clicks, and JSON round-tripping.
 - Added report-event dispatcher and preview lifecycle tests, pipeline hook

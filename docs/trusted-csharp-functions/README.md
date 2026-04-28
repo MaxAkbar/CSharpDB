@@ -354,7 +354,7 @@ Supported form-level events in this slice are:
 
 Command context arguments include the current record fields converted to `DbValue`. Static arguments configured on the event binding override same-named record fields. Metadata includes `surface`, `formId`, `formName`, `tableName`, and `event`.
 
-The Admin Forms designer preserves form event bindings and exposes them in the property inspector when no control is selected. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer.
+The Admin Forms designer preserves form event bindings and exposes them in the property inspector when no control is selected. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer. The same editor can attach a visual action sequence to the event.
 
 Admin Forms also include control-level trusted command events. Form controls store event names, command names, and optional JSON arguments in the form definition. At runtime, the renderer invokes the registered host command with the current record fields plus event-specific arguments.
 
@@ -383,7 +383,7 @@ Supported control events in this slice are:
 
 Control event metadata includes the Forms metadata plus `event`, `controlId`, `controlType`, and `fieldName` for bound controls. Arguments include current record fields and event details such as `fieldName`, `value`, and `oldValue` for field changes. Static arguments configured on the event binding override same-named runtime arguments.
 
-The Admin Forms designer exposes selected-control event bindings in the property inspector. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer.
+The Admin Forms designer exposes selected-control event bindings in the property inspector. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer. Selected-control events use the same visual action-sequence editor as form lifecycle events.
 
 Admin Forms also include a command button control. Command buttons store a display label, a command name, and optional JSON arguments in the form definition. At runtime, clicking the button invokes the registered host command with the current record fields plus the configured arguments. Command buttons can also use `ControlEventKind.OnClick` bindings, which allows a button to be driven entirely by the shared control-event model.
 
@@ -481,8 +481,12 @@ var form = existingForm with
 };
 ```
 
-The Admin Forms property inspector exposes action sequences as editable JSON on
-form-level and selected-control event bindings.
+The Admin Forms property inspector exposes action sequences with a visual
+editor on form-level and selected-control event bindings. Designers can add a
+sequence, name it, add `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop`
+steps, reorder or remove steps, choose registered commands when available, and
+toggle per-step `StopOnFailure`. JSON editing remains only for optional binding
+or `RunCommand` step argument payloads.
 
 For `RunCommand`, command arguments are built from current record fields,
 binding arguments, runtime event arguments, and step arguments, with later
