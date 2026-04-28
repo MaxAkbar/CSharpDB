@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Admin.Forms.Serialization;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Tests.Serialization;
 
@@ -157,6 +158,47 @@ public class JsonRoundtripTests
         Assert.Equal("FirstName", deserialized.Binding.FieldName);
         Assert.Equal("TwoWay", deserialized.Binding.Mode);
         Assert.Equal("Enter first name", deserialized.Props.Values["placeholder"]);
+    }
+
+    [Fact]
+    public void FormEventBinding_WithActionSequence_RoundTrips()
+    {
+        var form = new FormDefinition(
+            "f-actions",
+            "Action Form",
+            "Orders",
+            1,
+            "orders:v1",
+            new LayoutDefinition("absolute", 8, true, []),
+            [],
+            EventBindings:
+            [
+                new FormEventBinding(
+                    FormEventKind.OnLoad,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.SetFieldValue, Target: "Status", Value: "Ready"),
+                        new DbActionStep(
+                            DbActionKind.RunCommand,
+                            CommandName: "AuditAction",
+                            Arguments: new Dictionary<string, object?> { ["source"] = "roundtrip" }),
+                    ],
+                    Name: "LoadActions")),
+            ]);
+
+        string json = JsonSerializer.Serialize(form, Options);
+        FormDefinition deserialized = JsonSerializer.Deserialize<FormDefinition>(json, Options)!;
+
+        DbActionSequence sequence = deserialized.EventBindings![0].ActionSequence!;
+        Assert.Equal("LoadActions", sequence.Name);
+        Assert.Equal(2, sequence.Steps.Count);
+        Assert.Equal(DbActionKind.SetFieldValue, sequence.Steps[0].Kind);
+        Assert.Equal("Status", sequence.Steps[0].Target);
+        Assert.Equal("Ready", sequence.Steps[0].Value?.ToString());
+        Assert.Equal(DbActionKind.RunCommand, sequence.Steps[1].Kind);
+        Assert.Equal("AuditAction", sequence.Steps[1].CommandName);
+        Assert.Equal("roundtrip", sequence.Steps[1].Arguments!["source"]);
     }
 
     [Fact]

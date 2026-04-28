@@ -128,6 +128,53 @@ public sealed class FormRendererCommandButtonTests
         Assert.Equal(42, captured.Arguments["OrderId"].AsInteger);
     }
 
+    [Fact]
+    public async Task CommandButton_ExecutesOnClickActionSequenceWhenNoDirectCommandIsConfigured()
+    {
+        DbCommandContext? captured = null;
+        string? error = null;
+        DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("AuditButtonAction", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+
+        ControlDefinition button = new(
+            "button1",
+            "commandButton",
+            new Rect(10, 20, 120, 34),
+            null,
+            new PropertyBag(new Dictionary<string, object?> { ["text"] = "Ship" }),
+            null,
+            EventBindings:
+            [
+                new ControlEventBinding(
+                    ControlEventKind.OnClick,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.SetFieldValue, Target: "Status", Value: "Shipped"),
+                        new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditButtonAction"),
+                    ],
+                    Name: "ShipButtonActions")),
+            ]);
+        var renderer = CreateRenderer(commands, CreateForm(button), message => error = message);
+
+        await InvokeNonPublicAsync(renderer, "InvokeCommandButtonAsync", button);
+
+        var record = (Dictionary<string, object?>)GetProperty(renderer, nameof(FormRenderer.Record))!;
+        Assert.Null(error);
+        Assert.Equal("Shipped", record["Status"]);
+        Assert.NotNull(captured);
+        Assert.Equal("Shipped", captured!.Arguments["Status"].AsText);
+        Assert.Equal("RunCommand", captured.Metadata["actionKind"]);
+        Assert.Equal("1", captured.Metadata["actionStep"]);
+        Assert.Equal("ShipButtonActions", captured.Metadata["actionSequence"]);
+    }
+
     private static FormRenderer CreateRenderer(
         DbCommandRegistry commands,
         FormDefinition form,
@@ -180,6 +227,13 @@ public sealed class FormRendererCommandButtonTests
         PropertyInfo property = instance.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"Property '{propertyName}' was not found.");
         property.SetValue(instance, value);
+    }
+
+    private static object? GetProperty(object instance, string propertyName)
+    {
+        PropertyInfo property = instance.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Property '{propertyName}' was not found.");
+        return property.GetValue(instance);
     }
 
     private static async Task InvokeNonPublicAsync(object instance, string methodName, params object?[] args)

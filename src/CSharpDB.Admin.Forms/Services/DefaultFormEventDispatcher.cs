@@ -17,33 +17,65 @@ public sealed class DefaultFormEventDispatcher(DbCommandRegistry commands) : IFo
         IReadOnlyList<FormEventBinding> bindings = form.EventBindings ?? [];
         foreach (FormEventBinding binding in bindings.Where(binding => binding.Event == eventKind))
         {
-            if (string.IsNullOrWhiteSpace(binding.CommandName))
-                return FormEventDispatchResult.Failure($"Form event '{eventKind}' has an empty command name.");
-
-            if (!commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
-                return FormEventDispatchResult.Failure($"Unknown form command '{binding.CommandName}' for event '{eventKind}'.");
-
-            Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(record, binding.Arguments);
             Dictionary<string, string> metadata = FormCommandInvocation.BuildMetadata(form);
             metadata["event"] = eventKind.ToString();
 
-            DbCommandResult result;
-            try
+            if (!string.IsNullOrWhiteSpace(binding.CommandName))
             {
-                result = await definition.InvokeAsync(arguments, metadata, ct);
+                if (!commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
+                    return FormEventDispatchResult.Failure($"Unknown form command '{binding.CommandName}' for event '{eventKind}'.");
+
+                Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(record, binding.Arguments);
+                bool commandFailed = false;
+                string? commandFailureMessage = null;
+                try
+                {
+                    DbCommandResult result = await definition.InvokeAsync(arguments, metadata, ct);
+                    if (!result.Succeeded)
+                    {
+                        commandFailed = true;
+                        commandFailureMessage = string.IsNullOrWhiteSpace(result.Message)
+                            ? $"Form event '{eventKind}' command '{definition.Name}' failed."
+                            : result.Message;
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    commandFailed = true;
+                    commandFailureMessage = $"Form event '{eventKind}' command '{definition.Name}' failed: {ex.Message}";
+                }
+
+                if (commandFailed)
+                {
+                    if (binding.StopOnFailure)
+                        return FormEventDispatchResult.Failure(commandFailureMessage!);
+
+                    if (binding.ActionSequence is null)
+                        continue;
+                }
             }
-            catch (Exception ex)
+            else if (binding.ActionSequence is null)
             {
-                return FormEventDispatchResult.Failure(
-                    $"Form event '{eventKind}' command '{definition.Name}' failed: {ex.Message}");
+                return FormEventDispatchResult.Failure($"Form event '{eventKind}' has no command or action sequence.");
             }
 
-            if (!result.Succeeded && binding.StopOnFailure)
+            if (binding.ActionSequence is not null)
             {
-                string message = string.IsNullOrWhiteSpace(result.Message)
-                    ? $"Form event '{eventKind}' command '{definition.Name}' failed."
-                    : result.Message;
-                return FormEventDispatchResult.Failure(message);
+                FormEventDispatchResult actionResult = await FormActionSequenceExecutor.ExecuteAsync(
+                    binding.ActionSequence,
+                    commands,
+                    record,
+                    binding.Arguments,
+                    runtimeArguments: null,
+                    metadata,
+                    ct: ct);
+
+                if (!actionResult.Succeeded && binding.StopOnFailure)
+                    return actionResult;
             }
         }
 

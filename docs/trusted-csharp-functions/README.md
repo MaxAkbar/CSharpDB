@@ -385,6 +385,98 @@ Command button direct-command metadata includes the same form metadata as lifecy
 
 ---
 
+## Declarative Admin Forms Action Sequences
+
+Admin Forms event bindings can also store small declarative action sequences.
+This is the first Access-style macro layer for CSharpDB Forms: the form stores
+action metadata, while any executable C# still lives in host-registered trusted
+commands.
+
+```csharp
+using CSharpDB.Admin.Forms.Models;
+using CSharpDB.Primitives;
+
+var shipButton = existingButton with
+{
+    EventBindings =
+    [
+        new ControlEventBinding(
+            ControlEventKind.OnClick,
+            CommandName: string.Empty,
+            ActionSequence: new DbActionSequence(
+            [
+                new DbActionStep(
+                    DbActionKind.SetFieldValue,
+                    Target: "Status",
+                    Value: "Shipped"),
+                new DbActionStep(
+                    DbActionKind.RunCommand,
+                    CommandName: "AuditOrderStatus",
+                    Arguments: new Dictionary<string, object?>
+                    {
+                        ["source"] = "ship-button",
+                    }),
+                new DbActionStep(
+                    DbActionKind.ShowMessage,
+                    Message: "Order marked as shipped."),
+            ],
+            Name: "ShipButtonActions")),
+    ],
+};
+```
+
+The initial action set is intentionally small:
+
+| Action | Behavior |
+| --- | --- |
+| `RunCommand` | Invokes a host-registered trusted command by name. |
+| `SetFieldValue` | Updates a target field in the current mutable form record. |
+| `ShowMessage` | Sends a message when the current Forms surface provides a command/message callback. |
+| `Stop` | Ends the current sequence successfully. |
+
+Action sequences can be attached to form lifecycle bindings or selected-control
+bindings. A binding can contain only a command, only an action sequence, or a
+command followed by an action sequence:
+
+```csharp
+var form = existingForm with
+{
+    EventBindings =
+    [
+        new FormEventBinding(
+            FormEventKind.BeforeInsert,
+            "ValidateOrder",
+            ActionSequence: new DbActionSequence(
+            [
+                new DbActionStep(
+                    DbActionKind.SetFieldValue,
+                    Target: "Status",
+                    Value: "Draft"),
+            ])),
+    ],
+};
+```
+
+The Admin Forms property inspector exposes action sequences as editable JSON on
+form-level and selected-control event bindings.
+
+For `RunCommand`, command arguments are built from current record fields,
+binding arguments, runtime event arguments, and step arguments, with later
+sources overriding earlier ones. Command metadata includes the Forms metadata
+plus `actionKind`, `actionStep`, and optional `actionSequence`.
+
+`SetFieldValue` can update mutable records in form lifecycle events such as
+`BeforeInsert` and `BeforeUpdate`, and it can update the current rendered record
+from control events or command-button clicks. It does not add built-in database
+operations by itself; use `RunCommand` for host-owned work.
+
+V1 action sequences do not include conditions, loops, stored C# source,
+database-owned plugins, built-in navigation actions, built-in save/delete
+actions, direct SQL/procedure execution actions, or remote delegate
+serialization.
+
+---
+
 ## Admin Reports
 
 Admin Reports preview rendering accepts the same registry through `DefaultReportPreviewService`:
@@ -609,6 +701,11 @@ Admin Forms formulas intentionally return `null` for invalid formulas, unsupport
 
 Trusted command failures are surface-specific. Form before-events can cancel writes, report event failures fail preview rendering, and pipeline hook failures produce a failed `PipelineRunResult` unless the binding sets `StopOnFailure = false`.
 
+Forms action-sequence failures follow the same binding-level `StopOnFailure`
+rule. Step-level `StopOnFailure = false` lets a later step continue after that
+step fails; otherwise the sequence reports the failure to the surrounding form
+or control event.
+
 ---
 
 ## Performance Guidance
@@ -638,4 +735,4 @@ V1 does not support:
 - Sending delegates over HTTP, gRPC, or pipeline package files.
 - Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.
 - Additional Access-style control events such as double-click, key, mouse, timer, and dirty/current events.
-- Stored macro/action scripts.
+- Richer macro/action scripts with conditions, loops, built-in navigation, built-in save/delete, direct SQL/procedure actions, or database-owned executable code.

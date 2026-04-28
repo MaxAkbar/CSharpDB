@@ -351,47 +351,75 @@
         IReadOnlyList<ControlEventBinding> bindings = control.EventBindings ?? [];
         foreach (ControlEventBinding binding in bindings.Where(binding => binding.Event == eventKind))
         {
-            if (string.IsNullOrWhiteSpace(binding.CommandName))
-            {
-                await ReportCommandErrorAsync($"Control event '{eventKind}' has an empty command name.");
-                return;
-            }
-
-            if (!Commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
-            {
-                await ReportCommandErrorAsync($"Unknown form command '{binding.CommandName}' for control event '{eventKind}'.");
-                return;
-            }
-
-            Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(
-                Record,
-                runtimeArguments,
-                binding.Arguments);
             Dictionary<string, string> metadata = FormCommandInvocation.BuildControlMetadata(Form, control, eventKind.ToString());
 
-            DbCommandResult result;
-            try
+            if (!string.IsNullOrWhiteSpace(binding.CommandName))
             {
-                result = await definition.InvokeAsync(arguments, metadata);
-            }
-            catch (Exception ex)
-            {
-                if (binding.StopOnFailure)
+                if (!Commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
                 {
-                    await ReportCommandErrorAsync($"Control event '{eventKind}' command '{definition.Name}' failed: {ex.Message}");
+                    await ReportCommandErrorAsync($"Unknown form command '{binding.CommandName}' for control event '{eventKind}'.");
                     return;
                 }
 
-                continue;
+                Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(
+                    Record,
+                    runtimeArguments,
+                    binding.Arguments);
+
+                bool commandFailed = false;
+                string? commandFailureMessage = null;
+                try
+                {
+                    DbCommandResult result = await definition.InvokeAsync(arguments, metadata);
+                    if (!result.Succeeded)
+                    {
+                        commandFailed = true;
+                        commandFailureMessage = string.IsNullOrWhiteSpace(result.Message)
+                            ? $"Control event '{eventKind}' command '{definition.Name}' failed."
+                            : result.Message;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    commandFailed = true;
+                    commandFailureMessage = $"Control event '{eventKind}' command '{definition.Name}' failed: {ex.Message}";
+                }
+
+                if (commandFailed)
+                {
+                    if (binding.StopOnFailure)
+                    {
+                        await ReportCommandErrorAsync(commandFailureMessage!);
+                        return;
+                    }
+
+                    if (binding.ActionSequence is null)
+                        continue;
+                }
+            }
+            else if (binding.ActionSequence is null)
+            {
+                await ReportCommandErrorAsync($"Control event '{eventKind}' has no command or action sequence.");
+                return;
             }
 
-            if (!result.Succeeded && binding.StopOnFailure)
+            if (binding.ActionSequence is not null)
             {
-                string message = string.IsNullOrWhiteSpace(result.Message)
-                    ? $"Control event '{eventKind}' command '{definition.Name}' failed."
-                    : result.Message;
-                await ReportCommandErrorAsync(message);
-                return;
+                FormEventDispatchResult actionResult = await FormActionSequenceExecutor.ExecuteAsync(
+                    binding.ActionSequence,
+                    Commands,
+                    Record,
+                    binding.Arguments,
+                    runtimeArguments,
+                    metadata,
+                    setFieldValue: SetActionFieldValueAsync,
+                    showMessage: ReportCommandErrorAsync);
+
+                if (!actionResult.Succeeded && binding.StopOnFailure)
+                {
+                    await ReportCommandErrorAsync(actionResult.Message ?? $"Control event '{eventKind}' action sequence failed.");
+                    return;
+                }
             }
         }
     }
@@ -427,6 +455,18 @@
 
     private Task ReportCommandErrorAsync(string message)
         => OnCommandError.HasDelegate ? OnCommandError.InvokeAsync(message) : Task.CompletedTask;
+
+    private async Task SetActionFieldValueAsync(string fieldName, object? value)
+    {
+        if (string.IsNullOrWhiteSpace(fieldName))
+            return;
+
+        string key = Record.Keys.FirstOrDefault(candidate => string.Equals(candidate, fieldName, StringComparison.OrdinalIgnoreCase))
+            ?? fieldName;
+        await BeforeFieldChanged.InvokeAsync(key);
+        Record[key] = value;
+        await OnFieldChanged.InvokeAsync(key);
+    }
 
     private FormFieldDefinition? GetFieldDefinition(string? fieldName)
         => fieldName is null

@@ -25,6 +25,9 @@ The current forms surface already includes:
 - trusted host command registration for form lifecycle events
 - designer editing for form-level event bindings
 - command button controls that invoke trusted host commands
+- trusted command-backed selected-control events
+- declarative form action sequences for run-command, set-field, show-message,
+  and stop steps
 
 ## Added Review Findings
 
@@ -99,8 +102,8 @@ Expected fix:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands; built-in form actions remain future work. |
-| Action model | Planned | Support actions such as open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, and show message. |
+| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands and action-only click sequences; built-in navigation/save/delete actions remain future work. |
+| Action model | Partial | Declarative action sequences support run-command, set-field, show-message, and stop steps; open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, conditions, and loops remain future work. |
 | Event hooks | Partial | Form lifecycle events, command-button clicks, and selected control events can call trusted commands; additional Access-style events remain future work. |
 | Conditional UI rules | Planned | Add visible/enabled/read-only expressions for controls. |
 

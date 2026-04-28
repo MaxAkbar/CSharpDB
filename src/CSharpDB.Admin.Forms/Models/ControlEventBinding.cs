@@ -1,3 +1,5 @@
+using CSharpDB.Primitives;
+
 namespace CSharpDB.Admin.Forms.Models;
 
 public enum ControlEventKind
@@ -12,4 +14,5 @@ public sealed record ControlEventBinding(
     ControlEventKind Event,
     string CommandName,
     IReadOnlyDictionary<string, object?>? Arguments = null,
-    bool StopOnFailure = true);
+    bool StopOnFailure = true,
+    DbActionSequence? ActionSequence = null);

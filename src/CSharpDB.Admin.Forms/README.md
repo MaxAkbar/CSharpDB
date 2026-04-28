@@ -17,6 +17,7 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - child table/tab support for related records
 - trusted command-backed form events and command buttons
 - trusted command-backed selected-control events
+- declarative action sequences for form and selected-control events
 
 ## Main Components
 
@@ -91,6 +92,12 @@ Controls are stored as `ControlDefinition` records with geometry, binding,
 properties, optional validation overrides, optional renderer hints, and optional
 `ControlEventBinding` entries for selected control events such as `OnClick`,
 `OnChange`, `OnGotFocus`, and `OnLostFocus`.
+
+Form and control event bindings can reference a trusted command name and can
+optionally include a `DbActionSequence`. Action sequences store declarative
+steps such as `RunCommand`, `SetFieldValue`, `ShowMessage`, and `Stop`; they do
+not store C# source or serialized delegates. The property inspector exposes the
+sequence as JSON on form-level and selected-control event bindings.
 
 ## Build
 

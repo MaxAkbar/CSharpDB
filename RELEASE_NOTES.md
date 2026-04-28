@@ -57,6 +57,14 @@ calculated text, and pipeline filter/derive expressions.
 - The Forms property inspector now edits selected-control event bindings using
   the same registered-command picker and JSON argument editor as form-level
   events.
+- Added shared declarative action sequence metadata with `RunCommand`,
+  `SetFieldValue`, `ShowMessage`, and `Stop` steps for Admin Forms automation.
+  Form and control event bindings can now be command-only,
+  action-sequence-only, or a command followed by an action sequence.
+- The existing form-event and selected-control event editors now expose an
+  action-sequence JSON field so designers can edit the stored sequence metadata.
+- Action sequences store names, arguments, field targets, and literal values
+  only. They do not store C# source, serialize delegates, or run untrusted code.
 - Added shared command argument conversion helpers so Forms, Reports, and
   Pipelines pass host command arguments with the same `DbValue` conversion
   rules.
@@ -103,6 +111,8 @@ calculated text, and pipeline filter/derive expressions.
   before-event cancellation.
 - Added designer-state, command-button, and control-event tests covering event
   binding preservation and registered command invocation from rendered forms.
+- Added Forms action-sequence tests for event dispatch, mutable record updates,
+  command button action-only clicks, and JSON round-tripping.
 - Added report-event dispatcher and preview lifecycle tests, pipeline hook
   serialization/validation/orchestrator tests, and shared command argument
   conversion tests.
@@ -155,8 +165,9 @@ otherwise neutral to improved.
   callback delegates are never serialized over HTTP or gRPC.
 - Admin Forms and Reports use the shared registries, but their formula and
   automation surfaces remain narrower than SQL or stored macro systems:
-  formulas stay expression-focused, and command hooks invoke host-owned code by
-  name rather than storing executable scripts in database metadata.
+  formulas stay expression-focused, command hooks invoke host-owned code by
+  name, and declarative action sequences store only limited action metadata
+  rather than executable scripts in database metadata.
 
 ## v3.5.0
 

@@ -1,3 +1,4 @@
+using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Primitives;
@@ -115,6 +116,77 @@ public sealed class DefaultFormEventDispatcherTests
 
         Assert.True(result.Succeeded);
         Assert.Equal(["reject", "after"], calls);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ExecutesActionSequenceAndMutatesMutableRecord()
+    {
+        DbCommandContext? captured = null;
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("AuditChange", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+
+        var dispatcher = new DefaultFormEventDispatcher(commands);
+        var form = CreateForm([
+            new FormEventBinding(
+                FormEventKind.BeforeUpdate,
+                string.Empty,
+                new Dictionary<string, object?> { ["Reason"] = "action-sequence" },
+                ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.SetFieldValue, Target: "Name", Value: "Bob"),
+                        new DbActionStep(
+                            DbActionKind.RunCommand,
+                            CommandName: "AuditChange",
+                            Arguments: new Dictionary<string, object?> { ["Step"] = "audit" }),
+                    ],
+                    Name: "BeforeUpdateActions")),
+        ]);
+        var record = new Dictionary<string, object?> { ["Id"] = 7L, ["Name"] = "Alice" };
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.BeforeUpdate,
+            record,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Bob", record["Name"]);
+        Assert.NotNull(captured);
+        Assert.Equal("Bob", captured!.Arguments["Name"].AsText);
+        Assert.Equal("action-sequence", captured.Arguments["Reason"].AsText);
+        Assert.Equal("audit", captured.Arguments["Step"].AsText);
+        Assert.Equal("RunCommand", captured.Metadata["actionKind"]);
+        Assert.Equal("1", captured.Metadata["actionStep"]);
+        Assert.Equal("BeforeUpdateActions", captured.Metadata["actionSequence"]);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ActionSequenceFailureStopsByDefault()
+    {
+        var commands = DbCommandRegistry.Empty;
+        var dispatcher = new DefaultFormEventDispatcher(commands);
+        var form = CreateForm([
+            new FormEventBinding(
+                FormEventKind.AfterUpdate,
+                string.Empty,
+                ActionSequence: new DbActionSequence(
+                    [new DbActionStep(DbActionKind.RunCommand, CommandName: "MissingCommand")])),
+        ]);
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.AfterUpdate,
+            new Dictionary<string, object?> { ["Id"] = 7L },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("Unknown form command 'MissingCommand'", result.Message);
     }
 
     private static FormDefinition CreateForm(IReadOnlyList<FormEventBinding> eventBindings)
