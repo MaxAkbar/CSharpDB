@@ -16,6 +16,7 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - validation rule inference and validation override support
 - child table/tab support for related records
 - trusted command-backed form events and command buttons
+- trusted command-backed selected-control events
 
 ## Main Components
 
@@ -87,7 +88,9 @@ public sealed record FormDefinition(
 ```
 
 Controls are stored as `ControlDefinition` records with geometry, binding,
-properties, optional validation overrides, and optional renderer hints.
+properties, optional validation overrides, optional renderer hints, and optional
+`ControlEventBinding` entries for selected control events such as `OnClick`,
+`OnChange`, `OnGotFocus`, and `OnLostFocus`.
 
 ## Build
 

@@ -10,6 +10,12 @@ internal static class FormCommandInvocation
         IReadOnlyDictionary<string, object?>? configuredArguments)
         => DbCommandArguments.FromObjectDictionary(record, configuredArguments);
 
+    public static Dictionary<string, DbValue> BuildArguments(
+        IReadOnlyDictionary<string, object?>? record,
+        IReadOnlyDictionary<string, object?>? runtimeArguments,
+        IReadOnlyDictionary<string, object?>? configuredArguments)
+        => DbCommandArguments.FromObjectDictionaries(record, runtimeArguments, configuredArguments);
+
     public static Dictionary<string, string> BuildMetadata(FormDefinition form)
     {
         ArgumentNullException.ThrowIfNull(form);
@@ -21,6 +27,21 @@ internal static class FormCommandInvocation
             ["formName"] = form.Name,
             ["tableName"] = form.TableName,
         };
+    }
+
+    public static Dictionary<string, string> BuildControlMetadata(
+        FormDefinition form,
+        ControlDefinition control,
+        string eventName)
+    {
+        Dictionary<string, string> metadata = BuildMetadata(form);
+        metadata["event"] = eventName;
+        metadata["controlId"] = control.ControlId;
+        metadata["controlType"] = control.ControlType;
+        if (!string.IsNullOrWhiteSpace(control.Binding?.FieldName))
+            metadata["fieldName"] = control.Binding.FieldName;
+
+        return metadata;
     }
 
     public static IReadOnlyDictionary<string, object?>? ReadArgumentsProperty(object? value)

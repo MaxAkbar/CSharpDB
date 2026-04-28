@@ -50,6 +50,38 @@ public sealed class DesignerStateTests
         Assert.False(binding.StopOnFailure);
     }
 
+    [Fact]
+    public void UpdateControlEventBindings_ReplacesSelectedControlBindings()
+    {
+        var state = new DesignerState();
+        ControlDefinition textControl = new(
+            "name",
+            "text",
+            new Rect(0, 0, 120, 24),
+            new BindingDefinition("Name", "TwoWay"),
+            PropertyBag.Empty,
+            null);
+        state.LoadForm(CreateForm() with { Controls = [textControl] });
+
+        state.UpdateControlEventBindings(
+            "name",
+            [
+                new ControlEventBinding(
+                    ControlEventKind.OnChange,
+                    "NormalizeName",
+                    new Dictionary<string, object?> { ["source"] = "designer" },
+                    StopOnFailure: false),
+            ]);
+
+        FormDefinition saved = state.ToFormDefinition();
+
+        ControlEventBinding binding = Assert.Single(saved.Controls[0].EventBindings!);
+        Assert.Equal(ControlEventKind.OnChange, binding.Event);
+        Assert.Equal("NormalizeName", binding.CommandName);
+        Assert.Equal("designer", binding.Arguments!["source"]);
+        Assert.False(binding.StopOnFailure);
+    }
+
     private static FormDefinition CreateForm()
         => new(
             "customers-form",

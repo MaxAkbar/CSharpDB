@@ -43,6 +43,10 @@ public class JsonRoundtripTests
         Assert.Equal(FormEventKind.AfterUpdate, deserialized.EventBindings[0].Event);
         Assert.Equal("AuditChange", deserialized.EventBindings[0].CommandName);
         Assert.Equal("manual", deserialized.EventBindings[0].Arguments!["reason"]);
+        ControlEventBinding controlBinding = Assert.Single(deserialized.Controls[1].EventBindings!);
+        Assert.Equal(ControlEventKind.OnChange, controlBinding.Event);
+        Assert.Equal("NormalizeName", controlBinding.CommandName);
+        Assert.Equal("control", controlBinding.Arguments!["source"]);
     }
 
     [Fact]
@@ -286,7 +290,14 @@ public class JsonRoundtripTests
                 new PropertyBag(new Dictionary<string, object?> { ["text"] = "First Name" }), null),
             new("c1", "text", new Rect(220, 24, 320, 34),
                 new BindingDefinition("FirstName", "TwoWay"),
-                new PropertyBag(new Dictionary<string, object?> { ["placeholder"] = "Enter first name" }), null)
+                new PropertyBag(new Dictionary<string, object?> { ["placeholder"] = "Enter first name" }), null,
+                EventBindings:
+                [
+                    new ControlEventBinding(
+                        ControlEventKind.OnChange,
+                        "NormalizeName",
+                        new Dictionary<string, object?> { ["source"] = "control" }),
+                ])
         };
 
         return new FormDefinition(

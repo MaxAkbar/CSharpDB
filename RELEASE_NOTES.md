@@ -51,6 +51,12 @@ calculated text, and pipeline filter/derive expressions.
 - Added a command button control that invokes a trusted host command on click,
   passing current record fields, optional configured arguments, and form
   metadata to the command callback.
+- Added control-level Admin Forms event bindings for `OnClick`, `OnChange`,
+  `OnGotFocus`, and `OnLostFocus`, so ordinary controls can invoke trusted
+  host commands without being command buttons.
+- The Forms property inspector now edits selected-control event bindings using
+  the same registered-command picker and JSON argument editor as form-level
+  events.
 - Added shared command argument conversion helpers so Forms, Reports, and
   Pipelines pass host command arguments with the same `DbValue` conversion
   rules.
@@ -95,8 +101,8 @@ calculated text, and pipeline filter/derive expressions.
 - Added command-registry, form-event dispatcher, event JSON round-trip, and
   Forms data-entry tests for create/update/delete event dispatch and
   before-event cancellation.
-- Added designer-state and command-button tests covering event binding
-  preservation and registered command invocation from rendered forms.
+- Added designer-state, command-button, and control-event tests covering event
+  binding preservation and registered command invocation from rendered forms.
 - Added report-event dispatcher and preview lifecycle tests, pipeline hook
   serialization/validation/orchestrator tests, and shared command argument
   conversion tests.

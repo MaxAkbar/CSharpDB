@@ -58,6 +58,12 @@
         </div>
 
         <div class="pi-section">
+            <div class="pi-section-label">Events</div>
+            <ControlEventBindingsEditor EventBindings="@(_selected.EventBindings ?? [])"
+                                        EventBindingsChanged="OnControlEventBindingsChanged" />
+        </div>
+
+        <div class="pi-section">
             <div class="pi-section-label">Position &amp; Size</div>
             <div class="pi-field-row">
                 <div class="pi-field half">
@@ -808,6 +814,14 @@
     private Task OnEventBindingsChanged(IReadOnlyList<FormEventBinding> bindings)
     {
         State.UpdateEventBindings(bindings);
+        return Task.CompletedTask;
+    }
+
+    private Task OnControlEventBindingsChanged(IReadOnlyList<ControlEventBinding> bindings)
+    {
+        if (_selected is not null)
+            State.UpdateControlEventBindings(_selected.ControlId, bindings);
+
         return Task.CompletedTask;
     }
 

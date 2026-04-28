@@ -15,7 +15,8 @@
             @switch (c.ControlType)
             {
                 case "label":
-                    <span class="fr-label">@GetProp(c, "text", "Label")</span>
+                    <span class="fr-label"
+                          @onclick="@(() => InvokeControlEventsAsync(c, ControlEventKind.OnClick))">@GetProp(c, "text", "Label")</span>
                     break;
                 case "text":
                     <input type="text"
@@ -24,7 +25,9 @@
                            value="@GetFieldValue(fieldName)"
                            readonly="@GetBoolProp(c, "readOnly")"
                            tabindex="@tabIdx"
-                           @onchange="@(e => SetFieldValue(fieldName, e.Value))" />
+                           @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                           @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                           @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))" />
                     break;
                 case "number":
                     <input type="number"
@@ -33,7 +36,9 @@
                            value="@GetFieldValue(fieldName)"
                            readonly="@GetBoolProp(c, "readOnly")"
                            tabindex="@tabIdx"
-                           @onchange="@(e => SetFieldValue(fieldName, ParseNumber(e.Value)))" />
+                           @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                           @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                           @onchange="@(e => SetFieldValueAsync(c, fieldName, ParseNumber(e.Value)))" />
                     break;
                 case "date":
                     <input type="date"
@@ -41,14 +46,18 @@
                            value="@GetDateValue(fieldName)"
                            readonly="@GetBoolProp(c, "readOnly")"
                            tabindex="@tabIdx"
-                           @onchange="@(e => SetFieldValue(fieldName, e.Value))" />
+                           @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                           @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                           @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))" />
                     break;
                 case "checkbox":
                     <label class="fr-checkbox">
                         <input type="checkbox"
                                checked="@GetCheckboxFieldValue(fieldName)"
                                tabindex="@tabIdx"
-                               @onchange="@(e => SetCheckboxFieldValue(fieldName, e.Value is bool b && b))" />
+                               @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                               @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                               @onchange="@(e => SetCheckboxFieldValueAsync(c, fieldName, e.Value is bool b && b))" />
                         <span>@GetProp(c, "text", fieldName ?? "Checkbox")</span>
                     </label>
                     break;
@@ -56,7 +65,9 @@
                     <select class="@inputClass"
                             value="@GetFieldValue(fieldName)"
                             tabindex="@tabIdx"
-                            @onchange="@(e => SetFieldValue(fieldName, e.Value))">
+                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                            @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))">
                         <option value="">@GetProp(c, "placeholder", "-- Select --")</option>
                         @if (Choices?.TryGetValue(fieldName ?? "", out var choices) == true && choices is not null)
                         {
@@ -71,7 +82,9 @@
                     <select class="@inputClass"
                             value="@GetFieldValue(fieldName)"
                             tabindex="@tabIdx"
-                            @onchange="@(e => SetFieldValue(fieldName, e.Value))">
+                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                            @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))">
                         <option value="">@GetProp(c, "placeholder", "-- Select --")</option>
                         @if (Choices?.TryGetValue(fieldName ?? "", out var lookupChoices) == true && lookupChoices is not null)
                         {
@@ -88,7 +101,9 @@
                               value="@GetFieldValue(fieldName)"
                               readonly="@GetBoolProp(c, "readOnly")"
                               tabindex="@tabIdx"
-                              @onchange="@(e => SetFieldValue(fieldName, e.Value))"></textarea>
+                              @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                              @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                              @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))"></textarea>
                     break;
                 case "radio":
                     @if (Choices?.TryGetValue(fieldName ?? "", out var radioChoices) == true && radioChoices is not null)
@@ -103,7 +118,9 @@
                                            value="@val"
                                            checked="@IsRadioChoiceSelected(fieldName, val)"
                                            tabindex="@tabIdx"
-                                           @onchange="@(e => SetRadioFieldValue(fieldName, val))" />
+                                           @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                                           @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                                           @onchange="@(e => SetRadioFieldValueAsync(c, fieldName, val))" />
                                     <span>@ch.Label</span>
                                 </label>
                             }
@@ -122,7 +139,9 @@
                            class="fr-input fr-computed"
                            value="@displayValue"
                            readonly
-                           tabindex="@tabIdx" />
+                           tabindex="@tabIdx"
+                           @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                           @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))" />
                     break;
                 case "commandButton":
                     var isExecuting = _executingCommandButtons.Contains(c.ControlId);
@@ -243,30 +262,36 @@
     private bool IsRadioChoiceSelected(string? fieldName, string? choiceValue)
         => FormControlValueConverter.ChoiceMatchesValue(GetFieldObjectValue(fieldName), choiceValue, GetFieldDefinition(fieldName));
 
-    private void SetCheckboxFieldValue(string? fieldName, bool isChecked)
-        => SetFieldValue(fieldName, FormControlValueConverter.ConvertCheckboxValue(isChecked, GetFieldDefinition(fieldName)));
+    private Task SetCheckboxFieldValueAsync(ControlDefinition control, string? fieldName, bool isChecked)
+        => SetFieldValueAsync(control, fieldName, FormControlValueConverter.ConvertCheckboxValue(isChecked, GetFieldDefinition(fieldName)));
 
-    private void SetRadioFieldValue(string? fieldName, string? choiceValue)
-        => SetFieldValue(fieldName, FormControlValueConverter.ConvertChoiceValue(choiceValue, GetFieldDefinition(fieldName)));
+    private Task SetRadioFieldValueAsync(ControlDefinition control, string? fieldName, string? choiceValue)
+        => SetFieldValueAsync(control, fieldName, FormControlValueConverter.ConvertChoiceValue(choiceValue, GetFieldDefinition(fieldName)));
 
-    private void SetFieldValue(string? fieldName, object? value)
+    private async Task SetFieldValueAsync(ControlDefinition control, string? fieldName, object? value)
     {
         if (fieldName is null) return;
-        BeforeFieldChanged.InvokeAsync(fieldName);
+        object? oldValue = GetFieldObjectValue(fieldName);
+        await BeforeFieldChanged.InvokeAsync(fieldName);
         Record[fieldName] = value;
-        OnFieldChanged.InvokeAsync(fieldName);
+        await InvokeControlEventsAsync(
+            control,
+            ControlEventKind.OnChange,
+            BuildFieldEventArguments(control, ControlEventKind.OnChange, fieldName, value, oldValue));
+        await OnFieldChanged.InvokeAsync(fieldName);
     }
 
     private async Task InvokeCommandButtonAsync(ControlDefinition control)
     {
         string commandName = GetProp(control, "commandName", string.Empty);
-        if (string.IsNullOrWhiteSpace(commandName))
+        if (string.IsNullOrWhiteSpace(commandName) && !HasControlEventBindings(control, ControlEventKind.OnClick))
         {
             await ReportCommandErrorAsync("Command button has no command name.");
             return;
         }
 
-        if (!Commands.TryGetCommand(commandName, out DbCommandDefinition definition))
+        DbCommandDefinition? definition = null;
+        if (!string.IsNullOrWhiteSpace(commandName) && !Commands.TryGetCommand(commandName, out definition))
         {
             await ReportCommandErrorAsync($"Unknown form command '{commandName}'.");
             return;
@@ -275,32 +300,129 @@
         _executingCommandButtons.Add(control.ControlId);
         try
         {
-            control.Props.Values.TryGetValue("commandArguments", out object? configuredArguments);
-            Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(
-                Record,
-                FormCommandInvocation.ReadArgumentsProperty(configuredArguments));
-            Dictionary<string, string> metadata = FormCommandInvocation.BuildMetadata(Form);
-            metadata["event"] = "Click";
-            metadata["controlId"] = control.ControlId;
-            metadata["controlType"] = control.ControlType;
-
-            DbCommandResult result = await definition.InvokeAsync(arguments, metadata);
-            if (!result.Succeeded)
+            if (!string.IsNullOrWhiteSpace(commandName))
             {
-                string message = string.IsNullOrWhiteSpace(result.Message)
-                    ? $"Form command '{definition.Name}' failed."
-                    : result.Message;
-                await ReportCommandErrorAsync(message);
+                if (definition is null)
+                    throw new InvalidOperationException($"Form command '{commandName}' was not resolved.");
+
+                control.Props.Values.TryGetValue("commandArguments", out object? configuredArguments);
+                Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(
+                    Record,
+                    FormCommandInvocation.ReadArgumentsProperty(configuredArguments));
+                Dictionary<string, string> metadata = FormCommandInvocation.BuildControlMetadata(Form, control, "Click");
+
+                DbCommandResult result = await definition.InvokeAsync(arguments, metadata);
+                if (!result.Succeeded)
+                {
+                    string message = string.IsNullOrWhiteSpace(result.Message)
+                        ? $"Form command '{definition.Name}' failed."
+                        : result.Message;
+                    await ReportCommandErrorAsync(message);
+                    return;
+                }
             }
+
+            await InvokeControlEventsAsync(control, ControlEventKind.OnClick);
         }
         catch (Exception ex)
         {
-            await ReportCommandErrorAsync($"Form command '{definition.Name}' failed: {ex.Message}");
+            string subject = string.IsNullOrWhiteSpace(commandName)
+                ? "Control click command"
+                : $"Form command '{commandName}'";
+            await ReportCommandErrorAsync($"{subject} failed: {ex.Message}");
         }
         finally
         {
             _executingCommandButtons.Remove(control.ControlId);
         }
+    }
+
+    private Task InvokeFieldControlEventAsync(ControlDefinition control, ControlEventKind eventKind, string? fieldName)
+        => InvokeControlEventsAsync(
+            control,
+            eventKind,
+            BuildFieldEventArguments(control, eventKind, fieldName, GetFieldObjectValue(fieldName), oldValue: null));
+
+    private async Task InvokeControlEventsAsync(
+        ControlDefinition control,
+        ControlEventKind eventKind,
+        IReadOnlyDictionary<string, object?>? runtimeArguments = null)
+    {
+        IReadOnlyList<ControlEventBinding> bindings = control.EventBindings ?? [];
+        foreach (ControlEventBinding binding in bindings.Where(binding => binding.Event == eventKind))
+        {
+            if (string.IsNullOrWhiteSpace(binding.CommandName))
+            {
+                await ReportCommandErrorAsync($"Control event '{eventKind}' has an empty command name.");
+                return;
+            }
+
+            if (!Commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
+            {
+                await ReportCommandErrorAsync($"Unknown form command '{binding.CommandName}' for control event '{eventKind}'.");
+                return;
+            }
+
+            Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(
+                Record,
+                runtimeArguments,
+                binding.Arguments);
+            Dictionary<string, string> metadata = FormCommandInvocation.BuildControlMetadata(Form, control, eventKind.ToString());
+
+            DbCommandResult result;
+            try
+            {
+                result = await definition.InvokeAsync(arguments, metadata);
+            }
+            catch (Exception ex)
+            {
+                if (binding.StopOnFailure)
+                {
+                    await ReportCommandErrorAsync($"Control event '{eventKind}' command '{definition.Name}' failed: {ex.Message}");
+                    return;
+                }
+
+                continue;
+            }
+
+            if (!result.Succeeded && binding.StopOnFailure)
+            {
+                string message = string.IsNullOrWhiteSpace(result.Message)
+                    ? $"Control event '{eventKind}' command '{definition.Name}' failed."
+                    : result.Message;
+                await ReportCommandErrorAsync(message);
+                return;
+            }
+        }
+    }
+
+    private static bool HasControlEventBindings(ControlDefinition control, ControlEventKind eventKind)
+        => control.EventBindings?.Any(binding => binding.Event == eventKind) == true;
+
+    private static Dictionary<string, object?> BuildFieldEventArguments(
+        ControlDefinition control,
+        ControlEventKind eventKind,
+        string? fieldName,
+        object? value,
+        object? oldValue)
+    {
+        var arguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["controlId"] = control.ControlId,
+            ["controlType"] = control.ControlType,
+            ["event"] = eventKind.ToString(),
+        };
+
+        if (!string.IsNullOrWhiteSpace(fieldName))
+            arguments["fieldName"] = fieldName;
+
+        if (value is not null)
+            arguments["value"] = value;
+
+        if (oldValue is not null)
+            arguments["oldValue"] = oldValue;
+
+        return arguments;
     }
 
     private Task ReportCommandErrorAsync(string message)

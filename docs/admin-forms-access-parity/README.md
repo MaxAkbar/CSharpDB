@@ -101,7 +101,7 @@ Expected fix:
 | --- | --- | --- |
 | Command button control | Partial | Trusted command buttons can invoke host-registered C# commands; built-in form actions remain future work. |
 | Action model | Planned | Support actions such as open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, and show message. |
-| Event hooks | Partial | Form lifecycle events and command-button clicks can call trusted commands; field/control event coverage remains future work. |
+| Event hooks | Partial | Form lifecycle events, command-button clicks, and selected control events can call trusted commands; additional Access-style events remain future work. |
 | Conditional UI rules | Planned | Add visible/enabled/read-only expressions for controls. |
 
 ### Phase 5: Broader Control and Property Coverage

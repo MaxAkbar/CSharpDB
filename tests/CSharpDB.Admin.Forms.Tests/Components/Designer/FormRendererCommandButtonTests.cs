@@ -48,6 +48,86 @@ public sealed class FormRendererCommandButtonTests
         Assert.Equal("Unknown form command 'MissingCommand'.", error);
     }
 
+    [Fact]
+    public async Task ControlOnChange_InvokesRegisteredCommandWithFieldRuntimeArguments()
+    {
+        DbCommandContext? captured = null;
+        DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("AuditStatus", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+
+        ControlDefinition text = new(
+            "status",
+            "text",
+            new Rect(10, 20, 180, 34),
+            new BindingDefinition("Status", "TwoWay"),
+            PropertyBag.Empty,
+            null,
+            EventBindings:
+            [
+                new ControlEventBinding(
+                    ControlEventKind.OnChange,
+                    "AuditStatus",
+                    new Dictionary<string, object?> { ["source"] = "control-event" }),
+            ]);
+        var renderer = CreateRenderer(commands, CreateForm(text));
+
+        await InvokeNonPublicAsync(renderer, "SetFieldValueAsync", text, "Status", "Shipped");
+
+        Assert.NotNull(captured);
+        Assert.Equal("AuditStatus", captured.CommandName);
+        Assert.Equal("AdminForms", captured.Metadata["surface"]);
+        Assert.Equal("OnChange", captured.Metadata["event"]);
+        Assert.Equal("status", captured.Metadata["controlId"]);
+        Assert.Equal("Status", captured.Metadata["fieldName"]);
+        Assert.Equal("Shipped", captured.Arguments["Status"].AsText);
+        Assert.Equal("Status", captured.Arguments["fieldName"].AsText);
+        Assert.Equal("Shipped", captured.Arguments["value"].AsText);
+        Assert.Equal("Ready", captured.Arguments["oldValue"].AsText);
+        Assert.Equal("control-event", captured.Arguments["source"].AsText);
+    }
+
+    [Fact]
+    public async Task CommandButton_UsesOnClickBindingWhenNoDirectCommandIsConfigured()
+    {
+        DbCommandContext? captured = null;
+        string? error = null;
+        DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("ShipOrder", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+
+        ControlDefinition button = new(
+            "button1",
+            "commandButton",
+            new Rect(10, 20, 120, 34),
+            null,
+            new PropertyBag(new Dictionary<string, object?> { ["text"] = "Ship" }),
+            null,
+            EventBindings:
+            [
+                new ControlEventBinding(ControlEventKind.OnClick, "ShipOrder"),
+            ]);
+        var renderer = CreateRenderer(commands, CreateForm(button), message => error = message);
+
+        await InvokeNonPublicAsync(renderer, "InvokeCommandButtonAsync", button);
+
+        Assert.Null(error);
+        Assert.NotNull(captured);
+        Assert.Equal("OnClick", captured!.Metadata["event"]);
+        Assert.Equal("button1", captured.Metadata["controlId"]);
+        Assert.Equal(42, captured.Arguments["OrderId"].AsInteger);
+    }
+
     private static FormRenderer CreateRenderer(
         DbCommandRegistry commands,
         FormDefinition form,

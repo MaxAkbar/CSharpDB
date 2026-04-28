@@ -7,10 +7,14 @@ public static class DbCommandArguments
     public static Dictionary<string, DbValue> FromObjectDictionary(
         IReadOnlyDictionary<string, object?>? first,
         IReadOnlyDictionary<string, object?>? second = null)
+        => FromObjectDictionaries(first, second);
+
+    public static Dictionary<string, DbValue> FromObjectDictionaries(
+        params IReadOnlyDictionary<string, object?>?[] sources)
     {
         var arguments = new Dictionary<string, DbValue>(StringComparer.OrdinalIgnoreCase);
-        AddDictionary(arguments, first);
-        AddDictionary(arguments, second);
+        foreach (IReadOnlyDictionary<string, object?>? source in sources)
+            AddDictionary(arguments, source);
         return arguments;
     }
 

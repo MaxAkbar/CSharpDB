@@ -332,7 +332,36 @@ Command context arguments include the current record fields converted to `DbValu
 
 The Admin Forms designer preserves form event bindings and exposes them in the property inspector when no control is selected. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer.
 
-Admin Forms also include a command button control. Command buttons store a display label, a command name, and optional JSON arguments in the form definition. At runtime, clicking the button invokes the registered host command with the current record fields plus the configured arguments.
+Admin Forms also include control-level trusted command events. Form controls store event names, command names, and optional JSON arguments in the form definition. At runtime, the renderer invokes the registered host command with the current record fields plus event-specific arguments.
+
+```csharp
+var textBox = existingTextBox with
+{
+    EventBindings =
+    [
+        new ControlEventBinding(
+            ControlEventKind.OnChange,
+            "NormalizeCustomerName",
+            new Dictionary<string, object?> { ["source"] = "name-textbox" }),
+        new ControlEventBinding(ControlEventKind.OnLostFocus, "ValidateCustomerName"),
+    ],
+};
+```
+
+Supported control events in this slice are:
+
+| Event | When it runs |
+| --- | --- |
+| `OnClick` | When a label or command button is clicked. |
+| `OnChange` | After an input, checkbox, radio, select, lookup, or textarea updates its bound field. |
+| `OnGotFocus` | When an interactive control receives focus. |
+| `OnLostFocus` | When an interactive control loses focus. |
+
+Control event metadata includes the Forms metadata plus `event`, `controlId`, `controlType`, and `fieldName` for bound controls. Arguments include current record fields and event details such as `fieldName`, `value`, and `oldValue` for field changes. Static arguments configured on the event binding override same-named runtime arguments.
+
+The Admin Forms designer exposes selected-control event bindings in the property inspector. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer.
+
+Admin Forms also include a command button control. Command buttons store a display label, a command name, and optional JSON arguments in the form definition. At runtime, clicking the button invokes the registered host command with the current record fields plus the configured arguments. Command buttons can also use `ControlEventKind.OnClick` bindings, which allows a button to be driven entirely by the shared control-event model.
 
 ```csharp
 var button = new ControlDefinition(
@@ -352,7 +381,7 @@ var button = new ControlDefinition(
     ValidationOverride: null);
 ```
 
-Command button metadata includes the same form metadata as lifecycle events, plus `event = "Click"`, `controlId`, and `controlType`.
+Command button direct-command metadata includes the same form metadata as lifecycle events, plus `event = "Click"`, `controlId`, and `controlType`.
 
 ---
 
@@ -608,5 +637,5 @@ V1 does not support:
 - Passing a database handle into the function context.
 - Sending delegates over HTTP, gRPC, or pipeline package files.
 - Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.
-- Broader control-level form events beyond command-button clicks.
+- Additional Access-style control events such as double-click, key, mouse, timer, and dirty/current events.
 - Stored macro/action scripts.

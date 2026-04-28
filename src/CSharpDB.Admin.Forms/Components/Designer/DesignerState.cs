@@ -96,6 +96,15 @@ public class DesignerState
         NotifyChanged();
     }
 
+    public void UpdateControlEventBindings(string controlId, IReadOnlyList<ControlEventBinding> bindings)
+    {
+        var idx = _controls.FindIndex(c => c.ControlId == controlId);
+        if (idx < 0) return;
+        PushUndo();
+        _controls[idx] = _controls[idx] with { EventBindings = bindings.ToList() };
+        NotifyChanged();
+    }
+
     public void PushUndo()
     {
         _undoStack.Push(_controls.Select(c => c).ToList());
