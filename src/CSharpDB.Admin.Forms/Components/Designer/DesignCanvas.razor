@@ -90,11 +90,17 @@
                             break;
                         case "datagrid":
                             var childTbl = GetProp(c, "childTable", "");
+                            var dataGridMode = GetProp(c, "dataGridMode", "related");
+                            var dataGridLabel = string.IsNullOrEmpty(childTbl)
+                                ? "DataGrid (not configured)"
+                                : string.Equals(dataGridMode, "standalone", StringComparison.OrdinalIgnoreCase)
+                                    ? $"Table Grid: {childTbl}"
+                                    : $"Related Grid: {childTbl}";
                             var dgCols = GetListProp(c, "visibleColumns");
                             <div class="preview-datagrid">
                                 <div class="preview-datagrid-header">
                                     <span class="preview-datagrid-icon">&#x2637;</span>
-                                    @(string.IsNullOrEmpty(childTbl) ? "DataGrid (not configured)" : $"DataGrid: {childTbl}")
+                                    @dataGridLabel
                                 </div>
                                 <div class="preview-datagrid-body">
                                     <div class="preview-datagrid-row header-row">
@@ -266,6 +272,7 @@
             props["text"] = "Checkbox";
         if (controlType == "datagrid")
         {
+            props["dataGridMode"] = "standalone";
             props["childTable"] = "";
             props["foreignKeyField"] = "";
             props["parentKeyField"] = "";

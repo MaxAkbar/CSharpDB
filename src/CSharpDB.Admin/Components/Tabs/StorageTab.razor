@@ -25,6 +25,33 @@
         <div class="toolbar-info">@(_dbReport?.DatabasePath ?? DbClient.DataSource)</div>
     </div>
 
+    <div class="heavy-layout">
+        <aside class="heavy-rail">
+            <div class="heavy-rail-head">Storage Inspector</div>
+            <div class="heavy-rail-section">
+                <div class="heavy-rail-label">Overview</div>
+                <a class="heavy-rail-item active" href="#storage-summary"><i class="bi bi-speedometer2"></i><span>Summary</span></a>
+            </div>
+            <div class="heavy-rail-section">
+                <div class="heavy-rail-label">Inspect</div>
+                <a class="heavy-rail-item" href="#storage-header"><i class="bi bi-file-binary"></i><span>Database header</span></a>
+                <a class="heavy-rail-item" href="#storage-wal"><i class="bi bi-journal-text"></i><span>WAL</span></a>
+                <a class="heavy-rail-item" href="#storage-space"><i class="bi bi-pie-chart"></i><span>Space usage</span></a>
+                <a class="heavy-rail-item" href="#storage-histogram"><i class="bi bi-bar-chart-steps"></i><span>Page histogram</span></a>
+                <a class="heavy-rail-item" href="#storage-page"><i class="bi bi-search"></i><span>Page drill-down</span></a>
+            </div>
+            <div class="heavy-rail-section">
+                <div class="heavy-rail-label">Health</div>
+                <a class="heavy-rail-item" href="#storage-indexes"><i class="bi bi-shield-check"></i><span>Index checks</span><span class="badge">@IndexIssueBadge</span></a>
+                <a class="heavy-rail-item" href="#storage-issues"><i class="bi bi-exclamation-triangle"></i><span>Integrity issues</span><span class="badge @(_combinedIssues.Count > 0 ? "warn" : "")">@_combinedIssues.Count</span></a>
+            </div>
+            <div class="heavy-rail-section">
+                <div class="heavy-rail-label">Operations</div>
+                <a class="heavy-rail-item" href="#storage-maintenance"><i class="bi bi-tools"></i><span>Maintenance</span></a>
+            </div>
+        </aside>
+
+        <main class="heavy-pane">
     @if (_loading)
     {
         <div class="loading-overlay">
@@ -33,9 +60,16 @@
     }
     else
     {
-        <div class="storage-content">
+        <div class="storage-content" id="storage-summary">
+            <div class="heavy-summary-strip">
+                <div><span>File</span><strong>@FormatBytes(_maintenanceReport?.SpaceUsage.DatabaseFileBytes ?? 0)</strong></div>
+                <div><span>Pages</span><strong>@(_dbReport?.Header.PhysicalPageCount.ToString() ?? "-")</strong></div>
+                <div><span>Page size</span><strong>@(_dbReport?.Header.PageSize.ToString() ?? "-")</strong></div>
+                <div><span>Issues</span><strong>@_combinedIssues.Count</strong></div>
+            </div>
+
             <div class="storage-grid">
-                <section class="storage-card">
+                <section class="storage-card" id="storage-header">
                     <h3>Database Header</h3>
                     @if (_dbReport is not null)
                     {
@@ -55,7 +89,7 @@
                     }
                 </section>
 
-                <section class="storage-card">
+                <section class="storage-card" id="storage-wal">
                     <h3>WAL</h3>
                     @if (_walReport is not null)
                     {
@@ -77,7 +111,7 @@
             </div>
 
             <div class="storage-grid">
-                <section class="storage-card">
+                <section class="storage-card" id="storage-space">
                     <h3>Space Usage</h3>
                     @if (_maintenanceReport is not null)
                     {
@@ -95,7 +129,7 @@
                     }
                 </section>
 
-                <section class="storage-card">
+                <section class="storage-card" id="storage-fragmentation">
                     <h3>Fragmentation</h3>
                     @if (_maintenanceReport is not null)
                     {
@@ -111,7 +145,7 @@
                 </section>
             </div>
 
-            <section class="storage-card">
+            <section class="storage-card" id="storage-maintenance">
                 <h3>Maintenance</h3>
                 <div class="storage-subsection">
                     <div class="toolbar">
@@ -336,7 +370,7 @@
                 </div>
             </section>
 
-            <section class="storage-card">
+            <section class="storage-card" id="storage-histogram">
                 <h3>Page Type Histogram</h3>
                 @if (_dbReport?.PageTypeHistogram is not null && _dbReport.PageTypeHistogram.Count > 0)
                 {
@@ -364,7 +398,7 @@
                 }
             </section>
 
-            <section class="storage-card">
+            <section class="storage-card" id="storage-indexes">
                 <h3>Index Checks</h3>
                 @if (_indexReport?.Indexes is not null && _indexReport.Indexes.Count > 0)
                 {
@@ -402,7 +436,7 @@
                 }
             </section>
 
-            <section class="storage-card">
+            <section class="storage-card" id="storage-issues">
                 <h3>Integrity Issues</h3>
                 @if (_combinedIssues.Count > 0)
                 {
@@ -438,7 +472,7 @@
                 }
             </section>
 
-            <section class="storage-card">
+            <section class="storage-card" id="storage-page">
                 <h3>Page Drill-Down</h3>
                 @if (_pageReport is null)
                 {
@@ -488,6 +522,8 @@
             </section>
         </div>
     }
+        </main>
+    </div>
 </div>
 
 @code {
@@ -535,6 +571,12 @@
     private IReadOnlyList<string> _availableIndexes = [];
 
     private readonly List<IntegrityIssue> _combinedIssues = new();
+    private string IndexIssueBadge
+        => _indexReport?.Indexes is null
+            ? "-"
+            : _indexReport.Indexes.All(index => index.RootPageValid && index.TableExists && index.ColumnsExistInTable && index.RootTreeReachable)
+                ? "OK"
+                : "Check";
 
     protected override async Task OnInitializedAsync()
     {

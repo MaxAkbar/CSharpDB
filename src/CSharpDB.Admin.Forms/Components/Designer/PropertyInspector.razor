@@ -23,6 +23,23 @@
                 <p>Form properties</p>
             }
         </div>
+        @if (State.SelectedIds.Count <= 1)
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Form</div>
+                <div class="pi-field">
+                    <label>Name</label>
+                    <input type="text"
+                           value="@State.FormName"
+                           placeholder="Customer Entry"
+                           @onchange="OnFormNameChanged" />
+                </div>
+                <div class="pi-field">
+                    <label>Source</label>
+                    <div class="pi-static-value">@(string.IsNullOrWhiteSpace(State.TableName) ? "No source selected" : State.TableName)</div>
+                </div>
+            </div>
+        }
         <div class="pi-section">
             <div class="pi-section-label">Events</div>
             <FormEventBindingsEditor EventBindings="State.EventBindings"
@@ -297,11 +314,18 @@
         @if (_selected.ControlType == "datagrid")
         {
             <div class="pi-section">
-                <div class="pi-section-label">Child Table</div>
+                <div class="pi-section-label">Data Grid</div>
+                <div class="pi-field">
+                    <label>Mode</label>
+                    <select value="@GetProp(PropDataGridMode, "related")" @onchange="OnDataGridModeChanged">
+                        <option value="standalone">Standalone table</option>
+                        <option value="related">Related child table</option>
+                    </select>
+                </div>
                 <div class="pi-field">
                     <label>Table</label>
                     <select value="@GetProp(PropChildTable, "")" @onchange="OnChildTableChanged">
-                        <option value="">-- Select child table --</option>
+                        <option value="">-- Select table --</option>
                         @if (_availableTables is not null)
                         {
                             @foreach (var t in _availableTables)
@@ -314,55 +338,58 @@
 
                 @if (_childTableDef is not null)
                 {
-                    var fks = _childTableDef.ForeignKeys
-                        .Where(fk => string.Equals(fk.ReferencedTable, State.TableName, StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-
-                    @if (fks.Count > 0)
+                    if (!IsStandaloneDataGrid())
                     {
+                        var fks = _childTableDef.ForeignKeys
+                            .Where(fk => string.Equals(fk.ReferencedTable, State.TableName, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+
+                        @if (fks.Count > 0)
+                        {
+                            <div class="pi-field">
+                                <label>Foreign Key</label>
+                                <select value="@GetProp(PropForeignKeyName, "")" @onchange="OnForeignKeyChanged">
+                                    <option value="">-- Manual mapping --</option>
+                                    @foreach (var fk in fks)
+                                    {
+                                        var fkLabel = $"{fk.Name} ({string.Join(", ", fk.LocalFields)})";
+                                        <option value="@fk.Name">@fkLabel</option>
+                                    }
+                                </select>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="pi-field">
+                                <span style="color: #d32f2f; font-size: 11px;">No FK referencing @State.TableName. Use manual mapping below.</span>
+                            </div>
+                        }
+
                         <div class="pi-field">
-                            <label>Foreign Key</label>
-                            <select value="@GetProp(PropForeignKeyName, "")" @onchange="OnForeignKeyChanged">
-                                <option value="">-- Manual mapping --</option>
-                                @foreach (var fk in fks)
+                            <label>Child Field</label>
+                            <select value="@GetProp(PropForeignKeyField, "")" @onchange="OnManualChildFieldChanged">
+                                <option value="">-- Select child field --</option>
+                                @foreach (var field in _childTableDef.Fields)
                                 {
-                                    var fkLabel = $"{fk.Name} ({string.Join(", ", fk.LocalFields)})";
-                                    <option value="@fk.Name">@fkLabel</option>
+                                    <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                                }
+                            </select>
+                        </div>
+
+                        <div class="pi-field">
+                            <label>Parent Field</label>
+                            <select value="@GetProp(PropParentKeyField, "")" @onchange="OnManualParentFieldChanged" disabled="@(_sourceTableDef is null)">
+                                <option value="">-- Select parent field --</option>
+                                @if (_sourceTableDef is not null)
+                                {
+                                    @foreach (var field in _sourceTableDef.Fields)
+                                    {
+                                        <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+                                    }
                                 }
                             </select>
                         </div>
                     }
-                    else
-                    {
-                        <div class="pi-field">
-                            <span style="color: #d32f2f; font-size: 11px;">No FK referencing @State.TableName. Use manual mapping below.</span>
-                        </div>
-                    }
-
-                    <div class="pi-field">
-                        <label>Child Field</label>
-                        <select value="@GetProp(PropForeignKeyField, "")" @onchange="OnManualChildFieldChanged">
-                            <option value="">-- Select child field --</option>
-                            @foreach (var field in _childTableDef.Fields)
-                            {
-                                <option value="@field.Name">@GetFieldOptionLabel(field)</option>
-                            }
-                        </select>
-                    </div>
-
-                    <div class="pi-field">
-                        <label>Parent Field</label>
-                        <select value="@GetProp(PropParentKeyField, "")" @onchange="OnManualParentFieldChanged" disabled="@(_sourceTableDef is null)">
-                            <option value="">-- Select parent field --</option>
-                            @if (_sourceTableDef is not null)
-                            {
-                                @foreach (var field in _sourceTableDef.Fields)
-                                {
-                                    <option value="@field.Name">@GetFieldOptionLabel(field)</option>
-                                }
-                            }
-                        </select>
-                    </div>
 
                     <div class="pi-field">
                         <label>Visible Columns</label>
@@ -447,6 +474,7 @@
     private const string PropMaxLength = "maxLength";
     private const string PropReadOnly = "readOnly";
     private const string PropTabIndex = "tabIndex";
+    private const string PropDataGridMode = "dataGridMode";
     private const string PropChildTable = "childTable";
     private const string PropForeignKeyName = "foreignKeyName";
     private const string PropForeignKeyField = "foreignKeyField";
@@ -574,6 +602,11 @@
         State.UpdateControlProp(_selected.ControlId, key, value);
     }
 
+    private void OnFormNameChanged(ChangeEventArgs e)
+    {
+        State.SetFormName(e.Value?.ToString());
+    }
+
     private void OnTypeChanged(ChangeEventArgs e)
     {
         if (_selected is null || e.Value is not string newType) return;
@@ -630,6 +663,36 @@
 
     // ===== DataGrid Configuration Methods =====
 
+    private async Task OnDataGridModeChanged(ChangeEventArgs e)
+    {
+        if (_selected is null || e.Value is not string mode)
+            return;
+
+        mode = string.Equals(mode, "standalone", StringComparison.OrdinalIgnoreCase)
+            ? "standalone"
+            : "related";
+        OnPropChanged(PropDataGridMode, mode);
+
+        if (string.Equals(mode, "standalone", StringComparison.OrdinalIgnoreCase))
+        {
+            OnPropChanged(PropForeignKeyField, "");
+            OnPropChanged(PropParentKeyField, "");
+            OnPropChanged(PropForeignKeyName, "");
+            return;
+        }
+
+        if (_childTableDef is not null)
+        {
+            var matchingFks = _childTableDef.ForeignKeys
+                .Where(fk => string.Equals(fk.ReferencedTable, State.TableName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matchingFks.Count == 1)
+                AutoSelectForeignKey(matchingFks[0]);
+        }
+
+        await Task.CompletedTask;
+    }
+
     private async Task OnChildTableChanged(ChangeEventArgs e)
     {
         if (_selected is null || e.Value is not string tableName) return;
@@ -646,18 +709,21 @@
 
             if (_childTableDef is not null)
             {
-                // Auto-select FK if exactly one references the parent table
-                var matchingFks = _childTableDef.ForeignKeys
-                    .Where(fk => string.Equals(fk.ReferencedTable, State.TableName, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (matchingFks.Count == 1)
+                if (!IsStandaloneDataGrid())
                 {
-                    AutoSelectForeignKey(matchingFks[0]);
+                    // Auto-select FK if exactly one references the parent table
+                    var matchingFks = _childTableDef.ForeignKeys
+                        .Where(fk => string.Equals(fk.ReferencedTable, State.TableName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    if (matchingFks.Count == 1)
+                    {
+                        AutoSelectForeignKey(matchingFks[0]);
+                    }
                 }
 
-                // Auto-select all non-PK columns as visible
+                // Related grids keep PKs hidden by default; standalone grids show the mapped table as-is.
                 var allCols = _childTableDef.Fields
-                    .Where(f => !_childTableDef.PrimaryKey.Contains(f.Name))
+                    .Where(f => IsStandaloneDataGrid() || !_childTableDef.PrimaryKey.Contains(f.Name))
                     .Select(f => (object?)f.Name)
                     .ToArray();
                 OnPropChanged(PropVisibleColumns, allCols);
@@ -808,6 +874,9 @@
             _commandArgumentError = $"Invalid arguments JSON: {ex.Message}";
         }
     }
+
+    private bool IsStandaloneDataGrid()
+        => string.Equals(GetProp(PropDataGridMode, "related"), "standalone", StringComparison.OrdinalIgnoreCase);
 
     private bool ShouldRenderMissingCommand(string commandName)
         => !string.IsNullOrWhiteSpace(commandName)

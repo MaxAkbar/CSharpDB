@@ -1,8 +1,10 @@
+@using System.Globalization
+@using System.Text.Json
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Primitives
 @inject DbCommandRegistry Commands
 
-<div class="form-renderer" style="position: relative; min-height: 500px;">
+<div class="@GetRendererClass()" style="@GetRendererStyle()">
     @foreach (var control in Form.Controls)
     {
         var c = control;
@@ -11,7 +13,7 @@
         var hasError = fieldName is not null && ValidationErrors?.ContainsKey(fieldName) == true;
         var errorMsg = hasError ? ValidationErrors![fieldName!] : null;
         var inputClass = hasError ? "fr-input fr-field-error" : "fr-input";
-        <div style="@($"position: absolute; left: {c.Rect.X}px; top: {c.Rect.Y}px; width: {c.Rect.Width}px; height: {c.Rect.Height}px;")">
+        <div class="@GetControlClass(c)" style="@GetControlStyle(c)">
             @switch (c.ControlType)
             {
                 case "label":
@@ -154,28 +156,45 @@
                     </button>
                     break;
                 case "datagrid":
+                    var dgMode = GetProp(c, "dataGridMode", "related");
+                    var dgIsStandalone = string.Equals(dgMode, "standalone", StringComparison.OrdinalIgnoreCase);
                     var dgChildTable = GetProp(c, "childTable", "");
                     var dgFkField = GetProp(c, "foreignKeyField", "");
                     var dgPkField = GetProp(c, "parentKeyField", "");
-                    var dgColumns = GetListProp(c, "visibleColumns");
+                    var dgTableDefinition = ChildFormTableDefinitions?.GetValueOrDefault(dgChildTable);
+                    var dgColumns = GetDataGridVisibleColumns(c, dgTableDefinition);
                     var dgAllowAdd = GetBoolProp(c, "allowAdd");
                     var dgAllowEdit = GetBoolProp(c, "allowEdit");
                     var dgAllowDelete = GetBoolProp(c, "allowDelete");
                     var parentPkValue = GetFieldObjectValue(dgPkField);
 
-                    @if (!string.IsNullOrEmpty(dgChildTable) && !string.IsNullOrEmpty(dgFkField) && parentPkValue is not null)
+                    @if (!string.IsNullOrEmpty(dgChildTable) && dgIsStandalone)
                     {
                         <ChildDataGrid ChildTableName="@dgChildTable"
-                                       ForeignKeyField="@dgFkField"
-                                       ParentKeyValue="@parentPkValue"
+                                       ForeignKeyField=""
+                                       ParentKeyValue="null"
+                                       IsStandalone="true"
                                        VisibleColumns="dgColumns"
                                        AllowAdd="dgAllowAdd"
                                        AllowEdit="dgAllowEdit"
                                        AllowDelete="dgAllowDelete"
-                                       ChildFormTableDefinition="@(ChildFormTableDefinitions?.GetValueOrDefault(dgChildTable))"
+                                       ChildFormTableDefinition="dgTableDefinition"
                                        OnRowsChanged="OnChildRowsChanged" />
                     }
-                    else if (parentPkValue is null && !string.IsNullOrEmpty(dgChildTable))
+                    else if (!string.IsNullOrEmpty(dgChildTable) && !string.IsNullOrEmpty(dgFkField) && parentPkValue is not null)
+                    {
+                        <ChildDataGrid ChildTableName="@dgChildTable"
+                                       ForeignKeyField="@dgFkField"
+                                       ParentKeyValue="@parentPkValue"
+                                       IsStandalone="false"
+                                       VisibleColumns="dgColumns"
+                                       AllowAdd="dgAllowAdd"
+                                       AllowEdit="dgAllowEdit"
+                                       AllowDelete="dgAllowDelete"
+                                       ChildFormTableDefinition="dgTableDefinition"
+                                       OnRowsChanged="OnChildRowsChanged" />
+                    }
+                    else if (!dgIsStandalone && parentPkValue is null && !string.IsNullOrEmpty(dgChildTable))
                     {
                         <div class="fr-datagrid-placeholder">Save the parent record first to see child records.</div>
                     }
@@ -226,6 +245,160 @@
     [Parameter] public Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? OnBuiltInAction { get; set; }
 
     private readonly HashSet<string> _executingCommandButtons = [];
+    private const string LayoutModeElastic = "elastic";
+    private const double DesktopCanvasWidth = 1200;
+    private const double TabletCanvasWidth = 768;
+
+    private bool IsElasticLayout
+        => string.Equals(Form.Layout.LayoutMode, LayoutModeElastic, StringComparison.OrdinalIgnoreCase);
+
+    private string GetRendererClass()
+        => IsElasticLayout
+            ? "form-renderer form-renderer-elastic"
+            : "form-renderer form-renderer-fixed";
+
+    private string GetRendererStyle()
+        => FormattableString.Invariant($"--fr-canvas-height: {GetCanvasHeight()}px;");
+
+    private string GetControlClass(ControlDefinition c)
+    {
+        List<string> classes = ["fr-control", $"fr-control-{c.ControlType}"];
+
+        if (!IsVisibleAtBreakpoint(c, "mobile"))
+            classes.Add("fr-hidden-mobile");
+        if (!IsVisibleAtBreakpoint(c, "tablet"))
+            classes.Add("fr-hidden-tablet");
+
+        return string.Join(" ", classes);
+    }
+
+    private string GetControlStyle(ControlDefinition c)
+    {
+        Rect desktop = c.Rect;
+        Rect tablet = GetEffectiveRect(c, "tablet");
+        int desktopSpan = GetGridSpan(desktop, 12, DesktopCanvasWidth);
+        int tabletSpan = GetGridSpan(tablet, 8, TabletCanvasWidth);
+
+        return FormattableString.Invariant(
+            $"--fr-left: {desktop.X}px; --fr-top: {desktop.Y}px; --fr-width: {desktop.Width}px; --fr-height: {desktop.Height}px; --fr-stack-order: {GetStackOrder(c)}; --fr-grid-span: {desktopSpan}; --fr-tablet-span: {tabletSpan};");
+    }
+
+    private double GetCanvasHeight()
+    {
+        double bottom = Form.Controls.Count == 0
+            ? 500
+            : Form.Controls.Max(control => control.Rect.Y + control.Rect.Height) + 24;
+        return Math.Max(500, bottom);
+    }
+
+    private int GetStackOrder(ControlDefinition c)
+    {
+        var ordered = Form.Controls
+            .Select((control, index) => new
+            {
+                Control = control,
+                Index = index,
+                Rect = GetEffectiveRect(control, "mobile"),
+            })
+            .OrderBy(item => item.Rect.Y)
+            .ThenBy(item => item.Rect.X)
+            .ThenBy(item => item.Index)
+            .ToList();
+
+        int order = ordered.FindIndex(item => string.Equals(item.Control.ControlId, c.ControlId, StringComparison.Ordinal));
+        return order < 0 ? 0 : order;
+    }
+
+    private static int GetGridSpan(Rect rect, int columns, double canvasWidth)
+    {
+        if (canvasWidth <= 0)
+            return columns;
+
+        int span = (int)Math.Ceiling(Math.Max(1, rect.Width) / canvasWidth * columns);
+        return Math.Clamp(span, 1, columns);
+    }
+
+    private static Rect GetEffectiveRect(ControlDefinition c, string breakpoint)
+    {
+        if (string.Equals(breakpoint, "desktop", StringComparison.OrdinalIgnoreCase) || c.RendererHints is null)
+            return c.Rect;
+
+        string key = $"bp:{breakpoint}";
+        if (!c.RendererHints.TryGetValue(key, out object? hintObj) || hintObj is null)
+            return c.Rect;
+
+        if (hintObj is JsonElement json && json.ValueKind == JsonValueKind.Object)
+        {
+            double x = GetJsonDouble(json, "x", c.Rect.X);
+            double y = GetJsonDouble(json, "y", c.Rect.Y);
+            double width = GetJsonDouble(json, "width", c.Rect.Width);
+            double height = GetJsonDouble(json, "height", c.Rect.Height);
+            return new Rect(x, y, width, height);
+        }
+
+        if (hintObj is IReadOnlyDictionary<string, object?> dict)
+        {
+            double x = GetDictionaryDouble(dict, "x", c.Rect.X);
+            double y = GetDictionaryDouble(dict, "y", c.Rect.Y);
+            double width = GetDictionaryDouble(dict, "width", c.Rect.Width);
+            double height = GetDictionaryDouble(dict, "height", c.Rect.Height);
+            return new Rect(x, y, width, height);
+        }
+
+        return c.Rect;
+    }
+
+    private static bool IsVisibleAtBreakpoint(ControlDefinition c, string breakpoint)
+    {
+        if (string.Equals(breakpoint, "desktop", StringComparison.OrdinalIgnoreCase) || c.RendererHints is null)
+            return true;
+
+        string key = $"bp:{breakpoint}";
+        if (!c.RendererHints.TryGetValue(key, out object? hintObj) || hintObj is null)
+            return true;
+
+        if (hintObj is JsonElement json && json.ValueKind == JsonValueKind.Object)
+            return !json.TryGetProperty("visible", out JsonElement visible) || visible.GetBoolean();
+
+        if (hintObj is IReadOnlyDictionary<string, object?> dict && dict.TryGetValue("visible", out object? value))
+            return ReadBoolean(value, fallback: true);
+
+        return true;
+    }
+
+    private static double GetJsonDouble(JsonElement json, string propertyName, double fallback)
+        => json.TryGetProperty(propertyName, out JsonElement property) && property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out double value)
+            ? value
+            : fallback;
+
+    private static double GetDictionaryDouble(IReadOnlyDictionary<string, object?> dict, string key, double fallback)
+    {
+        if (!dict.TryGetValue(key, out object? value) || value is null)
+            return fallback;
+
+        return value switch
+        {
+            double d => d,
+            float f => f,
+            decimal m => (double)m,
+            int i => i,
+            long l => l,
+            JsonElement json when json.ValueKind == JsonValueKind.Number && json.TryGetDouble(out double d) => d,
+            _ when double.TryParse(value.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) => parsed,
+            _ => fallback,
+        };
+    }
+
+    private static bool ReadBoolean(object? value, bool fallback)
+    {
+        return value switch
+        {
+            bool b => b,
+            JsonElement json when json.ValueKind is JsonValueKind.True or JsonValueKind.False => json.GetBoolean(),
+            _ when bool.TryParse(value?.ToString(), out bool parsed) => parsed,
+            _ => fallback,
+        };
+    }
 
     private string GetFieldValue(string? fieldName)
     {
@@ -520,6 +693,17 @@
                 return je.EnumerateArray().Select(e => e.GetString() ?? "").ToList();
         }
         return [];
+    }
+
+    private static List<string> GetDataGridVisibleColumns(ControlDefinition control, FormTableDefinition? tableDefinition)
+    {
+        List<string> configuredColumns = GetListProp(control, "visibleColumns");
+        if (configuredColumns.Count > 0 || tableDefinition is null)
+            return configuredColumns;
+
+        return tableDefinition.Fields
+            .Select(field => field.Name)
+            .ToList();
     }
 
     private static bool GetBoolProp(ControlDefinition c, string key)

@@ -15,12 +15,18 @@
              width="24"
              height="24" />
         <span class="titlebar-brand">CSharpDB Studio</span>
-        <span class="titlebar-dbname">@("\u2014") @DbClient.DataSource</span>
     </div>
+    <button class="db-switcher" @onclick="OpenDatabase" title="Switch database">
+        <i class="bi bi-database"></i>
+        <span>@CurrentDatabaseName</span>
+        <i class="bi bi-caret-down-fill"></i>
+    </button>
+    <button class="palette-launcher" @onclick="OpenCommandPalette" title="Command Palette (Ctrl+K)">
+        <i class="bi bi-search"></i>
+        <span>Search anything...</span>
+        <span class="kbd">Ctrl K</span>
+    </button>
     <div class="titlebar-toolbar">
-        <button class="titlebar-action-btn" @onclick="OpenDatabase" title="Open Database">
-            <i class="bi bi-folder2-open"></i> Open Database
-        </button>
         <button class="titlebar-action-btn" @onclick="() => TabManager.OpenQueryTab()" title="New Query (Ctrl+N)">
             <i class="bi bi-plus"></i> New Query
         </button>
@@ -60,6 +66,26 @@
 @code {
     [Parameter] public EventCallback OnToggleSidebar { get; set; }
     [Parameter] public EventCallback OnShowShortcuts { get; set; }
+    [Parameter] public EventCallback OnOpenCommandPalette { get; set; }
+
+    private string CurrentDatabaseName
+    {
+        get
+        {
+            string source = DbHolder.DataSource ?? DbClient.DataSource ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(source))
+                return "Open database";
+
+            try
+            {
+                return Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            }
+            catch
+            {
+                return source;
+            }
+        }
+    }
 
     protected override void OnInitialized()
     {
@@ -70,6 +96,7 @@
     private async Task ToggleTheme() => await Theme.ToggleAsync();
     private async Task ToggleSidebar() => await OnToggleSidebar.InvokeAsync();
     private async Task ShowShortcuts() => await OnShowShortcuts.InvokeAsync();
+    private async Task OpenCommandPalette() => await OnOpenCommandPalette.InvokeAsync();
 
     private async Task OpenDatabase()
     {

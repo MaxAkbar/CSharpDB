@@ -135,6 +135,42 @@ public sealed class DesignerStateTests
     }
 
     [Fact]
+    public void SetLayoutMode_UpdatesSavedLayout()
+    {
+        var state = new DesignerState();
+        state.LoadForm(CreateForm());
+
+        state.SetLayoutMode("elastic");
+
+        FormDefinition saved = state.ToFormDefinition();
+        Assert.Equal("elastic", saved.Layout.LayoutMode);
+    }
+
+    [Fact]
+    public void SetFormName_TrimsAndPersistsName()
+    {
+        var state = new DesignerState();
+        state.LoadForm(CreateForm());
+
+        state.SetFormName("  Customer Entry  ");
+
+        FormDefinition saved = state.ToFormDefinition();
+        Assert.Equal("Customer Entry", saved.Name);
+    }
+
+    [Fact]
+    public void SetFormName_BlankNameFallsBackToUntitled()
+    {
+        var state = new DesignerState();
+        state.LoadForm(CreateForm());
+
+        state.SetFormName("   ");
+
+        FormDefinition saved = state.ToFormDefinition();
+        Assert.Equal("Untitled Form", saved.Name);
+    }
+
+    [Fact]
     public void UpdateEventBindings_ReplacesFormLevelBindings()
     {
         var state = new DesignerState();

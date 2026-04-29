@@ -6,7 +6,9 @@
 @implements IDisposable
 
 <div class="app-root">
-    <TitleBar OnToggleSidebar="ToggleSidebar" OnShowShortcuts="ShowShortcuts" />
+    <TitleBar OnToggleSidebar="ToggleSidebar"
+              OnShowShortcuts="ShowShortcuts"
+              OnOpenCommandPalette="OpenCommandPalette" />
     <div class="app-container">
         @if (_sidebarVisible)
         {
@@ -82,9 +84,11 @@
 
 <ToastContainer />
 <ConfirmModal />
+<CommandPalette @bind-Visible="_commandPaletteVisible" />
 
 @code {
     private bool _sidebarVisible = true;
+    private bool _commandPaletteVisible;
     private DotNetObjectReference<MainLayout>? _dotNetRef;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -112,6 +116,9 @@
             case "ToggleTheme":
                 await Theme.ToggleAsync();
                 break;
+            case "OpenCommandPalette":
+                OpenCommandPalette();
+                break;
             case "CloseTab":
                 if (TabManager.ActiveTab?.Closable == true)
                     TabManager.CloseTab(TabManager.ActiveTab.Id);
@@ -129,11 +136,17 @@
         StateHasChanged();
     }
 
+    private void OpenCommandPalette()
+    {
+        _commandPaletteVisible = true;
+        StateHasChanged();
+    }
+
     private async Task ShowShortcuts()
     {
         await Modal.ConfirmAsync(
             "Keyboard Shortcuts",
-            "Ctrl+N \u2014 New query tab\nCtrl+B \u2014 Toggle sidebar\nCtrl+Enter \u2014 Run query\nCtrl+Shift+L \u2014 Toggle theme\nCtrl+W \u2014 Close tab\nDouble-click \u2014 Edit cell",
+            "Ctrl+K - Command palette\nCtrl+N - New query tab\nCtrl+B - Toggle sidebar\nCtrl+Enter - Run query\nCtrl+Shift+L - Toggle theme\nCtrl+W - Close tab\nDouble-click - Edit cell",
             "OK");
     }
 

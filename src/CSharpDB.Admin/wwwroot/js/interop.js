@@ -7,6 +7,24 @@ window.themeInterop = {
     }
 };
 
+window.fileInterop = {
+    downloadText: (fileName, contentType, content) => {
+        const blob = new Blob([content || ''], { type: contentType || 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName || 'export.txt';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+};
+
+window.clipboardInterop = {
+    writeText: (text) => navigator.clipboard.writeText(text || '')
+};
+
 // Keyboard shortcut listener - invokes .NET methods
 window.keyboardInterop = {
     _dotNetRef: null,
@@ -34,6 +52,11 @@ window.keyboardInterop = {
         else if (e.ctrlKey && !e.shiftKey && e.key === 'n') {
             e.preventDefault();
             ref.invokeMethodAsync('OnKeyboardShortcut', 'NewQuery');
+        }
+        // Ctrl+K: command palette
+        else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+            e.preventDefault();
+            ref.invokeMethodAsync('OnKeyboardShortcut', 'OpenCommandPalette');
         }
         // Ctrl+B: Toggle sidebar
         else if (e.ctrlKey && e.key === 'b') {

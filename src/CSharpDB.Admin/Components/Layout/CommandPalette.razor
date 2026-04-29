@@ -1,0 +1,257 @@
+@inject ICSharpDbClient DbClient
+@inject IFormRepository FormRepository
+@inject IReportRepository ReportRepository
+@inject TabManagerService TabManager
+@inject DatabaseChangeService Changes
+@inject IJSRuntime JS
+@implements IDisposable
+
+@if (Visible)
+{
+    <div class="command-palette-backdrop" @onclick="CloseAsync">
+        <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" @onclick:stopPropagation>
+            <div class="command-palette-search">
+                <i class="bi bi-search"></i>
+                <input id="admin-command-palette-search"
+                       value="@_query"
+                       @oninput="OnQueryChanged"
+                       @onkeydown="HandleKeyDown"
+                       placeholder="Search commands, tables, forms, reports..." />
+                <span class="kbd">Esc</span>
+            </div>
+
+            <div class="command-palette-body">
+                @if (_loading)
+                {
+                    <div class="command-palette-empty">Loading commands...</div>
+                }
+                else if (FilteredItems.Count == 0)
+                {
+                    <div class="command-palette-empty">No matching commands</div>
+                }
+                else
+                {
+                    @foreach (PaletteItem item in FilteredItems)
+                    {
+                        <button class="command-palette-item" @onclick="() => ExecuteAsync(item)">
+                            <span class="command-palette-icon @item.IconClass"><i class="bi @item.Icon"></i></span>
+                            <span class="command-palette-copy">
+                                <strong>@item.Title</strong>
+                                <small>@item.Subtitle</small>
+                            </span>
+                            <span class="command-palette-kind">@item.Kind</span>
+                        </button>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
+
+    private readonly List<PaletteItem> _items = [];
+    private string _query = string.Empty;
+    private bool _loading;
+    private bool _loaded;
+
+    private IReadOnlyList<PaletteItem> FilteredItems
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_query))
+                return _items.Take(32).ToList();
+
+            string query = _query.Trim();
+            return _items
+                .Where(item => item.Title.Contains(query, StringComparison.OrdinalIgnoreCase)
+                               || item.Subtitle.Contains(query, StringComparison.OrdinalIgnoreCase)
+                               || item.Kind.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .Take(32)
+                .ToList();
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Visible && !_loaded && !_loading)
+            await LoadItemsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Visible)
+        {
+            try { await JS.InvokeVoidAsync("editorInterop.focus", "admin-command-palette-search"); }
+            catch { }
+        }
+    }
+
+    private async Task LoadItemsAsync()
+    {
+        _loading = true;
+        try
+        {
+            _items.Clear();
+            AddCoreCommands();
+
+            IReadOnlyCollection<string> tables = await DbClient.GetTableNamesAsync();
+            foreach (string tableName in tables.Where(static name => !name.StartsWith("_", StringComparison.Ordinal)).OrderBy(name => name))
+            {
+                string captured = tableName;
+                _items.Add(new PaletteItem(
+                    "Table",
+                    captured,
+                    "Open table data",
+                    "bi-table",
+                    "icon-table",
+                    () => { TabManager.OpenTableTab(captured); return Task.CompletedTask; }));
+                _items.Add(new PaletteItem(
+                    "Schema",
+                    $"Design {captured}",
+                    "Open table schema",
+                    "bi-file-earmark-code",
+                    "icon-system",
+                    () => { TabManager.OpenTableSchemaTab(captured); return Task.CompletedTask; }));
+            }
+
+            IReadOnlyCollection<string> views = await DbClient.GetViewNamesAsync();
+            foreach (string viewName in views.OrderBy(name => name))
+            {
+                string captured = viewName;
+                _items.Add(new PaletteItem(
+                    "View",
+                    captured,
+                    "Open view data",
+                    "bi-eye",
+                    "icon-view",
+                    () => { TabManager.OpenViewTab(captured); return Task.CompletedTask; }));
+            }
+
+            foreach (ProcedureDefinition procedure in (await DbClient.GetProceduresAsync()).OrderBy(procedure => procedure.Name))
+            {
+                string captured = procedure.Name;
+                _items.Add(new PaletteItem(
+                    "Procedure",
+                    captured,
+                    procedure.Description ?? "Open procedure",
+                    "bi-gear-wide-connected",
+                    "icon-trigger",
+                    () => { TabManager.OpenProcedureTab(captured); return Task.CompletedTask; }));
+            }
+
+            foreach (FormDefinition form in (await FormRepository.ListAsync()).OrderBy(form => form.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                FormDefinition captured = form;
+                _items.Add(new PaletteItem(
+                    "Form",
+                    captured.Name,
+                    $"Design form for {captured.TableName}",
+                    "bi-ui-checks-grid",
+                    "icon-form",
+                    () => { TabManager.OpenFormDesignerTab(captured.FormId, title: captured.Name); return Task.CompletedTask; }));
+                _items.Add(new PaletteItem(
+                    "Form",
+                    $"Open {captured.Name}",
+                    $"Data entry for {captured.TableName}",
+                    "bi-file-earmark-text",
+                    "icon-form",
+                    () => { TabManager.OpenFormEntryTab(captured.FormId, captured.Name); return Task.CompletedTask; }));
+            }
+
+            foreach (ReportDefinition report in (await ReportRepository.ListAsync()).OrderBy(report => report.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                ReportDefinition captured = report;
+                _items.Add(new PaletteItem(
+                    "Report",
+                    captured.Name,
+                    $"Design report from {captured.Source.Name}",
+                    "bi-file-earmark-richtext",
+                    "icon-report",
+                    () => { TabManager.OpenReportDesignerTab(captured.ReportId, title: captured.Name); return Task.CompletedTask; }));
+                _items.Add(new PaletteItem(
+                    "Report",
+                    $"Preview {captured.Name}",
+                    $"Render report from {captured.Source.Name}",
+                    "bi-printer",
+                    "icon-report",
+                    () => { TabManager.OpenReportPreviewTab(captured.ReportId, captured.Name); return Task.CompletedTask; }));
+            }
+
+            _loaded = true;
+        }
+        catch
+        {
+            _items.Clear();
+            AddCoreCommands();
+            _loaded = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void AddCoreCommands()
+    {
+        _items.Add(new PaletteItem("Command", "New Query", "Open a SQL editor", "bi-terminal", "icon-system", () => { TabManager.OpenQueryTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "New Table", "Open table designer", "bi-table", "icon-table", () => { TabManager.OpenTableDesignerTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "New Form", "Open form designer", "bi-ui-checks-grid", "icon-form", () => { TabManager.OpenFormDesignerTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "New Report", "Open report designer", "bi-file-earmark-richtext", "icon-report", () => { TabManager.OpenReportDesignerTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "New Procedure", "Open procedure editor", "bi-gear-wide-connected", "icon-trigger", () => { TabManager.OpenNewProcedureTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "New Pipeline", "Open pipeline builder", "bi-diagram-3", "icon-view", () => { TabManager.OpenPipelineTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Storage Inspector", "Open storage diagnostics", "bi-hdd-stack", "icon-system", () => { TabManager.OpenStorageTab(); return Task.CompletedTask; }));
+    }
+
+    private Task OnQueryChanged(ChangeEventArgs e)
+    {
+        _query = e.Value?.ToString() ?? string.Empty;
+        return Task.CompletedTask;
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+            await CloseAsync();
+    }
+
+    private async Task ExecuteAsync(PaletteItem item)
+    {
+        await item.Execute();
+        await CloseAsync();
+    }
+
+    private async Task CloseAsync()
+    {
+        _query = string.Empty;
+        await VisibleChanged.InvokeAsync(false);
+    }
+
+    private void OnChanged()
+    {
+        _loaded = false;
+        if (Visible)
+            _ = InvokeAsync(LoadItemsAsync);
+    }
+
+    protected override void OnInitialized()
+    {
+        Changes.Changed += OnChanged;
+    }
+
+    public void Dispose()
+    {
+        Changes.Changed -= OnChanged;
+    }
+
+    private sealed record PaletteItem(
+        string Kind,
+        string Title,
+        string Subtitle,
+        string Icon,
+        string IconClass,
+        Func<Task> Execute);
+
+}

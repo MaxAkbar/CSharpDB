@@ -53,6 +53,28 @@ public class DesignerState
     public double GridSize => Layout.GridSize;
     public bool SnapToGrid => Layout.SnapToGrid;
 
+    public void SetLayoutMode(string layoutMode)
+    {
+        if (string.IsNullOrWhiteSpace(layoutMode) || string.Equals(Layout.LayoutMode, layoutMode, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        Layout = Layout with { LayoutMode = layoutMode };
+        NotifyChanged();
+    }
+
+    public void SetFormName(string? formName)
+    {
+        string normalized = string.IsNullOrWhiteSpace(formName)
+            ? "Untitled Form"
+            : formName.Trim();
+
+        if (string.Equals(FormName, normalized, StringComparison.Ordinal))
+            return;
+
+        FormName = normalized;
+        NotifyChanged();
+    }
+
     public double Snap(double v)
     {
         if (!SnapToGrid) return v;
