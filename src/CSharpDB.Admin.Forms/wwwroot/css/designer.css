@@ -1683,6 +1683,15 @@
 .data-entry-layout {
     background: var(--fd-bg-primary);
 }
+.tce-tab-entry,
+.tce-tab-body {
+    background: var(--fd-bg-secondary);
+    color: var(--fd-text);
+}
+
+.tce-child-tabs {
+    border-left-color: var(--fd-border-light);
+}
 
 .designer-toolbar,
 .de-toolbar,
@@ -1786,6 +1795,33 @@
     background: var(--fd-bg-elevated);
     color: var(--fd-text);
     border-color: var(--fd-border);
+}
+.tce-field input[type="checkbox"] {
+    accent-color: var(--fd-accent);
+}
+
+.tce-field select option {
+    background: var(--fd-bg-elevated);
+    color: var(--fd-text);
+}
+
+.tce-toggle {
+    color: var(--fd-text-secondary);
+}
+
+.tce-toggle:hover {
+    color: var(--fd-text);
+    background: var(--fd-bg-hover);
+}
+
+.tce-btn-add {
+    background: var(--fd-accent-soft);
+    border-color: color-mix(in srgb, var(--fd-accent) 42%, var(--fd-border));
+    color: var(--fd-accent);
+}
+
+.tce-btn-add:hover {
+    background: color-mix(in srgb, var(--fd-accent-soft) 72%, var(--fd-bg-hover));
 }
 
 .designer-toolbar button:hover,
