@@ -215,6 +215,44 @@ public sealed class FormRendererCommandButtonTests
         Assert.Equal(DbActionKind.NextRecord, captured!.Kind);
     }
 
+    [Fact]
+    public async Task CommandButton_SkipsBuiltInFormActionWhenConditionIsFalse()
+    {
+        bool invoked = false;
+        string? error = null;
+        ControlDefinition button = new(
+            "button1",
+            "commandButton",
+            new Rect(10, 20, 120, 34),
+            null,
+            new PropertyBag(new Dictionary<string, object?> { ["text"] = "Next" }),
+            null,
+            EventBindings:
+            [
+                new ControlEventBinding(
+                    ControlEventKind.OnClick,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.NextRecord, Condition: "Status = 'Archived'"),
+                    ])),
+            ]);
+        var renderer = CreateRenderer(DbCommandRegistry.Empty, CreateForm(button), message => error = message);
+        SetProperty(
+            renderer,
+            nameof(FormRenderer.OnBuiltInAction),
+            new Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>((_, _) =>
+            {
+                invoked = true;
+                return Task.FromResult(FormEventDispatchResult.Success());
+            }));
+
+        await InvokeNonPublicAsync(renderer, "InvokeCommandButtonAsync", button);
+
+        Assert.Null(error);
+        Assert.False(invoked);
+    }
+
     private static FormRenderer CreateRenderer(
         DbCommandRegistry commands,
         FormDefinition form,

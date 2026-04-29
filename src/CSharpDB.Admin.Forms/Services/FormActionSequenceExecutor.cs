@@ -71,6 +71,22 @@ internal static class FormActionSequenceExecutor
     {
         try
         {
+            if (!FormActionConditionEvaluator.TryEvaluate(
+                step.Condition,
+                record,
+                bindingArguments,
+                runtimeArguments,
+                step.Arguments,
+                out bool shouldRun,
+                out string? conditionError))
+            {
+                return FormEventDispatchResult.Failure(
+                    $"Form action '{step.Kind}' condition failed: {conditionError}");
+            }
+
+            if (!shouldRun)
+                return FormEventDispatchResult.Success();
+
             return step.Kind switch
             {
                 DbActionKind.RunCommand => await RunCommandAsync(sequence, step, stepIndex, commands, record, bindingArguments, runtimeArguments, metadata, ct),
@@ -213,6 +229,9 @@ internal static class FormActionSequenceExecutor
 
         if (!string.IsNullOrWhiteSpace(step.Target))
             result["actionTarget"] = step.Target;
+
+        if (!string.IsNullOrWhiteSpace(step.Condition))
+            result["actionCondition"] = step.Condition;
 
         return result;
     }

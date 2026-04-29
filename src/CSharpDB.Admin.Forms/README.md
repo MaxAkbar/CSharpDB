@@ -124,6 +124,11 @@ The built-in record actions run only in the rendered Forms data-entry runtime.
 Headless form event dispatch can still run command, field, message, and stop
 steps, but navigation and save/delete actions require a rendered form instance.
 
+Every action step can also store a simple condition such as `Status = 'Ready'`,
+`Amount > 0`, or `IsActive`. False conditions skip that step; malformed
+conditions fail through the normal action failure path and honor
+`StopOnFailure`.
+
 `DbFormRepository` regenerates `Automation` on save/load. The manifest records
 trusted command and scalar-function names used by form events, command buttons,
 selected-control events, action sequences, and computed formulas so exported

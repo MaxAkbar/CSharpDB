@@ -196,6 +196,86 @@ public sealed class DefaultFormEventDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_ActionSequenceConditionsSkipAndRunSteps()
+    {
+        DbCommandContext? captured = null;
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("AuditReady", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+
+        var dispatcher = new DefaultFormEventDispatcher(commands);
+        var form = CreateForm([
+            new FormEventBinding(
+                FormEventKind.BeforeUpdate,
+                string.Empty,
+                ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(
+                            DbActionKind.SetFieldValue,
+                            Target: "Status",
+                            Value: "Skipped",
+                            Condition: "Name = 'Not Alice'"),
+                        new DbActionStep(
+                            DbActionKind.SetFieldValue,
+                            Target: "Status",
+                            Value: "Ready",
+                            Condition: "Name = 'Alice'"),
+                        new DbActionStep(
+                            DbActionKind.RunCommand,
+                            CommandName: "AuditReady",
+                            Condition: "Status = 'Ready'"),
+                    ])),
+        ]);
+        var record = new Dictionary<string, object?> { ["Id"] = 7L, ["Name"] = "Alice", ["Status"] = "Draft" };
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.BeforeUpdate,
+            record,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Ready", record["Status"]);
+        Assert.NotNull(captured);
+        Assert.Equal("Ready", captured!.Arguments["Status"].AsText);
+        Assert.Equal("Status = 'Ready'", captured.Metadata["actionCondition"]);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ActionSequenceConditionFailureStopsByDefault()
+    {
+        var dispatcher = new DefaultFormEventDispatcher(DbCommandRegistry.Empty);
+        var form = CreateForm([
+            new FormEventBinding(
+                FormEventKind.BeforeUpdate,
+                string.Empty,
+                ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(
+                            DbActionKind.SetFieldValue,
+                            Target: "Status",
+                            Value: "Ready",
+                            Condition: "MissingField = 'Ready'"),
+                    ])),
+        ]);
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.BeforeUpdate,
+            new Dictionary<string, object?> { ["Id"] = 7L, ["Status"] = "Draft" },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("condition failed", result.Message);
+        Assert.Contains("MissingField", result.Message);
+    }
+
+    [Fact]
     public async Task DispatchAsync_ActionSequenceFailureStopsByDefault()
     {
         var commands = DbCommandRegistry.Empty;

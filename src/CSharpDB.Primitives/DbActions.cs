@@ -26,4 +26,5 @@ public sealed record DbActionStep(
     object? Value = null,
     string? Message = null,
     IReadOnlyDictionary<string, object?>? Arguments = null,
-    bool StopOnFailure = true);
+    bool StopOnFailure = true,
+    string? Condition = null);

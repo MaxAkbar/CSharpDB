@@ -451,6 +451,7 @@ var shipButton = existingButton with
                 new DbActionStep(
                     DbActionKind.RunCommand,
                     CommandName: "AuditOrderStatus",
+                    Condition: "Status = 'Shipped'",
                     Arguments: new Dictionary<string, object?>
                     {
                         ["source"] = "ship-button",
@@ -507,13 +508,34 @@ The Admin Forms property inspector exposes action sequences with a visual
 editor on form-level and selected-control event bindings. Designers can add a
 sequence, name it, add command, field, message, stop, and built-in record
 steps, reorder or remove steps, choose registered commands when available, and
-toggle per-step `StopOnFailure`. JSON editing remains only for optional binding
-or `RunCommand` step argument payloads.
+set per-step conditions and `StopOnFailure`. JSON editing remains only for
+optional binding or `RunCommand` step argument payloads.
 
 For `RunCommand`, command arguments are built from current record fields,
 binding arguments, runtime event arguments, and step arguments, with later
 sources overriding earlier ones. Command metadata includes the Forms metadata
-plus `actionKind`, `actionStep`, and optional `actionSequence`.
+plus `actionKind`, `actionStep`, optional `actionSequence`, and optional
+`actionCondition`.
+
+Every action step can include a `Condition`. Empty conditions run the step.
+False conditions skip only that step. Malformed conditions fail through the
+normal step failure path, so `StopOnFailure = false` can allow a later step to
+continue.
+
+Supported condition syntax is intentionally small:
+
+| Syntax | Example |
+| --- | --- |
+| Truthy value | `IsActive` |
+| Equality | `Status = 'Ready'` or `[Status] == "Ready"` |
+| Inequality | `Status <> 'Closed'` or `Status != 'Closed'` |
+| Numeric comparison | `Amount > 0`, `Quantity <= 10` |
+| Null comparison | `ClosedAt = null` |
+
+Condition values are resolved from current record fields, binding arguments,
+runtime event arguments, and step arguments using the same later-wins order as
+command arguments. A leading `=` is accepted for macro-style conditions, for
+example `=Status = 'Ready'`.
 
 When forms are saved through `DbFormRepository` or exported through
 `FormAutomationMetadata.NormalizeForExport(...)`, the definition's `automation`
@@ -531,9 +553,9 @@ form lifecycle dispatch can still run `SetFieldValue`, `ShowMessage`, `Stop`,
 and `RunCommand`, but it reports a failure if a sequence asks for rendered-form
 navigation or save/delete actions.
 
-V1 action sequences do not include conditions, loops, stored C# source,
-database-owned plugins, direct SQL/procedure execution actions, or remote
-delegate serialization.
+V1 action sequences do not include loops, stored C# source, database-owned
+plugins, direct SQL/procedure execution actions, or remote delegate
+serialization.
 
 ---
 

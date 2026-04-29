@@ -124,6 +124,14 @@
                 }
 
                 <div class="feb-field">
+                    <label>Condition</label>
+                    <input type="text"
+                           value="@(step.Condition ?? string.Empty)"
+                           placeholder="Status = 'Ready'"
+                           @onchange="@(e => UpdateCondition(idx, step, e.Value?.ToString()))" />
+                </div>
+
+                <div class="feb-field">
                     <label>
                         <input type="checkbox"
                                checked="@step.StopOnFailure"
@@ -235,6 +243,7 @@
         {
             Arguments = kind == DbActionKind.RunCommand ? step.Arguments : null,
             StopOnFailure = step.StopOnFailure,
+            Condition = step.Condition,
         };
         return ReplaceStep(index, updated);
     }
@@ -250,6 +259,9 @@
 
     private Task UpdateMessage(int index, DbActionStep step, string? message)
         => ReplaceStep(index, step with { Message = string.IsNullOrWhiteSpace(message) ? null : message });
+
+    private Task UpdateCondition(int index, DbActionStep step, string? condition)
+        => ReplaceStep(index, step with { Condition = string.IsNullOrWhiteSpace(condition) ? null : condition.Trim() });
 
     private Task UpdateStepStopOnFailure(int index, DbActionStep step, bool stopOnFailure)
         => ReplaceStep(index, step with { StopOnFailure = stopOnFailure });
