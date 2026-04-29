@@ -470,6 +470,7 @@ The action set is intentionally small and form-focused:
 | Action | Behavior |
 | --- | --- |
 | `RunCommand` | Invokes a host-registered trusted command by name. |
+| `RunActionSequence` | Invokes a reusable named form action sequence stored on the form definition. |
 | `SetFieldValue` | Updates a target field in the current mutable form record. |
 | `ShowMessage` | Sends a message when the current Forms surface provides a command/message callback. |
 | `Stop` | Ends the current sequence successfully. |
@@ -480,6 +481,42 @@ The action set is intentionally small and form-focused:
 | `PreviousRecord` | Moves the rendered form to the previous record. |
 | `NextRecord` | Moves the rendered form to the next record. |
 | `GoToRecord` | Navigates to a primary-key value from `Value`, `Arguments["value"]`, `Arguments["recordId"]`, `Arguments["primaryKey"]`, or the field named by `Target`. |
+
+Reusable action sequences are stored once on the form and invoked by name from
+form events, control events, or command buttons:
+
+```csharp
+var form = existingForm with
+{
+    ActionSequences =
+    [
+        new DbActionSequence(
+        [
+            new DbActionStep(DbActionKind.SetFieldValue, Target: "Status", Value: "Ready"),
+            new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditReady"),
+        ],
+        Name: "PrepareReadyStatus"),
+    ],
+    EventBindings =
+    [
+        new FormEventBinding(
+            FormEventKind.BeforeUpdate,
+            string.Empty,
+            ActionSequence: new DbActionSequence(
+            [
+                new DbActionStep(
+                    DbActionKind.RunActionSequence,
+                    SequenceName: "PrepareReadyStatus",
+                    Arguments: new Dictionary<string, object?> { ["source"] = "before-update" }),
+            ])),
+    ],
+};
+```
+
+`RunActionSequence` arguments become runtime arguments for the nested sequence,
+so nested `RunCommand` steps receive current record fields, binding arguments,
+caller-supplied sequence arguments, and their own step arguments. Recursive
+sequence loops fail with a nesting-limit error instead of running forever.
 
 Action sequences can be attached to form lifecycle bindings or selected-control
 bindings. A binding can contain only a command, only an action sequence, or a
@@ -506,10 +543,12 @@ var form = existingForm with
 
 The Admin Forms property inspector exposes action sequences with a visual
 editor on form-level and selected-control event bindings. Designers can add a
-sequence, name it, add command, field, message, stop, and built-in record
-steps, reorder or remove steps, choose registered commands when available, and
-set per-step conditions and `StopOnFailure`. JSON editing remains only for
-optional binding or `RunCommand` step argument payloads.
+sequence, name it, add command, reusable-sequence, field, message, stop, and
+built-in record steps, reorder or remove steps, choose registered commands or
+reusable sequences when available, and set per-step conditions and
+`StopOnFailure`. The form-level property inspector also includes a reusable
+action-sequence library editor. JSON editing remains only for optional binding,
+`RunCommand`, or `RunActionSequence` argument payloads.
 
 For `RunCommand`, command arguments are built from current record fields,
 binding arguments, runtime event arguments, and step arguments, with later
@@ -540,8 +579,9 @@ example `=Status = 'Ready'`.
 When forms are saved through `DbFormRepository` or exported through
 `FormAutomationMetadata.NormalizeForExport(...)`, the definition's `automation`
 metadata is regenerated from form events, command buttons, selected-control
-events, action-sequence `RunCommand` steps, and computed-control formulas.
-Older form JSON without automation metadata is backfilled when it is loaded.
+events, reusable action sequences, action-sequence `RunCommand` steps, and
+computed-control formulas. Older form JSON without automation metadata is
+backfilled when it is loaded.
 
 `SetFieldValue` can update mutable records in form lifecycle events such as
 `BeforeInsert` and `BeforeUpdate`, and it can update the current rendered record
@@ -826,4 +866,4 @@ V1 does not support:
 - Sending delegates over HTTP, gRPC, or pipeline package files.
 - Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.
 - Additional Access-style control events such as double-click, key, mouse, timer, and dirty/current events.
-- Richer macro/action scripts with conditions, loops, built-in navigation, built-in save/delete, direct SQL/procedure actions, or database-owned executable code.
+- Richer macro/action scripts with loops, direct SQL/procedure actions, conditional UI rules, or database-owned executable code.

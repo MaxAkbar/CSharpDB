@@ -247,6 +247,122 @@ public sealed class DefaultFormEventDispatcherTests
     }
 
     [Fact]
+    public async Task DispatchAsync_RunActionSequenceInvokesReusableSequence()
+    {
+        DbCommandContext? captured = null;
+        var commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("AuditPrepared", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+
+        var dispatcher = new DefaultFormEventDispatcher(commands);
+        var form = CreateForm(
+            [
+                new FormEventBinding(
+                    FormEventKind.BeforeUpdate,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(
+                            DbActionKind.RunActionSequence,
+                            SequenceName: "PrepareOrder",
+                            Arguments: new Dictionary<string, object?> { ["source"] = "event-binding" }),
+                    ],
+                    Name: "BeforeUpdateActions")),
+            ],
+            [
+                new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.SetFieldValue, Target: "Status", Value: "Ready"),
+                    new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditPrepared"),
+                ],
+                Name: "PrepareOrder"),
+            ]);
+        var record = new Dictionary<string, object?> { ["Id"] = 7L, ["Status"] = "Draft" };
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.BeforeUpdate,
+            record,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Ready", record["Status"]);
+        Assert.NotNull(captured);
+        Assert.Equal("AuditPrepared", captured!.CommandName);
+        Assert.Equal("Ready", captured.Arguments["Status"].AsText);
+        Assert.Equal("event-binding", captured.Arguments["source"].AsText);
+        Assert.Equal("PrepareOrder", captured.Metadata["actionSequence"]);
+        Assert.Equal("RunCommand", captured.Metadata["actionKind"]);
+        Assert.Equal("1", captured.Metadata["actionStep"]);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_RunActionSequenceFailsForMissingReusableSequence()
+    {
+        var dispatcher = new DefaultFormEventDispatcher(DbCommandRegistry.Empty);
+        var form = CreateForm([
+            new FormEventBinding(
+                FormEventKind.BeforeUpdate,
+                string.Empty,
+                ActionSequence: new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.RunActionSequence, SequenceName: "MissingSequence"),
+                ])),
+        ]);
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.BeforeUpdate,
+            new Dictionary<string, object?> { ["Id"] = 7L },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("Unknown form action sequence 'MissingSequence'", result.Message);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_RunActionSequenceStopsRecursiveLoops()
+    {
+        var dispatcher = new DefaultFormEventDispatcher(DbCommandRegistry.Empty);
+        var form = CreateForm(
+            [
+                new FormEventBinding(
+                    FormEventKind.BeforeUpdate,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.RunActionSequence, SequenceName: "A"),
+                    ])),
+            ],
+            [
+                new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.RunActionSequence, SequenceName: "B"),
+                ],
+                Name: "A"),
+                new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.RunActionSequence, SequenceName: "A"),
+                ],
+                Name: "B"),
+            ]);
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.BeforeUpdate,
+            new Dictionary<string, object?> { ["Id"] = 7L },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("nesting limit", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task DispatchAsync_ActionSequenceConditionFailureStopsByDefault()
     {
         var dispatcher = new DefaultFormEventDispatcher(DbCommandRegistry.Empty);
@@ -298,7 +414,9 @@ public sealed class DefaultFormEventDispatcherTests
         Assert.Contains("Unknown form command 'MissingCommand'", result.Message);
     }
 
-    private static FormDefinition CreateForm(IReadOnlyList<FormEventBinding> eventBindings)
+    private static FormDefinition CreateForm(
+        IReadOnlyList<FormEventBinding> eventBindings,
+        IReadOnlyList<DbActionSequence>? actionSequences = null)
         => new(
             "customers-form",
             "Customers Form",
@@ -307,5 +425,6 @@ public sealed class DefaultFormEventDispatcherTests
             SourceSchemaSignature: "customers:v1",
             Layout: new LayoutDefinition("absolute", 8, SnapToGrid: false, []),
             Controls: [],
-            EventBindings: eventBindings);
+            EventBindings: eventBindings,
+            ActionSequences: actionSequences);
 }

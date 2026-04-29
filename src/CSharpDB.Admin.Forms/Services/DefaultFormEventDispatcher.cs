@@ -72,6 +72,7 @@ public sealed class DefaultFormEventDispatcher(DbCommandRegistry commands) : IFo
                     binding.Arguments,
                     runtimeArguments: null,
                     metadata,
+                    reusableSequences: form.ActionSequences,
                     ct: ct);
 
                 if (!actionResult.Succeeded && binding.StopOnFailure)

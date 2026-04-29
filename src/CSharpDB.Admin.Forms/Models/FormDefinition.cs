@@ -12,4 +12,5 @@ public sealed record FormDefinition(
     IReadOnlyList<ControlDefinition> Controls,
     IReadOnlyDictionary<string, object?>? RendererHints = null,
     IReadOnlyList<FormEventBinding>? EventBindings = null,
-    DbAutomationMetadata? Automation = null);
+    DbAutomationMetadata? Automation = null,
+    IReadOnlyList<DbActionSequence>? ActionSequences = null);

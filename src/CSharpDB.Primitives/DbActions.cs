@@ -13,6 +13,7 @@ public enum DbActionKind
     PreviousRecord,
     NextRecord,
     GoToRecord,
+    RunActionSequence,
 }
 
 public sealed record DbActionSequence(
@@ -27,4 +28,5 @@ public sealed record DbActionStep(
     string? Message = null,
     IReadOnlyDictionary<string, object?>? Arguments = null,
     bool StopOnFailure = true,
-    string? Condition = null);
+    string? Condition = null,
+    string? SequenceName = null);

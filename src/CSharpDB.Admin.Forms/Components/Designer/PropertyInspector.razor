@@ -26,7 +26,13 @@
         <div class="pi-section">
             <div class="pi-section-label">Events</div>
             <FormEventBindingsEditor EventBindings="State.EventBindings"
+                                     ActionSequences="State.ActionSequences"
                                      EventBindingsChanged="OnEventBindingsChanged" />
+        </div>
+        <div class="pi-section">
+            <div class="pi-section-label">Reusable Actions</div>
+            <FormActionSequencesEditor ActionSequences="State.ActionSequences"
+                                       ActionSequencesChanged="OnActionSequencesChanged" />
         </div>
     }
     else
@@ -60,6 +66,7 @@
         <div class="pi-section">
             <div class="pi-section-label">Events</div>
             <ControlEventBindingsEditor EventBindings="@(_selected.EventBindings ?? [])"
+                                        ActionSequences="State.ActionSequences"
                                         EventBindingsChanged="OnControlEventBindingsChanged" />
         </div>
 
@@ -814,6 +821,12 @@
     private Task OnEventBindingsChanged(IReadOnlyList<FormEventBinding> bindings)
     {
         State.UpdateEventBindings(bindings);
+        return Task.CompletedTask;
+    }
+
+    private Task OnActionSequencesChanged(IReadOnlyList<DbActionSequence> sequences)
+    {
+        State.UpdateActionSequences(sequences);
         return Task.CompletedTask;
     }
 

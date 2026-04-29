@@ -71,6 +71,7 @@
             <div class="feb-field">
                 <label>Action Sequence</label>
                 <ActionSequenceEditor ActionSequence="binding.ActionSequence"
+                                      AvailableActionSequences="ActionSequences"
                                       ActionSequenceChanged="@(sequence => UpdateActionSequence(idx, binding, sequence))" />
             </div>
         </div>
@@ -86,6 +87,7 @@
 
 @code {
     [Parameter, EditorRequired] public IReadOnlyList<FormEventBinding> EventBindings { get; set; } = [];
+    [Parameter] public IReadOnlyList<DbActionSequence> ActionSequences { get; set; } = [];
     [Parameter] public EventCallback<IReadOnlyList<FormEventBinding>> EventBindingsChanged { get; set; }
 
     private readonly Dictionary<int, string> _argumentText = [];

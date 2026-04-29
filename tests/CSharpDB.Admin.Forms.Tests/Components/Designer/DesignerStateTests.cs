@@ -67,6 +67,74 @@ public sealed class DesignerStateTests
     }
 
     [Fact]
+    public void ToFormDefinition_PreservesReusableActionSequences()
+    {
+        var state = new DesignerState();
+        var form = CreateForm() with
+        {
+            EventBindings =
+            [
+                new FormEventBinding(
+                    FormEventKind.BeforeInsert,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.RunActionSequence, SequenceName: "PrepareRecord"),
+                    ])),
+            ],
+            ActionSequences =
+            [
+                new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.SetFieldValue, Target: "Status", Value: "Ready"),
+                    new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditPrepared"),
+                ],
+                Name: "PrepareRecord"),
+            ],
+        };
+
+        state.LoadForm(form);
+
+        FormDefinition saved = state.ToFormDefinition();
+
+        DbActionSequence reusable = Assert.Single(saved.ActionSequences!);
+        Assert.Equal("PrepareRecord", reusable.Name);
+        Assert.Equal(DbActionKind.SetFieldValue, reusable.Steps[0].Kind);
+        Assert.Equal("Status", reusable.Steps[0].Target);
+        Assert.Equal("Ready", reusable.Steps[0].Value);
+        Assert.Equal(DbActionKind.RunCommand, reusable.Steps[1].Kind);
+        Assert.Equal("AuditPrepared", reusable.Steps[1].CommandName);
+
+        FormEventBinding binding = Assert.Single(saved.EventBindings!);
+        Assert.Equal(DbActionKind.RunActionSequence, binding.ActionSequence!.Steps[0].Kind);
+        Assert.Equal("PrepareRecord", binding.ActionSequence.Steps[0].SequenceName);
+    }
+
+    [Fact]
+    public void UpdateActionSequences_ReplacesReusableActionSequences()
+    {
+        var state = new DesignerState();
+        state.LoadForm(CreateForm());
+
+        state.UpdateActionSequences(
+        [
+            new DbActionSequence(
+            [
+                new DbActionStep(DbActionKind.ShowMessage, Message: "Ready."),
+            ],
+            Name: "NotifyReady"),
+        ]);
+
+        FormDefinition saved = state.ToFormDefinition();
+
+        DbActionSequence sequence = Assert.Single(saved.ActionSequences!);
+        Assert.Equal("NotifyReady", sequence.Name);
+        DbActionStep step = Assert.Single(sequence.Steps);
+        Assert.Equal(DbActionKind.ShowMessage, step.Kind);
+        Assert.Equal("Ready.", step.Message);
+    }
+
+    [Fact]
     public void UpdateEventBindings_ReplacesFormLevelBindings()
     {
         var state = new DesignerState();

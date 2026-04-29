@@ -28,6 +28,14 @@ public static class FormAutomationMetadata
             AddActionSequence(builder, binding.ActionSequence, bindingLocation);
         }
 
+        foreach (DbActionSequence sequence in form.ActionSequences ?? [])
+        {
+            string sequenceLocation = string.IsNullOrWhiteSpace(sequence.Name)
+                ? "form.actionSequences.unnamed"
+                : $"form.actionSequences.{sequence.Name}";
+            AddActionSequence(builder, sequence, sequenceLocation);
+        }
+
         foreach (ControlDefinition control in form.Controls)
         {
             AddCommandButton(builder, control);

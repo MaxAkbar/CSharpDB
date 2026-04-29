@@ -7,6 +7,8 @@ namespace CSharpDB.Admin.Forms.Services;
 
 internal static class FormActionSequenceExecutor
 {
+    private const int MaxNestedActionSequenceDepth = 8;
+
     public static async Task<FormEventDispatchResult> ExecuteAsync(
         DbActionSequence sequence,
         DbCommandRegistry commands,
@@ -14,6 +16,7 @@ internal static class FormActionSequenceExecutor
         IReadOnlyDictionary<string, object?>? bindingArguments,
         IReadOnlyDictionary<string, object?>? runtimeArguments,
         IReadOnlyDictionary<string, string> metadata,
+        IReadOnlyList<DbActionSequence>? reusableSequences = null,
         Func<string, object?, Task>? setFieldValue = null,
         Func<string, Task>? showMessage = null,
         Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction = null,
@@ -23,6 +26,35 @@ internal static class FormActionSequenceExecutor
         ArgumentNullException.ThrowIfNull(commands);
         ArgumentNullException.ThrowIfNull(metadata);
 
+        return await ExecuteCoreAsync(
+            sequence,
+            commands,
+            record,
+            bindingArguments,
+            runtimeArguments,
+            metadata,
+            reusableSequences,
+            setFieldValue,
+            showMessage,
+            executeBuiltInFormAction,
+            ct,
+            depth: 0);
+    }
+
+    private static async Task<FormEventDispatchResult> ExecuteCoreAsync(
+        DbActionSequence sequence,
+        DbCommandRegistry commands,
+        IReadOnlyDictionary<string, object?>? record,
+        IReadOnlyDictionary<string, object?>? bindingArguments,
+        IReadOnlyDictionary<string, object?>? runtimeArguments,
+        IReadOnlyDictionary<string, string> metadata,
+        IReadOnlyList<DbActionSequence>? reusableSequences,
+        Func<string, object?, Task>? setFieldValue,
+        Func<string, Task>? showMessage,
+        Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
+        CancellationToken ct,
+        int depth)
+    {
         IReadOnlyList<DbActionStep> steps = sequence.Steps ?? [];
         string? lastMessage = null;
         for (int i = 0; i < steps.Count; i++)
@@ -37,10 +69,12 @@ internal static class FormActionSequenceExecutor
                 bindingArguments,
                 runtimeArguments,
                 metadata,
+                reusableSequences,
                 setFieldValue,
                 showMessage,
                 executeBuiltInFormAction,
-                ct);
+                ct,
+                depth);
 
             if (!result.Succeeded && step.StopOnFailure)
                 return result;
@@ -64,10 +98,12 @@ internal static class FormActionSequenceExecutor
         IReadOnlyDictionary<string, object?>? bindingArguments,
         IReadOnlyDictionary<string, object?>? runtimeArguments,
         IReadOnlyDictionary<string, string> metadata,
+        IReadOnlyList<DbActionSequence>? reusableSequences,
         Func<string, object?, Task>? setFieldValue,
         Func<string, Task>? showMessage,
         Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
-        CancellationToken ct)
+        CancellationToken ct,
+        int depth)
     {
         try
         {
@@ -93,6 +129,19 @@ internal static class FormActionSequenceExecutor
                 DbActionKind.SetFieldValue => await SetFieldValueAsync(step, record, setFieldValue),
                 DbActionKind.ShowMessage => await ShowMessageAsync(step, showMessage),
                 DbActionKind.Stop => FormEventDispatchResult.Success(ReadMessage(step)),
+                DbActionKind.RunActionSequence => await RunActionSequenceAsync(
+                    step,
+                    commands,
+                    record,
+                    bindingArguments,
+                    runtimeArguments,
+                    metadata,
+                    reusableSequences,
+                    setFieldValue,
+                    showMessage,
+                    executeBuiltInFormAction,
+                    ct,
+                    depth),
                 DbActionKind.NewRecord or
                 DbActionKind.SaveRecord or
                 DbActionKind.DeleteRecord or
@@ -169,6 +218,57 @@ internal static class FormActionSequenceExecutor
         }
     }
 
+    private static async Task<FormEventDispatchResult> RunActionSequenceAsync(
+        DbActionStep step,
+        DbCommandRegistry commands,
+        IReadOnlyDictionary<string, object?>? record,
+        IReadOnlyDictionary<string, object?>? bindingArguments,
+        IReadOnlyDictionary<string, object?>? runtimeArguments,
+        IReadOnlyDictionary<string, string> metadata,
+        IReadOnlyList<DbActionSequence>? reusableSequences,
+        Func<string, object?, Task>? setFieldValue,
+        Func<string, Task>? showMessage,
+        Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
+        CancellationToken ct,
+        int depth)
+    {
+        string? sequenceName = ReadSequenceName(step);
+        if (string.IsNullOrWhiteSpace(sequenceName))
+            return FormEventDispatchResult.Failure("RunActionSequence action requires a sequence name.");
+
+        if (depth >= MaxNestedActionSequenceDepth)
+            return FormEventDispatchResult.Failure(
+                $"Action sequence nesting limit exceeded while running '{sequenceName}'.");
+
+        IReadOnlyList<DbActionSequence> matches = (reusableSequences ?? [])
+            .Where(sequence => string.Equals(sequence.Name, sequenceName, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+
+        if (matches.Count == 0)
+            return FormEventDispatchResult.Failure($"Unknown form action sequence '{sequenceName}'.");
+
+        if (matches.Count > 1)
+            return FormEventDispatchResult.Failure($"Form action sequence name '{sequenceName}' is ambiguous.");
+
+        IReadOnlyDictionary<string, object?>? nestedRuntimeArguments =
+            MergeRuntimeArguments(runtimeArguments, step.Arguments);
+
+        return await ExecuteCoreAsync(
+            matches[0],
+            commands,
+            record,
+            bindingArguments,
+            nestedRuntimeArguments,
+            metadata,
+            reusableSequences,
+            setFieldValue,
+            showMessage,
+            executeBuiltInFormAction,
+            ct,
+            depth + 1);
+    }
+
     private static async Task<FormEventDispatchResult> SetFieldValueAsync(
         DbActionStep step,
         IReadOnlyDictionary<string, object?>? record,
@@ -233,7 +333,48 @@ internal static class FormActionSequenceExecutor
         if (!string.IsNullOrWhiteSpace(step.Condition))
             result["actionCondition"] = step.Condition;
 
+        string? sequenceName = ReadSequenceName(step);
+        if (!string.IsNullOrWhiteSpace(sequenceName))
+            result["actionSequenceTarget"] = sequenceName;
+
         return result;
+    }
+
+    private static string? ReadSequenceName(DbActionStep step)
+    {
+        if (!string.IsNullOrWhiteSpace(step.SequenceName))
+            return step.SequenceName.Trim();
+
+        if (!string.IsNullOrWhiteSpace(step.Target))
+            return step.Target.Trim();
+
+        if (step.Arguments is null)
+            return null;
+
+        foreach (string key in new[] { "sequenceName", "sequence", "name" })
+        {
+            if (step.Arguments.TryGetValue(key, out object? value))
+                return NormalizeValue(value)?.ToString();
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyDictionary<string, object?>? MergeRuntimeArguments(
+        IReadOnlyDictionary<string, object?>? runtimeArguments,
+        IReadOnlyDictionary<string, object?>? stepArguments)
+    {
+        if (stepArguments is null || stepArguments.Count == 0)
+            return runtimeArguments;
+
+        var merged = runtimeArguments is null
+            ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, object?>(runtimeArguments, StringComparer.OrdinalIgnoreCase);
+
+        foreach ((string key, object? value) in stepArguments)
+            merged[key] = NormalizeValue(value);
+
+        return merged;
     }
 
     private static string? ReadMessage(DbActionStep step)

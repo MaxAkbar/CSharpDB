@@ -177,6 +177,63 @@ public sealed class FormRendererCommandButtonTests
     }
 
     [Fact]
+    public async Task CommandButton_ExecutesReusableActionSequence()
+    {
+        DbCommandContext? captured = null;
+        string? error = null;
+        DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
+        {
+            builder.AddCommand("AuditReusableAction", context =>
+            {
+                captured = context;
+                return DbCommandResult.Success();
+            });
+        });
+
+        ControlDefinition button = new(
+            "button1",
+            "commandButton",
+            new Rect(10, 20, 120, 34),
+            null,
+            new PropertyBag(new Dictionary<string, object?> { ["text"] = "Ship" }),
+            null,
+            EventBindings:
+            [
+                new ControlEventBinding(
+                    ControlEventKind.OnClick,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(
+                            DbActionKind.RunActionSequence,
+                            SequenceName: "ReusableShip",
+                            Arguments: new Dictionary<string, object?> { ["source"] = "button" }),
+                    ])),
+            ]);
+        FormDefinition form = CreateForm(
+            button,
+            [
+                new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.SetFieldValue, Target: "Status", Value: "Shipped"),
+                    new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditReusableAction"),
+                ],
+                Name: "ReusableShip"),
+            ]);
+        var renderer = CreateRenderer(commands, form, message => error = message);
+
+        await InvokeNonPublicAsync(renderer, "InvokeCommandButtonAsync", button);
+
+        var record = (Dictionary<string, object?>)GetProperty(renderer, nameof(FormRenderer.Record))!;
+        Assert.Null(error);
+        Assert.Equal("Shipped", record["Status"]);
+        Assert.NotNull(captured);
+        Assert.Equal("AuditReusableAction", captured!.CommandName);
+        Assert.Equal("button", captured.Arguments["source"].AsText);
+        Assert.Equal("ReusableShip", captured.Metadata["actionSequence"]);
+    }
+
+    [Fact]
     public async Task CommandButton_ExecutesBuiltInFormAction()
     {
         DbActionStep? captured = null;
@@ -290,7 +347,9 @@ public sealed class FormRendererCommandButtonTests
             }),
             null);
 
-    private static FormDefinition CreateForm(ControlDefinition button)
+    private static FormDefinition CreateForm(
+        ControlDefinition button,
+        IReadOnlyList<DbActionSequence>? actionSequences = null)
         => new(
             "orders-form",
             "Orders",
@@ -298,7 +357,8 @@ public sealed class FormRendererCommandButtonTests
             1,
             "sig:orders",
             new LayoutDefinition("absolute", 8, true, [new Breakpoint("md", 0, null)]),
-            [button]);
+            [button],
+            ActionSequences: actionSequences);
 
     private static void SetProperty(object instance, string propertyName, object? value)
     {

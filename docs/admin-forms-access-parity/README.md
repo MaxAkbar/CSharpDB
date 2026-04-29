@@ -26,8 +26,10 @@ The current forms surface already includes:
 - designer editing for form-level event bindings
 - command button controls that invoke trusted host commands
 - trusted command-backed selected-control events
-- declarative form action sequences for run-command, set-field, show-message,
-  and stop steps
+- declarative form action sequences for run-command, reusable sequence,
+  set-field, show-message, stop, built-in navigation, save, delete, refresh,
+  and go-to-record steps
+- conditional action steps and reusable named form action sequences
 - visual designer editing for form and selected-control action sequences
 - generated automation metadata for export/import host callback requirements
 
@@ -104,8 +106,8 @@ Expected fix:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands and action-only click sequences; built-in navigation/save/delete actions remain future work. |
-| Action model | Partial | Declarative action sequences support run-command, set-field, show-message, and stop steps with visual designer editing and generated automation metadata for form and selected-control events; open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, conditions, and loops remain future work. |
+| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands, action-only click sequences, reusable action sequences, and built-in rendered-form navigation/save/delete actions; richer button styling and command presets remain future work. |
+| Action model | Partial | Declarative action sequences support run-command, reusable sequence, set-field, show-message, stop, built-in navigation/save/delete/refresh/go-to, simple per-step conditions, visual designer editing, and generated automation metadata for form and selected-control events; open form, apply filter, clear filter, run SQL/procedure, loops, and conditional UI rules remain future work. |
 | Event hooks | Partial | Form lifecycle events, command-button clicks, and selected control events can call trusted commands; additional Access-style events remain future work. |
 | Conditional UI rules | Planned | Add visible/enabled/read-only expressions for controls. |
 

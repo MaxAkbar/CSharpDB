@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Forms.Models;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Components.Designer;
 
@@ -6,6 +7,7 @@ public class DesignerState
 {
     private readonly List<ControlDefinition> _controls = [];
     private readonly List<FormEventBinding> _eventBindings = [];
+    private readonly List<DbActionSequence> _actionSequences = [];
     private readonly Stack<List<ControlDefinition>> _undoStack = new();
     private readonly Stack<List<ControlDefinition>> _redoStack = new();
 
@@ -18,6 +20,7 @@ public class DesignerState
 
     public IReadOnlyList<ControlDefinition> Controls => _controls;
     public IReadOnlyList<FormEventBinding> EventBindings => _eventBindings;
+    public IReadOnlyList<DbActionSequence> ActionSequences => _actionSequences;
     public HashSet<string> SelectedIds { get; } = [];
 
     // Active tool from toolbox (null = select mode)
@@ -62,6 +65,8 @@ public class DesignerState
         _controls.AddRange(form.Controls);
         _eventBindings.Clear();
         _eventBindings.AddRange(form.EventBindings ?? []);
+        _actionSequences.Clear();
+        _actionSequences.AddRange(form.ActionSequences ?? []);
         _undoStack.Clear();
         _redoStack.Clear();
         SelectedIds.Clear();
@@ -86,13 +91,20 @@ public class DesignerState
     {
         return new FormDefinition(
             FormId, FormName, TableName, DefinitionVersion, SourceSchemaSignature,
-            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList());
+            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList(), ActionSequences: _actionSequences.ToList());
     }
 
     public void UpdateEventBindings(IReadOnlyList<FormEventBinding> bindings)
     {
         _eventBindings.Clear();
         _eventBindings.AddRange(bindings);
+        NotifyChanged();
+    }
+
+    public void UpdateActionSequences(IReadOnlyList<DbActionSequence> sequences)
+    {
+        _actionSequences.Clear();
+        _actionSequences.AddRange(sequences);
         NotifyChanged();
     }
 

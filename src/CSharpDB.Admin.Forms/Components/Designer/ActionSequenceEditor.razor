@@ -79,6 +79,38 @@
                                       @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
                         </div>
                         break;
+                    case DbActionKind.RunActionSequence:
+                        <div class="feb-field">
+                            <label>Action Sequence</label>
+                            @if (AvailableActionSequences.Count > 0)
+                            {
+                                <select value="@(step.SequenceName ?? string.Empty)" @onchange="@(e => UpdateSequenceName(idx, step, e.Value?.ToString()))">
+                                    <option value="">-- Select sequence --</option>
+                                    @if (ShouldRenderMissingActionSequence(step.SequenceName))
+                                    {
+                                        <option value="@step.SequenceName">@($"{step.SequenceName} (missing)")</option>
+                                    }
+                                    @foreach (DbActionSequence sequence in AvailableActionSequences.Where(sequence => !string.IsNullOrWhiteSpace(sequence.Name)))
+                                    {
+                                        <option value="@sequence.Name">@sequence.Name</option>
+                                    }
+                                </select>
+                            }
+                            else
+                            {
+                                <input type="text"
+                                       value="@(step.SequenceName ?? string.Empty)"
+                                       @onchange="@(e => UpdateSequenceName(idx, step, e.Value?.ToString()))" />
+                            }
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;source&quot;:&quot;nested-sequence&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
                     case DbActionKind.SetFieldValue:
                         <div class="feb-row">
                             <div class="feb-field">
@@ -149,6 +181,7 @@
 
         <div class="ase-actions">
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunCommand))">+ Command</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunActionSequence))">+ Sequence</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SetFieldValue))">+ Set Field</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.NewRecord))">+ New</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SaveRecord))">+ Save</button>
@@ -166,6 +199,7 @@
 @code {
     [Parameter] public DbActionSequence? ActionSequence { get; set; }
     [Parameter] public EventCallback<DbActionSequence?> ActionSequenceChanged { get; set; }
+    [Parameter] public IReadOnlyList<DbActionSequence> AvailableActionSequences { get; set; } = [];
 
     private readonly Dictionary<int, string> _argumentText = [];
     private string? _argumentError;
@@ -241,7 +275,8 @@
 
         DbActionStep updated = CreateDefaultStep(kind) with
         {
-            Arguments = kind == DbActionKind.RunCommand ? step.Arguments : null,
+            Arguments = kind is DbActionKind.RunCommand or DbActionKind.RunActionSequence ? step.Arguments : null,
+            SequenceName = kind == DbActionKind.RunActionSequence ? step.SequenceName : null,
             StopOnFailure = step.StopOnFailure,
             Condition = step.Condition,
         };
@@ -250,6 +285,9 @@
 
     private Task UpdateCommandName(int index, DbActionStep step, string? commandName)
         => ReplaceStep(index, step with { CommandName = string.IsNullOrWhiteSpace(commandName) ? null : commandName.Trim() });
+
+    private Task UpdateSequenceName(int index, DbActionStep step, string? sequenceName)
+        => ReplaceStep(index, step with { SequenceName = string.IsNullOrWhiteSpace(sequenceName) ? null : sequenceName.Trim() });
 
     private Task UpdateTarget(int index, DbActionStep step, string? target)
         => ReplaceStep(index, step with { Target = string.IsNullOrWhiteSpace(target) ? null : target.Trim() });
@@ -310,6 +348,7 @@
         => kind switch
         {
             DbActionKind.RunCommand => new DbActionStep(kind, CommandName: RegisteredCommands.FirstOrDefault()?.Name),
+            DbActionKind.RunActionSequence => new DbActionStep(kind, SequenceName: FirstAvailableActionSequenceName()),
             DbActionKind.SetFieldValue => new DbActionStep(kind, Target: string.Empty, Value: string.Empty),
             DbActionKind.GoToRecord => new DbActionStep(kind, Value: string.Empty),
             DbActionKind.ShowMessage => new DbActionStep(kind, Message: string.Empty),
@@ -338,6 +377,13 @@
         => !string.IsNullOrWhiteSpace(commandName)
             && RegisteredCommands.All(command => !string.Equals(command.Name, commandName, StringComparison.OrdinalIgnoreCase));
 
+    private bool ShouldRenderMissingActionSequence(string? sequenceName)
+        => !string.IsNullOrWhiteSpace(sequenceName)
+            && AvailableActionSequences.All(sequence => !string.Equals(sequence.Name, sequenceName, StringComparison.OrdinalIgnoreCase));
+
+    private string? FirstAvailableActionSequenceName()
+        => AvailableActionSequences.FirstOrDefault(sequence => !string.IsNullOrWhiteSpace(sequence.Name))?.Name;
+
     private static string FormatArguments(IReadOnlyDictionary<string, object?>? arguments)
         => arguments is null || arguments.Count == 0
             ? string.Empty
@@ -356,6 +402,7 @@
         => kind switch
         {
             DbActionKind.RunCommand => "Run Command",
+            DbActionKind.RunActionSequence => "Run Action Sequence",
             DbActionKind.SetFieldValue => "Set Field Value",
             DbActionKind.ShowMessage => "Show Message",
             DbActionKind.Stop => "Stop",

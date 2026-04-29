@@ -187,8 +187,17 @@ public class JsonRoundtripTests
                             Condition: "Status = 'Ready'"),
                         new DbActionStep(DbActionKind.GoToRecord, Value: 123L),
                         new DbActionStep(DbActionKind.SaveRecord),
+                        new DbActionStep(DbActionKind.RunActionSequence, SequenceName: "ReusableShip"),
                     ],
                     Name: "LoadActions")),
+            ],
+            ActionSequences:
+            [
+                new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditReusableShip"),
+                ],
+                Name: "ReusableShip"),
             ]);
 
         string json = JsonSerializer.Serialize(form, Options);
@@ -196,7 +205,7 @@ public class JsonRoundtripTests
 
         DbActionSequence sequence = deserialized.EventBindings![0].ActionSequence!;
         Assert.Equal("LoadActions", sequence.Name);
-        Assert.Equal(4, sequence.Steps.Count);
+        Assert.Equal(5, sequence.Steps.Count);
         Assert.Equal(DbActionKind.SetFieldValue, sequence.Steps[0].Kind);
         Assert.Equal("Status", sequence.Steps[0].Target);
         Assert.Equal("Ready", sequence.Steps[0].Value?.ToString());
@@ -207,6 +216,11 @@ public class JsonRoundtripTests
         Assert.Equal(DbActionKind.GoToRecord, sequence.Steps[2].Kind);
         Assert.Equal("123", sequence.Steps[2].Value?.ToString());
         Assert.Equal(DbActionKind.SaveRecord, sequence.Steps[3].Kind);
+        Assert.Equal(DbActionKind.RunActionSequence, sequence.Steps[4].Kind);
+        Assert.Equal("ReusableShip", sequence.Steps[4].SequenceName);
+        DbActionSequence reusable = Assert.Single(deserialized.ActionSequences!);
+        Assert.Equal("ReusableShip", reusable.Name);
+        Assert.Equal("AuditReusableShip", reusable.Steps[0].CommandName);
     }
 
     [Fact]
@@ -249,6 +263,14 @@ public class JsonRoundtripTests
             EventBindings:
             [
                 new FormEventBinding(FormEventKind.BeforeInsert, "ValidateOrder"),
+            ],
+            ActionSequences:
+            [
+                new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.RunCommand, CommandName: "ReusableOrderAudit"),
+                ],
+                Name: "ReusableOrderActions"),
             ]);
 
         FormDefinition normalized = FormAutomationMetadata.NormalizeForExport(form);
@@ -261,6 +283,7 @@ public class JsonRoundtripTests
         Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "NormalizeScore");
         Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "AuditScore");
         Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "ValidateOrder");
+        Assert.Contains(deserialized.Automation.Commands!, command => command.Name == "ReusableOrderAudit");
         DbAutomationScalarFunctionReference function = Assert.Single(deserialized.Automation.ScalarFunctions!);
         Assert.Equal("BoostScore", function.Name);
         Assert.Equal(1, function.Arity);

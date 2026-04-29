@@ -75,10 +75,16 @@ calculated text, and pipeline filter/derive expressions.
 - Action sequence steps can now include a simple condition such as
   `Status = 'Ready'`, `Amount > 0`, or `IsActive`; false conditions skip that
   step, while malformed conditions fail through the normal step failure path.
+- Forms can now store reusable named action sequences on `FormDefinition` and
+  invoke them from event/button sequences with `RunActionSequence`, including
+  optional per-call arguments and a nesting guard for recursive loops.
 - The form-event and selected-control event editors now include a visual
   action-sequence editor for adding, ordering, removing, and configuring
-  command, field, message, stop, built-in record actions, and per-step
-  conditions.
+  command, reusable sequence, field, message, stop, built-in record actions,
+  and per-step conditions.
+- The Forms property inspector now includes a reusable action-sequence library
+  editor at the form level, and event action editors can pick those named
+  sequences while preserving missing names for portable metadata.
 - The action-sequence editor uses registered-command pickers when commands are
   available, preserves missing command names for portable form metadata, and
   keeps JSON editing limited to optional argument payloads.
@@ -112,8 +118,8 @@ calculated text, and pipeline filter/derive expressions.
   metadata during repository save/load or package serialization/deserialization.
   Older JSON without automation metadata is backfilled on read.
 - Form metadata captures trusted form events, command buttons, selected-control
-  events, action-sequence `RunCommand` steps, and computed-formula scalar
-  functions.
+  events, reusable action sequences, action-sequence `RunCommand` steps, and
+  computed-formula scalar functions.
 - Report metadata captures preview lifecycle command bindings and calculated
   text scalar functions.
 - Pipeline package metadata captures command hooks and scalar functions used by
