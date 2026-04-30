@@ -1,5 +1,6 @@
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Admin.Forms.Services
 @inject IFormRecordService RecordService
 
 <div class="child-datagrid">
@@ -121,6 +122,8 @@
     [Parameter] public bool EnableRowSelection { get; set; }
     [Parameter] public EventCallback<Dictionary<string, object?>?> OnRowSelected { get; set; }
     [Parameter] public EventCallback OnRowsChanged { get; set; }
+    [Parameter] public string? FilterExpression { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, object?>? FilterParameters { get; set; }
 
     private List<Dictionary<string, object?>> _rows = [];
     private bool _loading = true;
@@ -133,12 +136,15 @@
     private string? _lastChildTableName;
     private string? _lastForeignKeyField;
     private string? _lastChildTableDefinitionName;
+    private string? _lastFilterExpression;
+    private string _lastFilterParametersKey = string.Empty;
     private bool _lastIsStandalone;
     private int _pageNumber = 1;
     private int _pageSize = 25;
     private int _totalCount;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalCount / (double)_pageSize));
+    private bool HasActiveFilter => !string.IsNullOrWhiteSpace(FilterExpression);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -146,17 +152,22 @@
         bool childTableChanged = !string.Equals(_lastChildTableName, ChildTableName, StringComparison.OrdinalIgnoreCase);
         bool foreignKeyChanged = !string.Equals(_lastForeignKeyField, ForeignKeyField, StringComparison.OrdinalIgnoreCase);
         bool definitionChanged = !string.Equals(_lastChildTableDefinitionName, ChildFormTableDefinition?.TableName, StringComparison.OrdinalIgnoreCase);
+        string filterParametersKey = FormatFilterParameterKey(FilterParameters);
+        bool filterChanged = !string.Equals(_lastFilterExpression, FilterExpression, StringComparison.Ordinal) ||
+            !string.Equals(_lastFilterParametersKey, filterParametersKey, StringComparison.Ordinal);
         bool modeChanged = _lastIsStandalone != IsStandalone;
 
-        if (parentChanged || childTableChanged || foreignKeyChanged || definitionChanged || modeChanged)
+        if (parentChanged || childTableChanged || foreignKeyChanged || definitionChanged || filterChanged || modeChanged)
         {
-            if (childTableChanged || definitionChanged || modeChanged)
+            if (childTableChanged || definitionChanged || filterChanged || modeChanged)
                 _pageNumber = 1;
 
             _lastParentKeyValue = ParentKeyValue;
             _lastChildTableName = ChildTableName;
             _lastForeignKeyField = ForeignKeyField;
             _lastChildTableDefinitionName = ChildFormTableDefinition?.TableName;
+            _lastFilterExpression = FilterExpression;
+            _lastFilterParametersKey = filterParametersKey;
             _lastIsStandalone = IsStandalone;
             await LoadChildRecords();
         }
@@ -182,6 +193,24 @@
 
             if (IsStandalone)
             {
+                if (TryGetActiveFilter(out FormFilterExpression? standaloneFilter, out IReadOnlyDictionary<string, object?> standaloneParameters, out string? standaloneFilterError))
+                {
+                    if (standaloneFilterError is not null)
+                        throw new InvalidOperationException(standaloneFilterError);
+
+                    List<Dictionary<string, object?>> filteredRows = (await RecordService.ListRecordsAsync(ChildFormTableDefinition))
+                        .Where(row => standaloneFilter!.Evaluate(row, standaloneParameters))
+                        .ToList();
+                    int totalPages = filteredRows.Count == 0 ? 1 : (int)Math.Ceiling(filteredRows.Count / (double)_pageSize);
+                    _pageNumber = Math.Clamp(_pageNumber, 1, totalPages);
+                    _totalCount = filteredRows.Count;
+                    _rows = filteredRows
+                        .Skip((_pageNumber - 1) * _pageSize)
+                        .Take(_pageSize)
+                        .ToList();
+                    return;
+                }
+
                 FormRecordPage page = await RecordService.ListRecordPageAsync(ChildFormTableDefinition, _pageNumber, _pageSize);
                 _pageNumber = page.PageNumber;
                 _pageSize = page.PageSize;
@@ -194,6 +223,16 @@
                 throw new InvalidOperationException("The related DataGrid foreign key field is not configured.");
 
             _rows = await RecordService.ListFilteredRecordsAsync(ChildFormTableDefinition, ForeignKeyField, ParentKeyValue);
+            if (TryGetActiveFilter(out FormFilterExpression? relatedFilter, out IReadOnlyDictionary<string, object?> relatedParameters, out string? relatedFilterError))
+            {
+                if (relatedFilterError is not null)
+                    throw new InvalidOperationException(relatedFilterError);
+
+                _rows = _rows
+                    .Where(row => relatedFilter!.Evaluate(row, relatedParameters))
+                    .ToList();
+            }
+
             _totalCount = _rows.Count;
         }
         catch (Exception ex)
@@ -227,9 +266,11 @@
             }
 
             var created = await RecordService.CreateRecordAsync(ChildFormTableDefinition, newRow);
-            if (IsStandalone)
+            if (IsStandalone || HasActiveFilter)
             {
-                _pageNumber = GetTotalPages(_totalCount + 1, _pageSize);
+                if (IsStandalone)
+                    _pageNumber = GetTotalPages(_totalCount + 1, _pageSize);
+
                 await LoadChildRecords();
             }
             else
@@ -445,4 +486,54 @@
 
     private static int GetTotalPages(int totalCount, int pageSize)
         => Math.Max(1, (int)Math.Ceiling(totalCount / (double)pageSize));
+
+    private bool TryGetActiveFilter(
+        out FormFilterExpression? filter,
+        out IReadOnlyDictionary<string, object?> parameters,
+        out string? error)
+    {
+        filter = null;
+        parameters = FilterParameters ?? EmptyObjectDictionary.Instance;
+        error = null;
+
+        if (!HasActiveFilter)
+            return false;
+
+        if (!FormFilterExpression.TryParse(FilterExpression!, ChildFormTableDefinition, out filter, out string? parseError))
+        {
+            error = $"Invalid DataGrid filter: {parseError}";
+            return true;
+        }
+
+        IReadOnlyDictionary<string, object?> parameterSnapshot = parameters;
+        string? missingParameter = filter!.Parameters.FirstOrDefault(parameter => !parameterSnapshot.ContainsKey(parameter));
+        if (missingParameter is not null)
+        {
+            error = $"DataGrid filter is missing parameter '@{missingParameter}'.";
+            return true;
+        }
+
+        return true;
+    }
+
+    private static string FormatFilterParameterKey(IReadOnlyDictionary<string, object?>? parameters)
+    {
+        if (parameters is null || parameters.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "\u001f",
+            parameters
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => $"{pair.Key}={FormatFilterParameterValue(pair.Value)}"));
+    }
+
+    private static string FormatFilterParameterValue(object? value)
+        => value is null ? "<null>" : $"{value.GetType().FullName}:{value}";
+
+    private static class EmptyObjectDictionary
+    {
+        public static readonly IReadOnlyDictionary<string, object?> Instance =
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+    }
 }

@@ -73,6 +73,30 @@ public sealed class TabDescriptor
         set => State["InitialTableName"] = value;
     }
 
+    public object? InitialRecordId
+    {
+        get => State.TryGetValue("InitialRecordId", out var v) ? v : null;
+        set => State["InitialRecordId"] = value;
+    }
+
+    public string? InitialFormEntryMode
+    {
+        get => State.TryGetValue("InitialFormEntryMode", out var v) ? v as string : null;
+        set => State["InitialFormEntryMode"] = value;
+    }
+
+    public string? InitialFilterExpression
+    {
+        get => State.TryGetValue("InitialFilterExpression", out var v) ? v as string : null;
+        set => State["InitialFilterExpression"] = value;
+    }
+
+    public IReadOnlyDictionary<string, object?>? InitialFilterParameters
+    {
+        get => State.TryGetValue("InitialFilterParameters", out var v) ? v as IReadOnlyDictionary<string, object?> : null;
+        set => State["InitialFilterParameters"] = value;
+    }
+
     public string? ReportId
     {
         get => State.TryGetValue("ReportId", out var v) ? v as string : null;

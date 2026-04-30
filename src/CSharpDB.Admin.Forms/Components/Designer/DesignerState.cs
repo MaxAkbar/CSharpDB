@@ -8,6 +8,7 @@ public class DesignerState
     private readonly List<ControlDefinition> _controls = [];
     private readonly List<FormEventBinding> _eventBindings = [];
     private readonly List<DbActionSequence> _actionSequences = [];
+    private readonly List<ControlRuleDefinition> _rules = [];
     private readonly Stack<List<ControlDefinition>> _undoStack = new();
     private readonly Stack<List<ControlDefinition>> _redoStack = new();
 
@@ -21,6 +22,7 @@ public class DesignerState
     public IReadOnlyList<ControlDefinition> Controls => _controls;
     public IReadOnlyList<FormEventBinding> EventBindings => _eventBindings;
     public IReadOnlyList<DbActionSequence> ActionSequences => _actionSequences;
+    public IReadOnlyList<ControlRuleDefinition> Rules => _rules;
     public HashSet<string> SelectedIds { get; } = [];
 
     // Active tool from toolbox (null = select mode)
@@ -89,6 +91,8 @@ public class DesignerState
         _eventBindings.AddRange(form.EventBindings ?? []);
         _actionSequences.Clear();
         _actionSequences.AddRange(form.ActionSequences ?? []);
+        _rules.Clear();
+        _rules.AddRange(form.Rules ?? []);
         _undoStack.Clear();
         _redoStack.Clear();
         SelectedIds.Clear();
@@ -113,7 +117,7 @@ public class DesignerState
     {
         return new FormDefinition(
             FormId, FormName, TableName, DefinitionVersion, SourceSchemaSignature,
-            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList(), ActionSequences: _actionSequences.ToList());
+            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList(), ActionSequences: _actionSequences.ToList(), Rules: _rules.ToList());
     }
 
     public void UpdateEventBindings(IReadOnlyList<FormEventBinding> bindings)
@@ -127,6 +131,13 @@ public class DesignerState
     {
         _actionSequences.Clear();
         _actionSequences.AddRange(sequences);
+        NotifyChanged();
+    }
+
+    public void UpdateRules(IReadOnlyList<ControlRuleDefinition> rules)
+    {
+        _rules.Clear();
+        _rules.AddRange(rules);
         NotifyChanged();
     }
 

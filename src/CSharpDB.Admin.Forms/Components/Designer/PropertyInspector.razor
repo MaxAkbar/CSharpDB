@@ -51,6 +51,12 @@
             <FormActionSequencesEditor ActionSequences="State.ActionSequences"
                                        ActionSequencesChanged="OnActionSequencesChanged" />
         </div>
+        <div class="pi-section">
+            <div class="pi-section-label">Rules</div>
+            <ControlRulesEditor Rules="State.Rules"
+                                Controls="State.Controls"
+                                RulesChanged="OnRulesChanged" />
+        </div>
     }
     else
     {
@@ -896,6 +902,12 @@
     private Task OnActionSequencesChanged(IReadOnlyList<DbActionSequence> sequences)
     {
         State.UpdateActionSequences(sequences);
+        return Task.CompletedTask;
+    }
+
+    private Task OnRulesChanged(IReadOnlyList<ControlRuleDefinition> rules)
+    {
+        State.UpdateRules(rules);
         return Task.CompletedTask;
     }
 

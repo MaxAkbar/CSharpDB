@@ -1,0 +1,178 @@
+{
+  "formId": "products-entry-access-macros",
+  "name": "Products Entry Access Macros",
+  "tableName": "Products",
+  "definitionVersion": 1,
+  "sourceSchemaSignature": "sample:products:v1",
+  "layout": {
+    "layoutMode": "absolute",
+    "gridSize": 8,
+    "snapToGrid": true,
+    "breakpoints": []
+  },
+  "controls": [
+    {
+      "controlId": "statusBox",
+      "controlType": "text",
+      "rect": { "x": 24, "y": 24, "width": 180, "height": 32 },
+      "binding": { "fieldName": "Status", "mode": "TwoWay" },
+      "props": { "placeholder": "Status" }
+    },
+    {
+      "controlId": "openOrdersButton",
+      "controlType": "commandButton",
+      "rect": { "x": 224, "y": 24, "width": 120, "height": 32 },
+      "props": { "text": "Open Orders" },
+      "eventBindings": [
+        {
+          "event": "onClick",
+          "commandName": "",
+          "stopOnFailure": true,
+          "actionSequence": {
+            "name": "OpenOrders",
+            "steps": [
+              {
+                "kind": "openForm",
+                "target": "Orders Entry",
+                "arguments": {
+                  "recordId": "$record.Id",
+                  "mode": "view"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "controlId": "showOpenOrdersButton",
+      "controlType": "commandButton",
+      "rect": { "x": 24, "y": 72, "width": 152, "height": 32 },
+      "props": { "text": "Show Open" },
+      "eventBindings": [
+        {
+          "event": "onClick",
+          "commandName": "",
+          "stopOnFailure": true,
+          "actionSequence": {
+            "name": "ShowOpenOrders",
+            "steps": [
+              {
+                "kind": "applyFilter",
+                "target": "ordersGrid",
+                "value": "[Status] = @status",
+                "arguments": {
+                  "status": "Open"
+                }
+              },
+              {
+                "kind": "setControlVisibility",
+                "target": "clearOrdersFilterButton",
+                "value": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "controlId": "clearOrdersFilterButton",
+      "controlType": "commandButton",
+      "rect": { "x": 184, "y": 72, "width": 152, "height": 32 },
+      "props": {
+        "text": "Clear Filter",
+        "visible": false
+      },
+      "eventBindings": [
+        {
+          "event": "onClick",
+          "commandName": "",
+          "stopOnFailure": true,
+          "actionSequence": {
+            "name": "ClearOrdersFilter",
+            "steps": [
+              {
+                "kind": "clearFilter",
+                "target": "ordersGrid"
+              },
+              {
+                "kind": "setControlVisibility",
+                "target": "clearOrdersFilterButton",
+                "value": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "controlId": "archiveButton",
+      "controlType": "commandButton",
+      "rect": { "x": 344, "y": 72, "width": 120, "height": 32 },
+      "props": { "text": "Archive" },
+      "eventBindings": [
+        {
+          "event": "onClick",
+          "commandName": "",
+          "stopOnFailure": true,
+          "actionSequence": {
+            "name": "ArchiveProduct",
+            "steps": [
+              {
+                "kind": "runSql",
+                "value": "UPDATE Products SET Status = @status WHERE Id = @id",
+                "arguments": {
+                  "status": "Archived",
+                  "id": "$record.Id",
+                  "refresh": true
+                }
+              },
+              {
+                "kind": "setControlProperty",
+                "target": "statusBox",
+                "value": "Archived",
+                "arguments": {
+                  "property": "value"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "controlId": "ordersGrid",
+      "controlType": "datagrid",
+      "rect": { "x": 24, "y": 128, "width": 720, "height": 260 },
+      "props": {
+        "childTable": "Orders",
+        "dataGridMode": "related",
+        "foreignKeyField": "ProductId",
+        "parentKeyField": "Id",
+        "visibleColumns": [ "OrderId", "Status", "Total" ],
+        "allowAdd": true,
+        "allowEdit": true,
+        "allowDelete": false
+      }
+    }
+  ],
+  "rules": [
+    {
+      "ruleId": "archived-state",
+      "condition": "[Status] = 'Archived'",
+      "description": "Archived products cannot be edited from the entry form.",
+      "effects": [
+        {
+          "controlId": "statusBox",
+          "property": "readOnly",
+          "value": true
+        },
+        {
+          "controlId": "archiveButton",
+          "property": "enabled",
+          "value": false
+        }
+      ]
+    }
+  ]
+}

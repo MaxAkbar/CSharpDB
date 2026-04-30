@@ -82,6 +82,10 @@
     {
         <div class="designer-warning">Select a source before saving this form.</div>
     }
+    else
+    {
+        <MacroValidationPanel Form="_state.ToFormDefinition()" Schema="_currentSourceDefinition" />
+    }
 
     <CascadingValue Value="_state" IsFixed="true">
         <div class="left-panel">
@@ -126,6 +130,7 @@
     private bool _saving;
     private string? _error;
     private string? _schemaWarning;
+    private FormTableDefinition? _currentSourceDefinition;
     private bool _saved;
     private System.Timers.Timer? _savedTimer;
     private bool _editingName;
@@ -226,6 +231,7 @@
             }
 
             var generated = FormGenerator.GenerateDefault(source) with { FormId = string.Empty };
+            _currentSourceDefinition = source;
             _state.LoadForm(generated);
         }
         catch (Exception ex)
@@ -237,6 +243,7 @@
 
     private void LoadBlankDesigner(FormTableDefinition? source)
     {
+        _currentSourceDefinition = source;
         _state.LoadForm(new FormDefinition(
             string.Empty,
             source is null ? "Untitled Form" : $"{source.TableName} Form",
@@ -255,6 +262,7 @@
         if (string.IsNullOrWhiteSpace(tableName))
         {
             _state.SetTableContext(null);
+            _currentSourceDefinition = null;
             _schemaWarning = null;
             return;
         }
@@ -269,6 +277,7 @@
             }
 
             _state.SetTableContext(source);
+            _currentSourceDefinition = source;
             if (string.IsNullOrWhiteSpace(_state.FormId) && shouldUseDefaultName)
             {
                 _state.SetFormName($"{source.TableName} Form");
@@ -337,6 +346,7 @@
         }
 
         FormTableDefinition? current = await SchemaProvider.GetTableDefinitionAsync(form.TableName);
+        _currentSourceDefinition = current;
         _schemaWarning = current is not null && !string.Equals(current.SourceSchemaSignature, form.SourceSchemaSignature, StringComparison.Ordinal)
             ? "The source schema has changed since this form was last saved."
             : null;

@@ -47,6 +47,33 @@ public sealed class DataEntryTests
     }
 
     [Fact]
+    public async Task InitialRecordId_LoadsRequestedRecord()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Events (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Events VALUES (1, 'Alpha');
+            INSERT INTO Events VALUES (2, 'Beta');
+            INSERT INTO Events VALUES (3, 'Gamma');
+            """);
+
+        var recordService = new CountingFormRecordService(new DbFormRecordService(db.Client));
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("events-form", "Events"),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: recordService,
+            initialRecordId: 3L);
+
+        Assert.Equal(3L, ReadCurrentRecord(component)["Id"]);
+        Assert.Equal("Gamma", ReadCurrentRecord(component)["Name"]);
+        Assert.Equal(1, recordService.GetRecordOrdinalCalls);
+    }
+
+    [Fact]
     public async Task SaveRecord_UpdatePatchesVisibleRowWithoutReloadingPage()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
@@ -453,6 +480,65 @@ public sealed class DataEntryTests
     }
 
     [Fact]
+    public async Task Phase8Runtime_AppliesAndClearsDataGridFilter()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            CREATE TABLE Orders (
+                OrderId INTEGER PRIMARY KEY,
+                ProductId INTEGER NOT NULL,
+                Status TEXT NOT NULL
+            );
+            INSERT INTO Products VALUES (1, 'Widget');
+            INSERT INTO Orders VALUES (101, 1, 'Open');
+            """);
+
+        ControlDefinition grid = new(
+            "ordersGrid",
+            "datagrid",
+            new Rect(0, 0, 320, 160),
+            Binding: null,
+            Props: new PropertyBag(new Dictionary<string, object?>
+            {
+                ["childTable"] = "Orders",
+                ["dataGridMode"] = "related",
+                ["foreignKeyField"] = "ProductId",
+                ["parentKeyField"] = "Id",
+            }),
+            ValidationOverride: null);
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("products-form", "Products", [grid]),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: new DbFormRecordService(db.Client));
+
+        FormEventDispatchResult result = await ((IFormActionRuntime)component).ApplyFilterAsync(
+            CreateRuntimeContext(component),
+            "ordersGrid",
+            "[Status] = @status",
+            new Dictionary<string, object?> { ["status"] = "Open" },
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        var filters = GetField<Dictionary<string, ControlFilterState>>(component, "_controlFilters");
+        ControlFilterState filter = Assert.Single(filters).Value;
+        Assert.Equal("[Status] = @status", filter.FilterExpression);
+        Assert.Equal("Open", filter.Parameters["status"]);
+
+        result = await ((IFormActionRuntime)component).ClearFilterAsync(
+            CreateRuntimeContext(component),
+            "ordersGrid",
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Empty(filters);
+    }
+
+    [Fact]
     public async Task Phase8Runtime_SetsControlPropertyAndBoundValue()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
@@ -586,7 +672,11 @@ public sealed class DataEntryTests
         FormDefinition form,
         ISchemaProvider schemaProvider,
         IFormRecordService recordService,
-        IFormEventDispatcher? formEvents = null)
+        IFormEventDispatcher? formEvents = null,
+        object? initialRecordId = null,
+        string? initialMode = null,
+        string? initialFilterExpression = null,
+        IReadOnlyDictionary<string, object?>? initialFilterParameters = null)
     {
         var component = new DataEntry();
         SetProperty(component, "FormRepository", new StaticFormRepository(form));
@@ -596,6 +686,10 @@ public sealed class DataEntryTests
         SetProperty(component, "FormEvents", formEvents ?? NullFormEventDispatcher.Instance);
         SetProperty(component, "JS", new StubJsRuntime());
         SetProperty(component, nameof(DataEntry.FormId), form.FormId);
+        SetProperty(component, nameof(DataEntry.InitialRecordId), initialRecordId);
+        SetProperty(component, nameof(DataEntry.InitialMode), initialMode);
+        SetProperty(component, nameof(DataEntry.InitialFilterExpression), initialFilterExpression);
+        SetProperty(component, nameof(DataEntry.InitialFilterParameters), initialFilterParameters);
 
         await InvokeNonPublicAsync(component, "OnParametersSetAsync");
         return component;

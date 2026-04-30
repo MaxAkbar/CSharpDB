@@ -180,15 +180,44 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
-    public TabDescriptor OpenFormEntryTab(string formId, string? title = null)
+    public TabDescriptor OpenFormEntryTab(
+        string formId,
+        string? title = null,
+        object? initialRecordId = null,
+        string? initialMode = null,
+        string? initialFilterExpression = null,
+        IReadOnlyDictionary<string, object?>? initialFilterParameters = null)
     {
-        var tab = new TabDescriptor($"form-entry:{formId}", title ?? "Form Entry", "bi-file-earmark-text", TabKind.FormEntry)
+        string tabId = $"form-entry:{formId}";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ApplyFormEntryInitialState(existing, initialRecordId, initialMode, initialFilterExpression, initialFilterParameters);
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(tabId, title ?? "Form Entry", "bi-file-earmark-text", TabKind.FormEntry)
         {
             FormId = formId,
         };
+        ApplyFormEntryInitialState(tab, initialRecordId, initialMode, initialFilterExpression, initialFilterParameters);
 
         OpenTab(tab);
         return _tabs.First(t => t.Id == tab.Id);
+    }
+
+    private static void ApplyFormEntryInitialState(
+        TabDescriptor tab,
+        object? initialRecordId,
+        string? initialMode,
+        string? initialFilterExpression,
+        IReadOnlyDictionary<string, object?>? initialFilterParameters)
+    {
+        tab.InitialRecordId = initialRecordId;
+        tab.InitialFormEntryMode = string.IsNullOrWhiteSpace(initialMode) ? null : initialMode.Trim();
+        tab.InitialFilterExpression = string.IsNullOrWhiteSpace(initialFilterExpression) ? null : initialFilterExpression.Trim();
+        tab.InitialFilterParameters = initialFilterParameters;
     }
 
     /// <summary>Open a table tab and switch it to Schema view.</summary>

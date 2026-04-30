@@ -17,6 +17,7 @@ public static class FormActionManifestValidator
         "validationMessage",
         "text",
         "value",
+        "placeholder",
     };
 
     public static FormActionValidationResult Validate(
@@ -298,9 +299,13 @@ public static class FormActionManifestValidator
     {
         ValidateOptionalControlTarget(step, location, eventName, actionSequence, stepIndex, controlIds, issues);
         string? filter = ReadText(step.Value) ?? ReadArgumentText(step.Arguments, "filter", "where");
+        string? target = ReadText(step.Target) ?? ReadArgumentText(step.Arguments, "target");
+        bool targetsForm = string.IsNullOrWhiteSpace(target) ||
+            string.Equals(target, "form", StringComparison.OrdinalIgnoreCase);
+        FormTableDefinition? filterSchema = targetsForm ? schema : null;
         if (string.IsNullOrWhiteSpace(filter))
             AddError(issues, step, location, "ApplyFilter action requires a filter expression.", eventName, actionSequence, stepIndex);
-        else if (!FormFilterExpression.TryParse(filter, schema, out _, out string? filterError))
+        else if (!FormFilterExpression.TryParse(filter, filterSchema, out _, out string? filterError))
             AddError(issues, step, location, $"ApplyFilter expression '{filter}' is malformed: {filterError}", eventName, actionSequence, stepIndex);
     }
 

@@ -56,6 +56,27 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenFormEntryTab_UpdatesInitialStateWhenExistingTabIsReopened()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenFormEntryTab("form-1", "Customer Form", initialRecordId: 10L);
+        TabDescriptor second = manager.OpenFormEntryTab(
+            "form-1",
+            "Customer Form",
+            initialRecordId: 42L,
+            initialMode: "view",
+            initialFilterExpression: "[Status] = @status",
+            initialFilterParameters: new Dictionary<string, object?> { ["status"] = "Open" });
+
+        Assert.Same(first, second);
+        Assert.Equal(42L, second.InitialRecordId);
+        Assert.Equal("view", second.InitialFormEntryMode);
+        Assert.Equal("[Status] = @status", second.InitialFilterExpression);
+        Assert.Equal("Open", second.InitialFilterParameters!["status"]);
+    }
+
+    [Fact]
     public void CloseTabsForForm_ClosesDesignerAndEntryTabs()
     {
         var manager = new TabManagerService();

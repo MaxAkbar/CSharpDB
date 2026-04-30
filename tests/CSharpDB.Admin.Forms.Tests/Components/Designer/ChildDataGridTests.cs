@@ -80,6 +80,33 @@ public sealed class ChildDataGridTests
     }
 
     [Fact]
+    public async Task OnParametersSetAsync_StandaloneGridAppliesFilterExpression()
+    {
+        var service = new TableSpecificRecordService();
+        var component = new ChildDataGrid();
+        SetProperty(component, "RecordService", service);
+
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Orders");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), null);
+        SetProperty(component, nameof(ChildDataGrid.IsStandalone), true);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Orders", "OrderId", "CustomerId"));
+        SetProperty(component, nameof(ChildDataGrid.FilterExpression), "[CustomerId] = @customerId");
+        SetProperty(
+            component,
+            nameof(ChildDataGrid.FilterParameters),
+            new Dictionary<string, object?> { ["customerId"] = 7L });
+
+        await InvokeNonPublicAsync(component, "OnParametersSetAsync");
+
+        Assert.Empty(service.RequestedPages);
+        Assert.Equal(["Orders"], service.RequestedAllTables);
+        Assert.Equal(15, ReadIntField(component, "_totalCount"));
+        Assert.Equal(Enumerable.Range(101, 30).Where(id => id % 2 != 0).Select(id => (long)id).ToArray(),
+            ReadRows(component).Select(row => (long)row["OrderId"]!).ToArray());
+    }
+
+    [Fact]
     public async Task AddRow_StandaloneGridDoesNotSeedForeignKey()
     {
         var service = new TableSpecificRecordService();
@@ -122,7 +149,8 @@ public sealed class ChildDataGridTests
             $"sig:{tableName}",
             [
                 new FormFieldDefinition(primaryKeyField, FieldDataType.Int64, false, false),
-                new FormFieldDefinition(foreignKeyField, FieldDataType.Int64, false, false)
+                new FormFieldDefinition(foreignKeyField, FieldDataType.Int64, false, false),
+                new FormFieldDefinition("Status", FieldDataType.String, false, false)
             ],
             [primaryKeyField],
             []);
@@ -217,7 +245,8 @@ public sealed class ChildDataGridTests
                     new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["OrderId"] = 101L,
-                        [filterField] = filterValue
+                        [filterField] = filterValue,
+                        ["Status"] = "Open"
                     }
                 ],
                 "Payments" =>
@@ -225,7 +254,8 @@ public sealed class ChildDataGridTests
                     new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["PaymentId"] = 201L,
-                        [filterField] = filterValue
+                        [filterField] = filterValue,
+                        ["Status"] = "Open"
                     }
                 ],
                 _ => []
@@ -257,7 +287,8 @@ public sealed class ChildDataGridTests
                     .Select(id => new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["OrderId"] = (long)id,
-                        ["CustomerId"] = id % 2 == 0 ? 9L : 7L
+                        ["CustomerId"] = id % 2 == 0 ? 9L : 7L,
+                        ["Status"] = id % 3 == 0 ? "Closed" : "Open"
                     })
                     .ToList(),
                 _ => []

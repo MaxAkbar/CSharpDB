@@ -176,6 +176,7 @@
                     var dgAllowEdit = GetBoolProp(c, "allowEdit");
                     var dgAllowDelete = GetBoolProp(c, "allowDelete");
                     var parentPkValue = GetFieldObjectValue(dgPkField);
+                    var dgFilter = GetControlFilter(c.ControlId);
 
                     @if (!string.IsNullOrEmpty(dgChildTable) && dgIsStandalone)
                     {
@@ -188,6 +189,8 @@
                                        AllowEdit="dgAllowEdit"
                                        AllowDelete="dgAllowDelete"
                                        ChildFormTableDefinition="dgTableDefinition"
+                                       FilterExpression="@dgFilter?.FilterExpression"
+                                       FilterParameters="@dgFilter?.Parameters"
                                        OnRowsChanged="OnChildRowsChanged" />
                     }
                     else if (!string.IsNullOrEmpty(dgChildTable) && !string.IsNullOrEmpty(dgFkField) && parentPkValue is not null)
@@ -201,6 +204,8 @@
                                        AllowEdit="dgAllowEdit"
                                        AllowDelete="dgAllowDelete"
                                        ChildFormTableDefinition="dgTableDefinition"
+                                       FilterExpression="@dgFilter?.FilterExpression"
+                                       FilterParameters="@dgFilter?.Parameters"
                                        OnRowsChanged="OnChildRowsChanged" />
                     }
                     else if (!dgIsStandalone && parentPkValue is null && !string.IsNullOrEmpty(dgChildTable))
@@ -254,6 +259,7 @@
     [Parameter] public Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? OnBuiltInAction { get; set; }
     [Parameter] public IFormActionRuntime? ActionRuntime { get; set; }
     [Parameter] public IReadOnlyDictionary<string, IReadOnlyDictionary<string, object?>>? ControlPropertyOverrides { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, ControlFilterState>? ControlFilters { get; set; }
 
     private readonly HashSet<string> _executingCommandButtons = [];
     private const string LayoutModeElastic = "elastic";
@@ -720,6 +726,11 @@
             .Select(field => field.Name)
             .ToList();
     }
+
+    private ControlFilterState? GetControlFilter(string controlId)
+        => ControlFilters?.TryGetValue(controlId, out ControlFilterState? filter) == true
+            ? filter
+            : null;
 
     private bool IsControlVisible(ControlDefinition c)
         => GetBoolProp(c, "visible", fallback: true);

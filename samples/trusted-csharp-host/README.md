@@ -14,6 +14,8 @@ It demonstrates:
 - generating starter C# registration stubs from automation metadata
 - running an Admin Forms action sequence that sets a field
 - invoking a reusable named Admin Forms action sequence that calls the command
+- inspecting an Access-style macro form manifest with open form, filter,
+  run SQL, and conditional UI rule actions
 - inspecting callback arguments and metadata in console output
 
 The sample keeps the important runtime boundary visible: C# callback bodies live
@@ -52,5 +54,7 @@ and action sequence.
 
 - `Program.cs` contains the host registration code, metadata validation, stub
   generation, and runnable demo.
+- `access-style-macro-form.json` contains a Phase 8 form manifest with richer
+  macro actions and conditional UI rules.
 - `.vscode/launch.json` launches the sample under the debugger.
 - `.vscode/tasks.json` builds and runs the sample from VS Code tasks.

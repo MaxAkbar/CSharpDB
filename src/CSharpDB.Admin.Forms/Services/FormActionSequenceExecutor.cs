@@ -110,73 +110,148 @@ internal static class FormActionSequenceExecutor
         CancellationToken ct,
         int depth)
     {
+        bool diagnosticsEnabled = FormActionDiagnostics.IsInvocationEnabled;
+        long started = diagnosticsEnabled ? FormActionDiagnostics.GetTimestamp() : 0;
+        Dictionary<string, string>? stepMetadata = diagnosticsEnabled
+            ? BuildStepMetadata(sequence, step, stepIndex, metadata)
+            : null;
+
         try
         {
-            if (!FormActionConditionEvaluator.TryEvaluate(
-                step.Condition,
+            FormEventDispatchResult result = await ExecuteStepCoreAsync(
+                sequence,
+                step,
+                stepIndex,
+                commands,
                 record,
                 bindingArguments,
                 runtimeArguments,
-                step.Arguments,
-                out bool shouldRun,
-                out string? conditionError))
-            {
-                return FormEventDispatchResult.Failure(
-                    $"Form action '{step.Kind}' condition failed: {conditionError}");
-            }
+                metadata,
+                reusableSequences,
+                setFieldValue,
+                showMessage,
+                executeBuiltInFormAction,
+                actionRuntime,
+                ct,
+                depth);
 
-            if (!shouldRun)
-                return FormEventDispatchResult.Success();
-
-            return step.Kind switch
-            {
-                DbActionKind.RunCommand => await RunCommandAsync(sequence, step, stepIndex, commands, record, bindingArguments, runtimeArguments, metadata, ct),
-                DbActionKind.SetFieldValue => await SetFieldValueAsync(step, record, setFieldValue),
-                DbActionKind.ShowMessage => await ShowMessageAsync(step, showMessage),
-                DbActionKind.Stop => FormEventDispatchResult.Success(ReadMessage(step)),
-                DbActionKind.RunActionSequence => await RunActionSequenceAsync(
-                    step,
-                    commands,
-                    record,
-                    bindingArguments,
-                    runtimeArguments,
-                    metadata,
-                    reusableSequences,
-                    setFieldValue,
-                    showMessage,
-                    executeBuiltInFormAction,
-                    actionRuntime,
-                    ct,
-                    depth),
-                DbActionKind.OpenForm => await OpenFormAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.CloseForm => await CloseFormAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.ApplyFilter => await ApplyFilterAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.ClearFilter => await ClearFilterAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.RunSql => await RunSqlAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.RunProcedure => await RunProcedureAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.SetControlProperty => await SetControlPropertyAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.SetControlVisibility => await SetSpecificControlPropertyAsync(sequence, step, stepIndex, "visible", record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.SetControlEnabled => await SetSpecificControlPropertyAsync(sequence, step, stepIndex, "enabled", record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.SetControlReadOnly => await SetSpecificControlPropertyAsync(sequence, step, stepIndex, "readOnly", record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                DbActionKind.NewRecord or
-                DbActionKind.SaveRecord or
-                DbActionKind.DeleteRecord or
-                DbActionKind.RefreshRecords or
-                DbActionKind.PreviousRecord or
-                DbActionKind.NextRecord or
-                DbActionKind.GoToRecord => await ExecuteRecordActionAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
-                _ => FormEventDispatchResult.Failure($"Unsupported form action kind '{step.Kind}'."),
-            };
+            WriteActionDiagnostic(step, stepMetadata, started, result, canceled: false, exceptionMessage: null);
+            return result;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            WriteActionDiagnostic(
+                step,
+                stepMetadata,
+                started,
+                FormEventDispatchResult.Failure($"Form action '{step.Kind}' was canceled."),
+                canceled: true,
+                exceptionMessage: null);
             throw;
         }
         catch (Exception ex)
         {
-            return FormEventDispatchResult.Failure(
+            FormEventDispatchResult result = FormEventDispatchResult.Failure(
                 $"Form action '{step.Kind}' failed: {ex.Message}");
+            WriteActionDiagnostic(step, stepMetadata, started, result, canceled: false, ex.Message);
+            return result;
         }
+    }
+
+    private static async Task<FormEventDispatchResult> ExecuteStepCoreAsync(
+        DbActionSequence sequence,
+        DbActionStep step,
+        int stepIndex,
+        DbCommandRegistry commands,
+        IReadOnlyDictionary<string, object?>? record,
+        IReadOnlyDictionary<string, object?>? bindingArguments,
+        IReadOnlyDictionary<string, object?>? runtimeArguments,
+        IReadOnlyDictionary<string, string> metadata,
+        IReadOnlyList<DbActionSequence>? reusableSequences,
+        Func<string, object?, Task>? setFieldValue,
+        Func<string, Task>? showMessage,
+        Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
+        IFormActionRuntime actionRuntime,
+        CancellationToken ct,
+        int depth)
+    {
+        if (!FormActionConditionEvaluator.TryEvaluate(
+            step.Condition,
+            record,
+            bindingArguments,
+            runtimeArguments,
+            step.Arguments,
+            out bool shouldRun,
+            out string? conditionError))
+        {
+            return FormEventDispatchResult.Failure(
+                $"Form action '{step.Kind}' condition failed: {conditionError}");
+        }
+
+        if (!shouldRun)
+            return FormEventDispatchResult.Success();
+
+        return step.Kind switch
+        {
+            DbActionKind.RunCommand => await RunCommandAsync(sequence, step, stepIndex, commands, record, bindingArguments, runtimeArguments, metadata, ct),
+            DbActionKind.SetFieldValue => await SetFieldValueAsync(step, record, setFieldValue),
+            DbActionKind.ShowMessage => await ShowMessageAsync(step, showMessage),
+            DbActionKind.Stop => FormEventDispatchResult.Success(ReadMessage(step)),
+            DbActionKind.RunActionSequence => await RunActionSequenceAsync(
+                step,
+                commands,
+                record,
+                bindingArguments,
+                runtimeArguments,
+                metadata,
+                reusableSequences,
+                setFieldValue,
+                showMessage,
+                executeBuiltInFormAction,
+                actionRuntime,
+                ct,
+                depth),
+            DbActionKind.OpenForm => await OpenFormAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.CloseForm => await CloseFormAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.ApplyFilter => await ApplyFilterAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.ClearFilter => await ClearFilterAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.RunSql => await RunSqlAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.RunProcedure => await RunProcedureAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.SetControlProperty => await SetControlPropertyAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.SetControlVisibility => await SetSpecificControlPropertyAsync(sequence, step, stepIndex, "visible", record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.SetControlEnabled => await SetSpecificControlPropertyAsync(sequence, step, stepIndex, "enabled", record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.SetControlReadOnly => await SetSpecificControlPropertyAsync(sequence, step, stepIndex, "readOnly", record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            DbActionKind.NewRecord or
+            DbActionKind.SaveRecord or
+            DbActionKind.DeleteRecord or
+            DbActionKind.RefreshRecords or
+            DbActionKind.PreviousRecord or
+            DbActionKind.NextRecord or
+            DbActionKind.GoToRecord => await ExecuteRecordActionAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
+            _ => FormEventDispatchResult.Failure($"Unsupported form action kind '{step.Kind}'."),
+        };
+    }
+
+    private static void WriteActionDiagnostic(
+        DbActionStep step,
+        IReadOnlyDictionary<string, string>? metadata,
+        long started,
+        FormEventDispatchResult result,
+        bool canceled,
+        string? exceptionMessage)
+    {
+        if (metadata is null)
+            return;
+
+        FormActionDiagnostics.WriteInvocation(
+            step.Kind,
+            step.Target,
+            metadata,
+            FormActionDiagnostics.GetElapsedTime(started),
+            result.Succeeded,
+            canceled,
+            result.Message,
+            exceptionMessage);
     }
 
     private static Task<FormEventDispatchResult> ExecuteRecordActionAsync(

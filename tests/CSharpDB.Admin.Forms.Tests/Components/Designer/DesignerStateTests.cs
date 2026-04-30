@@ -135,6 +135,55 @@ public sealed class DesignerStateTests
     }
 
     [Fact]
+    public void ToFormDefinition_PreservesControlRules()
+    {
+        var state = new DesignerState();
+        var form = CreateForm() with
+        {
+            Rules =
+            [
+                new ControlRuleDefinition(
+                    "closed-state",
+                    "[Status] = 'Closed'",
+                    [new ControlRuleEffect("status", "visible", false)]),
+            ],
+        };
+
+        state.LoadForm(form);
+
+        FormDefinition saved = state.ToFormDefinition();
+
+        ControlRuleDefinition rule = Assert.Single(saved.Rules!);
+        Assert.Equal("closed-state", rule.RuleId);
+        Assert.Equal("[Status] = 'Closed'", rule.Condition);
+        ControlRuleEffect effect = Assert.Single(rule.Effects);
+        Assert.Equal("status", effect.ControlId);
+        Assert.Equal("visible", effect.Property);
+        Assert.False(Assert.IsType<bool>(effect.Value));
+    }
+
+    [Fact]
+    public void UpdateRules_ReplacesControlRules()
+    {
+        var state = new DesignerState();
+        state.LoadForm(CreateForm());
+
+        state.UpdateRules(
+        [
+            new ControlRuleDefinition(
+                "readonly-closed",
+                "[Status] = 'Closed'",
+                [new ControlRuleEffect("status", "readOnly", true)]),
+        ]);
+
+        FormDefinition saved = state.ToFormDefinition();
+
+        ControlRuleDefinition rule = Assert.Single(saved.Rules!);
+        Assert.Equal("readonly-closed", rule.RuleId);
+        Assert.Equal("readOnly", Assert.Single(rule.Effects).Property);
+    }
+
+    [Fact]
     public void SetLayoutMode_UpdatesSavedLayout()
     {
         var state = new DesignerState();

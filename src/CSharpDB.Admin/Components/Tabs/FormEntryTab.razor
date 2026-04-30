@@ -13,6 +13,10 @@ else
 {
     <DataEntry @key="_renderKey"
                FormId="@Tab.FormId"
+               InitialRecordId="@Tab.InitialRecordId"
+               InitialMode="@Tab.InitialFormEntryMode"
+               InitialFilterExpression="@Tab.InitialFilterExpression"
+               InitialFilterParameters="@Tab.InitialFilterParameters"
                OnOpenDesigner="OpenDesigner"
                OnOpenForm="OpenForm"
                OnCloseForm="CloseForm" />
@@ -41,7 +45,13 @@ else
 
     private Task OpenForm(FormOpenRequest request)
     {
-        TabManager.OpenFormEntryTab(request.FormId, request.FormName);
+        TabManager.OpenFormEntryTab(
+            request.FormId,
+            request.FormName,
+            request.RecordId,
+            request.Mode,
+            request.FilterExpression,
+            request.Arguments);
         return Task.CompletedTask;
     }
 

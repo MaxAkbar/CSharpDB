@@ -99,6 +99,7 @@
                           OnBuiltInAction="ExecuteBuiltInFormActionAsync"
                           ActionRuntime="this"
                           ControlPropertyOverrides="_controlPropertyOverrides"
+                          ControlFilters="_controlFilters"
                           OnChildRowsChanged="OnChildRowsChanged" />
         </div>
     }
@@ -210,6 +211,10 @@
     [Parameter] public EventCallback<FormCloseRequest> OnCloseForm { get; set; }
     [Parameter] public bool EnableSqlActions { get; set; }
     [Parameter] public bool EnableProcedureActions { get; set; }
+    [Parameter] public object? InitialRecordId { get; set; }
+    [Parameter] public string? InitialMode { get; set; }
+    [Parameter] public string? InitialFilterExpression { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, object?>? InitialFilterParameters { get; set; }
     [Inject] public IFormEventDispatcher FormEvents { get; set; } = NullFormEventDispatcher.Instance;
     [Inject] public ICSharpDbClient? DbClient { get; set; }
     [Inject] public NavigationManager? Navigation { get; set; }
@@ -246,7 +251,9 @@
     private readonly List<ControlDefinition> _computedControls = [];
     private readonly HashSet<string> _computedFieldNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyDictionary<string, object?>> _controlPropertyOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ControlFilterState> _controlFilters = new(StringComparer.OrdinalIgnoreCase);
     private string? _loadedFormId;
+    private string _appliedInitialStateKey = string.Empty;
     private ElementReference _layoutRef;
     private ElementReference _recordListRef;
 
@@ -273,11 +280,20 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (string.IsNullOrWhiteSpace(FormId) || string.Equals(_loadedFormId, FormId, StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(FormId))
             return;
 
-        _loadedFormId = FormId;
-        await LoadAsync();
+        string initialStateKey = BuildInitialStateKey();
+        if (!string.Equals(_loadedFormId, FormId, StringComparison.Ordinal))
+        {
+            _loadedFormId = FormId;
+            _appliedInitialStateKey = string.Empty;
+            await LoadAsync();
+            return;
+        }
+
+        if (_form is not null && !string.Equals(_appliedInitialStateKey, initialStateKey, StringComparison.Ordinal))
+            await ApplyInitialEntryStateAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -323,6 +339,7 @@
         _computedControls.Clear();
         _computedFieldNames.Clear();
         _controlPropertyOverrides.Clear();
+        _controlFilters.Clear();
         ClearFilterState();
 
         try
@@ -352,6 +369,8 @@
             _page = 1;
             await LoadRecordPageAsync(_page);
             if (_error is null)
+                await ApplyInitialEntryStateAsync();
+            if (_error is null)
                 await DispatchFormEventAsync(FormEventKind.OnLoad, _currentRecord);
         }
         catch (Exception ex)
@@ -359,6 +378,94 @@
             _error = $"Failed to load form entry: {ex.Message}";
         }
     }
+
+    private async Task ApplyInitialEntryStateAsync()
+    {
+        _appliedInitialStateKey = BuildInitialStateKey();
+        if (_table is null)
+            return;
+
+        string? mode = InitialMode?.Trim();
+        if (string.Equals(mode, "new", StringComparison.OrdinalIgnoreCase))
+        {
+            if (SupportsWriteOperations)
+                NewRecord();
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(InitialFilterExpression))
+        {
+            if (!FormFilterExpression.TryParse(InitialFilterExpression, _table, out FormFilterExpression? parsed, out string? filterError))
+            {
+                _error = $"Initial filter is invalid: {filterError}";
+                return;
+            }
+
+            IReadOnlyDictionary<string, object?> parameters = InitialFilterParameters ?? EmptyObjectDictionary.Instance;
+            string? missingParameter = parsed!.Parameters.FirstOrDefault(parameter => !parameters.ContainsKey(parameter));
+            if (missingParameter is not null)
+            {
+                _error = $"Initial filter is missing parameter '@{missingParameter}'.";
+                return;
+            }
+
+            _activeFilterExpression = InitialFilterExpression;
+            _activeFilter = parsed;
+            _activeFilterParameters = parameters;
+            ClearSearchState(clearPendingValue: true);
+            await LoadRecordPageAsync(1, preserveCurrentRecordWhenEmpty: _currentRecord.Count > 0 || _isNew);
+        }
+
+        if (InitialRecordId is not null)
+            await NavigateToInitialRecordAsync(InitialRecordId);
+    }
+
+    private async Task NavigateToInitialRecordAsync(object initialRecordId)
+    {
+        FormFieldDefinition? primaryKeyField = GetPrimaryKeyField();
+        if (primaryKeyField is null)
+        {
+            _error = "Initial record navigation requires a form source with a single primary key column.";
+            return;
+        }
+
+        string rawValue = NormalizeActionValue(initialRecordId)?.ToString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(rawValue))
+            return;
+
+        if (!TryParseFieldValue(primaryKeyField, rawValue, out object? parsedValue, out string? validationError) || parsedValue is null)
+        {
+            _error = validationError ?? $"'{rawValue}' is not a valid {GetPrimaryKeyLabel()} value.";
+            return;
+        }
+
+        ClearSearchState(clearPendingValue: true);
+        await NavigateToRecordAsync(parsedValue);
+    }
+
+    private string BuildInitialStateKey()
+        => string.Join(
+            "|",
+            FormId,
+            InitialMode?.Trim() ?? string.Empty,
+            FormatInitialStateValue(InitialRecordId),
+            InitialFilterExpression?.Trim() ?? string.Empty,
+            FormatInitialParameterKey(InitialFilterParameters));
+
+    private static string FormatInitialParameterKey(IReadOnlyDictionary<string, object?>? parameters)
+    {
+        if (parameters is null || parameters.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "\u001f",
+            parameters
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => $"{pair.Key}={FormatInitialStateValue(pair.Value)}"));
+    }
+
+    private static string FormatInitialStateValue(object? value)
+        => value is null ? "<null>" : $"{value.GetType().FullName}:{value}";
 
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<EnumChoice>>> LoadChoicesAsync(FormDefinition form, FormTableDefinition table)
     {
@@ -749,7 +856,10 @@
             return FormEventDispatchResult.Success();
         }
 
-        await OnOpenForm.InvokeAsync(new FormOpenRequest(targetForm.FormId, targetForm.Name, resolvedArguments));
+        string? mode = TryReadArgumentText(resolvedArguments, "mode", "openMode");
+        object? recordId = TryReadArgumentValue(resolvedArguments, "recordId", "primaryKey", "id");
+        string? filterExpression = TryReadArgumentText(resolvedArguments, "filter", "where");
+        await OnOpenForm.InvokeAsync(new FormOpenRequest(targetForm.FormId, targetForm.Name, resolvedArguments, mode, recordId, filterExpression));
         return FormEventDispatchResult.Success();
     }
 
@@ -778,7 +888,7 @@
             return FormEventDispatchResult.Failure("ApplyFilter action requires a loaded form source.");
 
         if (!IsCurrentFormTarget(target))
-            return FormEventDispatchResult.Failure($"ApplyFilter target '{target}' is not supported by this rendered form runtime.");
+            return await ApplyControlFilterAsync(context, target, filter, arguments, ct);
 
         if (!FormFilterExpression.TryParse(filter, _table, out FormFilterExpression? parsed, out string? filterError))
             return FormEventDispatchResult.Failure($"ApplyFilter action has an invalid filter expression: {filterError}");
@@ -807,7 +917,7 @@
             return FormEventDispatchResult.Failure("ClearFilter action requires a loaded form source.");
 
         if (!IsCurrentFormTarget(target))
-            return FormEventDispatchResult.Failure($"ClearFilter target '{target}' is not supported by this rendered form runtime.");
+            return await ClearControlFilterAsync(target, ct);
 
         object? currentPk = TryGetPrimaryKeyValue(_currentRecord, out object? pkValue) ? pkValue : null;
         ClearFilterState();
@@ -969,6 +1079,90 @@
            string.Equals(target, "form", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(target, _form?.FormId, StringComparison.OrdinalIgnoreCase) ||
            string.Equals(target, _form?.Name, StringComparison.OrdinalIgnoreCase);
+
+    private async Task<FormEventDispatchResult> ApplyControlFilterAsync(
+        FormActionRuntimeContext context,
+        string target,
+        string filter,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!TryResolveDataGridFilterTarget(target, out ControlDefinition? control, out FormTableDefinition? table, out string? targetError))
+            return FormEventDispatchResult.Failure(targetError ?? $"ApplyFilter target '{target}' is not supported by this rendered form runtime.");
+
+        if (!FormFilterExpression.TryParse(filter, table, out FormFilterExpression? parsed, out string? filterError))
+            return FormEventDispatchResult.Failure($"ApplyFilter action has an invalid filter expression for control '{control!.ControlId}': {filterError}");
+
+        IReadOnlyDictionary<string, object?> resolvedArguments = BuildActionParameterDictionary(context, arguments);
+        string? missingParameter = parsed!.Parameters.FirstOrDefault(parameter => !resolvedArguments.ContainsKey(parameter));
+        if (missingParameter is not null)
+            return FormEventDispatchResult.Failure($"ApplyFilter action is missing parameter '@{missingParameter}'.");
+
+        _controlFilters[control!.ControlId] = new ControlFilterState(filter, resolvedArguments);
+        await RefreshDataEntryStateAsync();
+        return FormEventDispatchResult.Success();
+    }
+
+    private async Task<FormEventDispatchResult> ClearControlFilterAsync(string target, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!TryResolveDataGridFilterTarget(target, out ControlDefinition? control, out _, out string? targetError))
+            return FormEventDispatchResult.Failure(targetError ?? $"ClearFilter target '{target}' is not supported by this rendered form runtime.");
+
+        _controlFilters.Remove(control!.ControlId);
+        await RefreshDataEntryStateAsync();
+        return FormEventDispatchResult.Success();
+    }
+
+    private bool TryResolveDataGridFilterTarget(
+        string target,
+        out ControlDefinition? control,
+        out FormTableDefinition? table,
+        out string? error)
+    {
+        control = null;
+        table = null;
+        error = null;
+
+        if (_form is null)
+        {
+            error = "Control filter actions require a loaded form.";
+            return false;
+        }
+
+        control = _form.Controls.FirstOrDefault(candidate => string.Equals(candidate.ControlId, target, StringComparison.OrdinalIgnoreCase));
+        if (control is null)
+        {
+            error = $"Filter target '{target}' does not match the current form or a known control.";
+            return false;
+        }
+
+        if (!string.Equals(control.ControlType, "datagrid", StringComparison.OrdinalIgnoreCase))
+        {
+            error = $"Filter target '{target}' is not a DataGrid control.";
+            return false;
+        }
+
+        string? childTableName = control.Props.Values.TryGetValue("childTable", out object? childTableValue)
+            ? childTableValue?.ToString()
+            : null;
+        if (string.IsNullOrWhiteSpace(childTableName))
+        {
+            error = $"DataGrid control '{target}' does not have a child table configured.";
+            return false;
+        }
+
+        if (!_childTableDefs.TryGetValue(childTableName, out table))
+        {
+            error = $"DataGrid control '{target}' child table '{childTableName}' was not found.";
+            return false;
+        }
+
+        return true;
+    }
 
     private IReadOnlyDictionary<string, object?> BuildActionParameterDictionary(
         FormActionRuntimeContext context,
@@ -1224,6 +1418,19 @@
                 if (!string.IsNullOrWhiteSpace(text))
                     return text;
             }
+        }
+
+        return null;
+    }
+
+    private static object? TryReadArgumentValue(
+        IReadOnlyDictionary<string, object?> arguments,
+        params string[] keys)
+    {
+        foreach (string key in keys)
+        {
+            if (arguments.TryGetValue(key, out object? value))
+                return NormalizeActionValue(value);
         }
 
         return null;
@@ -2102,4 +2309,10 @@
         => TryGetFieldValue(record, fieldName, out object? value) && value is not null
             ? value.ToString() ?? string.Empty
             : string.Empty;
+
+    private static class EmptyObjectDictionary
+    {
+        public static readonly IReadOnlyDictionary<string, object?> Instance =
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+    }
 }
