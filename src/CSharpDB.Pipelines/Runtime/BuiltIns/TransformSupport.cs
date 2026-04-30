@@ -204,7 +204,7 @@ internal static class TransformSupport
 
         try
         {
-            value = FromDbValue(definition.Invoke(arguments));
+            value = FromDbValue(definition.Invoke(arguments, CreatePipelineCallbackMetadata(name)));
             return true;
         }
         catch (Exception ex)
@@ -332,4 +332,13 @@ internal static class TransformSupport
 
         return string.CompareOrdinal(left.ToString(), right.ToString());
     }
+
+    private static IReadOnlyDictionary<string, string>? CreatePipelineCallbackMetadata(string functionName)
+        => DbCallbackDiagnostics.IsInvocationEnabled
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["surface"] = "Pipelines",
+                ["location"] = $"transforms.functions.{functionName}",
+            }
+            : null;
 }

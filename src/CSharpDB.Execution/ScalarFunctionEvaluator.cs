@@ -78,7 +78,7 @@ internal static class ScalarFunctionEvaluator
 
         try
         {
-            return definition.Invoke(arguments);
+            return definition.Invoke(arguments, CreateSqlCallbackMetadata(func.FunctionName));
         }
         catch (Exception ex)
         {
@@ -109,7 +109,7 @@ internal static class ScalarFunctionEvaluator
 
         try
         {
-            return definition.Invoke(arguments);
+            return definition.Invoke(arguments, CreateSqlCallbackMetadata(func.FunctionName));
         }
         catch (Exception ex)
         {
@@ -129,4 +129,13 @@ internal static class ScalarFunctionEvaluator
         DbType.Blob => $"[{value.AsBlob.Length} bytes]",
         _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported DbValue type '{value.Type}'."),
     };
+
+    private static IReadOnlyDictionary<string, string>? CreateSqlCallbackMetadata(string functionName)
+        => DbCallbackDiagnostics.IsInvocationEnabled
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["surface"] = "SQL",
+                ["location"] = $"functions.{functionName}",
+            }
+            : null;
 }

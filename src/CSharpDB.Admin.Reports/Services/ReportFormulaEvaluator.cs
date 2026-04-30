@@ -355,7 +355,7 @@ public static class ReportFormulaEvaluator
 
             try
             {
-                DbValue value = definition.Invoke(arguments.ToArray());
+                DbValue value = definition.Invoke(arguments.ToArray(), CreateReportCallbackMetadata(functionName));
                 return value.Type switch
                 {
                     DbType.Integer => value.AsInteger,
@@ -405,7 +405,7 @@ public static class ReportFormulaEvaluator
             return true;
         }
 
-        value = definition.Invoke(arguments);
+        value = definition.Invoke(arguments, CreateReportCallbackMetadata(name));
         return true;
     }
 
@@ -519,4 +519,13 @@ public static class ReportFormulaEvaluator
 
         return true;
     }
+
+    private static IReadOnlyDictionary<string, string>? CreateReportCallbackMetadata(string functionName)
+        => DbCallbackDiagnostics.IsInvocationEnabled
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["surface"] = "AdminReports",
+                ["location"] = $"expressions.functions.{functionName}",
+            }
+            : null;
 }

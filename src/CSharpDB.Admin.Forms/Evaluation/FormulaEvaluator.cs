@@ -299,7 +299,7 @@ public static class FormulaEvaluator
 
             try
             {
-                DbValue value = definition.Invoke(arguments.ToArray());
+                DbValue value = definition.Invoke(arguments.ToArray(), CreateFormCallbackMetadata(functionName));
                 return value.Type switch
                 {
                     DbType.Integer => value.AsInteger,
@@ -319,4 +319,13 @@ public static class FormulaEvaluator
                 Position++;
         }
     }
+
+    private static IReadOnlyDictionary<string, string>? CreateFormCallbackMetadata(string functionName)
+        => DbCallbackDiagnostics.IsInvocationEnabled
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["surface"] = "AdminForms",
+                ["location"] = $"formulas.functions.{functionName}",
+            }
+            : null;
 }

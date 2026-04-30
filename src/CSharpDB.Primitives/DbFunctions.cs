@@ -4,7 +4,24 @@ public delegate DbValue DbScalarFunctionDelegate(
     DbScalarFunctionContext context,
     ReadOnlySpan<DbValue> arguments);
 
-public sealed record DbScalarFunctionContext(string FunctionName);
+public sealed record DbScalarFunctionContext(string FunctionName)
+{
+    public IReadOnlyDictionary<string, string> Metadata { get; init; } = EmptyStringDictionary.Instance;
+
+    internal static DbScalarFunctionContext Create(
+        string functionName,
+        IReadOnlyDictionary<string, string>? metadata)
+        => new(functionName)
+        {
+            Metadata = metadata ?? EmptyStringDictionary.Instance,
+        };
+
+    private static class EmptyStringDictionary
+    {
+        public static readonly IReadOnlyDictionary<string, string> Instance =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
+}
 
 public sealed record DbScalarFunctionOptions(
     DbType? ReturnType = null,
@@ -34,7 +51,55 @@ public sealed class DbScalarFunctionDefinition
     public DbScalarFunctionOptions Options { get; }
 
     public DbValue Invoke(ReadOnlySpan<DbValue> arguments)
-        => _invoke(new DbScalarFunctionContext(Name), arguments);
+        => Invoke(arguments, metadata: null);
+
+    public DbValue Invoke(
+        ReadOnlySpan<DbValue> arguments,
+        IReadOnlyDictionary<string, string>? metadata)
+    {
+        DbScalarFunctionContext context = DbScalarFunctionContext.Create(Name, metadata);
+        if (!DbCallbackDiagnostics.IsInvocationEnabled)
+            return _invoke(context, arguments);
+
+        long started = DbCallbackDiagnostics.GetTimestamp();
+        try
+        {
+            DbValue result = _invoke(context, arguments);
+            DbCallbackDiagnostics.WriteScalarInvocation(
+                Name,
+                Arity,
+                context.Metadata,
+                DbCallbackDiagnostics.GetElapsedTime(started),
+                succeeded: true,
+                canceled: false,
+                exceptionMessage: null);
+            return result;
+        }
+        catch (OperationCanceledException ex)
+        {
+            DbCallbackDiagnostics.WriteScalarInvocation(
+                Name,
+                Arity,
+                context.Metadata,
+                DbCallbackDiagnostics.GetElapsedTime(started),
+                succeeded: false,
+                canceled: true,
+                ex.Message);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            DbCallbackDiagnostics.WriteScalarInvocation(
+                Name,
+                Arity,
+                context.Metadata,
+                DbCallbackDiagnostics.GetElapsedTime(started),
+                succeeded: false,
+                canceled: false,
+                ex.Message);
+            throw;
+        }
+    }
 }
 
 public sealed class DbFunctionRegistry

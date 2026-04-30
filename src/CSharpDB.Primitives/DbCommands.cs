@@ -31,6 +31,7 @@ public sealed record DbCommandResult(
 
 public sealed class DbCommandDefinition
 {
+    private const string CommandTimeoutDataKey = "CSharpDB.CommandTimedOut";
     private readonly DbCommandDelegate _invoke;
 
     internal DbCommandDefinition(
@@ -56,9 +57,79 @@ public sealed class DbCommandDefinition
             Name,
             arguments ?? EmptyDbValueDictionary.Instance,
             metadata ?? EmptyStringDictionary.Instance);
+        if (DbCallbackDiagnostics.IsInvocationEnabled)
+            return InvokeWithDiagnosticsAsync(context, ct);
+
+        return InvokeCoreAsync(context, ct);
+    }
+
+    private ValueTask<DbCommandResult> InvokeCoreAsync(
+        DbCommandContext context,
+        CancellationToken ct)
+    {
         return Options.Timeout is { } timeout
             ? InvokeWithTimeoutAsync(context, timeout, ct)
             : _invoke(context, ct);
+    }
+
+    private async ValueTask<DbCommandResult> InvokeWithDiagnosticsAsync(
+        DbCommandContext context,
+        CancellationToken ct)
+    {
+        long started = DbCallbackDiagnostics.GetTimestamp();
+        try
+        {
+            DbCommandResult result = await InvokeCoreAsync(context, ct).ConfigureAwait(false);
+            DbCallbackDiagnostics.WriteCommandInvocation(
+                Name,
+                context.Metadata,
+                DbCallbackDiagnostics.GetElapsedTime(started),
+                succeeded: result.Succeeded,
+                timedOut: false,
+                canceled: false,
+                result.Message,
+                exceptionMessage: null);
+            return result;
+        }
+        catch (TimeoutException ex) when (IsCommandTimeoutException(ex))
+        {
+            DbCallbackDiagnostics.WriteCommandInvocation(
+                Name,
+                context.Metadata,
+                DbCallbackDiagnostics.GetElapsedTime(started),
+                succeeded: false,
+                timedOut: true,
+                canceled: false,
+                resultMessage: null,
+                ex.Message);
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            DbCallbackDiagnostics.WriteCommandInvocation(
+                Name,
+                context.Metadata,
+                DbCallbackDiagnostics.GetElapsedTime(started),
+                succeeded: false,
+                timedOut: false,
+                canceled: true,
+                resultMessage: null,
+                ex.Message);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            DbCallbackDiagnostics.WriteCommandInvocation(
+                Name,
+                context.Metadata,
+                DbCallbackDiagnostics.GetElapsedTime(started),
+                succeeded: false,
+                timedOut: false,
+                canceled: false,
+                resultMessage: null,
+                ex.Message);
+            throw;
+        }
     }
 
     private async ValueTask<DbCommandResult> InvokeWithTimeoutAsync(
@@ -84,7 +155,14 @@ public sealed class DbCommandDefinition
     }
 
     private TimeoutException CreateTimeoutException(TimeSpan timeout, Exception inner)
-        => new($"Command '{Name}' timed out after {FormatTimeout(timeout)}.", inner);
+    {
+        var exception = new TimeoutException($"Command '{Name}' timed out after {FormatTimeout(timeout)}.", inner);
+        exception.Data[CommandTimeoutDataKey] = true;
+        return exception;
+    }
+
+    private static bool IsCommandTimeoutException(TimeoutException exception)
+        => exception.Data[CommandTimeoutDataKey] is true;
 
     private static string FormatTimeout(TimeSpan timeout)
         => timeout.TotalMilliseconds < 1000
