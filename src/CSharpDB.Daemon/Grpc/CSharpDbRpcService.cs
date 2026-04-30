@@ -257,6 +257,9 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
     public override Task<BoolValue> DeleteDocument(DeleteDocumentRequest request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.DeleteDocumentAsync(request.CollectionName, request.Key, ct), value => new BoolValue { Value = value });
 
+    public override Task<Empty> DropCollection(CollectionNameRequest request, ServerCallContext context)
+        => ExecuteEmptyAsync(context, ct => client.DropCollectionAsync(request.CollectionName, ct));
+
     public override Task<Empty> Checkpoint(Empty request, ServerCallContext context)
         => ExecuteEmptyAsync(context, ct => client.CheckpointAsync(ct));
 

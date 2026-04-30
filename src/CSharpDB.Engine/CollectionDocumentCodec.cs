@@ -86,10 +86,7 @@ internal sealed class CollectionDocumentCodec<T>
 
             try
             {
-                T document = header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary
-                    ? CollectionBinaryDocumentCodec.Decode<T>(documentPayload)
-                    : JsonSerializer.Deserialize<T>(documentPayload, s_jsonOptions)!;
-
+                T document = DecodeDirectDocumentPayload(documentPayload, header.Format);
                 return (key, document);
             }
             catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
@@ -112,28 +109,14 @@ internal sealed class CollectionDocumentCodec<T>
             CollectionPayloadCodec.TryReadFastHeader(payload, out var header))
         {
             ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+            try
             {
-                try
-                {
-                    return CollectionBinaryDocumentCodec.Decode<T>(documentPayload);
-                }
-                catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
-                {
-                    // Fall through to the slower validated / legacy path if the fast binary probe
-                    // was triggered by a non-direct payload that happens to share the marker bytes.
-                }
+                return DecodeDirectDocumentPayload(documentPayload, header.Format);
             }
-            else
+            catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
             {
-                try
-                {
-                    return JsonSerializer.Deserialize<T>(documentPayload, s_jsonOptions)!;
-                }
-                catch (Exception ex) when (IsFastHeaderFallbackCandidate(ex))
-                {
-                    // Fall through to the slower validated / legacy path.
-                }
+                // Fall through to the slower validated / legacy path if the fast probe
+                // was triggered by a non-direct payload that happens to share the marker bytes.
             }
         }
 
@@ -141,10 +124,7 @@ internal sealed class CollectionDocumentCodec<T>
             CollectionPayloadCodec.TryReadValidatedHeader(payload, out header))
         {
             ReadOnlySpan<byte> documentPayload = CollectionPayloadCodec.GetDocumentPayload(payload, header);
-            if (header.Format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
-                return CollectionBinaryDocumentCodec.Decode<T>(documentPayload);
-
-            return JsonSerializer.Deserialize<T>(documentPayload, s_jsonOptions)!;
+            return DecodeDirectDocumentPayload(documentPayload, header.Format);
         }
 
         return DecodeLegacy(payload).Document;
@@ -252,6 +232,30 @@ internal sealed class CollectionDocumentCodec<T>
     {
         var values = _recordSerializer.DecodeUpTo(payload, 0);
         return values[0].AsText;
+    }
+
+    [RequiresUnreferencedCode("Collection<T> JSON deserialization requires reflection. Use SQL API for NativeAOT scenarios.")]
+    [RequiresDynamicCode("Collection<T> JSON deserialization requires runtime code generation. Use SQL API for NativeAOT scenarios.")]
+    private static T DecodeDirectDocumentPayload(
+        ReadOnlySpan<byte> documentPayload,
+        CollectionPayloadCodec.CollectionPayloadFormat format)
+    {
+        if (format == CollectionPayloadCodec.CollectionPayloadFormat.Binary)
+        {
+            if (typeof(T) == typeof(JsonElement))
+                return (T)(object)DecodeBinaryDocumentAsJsonElement(documentPayload);
+
+            return CollectionBinaryDocumentCodec.Decode<T>(documentPayload);
+        }
+
+        return JsonSerializer.Deserialize<T>(documentPayload, s_jsonOptions)!;
+    }
+
+    private static JsonElement DecodeBinaryDocumentAsJsonElement(ReadOnlySpan<byte> documentPayload)
+    {
+        byte[] jsonUtf8 = CollectionBinaryDocumentCodec.EncodeJsonUtf8(documentPayload);
+        using JsonDocument document = JsonDocument.Parse(jsonUtf8);
+        return document.RootElement.Clone();
     }
 
     private static bool IsFastHeaderFallbackCandidate(Exception ex)

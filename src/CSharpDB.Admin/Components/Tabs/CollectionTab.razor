@@ -1,0 +1,510 @@
+@using System.Text.Json
+@inject ICSharpDbClient DbClient
+@inject DatabaseChangeService Changes
+@inject TabManagerService TabManager
+@inject ToastService Toast
+@inject ModalService Modal
+
+<div class="data-tab collection-tab">
+    <div class="data-toolbar">
+        <div class="data-crumb">
+            <button type="button" @onclick="RefreshAsync">
+                <i class="bi bi-braces"></i>
+                collections
+            </button>
+            <span>/</span>
+            <strong><i class="bi bi-braces icon-view"></i>@CollectionName</strong>
+        </div>
+
+        <div class="data-toolbar-group">
+            <button type="button" class="data-toolbar-btn" @onclick="RefreshAsync" disabled="@_loading">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <button type="button" class="data-toolbar-btn primary" @onclick="StartNewDocumentAsync">
+                <i class="bi bi-plus-lg"></i> New Document
+            </button>
+            <button type="button" class="data-toolbar-btn primary" @onclick="SaveDocumentAsync" disabled="@(!CanSave)">
+                <i class="bi bi-check-lg"></i> Save
+            </button>
+            <button type="button" class="data-toolbar-btn" @onclick="DiscardChangesAsync" disabled="@(!CanDiscard)">
+                <i class="bi bi-x-lg"></i> Discard
+            </button>
+            <button type="button" class="data-toolbar-btn danger" @onclick="DeleteDocumentAsync" disabled="@(!CanDelete)">
+                <i class="bi bi-trash3"></i> Delete
+            </button>
+        </div>
+
+        <div class="collection-key-lookup">
+            <i class="bi bi-key"></i>
+            <input type="text"
+                   placeholder="Find exact key..."
+                   value="@_lookupKey"
+                   @oninput="e => _lookupKey = e.Value?.ToString() ?? string.Empty"
+                   @onkeydown="HandleLookupKeyDown" />
+            <button type="button" title="Find document" @onclick="FindByKeyAsync" disabled="@string.IsNullOrWhiteSpace(_lookupKey)">
+                <i class="bi bi-search"></i>
+            </button>
+        </div>
+
+        <div class="data-pager">
+            <span>@GetRangeText()</span>
+            <select value="@_pageSize" @onchange="ChangePageSizeAsync" disabled="@_loading">
+                <option value="10">10 rows</option>
+                <option value="25">25 rows</option>
+                <option value="50">50 rows</option>
+                <option value="100">100 rows</option>
+            </select>
+            <button type="button" disabled="@(!CanGoToPreviousPage)" @onclick="GoToPreviousPageAsync" title="Previous page">
+                <i class="bi bi-chevron-left"></i>
+            </button>
+            <button type="button" disabled="@(!CanGoToNextPage)" @onclick="GoToNextPageAsync" title="Next page">
+                <i class="bi bi-chevron-right"></i>
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="collection-alert error">
+            <i class="bi bi-exclamation-triangle"></i>
+            <span>@_error</span>
+        </div>
+    }
+
+    <div class="collection-browser">
+        <div class="collection-list">
+            <table class="data-grid collection-grid">
+                <thead>
+                    <tr>
+                        <th class="row-num-header">#</th>
+                        <th>Key</th>
+                        <th>Kind</th>
+                        <th>Preview</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading)
+                    {
+                        <tr>
+                            <td colspan="4" class="empty-cell">Loading documents...</td>
+                        </tr>
+                    }
+                    else if (_documents.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="4" class="empty-cell">No documents in this collection</td>
+                        </tr>
+                    }
+                    else
+                    {
+                        @for (int i = 0; i < _documents.Count; i++)
+                        {
+                            var document = _documents[i];
+                            int rowNumber = ((_page - 1) * _pageSize) + i + 1;
+                            <tr class="@(IsSelected(document.Key) ? "selected" : string.Empty)"
+                                @onclick="() => SelectDocumentAsync(document)">
+                                <td class="row-num">@rowNumber</td>
+                                <td class="collection-key-cell">@document.Key</td>
+                                <td>@CollectionJsonFormatter.GetKindLabel(document.Document)</td>
+                                <td class="collection-preview-cell">@CollectionJsonFormatter.GetPreview(document.Document)</td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="collection-detail">
+            <div class="collection-detail-header">
+                <div>
+                    <span class="collection-detail-label">@(_isNewDocument ? "New Document" : "Document")</span>
+                    <strong>@(string.IsNullOrWhiteSpace(_editorKey) ? "No document selected" : _editorKey)</strong>
+                </div>
+                @if (_dirty)
+                {
+                    <span class="collection-dirty-badge">Unsaved</span>
+                }
+            </div>
+
+            @if (HasEditor)
+            {
+                <label class="schema-field">
+                    <span>Key</span>
+                    <input type="text"
+                           value="@_editorKey"
+                           readonly="@(!_isNewDocument)"
+                           @oninput="OnEditorKeyChanged" />
+                </label>
+
+                <label class="schema-field collection-json-field">
+                    <span>JSON Document</span>
+                    <textarea class="schema-textarea collection-json-editor"
+                              value="@_editorJson"
+                              @oninput="OnEditorJsonChanged"></textarea>
+                </label>
+
+                @if (!string.IsNullOrWhiteSpace(_validationMessage))
+                {
+                    <div class="collection-alert error">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <span>@_validationMessage</span>
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="collection-empty-detail">
+                    <i class="bi bi-braces"></i>
+                    <span>Select a document or create a new one.</span>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+    [Parameter] public string CollectionName { get; set; } = string.Empty;
+
+    private readonly List<CollectionDocument> _documents = new();
+    private string? _loadedCollectionName;
+    private string? _selectedKey;
+    private string _editorKey = string.Empty;
+    private string _editorJson = string.Empty;
+    private string _originalJson = string.Empty;
+    private string _lookupKey = string.Empty;
+    private string? _validationMessage;
+    private string? _error;
+    private bool _loading;
+    private bool _isNewDocument;
+    private bool _dirty;
+    private int _page = 1;
+    private int _pageSize = 25;
+    private int _totalCount;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalCount / (double)_pageSize));
+    private bool HasEditor => _isNewDocument || !string.IsNullOrWhiteSpace(_selectedKey);
+    private bool CanSave => HasEditor && _dirty && string.IsNullOrWhiteSpace(_validationMessage) && !string.IsNullOrWhiteSpace(_editorKey);
+    private bool CanDiscard => HasEditor && _dirty;
+    private bool CanDelete => HasEditor && !_isNewDocument && !string.IsNullOrWhiteSpace(_selectedKey);
+    private bool CanGoToPreviousPage => !_loading && _page > 1;
+    private bool CanGoToNextPage => !_loading && _page < TotalPages;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        bool startNewDocument = Tab?.State.Remove("StartNewDocument") == true;
+        if (string.Equals(_loadedCollectionName, CollectionName, StringComparison.Ordinal))
+        {
+            if (startNewDocument)
+                await StartNewDocumentAsync();
+            return;
+        }
+
+        _loadedCollectionName = CollectionName;
+        _page = 1;
+        ClearEditor();
+        await LoadPageAsync();
+
+        if (startNewDocument)
+            await StartNewDocumentAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (!await ConfirmDiscardIfDirtyAsync())
+            return;
+
+        await LoadPageAsync(_selectedKey);
+    }
+
+    private async Task ChangePageSizeAsync(ChangeEventArgs e)
+    {
+        if (!await ConfirmDiscardIfDirtyAsync())
+            return;
+
+        if (!int.TryParse(e.Value?.ToString(), out int pageSize))
+            pageSize = 25;
+
+        _pageSize = pageSize;
+        _page = 1;
+        await LoadPageAsync();
+    }
+
+    private async Task GoToPreviousPageAsync()
+    {
+        if (!CanGoToPreviousPage || !await ConfirmDiscardIfDirtyAsync())
+            return;
+
+        _page--;
+        await LoadPageAsync();
+    }
+
+    private async Task GoToNextPageAsync()
+    {
+        if (!CanGoToNextPage || !await ConfirmDiscardIfDirtyAsync())
+            return;
+
+        _page++;
+        await LoadPageAsync();
+    }
+
+    private async Task LoadPageAsync(string? selectKey = null)
+    {
+        if (string.IsNullOrWhiteSpace(CollectionName))
+        {
+            _error = "Collection name is required.";
+            return;
+        }
+
+        _loading = true;
+        _error = null;
+        try
+        {
+            var result = await DbClient.BrowseCollectionAsync(CollectionName, _page, _pageSize);
+            _totalCount = result.TotalCount;
+            _documents.Clear();
+            _documents.AddRange(result.Documents);
+
+            if (_page > TotalPages)
+            {
+                _page = TotalPages;
+                result = await DbClient.BrowseCollectionAsync(CollectionName, _page, _pageSize);
+                _totalCount = result.TotalCount;
+                _documents.Clear();
+                _documents.AddRange(result.Documents);
+            }
+
+            string? keyToSelect = selectKey ?? _selectedKey;
+            var selected = !string.IsNullOrWhiteSpace(keyToSelect)
+                ? _documents.FirstOrDefault(document => string.Equals(document.Key, keyToSelect, StringComparison.Ordinal))
+                : null;
+
+            selected ??= _documents.FirstOrDefault();
+            if (selected is not null)
+                SelectDocument(selected, isDirty: false);
+            else
+                ClearEditor();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _documents.Clear();
+            _totalCount = 0;
+            ClearEditor();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SelectDocumentAsync(CollectionDocument document)
+    {
+        if (!await ConfirmDiscardIfDirtyAsync())
+            return;
+
+        SelectDocument(document, isDirty: false);
+    }
+
+    private void SelectDocument(CollectionDocument document, bool isDirty)
+    {
+        _selectedKey = document.Key;
+        _editorKey = document.Key;
+        _editorJson = CollectionJsonFormatter.Format(document.Document);
+        _originalJson = _editorJson;
+        _isNewDocument = false;
+        _dirty = isDirty;
+        _validationMessage = null;
+    }
+
+    private async Task StartNewDocumentAsync()
+    {
+        if (!await ConfirmDiscardIfDirtyAsync())
+            return;
+
+        _selectedKey = null;
+        _editorKey = string.Empty;
+        _editorJson = "{}";
+        _originalJson = string.Empty;
+        _isNewDocument = true;
+        _dirty = true;
+        _validationMessage = null;
+    }
+
+    private async Task SaveDocumentAsync()
+    {
+        ValidateEditorJson();
+        if (!CanSave)
+            return;
+
+        string key = _editorKey.Trim();
+        if (!CollectionJsonFormatter.TryClone(_editorJson, out JsonElement document, out string? error))
+        {
+            _validationMessage = error;
+            return;
+        }
+
+        try
+        {
+            await DbClient.PutDocumentAsync(CollectionName, key, document);
+            Toast.Success($"Saved document '{key}'.");
+            Changes.NotifyChanged();
+            _selectedKey = key;
+            _isNewDocument = false;
+            _dirty = false;
+            await LoadPageAsync(key);
+        }
+        catch (Exception ex)
+        {
+            _validationMessage = ex.Message;
+        }
+    }
+
+    private async Task DeleteDocumentAsync()
+    {
+        if (!CanDelete || _selectedKey is null)
+            return;
+
+        string key = _selectedKey;
+        bool confirmed = await Modal.ConfirmAsync(
+            "Delete Document",
+            $"Are you sure you want to delete document '{key}' from collection '{CollectionName}'?",
+            "Delete",
+            isDanger: true);
+        if (!confirmed)
+            return;
+
+        try
+        {
+            bool deleted = await DbClient.DeleteDocumentAsync(CollectionName, key);
+            if (deleted)
+            {
+                Toast.Success($"Deleted document '{key}'.");
+                Changes.NotifyChanged();
+            }
+            else
+            {
+                Toast.Info($"Document '{key}' was not found.");
+            }
+
+            _selectedKey = null;
+            ClearEditor();
+            await LoadPageAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private Task DiscardChangesAsync()
+    {
+        if (!HasEditor)
+            return Task.CompletedTask;
+
+        if (_isNewDocument)
+        {
+            ClearEditor();
+            return Task.CompletedTask;
+        }
+
+        _editorJson = _originalJson;
+        _dirty = false;
+        _validationMessage = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task FindByKeyAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_lookupKey) || !await ConfirmDiscardIfDirtyAsync())
+            return;
+
+        string key = _lookupKey.Trim();
+        try
+        {
+            JsonElement? document = await DbClient.GetDocumentAsync(CollectionName, key);
+            if (document is null)
+            {
+                Toast.Info($"Document '{key}' was not found.");
+                return;
+            }
+
+            SelectDocument(new CollectionDocument { Key = key, Document = document.Value }, isDirty: false);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task HandleLookupKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await FindByKeyAsync();
+    }
+
+    private void OnEditorKeyChanged(ChangeEventArgs e)
+    {
+        _editorKey = e.Value?.ToString() ?? string.Empty;
+        _dirty = true;
+    }
+
+    private void OnEditorJsonChanged(ChangeEventArgs e)
+    {
+        _editorJson = e.Value?.ToString() ?? string.Empty;
+        _dirty = true;
+        ValidateEditorJson();
+    }
+
+    private void ValidateEditorJson()
+    {
+        if (string.IsNullOrWhiteSpace(_editorJson))
+        {
+            _validationMessage = "Document JSON is required.";
+            return;
+        }
+
+        _validationMessage = CollectionJsonFormatter.TryClone(_editorJson, out _, out string? error)
+            ? null
+            : error;
+    }
+
+    private async Task<bool> ConfirmDiscardIfDirtyAsync()
+    {
+        if (!_dirty)
+            return true;
+
+        return await Modal.ConfirmAsync(
+            "Discard Changes",
+            "Discard unsaved collection document changes?",
+            "Discard",
+            isDanger: true);
+    }
+
+    private void ClearEditor()
+    {
+        _selectedKey = null;
+        _editorKey = string.Empty;
+        _editorJson = string.Empty;
+        _originalJson = string.Empty;
+        _validationMessage = null;
+        _isNewDocument = false;
+        _dirty = false;
+    }
+
+    private bool IsSelected(string key)
+        => !_isNewDocument && string.Equals(_selectedKey, key, StringComparison.Ordinal);
+
+    private string GetRangeText()
+    {
+        if (_loading)
+            return "Loading...";
+
+        if (_totalCount == 0)
+            return "0 documents";
+
+        int first = ((_page - 1) * _pageSize) + 1;
+        int last = Math.Min(_totalCount, first + _documents.Count - 1);
+        return $"{first}-{last} of {_totalCount}";
+    }
+}

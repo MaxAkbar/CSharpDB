@@ -42,6 +42,11 @@
                                          ObjectName="@(tab.ObjectName ?? string.Empty)"
                                          IsView="true" />
                                 break;
+                            case TabKind.CollectionData:
+                                <CollectionTab @key="tab.Id"
+                                               Tab="tab"
+                                               CollectionName="@(tab.ObjectName ?? string.Empty)" />
+                                break;
                             case TabKind.Procedure:
                                 <ProcedureTab @key="tab.Id"
                                               Tab="tab" />

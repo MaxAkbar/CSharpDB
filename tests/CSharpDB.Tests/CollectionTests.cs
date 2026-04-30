@@ -354,6 +354,33 @@ public class CollectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DropCollection_RemovesCollectionAndIndexes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+
+        await users.PutAsync("u:1", new User("Alice", 30, "alice@example.com"), ct);
+        await users.EnsureIndexAsync(user => user.Name, ct);
+
+        Assert.Contains("users", _db.GetCollectionNames());
+        Assert.Contains(_db.GetIndexes(), index => index.TableName == "_col_users");
+
+        await _db.DropCollectionAsync("users", ct);
+
+        Assert.DoesNotContain("users", _db.GetCollectionNames());
+        Assert.DoesNotContain(_db.GetIndexes(), index => index.TableName == "_col_users");
+
+        await ReopenDatabaseAsync(ct);
+
+        Assert.DoesNotContain("users", _db.GetCollectionNames());
+        Assert.DoesNotContain(_db.GetIndexes(), index => index.TableName == "_col_users");
+
+        var ex = await Assert.ThrowsAsync<CSharpDbException>(
+            async () => await _db.DropCollectionAsync("users", ct));
+        Assert.Equal(ErrorCode.TableNotFound, ex.Code);
+    }
+
+    [Fact]
     public async Task GetCollectionAsync_CachedCollectionLookup_ReleasesWriteGate()
     {
         var ct = TestContext.Current.CancellationToken;

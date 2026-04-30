@@ -56,6 +56,46 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenCollectionTab_CreatesCollectionDataTab()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenCollectionTab("profiles");
+
+        Assert.Equal("collection:profiles", tab.Id);
+        Assert.Equal("profiles", tab.Title);
+        Assert.Equal("profiles", tab.ObjectName);
+        Assert.Equal(TabKind.CollectionData, tab.Kind);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenCollectionTab_DeduplicatesByCollectionName()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenCollectionTab("profiles");
+        TabDescriptor second = manager.OpenCollectionTab("profiles");
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void CloseTabsForObject_ClosesCollectionTab()
+    {
+        var manager = new TabManagerService();
+        manager.OpenCollectionTab("profiles");
+        manager.OpenTableTab("customers");
+
+        manager.CloseTabsForObject("profiles");
+
+        Assert.Equal(["welcome", "table:customers"], manager.Tabs.Select(tab => tab.Id).ToArray());
+        Assert.Equal("table:customers", manager.ActiveTab!.Id);
+    }
+
+    [Fact]
     public void OpenFormEntryTab_UpdatesInitialStateWhenExistingTabIsReopened()
     {
         var manager = new TabManagerService();

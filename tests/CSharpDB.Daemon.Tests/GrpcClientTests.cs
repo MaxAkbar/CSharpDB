@@ -274,6 +274,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Single(browse.Documents);
         Assert.Equal("doc-1", browse.Documents[0].Key);
         Assert.Equal("proto", browse.Documents[0].Document.GetProperty("tags")[1].GetString());
+
+        await client.DropCollectionAsync("grpc_docs", Ct);
+        Assert.DoesNotContain("grpc_docs", await client.GetCollectionNamesAsync(Ct));
     }
 
     [Fact]

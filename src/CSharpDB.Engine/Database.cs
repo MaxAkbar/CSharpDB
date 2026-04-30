@@ -1410,6 +1410,12 @@ public sealed class Database : IAsyncDisposable
             ? catalogName + GeneratedCollectionCacheSuffix
             : catalogName;
 
+    private void RemoveCachedCollection(string catalogName)
+    {
+        _collectionCache.Remove(catalogName);
+        _collectionCache.Remove(catalogName + GeneratedCollectionCacheSuffix);
+    }
+
     /// <summary>
     /// Returns the names of all document collections in the database.
     /// </summary>
@@ -1419,6 +1425,69 @@ public sealed class Database : IAsyncDisposable
             .Where(n => n.StartsWith(CollectionPrefix, StringComparison.Ordinal))
             .Select(n => n[CollectionPrefix.Length..])
             .ToArray();
+    }
+
+    /// <summary>
+    /// Drop a document collection and its collection indexes.
+    /// </summary>
+    public async ValueTask DropCollectionAsync(string name, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        IDisposable? writeScope = _inTransaction
+            ? WriteOperationScope.NoOp
+            : await AcquireWriteOperationScopeAsync(ct);
+        try
+        {
+            InvalidateCachesIfSchemaChanged();
+
+            string catalogName = $"{CollectionPrefix}{name}";
+            if (_catalog.GetTable(catalogName) is null)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TableNotFound,
+                    $"Collection '{name}' not found.");
+            }
+
+            PagerCommitResult commit = PagerCommitResult.Completed;
+            bool completeCommit = false;
+            bool needsTx = !_inTransaction;
+            if (needsTx)
+                await _pager.BeginTransactionAsync(ct);
+
+            try
+            {
+                await _catalog.DropTableAsync(catalogName, ct);
+                _pendingCollectionCatalogMutations.Remove(catalogName);
+                RemoveCachedCollection(catalogName);
+                _statementCache.Clear();
+                _observedSchemaVersion = _catalog.SchemaVersion;
+
+                if (needsTx)
+                {
+                    commit = await BeginCommitWithCatalogSyncAsync(ct);
+                    completeCommit = true;
+                    writeScope?.Dispose();
+                    writeScope = WriteOperationScope.NoOp;
+                }
+            }
+            catch
+            {
+                if (needsTx)
+                    await RecoverCatalogStateAfterFailedCommitAsync();
+                throw;
+            }
+
+            if (completeCommit)
+            {
+                await WaitForCommitOrRecoverAsync(commit);
+                await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
+            }
+        }
+        finally
+        {
+            writeScope?.Dispose();
+        }
     }
 
     private Statement ParseCached(string sql) =>

@@ -90,6 +90,16 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenCollectionTab(string collectionName)
+    {
+        var tab = new TabDescriptor($"collection:{collectionName}", collectionName, "bi-braces", TabKind.CollectionData)
+        {
+            ObjectName = collectionName
+        };
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenQueryTab(string? initialSql = null)
     {
         int num = Interlocked.Increment(ref _queryCounter);

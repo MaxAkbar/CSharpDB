@@ -72,6 +72,7 @@ public interface ICSharpDbClient : IAsyncDisposable
     Task<JsonElement?> GetDocumentAsync(string collectionName, string key, CancellationToken ct = default);
     Task PutDocumentAsync(string collectionName, string key, JsonElement document, CancellationToken ct = default);
     Task<bool> DeleteDocumentAsync(string collectionName, string key, CancellationToken ct = default);
+    Task DropCollectionAsync(string collectionName, CancellationToken ct = default);
 
     Task CheckpointAsync(CancellationToken ct = default);
     Task<BackupResult> BackupAsync(BackupRequest request, CancellationToken ct = default);

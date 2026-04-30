@@ -3,6 +3,8 @@
 @inject IReportRepository ReportRepository
 @inject TabManagerService TabManager
 @inject DatabaseChangeService Changes
+@inject ModalService Modal
+@inject ToastService Toast
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -16,7 +18,7 @@
                        value="@_query"
                        @oninput="OnQueryChanged"
                        @onkeydown="HandleKeyDown"
-                       placeholder="Search commands, tables, forms, reports..." />
+                       placeholder="Search commands, tables, collections, forms, reports..." />
                 <span class="kbd">Esc</span>
             </div>
 
@@ -130,6 +132,19 @@
                     () => { TabManager.OpenViewTab(captured); return Task.CompletedTask; }));
             }
 
+            IReadOnlyCollection<string> collections = await DbClient.GetCollectionNamesAsync();
+            foreach (string collectionName in collections.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+            {
+                string captured = collectionName;
+                _items.Add(new PaletteItem(
+                    "Collection",
+                    captured,
+                    "Open collection documents",
+                    "bi-braces",
+                    "icon-view",
+                    () => { TabManager.OpenCollectionTab(captured); return Task.CompletedTask; }));
+            }
+
             foreach (ProcedureDefinition procedure in (await DbClient.GetProceduresAsync()).OrderBy(procedure => procedure.Name))
             {
                 string captured = procedure.Name;
@@ -198,11 +213,41 @@
     {
         _items.Add(new PaletteItem("Command", "New Query", "Open a SQL editor", "bi-terminal", "icon-system", () => { TabManager.OpenQueryTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Table", "Open table designer", "bi-table", "icon-table", () => { TabManager.OpenTableDesignerTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "New Collection", "Create or open a document collection", "bi-braces", "icon-view", OpenNewCollectionAsync));
         _items.Add(new PaletteItem("Command", "New Form", "Open form designer", "bi-ui-checks-grid", "icon-form", () => { TabManager.OpenFormDesignerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Report", "Open report designer", "bi-file-earmark-richtext", "icon-report", () => { TabManager.OpenReportDesignerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Procedure", "Open procedure editor", "bi-gear-wide-connected", "icon-trigger", () => { TabManager.OpenNewProcedureTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Pipeline", "Open pipeline builder", "bi-diagram-3", "icon-view", () => { TabManager.OpenPipelineTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Storage Inspector", "Open storage diagnostics", "bi-hdd-stack", "icon-system", () => { TabManager.OpenStorageTab(); return Task.CompletedTask; }));
+    }
+
+    private async Task OpenNewCollectionAsync()
+    {
+        string? enteredName = await Modal.PromptAsync(
+            "New Collection",
+            CollectionNameValidator.HelpText,
+            "Create",
+            "collection_name");
+        if (enteredName is null)
+            return;
+
+        string collectionName = CollectionNameValidator.Normalize(enteredName);
+        if (!CollectionNameValidator.IsValid(collectionName))
+        {
+            Toast.Error(CollectionNameValidator.HelpText);
+            return;
+        }
+
+        try
+        {
+            await DbClient.BrowseCollectionAsync(collectionName, page: 1, pageSize: 1);
+            TabManager.OpenCollectionTab(collectionName);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
     }
 
     private Task OnQueryChanged(ChangeEventArgs e)

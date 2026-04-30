@@ -415,6 +415,12 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         return await collection.DeleteAsync(key, ct);
     }
 
+    public async Task DropCollectionAsync(string collectionName, CancellationToken ct = default)
+    {
+        string normalizedName = RequireIdentifier(collectionName, nameof(collectionName));
+        await (await GetDatabaseAsync(ct)).DropCollectionAsync(normalizedName, ct);
+    }
+
     public async Task CheckpointAsync(CancellationToken ct = default)
         => await (await GetDatabaseAsync(ct)).CheckpointAsync(ct);
 

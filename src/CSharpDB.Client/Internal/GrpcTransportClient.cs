@@ -344,6 +344,9 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
             Key = key,
         }, cancellationToken: ct), response => response.Value, ct);
 
+    public Task DropCollectionAsync(string collectionName, CancellationToken ct = default)
+        => CallEmptyAsync(_client.DropCollectionAsync(new CollectionNameRequest { CollectionName = collectionName }, cancellationToken: ct), ct);
+
     public Task CheckpointAsync(CancellationToken ct = default)
         => CallEmptyAsync(_client.CheckpointAsync(EmptyRequest, cancellationToken: ct), ct);
 

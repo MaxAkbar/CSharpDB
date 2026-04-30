@@ -105,6 +105,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient
     public Task<JsonElement?> GetDocumentAsync(string collectionName, string key, CancellationToken ct = default) => _inner.GetDocumentAsync(collectionName, key, ct);
     public Task PutDocumentAsync(string collectionName, string key, JsonElement document, CancellationToken ct = default) => _inner.PutDocumentAsync(collectionName, key, document, ct);
     public Task<bool> DeleteDocumentAsync(string collectionName, string key, CancellationToken ct = default) => _inner.DeleteDocumentAsync(collectionName, key, ct);
+    public Task DropCollectionAsync(string collectionName, CancellationToken ct = default) => _inner.DropCollectionAsync(collectionName, ct);
     public Task CheckpointAsync(CancellationToken ct = default) => _inner.CheckpointAsync(ct);
     public Task<BackupResult> BackupAsync(BackupRequest request, CancellationToken ct = default) => _inner.BackupAsync(request, ct);
     public Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default) => _inner.RestoreAsync(request, ct);

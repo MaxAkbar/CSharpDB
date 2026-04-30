@@ -36,6 +36,7 @@
     <div class="sidebar-filter-chips">
         <button class="@GetFilterChipClass("all")" @onclick='() => SetObjectFilter("all")'>All</button>
         <button class="@GetFilterChipClass("tables")" @onclick='() => SetObjectFilter("tables")'>Tables</button>
+        <button class="@GetFilterChipClass("collections")" @onclick='() => SetObjectFilter("collections")'>Collections</button>
         <button class="@GetFilterChipClass("forms")" @onclick='() => SetObjectFilter("forms")'>Forms</button>
         <button class="@GetFilterChipClass("reports")" @onclick='() => SetObjectFilter("reports")'>Reports</button>
     </div>
@@ -196,6 +197,38 @@
                                 }
                             </div>
                         }
+                    }
+                </div>
+            }
+        </div>
+        }
+
+        @* Collections *@
+        @if (ShouldShowGroup("collections"))
+        {
+        <div class="tree-group">
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("collections")'
+                 @oncontextmenu="e => ShowCollectionsGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
+                <i class="bi @(_expandedGroups.Contains("collections") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-braces icon-view"></i>
+                <span>Collections</span>
+                <span class="group-count">@(_collectionNames?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("collections") && _collectionNames is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var name in FilterCollections())
+                    {
+                        var collectionName = name;
+                        <div class="tree-item @(IsActive("collection", collectionName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenCollectionTab(collectionName)"
+                             @oncontextmenu="e => ShowCollectionItemMenu(e, collectionName)"
+                             @oncontextmenu:preventDefault>
+                            <i class="bi bi-braces icon-view"></i>
+                            <span class="item-label">@collectionName</span>
+                        </div>
                     }
                 </div>
             }
@@ -561,6 +594,7 @@
     private IReadOnlyCollection<string>? _userTableNames;
     private IReadOnlyCollection<string>? _systemTableNames;
     private IReadOnlyCollection<string>? _viewNames;
+    private IReadOnlyCollection<string>? _collectionNames;
     private IReadOnlyList<IndexSchema>? _indexes;
     private IReadOnlyList<TriggerSchema>? _triggers;
     private IReadOnlyList<ProcedureDefinition>? _procedures;
@@ -568,7 +602,7 @@
     private IReadOnlyList<ReportDefinition>? _reports;
     private string _searchQuery = string.Empty;
     private string _objectFilter = "all";
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "forms", "reports", "system", "views", "procedures" };
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "collections", "forms", "reports", "system", "views", "procedures" };
     private readonly HashSet<string> _expandedTableNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _tableSchemaLoadFailures = new(StringComparer.OrdinalIgnoreCase);
@@ -590,6 +624,12 @@
             {
                 FormDefinition captured = form;
                 items.Add(new SidebarShortcut(captured.Name, "bi-ui-checks-grid", "icon-form", () => TabManager.OpenFormDesignerTab(captured.FormId, title: captured.Name)));
+            }
+
+            foreach (string collectionName in (_collectionNames ?? []).Take(1))
+            {
+                string captured = collectionName;
+                items.Add(new SidebarShortcut(captured, "bi-braces", "icon-view", () => TabManager.OpenCollectionTab(captured)));
             }
 
             return items;
@@ -635,6 +675,7 @@
             _userTableNames = allTables.Where(static n => !IsSystemTableName(n)).ToList();
             _systemTableNames = allTables.Where(IsSystemTableName).ToList();
             _viewNames = (await DbClient.GetViewNamesAsync()).OrderBy(n => n).ToList();
+            _collectionNames = (await DbClient.GetCollectionNamesAsync()).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
             _indexes = (await DbClient.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
             _triggers = (await DbClient.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
             _procedures = (await DbClient.GetProceduresAsync()).OrderBy(p => p.Name).ToList();
@@ -652,6 +693,7 @@
             _userTableNames = null;
             _systemTableNames = null;
             _viewNames = null;
+            _collectionNames = null;
             _indexes = null;
             _triggers = null;
             _procedures = null;
@@ -697,6 +739,7 @@
         {
             "all" => true,
             "tables" => group is "tables" or "views",
+            "collections" => group == "collections",
             "forms" => group == "forms",
             "reports" => group == "reports",
             _ => string.Equals(group, _objectFilter, StringComparison.OrdinalIgnoreCase),
@@ -707,6 +750,14 @@
         if (string.IsNullOrWhiteSpace(_searchQuery))
             return items;
         return items.Where(n => n.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private IEnumerable<string> FilterCollections()
+    {
+        if (_collectionNames is null)
+            return Enumerable.Empty<string>();
+
+        return FilterItems(_collectionNames);
     }
 
     private IEnumerable<string> FilterTableNames(IReadOnlyCollection<string> tableNames)
@@ -952,6 +1003,29 @@
         });
     }
 
+    private void ShowCollectionsGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "New Collection...", Icon = "bi-plus-lg", OnClick = async () => await OpenNewCollectionAsync() },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowCollectionItemMenu(MouseEventArgs e, string collectionName)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-braces", OnClick = () => TabManager.OpenCollectionTab(collectionName) },
+            new() { Label = "New Document...", Icon = "bi-plus-lg", OnClick = () => OpenNewDocumentForCollection(collectionName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyCollectionNameAsync(collectionName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Drop Collection", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropCollectionAsync(collectionName) },
+        });
+    }
+
     private void ShowTableItemMenu(MouseEventArgs e, string tableName)
     {
         ShowContextMenu(e, new List<ContextMenuItem>
@@ -1075,6 +1149,57 @@
         });
     }
 
+    private async Task OpenNewCollectionAsync()
+    {
+        string? enteredName = await Modal.PromptAsync(
+            "New Collection",
+            CollectionNameValidator.HelpText,
+            "Create",
+            "collection_name");
+        if (enteredName is null)
+            return;
+
+        string collectionName = CollectionNameValidator.Normalize(enteredName);
+        if (!CollectionNameValidator.IsValid(collectionName))
+        {
+            Toast.Error(CollectionNameValidator.HelpText);
+            return;
+        }
+
+        try
+        {
+            await DbClient.BrowseCollectionAsync(collectionName, page: 1, pageSize: 1);
+            TabManager.OpenCollectionTab(collectionName);
+            Changes.NotifyChanged();
+            await LoadObjects();
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private void OpenNewDocumentForCollection(string collectionName)
+    {
+        var tab = TabManager.OpenCollectionTab(collectionName);
+        tab.State["StartNewDocument"] = true;
+        TabManager.ActivateTab(tab.Id);
+    }
+
+    private async Task CopyCollectionNameAsync(string collectionName)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", collectionName);
+            Toast.Success($"Copied '{collectionName}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
     private async Task ConfirmDropTableAsync(string tableName)
     {
         var confirmed = await Modal.ConfirmAsync("Drop Table", $"Are you sure you want to drop table '{tableName}'? This action cannot be undone.", "Drop", isDanger: true);
@@ -1084,6 +1209,20 @@
             await DbClient.DropTableAsync(tableName);
             Toast.Success($"Dropped table '{tableName}'.");
             TabManager.CloseTabsForObject(tableName);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    private async Task ConfirmDropCollectionAsync(string collectionName)
+    {
+        var confirmed = await Modal.ConfirmAsync("Drop Collection", $"Are you sure you want to drop collection '{collectionName}'? All documents and collection indexes will be deleted. This action cannot be undone.", "Drop", isDanger: true);
+        if (!confirmed) return;
+        try
+        {
+            await DbClient.DropCollectionAsync(collectionName);
+            Toast.Success($"Dropped collection '{collectionName}'.");
+            TabManager.CloseTabsForObject(collectionName);
             Changes.NotifyChanged();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
