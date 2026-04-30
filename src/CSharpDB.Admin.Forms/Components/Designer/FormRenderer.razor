@@ -1,5 +1,6 @@
 @using System.Globalization
 @using System.Text.Json
+@using CSharpDB.Admin.Forms.Contracts
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Primitives
 @inject DbCommandRegistry Commands
@@ -25,7 +26,8 @@
                            class="@inputClass"
                            placeholder="@GetProp(c, "placeholder", "")"
                            value="@GetFieldValue(fieldName)"
-                           readonly="@GetBoolProp(c, "readOnly")"
+                           readonly="@IsControlReadOnly(c)"
+                           disabled="@(!IsControlEnabled(c))"
                            tabindex="@tabIdx"
                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -36,7 +38,8 @@
                            class="@inputClass"
                            placeholder="@GetProp(c, "placeholder", "")"
                            value="@GetFieldValue(fieldName)"
-                           readonly="@GetBoolProp(c, "readOnly")"
+                           readonly="@IsControlReadOnly(c)"
+                           disabled="@(!IsControlEnabled(c))"
                            tabindex="@tabIdx"
                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -46,7 +49,8 @@
                     <input type="date"
                            class="@inputClass"
                            value="@GetDateValue(fieldName)"
-                           readonly="@GetBoolProp(c, "readOnly")"
+                           readonly="@IsControlReadOnly(c)"
+                           disabled="@(!IsControlEnabled(c))"
                            tabindex="@tabIdx"
                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -56,6 +60,7 @@
                     <label class="fr-checkbox">
                         <input type="checkbox"
                                checked="@GetCheckboxFieldValue(fieldName)"
+                               disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
                                tabindex="@tabIdx"
                                @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                                @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -66,6 +71,7 @@
                 case "select":
                     <select class="@inputClass"
                             value="@GetFieldValue(fieldName)"
+                            disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
                             tabindex="@tabIdx"
                             @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                             @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -83,6 +89,7 @@
                 case "lookup":
                     <select class="@inputClass"
                             value="@GetFieldValue(fieldName)"
+                            disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
                             tabindex="@tabIdx"
                             @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                             @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -101,7 +108,8 @@
                     <textarea class="@(hasError ? "fr-input fr-textarea fr-field-error" : "fr-input fr-textarea")"
                               placeholder="@GetProp(c, "placeholder", "")"
                               value="@GetFieldValue(fieldName)"
-                              readonly="@GetBoolProp(c, "readOnly")"
+                              readonly="@IsControlReadOnly(c)"
+                              disabled="@(!IsControlEnabled(c))"
                               tabindex="@tabIdx"
                               @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                               @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -119,6 +127,7 @@
                                            name="@($"radio_{c.ControlId}")"
                                            value="@val"
                                            checked="@IsRadioChoiceSelected(fieldName, val)"
+                                           disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
                                            tabindex="@tabIdx"
                                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
@@ -150,7 +159,7 @@
                     <button type="button"
                             class="fr-command-button"
                             tabindex="@tabIdx"
-                            disabled="@isExecuting"
+                            disabled="@(isExecuting || !IsControlEnabled(c))"
                             @onclick="@(() => InvokeCommandButtonAsync(c))">
                         @GetProp(c, "text", "Button")
                     </button>
@@ -243,6 +252,8 @@
     [Parameter] public EventCallback OnChildRowsChanged { get; set; }
     [Parameter] public EventCallback<string> OnCommandError { get; set; }
     [Parameter] public Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? OnBuiltInAction { get; set; }
+    [Parameter] public IFormActionRuntime? ActionRuntime { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, IReadOnlyDictionary<string, object?>>? ControlPropertyOverrides { get; set; }
 
     private readonly HashSet<string> _executingCommandButtons = [];
     private const string LayoutModeElastic = "elastic";
@@ -279,8 +290,9 @@
         int desktopSpan = GetGridSpan(desktop, 12, DesktopCanvasWidth);
         int tabletSpan = GetGridSpan(tablet, 8, TabletCanvasWidth);
 
+        string visibilityStyle = IsControlVisible(c) ? string.Empty : " display: none;";
         return FormattableString.Invariant(
-            $"--fr-left: {desktop.X}px; --fr-top: {desktop.Y}px; --fr-width: {desktop.Width}px; --fr-height: {desktop.Height}px; --fr-stack-order: {GetStackOrder(c)}; --fr-grid-span: {desktopSpan}; --fr-tablet-span: {tabletSpan};");
+            $"--fr-left: {desktop.X}px; --fr-top: {desktop.Y}px; --fr-width: {desktop.Width}px; --fr-height: {desktop.Height}px; --fr-stack-order: {GetStackOrder(c)}; --fr-grid-span: {desktopSpan}; --fr-tablet-span: {tabletSpan};{visibilityStyle}");
     }
 
     private double GetCanvasHeight()
@@ -603,7 +615,8 @@
                     reusableSequences: Form.ActionSequences,
                     setFieldValue: SetActionFieldValueAsync,
                     showMessage: ReportCommandErrorAsync,
-                    executeBuiltInFormAction: OnBuiltInAction);
+                    executeBuiltInFormAction: OnBuiltInAction,
+                    actionRuntime: ActionRuntime);
 
                 if (!actionResult.Succeeded && binding.StopOnFailure)
                 {
@@ -676,10 +689,12 @@
         return 0;
     }
 
-    private static string GetProp(ControlDefinition c, string key, string fallback)
+    private string GetProp(ControlDefinition c, string key, string fallback)
     {
-        if (c.Props.Values.TryGetValue(key, out var val) && val is string s)
+        if (TryGetEffectiveProperty(c, key, out object? val) && val is string s)
             return s;
+        if (val is not null && key is "text" or "placeholder")
+            return val.ToString() ?? fallback;
         return fallback;
     }
 
@@ -706,11 +721,58 @@
             .ToList();
     }
 
-    private static bool GetBoolProp(ControlDefinition c, string key)
+    private bool IsControlVisible(ControlDefinition c)
+        => GetBoolProp(c, "visible", fallback: true);
+
+    private bool IsControlEnabled(ControlDefinition c)
+        => GetBoolProp(c, "enabled", fallback: true);
+
+    private bool IsControlReadOnly(ControlDefinition c)
+        => GetBoolProp(c, "readOnly", fallback: false);
+
+    private bool GetBoolProp(ControlDefinition c, string key, bool fallback = false)
+        => TryGetEffectiveProperty(c, key, out object? value)
+            ? ReadBoolean(value, fallback)
+            : fallback;
+
+    private bool TryGetEffectiveProperty(ControlDefinition control, string key, out object? value)
     {
-        if (c.Props.Values.TryGetValue(key, out var val) && val is bool b)
-            return b;
-        return false;
+        bool found = control.Props.Values.TryGetValue(key, out value);
+
+        foreach (ControlRuleDefinition rule in Form.Rules ?? [])
+        {
+            if (!FormActionConditionEvaluator.TryEvaluate(
+                rule.Condition,
+                Record,
+                bindingArguments: null,
+                runtimeArguments: null,
+                stepArguments: null,
+                out bool shouldApply,
+                out _) ||
+                !shouldApply)
+            {
+                continue;
+            }
+
+            foreach (ControlRuleEffect effect in rule.Effects)
+            {
+                if (string.Equals(effect.ControlId, control.ControlId, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(effect.Property, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = effect.Value;
+                    found = true;
+                }
+            }
+        }
+
+        if (ControlPropertyOverrides?.TryGetValue(control.ControlId, out IReadOnlyDictionary<string, object?>? overrides) == true &&
+            overrides.TryGetValue(key, out object? overrideValue))
+        {
+            value = overrideValue;
+            found = true;
+        }
+
+        return found;
     }
 
     private static object? ParseNumber(object? value)

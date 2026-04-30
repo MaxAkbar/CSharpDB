@@ -310,6 +310,37 @@ public sealed class FormRendererCommandButtonTests
         Assert.False(invoked);
     }
 
+    [Fact]
+    public void ControlRules_ApplyVisibilityAndTextEffects()
+    {
+        ControlDefinition label = new(
+            "statusLabel",
+            "label",
+            new Rect(10, 20, 120, 34),
+            null,
+            new PropertyBag(new Dictionary<string, object?> { ["text"] = "Ready" }),
+            null);
+        FormDefinition form = CreateForm(
+            label,
+            rules:
+            [
+                new ControlRuleDefinition(
+                    "closed-state",
+                    "[Status] = 'Ready'",
+                    [
+                        new ControlRuleEffect("statusLabel", "visible", false),
+                        new ControlRuleEffect("statusLabel", "text", "Matched"),
+                    ]),
+            ]);
+        var renderer = CreateRenderer(DbCommandRegistry.Empty, form);
+
+        string style = InvokeNonPublic<string>(renderer, "GetControlStyle", label);
+        string text = InvokeNonPublic<string>(renderer, "GetProp", label, "text", "Fallback");
+
+        Assert.Contains("display: none", style, StringComparison.Ordinal);
+        Assert.Equal("Matched", text);
+    }
+
     private static FormRenderer CreateRenderer(
         DbCommandRegistry commands,
         FormDefinition form,
@@ -349,7 +380,8 @@ public sealed class FormRendererCommandButtonTests
 
     private static FormDefinition CreateForm(
         ControlDefinition button,
-        IReadOnlyList<DbActionSequence>? actionSequences = null)
+        IReadOnlyList<DbActionSequence>? actionSequences = null,
+        IReadOnlyList<ControlRuleDefinition>? rules = null)
         => new(
             "orders-form",
             "Orders",
@@ -358,7 +390,8 @@ public sealed class FormRendererCommandButtonTests
             "sig:orders",
             new LayoutDefinition("absolute", 8, true, [new Breakpoint("md", 0, null)]),
             [button],
-            ActionSequences: actionSequences);
+            ActionSequences: actionSequences,
+            Rules: rules);
 
     private static void SetProperty(object instance, string propertyName, object? value)
     {
@@ -381,5 +414,12 @@ public sealed class FormRendererCommandButtonTests
         var task = (Task?)method.Invoke(instance, args)
             ?? throw new InvalidOperationException($"Method '{methodName}' did not return a task.");
         await task;
+    }
+
+    private static T InvokeNonPublic<T>(object instance, string methodName, params object?[] args)
+    {
+        MethodInfo method = instance.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Method '{methodName}' was not found.");
+        return (T)method.Invoke(instance, args)!;
     }
 }

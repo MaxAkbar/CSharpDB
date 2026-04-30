@@ -410,6 +410,138 @@ public sealed class DataEntryTests
     }
 
     [Fact]
+    public async Task Phase8Runtime_AppliesAndClearsFormFilter()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL,
+                Status TEXT NOT NULL
+            );
+            INSERT INTO Products VALUES (1, 'Widget', 'Open');
+            INSERT INTO Products VALUES (2, 'Gadget', 'Closed');
+            INSERT INTO Products VALUES (3, 'Sprocket', 'Open');
+            """);
+
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("products-form", "Products"),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: new DbFormRecordService(db.Client));
+
+        FormEventDispatchResult result = await ((IFormActionRuntime)component).ApplyFilterAsync(
+            CreateRuntimeContext(component),
+            "form",
+            "[Status] = @status AND [Id] > 1",
+            new Dictionary<string, object?>
+            {
+                ["parameters"] = new Dictionary<string, object?> { ["status"] = "Open" },
+            },
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal([3L], ReadRecords(component).Select(row => (long)row["Id"]!).ToArray());
+
+        result = await ((IFormActionRuntime)component).ClearFilterAsync(
+            CreateRuntimeContext(component),
+            "form",
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal([1L, 2L, 3L], ReadRecords(component).Select(row => (long)row["Id"]!).ToArray());
+    }
+
+    [Fact]
+    public async Task Phase8Runtime_SetsControlPropertyAndBoundValue()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO Products VALUES (1, 'Widget');
+            """);
+
+        ControlDefinition control = new(
+            "nameBox",
+            "text",
+            new Rect(0, 0, 120, 32),
+            new BindingDefinition("Name", "TwoWay"),
+            PropertyBag.Empty,
+            ValidationOverride: null);
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("products-form", "Products", [control]),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: new DbFormRecordService(db.Client));
+
+        FormEventDispatchResult result = await ((IFormActionRuntime)component).SetControlPropertyAsync(
+            CreateRuntimeContext(component),
+            "nameBox",
+            "visible",
+            false,
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        var overrides = GetField<Dictionary<string, IReadOnlyDictionary<string, object?>>>(component, "_controlPropertyOverrides");
+        Assert.False(Assert.IsType<bool>(overrides["nameBox"]["visible"]));
+
+        result = await ((IFormActionRuntime)component).SetControlPropertyAsync(
+            CreateRuntimeContext(component),
+            "nameBox",
+            "value",
+            "Widget Pro",
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Widget Pro", ReadCurrentRecord(component)["Name"]);
+        Assert.True(GetField<bool>(component, "_dirty"));
+    }
+
+    [Fact]
+    public async Task Phase8Runtime_RunSqlRequiresHostOptInAndRefreshesRecord()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Products (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL,
+                Status TEXT NOT NULL
+            );
+            INSERT INTO Products VALUES (1, 'Widget', 'Open');
+            """);
+
+        DataEntry component = await CreateComponentAsync(
+            form: CreateForm("products-form", "Products"),
+            schemaProvider: new DbSchemaProvider(db.Client),
+            recordService: new DbFormRecordService(db.Client));
+        SetProperty(component, nameof(DataEntry.DbClient), db.Client);
+
+        FormEventDispatchResult result = await ((IFormActionRuntime)component).RunSqlAsync(
+            CreateRuntimeContext(component),
+            "UPDATE Products SET Status = @status WHERE Id = @id",
+            new Dictionary<string, object?> { ["status"] = "Closed", ["id"] = 1L },
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("disabled", result.Message, StringComparison.OrdinalIgnoreCase);
+
+        SetProperty(component, nameof(DataEntry.EnableSqlActions), true);
+        result = await ((IFormActionRuntime)component).RunSqlAsync(
+            CreateRuntimeContext(component),
+            "UPDATE Products SET Status = @status WHERE Id = @id",
+            new Dictionary<string, object?> { ["status"] = "Closed", ["id"] = 1L },
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Closed", ReadCurrentRecord(component)["Status"]);
+        Assert.Equal("Closed", (await db.QueryRowsAsync("SELECT Status FROM Products WHERE Id = 1"))[0]["Status"]);
+    }
+
+    [Fact]
     public async Task ViewBackedForm_LoadsAndSearchesInReadOnlyMode()
     {
         await using var db = await TestDatabaseScope.CreateAsync();
@@ -469,7 +601,10 @@ public sealed class DataEntryTests
         return component;
     }
 
-    private static FormDefinition CreateForm(string formId, string tableName)
+    private static FormDefinition CreateForm(
+        string formId,
+        string tableName,
+        IReadOnlyList<ControlDefinition>? controls = null)
         => new(
             formId,
             $"{tableName} Form",
@@ -477,7 +612,21 @@ public sealed class DataEntryTests
             DefinitionVersion: 1,
             SourceSchemaSignature: $"sig:{tableName}",
             Layout: new LayoutDefinition("absolute", 8, SnapToGrid: false, []),
-            Controls: []);
+            Controls: controls ?? []);
+
+    private static FormActionRuntimeContext CreateRuntimeContext(DataEntry component)
+        => new(
+            FormId: component.FormId,
+            FormName: null,
+            TableName: null,
+            EventName: "Test",
+            ActionSequenceName: "TestActions",
+            StepIndex: 0,
+            Record: ReadCurrentRecord(component),
+            BindingArguments: null,
+            RuntimeArguments: null,
+            StepArguments: null,
+            Metadata: new Dictionary<string, string>());
 
     private static Dictionary<string, object?> ReadCurrentRecord(DataEntry component)
         => GetField<Dictionary<string, object?>>(component, "_currentRecord");

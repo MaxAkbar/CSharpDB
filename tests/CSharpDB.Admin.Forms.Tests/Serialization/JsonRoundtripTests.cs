@@ -224,6 +224,64 @@ public class JsonRoundtripTests
     }
 
     [Fact]
+    public void Phase8MacroActionsAndRules_RoundTrip()
+    {
+        var form = new FormDefinition(
+            "f-phase8",
+            "Phase 8 Form",
+            "Orders",
+            1,
+            "orders:v1",
+            new LayoutDefinition("absolute", 8, true, []),
+            [
+                new ControlDefinition(
+                    "ordersGrid",
+                    "childDataGrid",
+                    new Rect(0, 0, 320, 180),
+                    Binding: null,
+                    Props: new PropertyBag(new Dictionary<string, object?>()),
+                    ValidationOverride: null),
+            ],
+            EventBindings:
+            [
+                new FormEventBinding(
+                    FormEventKind.OnLoad,
+                    string.Empty,
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.OpenForm, Target: "orders-detail"),
+                        new DbActionStep(DbActionKind.ApplyFilter, Target: "ordersGrid", Value: "[Status] = 'Open'"),
+                        new DbActionStep(DbActionKind.RunSql, Value: "UPDATE Orders SET Status = @status"),
+                        new DbActionStep(DbActionKind.SetControlVisibility, Target: "ordersGrid", Value: true),
+                    ],
+                    Name: "LoadActions")),
+            ],
+            Rules:
+            [
+                new ControlRuleDefinition(
+                    "hide-grid",
+                    "Status = 'Closed'",
+                    [new ControlRuleEffect("ordersGrid", "visible", false)]),
+            ]);
+
+        string json = JsonSerializer.Serialize(form, Options);
+        FormDefinition deserialized = JsonSerializer.Deserialize<FormDefinition>(json, Options)!;
+
+        DbActionSequence sequence = deserialized.EventBindings![0].ActionSequence!;
+        Assert.Equal(DbActionKind.OpenForm, sequence.Steps[0].Kind);
+        Assert.Equal(DbActionKind.ApplyFilter, sequence.Steps[1].Kind);
+        Assert.Equal(DbActionKind.RunSql, sequence.Steps[2].Kind);
+        Assert.Equal(DbActionKind.SetControlVisibility, sequence.Steps[3].Kind);
+        Assert.Contains("\"kind\":\"openForm\"", json);
+        Assert.NotNull(deserialized.Rules);
+        ControlRuleDefinition rule = Assert.Single(deserialized.Rules);
+        Assert.Equal("hide-grid", rule.RuleId);
+        ControlRuleEffect effect = Assert.Single(rule.Effects);
+        Assert.Equal("ordersGrid", effect.ControlId);
+        Assert.Equal("visible", effect.Property);
+    }
+
+    [Fact]
     public void FormAutomationMetadata_NormalizeForExport_RoundTrips()
     {
         var form = new FormDefinition(

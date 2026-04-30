@@ -10,6 +10,7 @@ public static class AdminFormsServiceCollectionExtensions
     public static IServiceCollection AddCSharpDbAdminForms(this IServiceCollection services)
     {
         services.TryAddSingleton(DbCommandRegistry.Empty);
+        services.TryAddSingleton<IFormActionRuntime>(NullFormActionRuntime.Instance);
         services.AddScoped<IFormRepository, DbFormRepository>();
         services.AddScoped<ISchemaProvider, DbSchemaProvider>();
         services.AddScoped<IFormRecordService, DbFormRecordService>();

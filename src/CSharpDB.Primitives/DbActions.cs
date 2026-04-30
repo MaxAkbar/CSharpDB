@@ -14,6 +14,16 @@ public enum DbActionKind
     NextRecord,
     GoToRecord,
     RunActionSequence,
+    OpenForm,
+    CloseForm,
+    ApplyFilter,
+    ClearFilter,
+    RunSql,
+    RunProcedure,
+    SetControlProperty,
+    SetControlVisibility,
+    SetControlEnabled,
+    SetControlReadOnly,
 }
 
 public sealed record DbActionSequence(

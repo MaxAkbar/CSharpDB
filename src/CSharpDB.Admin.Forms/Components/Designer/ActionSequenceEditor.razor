@@ -144,6 +144,129 @@
                             </div>
                         </div>
                         break;
+                    case DbActionKind.OpenForm:
+                        <div class="feb-field">
+                            <label>Target Form</label>
+                            <input type="text"
+                                   value="@(step.Target ?? string.Empty)"
+                                   placeholder="Form id or name"
+                                   @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;mode&quot;:&quot;edit&quot;,&quot;recordId&quot;:&quot;$record.Id&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.ApplyFilter:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Target</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       placeholder="form or control id"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Filter</label>
+                                <input type="text"
+                                       value="@FormatValue(step.Value)"
+                                       placeholder="[Status] = 'Open'"
+                                       @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))" />
+                            </div>
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;parameters&quot;:{&quot;customerId&quot;:&quot;$record.CustomerId&quot;}}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.ClearFilter:
+                        <div class="feb-field">
+                            <label>Target</label>
+                            <input type="text"
+                                   value="@(step.Target ?? string.Empty)"
+                                   placeholder="form or control id"
+                                   @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                        </div>
+                        break;
+                    case DbActionKind.RunSql:
+                        <div class="feb-field">
+                            <label>SQL Or Saved Query</label>
+                            <textarea class="feb-arguments"
+                                      value="@FormatValue(step.Value)"
+                                      placeholder="UPDATE Orders SET Status = @@status WHERE Id = @@id"
+                                      @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))"></textarea>
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;status&quot;:&quot;Closed&quot;,&quot;id&quot;:&quot;$record.Id&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.RunProcedure:
+                        <div class="feb-field">
+                            <label>Procedure</label>
+                            <input type="text"
+                                   value="@(step.Target ?? string.Empty)"
+                                   @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;orderId&quot;:&quot;$record.Id&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.SetControlProperty:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Control</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Property</label>
+                                <input type="text"
+                                       value="@GetArgumentText(step, "property")"
+                                       placeholder="visible, enabled, readOnly, text, value"
+                                       @onchange='@(e => UpdateArgument(idx, step, "property", e.Value?.ToString()))' />
+                            </div>
+                            <div class="feb-field">
+                                <label>Value</label>
+                                <input type="text"
+                                       value="@FormatValue(step.Value)"
+                                       @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))" />
+                            </div>
+                        </div>
+                        break;
+                    case DbActionKind.SetControlVisibility:
+                    case DbActionKind.SetControlEnabled:
+                    case DbActionKind.SetControlReadOnly:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Control</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Value</label>
+                                <select value="@FormatValue(step.Value)" @onchange="@(e => UpdateBooleanValue(idx, step, e.Value?.ToString()))">
+                                    <option value="true">True</option>
+                                    <option value="false">False</option>
+                                </select>
+                            </div>
+                        </div>
+                        break;
                     case DbActionKind.ShowMessage:
                     case DbActionKind.Stop:
                         <div class="feb-field">
@@ -190,6 +313,12 @@
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.PreviousRecord))">+ Previous</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.NextRecord))">+ Next</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.GoToRecord))">+ Go To</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.OpenForm))">+ Open Form</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.ApplyFilter))">+ Filter</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.ClearFilter))">+ Clear Filter</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunSql))">+ SQL</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunProcedure))">+ Procedure</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SetControlProperty))">+ Control Prop</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.ShowMessage))">+ Message</button>
             <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.Stop))">+ Stop</button>
         </div>
@@ -295,6 +424,9 @@
     private Task UpdateValue(int index, DbActionStep step, string? value)
         => ReplaceStep(index, step with { Value = string.IsNullOrEmpty(value) ? null : value });
 
+    private Task UpdateBooleanValue(int index, DbActionStep step, string? value)
+        => ReplaceStep(index, step with { Value = bool.TryParse(value, out bool parsed) ? parsed : null });
+
     private Task UpdateMessage(int index, DbActionStep step, string? message)
         => ReplaceStep(index, step with { Message = string.IsNullOrWhiteSpace(message) ? null : message });
 
@@ -327,6 +459,19 @@
         }
     }
 
+    private Task UpdateArgument(int index, DbActionStep step, string key, object? value)
+    {
+        var arguments = step.Arguments?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        if (value is string text && string.IsNullOrWhiteSpace(text))
+            arguments.Remove(key);
+        else
+            arguments[key] = value;
+
+        _argumentText[index] = FormatArguments(arguments);
+        return ReplaceStep(index, step with { Arguments = arguments.Count == 0 ? null : arguments });
+    }
+
     private Task ReplaceStep(int index, DbActionStep step)
     {
         DbActionSequence sequence = CurrentSequence();
@@ -351,10 +496,28 @@
             DbActionKind.RunActionSequence => new DbActionStep(kind, SequenceName: FirstAvailableActionSequenceName()),
             DbActionKind.SetFieldValue => new DbActionStep(kind, Target: string.Empty, Value: string.Empty),
             DbActionKind.GoToRecord => new DbActionStep(kind, Value: string.Empty),
+            DbActionKind.OpenForm => new DbActionStep(kind, Target: string.Empty),
+            DbActionKind.ApplyFilter => new DbActionStep(kind, Target: "form", Value: string.Empty),
+            DbActionKind.ClearFilter => new DbActionStep(kind, Target: "form"),
+            DbActionKind.RunSql => new DbActionStep(kind, Value: string.Empty),
+            DbActionKind.RunProcedure => new DbActionStep(kind, Target: string.Empty),
+            DbActionKind.SetControlProperty => new DbActionStep(
+                kind,
+                Target: string.Empty,
+                Value: string.Empty,
+                Arguments: new Dictionary<string, object?> { ["property"] = "visible" }),
+            DbActionKind.SetControlVisibility or
+            DbActionKind.SetControlEnabled or
+            DbActionKind.SetControlReadOnly => new DbActionStep(kind, Target: string.Empty, Value: true),
             DbActionKind.ShowMessage => new DbActionStep(kind, Message: string.Empty),
             DbActionKind.Stop => new DbActionStep(kind),
             _ => new DbActionStep(kind),
         };
+
+    private static string GetArgumentText(DbActionStep step, string key)
+        => step.Arguments is not null && step.Arguments.TryGetValue(key, out object? value)
+            ? value?.ToString() ?? string.Empty
+            : string.Empty;
 
     private string GetArgumentsText(int index, DbActionStep step)
     {

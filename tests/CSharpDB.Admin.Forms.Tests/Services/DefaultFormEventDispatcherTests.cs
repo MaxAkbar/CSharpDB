@@ -414,6 +414,78 @@ public sealed class DefaultFormEventDispatcherTests
         Assert.Contains("Unknown form command 'MissingCommand'", result.Message);
     }
 
+    [Fact]
+    public async Task DispatchAsync_Phase8ActionsUseTypedRuntime()
+    {
+        var runtime = new RecordingFormActionRuntime();
+        var dispatcher = new DefaultFormEventDispatcher(DbCommandRegistry.Empty, runtime);
+        var form = CreateForm([
+            new FormEventBinding(
+                FormEventKind.OnLoad,
+                string.Empty,
+                ActionSequence: new DbActionSequence(
+                [
+                    new DbActionStep(
+                        DbActionKind.OpenForm,
+                        Target: "orders-detail",
+                        Arguments: new Dictionary<string, object?> { ["mode"] = "dialog" }),
+                    new DbActionStep(
+                        DbActionKind.ApplyFilter,
+                        Target: "orders-grid",
+                        Value: "[Status] = 'Open'"),
+                    new DbActionStep(DbActionKind.ClearFilter, Target: "orders-grid"),
+                    new DbActionStep(
+                        DbActionKind.RunSql,
+                        Value: "UPDATE Orders SET Status = @status WHERE Id = @id",
+                        Arguments: new Dictionary<string, object?> { ["status"] = "Ready" }),
+                    new DbActionStep(DbActionKind.RunProcedure, Target: "RepriceOrder"),
+                    new DbActionStep(DbActionKind.SetControlVisibility, Target: "internalNotes", Value: false),
+                ],
+                Name: "LoadActions")),
+        ]);
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.OnLoad,
+            new Dictionary<string, object?> { ["Id"] = 7L },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(
+            ["OpenForm:orders-detail", "ApplyFilter:orders-grid:[Status] = 'Open'", "ClearFilter:orders-grid", "RunSql:UPDATE Orders SET Status = @status WHERE Id = @id", "RunProcedure:RepriceOrder", "SetControlProperty:internalNotes.visible=False"],
+            runtime.Calls);
+        Assert.NotNull(runtime.LastContext);
+        Assert.Equal("customers-form", runtime.LastContext!.FormId);
+        Assert.Equal("Customers Form", runtime.LastContext.FormName);
+        Assert.Equal("OnLoad", runtime.LastContext.EventName);
+        Assert.Equal("LoadActions", runtime.LastContext.ActionSequenceName);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_Phase8ActionsFailClearlyWithoutRuntime()
+    {
+        var dispatcher = new DefaultFormEventDispatcher(DbCommandRegistry.Empty);
+        var form = CreateForm([
+            new FormEventBinding(
+                FormEventKind.OnLoad,
+                string.Empty,
+                ActionSequence: new DbActionSequence(
+                [
+                    new DbActionStep(DbActionKind.OpenForm, Target: "orders-detail"),
+                ])),
+        ]);
+
+        FormEventDispatchResult result = await dispatcher.DispatchAsync(
+            form,
+            FormEventKind.OnLoad,
+            new Dictionary<string, object?> { ["Id"] = 7L },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("OpenForm", result.Message);
+        Assert.Contains("rendered form runtime", result.Message);
+    }
+
     private static FormDefinition CreateForm(
         IReadOnlyList<FormEventBinding> eventBindings,
         IReadOnlyList<DbActionSequence>? actionSequences = null)
@@ -427,4 +499,73 @@ public sealed class DefaultFormEventDispatcherTests
             Controls: [],
             EventBindings: eventBindings,
             ActionSequences: actionSequences);
+
+    private sealed class RecordingFormActionRuntime : IFormActionRuntime
+    {
+        public List<string> Calls { get; } = [];
+
+        public FormActionRuntimeContext? LastContext { get; private set; }
+
+        public Task<FormEventDispatchResult> ExecuteRecordActionAsync(
+            FormActionRuntimeContext context,
+            DbActionStep step,
+            CancellationToken ct)
+            => RecordAsync(context, step.Kind.ToString());
+
+        public Task<FormEventDispatchResult> OpenFormAsync(
+            FormActionRuntimeContext context,
+            string formName,
+            IReadOnlyDictionary<string, object?> arguments,
+            CancellationToken ct)
+            => RecordAsync(context, $"OpenForm:{formName}");
+
+        public Task<FormEventDispatchResult> CloseFormAsync(
+            FormActionRuntimeContext context,
+            string? formName,
+            CancellationToken ct)
+            => RecordAsync(context, $"CloseForm:{formName}");
+
+        public Task<FormEventDispatchResult> ApplyFilterAsync(
+            FormActionRuntimeContext context,
+            string target,
+            string filter,
+            IReadOnlyDictionary<string, object?> arguments,
+            CancellationToken ct)
+            => RecordAsync(context, $"ApplyFilter:{target}:{filter}");
+
+        public Task<FormEventDispatchResult> ClearFilterAsync(
+            FormActionRuntimeContext context,
+            string target,
+            CancellationToken ct)
+            => RecordAsync(context, $"ClearFilter:{target}");
+
+        public Task<FormEventDispatchResult> RunSqlAsync(
+            FormActionRuntimeContext context,
+            string sqlOrName,
+            IReadOnlyDictionary<string, object?> arguments,
+            CancellationToken ct)
+            => RecordAsync(context, $"RunSql:{sqlOrName}");
+
+        public Task<FormEventDispatchResult> RunProcedureAsync(
+            FormActionRuntimeContext context,
+            string procedureName,
+            IReadOnlyDictionary<string, object?> arguments,
+            CancellationToken ct)
+            => RecordAsync(context, $"RunProcedure:{procedureName}");
+
+        public Task<FormEventDispatchResult> SetControlPropertyAsync(
+            FormActionRuntimeContext context,
+            string controlId,
+            string propertyName,
+            object? value,
+            CancellationToken ct)
+            => RecordAsync(context, $"SetControlProperty:{controlId}.{propertyName}={value}");
+
+        private Task<FormEventDispatchResult> RecordAsync(FormActionRuntimeContext context, string call)
+        {
+            LastContext = context;
+            Calls.Add(call);
+            return Task.FromResult(FormEventDispatchResult.Success());
+        }
+    }
 }

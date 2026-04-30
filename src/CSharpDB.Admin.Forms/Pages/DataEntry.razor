@@ -1,7 +1,11 @@
 @using System.Globalization
+@using System.Text.Json
+@using CSharpDB.Client
+@using CSharpDB.Client.Models
 @using CSharpDB.Admin.Forms.Contracts
 @using CSharpDB.Primitives
 @implements IDisposable
+@implements IFormActionRuntime
 @inject IFormRepository FormRepository
 @inject IFormRecordService RecordService
 @inject ISchemaProvider SchemaProvider
@@ -93,6 +97,8 @@
                           ChildFormTableDefinitions="_childTableDefs"
                           OnCommandError="OnCommandError"
                           OnBuiltInAction="ExecuteBuiltInFormActionAsync"
+                          ActionRuntime="this"
+                          ControlPropertyOverrides="_controlPropertyOverrides"
                           OnChildRowsChanged="OnChildRowsChanged" />
         </div>
     }
@@ -200,7 +206,13 @@
     [Parameter] public bool ShowDesignerButton { get; set; } = true;
     [Parameter] public string? BackHref { get; set; }
     [Parameter] public string BackLabel { get; set; } = "Forms";
+    [Parameter] public EventCallback<FormOpenRequest> OnOpenForm { get; set; }
+    [Parameter] public EventCallback<FormCloseRequest> OnCloseForm { get; set; }
+    [Parameter] public bool EnableSqlActions { get; set; }
+    [Parameter] public bool EnableProcedureActions { get; set; }
     [Inject] public IFormEventDispatcher FormEvents { get; set; } = NullFormEventDispatcher.Instance;
+    [Inject] public ICSharpDbClient? DbClient { get; set; }
+    [Inject] public NavigationManager? Navigation { get; set; }
 
     private FormDefinition? _form;
     private FormTableDefinition? _table;
@@ -224,12 +236,16 @@
     private string _searchValue = string.Empty;
     private string? _activeSearchColumnName;
     private string? _activeSearchValue;
+    private string? _activeFilterExpression;
+    private FormFilterExpression? _activeFilter;
+    private IReadOnlyDictionary<string, object?>? _activeFilterParameters;
     private readonly Stack<Dictionary<string, object?>> _undoStack = new();
     private readonly Stack<Dictionary<string, object?>> _redoStack = new();
     private Dictionary<string, string>? _validationErrors;
     private readonly Dictionary<string, FormTableDefinition> _childTableDefs = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ControlDefinition> _computedControls = [];
     private readonly HashSet<string> _computedFieldNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IReadOnlyDictionary<string, object?>> _controlPropertyOverrides = new(StringComparer.OrdinalIgnoreCase);
     private string? _loadedFormId;
     private ElementReference _layoutRef;
     private ElementReference _recordListRef;
@@ -241,6 +257,7 @@
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRecords / (double)_pageSize));
     private int CurrentRecordOrdinal => _isNew || _recordPageIndex < 0 ? 0 : ((_page - 1) * _pageSize) + _recordPageIndex + 1;
     private bool HasActiveSearch => !string.IsNullOrWhiteSpace(_activeSearchColumnName) && !string.IsNullOrWhiteSpace(_activeSearchValue);
+    private bool HasActiveFilter => _activeFilter is not null && !string.IsNullOrWhiteSpace(_activeFilterExpression);
     private bool HasAnySearchInput => HasActiveSearch || !string.IsNullOrWhiteSpace(_searchValue);
     private bool CanApplySearch => !string.IsNullOrWhiteSpace(_searchColumnName) && !string.IsNullOrWhiteSpace(_searchValue);
     private bool SupportsPrimaryKeyNavigation => _table?.HasSinglePrimaryKey == true;
@@ -305,6 +322,8 @@
         _childTableDefs.Clear();
         _computedControls.Clear();
         _computedFieldNames.Clear();
+        _controlPropertyOverrides.Clear();
+        ClearFilterState();
 
         try
         {
@@ -703,6 +722,208 @@
         }
     }
 
+    public Task<FormEventDispatchResult> ExecuteRecordActionAsync(
+        FormActionRuntimeContext context,
+        DbActionStep step,
+        CancellationToken ct)
+        => ExecuteBuiltInFormActionAsync(step, ct);
+
+    public async Task<FormEventDispatchResult> OpenFormAsync(
+        FormActionRuntimeContext context,
+        string formName,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        IReadOnlyDictionary<string, object?> resolvedArguments = ResolveActionArguments(context, arguments);
+        FormDefinition? targetForm = await ResolveFormAsync(formName);
+        if (targetForm is null)
+            return FormEventDispatchResult.Failure($"OpenForm target '{formName}' was not found.");
+
+        if (!OnOpenForm.HasDelegate)
+        {
+            if (Navigation is null)
+                return FormEventDispatchResult.Failure("OpenForm action requires a host open-form handler.");
+
+            Navigation.NavigateTo($"/forms/{Uri.EscapeDataString(targetForm.FormId)}");
+            return FormEventDispatchResult.Success();
+        }
+
+        await OnOpenForm.InvokeAsync(new FormOpenRequest(targetForm.FormId, targetForm.Name, resolvedArguments));
+        return FormEventDispatchResult.Success();
+    }
+
+    public async Task<FormEventDispatchResult> CloseFormAsync(
+        FormActionRuntimeContext context,
+        string? formName,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!OnCloseForm.HasDelegate)
+            return FormEventDispatchResult.Failure("CloseForm action requires a host close-form handler.");
+
+        await OnCloseForm.InvokeAsync(new FormCloseRequest(_form?.FormId, formName ?? _form?.Name));
+        return FormEventDispatchResult.Success();
+    }
+
+    public async Task<FormEventDispatchResult> ApplyFilterAsync(
+        FormActionRuntimeContext context,
+        string target,
+        string filter,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_table is null)
+            return FormEventDispatchResult.Failure("ApplyFilter action requires a loaded form source.");
+
+        if (!IsCurrentFormTarget(target))
+            return FormEventDispatchResult.Failure($"ApplyFilter target '{target}' is not supported by this rendered form runtime.");
+
+        if (!FormFilterExpression.TryParse(filter, _table, out FormFilterExpression? parsed, out string? filterError))
+            return FormEventDispatchResult.Failure($"ApplyFilter action has an invalid filter expression: {filterError}");
+
+        IReadOnlyDictionary<string, object?> resolvedArguments = BuildActionParameterDictionary(context, arguments);
+        string? missingParameter = parsed!.Parameters.FirstOrDefault(parameter => !resolvedArguments.ContainsKey(parameter));
+        if (missingParameter is not null)
+            return FormEventDispatchResult.Failure($"ApplyFilter action is missing parameter '@{missingParameter}'.");
+
+        _activeFilterExpression = filter;
+        _activeFilter = parsed;
+        _activeFilterParameters = resolvedArguments;
+        ClearSearchState(clearPendingValue: true);
+        await LoadRecordPageAsync(1, preserveCurrentRecordWhenEmpty: _currentRecord.Count > 0 || _isNew);
+        await RefreshDataEntryStateAsync();
+        return ToActionResult("ApplyFilter");
+    }
+
+    public async Task<FormEventDispatchResult> ClearFilterAsync(
+        FormActionRuntimeContext context,
+        string target,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_table is null)
+            return FormEventDispatchResult.Failure("ClearFilter action requires a loaded form source.");
+
+        if (!IsCurrentFormTarget(target))
+            return FormEventDispatchResult.Failure($"ClearFilter target '{target}' is not supported by this rendered form runtime.");
+
+        object? currentPk = TryGetPrimaryKeyValue(_currentRecord, out object? pkValue) ? pkValue : null;
+        ClearFilterState();
+        await LoadRecordPageAsync(1, preferredPk: currentPk, preserveCurrentRecordWhenEmpty: _currentRecord.Count > 0 || _isNew);
+        await RefreshDataEntryStateAsync();
+        return ToActionResult("ClearFilter");
+    }
+
+    public async Task<FormEventDispatchResult> RunSqlAsync(
+        FormActionRuntimeContext context,
+        string sqlOrName,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!EnableSqlActions)
+            return FormEventDispatchResult.Failure("RunSql action is disabled by host policy.");
+        if (DbClient is null)
+            return FormEventDispatchResult.Failure("RunSql action requires a database client.");
+
+        IReadOnlyDictionary<string, object?> resolvedArguments = BuildActionParameterDictionary(context, arguments);
+        string? sql = await ResolveSqlTextAsync(sqlOrName, ct);
+        if (string.IsNullOrWhiteSpace(sql))
+            return FormEventDispatchResult.Failure($"RunSql action could not resolve SQL operation '{sqlOrName}'.");
+
+        if (!TrySubstituteSqlParameters(sql, resolvedArguments, out string resolvedSql, out string? parameterError))
+            return FormEventDispatchResult.Failure(parameterError ?? "RunSql action has invalid SQL parameters.");
+
+        SqlExecutionResult result = await DbClient.ExecuteSqlAsync(resolvedSql, ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            return FormEventDispatchResult.Failure($"RunSql action failed: {result.Error}");
+
+        if (TryReadArgumentText(resolvedArguments, "setField", "targetField") is { } targetField)
+            await SetRuntimeFieldValueAsync(targetField, ReadScalarResult(result));
+
+        if (ShouldRefreshAfterAction(resolvedArguments, defaultValue: true))
+            await RefreshCurrentRecordsAsync();
+
+        await RefreshDataEntryStateAsync();
+        string message = result.IsQuery
+            ? $"RunSql action returned {result.Rows?.Count ?? 0} row(s)."
+            : $"RunSql action affected {result.RowsAffected} row(s).";
+        FormEventDispatchResult actionResult = ToActionResult("RunSql");
+        return actionResult.Succeeded ? FormEventDispatchResult.Success(message) : actionResult;
+    }
+
+    public async Task<FormEventDispatchResult> RunProcedureAsync(
+        FormActionRuntimeContext context,
+        string procedureName,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!EnableProcedureActions)
+            return FormEventDispatchResult.Failure("RunProcedure action is disabled by host policy.");
+        if (DbClient is null)
+            return FormEventDispatchResult.Failure("RunProcedure action requires a database client.");
+
+        IReadOnlyDictionary<string, object?> resolvedArguments = BuildExecutableArguments(BuildActionParameterDictionary(context, arguments));
+        ProcedureExecutionResult result = await DbClient.ExecuteProcedureAsync(procedureName, resolvedArguments, ct);
+        if (!result.Succeeded)
+            return FormEventDispatchResult.Failure($"RunProcedure action failed: {result.Error ?? $"Procedure '{procedureName}' failed."}");
+
+        if (ShouldRefreshAfterAction(arguments, defaultValue: true))
+            await RefreshCurrentRecordsAsync();
+
+        await RefreshDataEntryStateAsync();
+        FormEventDispatchResult actionResult = ToActionResult("RunProcedure");
+        return actionResult.Succeeded
+            ? FormEventDispatchResult.Success($"RunProcedure action executed '{procedureName}'.")
+            : actionResult;
+    }
+
+    public async Task<FormEventDispatchResult> SetControlPropertyAsync(
+        FormActionRuntimeContext context,
+        string controlId,
+        string propertyName,
+        object? value,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_form is null)
+            return FormEventDispatchResult.Failure("SetControlProperty action requires a loaded form.");
+
+        ControlDefinition? control = _form.Controls.FirstOrDefault(candidate => string.Equals(candidate.ControlId, controlId, StringComparison.OrdinalIgnoreCase));
+        if (control is null)
+            return FormEventDispatchResult.Failure($"SetControlProperty action targets unknown control '{controlId}'.");
+
+        string normalizedProperty = NormalizeControlPropertyName(propertyName);
+        object? resolvedValue = ResolveActionValue(value, context);
+        if (string.Equals(normalizedProperty, "value", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(control.Binding?.FieldName))
+                return FormEventDispatchResult.Failure($"SetControlProperty action cannot set value for unbound control '{controlId}'.");
+
+            await SetRuntimeFieldValueAsync(control.Binding.FieldName, resolvedValue);
+            await RefreshDataEntryStateAsync();
+            return FormEventDispatchResult.Success();
+        }
+
+        if (!IsSupportedRuntimeControlProperty(normalizedProperty))
+            return FormEventDispatchResult.Failure($"SetControlProperty action does not support property '{propertyName}'.");
+
+        if (!_controlPropertyOverrides.TryGetValue(control.ControlId, out IReadOnlyDictionary<string, object?>? existing) ||
+            existing is not Dictionary<string, object?> overrides)
+        {
+            overrides = existing?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+                ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            _controlPropertyOverrides[control.ControlId] = overrides;
+        }
+
+        overrides[normalizedProperty] = NormalizeActionValue(resolvedValue);
+        await RefreshDataEntryStateAsync();
+        return FormEventDispatchResult.Success();
+    }
+
     private async Task RefreshDataEntryStateAsync()
     {
         try
@@ -719,6 +940,323 @@
         => string.IsNullOrWhiteSpace(_error)
             ? FormEventDispatchResult.Success()
             : FormEventDispatchResult.Failure($"{actionName} action failed: {_error}");
+
+    private async Task<FormDefinition?> ResolveFormAsync(string formName)
+    {
+        if (string.IsNullOrWhiteSpace(formName))
+            return null;
+
+        string trimmed = formName.Trim();
+        FormDefinition? direct = await FormRepository.GetAsync(trimmed);
+        if (direct is not null)
+            return direct;
+
+        try
+        {
+            IReadOnlyList<FormDefinition> forms = await FormRepository.ListAsync();
+            return forms.FirstOrDefault(form =>
+                string.Equals(form.FormId, trimmed, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(form.Name, trimmed, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    private bool IsCurrentFormTarget(string? target)
+        => string.IsNullOrWhiteSpace(target) ||
+           string.Equals(target, "form", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(target, _form?.FormId, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(target, _form?.Name, StringComparison.OrdinalIgnoreCase);
+
+    private IReadOnlyDictionary<string, object?> BuildActionParameterDictionary(
+        FormActionRuntimeContext context,
+        IReadOnlyDictionary<string, object?> arguments)
+    {
+        Dictionary<string, object?> resolved = ResolveActionArguments(context, arguments).ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value,
+            StringComparer.OrdinalIgnoreCase);
+
+        if (resolved.TryGetValue("parameters", out object? nestedParameters))
+        {
+            foreach ((string key, object? value) in ToObjectDictionary(nestedParameters))
+                resolved[key] = ResolveActionValue(value, context);
+        }
+
+        return resolved;
+    }
+
+    private IReadOnlyDictionary<string, object?> ResolveActionArguments(
+        FormActionRuntimeContext context,
+        IReadOnlyDictionary<string, object?> arguments)
+    {
+        if (arguments.Count == 0)
+            return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+        var resolved = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach ((string key, object? value) in arguments)
+        {
+            if (!string.IsNullOrWhiteSpace(key))
+                resolved[key] = ResolveActionValue(value, context);
+        }
+
+        return resolved;
+    }
+
+    private object? ResolveActionValue(object? value, FormActionRuntimeContext context)
+    {
+        value = NormalizeActionValue(value);
+        if (value is string text)
+        {
+            if (TryResolvePath(text, "$record.", context.Record ?? _currentRecord, out object? recordValue))
+                return recordValue;
+            if (TryResolvePath(text, "$binding.", context.BindingArguments, out object? bindingValue))
+                return bindingValue;
+            if (TryResolvePath(text, "$runtime.", context.RuntimeArguments, out object? runtimeValue))
+                return runtimeValue;
+            if (TryResolvePath(text, "$arguments.", context.StepArguments, out object? argumentValue))
+                return argumentValue;
+        }
+
+        return value;
+    }
+
+    private static bool TryResolvePath(
+        string value,
+        string prefix,
+        IReadOnlyDictionary<string, object?>? source,
+        out object? resolved)
+    {
+        resolved = null;
+        if (source is null || !value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        string key = value[prefix.Length..].Trim();
+        if (key.Length == 0)
+            return false;
+
+        if (source.TryGetValue(key, out resolved))
+            return true;
+
+        string? actualKey = source.Keys.FirstOrDefault(candidate => string.Equals(candidate, key, StringComparison.OrdinalIgnoreCase));
+        if (actualKey is null)
+            return false;
+
+        resolved = source[actualKey];
+        return true;
+    }
+
+    private static object? NormalizeActionValue(object? value)
+    {
+        return value switch
+        {
+            JsonElement json => NormalizeJsonActionValue(json),
+            _ => value,
+        };
+    }
+
+    private static object? NormalizeJsonActionValue(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.TryGetInt64(out long integer) ? integer : value.GetDouble(),
+            JsonValueKind.Object => value.EnumerateObject().ToDictionary(
+                property => property.Name,
+                property => NormalizeJsonActionValue(property.Value),
+                StringComparer.OrdinalIgnoreCase),
+            JsonValueKind.Array => value.EnumerateArray().Select(NormalizeJsonActionValue).ToArray(),
+            _ => value.ToString(),
+        };
+    }
+
+    private static IReadOnlyDictionary<string, object?> ToObjectDictionary(object? value)
+    {
+        value = NormalizeActionValue(value);
+        if (value is IReadOnlyDictionary<string, object?> readOnly)
+            return readOnly;
+
+        if (value is IDictionary<string, object?> dictionary)
+            return dictionary.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+
+        return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyDictionary<string, object?> BuildExecutableArguments(IReadOnlyDictionary<string, object?> arguments)
+    {
+        var executable = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach ((string key, object? value) in arguments)
+        {
+            if (key is "mode" or "refresh" or "procedure" or "procedureName" or "sql" or "name" or "setField" or "targetField")
+                continue;
+
+            executable[key] = value;
+        }
+
+        return executable;
+    }
+
+    private async Task<string?> ResolveSqlTextAsync(string sqlOrName, CancellationToken ct)
+    {
+        string trimmed = sqlOrName.Trim();
+        if (LooksLikeSql(trimmed))
+            return trimmed;
+
+        SavedQueryDefinition? savedQuery = await DbClient!.GetSavedQueryAsync(trimmed, ct);
+        return savedQuery?.SqlText;
+    }
+
+    private static bool LooksLikeSql(string value)
+    {
+        string firstWord = value.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+        return firstWord is "SELECT" or "WITH" or "INSERT" or "UPDATE" or "DELETE" or "CREATE" or "DROP" or "ALTER" or "REPLACE"
+            || firstWord.Equals("SELECT", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("WITH", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("INSERT", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("UPDATE", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("DELETE", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("CREATE", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("DROP", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("ALTER", StringComparison.OrdinalIgnoreCase)
+            || firstWord.Equals("REPLACE", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TrySubstituteSqlParameters(
+        string sql,
+        IReadOnlyDictionary<string, object?> arguments,
+        out string resolvedSql,
+        out string? error)
+    {
+        var builder = new System.Text.StringBuilder(sql.Length);
+        bool inString = false;
+        for (int i = 0; i < sql.Length;)
+        {
+            char ch = sql[i];
+            if (ch == '\'')
+            {
+                builder.Append(ch);
+                if (inString && i + 1 < sql.Length && sql[i + 1] == '\'')
+                {
+                    builder.Append(sql[i + 1]);
+                    i += 2;
+                    continue;
+                }
+
+                inString = !inString;
+                i++;
+                continue;
+            }
+
+            if (!inString && ch == '@')
+            {
+                int start = i + 1;
+                int end = start;
+                while (end < sql.Length && (char.IsLetterOrDigit(sql[end]) || sql[end] == '_'))
+                    end++;
+
+                if (end == start)
+                {
+                    builder.Append(ch);
+                    i++;
+                    continue;
+                }
+
+                string parameterName = sql[start..end];
+                if (!arguments.TryGetValue(parameterName, out object? value))
+                {
+                    resolvedSql = string.Empty;
+                    error = $"RunSql action is missing parameter '@{parameterName}'.";
+                    return false;
+                }
+
+                builder.Append(FormSql.FormatLiteral(value));
+                i = end;
+                continue;
+            }
+
+            builder.Append(ch);
+            i++;
+        }
+
+        resolvedSql = builder.ToString();
+        error = null;
+        return true;
+    }
+
+    private static object? ReadScalarResult(SqlExecutionResult result)
+        => result.Rows is { Count: > 0 } rows && rows[0].Length > 0
+            ? rows[0][0]
+            : null;
+
+    private static bool ShouldRefreshAfterAction(IReadOnlyDictionary<string, object?> arguments, bool defaultValue)
+        => arguments.TryGetValue("refresh", out object? value)
+            ? ReadBooleanValue(value, defaultValue)
+            : defaultValue;
+
+    private static bool ReadBooleanValue(object? value, bool fallback)
+    {
+        value = NormalizeActionValue(value);
+        return value switch
+        {
+            bool boolean => boolean,
+            long integer => integer != 0,
+            int integer => integer != 0,
+            string text when bool.TryParse(text, out bool parsed) => parsed,
+            string text when long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed) => parsed != 0,
+            _ => fallback,
+        };
+    }
+
+    private static string? TryReadArgumentText(
+        IReadOnlyDictionary<string, object?> arguments,
+        params string[] keys)
+    {
+        foreach (string key in keys)
+        {
+            if (arguments.TryGetValue(key, out object? value))
+            {
+                string? text = NormalizeActionValue(value)?.ToString()?.Trim();
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task SetRuntimeFieldValueAsync(string fieldName, object? value)
+    {
+        string key = _currentRecord.Keys.FirstOrDefault(candidate => string.Equals(candidate, fieldName, StringComparison.OrdinalIgnoreCase))
+            ?? fieldName;
+
+        _undoStack.Push(CloneRecord(_currentRecord));
+        _redoStack.Clear();
+        _currentRecord[key] = NormalizeActionValue(value);
+        _dirty = true;
+
+        if (_recordPageIndex >= 0 && _recordPageIndex < _records.Count)
+            _records[_recordPageIndex] = CloneRecord(_currentRecord);
+
+        _validationErrors?.Remove(key);
+        if (_computedControls.Count > 0)
+            await EvaluateComputedFields();
+    }
+
+    private static string NormalizeControlPropertyName(string propertyName)
+    {
+        string trimmed = propertyName.Trim();
+        return trimmed.Equals("readonly", StringComparison.OrdinalIgnoreCase)
+            ? "readOnly"
+            : trimmed;
+    }
+
+    private static bool IsSupportedRuntimeControlProperty(string propertyName)
+        => propertyName is "visible" or "enabled" or "readOnly" or "required" or "styleVariant" or "validationMessage" or "text" or "placeholder";
 
     private async Task<FormEventDispatchResult> ExecuteGoToRecordActionAsync(DbActionStep step)
     {
@@ -787,7 +1325,9 @@
         if (_form is null)
             return true;
 
-        FormEventDispatchResult result = await FormEvents.DispatchAsync(_form, eventKind, record);
+        FormEventDispatchResult result = FormEvents is DefaultFormEventDispatcher defaultDispatcher
+            ? await defaultDispatcher.DispatchAsync(_form, eventKind, record, this)
+            : await FormEvents.DispatchAsync(_form, eventKind, record);
         if (result.Succeeded)
             return true;
 
@@ -849,6 +1389,7 @@
 
         _activeSearchColumnName = _searchColumnName;
         _activeSearchValue = requestedValue;
+        ClearFilterState();
         _searchValue = requestedValue;
         _page = 1;
         _error = null;
@@ -896,9 +1437,11 @@
 
         try
         {
-            FormRecordPage page = HasActiveSearch
-                ? await RecordService.SearchRecordPageAsync(_table, _activeSearchColumnName!, _activeSearchValue!, pageNumber, _pageSize)
-                : await RecordService.ListRecordPageAsync(_table, pageNumber, _pageSize);
+            FormRecordPage page = HasActiveFilter
+                ? await LoadFilteredRecordPageAsync(pageNumber)
+                : HasActiveSearch
+                    ? await RecordService.SearchRecordPageAsync(_table, _activeSearchColumnName!, _activeSearchValue!, pageNumber, _pageSize)
+                    : await RecordService.ListRecordPageAsync(_table, pageNumber, _pageSize);
             _records = page.Records.Select(CloneRecord).ToList();
             _page = page.PageNumber;
             _pageSize = page.PageSize;
@@ -963,6 +1506,34 @@
             return Math.Clamp(requestedIndex, 0, _records.Count - 1);
 
         return 0;
+    }
+
+    private async Task<FormRecordPage> LoadFilteredRecordPageAsync(int pageNumber)
+    {
+        if (_table is null || _activeFilter is null)
+            return new FormRecordPage(1, _pageSize, 0, []);
+
+        List<Dictionary<string, object?>> filtered = await GetFilteredRecordsAsync();
+        int totalPages = filtered.Count == 0 ? 1 : (int)Math.Ceiling(filtered.Count / (double)_pageSize);
+        int effectivePage = Math.Clamp(pageNumber, 1, totalPages);
+        List<Dictionary<string, object?>> pageRecords = filtered
+            .Skip((effectivePage - 1) * _pageSize)
+            .Take(_pageSize)
+            .ToList();
+
+        return new FormRecordPage(effectivePage, _pageSize, filtered.Count, pageRecords);
+    }
+
+    private async Task<List<Dictionary<string, object?>>> GetFilteredRecordsAsync()
+    {
+        if (_table is null || _activeFilter is null)
+            return [];
+
+        List<Dictionary<string, object?>> rows = await RecordService.ListRecordsAsync(_table);
+        return rows
+            .Where(row => _activeFilter.Evaluate(row, _activeFilterParameters))
+            .Select(CloneRecord)
+            .ToList();
     }
 
     private async Task LoadFocusedRecordWindowAsync(object pkValue)
@@ -1054,9 +1625,17 @@
         if (_table is null)
             return;
 
-        int? ordinal = HasActiveSearch
-            ? await RecordService.GetRecordOrdinalAsync(_table, pkValue, _activeSearchColumnName!, _activeSearchValue!)
-            : await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+        int? ordinal = HasActiveFilter
+            ? await GetFilteredRecordOrdinalAsync(pkValue)
+            : HasActiveSearch
+                ? await RecordService.GetRecordOrdinalAsync(_table, pkValue, _activeSearchColumnName!, _activeSearchValue!)
+                : await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+
+        if (ordinal is null && HasActiveFilter)
+        {
+            ClearFilterState();
+            ordinal = await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+        }
 
         if (ordinal is null && HasActiveSearch)
         {
@@ -1072,6 +1651,22 @@
 
         int targetPage = (ordinal.Value / _pageSize) + 1;
         await LoadRecordPageAsync(targetPage, preferredPk: pkValue);
+    }
+
+    private async Task<int?> GetFilteredRecordOrdinalAsync(object pkValue)
+    {
+        if (_table is null || !_table.HasSinglePrimaryKey)
+            return null;
+
+        string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
+        List<Dictionary<string, object?>> filtered = await GetFilteredRecordsAsync();
+        for (int i = 0; i < filtered.Count; i++)
+        {
+            if (TryGetFieldValue(filtered[i], pkColumn, out object? candidatePk) && AreValuesEqual(candidatePk, pkValue))
+                return i;
+        }
+
+        return null;
     }
 
     private void UpdateVisibleCurrentRecord(Dictionary<string, object?> updated)
@@ -1309,6 +1904,13 @@
 
         if (string.IsNullOrWhiteSpace(_searchColumnName))
             _searchColumnName = GetDefaultSearchFieldName() ?? string.Empty;
+    }
+
+    private void ClearFilterState()
+    {
+        _activeFilterExpression = null;
+        _activeFilter = null;
+        _activeFilterParameters = null;
     }
 
     private IReadOnlyList<FormFieldDefinition> GetSearchableFields()

@@ -11,7 +11,11 @@
 }
 else
 {
-    <DataEntry @key="_renderKey" FormId="@Tab.FormId" OnOpenDesigner="OpenDesigner" />
+    <DataEntry @key="_renderKey"
+               FormId="@Tab.FormId"
+               OnOpenDesigner="OpenDesigner"
+               OnOpenForm="OpenForm"
+               OnCloseForm="CloseForm" />
 }
 
 @code {
@@ -32,6 +36,18 @@ else
     private Task OpenDesigner(string formId)
     {
         TabManager.OpenFormDesignerTab(formId, title: Tab.Title);
+        return Task.CompletedTask;
+    }
+
+    private Task OpenForm(FormOpenRequest request)
+    {
+        TabManager.OpenFormEntryTab(request.FormId, request.FormName);
+        return Task.CompletedTask;
+    }
+
+    private Task CloseForm(FormCloseRequest request)
+    {
+        TabManager.CloseTab(Tab.Id);
         return Task.CompletedTask;
     }
 
