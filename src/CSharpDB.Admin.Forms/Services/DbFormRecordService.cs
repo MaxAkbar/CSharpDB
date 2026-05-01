@@ -297,6 +297,45 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
             ?? throw new InvalidOperationException("The updated record could not be reloaded.");
     }
 
+    public async Task SaveAttachmentAsync(FormAttachmentTableBinding binding, object parentValue, FormAttachmentValue attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        ArgumentNullException.ThrowIfNull(parentValue);
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        string tableName = FormSql.RequireIdentifier(binding.TableName, nameof(binding.TableName));
+        string foreignKeyField = FormSql.RequireIdentifier(binding.ForeignKeyField, nameof(binding.ForeignKeyField));
+        string blobField = FormSql.RequireIdentifier(binding.BlobField, nameof(binding.BlobField));
+        string whereClause = $"{foreignKeyField} = {FormSql.FormatLiteral(parentValue)}";
+
+        if (!string.IsNullOrWhiteSpace(binding.ControlIdField) && !string.IsNullOrWhiteSpace(binding.ControlId))
+        {
+            string controlIdField = FormSql.RequireIdentifier(binding.ControlIdField, nameof(binding.ControlIdField));
+            whereClause += $" AND {controlIdField} = {FormSql.FormatLiteral(binding.ControlId)}";
+        }
+
+        FormSql.ThrowIfError(await dbClient.ExecuteSqlAsync($"""
+            DELETE FROM {tableName}
+            WHERE {whereClause};
+            """, ct));
+
+        if (attachment.ClearExisting || attachment.Bytes is not { Length: > 0 } bytes)
+            return;
+
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [binding.ForeignKeyField] = parentValue,
+            [binding.BlobField] = bytes,
+        };
+
+        AddOptionalAttachmentValue(values, binding.FileNameField, attachment.FileName);
+        AddOptionalAttachmentValue(values, binding.ContentTypeField, attachment.ContentType);
+        AddOptionalAttachmentValue(values, binding.FileSizeField, attachment.FileSize);
+        AddOptionalAttachmentValue(values, binding.ControlIdField, binding.ControlId);
+
+        await dbClient.InsertRowAsync(binding.TableName, values, ct);
+    }
+
     public Task DeleteRecordAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
         => dbClient.DeleteRowAsync(table.TableName, GetPrimaryKeyColumn(table), pkValue, ct);
 
@@ -429,6 +468,12 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
         }
 
         return filtered;
+    }
+
+    private static void AddOptionalAttachmentValue(Dictionary<string, object?> values, string? fieldName, object? value)
+    {
+        if (!string.IsNullOrWhiteSpace(fieldName))
+            values[fieldName] = value;
     }
 
     private static Dictionary<string, object?> BuildEmptyInsertValues(FormTableDefinition table)

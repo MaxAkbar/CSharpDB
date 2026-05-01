@@ -341,6 +341,110 @@ public sealed class FormRendererCommandButtonTests
         Assert.Equal("Matched", text);
     }
 
+    [Fact]
+    public void FixedLayout_EmitsAnchorAndMinimumSizeVariables()
+    {
+        ControlDefinition stretched = new(
+            "status",
+            "text",
+            new Rect(100, 50, 200, 32),
+            new BindingDefinition("Status", "TwoWay"),
+            new PropertyBag(new Dictionary<string, object?>
+            {
+                ["anchorLeft"] = true,
+                ["anchorTop"] = true,
+                ["anchorRight"] = true,
+                ["anchorBottom"] = false,
+                ["minWidth"] = 120L,
+                ["minHeight"] = 24L,
+            }),
+            null);
+        ControlDefinition bottomRight = new(
+            "notes",
+            "textarea",
+            new Rect(100, 50, 200, 32),
+            new BindingDefinition("Notes", "TwoWay"),
+            new PropertyBag(new Dictionary<string, object?>
+            {
+                ["anchorLeft"] = false,
+                ["anchorTop"] = false,
+                ["anchorRight"] = true,
+                ["anchorBottom"] = true,
+            }),
+            null);
+        var renderer = CreateRenderer(DbCommandRegistry.Empty, CreateForm(stretched));
+        SetProperty(renderer, nameof(FormRenderer.AnchorCanvasWidth), 800d);
+        SetProperty(renderer, nameof(FormRenderer.AnchorCanvasHeight), 500d);
+
+        string stretchedStyle = InvokeNonPublic<string>(renderer, "GetControlStyle", stretched);
+        string bottomRightStyle = InvokeNonPublic<string>(renderer, "GetControlStyle", bottomRight);
+
+        Assert.Contains("--fr-left: 100px", stretchedStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-right: 500px", stretchedStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-width: auto", stretchedStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-height: 32px", stretchedStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-min-width: 120px", stretchedStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-min-height: 24px", stretchedStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-left: auto", bottomRightStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-top: auto", bottomRightStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-right: 500px", bottomRightStyle, StringComparison.Ordinal);
+        Assert.Contains("--fr-bottom: 418px", bottomRightStyle, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FixedLayout_ScaleResizeModeEmitsPercentVariables()
+    {
+        ControlDefinition scaled = new(
+            "status",
+            "text",
+            new Rect(120, 50, 240, 100),
+            new BindingDefinition("Status", "TwoWay"),
+            new PropertyBag(new Dictionary<string, object?> { ["resizeMode"] = "scale" }),
+            null);
+        var renderer = CreateRenderer(DbCommandRegistry.Empty, CreateForm(scaled));
+        SetProperty(renderer, nameof(FormRenderer.AnchorCanvasWidth), 1200d);
+        SetProperty(renderer, nameof(FormRenderer.AnchorCanvasHeight), 500d);
+
+        string style = InvokeNonPublic<string>(renderer, "GetControlStyle", scaled);
+
+        Assert.Contains("--fr-left: 10%", style, StringComparison.Ordinal);
+        Assert.Contains("--fr-top: 10%", style, StringComparison.Ordinal);
+        Assert.Contains("--fr-width: 20%", style, StringComparison.Ordinal);
+        Assert.Contains("--fr-height: 20%", style, StringComparison.Ordinal);
+        Assert.Contains("--fr-right: auto", style, StringComparison.Ordinal);
+        Assert.Contains("--fr-bottom: auto", style, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ListBox_MultiSelectStoresDelimitedValues()
+    {
+        ControlDefinition listBox = new(
+            "statusList",
+            "listBox",
+            new Rect(10, 20, 160, 120),
+            new BindingDefinition("Status", "TwoWay"),
+            new PropertyBag(new Dictionary<string, object?>
+            {
+                ["multiSelect"] = true,
+                ["multiValueDelimiter"] = "|",
+            }),
+            null);
+        EnumChoice[] choices =
+        [
+            new("A", "Active"),
+            new("P", "Pending"),
+            new("C", "Closed"),
+        ];
+        var renderer = CreateRenderer(DbCommandRegistry.Empty, CreateForm(listBox));
+
+        await InvokeNonPublicAsync(renderer, "SetListBoxValueAsync", listBox, "Status", new[] { "A", "C" }, choices);
+
+        var record = (Dictionary<string, object?>)GetProperty(renderer, nameof(FormRenderer.Record))!;
+        Assert.Equal("A|C", record["Status"]);
+        Assert.True(InvokeNonPublic<bool>(renderer, "IsListBoxChoiceSelected", listBox, "Status", "A", choices));
+        Assert.False(InvokeNonPublic<bool>(renderer, "IsListBoxChoiceSelected", listBox, "Status", "P", choices));
+    }
+
     private static FormRenderer CreateRenderer(
         DbCommandRegistry commands,
         FormDefinition form,

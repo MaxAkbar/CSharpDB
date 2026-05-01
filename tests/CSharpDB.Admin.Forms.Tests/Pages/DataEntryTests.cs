@@ -857,6 +857,9 @@ public sealed class DataEntryTests
         public Task<Dictionary<string, object?>> UpdateRecordAsync(FormTableDefinition table, object pkValue, Dictionary<string, object?> values, CancellationToken ct = default)
             => inner.UpdateRecordAsync(table, pkValue, values, ct);
 
+        public Task SaveAttachmentAsync(FormAttachmentTableBinding binding, object parentValue, FormAttachmentValue attachment, CancellationToken ct = default)
+            => inner.SaveAttachmentAsync(binding, parentValue, attachment, ct);
+
         public Task DeleteRecordAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
             => inner.DeleteRecordAsync(table, pkValue, ct);
     }

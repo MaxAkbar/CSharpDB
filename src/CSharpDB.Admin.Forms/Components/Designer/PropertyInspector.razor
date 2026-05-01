@@ -1,3 +1,4 @@
+@using System.Globalization
 @using System.Text.Json
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Admin.Forms.Components.Designer
@@ -6,6 +7,7 @@
 @using CSharpDB.Primitives
 @inject ISchemaProvider SchemaProvider
 @inject DbCommandRegistry CommandRegistry
+@inject IFormRepository FormRepository
 @implements IDisposable
 
 <div class="property-inspector">
@@ -65,19 +67,14 @@
             <div class="pi-field">
                 <label>Type</label>
                 <select value="@_selected.ControlType" @onchange="OnTypeChanged">
-                    <option value="label">Label</option>
-                    <option value="text">Text</option>
-                    <option value="textarea">Textarea</option>
-                    <option value="number">Number</option>
-                    <option value="date">Date</option>
-                    <option value="checkbox">Checkbox</option>
-                    <option value="radio">Radio</option>
-                    <option value="select">Select</option>
-                    <option value="lookup">Lookup</option>
-                    <option value="computed">Computed</option>
-                    <option value="commandButton">Command Button</option>
-                    <option value="datagrid">DataGrid</option>
-                    <option value="childtabs">Child Tabs</option>
+                    @foreach (FormControlDescriptor descriptor in GetTypeDropdownControls())
+                    {
+                        <option value="@descriptor.ControlType">@descriptor.DisplayName</option>
+                    }
+                    @if (!IsRegisteredControlType(_selected.ControlType))
+                    {
+                        <option value="@_selected.ControlType">@($"{_selected.ControlType} (unregistered)")</option>
+                    }
                 </select>
             </div>
             <div class="pi-field">
@@ -119,9 +116,66 @@
                            @onchange="@(e => OnRectChanged(e, RectPart.H))" />
                 </div>
             </div>
+            <div class="pi-field">
+                <label>Resize Mode</label>
+                <select value="@GetProp(PropResizeMode, "anchor")" @onchange="@(e => OnPropChanged(PropResizeMode, e.Value))">
+                    <option value="anchor">Anchored</option>
+                    <option value="scale">Scale With Form</option>
+                </select>
+            </div>
+            <div class="pi-field">
+                <label>Anchor Preset</label>
+                <select value="@GetAnchorPreset()" @onchange="OnAnchorPresetChanged">
+                    <option value="topLeft">Top Left</option>
+                    <option value="topRight">Top Right</option>
+                    <option value="bottomLeft">Bottom Left</option>
+                    <option value="bottomRight">Bottom Right</option>
+                    <option value="stretchAcross">Stretch Across</option>
+                    <option value="stretchDown">Stretch Down</option>
+                    <option value="stretchBoth">Stretch Both</option>
+                    <option value="custom">Custom</option>
+                </select>
+            </div>
+            <div class="pi-field">
+                <label>Anchors</label>
+                <div class="pi-anchor-grid">
+                    <label>
+                        <input type="checkbox" checked="@GetAnchorProp(PropAnchorLeft, true)"
+                               @onchange="@(e => OnAnchorChanged(PropAnchorLeft, e.Value))" />
+                        Left
+                    </label>
+                    <label>
+                        <input type="checkbox" checked="@GetAnchorProp(PropAnchorRight, false)"
+                               @onchange="@(e => OnAnchorChanged(PropAnchorRight, e.Value))" />
+                        Right
+                    </label>
+                    <label>
+                        <input type="checkbox" checked="@GetAnchorProp(PropAnchorTop, true)"
+                               @onchange="@(e => OnAnchorChanged(PropAnchorTop, e.Value))" />
+                        Top
+                    </label>
+                    <label>
+                        <input type="checkbox" checked="@GetAnchorProp(PropAnchorBottom, false)"
+                               @onchange="@(e => OnAnchorChanged(PropAnchorBottom, e.Value))" />
+                        Bottom
+                    </label>
+                </div>
+            </div>
+            <div class="pi-field-row">
+                <div class="pi-field half">
+                    <label>Min W</label>
+                    <input type="number" value="@GetProp(PropMinWidth, "24")" min="0" step="@State.GridSize"
+                           @onchange="@(e => OnPropChanged(PropMinWidth, ParseNonNegativeDouble(e.Value)))" />
+                </div>
+                <div class="pi-field half">
+                    <label>Min H</label>
+                    <input type="number" value="@GetProp(PropMinHeight, "16")" min="0" step="@State.GridSize"
+                           @onchange="@(e => OnPropChanged(PropMinHeight, ParseNonNegativeDouble(e.Value)))" />
+                </div>
+            </div>
         </div>
 
-        @if (_selected.ControlType is "label" or "checkbox")
+        @if (_selected.ControlType is "label" or "checkbox" or "toggleButton")
         {
             <div class="pi-section">
                 <div class="pi-section-label">Text</div>
@@ -133,7 +187,7 @@
             </div>
         }
 
-        @if (_selected.ControlType is "text" or "textarea" or "number" or "select" or "lookup")
+        @if (_selected.ControlType is "text" or "textarea" or "number" or "select" or "lookup" or "comboBox" or "listBox")
         {
             <div class="pi-section">
                 <div class="pi-section-label">Input</div>
@@ -154,6 +208,85 @@
                     <label>Read Only</label>
                     <input type="checkbox" checked="@GetBoolProp(PropReadOnly)"
                            @onchange="@(e => OnPropChanged(PropReadOnly, e.Value))" />
+                </div>
+            </div>
+        }
+
+        @if (_selected.ControlType is "select" or "comboBox" or "listBox" or "optionGroup")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Choices</div>
+                <div class="pi-field">
+                    <label>Static Options</label>
+                    <textarea class="pi-textarea"
+                              value="@GetOptionsText()"
+                              placeholder="value|Label"
+                              @onchange="@(e => OnOptionsChanged(e.Value?.ToString() ?? string.Empty))"></textarea>
+                    @if (!string.IsNullOrWhiteSpace(_optionsError))
+                    {
+                        <div class="pi-field-error">@_optionsError</div>
+                    }
+                </div>
+                @if (_selected.ControlType == "comboBox")
+                {
+                    <div class="pi-field">
+                        <label>Allow Custom Value</label>
+                        <input type="checkbox" checked="@GetBoolProp(PropAllowCustomValue)"
+                               @onchange="@(e => OnPropChanged(PropAllowCustomValue, e.Value))" />
+                    </div>
+                }
+                @if (_selected.ControlType == "listBox")
+                {
+                    <div class="pi-field">
+                        <label>Multi Select</label>
+                        <input type="checkbox" checked="@GetBoolProp(PropMultiSelect)"
+                               @onchange="@(e => OnPropChanged(PropMultiSelect, e.Value))" />
+                    </div>
+                    @if (GetBoolProp(PropMultiSelect))
+                    {
+                        <div class="pi-field">
+                            <label>Value Delimiter</label>
+                            <input type="text" value="@GetProp(PropMultiValueDelimiter, ";")"
+                                   @onchange="@(e => OnPropChanged(PropMultiValueDelimiter, e.Value))" />
+                        </div>
+                    }
+                    <div class="pi-field">
+                        <label>Visible Rows</label>
+                        <input type="number" value="@GetProp(PropVisibleRows, "6")" min="2"
+                               @onchange="@(e => OnPropChanged(PropVisibleRows, ParseLong(e.Value)))" />
+                    </div>
+                }
+                @if (_selected.ControlType == "optionGroup")
+                {
+                    <div class="pi-field">
+                        <label>Orientation</label>
+                        <select value="@GetProp(PropOrientation, "vertical")" @onchange="@(e => OnPropChanged(PropOrientation, e.Value))">
+                            <option value="vertical">Vertical</option>
+                            <option value="horizontal">Horizontal</option>
+                        </select>
+                    </div>
+                    <div class="pi-field">
+                        <label>Button Style</label>
+                        <input type="checkbox" checked="@GetBoolProp(PropButtonStyle)"
+                               @onchange="@(e => OnPropChanged(PropButtonStyle, e.Value))" />
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_selected.ControlType == "toggleButton")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Toggle Values</div>
+                <div class="pi-field">
+                    <label>True Value</label>
+                    <input type="text" value="@GetProp(PropTrueValue, "true")"
+                           @onchange="@(e => OnPropChanged(PropTrueValue, ParseScalar(e.Value)))" />
+                </div>
+                <div class="pi-field">
+                    <label>False Value</label>
+                    <input type="text" value="@GetProp(PropFalseValue, "false")"
+                           @onchange="@(e => OnPropChanged(PropFalseValue, ParseScalar(e.Value)))" />
                 </div>
             </div>
         }
@@ -199,8 +332,19 @@
                 </div>
             </div>
         }
+        else if (IsTabOrderControl(_selected))
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Keyboard</div>
+                <div class="pi-field">
+                    <label>Tab Order</label>
+                    <input type="number" value="@GetProp(PropTabIndex, string.Empty)" min="0"
+                           @onchange="@(e => OnPropChanged(PropTabIndex, ParseLong(e.Value)))" />
+                </div>
+            </div>
+        }
 
-        @if (_selected.ControlType == "lookup")
+        @if (_selected.ControlType is "lookup" or "comboBox" or "listBox" or "optionGroup")
         {
             <div class="pi-section">
                 <div class="pi-section-label">Lookup Configuration</div>
@@ -230,6 +374,12 @@
                         </select>
                     </div>
                     <div class="pi-field">
+                        <label>Additional Display Fields</label>
+                        <input type="text" value="@GetDisplayFieldsText()"
+                               placeholder="Code, Name"
+                               @onchange="@(e => OnDisplayFieldsChanged(e.Value?.ToString() ?? string.Empty))" />
+                    </div>
+                    <div class="pi-field">
                         <label>Value Field</label>
                         <select value="@GetProp(PropValueField, "")" @onchange="@(e => OnPropChanged(PropValueField, e.Value))">
                             <option value="">-- Select field --</option>
@@ -240,6 +390,11 @@
                         </select>
                     </div>
                 }
+                <div class="pi-field">
+                    <label>Row Limit</label>
+                    <input type="number" value="@GetProp(PropRowLimit, "500")" min="1"
+                           @onchange="@(e => OnPropChanged(PropRowLimit, ParseLong(e.Value)))" />
+                </div>
             </div>
         }
 
@@ -442,6 +597,257 @@
             </div>
         }
 
+        @if (_selected.ControlType == "tabControl")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Tab Pages</div>
+                <div class="pi-field">
+                    <label>Pages</label>
+                    <textarea class="pi-textarea"
+                              value="@GetTabPagesText()"
+                              placeholder="page1|Page 1"
+                              @onchange="@(e => OnTabPagesChanged(e.Value?.ToString() ?? string.Empty))"></textarea>
+                    @if (!string.IsNullOrWhiteSpace(_tabPagesError))
+                    {
+                        <div class="pi-field-error">@_tabPagesError</div>
+                    }
+                </div>
+            </div>
+        }
+
+        @if (_selected.ControlType != "tabControl" && GetTabControls().Count > 0)
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Tab Membership</div>
+                <div class="pi-field">
+                    <label>Parent Tab Control</label>
+                    <select value="@GetProp(PropParentControlId, "")" @onchange="OnParentTabControlChanged">
+                        <option value="">Top level</option>
+                        @foreach (var tabControl in GetTabControls())
+                        {
+                            <option value="@tabControl.ControlId">@GetControlDisplayName(tabControl)</option>
+                        }
+                    </select>
+                </div>
+                @if (GetSelectedParentTabControl() is { } parentTabControl)
+                {
+                    <div class="pi-field">
+                        <label>Tab Page</label>
+                        <select value="@GetProp(PropParentTabId, "")" @onchange="@(e => OnPropChanged(PropParentTabId, e.Value))">
+                            <option value="">-- Select page --</option>
+                            @foreach (var tab in ReadTabPages(parentTabControl))
+                            {
+                                <option value="@tab.Id">@tab.Label</option>
+                            }
+                        </select>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_selected.ControlType == "subform")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Subform</div>
+                <div class="pi-field">
+                    <label>Form</label>
+                    <select value="@GetProp(PropFormId, "")" @onchange="@(e => OnPropChanged(PropFormId, e.Value))">
+                        <option value="">-- Select form --</option>
+                        @if (_availableForms is not null)
+                        {
+                            @foreach (var form in _availableForms)
+                            {
+                                <option value="@form.FormId">@($"{form.Name} ({form.TableName})")</option>
+                            }
+                        }
+                    </select>
+                </div>
+                <div class="pi-field">
+                    <label>Parent Key Field</label>
+                    @RenderFieldSelect(PropParentKeyField, _sourceTableDef, "-- Select parent field --")
+                </div>
+                <div class="pi-field">
+                    <label>Foreign Key Field</label>
+                    <input type="text" value="@GetProp(PropForeignKeyField, "")"
+                           @onchange="@(e => OnPropChanged(PropForeignKeyField, e.Value))" />
+                </div>
+                <div class="pi-field">
+                    <label>Show Toolbar</label>
+                    <input type="checkbox" checked="@GetBoolProp(PropShowToolbar)"
+                           @onchange="@(e => OnPropChanged(PropShowToolbar, e.Value))" />
+                </div>
+                <div class="pi-field">
+                    <label>Show Record List</label>
+                    <input type="checkbox" checked="@GetBoolProp(PropShowRecordList)"
+                           @onchange="@(e => OnPropChanged(PropShowRecordList, e.Value))" />
+                </div>
+            </div>
+        }
+
+        @if (_selected.ControlType is "attachment" or "image")
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">Attachment Storage</div>
+                <div class="pi-field">
+                    <label>Storage Mode</label>
+                    <select value="@GetProp(PropStorageMode, "blobField")" @onchange="@(e => OnPropChanged(PropStorageMode, e.Value))">
+                        <option value="blobField">BLOB Field</option>
+                        <option value="attachmentTable">Attachment Table</option>
+                    </select>
+                </div>
+                @if (IsAttachmentTableMode())
+                {
+                    <div class="pi-field">
+                        <label>Attachment Table</label>
+                        <select value="@GetProp(PropAttachmentTable, "")" @onchange="@(e => OnPropChanged(PropAttachmentTable, e.Value))">
+                            <option value="">-- Select table --</option>
+                            @if (_availableTables is not null)
+                            {
+                                @foreach (var tableName in _availableTables)
+                                {
+                                    <option value="@tableName">@tableName</option>
+                                }
+                            }
+                        </select>
+                    </div>
+                    <div class="pi-field">
+                        <label>Parent Key Field</label>
+                        @RenderFieldSelect(PropParentKeyField, _sourceTableDef, "-- Primary key --")
+                    </div>
+                    <div class="pi-field">
+                        <label>Attachment FK Field</label>
+                        <input type="text" value="@GetProp(PropAttachmentForeignKeyField, "")"
+                               @onchange="@(e => OnPropChanged(PropAttachmentForeignKeyField, e.Value))" />
+                    </div>
+                    <div class="pi-field">
+                        <label>Attachment BLOB Field</label>
+                        <input type="text" value="@GetProp(PropAttachmentBlobField, "")"
+                               @onchange="@(e => OnPropChanged(PropAttachmentBlobField, e.Value))" />
+                    </div>
+                    <div class="pi-field">
+                        <label>File Name Field</label>
+                        <input type="text" value="@GetProp(PropAttachmentFileNameField, "")"
+                               @onchange="@(e => OnPropChanged(PropAttachmentFileNameField, e.Value))" />
+                    </div>
+                    <div class="pi-field">
+                        <label>Content Type Field</label>
+                        <input type="text" value="@GetProp(PropAttachmentContentTypeField, "")"
+                               @onchange="@(e => OnPropChanged(PropAttachmentContentTypeField, e.Value))" />
+                    </div>
+                    <div class="pi-field">
+                        <label>File Size Field</label>
+                        <input type="text" value="@GetProp(PropAttachmentFileSizeField, "")"
+                               @onchange="@(e => OnPropChanged(PropAttachmentFileSizeField, e.Value))" />
+                    </div>
+                    <div class="pi-field">
+                        <label>Control ID Field</label>
+                        <input type="text" value="@GetProp(PropAttachmentControlIdField, "")"
+                               @onchange="@(e => OnPropChanged(PropAttachmentControlIdField, e.Value))" />
+                    </div>
+                }
+                else
+                {
+                <div class="pi-field">
+                    <label>File Name Field</label>
+                    @RenderFieldSelect(PropFileNameField, _sourceTableDef, "-- None --")
+                </div>
+                <div class="pi-field">
+                    <label>Content Type Field</label>
+                    @RenderFieldSelect(PropContentTypeField, _sourceTableDef, "-- None --")
+                </div>
+                <div class="pi-field">
+                    <label>File Size Field</label>
+                    @RenderFieldSelect(PropFileSizeField, _sourceTableDef, "-- None --")
+                </div>
+                }
+                <div class="pi-field">
+                    <label>Accept</label>
+                    <input type="text" value="@GetProp(PropAccept, _selected.ControlType == "image" ? "image/*" : "")"
+                           @onchange="@(e => OnPropChanged(PropAccept, e.Value))" />
+                </div>
+                <div class="pi-field">
+                    <label>Max Bytes</label>
+                    <input type="number" value="@GetProp(PropMaxFileBytes, "")" min="1"
+                           @onchange="@(e => OnPropChanged(PropMaxFileBytes, ParseLong(e.Value)))" />
+                </div>
+                @if (_selected.ControlType == "image")
+                {
+                    <div class="pi-field">
+                        <label>Alt Text</label>
+                        <input type="text" value="@GetProp(PropAlt, "")"
+                               @onchange="@(e => OnPropChanged(PropAlt, e.Value))" />
+                    </div>
+                    <div class="pi-field">
+                        <label>Fit</label>
+                        <select value="@GetProp(PropFit, "contain")" @onchange="@(e => OnPropChanged(PropFit, e.Value))">
+                            <option value="contain">Contain</option>
+                            <option value="cover">Cover</option>
+                            <option value="fill">Fill</option>
+                            <option value="scale-down">Scale Down</option>
+                        </select>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (GetSelectedDescriptor() is { } registeredDescriptor &&
+             (registeredDescriptor.PropertyEditorComponentType is not null || registeredDescriptor.PropertyDescriptors.Count > 0))
+        {
+            <div class="pi-section">
+                <div class="pi-section-label">@registeredDescriptor.DisplayName Properties</div>
+                @if (registeredDescriptor.PropertyEditorComponentType is not null)
+                {
+                    <DynamicComponent Type="@registeredDescriptor.PropertyEditorComponentType"
+                                      Parameters="GetPropertyEditorParameters(registeredDescriptor)" />
+                }
+                @foreach (FormControlPropertyDescriptor property in registeredDescriptor.PropertyDescriptors)
+                {
+                    <div class="pi-field">
+                        <label>@property.Label</label>
+                        @switch (property.Editor)
+                        {
+                            case FormControlPropertyEditor.TextArea:
+                                <textarea class="pi-textarea"
+                                          value="@GetRegisteredPropertyValue(property)"
+                                          placeholder="@property.Placeholder"
+                                          @onchange="@(e => OnRegisteredPropertyChanged(property, e.Value))"></textarea>
+                                break;
+                            case FormControlPropertyEditor.Number:
+                                <input type="number"
+                                       value="@GetRegisteredPropertyValue(property)"
+                                       placeholder="@property.Placeholder"
+                                       @onchange="@(e => OnRegisteredPropertyChanged(property, e.Value))" />
+                                break;
+                            case FormControlPropertyEditor.Checkbox:
+                                <input type="checkbox"
+                                       checked="@GetRegisteredBoolPropertyValue(property)"
+                                       @onchange="@(e => OnRegisteredPropertyChanged(property, e.Value))" />
+                                break;
+                            case FormControlPropertyEditor.Select:
+                                <select value="@GetRegisteredPropertyValue(property)"
+                                        @onchange="@(e => OnRegisteredPropertyChanged(property, e.Value))">
+                                    @foreach (FormControlPropertyOption option in property.Options)
+                                    {
+                                        <option value="@option.Value">@option.Label</option>
+                                    }
+                                </select>
+                                break;
+                            default:
+                                <input type="text"
+                                       value="@GetRegisteredPropertyValue(property)"
+                                       placeholder="@property.Placeholder"
+                                       @onchange="@(e => OnRegisteredPropertyChanged(property, e.Value))" />
+                                break;
+                        }
+                        @if (!string.IsNullOrWhiteSpace(property.HelpText))
+                        {
+                            <div class="pi-help-text">@property.HelpText</div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
         <div class="pi-section">
             <div class="pi-section-label">Arrange</div>
             <div class="pi-field-row">
@@ -471,6 +877,7 @@
 
 @code {
     [CascadingParameter] public DesignerState State { get; set; } = default!;
+    [Inject] public IFormControlRegistry ControlRegistry { get; set; } = DefaultFormControlRegistry.Instance;
 
     private ControlDefinition? _selected;
 
@@ -480,6 +887,13 @@
     private const string PropMaxLength = "maxLength";
     private const string PropReadOnly = "readOnly";
     private const string PropTabIndex = "tabIndex";
+    private const string PropAnchorLeft = "anchorLeft";
+    private const string PropAnchorTop = "anchorTop";
+    private const string PropAnchorRight = "anchorRight";
+    private const string PropAnchorBottom = "anchorBottom";
+    private const string PropMinWidth = "minWidth";
+    private const string PropMinHeight = "minHeight";
+    private const string PropResizeMode = "resizeMode";
     private const string PropDataGridMode = "dataGridMode";
     private const string PropChildTable = "childTable";
     private const string PropForeignKeyName = "foreignKeyName";
@@ -492,6 +906,38 @@
     private const string PropLookupTable = "lookupTable";
     private const string PropDisplayField = "displayField";
     private const string PropValueField = "valueField";
+    private const string PropDisplayFields = "displayFields";
+    private const string PropRowLimit = "rowLimit";
+    private const string PropOptions = "options";
+    private const string PropAllowCustomValue = "allowCustomValue";
+    private const string PropVisibleRows = "visibleRows";
+    private const string PropMultiSelect = "multiSelect";
+    private const string PropMultiValueDelimiter = "multiValueDelimiter";
+    private const string PropOrientation = "orientation";
+    private const string PropButtonStyle = "buttonStyle";
+    private const string PropTrueValue = "trueValue";
+    private const string PropFalseValue = "falseValue";
+    private const string PropTabs = "tabs";
+    private const string PropParentControlId = "parentControlId";
+    private const string PropParentTabId = "parentTabId";
+    private const string PropFormId = "formId";
+    private const string PropShowToolbar = "showToolbar";
+    private const string PropShowRecordList = "showRecordList";
+    private const string PropFileNameField = "fileNameField";
+    private const string PropContentTypeField = "contentTypeField";
+    private const string PropFileSizeField = "fileSizeField";
+    private const string PropStorageMode = "storageMode";
+    private const string PropAttachmentTable = "attachmentTable";
+    private const string PropAttachmentForeignKeyField = "attachmentForeignKeyField";
+    private const string PropAttachmentBlobField = "attachmentBlobField";
+    private const string PropAttachmentFileNameField = "attachmentFileNameField";
+    private const string PropAttachmentContentTypeField = "attachmentContentTypeField";
+    private const string PropAttachmentFileSizeField = "attachmentFileSizeField";
+    private const string PropAttachmentControlIdField = "attachmentControlIdField";
+    private const string PropAccept = "accept";
+    private const string PropMaxFileBytes = "maxFileBytes";
+    private const string PropAlt = "alt";
+    private const string PropFit = "fit";
     private const string PropFormula = "formula";
     private const string PropFormat = "format";
     private const string PropCommandName = "commandName";
@@ -501,6 +947,7 @@
 
     // DataGrid configuration state
     private IReadOnlyList<string>? _availableTables;
+    private IReadOnlyList<FormDefinition>? _availableForms;
     private string? _loadedSourceTableName;
     private FormTableDefinition? _sourceTableDef;
     private FormTableDefinition? _childTableDef;
@@ -513,6 +960,12 @@
     private string? _loadedCommandArgumentControlId;
     private string _commandArgumentText = string.Empty;
     private string? _commandArgumentError;
+    private string? _loadedOptionsControlId;
+    private string _optionsText = string.Empty;
+    private string? _optionsError;
+    private string? _loadedTabPagesControlId;
+    private string _tabPagesText = string.Empty;
+    private string? _tabPagesError;
 
     private IReadOnlyList<DbCommandDefinition> RegisteredCommands => CommandRegistry.Commands.ToList();
 
@@ -520,6 +973,7 @@
     {
         State.OnChange += OnStateChanged;
         _availableTables = await SchemaProvider.ListTableNamesAsync();
+        _availableForms = await FormRepository.ListAsync();
         await RefreshSourceTableDefinitionAsync();
     }
 
@@ -554,8 +1008,8 @@
             await InvokeAsync(StateHasChanged);
         }
 
-        // Load lookup table def when a lookup control is selected
-        if (_selected?.ControlType == "lookup" && _selected != prev)
+        // Load lookup table def when a lookup-backed choice control is selected
+        if (_selected != prev && IsLookupChoiceControl(_selected?.ControlType))
         {
             var lookupTable = GetProp(PropLookupTable, "");
             if (!string.IsNullOrEmpty(lookupTable))
@@ -575,7 +1029,7 @@
         if (_selected?.ControlType != "childtabs")
             _currentTabs = [];
 
-        if (_selected?.ControlType != "lookup")
+        if (_selected?.ControlType is not ("lookup" or "comboBox" or "listBox" or "optionGroup"))
             _lookupTableDef = null;
 
         if (_selected?.ControlType != "commandButton")
@@ -583,6 +1037,20 @@
             _loadedCommandArgumentControlId = null;
             _commandArgumentText = string.Empty;
             _commandArgumentError = null;
+        }
+
+        if (_selected?.ControlType is not ("select" or "comboBox" or "listBox" or "optionGroup"))
+        {
+            _loadedOptionsControlId = null;
+            _optionsText = string.Empty;
+            _optionsError = null;
+        }
+
+        if (_selected?.ControlType != "tabControl")
+        {
+            _loadedTabPagesControlId = null;
+            _tabPagesText = string.Empty;
+            _tabPagesError = null;
         }
 
         await InvokeAsync(StateHasChanged);
@@ -597,15 +1065,193 @@
 
     private bool GetBoolProp(string key)
     {
-        if (_selected?.Props.Values.TryGetValue(key, out var val) == true && val is bool b)
-            return b;
+        if (_selected?.Props.Values.TryGetValue(key, out var val) == true)
+            return ReadBool(val, false);
         return false;
+    }
+
+    private FormControlDescriptor? GetSelectedDescriptor()
+        => _selected is not null && ControlRegistry.TryGetControl(_selected.ControlType, out FormControlDescriptor descriptor)
+            ? descriptor
+            : null;
+
+    private IReadOnlyList<FormControlDescriptor> GetTypeDropdownControls()
+        => ControlRegistry.Controls;
+
+    private bool IsRegisteredControlType(string controlType)
+        => ControlRegistry.TryGetControl(controlType, out _);
+
+    private bool IsTabOrderControl(ControlDefinition control)
+        => ControlRegistry.TryGetControl(control.ControlType, out FormControlDescriptor descriptor)
+            ? descriptor.ParticipatesInTabOrder
+            : control.ControlType is not ("label" or "datagrid" or "childtabs" or "tabControl" or "subform");
+
+    private string GetRegisteredPropertyValue(FormControlPropertyDescriptor property)
+    {
+        if (_selected?.Props.Values.TryGetValue(property.Name, out object? value) == true && value is not null)
+            return value.ToString() ?? string.Empty;
+
+        return property.DefaultValue?.ToString() ?? string.Empty;
+    }
+
+    private bool GetRegisteredBoolPropertyValue(FormControlPropertyDescriptor property)
+    {
+        if (_selected?.Props.Values.TryGetValue(property.Name, out object? value) == true)
+            return ReadBool(value, ReadBool(property.DefaultValue, false));
+
+        return ReadBool(property.DefaultValue, false);
+    }
+
+    private void OnRegisteredPropertyChanged(FormControlPropertyDescriptor property, object? rawValue)
+    {
+        object? value = property.Editor switch
+        {
+            FormControlPropertyEditor.Checkbox => rawValue is bool b && b,
+            FormControlPropertyEditor.Number => ParseScalar(rawValue),
+            _ => rawValue?.ToString(),
+        };
+
+        OnPropChanged(property.Name, value);
+    }
+
+    private Dictionary<string, object?> GetPropertyEditorParameters(FormControlDescriptor descriptor)
+        => new()
+        {
+            ["Context"] = new FormControlPropertyContext(
+                _selected!,
+                descriptor,
+                _sourceTableDef,
+                _availableTables,
+                _availableForms,
+                (key, value) =>
+                {
+                    OnPropChanged(key, value);
+                    return Task.CompletedTask;
+                }),
+        };
+
+    private bool IsAttachmentTableMode()
+        => string.Equals(GetProp(PropStorageMode, "blobField"), "attachmentTable", StringComparison.OrdinalIgnoreCase);
+
+    private bool GetAnchorProp(string key, bool fallback)
+    {
+        if (_selected?.Props.Values.TryGetValue(key, out var val) == true)
+            return ReadBool(val, fallback);
+        return fallback;
     }
 
     private void OnPropChanged(string key, object? value)
     {
         if (_selected is null) return;
         State.UpdateControlProp(_selected.ControlId, key, value);
+    }
+
+    private string GetAnchorPreset()
+    {
+        var anchors = GetCurrentAnchors();
+
+        return anchors switch
+        {
+            (true, true, false, false) => "topLeft",
+            (false, true, true, false) => "topRight",
+            (true, false, false, true) => "bottomLeft",
+            (false, false, true, true) => "bottomRight",
+            (true, true, true, false) => "stretchAcross",
+            (true, true, false, true) => "stretchDown",
+            (true, true, true, true) => "stretchBoth",
+            _ => "custom",
+        };
+    }
+
+    private void OnAnchorPresetChanged(ChangeEventArgs e)
+    {
+        if (_selected is null) return;
+
+        string preset = e.Value?.ToString() ?? string.Empty;
+        if (preset == "custom")
+            return;
+
+        var anchors = preset switch
+        {
+            "topLeft" => (Left: true, Top: true, Right: false, Bottom: false),
+            "topRight" => (Left: false, Top: true, Right: true, Bottom: false),
+            "bottomLeft" => (Left: true, Top: false, Right: false, Bottom: true),
+            "bottomRight" => (Left: false, Top: false, Right: true, Bottom: true),
+            "stretchAcross" => (Left: true, Top: true, Right: true, Bottom: false),
+            "stretchDown" => (Left: true, Top: true, Right: false, Bottom: true),
+            "stretchBoth" => (Left: true, Top: true, Right: true, Bottom: true),
+            _ => GetCurrentAnchors(),
+        };
+
+        UpdateAnchorProps(anchors);
+    }
+
+    private void OnAnchorChanged(string key, object? value)
+    {
+        if (_selected is null) return;
+
+        var anchors = GetCurrentAnchors();
+        bool left = anchors.Left;
+        bool top = anchors.Top;
+        bool right = anchors.Right;
+        bool bottom = anchors.Bottom;
+        bool isChecked = value is bool b && b;
+
+        switch (key)
+        {
+            case PropAnchorLeft:
+                left = isChecked;
+                break;
+            case PropAnchorTop:
+                top = isChecked;
+                break;
+            case PropAnchorRight:
+                right = isChecked;
+                break;
+            case PropAnchorBottom:
+                bottom = isChecked;
+                break;
+        }
+
+        if (!left && !right)
+        {
+            if (key == PropAnchorLeft)
+                right = true;
+            else
+                left = true;
+        }
+
+        if (!top && !bottom)
+        {
+            if (key == PropAnchorTop)
+                bottom = true;
+            else
+                top = true;
+        }
+
+        UpdateAnchorProps((left, top, right, bottom));
+    }
+
+    private (bool Left, bool Top, bool Right, bool Bottom) GetCurrentAnchors()
+        => (
+            GetAnchorProp(PropAnchorLeft, true),
+            GetAnchorProp(PropAnchorTop, true),
+            GetAnchorProp(PropAnchorRight, false),
+            GetAnchorProp(PropAnchorBottom, false));
+
+    private void UpdateAnchorProps((bool Left, bool Top, bool Right, bool Bottom) anchors)
+    {
+        if (_selected is null) return;
+
+        State.UpdateControlProps(
+            _selected.ControlId,
+            new Dictionary<string, object?>
+            {
+                [PropAnchorLeft] = anchors.Left,
+                [PropAnchorTop] = anchors.Top,
+                [PropAnchorRight] = anchors.Right,
+                [PropAnchorBottom] = anchors.Bottom,
+            });
     }
 
     private void OnFormNameChanged(ChangeEventArgs e)
@@ -617,6 +1263,13 @@
     {
         if (_selected is null || e.Value is not string newType) return;
         State.UpdateControlType(_selected.ControlId, newType);
+        if (ControlRegistry.TryGetControl(newType, out FormControlDescriptor descriptor))
+        {
+            if (!descriptor.SupportsBinding && _selected.Binding is not null)
+                State.UpdateControlBinding(_selected.ControlId, null);
+            else if (descriptor.SupportsBinding && _selected.Binding is null)
+                State.UpdateControlBinding(_selected.ControlId, new BindingDefinition("", "TwoWay"));
+        }
     }
 
     private void OnRectChanged(ChangeEventArgs e, RectPart part)
@@ -665,6 +1318,29 @@
         var s = value.ToString();
         if (string.IsNullOrEmpty(s)) return null;
         return long.TryParse(s, out var l) ? l : null;
+    }
+
+    private static object? ParseNonNegativeDouble(object? value)
+    {
+        if (value is null) return null;
+        var s = value.ToString();
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed)
+            ? Math.Max(0, parsed)
+            : null;
+    }
+
+    private static bool ReadBool(object? value, bool fallback)
+    {
+        return value switch
+        {
+            bool b => b,
+            JsonElement json when json.ValueKind == JsonValueKind.True => true,
+            JsonElement json when json.ValueKind == JsonValueKind.False => false,
+            JsonElement json when json.ValueKind == JsonValueKind.String && bool.TryParse(json.GetString(), out bool parsed) => parsed,
+            _ when bool.TryParse(value?.ToString(), out bool parsed) => parsed,
+            _ => fallback,
+        };
     }
 
     // ===== DataGrid Configuration Methods =====
@@ -833,6 +1509,247 @@
             _lookupTableDef = null;
         }
     }
+
+    private string GetOptionsText()
+    {
+        if (_selected is null)
+            return string.Empty;
+
+        if (string.Equals(_loadedOptionsControlId, _selected.ControlId, StringComparison.Ordinal))
+            return _optionsText;
+
+        _loadedOptionsControlId = _selected.ControlId;
+        _optionsError = null;
+        IReadOnlyList<EnumChoice> options = _selected.Props.Values.TryGetValue(PropOptions, out object? value)
+            ? FormChoiceResolver.ReadOptions(value)
+            : [];
+        _optionsText = string.Join(Environment.NewLine, options.Select(option => $"{option.Value}|{option.Label}"));
+        return _optionsText;
+    }
+
+    private void OnOptionsChanged(string text)
+    {
+        _optionsText = text;
+        _optionsError = null;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            OnPropChanged(PropOptions, Array.Empty<object?>());
+            return;
+        }
+
+        var options = new List<object?>();
+        foreach (string line in text.Split(["\r\n", "\n"], StringSplitOptions.None))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            string[] parts = line.Split('|', 2);
+            string value = parts[0].Trim();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                _optionsError = "Each option needs a value before the pipe.";
+                return;
+            }
+
+            string label = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])
+                ? parts[1].Trim()
+                : value;
+            options.Add(new Dictionary<string, object?>
+            {
+                ["value"] = value,
+                ["label"] = label,
+            });
+        }
+
+        OnPropChanged(PropOptions, options.ToArray());
+    }
+
+    private string GetDisplayFieldsText()
+    {
+        if (_selected?.Props.Values.TryGetValue(PropDisplayFields, out object? value) == true)
+            return string.Join(", ", FormChoiceResolver.ReadStringList(value));
+
+        return string.Empty;
+    }
+
+    private void OnDisplayFieldsChanged(string text)
+    {
+        object?[] fields = text
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(field => (object?)field)
+            .ToArray();
+        OnPropChanged(PropDisplayFields, fields);
+    }
+
+    private static object? ParseScalar(object? value)
+    {
+        string text = value?.ToString()?.Trim() ?? string.Empty;
+        if (text.Length == 0)
+            return null;
+
+        if (bool.TryParse(text, out bool boolValue))
+            return boolValue;
+        if (long.TryParse(text, out long longValue))
+            return longValue;
+        if (double.TryParse(text, out double doubleValue))
+            return doubleValue;
+
+        return text;
+    }
+
+    private string GetTabPagesText()
+    {
+        if (_selected is null)
+            return string.Empty;
+
+        if (string.Equals(_loadedTabPagesControlId, _selected.ControlId, StringComparison.Ordinal))
+            return _tabPagesText;
+
+        _loadedTabPagesControlId = _selected.ControlId;
+        _tabPagesError = null;
+        _tabPagesText = string.Join(Environment.NewLine, ReadTabPages(_selected).Select(tab => $"{tab.Id}|{tab.Label}"));
+        return _tabPagesText;
+    }
+
+    private void OnTabPagesChanged(string text)
+    {
+        _tabPagesText = text;
+        _tabPagesError = null;
+
+        var tabs = new List<object?>();
+        foreach (string line in text.Split(["\r\n", "\n"], StringSplitOptions.None))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            string[] parts = line.Split('|', 2);
+            string id = parts[0].Trim();
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                _tabPagesError = "Each tab page needs an id before the pipe.";
+                return;
+            }
+
+            string label = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])
+                ? parts[1].Trim()
+                : id;
+            tabs.Add(new Dictionary<string, object?>
+            {
+                ["id"] = id,
+                ["label"] = label,
+            });
+        }
+
+        OnPropChanged(PropTabs, tabs.ToArray());
+    }
+
+    private IReadOnlyList<(string Id, string Label)> ReadTabPages(ControlDefinition control)
+    {
+        if (!control.Props.Values.TryGetValue(PropTabs, out object? value) || value is null)
+            return [];
+
+        if (value is JsonElement json && json.ValueKind == JsonValueKind.Array)
+        {
+            return json.EnumerateArray()
+                .Select(element => ReadTabPage(element))
+                .Where(tab => tab is not null)
+                .Select(tab => tab!.Value)
+                .ToArray();
+        }
+
+        if (value is IEnumerable<object?> items)
+        {
+            return items
+                .Select(item => ReadTabPage(item))
+                .Where(tab => tab is not null)
+                .Select(tab => tab!.Value)
+                .ToArray();
+        }
+
+        return [];
+    }
+
+    private static (string Id, string Label)? ReadTabPage(object? value)
+    {
+        if (value is JsonElement json)
+        {
+            if (json.ValueKind != JsonValueKind.Object)
+                return null;
+
+            string id = json.TryGetProperty("id", out JsonElement idValue) ? idValue.ToString() : string.Empty;
+            string label = json.TryGetProperty("label", out JsonElement labelValue) ? labelValue.ToString() : id;
+            return string.IsNullOrWhiteSpace(id) ? null : (id, string.IsNullOrWhiteSpace(label) ? id : label);
+        }
+
+        if (value is IReadOnlyDictionary<string, object?> readOnly)
+            return ReadTabPage(readOnly);
+
+        if (value is IDictionary<string, object?> dictionary)
+            return ReadTabPage(dictionary);
+
+        return null;
+    }
+
+    private static (string Id, string Label)? ReadTabPage(IReadOnlyDictionary<string, object?> dictionary)
+    {
+        string id = dictionary.TryGetValue("id", out object? idValue) ? idValue?.ToString() ?? string.Empty : string.Empty;
+        if (string.IsNullOrWhiteSpace(id))
+            return null;
+
+        string label = dictionary.TryGetValue("label", out object? labelValue) ? labelValue?.ToString() ?? id : id;
+        return (id, string.IsNullOrWhiteSpace(label) ? id : label);
+    }
+
+    private List<ControlDefinition> GetTabControls()
+        => State.Controls
+            .Where(control => control.ControlType == "tabControl" && !string.Equals(control.ControlId, _selected?.ControlId, StringComparison.Ordinal))
+            .ToList();
+
+    private ControlDefinition? GetSelectedParentTabControl()
+    {
+        string parentControlId = GetProp(PropParentControlId, string.Empty);
+        return string.IsNullOrWhiteSpace(parentControlId)
+            ? null
+            : State.Controls.FirstOrDefault(control => string.Equals(control.ControlId, parentControlId, StringComparison.Ordinal));
+    }
+
+    private void OnParentTabControlChanged(ChangeEventArgs e)
+    {
+        if (_selected is null)
+            return;
+
+        string parentControlId = e.Value?.ToString() ?? string.Empty;
+        OnPropChanged(PropParentControlId, parentControlId);
+        if (string.IsNullOrWhiteSpace(parentControlId))
+        {
+            OnPropChanged(PropParentTabId, string.Empty);
+            return;
+        }
+
+        ControlDefinition? parent = State.Controls.FirstOrDefault(control => string.Equals(control.ControlId, parentControlId, StringComparison.Ordinal));
+        string firstTabId = parent is null ? string.Empty : ReadTabPages(parent).FirstOrDefault().Id ?? string.Empty;
+        OnPropChanged(PropParentTabId, firstTabId);
+    }
+
+    private static string GetControlDisplayName(ControlDefinition control)
+        => control.Props.Values.TryGetValue(PropText, out object? text) && !string.IsNullOrWhiteSpace(text?.ToString())
+            ? $"{text} ({control.ControlId[..Math.Min(8, control.ControlId.Length)]})"
+            : $"{control.ControlType} ({control.ControlId[..Math.Min(8, control.ControlId.Length)]})";
+
+    private RenderFragment RenderFieldSelect(string propName, FormTableDefinition? table, string emptyText) => @<select value="@GetProp(propName, "")" @onchange="@(e => OnPropChanged(propName, e.Value))">
+        <option value="">@emptyText</option>
+        @if (table is not null)
+        {
+            @foreach (var field in table.Fields)
+            {
+                <option value="@field.Name">@GetFieldOptionLabel(field)</option>
+            }
+        }
+    </select>;
+
+    private static bool IsLookupChoiceControl(string? controlType)
+        => controlType is "lookup" or "comboBox" or "listBox" or "optionGroup";
 
     // ===== ChildTabs Configuration Methods =====
 

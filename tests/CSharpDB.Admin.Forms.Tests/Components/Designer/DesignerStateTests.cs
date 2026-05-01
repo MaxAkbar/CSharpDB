@@ -306,6 +306,83 @@ public sealed class DesignerStateTests
         Assert.Equal("Queued.", step.Message);
     }
 
+    [Fact]
+    public void UpdateControlProps_UpdatesMultiplePropertiesWithOneUndoSnapshot()
+    {
+        var state = new DesignerState();
+        ControlDefinition text = new(
+            "status",
+            "text",
+            new Rect(0, 0, 160, 32),
+            new BindingDefinition("Status", "TwoWay"),
+            PropertyBag.Empty,
+            null);
+        state.LoadForm(CreateForm() with { Controls = [text] });
+
+        state.UpdateControlProps(
+            "status",
+            new Dictionary<string, object?>
+            {
+                ["anchorLeft"] = true,
+                ["anchorRight"] = true,
+                ["minWidth"] = 120L,
+            });
+
+        ControlDefinition updated = Assert.Single(state.ToFormDefinition().Controls);
+        Assert.Equal(true, updated.Props.Values["anchorLeft"]);
+        Assert.Equal(true, updated.Props.Values["anchorRight"]);
+        Assert.Equal(120L, updated.Props.Values["minWidth"]);
+
+        state.Undo();
+
+        ControlDefinition reverted = Assert.Single(state.ToFormDefinition().Controls);
+        Assert.Empty(reverted.Props.Values);
+    }
+
+    [Fact]
+    public void DeleteSelected_RemovesTabChildren()
+    {
+        var state = new DesignerState();
+        state.LoadForm(CreateForm() with
+        {
+            Controls =
+            [
+                CreateTabControl("tabs"),
+                CreateTabChild("child", "tabs", "main"),
+            ],
+        });
+
+        state.SelectControl("tabs", addToSelection: false);
+        state.DeleteSelected();
+
+        Assert.Empty(state.ToFormDefinition().Controls);
+    }
+
+    [Fact]
+    public void CopyPaste_RemapsCopiedTabChildrenToCopiedParent()
+    {
+        var state = new DesignerState();
+        state.LoadForm(CreateForm() with
+        {
+            Controls =
+            [
+                CreateTabControl("tabs"),
+                CreateTabChild("child", "tabs", "main"),
+            ],
+        });
+
+        state.SelectControl("tabs", addToSelection: false);
+        state.CopySelected();
+        state.PasteClipboard();
+
+        FormDefinition saved = state.ToFormDefinition();
+        Assert.Equal(4, saved.Controls.Count);
+        ControlDefinition pastedParent = Assert.Single(saved.Controls, control => control.ControlType == "tabControl" && control.ControlId != "tabs");
+        ControlDefinition pastedChild = Assert.Single(saved.Controls, control => control.ControlId is not "child" && control.ControlType == "text");
+        Assert.Equal(pastedParent.ControlId, pastedChild.Props.Values["parentControlId"]);
+        Assert.Equal("main", pastedChild.Props.Values["parentTabId"]);
+    }
+
     private static FormDefinition CreateForm()
         => new(
             "customers-form",
@@ -315,4 +392,32 @@ public sealed class DesignerStateTests
             "sig:customers",
             new LayoutDefinition("absolute", 8, true, [new Breakpoint("md", 0, null)]),
             []);
+
+    private static ControlDefinition CreateTabControl(string controlId)
+        => new(
+            controlId,
+            "tabControl",
+            new Rect(0, 0, 400, 240),
+            null,
+            new PropertyBag(new Dictionary<string, object?>
+            {
+                ["tabs"] = new object?[]
+                {
+                    new Dictionary<string, object?> { ["id"] = "main", ["label"] = "Main" },
+                },
+            }),
+            null);
+
+    private static ControlDefinition CreateTabChild(string controlId, string parentControlId, string parentTabId)
+        => new(
+            controlId,
+            "text",
+            new Rect(16, 48, 160, 32),
+            new BindingDefinition("Name", "TwoWay"),
+            new PropertyBag(new Dictionary<string, object?>
+            {
+                ["parentControlId"] = parentControlId,
+                ["parentTabId"] = parentTabId,
+            }),
+            null);
 }

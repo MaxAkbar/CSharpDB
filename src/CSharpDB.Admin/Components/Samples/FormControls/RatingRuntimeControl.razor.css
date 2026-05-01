@@ -1,0 +1,56 @@
+.sample-rating-control {
+    display: grid;
+    gap: 6px;
+    height: 100%;
+    min-height: 0;
+}
+
+.sample-rating-label {
+    color: var(--cdb-text, #1f2937);
+    font-size: 12px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sample-rating-buttons {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+}
+
+.sample-rating-button {
+    align-items: center;
+    background: var(--cdb-surface-muted, #f8fafc);
+    border: 1px solid var(--cdb-border, #cbd5e1);
+    border-radius: 4px;
+    color: var(--cdb-text, #1f2937);
+    cursor: pointer;
+    display: inline-flex;
+    font-size: 12px;
+    font-weight: 600;
+    height: 26px;
+    justify-content: center;
+    min-width: 28px;
+}
+
+.sample-rating-button.active {
+    background: var(--cdb-primary, #2563eb);
+    border-color: var(--cdb-primary, #2563eb);
+    color: var(--cdb-primary-contrast, #fff);
+}
+
+.sample-rating-control.locked .sample-rating-button {
+    cursor: default;
+    opacity: 0.72;
+}
+
+.sample-rating-control.invalid .sample-rating-button {
+    border-color: var(--cdb-danger, #dc2626);
+}
+
+.sample-rating-error {
+    color: var(--cdb-danger, #dc2626);
+    font-size: 11px;
+}

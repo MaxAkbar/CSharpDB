@@ -3,6 +3,7 @@
 @using CSharpDB.Client
 @using CSharpDB.Client.Models
 @using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Primitives
 @implements IDisposable
 @implements IFormActionRuntime
@@ -12,7 +13,9 @@
 @inject IValidationInferenceService ValidationService
 @inject IJSRuntime JS
 
-<div class="data-entry-layout" @ref="_layoutRef">
+<div class="@GetDataEntryLayoutClass()" @ref="_layoutRef">
+    @if (ShowToolbar)
+    {
     <div class="de-toolbar">
         @if (!string.IsNullOrWhiteSpace(BackHref))
         {
@@ -65,6 +68,7 @@
             <button class="de-btn" @onclick="OpenDesigner" title="Open in designer">Edit Form</button>
         }
     </div>
+    }
 
     @if (_error is not null)
     {
@@ -104,7 +108,7 @@
         </div>
     }
 
-    @if (_form is not null)
+    @if (_form is not null && ShowRecordList)
     {
         <div class="de-record-resize"
              title="Resize records pane"
@@ -205,6 +209,9 @@
     [Parameter] public string FormId { get; set; } = string.Empty;
     [Parameter] public EventCallback<string> OnOpenDesigner { get; set; }
     [Parameter] public bool ShowDesignerButton { get; set; } = true;
+    [Parameter] public bool ShowToolbar { get; set; } = true;
+    [Parameter] public bool ShowRecordList { get; set; } = true;
+    [Parameter] public bool Embedded { get; set; }
     [Parameter] public string? BackHref { get; set; }
     [Parameter] public string BackLabel { get; set; } = "Forms";
     [Parameter] public EventCallback<FormOpenRequest> OnOpenForm { get; set; }
@@ -278,6 +285,19 @@
         ? !_isNew && _recordPageIndex >= 0 && (_recordPageIndex < _records.Count - 1 || _hasFocusedNextRecords)
         : !_isNew && CurrentRecordOrdinal < _totalRecords;
 
+    private string GetDataEntryLayoutClass()
+    {
+        List<string> classes = ["data-entry-layout"];
+        if (!ShowRecordList)
+            classes.Add("data-entry-no-record-list");
+        if (!ShowToolbar)
+            classes.Add("data-entry-no-toolbar");
+        if (Embedded)
+            classes.Add("data-entry-embedded");
+
+        return string.Join(" ", classes);
+    }
+
     protected override async Task OnParametersSetAsync()
     {
         if (string.IsNullOrWhiteSpace(FormId))
@@ -298,7 +318,7 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender)
+        if (!firstRender || !ShowRecordList)
             return;
 
         try
@@ -477,15 +497,18 @@
                 choices[field.Name] = field.Choices;
         }
 
-        foreach (var control in form.Controls.Where(control => control.ControlType == "lookup"))
+        foreach (var control in form.Controls.Where(FormChoiceResolver.UsesLookupChoices))
         {
             string? bindingField = control.Binding?.FieldName;
-            string? lookupTableName = control.Props.Values.TryGetValue("lookupTable", out var lookupTable) ? lookupTable?.ToString() : null;
-            string? displayField = control.Props.Values.TryGetValue("displayField", out var display) ? display?.ToString() : null;
-            string? valueField = control.Props.Values.TryGetValue("valueField", out var value) ? value?.ToString() : null;
+            FormChoiceResolver.TryGetString(control.Props.Values, "lookupTable", out string lookupTableName);
+            FormChoiceResolver.TryGetString(control.Props.Values, "displayField", out string displayField);
+            FormChoiceResolver.TryGetString(control.Props.Values, "valueField", out string valueField);
+            int rowLimit = FormChoiceResolver.ReadInt(control.Props.Values, "rowLimit", 500);
+            IReadOnlyList<string> displayFields = control.Props.Values.TryGetValue("displayFields", out object? fields)
+                ? FormChoiceResolver.ReadStringList(fields)
+                : [];
 
-            if (string.IsNullOrWhiteSpace(bindingField) ||
-                string.IsNullOrWhiteSpace(lookupTableName) ||
+            if (string.IsNullOrWhiteSpace(lookupTableName) ||
                 string.IsNullOrWhiteSpace(displayField) ||
                 string.IsNullOrWhiteSpace(valueField))
             {
@@ -496,13 +519,16 @@
             if (lookupTableDef is null)
                 continue;
 
-            List<Dictionary<string, object?>> lookupRows = await RecordService.ListRecordsAsync(lookupTableDef);
-            var enumChoices = lookupRows
-                .Select(row => new EnumChoice(LookupField(row, valueField), LookupField(row, displayField)))
-                .Where(choice => !string.IsNullOrWhiteSpace(choice.Value))
-                .ToList();
+            FormRecordPage lookupPage = await RecordService.ListRecordPageAsync(lookupTableDef, 1, Math.Clamp(rowLimit, 1, 5000));
+            IReadOnlyList<EnumChoice> enumChoices = FormChoiceResolver.BuildLookupChoices(
+                lookupPage.Records,
+                valueField,
+                displayField,
+                displayFields);
 
-            choices[bindingField] = enumChoices;
+            choices[control.ControlId] = enumChoices;
+            if (!string.IsNullOrWhiteSpace(bindingField))
+                choices[bindingField] = enumChoices;
         }
 
         return choices;
@@ -591,6 +617,7 @@
                     return;
 
                 Dictionary<string, object?> created = await RecordService.CreateRecordAsync(_table, recordToSave);
+                await PersistAttachmentTableValuesAsync(recordToSave, created);
                 _currentRecord = CloneRecord(created);
                 _isNew = false;
                 if (TryGetPrimaryKeyValue(created, out object? createdPk) && createdPk is not null)
@@ -611,6 +638,7 @@
                     return;
 
                 Dictionary<string, object?> updated = await RecordService.UpdateRecordAsync(_table, pkValue!, recordToSave);
+                await PersistAttachmentTableValuesAsync(recordToSave, updated);
                 UpdateVisibleCurrentRecord(updated);
                 await DispatchFormEventAsync(FormEventKind.AfterUpdate, updated);
             }
@@ -630,6 +658,77 @@
             _saving = false;
         }
     }
+
+    private async Task PersistAttachmentTableValuesAsync(
+        IReadOnlyDictionary<string, object?> pendingRecord,
+        IReadOnlyDictionary<string, object?> savedRecord)
+    {
+        if (_form is null || _table is null)
+            return;
+
+        foreach (ControlDefinition control in _form.Controls.Where(IsAttachmentTableControl))
+        {
+            string pendingKey = FormAttachmentValue.GetRecordKey(control.ControlId);
+            if (!pendingRecord.TryGetValue(pendingKey, out object? pendingValue) || pendingValue is not FormAttachmentValue attachment)
+                continue;
+
+            FormAttachmentTableBinding binding = BuildAttachmentTableBinding(control);
+            string parentKeyField = GetControlStringProp(control, "parentKeyField");
+            if (string.IsNullOrWhiteSpace(parentKeyField))
+                parentKeyField = RecordService.GetPrimaryKeyColumn(_table);
+
+            object? parentValue = ReadRecordValue(savedRecord, parentKeyField) ?? ReadRecordValue(pendingRecord, parentKeyField);
+            if (parentValue is null || string.IsNullOrWhiteSpace(parentValue.ToString()))
+                throw new InvalidOperationException($"Attachment control '{control.ControlId}' requires parent key field '{parentKeyField}'.");
+
+            await RecordService.SaveAttachmentAsync(binding, parentValue, attachment);
+        }
+    }
+
+    private static bool IsAttachmentTableControl(ControlDefinition control)
+        => control.ControlType is "attachment" or "image" &&
+           string.Equals(GetControlStringProp(control, "storageMode"), "attachmentTable", StringComparison.OrdinalIgnoreCase);
+
+    private static FormAttachmentTableBinding BuildAttachmentTableBinding(ControlDefinition control)
+    {
+        string tableName = GetControlStringProp(control, "attachmentTable");
+        string foreignKeyField = GetControlStringProp(control, "attachmentForeignKeyField");
+        string blobField = GetControlStringProp(control, "attachmentBlobField");
+
+        if (string.IsNullOrWhiteSpace(tableName) ||
+            string.IsNullOrWhiteSpace(foreignKeyField) ||
+            string.IsNullOrWhiteSpace(blobField))
+        {
+            throw new InvalidOperationException($"Attachment control '{control.ControlId}' is missing attachment table, foreign key field, or blob field.");
+        }
+
+        return new FormAttachmentTableBinding(
+            tableName,
+            foreignKeyField,
+            blobField,
+            NullIfWhiteSpace(GetControlStringProp(control, "attachmentFileNameField")),
+            NullIfWhiteSpace(GetControlStringProp(control, "attachmentContentTypeField")),
+            NullIfWhiteSpace(GetControlStringProp(control, "attachmentFileSizeField")),
+            NullIfWhiteSpace(GetControlStringProp(control, "attachmentControlIdField")),
+            control.ControlId);
+    }
+
+    private static string GetControlStringProp(ControlDefinition control, string key)
+        => FormChoiceResolver.TryGetString(control.Props.Values, key, out string value)
+            ? value
+            : string.Empty;
+
+    private static object? ReadRecordValue(IReadOnlyDictionary<string, object?> record, string key)
+    {
+        if (record.TryGetValue(key, out object? value))
+            return value;
+
+        string? actualKey = record.Keys.FirstOrDefault(candidate => string.Equals(candidate, key, StringComparison.OrdinalIgnoreCase));
+        return actualKey is null ? null : record[actualKey];
+    }
+
+    private static string? NullIfWhiteSpace(string value)
+        => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private async Task DeleteRecord()
     {

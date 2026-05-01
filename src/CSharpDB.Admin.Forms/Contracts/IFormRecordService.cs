@@ -16,5 +16,6 @@ public interface IFormRecordService
     Task<List<Dictionary<string, object?>>> ListFilteredRecordsAsync(FormTableDefinition table, string filterField, object? filterValue, CancellationToken ct = default);
     Task<Dictionary<string, object?>> CreateRecordAsync(FormTableDefinition table, Dictionary<string, object?> values, CancellationToken ct = default);
     Task<Dictionary<string, object?>> UpdateRecordAsync(FormTableDefinition table, object pkValue, Dictionary<string, object?> values, CancellationToken ct = default);
+    Task SaveAttachmentAsync(FormAttachmentTableBinding binding, object parentValue, FormAttachmentValue attachment, CancellationToken ct = default);
     Task DeleteRecordAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default);
 }

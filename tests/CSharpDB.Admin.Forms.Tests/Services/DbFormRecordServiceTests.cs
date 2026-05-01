@@ -330,6 +330,150 @@ public class DbFormRecordServiceTests
     }
 
     [Fact]
+    public async Task CreateUpdateReloadAndClear_BlobValues()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE Documents (
+                Id INTEGER PRIMARY KEY,
+                Payload BLOB,
+                FileName TEXT,
+                ContentType TEXT,
+                FileSize INTEGER
+            );
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        var service = new DbFormRecordService(db.Client);
+        FormTableDefinition documents = (await provider.GetTableDefinitionAsync("Documents"))!;
+
+        byte[] insertedBytes = [0x01, 0x02, 0xFE];
+        Dictionary<string, object?> created = await service.CreateRecordAsync(
+            documents,
+            new Dictionary<string, object?>
+            {
+                ["Id"] = 1L,
+                ["Payload"] = insertedBytes,
+                ["FileName"] = "one.bin",
+                ["ContentType"] = "application/octet-stream",
+                ["FileSize"] = insertedBytes.Length,
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(insertedBytes, Assert.IsType<byte[]>(created["Payload"]));
+        Assert.Equal("one.bin", created["FileName"]);
+
+        byte[] updatedBytes = [0xAA, 0xBB, 0xCC, 0xDD];
+        Dictionary<string, object?> updated = await service.UpdateRecordAsync(
+            documents,
+            1L,
+            new Dictionary<string, object?>
+            {
+                ["Payload"] = updatedBytes,
+                ["FileName"] = "two.bin",
+                ["FileSize"] = updatedBytes.Length,
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(updatedBytes, Assert.IsType<byte[]>(updated["Payload"]));
+        Assert.Equal("two.bin", updated["FileName"]);
+        Assert.Equal(4L, updated["FileSize"]);
+
+        Dictionary<string, object?>? reloaded = await service.GetRecordAsync(documents, 1L, TestContext.Current.CancellationToken);
+        Assert.NotNull(reloaded);
+        Assert.Equal(updatedBytes, Assert.IsType<byte[]>(reloaded!["Payload"]));
+
+        Dictionary<string, object?> cleared = await service.UpdateRecordAsync(
+            documents,
+            1L,
+            new Dictionary<string, object?>
+            {
+                ["Payload"] = null,
+                ["FileName"] = null,
+                ["ContentType"] = null,
+                ["FileSize"] = null,
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(cleared["Payload"]);
+        Assert.Null(cleared["FileName"]);
+        Assert.Null(cleared["ContentType"]);
+        Assert.Null(cleared["FileSize"]);
+    }
+
+    [Fact]
+    public async Task SaveAttachmentAsync_ReplacesAndClearsAttachmentRows()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE DocumentAttachments (
+                Id INTEGER PRIMARY KEY,
+                DocumentId INTEGER NOT NULL,
+                ControlId TEXT,
+                Payload BLOB NOT NULL,
+                FileName TEXT,
+                ContentType TEXT,
+                FileSize INTEGER
+            );
+            """);
+
+        var service = new DbFormRecordService(db.Client);
+        var binding = new FormAttachmentTableBinding(
+            "DocumentAttachments",
+            "DocumentId",
+            "Payload",
+            FileNameField: "FileName",
+            ContentTypeField: "ContentType",
+            FileSizeField: "FileSize",
+            ControlIdField: "ControlId",
+            ControlId: "file");
+
+        await service.SaveAttachmentAsync(
+            binding,
+            10L,
+            FormAttachmentValue.FromFile([0x01, 0x02], "one.bin", "application/octet-stream", 2),
+            TestContext.Current.CancellationToken);
+
+        IReadOnlyList<Dictionary<string, object?>> rows = ReadRows(await db.Client.ExecuteSqlAsync(
+            "SELECT DocumentId, ControlId, Payload, FileName, ContentType, FileSize FROM DocumentAttachments;",
+            TestContext.Current.CancellationToken));
+        Dictionary<string, object?> inserted = Assert.Single(rows);
+        Assert.Equal(10L, inserted["DocumentId"]);
+        Assert.Equal("file", inserted["ControlId"]);
+        Assert.Equal([0x01, 0x02], Assert.IsType<byte[]>(inserted["Payload"]));
+        Assert.Equal("one.bin", inserted["FileName"]);
+        Assert.Equal("application/octet-stream", inserted["ContentType"]);
+        Assert.Equal(2L, inserted["FileSize"]);
+
+        await service.SaveAttachmentAsync(
+            binding,
+            10L,
+            FormAttachmentValue.FromFile([0xAA, 0xBB, 0xCC], "two.bin", "application/octet-stream", 3),
+            TestContext.Current.CancellationToken);
+
+        rows = ReadRows(await db.Client.ExecuteSqlAsync(
+            "SELECT Payload, FileName, FileSize FROM DocumentAttachments;",
+            TestContext.Current.CancellationToken));
+        Dictionary<string, object?> replaced = Assert.Single(rows);
+        Assert.Equal([0xAA, 0xBB, 0xCC], Assert.IsType<byte[]>(replaced["Payload"]));
+        Assert.Equal("two.bin", replaced["FileName"]);
+        Assert.Equal(3L, replaced["FileSize"]);
+
+        await service.SaveAttachmentAsync(
+            binding,
+            10L,
+            FormAttachmentValue.Clear(),
+            TestContext.Current.CancellationToken);
+
+        rows = ReadRows(await db.Client.ExecuteSqlAsync(
+            "SELECT Id FROM DocumentAttachments;",
+            TestContext.Current.CancellationToken));
+        Assert.Empty(rows);
+    }
+
+    [Fact]
     public void GetPrimaryKeyColumn_RejectsCompositeKeys()
     {
         var service = new DbFormRecordService(dbClient: null!);
@@ -386,4 +530,25 @@ public class DbFormRecordServiceTests
             INSERT INTO Customers VALUES (2, 'Grace', 0);
             INSERT INTO Customers VALUES (1, 'Ada', 1);
             """);
+
+    private static IReadOnlyList<Dictionary<string, object?>> ReadRows(CSharpDB.Client.Models.SqlExecutionResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+
+        if (result.ColumnNames is null || result.Rows is null)
+            return [];
+
+        var rows = new List<Dictionary<string, object?>>(result.Rows.Count);
+        foreach (object?[] row in result.Rows)
+        {
+            var dictionary = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < result.ColumnNames.Length && i < row.Length; i++)
+                dictionary[result.ColumnNames[i]] = row[i];
+
+            rows.Add(dictionary);
+        }
+
+        return rows;
+    }
 }

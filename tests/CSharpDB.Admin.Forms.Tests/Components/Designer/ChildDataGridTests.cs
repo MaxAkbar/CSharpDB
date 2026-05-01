@@ -277,6 +277,9 @@ public sealed class ChildDataGridTests
         public Task<Dictionary<string, object?>> UpdateRecordAsync(FormTableDefinition table, object pkValue, Dictionary<string, object?> values, CancellationToken ct = default)
             => throw new NotSupportedException();
 
+        public Task SaveAttachmentAsync(FormAttachmentTableBinding binding, object parentValue, FormAttachmentValue attachment, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task DeleteRecordAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
             => throw new NotSupportedException();
 

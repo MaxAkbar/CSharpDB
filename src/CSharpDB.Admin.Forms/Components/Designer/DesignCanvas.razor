@@ -1,5 +1,6 @@
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Admin.Forms.Components.Designer
+@using CSharpDB.Admin.Forms.Contracts
 @implements IDisposable
 
 <div class="design-canvas-wrapper">
@@ -23,6 +24,7 @@
 
         @foreach (var control in State.Controls)
         {
+            if (IsNestedControl(control)) continue;
             if (!State.IsVisibleAtBreakpoint(control)) continue;
             var isSelected = State.SelectedIds.Contains(control.ControlId);
             var c = control; // capture for lambda
@@ -42,8 +44,15 @@
                 }
 
                 <div class="design-item-content">
-                    @switch (c.ControlType)
+                    @if (TryGetDesignerPreviewComponent(c, out Type? designerPreviewComponent))
                     {
+                        <DynamicComponent Type="@designerPreviewComponent"
+                                          Parameters="GetDesignerPreviewParameters(c, isSelected, effectiveRect)" />
+                    }
+                    else
+                    {
+                        @switch (c.ControlType)
+                        {
                         case "label":
                             <span class="preview-label">@GetProp(c, "text", "Label")</span>
                             break;
@@ -67,11 +76,30 @@
                                 <option>@GetProp(c, "placeholder", "-- Select --")</option>
                             </select>
                             break;
+                        case "comboBox":
+                            <input type="text" class="preview-input" placeholder="@GetProp(c, "placeholder", "Search or select")" disabled />
+                            break;
+                        case "listBox":
+                            <select class="preview-input" size="@GetIntProp(c, "visibleRows", 5)" disabled>
+                                <option>Option 1</option>
+                                <option>Option 2</option>
+                                <option>Option 3</option>
+                            </select>
+                            break;
                         case "lookup":
                             var lkTable = GetProp(c, "lookupTable", "");
                             <select class="preview-input" disabled>
                                 <option>@(string.IsNullOrEmpty(lkTable) ? GetProp(c, "placeholder", "-- Select --") : $"Lookup: {lkTable}")</option>
                             </select>
+                            break;
+                        case "optionGroup":
+                            <div class="preview-option-group">
+                                <span>&#x25CB; Option 1</span>
+                                <span>&#x25CB; Option 2</span>
+                            </div>
+                            break;
+                        case "toggleButton":
+                            <button class="preview-command-button" disabled>@GetProp(c, "text", c.Binding?.FieldName ?? "Toggle")</button>
                             break;
                         case "computed":
                             var formula = GetProp(c, "formula", "");
@@ -164,9 +192,111 @@
                                 }
                             </div>
                             break;
-                        default:
-                            <span class="preview-label">[@c.ControlType]</span>
+                        case "tabControl":
+                            var tabPages = GetTabPages(c);
+                            var visibleTabPages = tabPages.Count > 0
+                                ? tabPages
+                                : new List<(string Id, string Label)> { ("tab1", "Page 1") };
+                            var activeTabPage = GetActiveDesignerTab(c, visibleTabPages);
+                            var tabChildControls = GetTabChildControls(c.ControlId, activeTabPage.Id);
+                            <div class="preview-childtabs preview-tab-designer">
+                                <div class="preview-childtabs-header">
+                                    <span class="preview-datagrid-icon">&#x25AB;</span>
+                                    @(tabPages.Count == 0 ? "Tab Control (no pages)" : "Tab Control")
+                                </div>
+                                <div class="preview-childtabs-tabbar">
+                                    @foreach (var tab in visibleTabPages)
+                                    {
+                                        var page = tab;
+                                        <button type="button"
+                                                class="@GetPreviewTabClass(activeTabPage.Id, page.Id)"
+                                                @onclick="@(() => SetActiveDesignerTab(c.ControlId, page.Id))"
+                                                @onclick:stopPropagation="true"
+                                                @onpointerdown:stopPropagation="true">
+                                            @(page.Label)
+                                        </button>
+                                    }
+                                </div>
+                                <div class="preview-childtabs-body preview-tab-page">
+                                    @if (tabChildControls.Count == 0)
+                                    {
+                                        <div class="preview-childtabs-empty">Assign child controls in the property inspector</div>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var child in tabChildControls)
+                                        {
+                                            var tabChild = child;
+                                            var childSelected = State.SelectedIds.Contains(tabChild.ControlId);
+                                            <div class="@($"design-tab-child {(childSelected ? "selected" : "")}")"
+                                                 style="@GetTabChildStyle(tabChild)"
+                                                 title="@GetDesignControlTitle(tabChild)"
+                                                 @onpointerdown="e => OnItemPointerDown(e, tabChild)"
+                                                 @onpointerdown:stopPropagation="true">
+                                                @if (State.ShowTabOrder && IsTabOrderControl(tabChild))
+                                                {
+                                                    var tabIdx = GetTabIndex(tabChild);
+                                                    @if (tabIdx > 0)
+                                                    {
+                                                        <div class="tab-order-badge">@tabIdx</div>
+                                                    }
+                                                }
+
+                                                <div class="design-tab-child-content">
+                                                    @if (TryGetDesignerPreviewComponent(tabChild, out Type? tabChildDesignerPreviewComponent))
+                                                    {
+                                                        <DynamicComponent Type="@tabChildDesignerPreviewComponent"
+                                                                          Parameters="GetDesignerPreviewParameters(tabChild, childSelected, State.GetEffectiveRect(tabChild))" />
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="design-tab-child-type">@GetControlDisplayName(tabChild.ControlType)</span>
+                                                        <span class="design-tab-child-label">@GetDesignControlTitle(tabChild)</span>
+                                                    }
+                                                </div>
+
+                                                @if (childSelected)
+                                                {
+                                                    @foreach (var h in _handles)
+                                                    {
+                                                        var handle = h;
+                                                        <div class="@($"resize-handle {handle}")"
+                                                             @onpointerdown="e => OnResizePointerDown(e, tabChild, handle)"
+                                                             @onpointerdown:stopPropagation="true"></div>
+                                                    }
+                                                }
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            </div>
                             break;
+                        case "subform":
+                            var formId = GetProp(c, "formId", "");
+                            <div class="preview-datagrid">
+                                <div class="preview-datagrid-header">
+                                    <span class="preview-datagrid-icon">&#x25A3;</span>
+                                    @(string.IsNullOrWhiteSpace(formId) ? "Subform (not configured)" : $"Subform: {formId}")
+                                </div>
+                                <div class="preview-childtabs-empty">Embedded form</div>
+                            </div>
+                            break;
+                        case "attachment":
+                            <div class="preview-attachment">
+                                <span>&#x2398;</span>
+                                <span>No file</span>
+                                <button disabled>Clear</button>
+                            </div>
+                            break;
+                        case "image":
+                            <div class="preview-image">
+                                <span>Image preview</span>
+                            </div>
+                            break;
+                            default:
+                                <span class="preview-label">[@c.ControlType]</span>
+                                break;
+                        }
                     }
                 </div>
 
@@ -187,9 +317,11 @@
 
 @code {
     [CascadingParameter] public DesignerState State { get; set; } = default!;
+    [Inject] public IFormControlRegistry ControlRegistry { get; set; } = DefaultFormControlRegistry.Instance;
 
     private ElementReference _canvasRef;
     private static readonly string[] _handles = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+    private readonly Dictionary<string, string> _activeDesignerTabs = new(StringComparer.Ordinal);
 
     // Marquee selection state
     private bool _isMarquee;
@@ -225,6 +357,183 @@
         return [];
     }
 
+    private static int GetIntProp(ControlDefinition c, string key, int fallback)
+    {
+        if (!c.Props.Values.TryGetValue(key, out var value) || value is null)
+            return fallback;
+
+        if (value is int i) return i;
+        if (value is long l) return (int)l;
+        if (value is double d) return (int)d;
+        if (value is System.Text.Json.JsonElement je && je.TryGetInt32(out var ji)) return ji;
+        return int.TryParse(value.ToString(), out var parsed) ? parsed : fallback;
+    }
+
+    private static bool IsNestedControl(ControlDefinition c)
+        => c.Props.Values.TryGetValue("parentControlId", out var value)
+           && !string.IsNullOrWhiteSpace(value?.ToString());
+
+    private static List<(string Id, string Label)> GetTabPages(ControlDefinition c)
+    {
+        if (!c.Props.Values.TryGetValue("tabs", out var value) || value is null)
+            return [];
+
+        if (value is System.Text.Json.JsonElement json && json.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            return json.EnumerateArray()
+                .Select(element => ReadTabPage(element))
+                .Where(tab => tab is not null)
+                .Select(tab => tab!.Value)
+                .ToList();
+        }
+
+        if (value is IEnumerable<object?> items)
+        {
+            return items
+                .Select(item => ReadTabPage(item))
+                .Where(tab => tab is not null)
+                .Select(tab => tab!.Value)
+                .ToList();
+        }
+
+        return [];
+    }
+
+    private static (string Id, string Label)? ReadTabPage(object? value)
+    {
+        if (value is System.Text.Json.JsonElement json)
+        {
+            if (json.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return null;
+
+            var id = json.TryGetProperty("id", out var idValue) ? idValue.ToString() : "";
+            var label = json.TryGetProperty("label", out var labelValue) ? labelValue.ToString() : id;
+            return string.IsNullOrWhiteSpace(id) ? null : (id, string.IsNullOrWhiteSpace(label) ? id : label);
+        }
+
+        if (value is IReadOnlyDictionary<string, object?> readOnly)
+        {
+            var id = readOnly.TryGetValue("id", out var idValue) ? idValue?.ToString() ?? "" : "";
+            var label = readOnly.TryGetValue("label", out var labelValue) ? labelValue?.ToString() ?? id : id;
+            return string.IsNullOrWhiteSpace(id) ? null : (id, string.IsNullOrWhiteSpace(label) ? id : label);
+        }
+
+        if (value is IDictionary<string, object?> dictionary)
+        {
+            var id = dictionary.TryGetValue("id", out var idValue) ? idValue?.ToString() ?? "" : "";
+            var label = dictionary.TryGetValue("label", out var labelValue) ? labelValue?.ToString() ?? id : id;
+            return string.IsNullOrWhiteSpace(id) ? null : (id, string.IsNullOrWhiteSpace(label) ? id : label);
+        }
+
+        return null;
+    }
+
+    private (string Id, string Label) GetActiveDesignerTab(ControlDefinition control, IReadOnlyList<(string Id, string Label)> tabs)
+    {
+        if (tabs.Count == 0)
+            return ("tab1", "Page 1");
+
+        if (_activeDesignerTabs.TryGetValue(control.ControlId, out string? activeId))
+        {
+            var active = tabs.FirstOrDefault(tab => string.Equals(tab.Id, activeId, StringComparison.Ordinal));
+            if (!string.IsNullOrWhiteSpace(active.Id))
+                return active;
+        }
+
+        _activeDesignerTabs[control.ControlId] = tabs[0].Id;
+        return tabs[0];
+    }
+
+    private void SetActiveDesignerTab(string controlId, string tabId)
+    {
+        _activeDesignerTabs[controlId] = tabId;
+        StateHasChanged();
+    }
+
+    private static string GetPreviewTabClass(string activeTabId, string tabId)
+        => string.Equals(activeTabId, tabId, StringComparison.Ordinal)
+            ? "preview-childtabs-tab active"
+            : "preview-childtabs-tab";
+
+    private IReadOnlyList<ControlDefinition> GetTabChildControls(string parentControlId, string tabId)
+        => State.Controls
+            .Where(control => State.IsVisibleAtBreakpoint(control) && IsTabChildControl(control, parentControlId, tabId))
+            .ToList();
+
+    private static bool IsTabChildControl(ControlDefinition control, string parentControlId, string tabId)
+        => TryGetStringProp(control, "parentControlId", out string configuredParentId)
+           && string.Equals(configuredParentId, parentControlId, StringComparison.Ordinal)
+           && TryGetStringProp(control, "parentTabId", out string configuredTabId)
+           && string.Equals(configuredTabId, tabId, StringComparison.Ordinal);
+
+    private static bool TryGetStringProp(ControlDefinition control, string key, out string value)
+    {
+        value = string.Empty;
+        if (!control.Props.Values.TryGetValue(key, out object? raw) || raw is null)
+            return false;
+
+        if (raw is System.Text.Json.JsonElement json)
+            raw = json.ValueKind == System.Text.Json.JsonValueKind.String ? json.GetString() : json.ToString();
+
+        value = raw?.ToString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private string GetTabChildStyle(ControlDefinition control)
+    {
+        var rect = State.GetEffectiveRect(control);
+        return FormattableString.Invariant($"left: {rect.X}px; top: {rect.Y}px; width: {rect.Width}px; height: {rect.Height}px;");
+    }
+
+    private string GetDesignControlTitle(ControlDefinition control)
+    {
+        var fieldName = control.Binding?.FieldName;
+        return control.ControlType switch
+        {
+            "label" => GetProp(control, "text", "Label"),
+            "checkbox" => GetProp(control, "text", fieldName ?? "Checkbox"),
+            "commandButton" => GetProp(control, "text", "Button"),
+            "toggleButton" => GetProp(control, "text", fieldName ?? "Toggle"),
+            "datagrid" => GetProp(control, "childTable", "DataGrid"),
+            "subform" => GetProp(control, "formId", "Subform"),
+            _ when !string.IsNullOrWhiteSpace(fieldName) => $"{GetControlDisplayName(control.ControlType)}: {fieldName}",
+            _ => GetControlDisplayName(control.ControlType)
+        };
+    }
+
+    private FormControlDescriptor? GetControlDescriptor(string controlType)
+        => ControlRegistry.TryGetControl(controlType, out FormControlDescriptor descriptor) ? descriptor : null;
+
+    private string GetControlDisplayName(string controlType)
+        => GetControlDescriptor(controlType)?.DisplayName ?? controlType;
+
+    private bool TryGetDesignerPreviewComponent(ControlDefinition control, out Type componentType)
+    {
+        componentType = default!;
+        FormControlDescriptor? descriptor = GetControlDescriptor(control.ControlType);
+        if (descriptor?.DesignerPreviewComponentType is null)
+            return false;
+
+        componentType = descriptor.DesignerPreviewComponentType;
+        return true;
+    }
+
+    private Dictionary<string, object?> GetDesignerPreviewParameters(ControlDefinition control, bool isSelected, Rect effectiveRect)
+    {
+        FormControlDescriptor descriptor = GetControlDescriptor(control.ControlType)
+            ?? new FormControlDescriptor
+            {
+                ControlType = control.ControlType,
+                DisplayName = control.ControlType,
+                ShowInToolbox = false,
+            };
+
+        return new Dictionary<string, object?>
+        {
+            ["Context"] = new FormControlDesignContext(control, State, isSelected, effectiveRect, descriptor),
+        };
+    }
+
     private void OnCanvasPointerDown(PointerEventArgs e)
     {
         if (e.Button != 0) return;
@@ -253,62 +562,17 @@
         var y = State.Snap(e.OffsetY);
         var controlType = State.ActiveTool!;
 
-        var (width, height) = controlType switch
-        {
-            "label" => (180.0, 34.0),
-            "checkbox" => (200.0, 34.0),
-            "textarea" => (320.0, 80.0),
-            "radio" => (200.0, 80.0),
-            "datagrid" => (560.0, 200.0),
-            "childtabs" => (600.0, 280.0),
-            "commandButton" => (160.0, 34.0),
-            _ => (320.0, 34.0)
-        };
-
-        var props = new Dictionary<string, object?>();
-        if (controlType == "label")
-            props["text"] = "Label";
-        if (controlType == "checkbox")
-            props["text"] = "Checkbox";
-        if (controlType == "datagrid")
-        {
-            props["dataGridMode"] = "standalone";
-            props["childTable"] = "";
-            props["foreignKeyField"] = "";
-            props["parentKeyField"] = "";
-            props["foreignKeyName"] = "";
-            props["visibleColumns"] = Array.Empty<object?>();
-            props["allowAdd"] = true;
-            props["allowDelete"] = true;
-            props["allowEdit"] = true;
-        }
-        if (controlType == "childtabs")
-        {
-            props["tabs"] = Array.Empty<object?>();
-        }
-        if (controlType == "lookup")
-        {
-            props["lookupTable"] = "";
-            props["displayField"] = "";
-            props["valueField"] = "";
-            props["placeholder"] = "-- Select --";
-        }
-        if (controlType == "computed")
-        {
-            props["formula"] = "";
-            props["format"] = "";
-        }
-        if (controlType == "commandButton")
-        {
-            props["text"] = "Button";
-            props["commandName"] = "";
-        }
+        FormControlDescriptor? descriptor = GetControlDescriptor(controlType);
+        var (width, height) = descriptor is null
+            ? (320.0, 34.0)
+            : (descriptor.DefaultWidth, descriptor.DefaultHeight);
+        Dictionary<string, object?> props = descriptor?.CreateDefaultProps() ?? [];
 
         var control = new ControlDefinition(
             ControlId: Guid.NewGuid().ToString("N"),
             ControlType: controlType,
             Rect: new Rect(x, y, width, height),
-            Binding: (controlType is "label" or "datagrid" or "childtabs" or "commandButton") ? null : new BindingDefinition("", "TwoWay"),
+            Binding: (descriptor?.SupportsBinding ?? true) ? new BindingDefinition("", "TwoWay") : null,
             Props: new PropertyBag(props),
             ValidationOverride: null);
 
@@ -428,8 +692,9 @@
         return 0;
     }
 
-    private static bool IsTabOrderControl(ControlDefinition c)
-        => c.ControlType is not ("label" or "datagrid" or "childtabs");
+    private bool IsTabOrderControl(ControlDefinition c)
+        => GetControlDescriptor(c.ControlType)?.ParticipatesInTabOrder
+           ?? (c.ControlType is not ("label" or "datagrid" or "childtabs" or "tabControl" or "subform"));
 
     private void ApplyResize(PointerEventArgs e)
     {

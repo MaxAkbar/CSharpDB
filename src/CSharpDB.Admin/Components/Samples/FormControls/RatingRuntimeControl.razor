@@ -1,0 +1,79 @@
+@namespace CSharpDB.Admin.Components.Samples.FormControls
+@using System.Globalization
+@using System.Text.Json
+@using CSharpDB.Admin.Forms.Models
+
+<div class="@ControlClass">
+    <div class="sample-rating-label">@Label</div>
+    <div class="sample-rating-buttons" role="radiogroup" aria-label="@Label">
+        @for (int value = 1; value <= MaxRating; value++)
+        {
+            int rating = value;
+            <button type="button"
+                    class="sample-rating-button @(rating <= CurrentValue ? "active" : null)"
+                    disabled="@IsLocked"
+                    aria-checked="@(rating == CurrentValue)"
+                    @onclick="@(() => SetRatingAsync(rating))">
+                @rating
+            </button>
+        }
+    </div>
+    @if (!string.IsNullOrWhiteSpace(Context.ValidationError))
+    {
+        <div class="sample-rating-error">@Context.ValidationError</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FormControlRuntimeContext Context { get; set; } = default!;
+
+    private string Label
+        => string.IsNullOrWhiteSpace(Context.FieldName)
+            ? Context.Descriptor.DisplayName
+            : Context.FieldName!;
+
+    private int MaxRating => Math.Clamp(ReadIntProp("max", 5), 1, 10);
+
+    private int CurrentValue => Math.Clamp(ReadIntValue(Context.BoundValue, 0), 0, MaxRating);
+
+    private bool IsLocked => !Context.IsEnabled || Context.IsReadOnly;
+
+    private string ControlClass
+        => "sample-rating-control"
+           + (IsLocked ? " locked" : "")
+           + (!string.IsNullOrWhiteSpace(Context.ValidationError) ? " invalid" : "");
+
+    private async Task SetRatingAsync(int rating)
+    {
+        if (IsLocked)
+            return;
+
+        await Context.SetValueAsync(rating);
+        await Context.DispatchEventAsync(
+            ControlEventKind.OnClick,
+            new Dictionary<string, object?>
+            {
+                ["rating"] = rating,
+                ["max"] = MaxRating,
+            });
+    }
+
+    private int ReadIntProp(string key, int fallback)
+    {
+        if (!Context.Control.Props.Values.TryGetValue(key, out object? value) || value is null)
+            return fallback;
+
+        return ReadIntValue(value, fallback);
+    }
+
+    private static int ReadIntValue(object? value, int fallback)
+        => value switch
+        {
+            int i => i,
+            long l => (int)l,
+            double d => (int)d,
+            JsonElement json when json.ValueKind == JsonValueKind.Number && json.TryGetInt32(out int parsed) => parsed,
+            _ when int.TryParse(value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) => parsed,
+            _ => fallback,
+        };
+}

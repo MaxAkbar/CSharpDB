@@ -27,7 +27,7 @@ internal static partial class FormSql
             long integer => integer.ToString(CultureInfo.InvariantCulture),
             double real => real.ToString(CultureInfo.InvariantCulture),
             string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
-            byte[] => throw new InvalidOperationException("Blob literals are not supported."),
+            byte[] blob => $"X'{Convert.ToHexString(blob)}'",
             _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
         };
     }

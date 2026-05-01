@@ -408,6 +408,156 @@ public class JsonRoundtripTests
     }
 
     [Fact]
+    public void AccessParityControls_RoundTripThroughPropertyBag()
+    {
+        var form = new FormDefinition(
+            "access-v1",
+            "Access Parity",
+            "Documents",
+            1,
+            "documents:v1",
+            new LayoutDefinition("absolute", 8, true, []),
+            [
+                new ControlDefinition(
+                    "combo",
+                    "comboBox",
+                    new Rect(0, 0, 240, 32),
+                    new BindingDefinition("Status", "TwoWay"),
+                    new PropertyBag(new Dictionary<string, object?>
+                    {
+                        ["options"] = new object?[]
+                        {
+                            new Dictionary<string, object?> { ["value"] = "A", ["label"] = "Active" },
+                        },
+                        ["allowCustomValue"] = true,
+                        ["anchorLeft"] = true,
+                        ["anchorTop"] = true,
+                        ["anchorRight"] = true,
+                        ["anchorBottom"] = false,
+                        ["minWidth"] = 120L,
+                        ["minHeight"] = 24L,
+                    }),
+                    null),
+                new ControlDefinition(
+                    "multi",
+                    "listBox",
+                    new Rect(260, 0, 240, 96),
+                    new BindingDefinition("Tags", "TwoWay"),
+                    new PropertyBag(new Dictionary<string, object?>
+                    {
+                        ["options"] = new object?[]
+                        {
+                            new Dictionary<string, object?> { ["value"] = "A", ["label"] = "Alpha" },
+                            new Dictionary<string, object?> { ["value"] = "B", ["label"] = "Beta" },
+                        },
+                        ["multiSelect"] = true,
+                        ["multiValueDelimiter"] = "|",
+                        ["resizeMode"] = "scale",
+                    }),
+                    null),
+                new ControlDefinition(
+                    "tabs",
+                    "tabControl",
+                    new Rect(0, 40, 500, 240),
+                    null,
+                    new PropertyBag(new Dictionary<string, object?>
+                    {
+                        ["tabs"] = new object?[]
+                        {
+                            new Dictionary<string, object?> { ["id"] = "main", ["label"] = "Main" },
+                        },
+                    }),
+                    null),
+                new ControlDefinition(
+                    "child",
+                    "text",
+                    new Rect(16, 56, 200, 32),
+                    new BindingDefinition("Title", "TwoWay"),
+                    new PropertyBag(new Dictionary<string, object?>
+                    {
+                        ["parentControlId"] = "tabs",
+                        ["parentTabId"] = "main",
+                    }),
+                    null),
+                new ControlDefinition(
+                    "sub",
+                    "subform",
+                    new Rect(0, 300, 500, 240),
+                    null,
+                    new PropertyBag(new Dictionary<string, object?>
+                    {
+                        ["formId"] = "child-form",
+                        ["parentKeyField"] = "Id",
+                        ["foreignKeyField"] = "DocumentId",
+                        ["showToolbar"] = false,
+                        ["showRecordList"] = true,
+                    }),
+                    null),
+                new ControlDefinition(
+                    "file",
+                    "attachment",
+                    new Rect(0, 560, 360, 80),
+                    new BindingDefinition("Payload", "TwoWay"),
+                    new PropertyBag(new Dictionary<string, object?>
+                    {
+                        ["fileNameField"] = "PayloadName",
+                        ["contentTypeField"] = "PayloadType",
+                        ["fileSizeField"] = "PayloadSize",
+                        ["storageMode"] = "attachmentTable",
+                        ["attachmentTable"] = "DocumentAttachments",
+                        ["attachmentForeignKeyField"] = "DocumentId",
+                        ["attachmentBlobField"] = "Payload",
+                        ["attachmentFileNameField"] = "Name",
+                        ["attachmentContentTypeField"] = "ContentType",
+                        ["attachmentFileSizeField"] = "Size",
+                        ["attachmentControlIdField"] = "ControlId",
+                    }),
+                    null),
+                new ControlDefinition(
+                    "photo",
+                    "image",
+                    new Rect(0, 660, 360, 220),
+                    new BindingDefinition("Photo", "TwoWay"),
+                    new PropertyBag(new Dictionary<string, object?>
+                    {
+                        ["accept"] = "image/*",
+                        ["fit"] = "cover",
+                    }),
+                    null),
+            ]);
+
+        string json = JsonSerializer.Serialize(form, Options);
+        FormDefinition deserialized = JsonSerializer.Deserialize<FormDefinition>(json, Options)!;
+
+        Assert.Contains(deserialized.Controls, control => control.ControlType == "comboBox");
+        Assert.Contains(deserialized.Controls, control => control.ControlType == "listBox");
+        Assert.Contains(deserialized.Controls, control => control.ControlType == "tabControl");
+        Assert.Contains(deserialized.Controls, control => control.ControlType == "subform");
+        Assert.Contains(deserialized.Controls, control => control.ControlType == "attachment");
+        Assert.Contains(deserialized.Controls, control => control.ControlType == "image");
+
+        ControlDefinition combo = Assert.Single(deserialized.Controls, control => control.ControlId == "combo");
+        Assert.Equal(true, combo.Props.Values["anchorLeft"]);
+        Assert.Equal(true, combo.Props.Values["anchorTop"]);
+        Assert.Equal(true, combo.Props.Values["anchorRight"]);
+        Assert.Equal(false, combo.Props.Values["anchorBottom"]);
+        Assert.Equal(120L, combo.Props.Values["minWidth"]);
+        Assert.Equal(24L, combo.Props.Values["minHeight"]);
+        ControlDefinition multi = Assert.Single(deserialized.Controls, control => control.ControlId == "multi");
+        Assert.Equal(true, multi.Props.Values["multiSelect"]);
+        Assert.Equal("|", multi.Props.Values["multiValueDelimiter"]);
+        Assert.Equal("scale", multi.Props.Values["resizeMode"]);
+        ControlDefinition tabChild = Assert.Single(deserialized.Controls, control => control.ControlId == "child");
+        Assert.Equal("tabs", tabChild.Props.Values["parentControlId"]);
+        Assert.Equal("main", tabChild.Props.Values["parentTabId"]);
+        ControlDefinition attachment = Assert.Single(deserialized.Controls, control => control.ControlId == "file");
+        Assert.Equal("PayloadName", attachment.Props.Values["fileNameField"]);
+        Assert.Equal("attachmentTable", attachment.Props.Values["storageMode"]);
+        Assert.Equal("DocumentAttachments", attachment.Props.Values["attachmentTable"]);
+        Assert.Equal("Payload", attachment.Props.Values["attachmentBlobField"]);
+    }
+
+    [Fact]
     public void FieldDataType_SerializesAsCamelCaseString()
     {
         var field = new FormFieldDefinition("Id", FieldDataType.Int32, false, true);

@@ -369,6 +369,13 @@
     margin-top: 4px;
 }
 
+.pi-help-text {
+    color: var(--cdb-muted, #64748b);
+    font-size: 11px;
+    line-height: 1.35;
+    margin-top: 4px;
+}
+
 .pi-readonly {
     background: #f5f5f5 !important;
     color: #888;
@@ -383,6 +390,20 @@
 .pi-field.half {
     flex: 1;
     margin-bottom: 0;
+}
+
+.pi-anchor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 8px;
+}
+
+.pi-anchor-grid label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #555;
+    font-size: 12px;
 }
 
 .pi-btn {
@@ -621,12 +642,20 @@
     max-width: 100%;
 }
 
+.form-renderer-fixed {
+    height: 100%;
+}
+
 .fr-control {
     position: absolute;
-    left: var(--fr-left);
-    top: var(--fr-top);
-    width: var(--fr-width);
-    height: var(--fr-height);
+    left: var(--fr-left, auto);
+    top: var(--fr-top, auto);
+    right: var(--fr-right, auto);
+    bottom: var(--fr-bottom, auto);
+    width: var(--fr-width, auto);
+    height: var(--fr-height, auto);
+    min-width: var(--fr-min-width, 0);
+    min-height: var(--fr-min-height, 0);
     box-sizing: border-box;
 }
 
@@ -642,7 +671,8 @@
     position: static;
     width: auto;
     height: auto;
-    min-height: var(--fr-height);
+    min-width: var(--fr-min-width, 0);
+    min-height: var(--fr-elastic-min-height, var(--fr-min-height, 0));
     order: var(--fr-stack-order);
     grid-column: span var(--fr-grid-span);
 }
@@ -735,8 +765,11 @@
         position: static;
         left: auto;
         top: auto;
+        right: auto;
+        bottom: auto;
         width: 100%;
         height: auto;
+        min-width: 0;
         min-height: 44px;
         order: var(--fr-stack-order);
         grid-column: 1 / -1;
@@ -810,8 +843,11 @@
         position: static;
         left: auto;
         top: auto;
+        right: auto;
+        bottom: auto;
         width: 100%;
         height: auto;
+        min-width: 0;
         min-height: 44px;
         order: var(--fr-stack-order);
         grid-column: 1 / -1;
@@ -894,6 +930,275 @@
 
 .fr-radio input[type="radio"] {
     cursor: pointer;
+}
+
+.fr-listbox {
+    height: 100%;
+    padding: 4px;
+}
+
+.fr-option-group {
+    display: flex;
+    gap: 6px;
+    height: 100%;
+    align-content: flex-start;
+    overflow: auto;
+}
+
+.fr-option-vertical {
+    flex-direction: column;
+}
+
+.fr-option-horizontal {
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+
+.fr-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.fr-option-buttons .fr-option {
+    border: 1px solid var(--fd-border, #c9d2df);
+    border-radius: 4px;
+    padding: 4px 8px;
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #1a1a1a);
+}
+
+.fr-option-buttons .fr-option:has(input:checked) {
+    border-color: var(--fd-accent, #1a73e8);
+    background: var(--fd-accent-soft, #e8f0fe);
+    color: var(--fd-accent, #174ea6);
+}
+
+.fr-toggle-button {
+    width: 100%;
+    height: 100%;
+    border: 1px solid var(--fd-border, #c0c0c0);
+    border-radius: 4px;
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #1a1a1a);
+    font: inherit;
+    cursor: pointer;
+}
+
+.fr-toggle-button.active {
+    border-color: var(--fd-accent, #188038);
+    background: var(--fd-accent-soft, #e6f4ea);
+    color: var(--fd-accent, #137333);
+}
+
+.fr-toggle-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.fr-tab-control {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 120px;
+    border: 1px solid var(--fd-border, #c9d2df);
+    border-radius: 4px;
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #1a1a1a);
+    overflow: hidden;
+}
+
+.fr-tab-bar {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--fd-border, #c9d2df);
+    background: var(--fd-bg-tertiary, #f6f8fb);
+    padding: 4px 4px 0;
+}
+
+.fr-tab-button {
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    background: transparent;
+    color: var(--fd-text-secondary, #4b5563);
+    padding: 6px 10px;
+    font: inherit;
+    cursor: pointer;
+}
+
+.fr-tab-button.active {
+    border-color: var(--fd-border, #c9d2df);
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #1a1a1a);
+    margin-bottom: -1px;
+}
+
+.fr-tab-page {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px;
+}
+
+.fr-tab-page .form-renderer {
+    min-height: 100%;
+}
+
+.fr-tab-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 80px;
+    color: var(--fd-text-muted, #999);
+    font-size: 12px;
+    font-style: italic;
+}
+
+.fr-subform {
+    height: 100%;
+    min-height: 180px;
+    border: 1px solid var(--fd-border, #d0d7de);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #1a1a1a);
+}
+
+.fr-subform .data-entry-layout {
+    height: 100%;
+}
+
+.data-entry-no-record-list {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.data-entry-no-record-list .de-toolbar,
+.data-entry-no-record-list .de-error,
+.data-entry-no-record-list .de-print-header,
+.data-entry-no-record-list .de-form-area,
+.data-entry-no-record-list .de-loading {
+    grid-column: 1;
+}
+
+.data-entry-embedded {
+    height: 100%;
+    min-height: 0;
+    background: var(--fd-bg-primary, #fff);
+}
+
+.data-entry-embedded .de-form-area {
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+    min-height: 0;
+}
+
+.data-entry-no-toolbar {
+    grid-template-rows: 1fr;
+}
+
+.fr-attachment,
+.fr-image-control {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    height: 100%;
+    min-height: 60px;
+    border: 1px solid var(--fd-border, #d0d7de);
+    border-radius: 4px;
+    padding: 8px;
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #1a1a1a);
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.fr-attachment-summary {
+    color: var(--fd-text-secondary, #4b5563);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fr-attachment-actions,
+.fr-image-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.fr-attachment-actions input[type="file"],
+.fr-image-actions input[type="file"] {
+    min-width: 0;
+    flex: 1;
+}
+
+.fr-attachment-clear {
+    border: 1px solid var(--fd-border, #c9d2df);
+    border-radius: 4px;
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #1a1a1a);
+    padding: 4px 8px;
+    font: inherit;
+    cursor: pointer;
+}
+
+.fr-attachment-clear:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.fr-image-control img {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border-radius: 3px;
+    background: var(--fd-bg-tertiary, #f6f8fb);
+}
+
+.fr-image-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    min-height: 80px;
+    color: var(--fd-text-muted, #999);
+    border: 1px dashed var(--fd-border, #c9d2df);
+    border-radius: 3px;
+}
+
+.preview-option-group,
+.preview-attachment,
+.preview-image {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 100%;
+    border: 1px solid #a0a0a0;
+    border-radius: 3px;
+    padding: 6px;
+    background: #fafafa;
+    box-sizing: border-box;
+    color: #555;
+    font-size: 12px;
+}
+
+.preview-option-group {
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.preview-image {
+    justify-content: center;
+    border-style: dashed;
 }
 
 /* ===== Feature 4: Editable Form Name ===== */
@@ -1637,22 +1942,98 @@
 }
 
 .preview-childtabs-tab {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    border-right: 1px solid #ddd;
     padding: 3px 10px;
     font-size: 10px;
     font-weight: 500;
     color: #555;
-    border-right: 1px solid #ddd;
+    font-family: inherit;
+    text-align: left;
 }
 
-.preview-childtabs-tab:first-child {
-    color: #1a73e8;
-    background: #fff;
+.preview-childtabs-tab:first-child,
+.preview-childtabs-tab.active {
+    color: var(--fd-accent, #1a73e8);
+    background: var(--fd-bg-elevated, #fff);
     font-weight: 600;
 }
 
 .preview-childtabs-body {
     flex: 1;
     overflow: hidden;
+}
+
+.preview-tab-designer,
+.preview-tab-designer * {
+    pointer-events: auto;
+}
+
+.preview-tab-designer .preview-childtabs-tab {
+    cursor: pointer;
+}
+
+.preview-tab-designer .preview-childtabs-tab:first-child:not(.active) {
+    background: transparent !important;
+    color: var(--fd-text-secondary, #555) !important;
+    font-weight: 500;
+}
+
+.preview-tab-page {
+    position: relative;
+    overflow: auto;
+    background: var(--fd-bg-elevated, #fff);
+}
+
+.preview-tab-page .preview-childtabs-empty {
+    min-height: 100%;
+}
+
+.design-tab-child {
+    position: absolute;
+    box-sizing: border-box;
+    min-width: 24px;
+    min-height: 16px;
+    border: 1px solid var(--fd-border-light, #a0a0a0);
+    border-radius: 2px;
+    background: var(--fd-bg-elevated, #fff);
+    color: var(--fd-text, #333);
+    cursor: grab;
+    overflow: visible;
+}
+
+.design-tab-child:hover,
+.design-tab-child.selected {
+    border-color: var(--fd-accent, #1a73e8);
+}
+
+.design-tab-child-content {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    padding: 2px 6px;
+    box-sizing: border-box;
+    pointer-events: none;
+}
+
+.design-tab-child-type {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--fd-accent, #1a73e8);
+}
+
+.design-tab-child-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
 }
 
 .preview-childtabs-empty {
@@ -2081,6 +2462,7 @@
 .ctp-tab-bar,
 .preview-datagrid-row.header-row,
 .preview-childtabs-tabbar,
+.fr-tab-bar,
 .toolbox-header,
 .layers-header,
 .pi-header,
@@ -2099,11 +2481,16 @@
 .property-inspector,
 .de-record-list,
 .child-datagrid,
+.fr-tab-control,
+.fr-subform,
+.fr-attachment,
+.fr-image-control,
 .tce-tab-entry,
 .design-canvas,
 .de-form-area,
 .preview-datagrid,
 .preview-childtabs,
+.design-tab-child,
 .child-tab-panel.ctp-nested {
     border-color: var(--fd-border);
 }
@@ -2118,7 +2505,9 @@
 .preview-label,
 .preview-checkbox,
 .preview-datagrid-row.header-row,
-.preview-childtabs-tab:first-child {
+.preview-childtabs-tab:first-child,
+.preview-childtabs-tab.active,
+.fr-tab-button.active {
     color: var(--fd-text);
 }
 
@@ -2145,6 +2534,9 @@
 .cdg-loading,
 .ctp-select-prompt,
 .fr-datagrid-placeholder,
+.fr-tab-empty,
+.fr-image-empty,
+.fr-attachment-summary,
 .preview-childtabs-empty {
     color: var(--fd-text-muted);
 }
@@ -2170,6 +2562,8 @@
 .de-search-select,
 .de-search-input,
 .fr-input,
+.fr-toggle-button,
+.fr-attachment-clear,
 .fr-command-button,
 .preview-command-button,
 .cdg-cell-input,
@@ -2260,6 +2654,9 @@
 .de-record-row:hover,
 .ctp-tab:hover,
 .cdg-cell:hover,
+.fr-tab-button:hover,
+.fr-attachment-clear:hover,
+.fr-toggle-button:hover,
 .fr-command-button:hover {
     background: var(--fd-bg-hover);
     color: var(--fd-text);
@@ -2397,8 +2794,13 @@
 
 .de-form-area,
 .child-datagrid,
+.fr-tab-control,
+.fr-subform,
+.fr-attachment,
+.fr-image-control,
 .preview-datagrid,
-.preview-childtabs {
+.preview-childtabs,
+.design-tab-child {
     background: var(--fd-bg-elevated);
     color: var(--fd-text);
 }
@@ -2458,6 +2860,7 @@
 .de-record-row,
 .ctp-tab,
 .preview-childtabs-tab,
+.fr-tab-button,
 .pi-field label,
 .tce-field label,
 .feb-field label,
@@ -2474,6 +2877,10 @@
 .toolbar-active,
 .cdg-selected,
 .preview-childtabs-tab:first-child,
+.preview-childtabs-tab.active,
+.fr-tab-button.active,
+.fr-option-buttons .fr-option:has(input:checked),
+.fr-toggle-button.active,
 .table-designer-grid tbody tr.selected {
     background: var(--fd-accent-soft) !important;
     color: var(--fd-accent) !important;
@@ -2547,6 +2954,7 @@
 .table-designer-preview,
 .preview-datagrid-row.header-row,
 .preview-childtabs-tabbar,
+.fr-tab-bar,
 .ctp-tab-bar {
     background: var(--fd-bg-tertiary);
 }
@@ -2555,6 +2963,10 @@
 .de-record-row,
 .layer-row,
 .toolbox-group,
+.fr-tab-bar,
+.fr-tab-button.active,
+.fr-attachment-clear,
+.fr-image-empty,
 .pi-section,
 .tce-tab-entry,
 .feb-entry,

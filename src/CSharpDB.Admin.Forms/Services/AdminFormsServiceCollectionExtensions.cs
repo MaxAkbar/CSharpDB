@@ -11,6 +11,7 @@ public static class AdminFormsServiceCollectionExtensions
     {
         services.TryAddSingleton(DbCommandRegistry.Empty);
         services.TryAddSingleton<IFormActionRuntime>(NullFormActionRuntime.Instance);
+        services.TryAddFormControlRegistry();
         services.AddScoped<IFormRepository, DbFormRepository>();
         services.AddScoped<ISchemaProvider, DbSchemaProvider>();
         services.AddScoped<IFormRecordService, DbFormRecordService>();
@@ -28,5 +29,33 @@ public static class AdminFormsServiceCollectionExtensions
 
         services.AddSingleton(DbCommandRegistry.Create(configureCommands));
         return services.AddCSharpDbAdminForms();
+    }
+
+    public static IServiceCollection AddCSharpDbAdminFormControls(
+        this IServiceCollection services,
+        Action<FormControlRegistryBuilder> configureControls)
+    {
+        ArgumentNullException.ThrowIfNull(configureControls);
+
+        services.AddSingleton<IFormControlRegistryConfiguration>(
+            new DelegateFormControlRegistryConfiguration(configureControls));
+        services.TryAddFormControlRegistry();
+        return services;
+    }
+
+    private static IServiceCollection TryAddFormControlRegistry(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IFormControlRegistry>(sp =>
+        {
+            var builder = new FormControlRegistryBuilder();
+            BuiltInFormControlDescriptors.AddTo(builder);
+
+            foreach (IFormControlRegistryConfiguration configuration in sp.GetServices<IFormControlRegistryConfiguration>())
+                configuration.Configure(builder);
+
+            return builder.Build();
+        });
+
+        return services;
     }
 }

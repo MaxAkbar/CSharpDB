@@ -1,5 +1,6 @@
 using CSharpDB.Admin.Configuration;
 using CSharpDB.Admin.Components;
+using CSharpDB.Admin.Components.Samples.FormControls;
 using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Admin.Reports.Services;
 using CSharpDB.Admin.Services;
@@ -43,6 +44,8 @@ builder.Services.AddScoped<HostCallbackCatalogService>();
 builder.Services.AddScoped<HostCallbackPolicyService>();
 builder.Services.AddScoped<HostCallbackReadinessService>();
 builder.Services.AddCSharpDbAdminForms();
+if (builder.Configuration.GetValue<bool>("AdminForms:EnableSampleControls"))
+    builder.Services.AddSampleFormControls();
 builder.Services.AddCSharpDbAdminReports();
 
 var app = builder.Build();

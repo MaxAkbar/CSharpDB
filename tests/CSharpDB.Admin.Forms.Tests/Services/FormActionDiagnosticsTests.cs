@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Admin.Forms.Services;
@@ -10,7 +11,7 @@ public sealed class FormActionDiagnosticsTests
     [Fact]
     public async Task DispatchActionSequence_EmitsDiagnosticEvent()
     {
-        List<FormActionInvocationDiagnostic> diagnostics = [];
+        var diagnostics = new ConcurrentQueue<FormActionInvocationDiagnostic>();
         using IDisposable subscription = FormActionDiagnostics.Listener.Subscribe(new ActionObserver(diagnostics));
         var dispatcher = new DefaultFormEventDispatcher(DbCommandRegistry.Empty);
         FormDefinition form = CreateForm(
@@ -28,7 +29,7 @@ public sealed class FormActionDiagnosticsTests
 
         Assert.True(result.Succeeded);
         FormActionInvocationDiagnostic diagnostic = Assert.Single(
-            diagnostics,
+            diagnostics.ToArray(),
             diagnostic => diagnostic.FormId == "orders-form" && diagnostic.ActionKind == DbActionKind.ShowMessage);
         Assert.Equal(DbActionKind.ShowMessage, diagnostic.ActionKind);
         Assert.Equal("orders-form", diagnostic.FormId);
@@ -58,7 +59,7 @@ public sealed class FormActionDiagnosticsTests
                 new FormEventBinding(FormEventKind.OnLoad, string.Empty, ActionSequence: sequence),
             ]);
 
-    private sealed class ActionObserver(List<FormActionInvocationDiagnostic> diagnostics)
+    private sealed class ActionObserver(ConcurrentQueue<FormActionInvocationDiagnostic> diagnostics)
         : IObserver<KeyValuePair<string, object?>>
     {
         public void OnCompleted()
@@ -74,7 +75,7 @@ public sealed class FormActionDiagnosticsTests
             if (value.Key == FormActionDiagnostics.InvocationEventName &&
                 value.Value is FormActionInvocationDiagnostic diagnostic)
             {
-                diagnostics.Add(diagnostic);
+                diagnostics.Enqueue(diagnostic);
             }
         }
     }

@@ -54,6 +54,7 @@ public class DefaultFormGeneratorTests
     [InlineData(FieldDataType.Int64, "number")]
     [InlineData(FieldDataType.Decimal, "number")]
     [InlineData(FieldDataType.Double, "number")]
+    [InlineData(FieldDataType.Blob, "attachment")]
     [InlineData(FieldDataType.String, "text")]
     [InlineData(FieldDataType.Guid, "text")]
     public void GenerateDefault_MapsFieldToCorrectControlType(FieldDataType dataType, string expectedControlType)

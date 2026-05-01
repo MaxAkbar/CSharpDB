@@ -2,11 +2,13 @@
 @using System.Text.Json
 @using CSharpDB.Admin.Forms.Contracts
 @using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Pages
+@using CSharpDB.Admin.Forms.Services
 @using CSharpDB.Primitives
 @inject DbCommandRegistry Commands
 
 <div class="@GetRendererClass()" style="@GetRendererStyle()">
-    @foreach (var control in Form.Controls)
+    @foreach (var control in GetControlsToRender())
     {
         var c = control;
         var fieldName = c.Binding?.FieldName;
@@ -15,8 +17,15 @@
         var errorMsg = hasError ? ValidationErrors![fieldName!] : null;
         var inputClass = hasError ? "fr-input fr-field-error" : "fr-input";
         <div class="@GetControlClass(c)" style="@GetControlStyle(c)">
-            @switch (c.ControlType)
+            @if (TryGetRuntimeComponent(c, out Type? runtimeComponent))
             {
+                <DynamicComponent Type="@runtimeComponent"
+                                  Parameters="GetRuntimeComponentParameters(c, fieldName, errorMsg, tabIdx)" />
+            }
+            else
+            {
+                @switch (c.ControlType)
+                {
                 case "label":
                     <span class="fr-label"
                           @onclick="@(() => InvokeControlEventsAsync(c, ControlEventKind.OnClick))">@GetProp(c, "text", "Label")</span>
@@ -69,38 +78,73 @@
                     </label>
                     break;
                 case "select":
+                    var selectChoices = GetControlChoices(c, fieldName);
                     <select class="@inputClass"
-                            value="@GetFieldValue(fieldName)"
+                            value="@GetSelectedChoiceValue(fieldName, selectChoices)"
                             disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
                             tabindex="@tabIdx"
                             @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                             @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
-                            @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))">
+                            @onchange="@(e => SetChoiceFieldValueAsync(c, fieldName, e.Value))">
                         <option value="">@GetProp(c, "placeholder", "-- Select --")</option>
-                        @if (Choices?.TryGetValue(fieldName ?? "", out var choices) == true && choices is not null)
+                        @foreach (var ch in selectChoices)
                         {
-                            @foreach (var ch in choices)
-                            {
-                                <option value="@ch.Value">@ch.Label</option>
-                            }
+                            <option value="@ch.Value">@ch.Label</option>
                         }
                     </select>
                     break;
                 case "lookup":
+                    var lookupChoices = GetControlChoices(c, fieldName);
                     <select class="@inputClass"
-                            value="@GetFieldValue(fieldName)"
+                            value="@GetSelectedChoiceValue(fieldName, lookupChoices)"
                             disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
                             tabindex="@tabIdx"
                             @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
                             @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
-                            @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))">
+                            @onchange="@(e => SetChoiceFieldValueAsync(c, fieldName, e.Value))">
                         <option value="">@GetProp(c, "placeholder", "-- Select --")</option>
-                        @if (Choices?.TryGetValue(fieldName ?? "", out var lookupChoices) == true && lookupChoices is not null)
+                        @foreach (var ch in lookupChoices)
                         {
-                            @foreach (var ch in lookupChoices)
-                            {
-                                <option value="@ch.Value">@ch.Label</option>
-                            }
+                            <option value="@ch.Value">@ch.Label</option>
+                        }
+                    </select>
+                    break;
+                case "comboBox":
+                    var comboChoices = GetControlChoices(c, fieldName);
+                    var comboListId = $"combo_{c.ControlId}";
+                    <input type="text"
+                           class="@(hasError ? "fr-input fr-combo fr-field-error" : "fr-input fr-combo")"
+                           list="@comboListId"
+                           placeholder="@GetProp(c, "placeholder", "")"
+                           value="@GetComboDisplayValue(fieldName, comboChoices)"
+                           readonly="@IsControlReadOnly(c)"
+                           disabled="@(!IsControlEnabled(c))"
+                           tabindex="@tabIdx"
+                           @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                           @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                           @onchange="@(e => SetComboBoxValueAsync(c, fieldName, e.Value, comboChoices))" />
+                    <datalist id="@comboListId">
+                        @foreach (var ch in comboChoices)
+                        {
+                            <option value="@ch.Label"></option>
+                        }
+                    </datalist>
+                    break;
+                case "listBox":
+                    var listChoices = GetControlChoices(c, fieldName);
+                    var listMultiSelect = IsListBoxMultiSelect(c);
+                    <select class="@(hasError ? "fr-input fr-listbox fr-field-error" : "fr-input fr-listbox")"
+                            size="@GetIntProp(c, "visibleRows", 6)"
+                            multiple="@listMultiSelect"
+                            value="@(listMultiSelect ? null : GetSelectedChoiceValue(fieldName, listChoices))"
+                            disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
+                            tabindex="@tabIdx"
+                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                            @onchange="@(e => SetListBoxValueAsync(c, fieldName, e.Value, listChoices))">
+                        @foreach (var ch in listChoices)
+                        {
+                            <option value="@ch.Value" selected="@IsListBoxChoiceSelected(c, fieldName, ch.Value, listChoices)">@ch.Label</option>
                         }
                     </select>
                     break;
@@ -116,7 +160,8 @@
                               @onchange="@(e => SetFieldValueAsync(c, fieldName, e.Value))"></textarea>
                     break;
                 case "radio":
-                    @if (Choices?.TryGetValue(fieldName ?? "", out var radioChoices) == true && radioChoices is not null)
+                    var radioChoices = GetControlChoices(c, fieldName);
+                    @if (radioChoices.Count > 0)
                     {
                         <div class="fr-radio-group">
                             @foreach (var ch in radioChoices)
@@ -137,6 +182,42 @@
                             }
                         </div>
                     }
+                    break;
+                case "optionGroup":
+                    var optionChoices = GetControlChoices(c, fieldName);
+                    var orientation = GetProp(c, "orientation", "vertical");
+                    var buttonStyle = GetBoolProp(c, "buttonStyle") || string.Equals(GetProp(c, "buttonStyle", ""), "buttons", StringComparison.OrdinalIgnoreCase);
+                    <div class="@GetOptionGroupClass(orientation, buttonStyle)">
+                        @foreach (var ch in optionChoices)
+                        {
+                            var val = ch.Value;
+                            <label class="fr-option">
+                                <input type="radio"
+                                       name="@($"option_{c.ControlId}")"
+                                       value="@val"
+                                       checked="@IsRadioChoiceSelected(fieldName, val)"
+                                       disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
+                                       tabindex="@tabIdx"
+                                       @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                                       @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                                       @onchange="@(e => SetRadioFieldValueAsync(c, fieldName, val))" />
+                                <span>@ch.Label</span>
+                            </label>
+                        }
+                    </div>
+                    break;
+                case "toggleButton":
+                    var toggleOn = IsToggleButtonOn(c, fieldName);
+                    <button type="button"
+                            class="@GetToggleButtonClass(toggleOn)"
+                            aria-pressed="@toggleOn"
+                            disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
+                            tabindex="@tabIdx"
+                            @onfocus="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnGotFocus, fieldName))"
+                            @onblur="@(() => InvokeFieldControlEventAsync(c, ControlEventKind.OnLostFocus, fieldName))"
+                            @onclick="@(() => ToggleButtonValueAsync(c, fieldName))">
+                        @GetToggleButtonText(c, fieldName, toggleOn)
+                    </button>
                     break;
                 case "computed":
                     var computedValue = GetFieldValue(fieldName);
@@ -163,6 +244,130 @@
                             @onclick="@(() => InvokeCommandButtonAsync(c))">
                         @GetProp(c, "text", "Button")
                     </button>
+                    break;
+                case "tabControl":
+                    var tabPages = GetTabPages(c);
+                    @if (tabPages.Count == 0)
+                    {
+                        <div class="fr-datagrid-placeholder">Tab control has no pages.</div>
+                    }
+                    else
+                    {
+                        var activeTab = GetActiveTabPage(c, tabPages);
+                        var childForm = BuildTabChildForm(c, activeTab.Id);
+                        <div class="fr-tab-control">
+                            <div class="fr-tab-bar" role="tablist">
+                                @foreach (var tab in tabPages)
+                                {
+                                    var page = tab;
+                                    <button type="button"
+                                            class="@GetTabButtonClass(activeTab.Id, page.Id)"
+                                            role="tab"
+                                            aria-selected="@(string.Equals(activeTab.Id, page.Id, StringComparison.Ordinal))"
+                                            @onclick="@(() => SetActiveTab(c.ControlId, page.Id))">
+                                        @(page.Label)
+                                    </button>
+                                }
+                            </div>
+                            <div class="fr-tab-page" role="tabpanel">
+                                @if (childForm.Controls.Count == 0)
+                                {
+                                    <div class="fr-tab-empty">No controls on this tab.</div>
+                                }
+                                else
+                                {
+                                    <FormRenderer Form="childForm"
+                                                  TableDefinition="TableDefinition"
+                                                  Record="Record"
+                                                  OnFieldChanged="OnFieldChanged"
+                                                  BeforeFieldChanged="BeforeFieldChanged"
+                                                  Choices="Choices"
+                                                  ValidationErrors="ValidationErrors"
+                                                  ChildFormTableDefinitions="ChildFormTableDefinitions"
+                                                  OnCommandError="OnCommandError"
+                                                  OnBuiltInAction="OnBuiltInAction"
+                                                  ActionRuntime="ActionRuntime"
+                                                  ControlPropertyOverrides="ControlPropertyOverrides"
+                                                  ControlFilters="ControlFilters"
+                                                  OnChildRowsChanged="OnChildRowsChanged"
+                                                  AnchorCanvasWidth="@GetTabChildCanvasWidth(c)"
+                                                  AnchorCanvasHeight="@GetTabChildCanvasHeight(c, activeTab.Id)"
+                                                  RenderAllControls="true" />
+                                }
+                            </div>
+                        </div>
+                    }
+                    break;
+                case "subform":
+                    var subformId = GetProp(c, "formId", "");
+                    var subformParentField = GetProp(c, "parentKeyField", "");
+                    var subformForeignField = GetProp(c, "foreignKeyField", "");
+                    var subformParentValue = GetFieldObjectValue(subformParentField);
+                    @if (string.IsNullOrWhiteSpace(subformId) ||
+                         string.IsNullOrWhiteSpace(subformParentField) ||
+                         string.IsNullOrWhiteSpace(subformForeignField))
+                    {
+                        <div class="fr-datagrid-placeholder">Subform not configured.</div>
+                    }
+                    else if (subformParentValue is null || string.IsNullOrWhiteSpace(subformParentValue.ToString()))
+                    {
+                        <div class="fr-datagrid-placeholder">Save the parent record first to see child records.</div>
+                    }
+                    else
+                    {
+                        <div class="fr-subform">
+                            <DataEntry @key="BuildSubformKey(c, subformParentValue)"
+                                       FormId="@subformId"
+                                       ShowDesignerButton="false"
+                                       ShowToolbar="@GetBoolProp(c, "showToolbar", true)"
+                                       ShowRecordList="@GetBoolProp(c, "showRecordList", true)"
+                                       Embedded="true"
+                                       InitialFilterExpression="@BuildSubformFilterExpression(subformForeignField)"
+                                       InitialFilterParameters="@BuildSubformFilterParameters(subformParentValue)" />
+                        </div>
+                    }
+                    break;
+                case "attachment":
+                    <div class="fr-attachment">
+                        <div class="fr-attachment-summary">@GetBlobSummary(c, fieldName)</div>
+                        <div class="fr-attachment-actions">
+                            <InputFile OnChange="@(e => OnBlobFileChangedAsync(c, fieldName, e))"
+                                       disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
+                                       accept="@GetProp(c, "accept", "")" />
+                            <button type="button"
+                                    class="fr-attachment-clear"
+                                    disabled="@(!CanClearBlob(c, fieldName))"
+                                    @onclick="@(() => ClearBlobFieldAsync(c, fieldName))">
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+                    break;
+                case "image":
+                    var imageSrc = GetImageDataUrl(c, fieldName);
+                    <div class="fr-image-control">
+                        @if (!string.IsNullOrWhiteSpace(imageSrc))
+                        {
+                            <img src="@imageSrc"
+                                 alt="@GetProp(c, "alt", fieldName ?? "Image")"
+                                 style="@GetImageStyle(c)" />
+                        }
+                        else
+                        {
+                            <div class="fr-image-empty">No image</div>
+                        }
+                        <div class="fr-image-actions">
+                            <InputFile OnChange="@(e => OnBlobFileChangedAsync(c, fieldName, e))"
+                                       disabled="@(!IsControlEnabled(c) || IsControlReadOnly(c))"
+                                       accept="@GetProp(c, "accept", "image/*")" />
+                            <button type="button"
+                                    class="fr-attachment-clear"
+                                    disabled="@(!CanClearBlob(c, fieldName))"
+                                    @onclick="@(() => ClearBlobFieldAsync(c, fieldName))">
+                                Clear
+                            </button>
+                        </div>
+                    </div>
                     break;
                 case "datagrid":
                     var dgMode = GetProp(c, "dataGridMode", "related");
@@ -233,9 +438,10 @@
                         <div class="fr-datagrid-placeholder">Child Tabs not configured.</div>
                     }
                     break;
-                default:
-                    <span class="fr-label">[@c.ControlType]</span>
-                    break;
+                    default:
+                        <span class="fr-label">[@c.ControlType]</span>
+                        break;
+                }
             }
             @if (errorMsg is not null)
             {
@@ -260,14 +466,79 @@
     [Parameter] public IFormActionRuntime? ActionRuntime { get; set; }
     [Parameter] public IReadOnlyDictionary<string, IReadOnlyDictionary<string, object?>>? ControlPropertyOverrides { get; set; }
     [Parameter] public IReadOnlyDictionary<string, ControlFilterState>? ControlFilters { get; set; }
+    [Parameter] public bool RenderAllControls { get; set; }
+    [Parameter] public double AnchorCanvasWidth { get; set; } = DesktopCanvasWidth;
+    [Parameter] public double? AnchorCanvasHeight { get; set; }
+    [Inject] public IFormControlRegistry ControlRegistry { get; set; } = DefaultFormControlRegistry.Instance;
 
     private readonly HashSet<string> _executingCommandButtons = [];
+    private readonly Dictionary<string, string> _activeTabs = new(StringComparer.Ordinal);
     private const string LayoutModeElastic = "elastic";
     private const double DesktopCanvasWidth = 1200;
     private const double TabletCanvasWidth = 768;
+    private const long DefaultMaxUploadBytes = 10 * 1024 * 1024;
+
+    private bool TryGetRuntimeComponent(ControlDefinition control, out Type componentType)
+    {
+        componentType = default!;
+        if (!ControlRegistry.TryGetControl(control.ControlType, out FormControlDescriptor descriptor) ||
+            descriptor.RuntimeComponentType is null)
+        {
+            return false;
+        }
+
+        if (descriptor.IsBuiltIn && !descriptor.ReplaceBuiltInRuntime)
+            return false;
+
+        componentType = descriptor.RuntimeComponentType;
+        return true;
+    }
+
+    private Dictionary<string, object?> GetRuntimeComponentParameters(
+        ControlDefinition control,
+        string? fieldName,
+        string? validationError,
+        int tabIndex)
+    {
+        FormControlDescriptor descriptor = ControlRegistry.TryGetControl(control.ControlType, out FormControlDescriptor registered)
+            ? registered
+            : new FormControlDescriptor
+            {
+                ControlType = control.ControlType,
+                DisplayName = control.ControlType,
+                ShowInToolbox = false,
+            };
+
+        return new Dictionary<string, object?>
+        {
+            ["Context"] = new FormControlRuntimeContext(
+                Form,
+                control,
+                descriptor,
+                TableDefinition,
+                Record,
+                fieldName,
+                GetFieldObjectValue(fieldName),
+                GetControlChoices(control, fieldName),
+                IsControlEnabled(control),
+                IsControlReadOnly(control),
+                validationError,
+                tabIndex,
+                value => SetFieldValueAsync(control, fieldName, value),
+                (eventKind, arguments) => InvokeControlEventsAsync(control, eventKind, arguments)),
+        };
+    }
 
     private bool IsElasticLayout
         => string.Equals(Form.Layout.LayoutMode, LayoutModeElastic, StringComparison.OrdinalIgnoreCase);
+
+    private IEnumerable<ControlDefinition> GetControlsToRender()
+        => RenderAllControls
+            ? Form.Controls
+            : Form.Controls.Where(IsTopLevelControl);
+
+    private static bool IsTopLevelControl(ControlDefinition control)
+        => !FormChoiceResolver.TryGetString(control.Props.Values, "parentControlId", out _);
 
     private string GetRendererClass()
         => IsElasticLayout
@@ -296,22 +567,92 @@
         int desktopSpan = GetGridSpan(desktop, 12, DesktopCanvasWidth);
         int tabletSpan = GetGridSpan(tablet, 8, TabletCanvasWidth);
 
+        ControlAnchors anchors = GetControlAnchors(c);
+        double canvasWidth = GetAnchorCanvasWidth();
+        double canvasHeight = GetAnchorCanvasHeight();
+
+        string resizeMode = GetProp(c, "resizeMode", "anchor");
+        string left;
+        string right;
+        string width;
+        string top;
+        string bottom;
+        string height;
+
+        if (string.Equals(resizeMode, "scale", StringComparison.OrdinalIgnoreCase))
+        {
+            left = ToCssPercent(desktop.X, canvasWidth);
+            right = "auto";
+            width = ToCssPercent(desktop.Width, canvasWidth);
+            top = ToCssPercent(desktop.Y, canvasHeight);
+            bottom = "auto";
+            height = ToCssPercent(desktop.Height, canvasHeight);
+        }
+        else
+        {
+            left = anchors.Left || !anchors.Right ? ToCssPx(desktop.X) : "auto";
+            right = anchors.Right ? ToCssPx(Math.Max(0, canvasWidth - desktop.X - desktop.Width)) : "auto";
+            width = anchors.Left && anchors.Right ? "auto" : ToCssPx(desktop.Width);
+
+            top = anchors.Top || !anchors.Bottom ? ToCssPx(desktop.Y) : "auto";
+            bottom = anchors.Bottom ? ToCssPx(Math.Max(0, canvasHeight - desktop.Y - desktop.Height)) : "auto";
+            height = anchors.Top && anchors.Bottom ? "auto" : ToCssPx(desktop.Height);
+        }
+
+        double minWidth = Math.Max(0, GetDoubleProp(c, "minWidth", 24));
+        double minHeight = Math.Max(0, GetDoubleProp(c, "minHeight", 16));
+        double elasticMinHeight = anchors.Top && anchors.Bottom ? minHeight : Math.Max(minHeight, desktop.Height);
         string visibilityStyle = IsControlVisible(c) ? string.Empty : " display: none;";
         return FormattableString.Invariant(
-            $"--fr-left: {desktop.X}px; --fr-top: {desktop.Y}px; --fr-width: {desktop.Width}px; --fr-height: {desktop.Height}px; --fr-stack-order: {GetStackOrder(c)}; --fr-grid-span: {desktopSpan}; --fr-tablet-span: {tabletSpan};{visibilityStyle}");
+            $"--fr-left: {left}; --fr-top: {top}; --fr-right: {right}; --fr-bottom: {bottom}; --fr-width: {width}; --fr-height: {height}; --fr-min-width: {minWidth}px; --fr-min-height: {minHeight}px; --fr-elastic-min-height: {elasticMinHeight}px; --fr-stack-order: {GetStackOrder(c)}; --fr-grid-span: {desktopSpan}; --fr-tablet-span: {tabletSpan};{visibilityStyle}");
+    }
+
+    private readonly record struct ControlAnchors(bool Left, bool Top, bool Right, bool Bottom);
+
+    private ControlAnchors GetControlAnchors(ControlDefinition c)
+    {
+        bool left = GetBoolProp(c, "anchorLeft", fallback: true);
+        bool top = GetBoolProp(c, "anchorTop", fallback: true);
+        bool right = GetBoolProp(c, "anchorRight", fallback: false);
+        bool bottom = GetBoolProp(c, "anchorBottom", fallback: false);
+
+        if (!left && !right)
+            left = true;
+        if (!top && !bottom)
+            top = true;
+
+        return new ControlAnchors(left, top, right, bottom);
+    }
+
+    private double GetAnchorCanvasWidth()
+        => AnchorCanvasWidth > 0 ? AnchorCanvasWidth : DesktopCanvasWidth;
+
+    private double GetAnchorCanvasHeight()
+        => AnchorCanvasHeight is > 0 ? AnchorCanvasHeight.Value : GetCanvasHeight();
+
+    private static string ToCssPx(double value)
+        => FormattableString.Invariant($"{value}px");
+
+    private static string ToCssPercent(double value, double total)
+    {
+        if (total <= 0)
+            return "0%";
+
+        return FormattableString.Invariant($"{value / total * 100}%");
     }
 
     private double GetCanvasHeight()
     {
-        double bottom = Form.Controls.Count == 0
+        ControlDefinition[] controls = GetControlsToRender().ToArray();
+        double bottom = controls.Length == 0
             ? 500
-            : Form.Controls.Max(control => control.Rect.Y + control.Rect.Height) + 24;
+            : controls.Max(control => control.Rect.Y + control.Rect.Height) + 24;
         return Math.Max(500, bottom);
     }
 
     private int GetStackOrder(ControlDefinition c)
     {
-        var ordered = Form.Controls
+        var ordered = GetControlsToRender()
             .Select((control, index) => new
             {
                 Control = control,
@@ -454,11 +795,231 @@
     private bool IsRadioChoiceSelected(string? fieldName, string? choiceValue)
         => FormControlValueConverter.ChoiceMatchesValue(GetFieldObjectValue(fieldName), choiceValue, GetFieldDefinition(fieldName));
 
+    private IReadOnlyList<EnumChoice> GetControlChoices(ControlDefinition control, string? fieldName)
+        => FormChoiceResolver.ResolveChoices(control, fieldName, Choices, GetFieldDefinition(fieldName));
+
+    private string GetSelectedChoiceValue(string? fieldName, IReadOnlyList<EnumChoice> choices)
+    {
+        object? value = GetFieldObjectValue(fieldName);
+        if (value is null)
+            return string.Empty;
+
+        EnumChoice? selected = choices.FirstOrDefault(choice =>
+            FormControlValueConverter.ChoiceMatchesValue(value, choice.Value, GetFieldDefinition(fieldName)));
+        return selected?.Value ?? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+    }
+
+    private string GetComboDisplayValue(string? fieldName, IReadOnlyList<EnumChoice> choices)
+    {
+        string selectedValue = GetSelectedChoiceValue(fieldName, choices);
+        if (string.IsNullOrWhiteSpace(selectedValue))
+            return GetFieldValue(fieldName);
+
+        return choices.FirstOrDefault(choice => string.Equals(choice.Value, selectedValue, StringComparison.OrdinalIgnoreCase))?.Label
+            ?? selectedValue;
+    }
+
     private Task SetCheckboxFieldValueAsync(ControlDefinition control, string? fieldName, bool isChecked)
         => SetFieldValueAsync(control, fieldName, FormControlValueConverter.ConvertCheckboxValue(isChecked, GetFieldDefinition(fieldName)));
 
     private Task SetRadioFieldValueAsync(ControlDefinition control, string? fieldName, string? choiceValue)
         => SetFieldValueAsync(control, fieldName, FormControlValueConverter.ConvertChoiceValue(choiceValue, GetFieldDefinition(fieldName)));
+
+    private Task SetChoiceFieldValueAsync(ControlDefinition control, string? fieldName, object? choiceValue)
+        => SetFieldValueAsync(control, fieldName, FormControlValueConverter.ConvertChoiceValue(choiceValue?.ToString(), GetFieldDefinition(fieldName)));
+
+    private bool IsListBoxMultiSelect(ControlDefinition control)
+        => GetBoolProp(control, "multiSelect");
+
+    private bool IsListBoxChoiceSelected(ControlDefinition control, string? fieldName, string? choiceValue, IReadOnlyList<EnumChoice> choices)
+    {
+        if (!IsListBoxMultiSelect(control))
+            return FormControlValueConverter.ChoiceMatchesValue(GetFieldObjectValue(fieldName), choiceValue, GetFieldDefinition(fieldName));
+
+        FormFieldDefinition? field = GetFieldDefinition(fieldName);
+        return GetSelectedListBoxValues(control, fieldName, choices)
+            .Any(selected => FormControlValueConverter.ChoiceMatchesValue(selected, choiceValue, field));
+    }
+
+    private Task SetListBoxValueAsync(ControlDefinition control, string? fieldName, object? rawValue, IReadOnlyList<EnumChoice> choices)
+    {
+        if (!IsListBoxMultiSelect(control))
+            return SetChoiceFieldValueAsync(control, fieldName, rawValue);
+
+        IReadOnlyList<string> selectedValues = ReadSelectedListBoxValues(rawValue);
+        object? storedValue = selectedValues.Count == 0
+            ? null
+            : string.Join(GetListBoxValueDelimiter(control), selectedValues);
+
+        return SetFieldValueAsync(control, fieldName, storedValue);
+    }
+
+    private IReadOnlyList<string> GetSelectedListBoxValues(ControlDefinition control, string? fieldName, IReadOnlyList<EnumChoice> choices)
+    {
+        object? value = GetFieldObjectValue(fieldName);
+        if (value is null)
+            return [];
+
+        if (value is JsonElement json)
+        {
+            if (json.ValueKind == JsonValueKind.Array)
+            {
+                return json.EnumerateArray()
+                    .Select(item => item.ValueKind == JsonValueKind.String ? item.GetString() : item.ToString())
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .Select(item => item!)
+                    .ToArray();
+            }
+
+            if (json.ValueKind == JsonValueKind.String)
+                value = json.GetString();
+        }
+
+        if (value is string text)
+        {
+            string delimiter = GetListBoxValueDelimiter(control);
+            return text
+                .Split([delimiter], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToArray();
+        }
+
+        if (value is System.Collections.IEnumerable values && value is not byte[])
+        {
+            return values
+                .Cast<object?>()
+                .Select(item => Convert.ToString(item, CultureInfo.InvariantCulture))
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!)
+                .ToArray();
+        }
+
+        string selectedValue = GetSelectedChoiceValue(fieldName, choices);
+        return string.IsNullOrWhiteSpace(selectedValue) ? [] : [selectedValue];
+    }
+
+    private static IReadOnlyList<string> ReadSelectedListBoxValues(object? rawValue)
+    {
+        if (rawValue is null)
+            return [];
+
+        if (rawValue is string text)
+            return string.IsNullOrWhiteSpace(text) ? [] : [text];
+
+        if (rawValue is string[] textValues)
+            return textValues.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
+
+        if (rawValue is IEnumerable<string> enumerableTextValues)
+            return enumerableTextValues.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
+
+        if (rawValue is System.Collections.IEnumerable enumerable)
+        {
+            return enumerable
+                .Cast<object?>()
+                .Select(item => Convert.ToString(item, CultureInfo.InvariantCulture))
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!)
+                .ToArray();
+        }
+
+        string converted = Convert.ToString(rawValue, CultureInfo.InvariantCulture) ?? string.Empty;
+        return string.IsNullOrWhiteSpace(converted) ? [] : [converted];
+    }
+
+    private string GetListBoxValueDelimiter(ControlDefinition control)
+    {
+        string delimiter = GetProp(control, "multiValueDelimiter", ";");
+        return string.IsNullOrEmpty(delimiter) ? ";" : delimiter;
+    }
+
+    private Task SetComboBoxValueAsync(ControlDefinition control, string? fieldName, object? inputValue, IReadOnlyList<EnumChoice> choices)
+    {
+        string raw = inputValue?.ToString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+            return SetFieldValueAsync(control, fieldName, null);
+
+        EnumChoice? choice = choices.FirstOrDefault(candidate =>
+            string.Equals(candidate.Label, raw, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(candidate.Value, raw, StringComparison.OrdinalIgnoreCase));
+
+        if (choice is not null)
+            return SetChoiceFieldValueAsync(control, fieldName, choice.Value);
+
+        bool allowCustomValue = GetBoolProp(control, "allowCustomValue");
+        return allowCustomValue
+            ? SetChoiceFieldValueAsync(control, fieldName, raw)
+            : Task.CompletedTask;
+    }
+
+    private static string GetOptionGroupClass(string orientation, bool buttonStyle)
+    {
+        List<string> classes = ["fr-option-group"];
+        classes.Add(string.Equals(orientation, "horizontal", StringComparison.OrdinalIgnoreCase)
+            ? "fr-option-horizontal"
+            : "fr-option-vertical");
+        if (buttonStyle)
+            classes.Add("fr-option-buttons");
+        return string.Join(" ", classes);
+    }
+
+    private bool IsToggleButtonOn(ControlDefinition control, string? fieldName)
+    {
+        object? value = GetFieldObjectValue(fieldName);
+        object? trueValue = GetConfiguredToggleValue(control, "trueValue", true);
+        return ValuesMatch(value, trueValue, GetFieldDefinition(fieldName));
+    }
+
+    private string GetToggleButtonClass(bool isOn)
+        => isOn ? "fr-toggle-button active" : "fr-toggle-button";
+
+    private string GetToggleButtonText(ControlDefinition control, string? fieldName, bool isOn)
+    {
+        string explicitText = GetProp(control, "text", string.Empty);
+        if (!string.IsNullOrWhiteSpace(explicitText))
+            return explicitText;
+
+        return isOn
+            ? GetProp(control, "onText", fieldName ?? "On")
+            : GetProp(control, "offText", fieldName ?? "Off");
+    }
+
+    private Task ToggleButtonValueAsync(ControlDefinition control, string? fieldName)
+    {
+        bool isOn = IsToggleButtonOn(control, fieldName);
+        object? next = GetConfiguredToggleValue(control, isOn ? "falseValue" : "trueValue", isOn ? false : true);
+        FormFieldDefinition? field = GetFieldDefinition(fieldName);
+        object? converted = field?.DataType == FieldDataType.Boolean
+            ? FormControlValueConverter.ConvertCheckboxValue(FormControlValueConverter.ToBoolean(next), field)
+            : FormControlValueConverter.ConvertChoiceValue(next?.ToString(), field);
+        return SetFieldValueAsync(control, fieldName, converted);
+    }
+
+    private static object? GetConfiguredToggleValue(ControlDefinition control, string key, object fallback)
+    {
+        if (!control.Props.Values.TryGetValue(key, out object? value) || value is null)
+            return fallback;
+
+        if (value is JsonElement json)
+            return json.ValueKind switch
+            {
+                JsonValueKind.Null => null,
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String => json.GetString(),
+                JsonValueKind.Number when json.TryGetInt64(out long integer) => integer,
+                JsonValueKind.Number => json.GetDouble(),
+                _ => json.ToString(),
+            };
+
+        return value;
+    }
+
+    private static bool ValuesMatch(object? value, object? configuredValue, FormFieldDefinition? field)
+    {
+        if (configuredValue is bool boolValue)
+            return FormControlValueConverter.ToBoolean(value) == boolValue;
+
+        return FormControlValueConverter.ChoiceMatchesValue(value, configuredValue?.ToString(), field);
+    }
 
     private async Task SetFieldValueAsync(ControlDefinition control, string? fieldName, object? value)
     {
@@ -471,6 +1032,211 @@
             ControlEventKind.OnChange,
             BuildFieldEventArguments(control, ControlEventKind.OnChange, fieldName, value, oldValue));
         await OnFieldChanged.InvokeAsync(fieldName);
+    }
+
+    private async Task OnBlobFileChangedAsync(ControlDefinition control, string? fieldName, InputFileChangeEventArgs args)
+    {
+        if ((!IsAttachmentTableMode(control) && string.IsNullOrWhiteSpace(fieldName)) || !IsControlEnabled(control) || IsControlReadOnly(control))
+            return;
+
+        IBrowserFile file = args.File;
+        long maxBytes = GetLongProp(control, "maxFileBytes", DefaultMaxUploadBytes);
+        await using Stream stream = file.OpenReadStream(maxBytes);
+        using var memory = new MemoryStream();
+        await stream.CopyToAsync(memory);
+        string eventFieldName = fieldName ?? FormAttachmentValue.GetRecordKey(control.ControlId);
+
+        object? oldValue = IsAttachmentTableMode(control)
+            ? GetPendingAttachmentValue(control)
+            : GetFieldObjectValue(fieldName);
+        await BeforeFieldChanged.InvokeAsync(eventFieldName);
+
+        if (IsAttachmentTableMode(control))
+        {
+            Record[FormAttachmentValue.GetRecordKey(control.ControlId)] = FormAttachmentValue.FromFile(
+                memory.ToArray(),
+                file.Name,
+                file.ContentType,
+                file.Size);
+        }
+        else
+        {
+            Record[fieldName!] = memory.ToArray();
+            await SetRelatedFieldValueAsync(control, "fileNameField", file.Name);
+            await SetRelatedFieldValueAsync(control, "contentTypeField", file.ContentType);
+            await SetRelatedFieldValueAsync(control, "fileSizeField", file.Size);
+        }
+
+        object? newValue = IsAttachmentTableMode(control)
+            ? GetPendingAttachmentValue(control)
+            : Record[fieldName!];
+        var runtimeArguments = BuildFieldEventArguments(control, ControlEventKind.OnChange, eventFieldName, newValue, oldValue);
+        runtimeArguments["fileName"] = file.Name;
+        runtimeArguments["contentType"] = file.ContentType;
+        runtimeArguments["fileSize"] = file.Size;
+
+        await InvokeControlEventsAsync(control, ControlEventKind.OnChange, runtimeArguments);
+        await OnFieldChanged.InvokeAsync(eventFieldName);
+    }
+
+    private async Task ClearBlobFieldAsync(ControlDefinition control, string? fieldName)
+    {
+        if ((!IsAttachmentTableMode(control) && string.IsNullOrWhiteSpace(fieldName)) || !CanClearBlob(control, fieldName))
+            return;
+
+        string eventFieldName = fieldName ?? FormAttachmentValue.GetRecordKey(control.ControlId);
+        object? oldValue = IsAttachmentTableMode(control)
+            ? GetPendingAttachmentValue(control)
+            : GetFieldObjectValue(fieldName);
+        await BeforeFieldChanged.InvokeAsync(eventFieldName);
+
+        if (IsAttachmentTableMode(control))
+        {
+            Record[FormAttachmentValue.GetRecordKey(control.ControlId)] = FormAttachmentValue.Clear();
+        }
+        else
+        {
+            Record[fieldName!] = null;
+            await SetRelatedFieldValueAsync(control, "fileNameField", null);
+            await SetRelatedFieldValueAsync(control, "contentTypeField", null);
+            await SetRelatedFieldValueAsync(control, "fileSizeField", null);
+        }
+
+        await InvokeControlEventsAsync(
+            control,
+            ControlEventKind.OnChange,
+            BuildFieldEventArguments(control, ControlEventKind.OnChange, eventFieldName, IsAttachmentTableMode(control) ? GetPendingAttachmentValue(control) : null, oldValue));
+        await OnFieldChanged.InvokeAsync(eventFieldName);
+    }
+
+    private Task SetRelatedFieldValueAsync(ControlDefinition control, string metadataProperty, object? value)
+    {
+        string fieldName = GetProp(control, metadataProperty, string.Empty);
+        if (string.IsNullOrWhiteSpace(fieldName))
+            return Task.CompletedTask;
+
+        Record[fieldName] = value;
+        return OnFieldChanged.InvokeAsync(fieldName);
+    }
+
+    private bool CanClearBlob(ControlDefinition control, string? fieldName)
+        => IsControlEnabled(control) &&
+           !IsControlReadOnly(control) &&
+           (IsAttachmentTableMode(control) || GetBlobBytes(fieldName) is { Length: > 0 });
+
+    private string GetBlobSummary(ControlDefinition control, string? fieldName)
+    {
+        if (IsAttachmentTableMode(control))
+        {
+            FormAttachmentValue? pending = GetPendingAttachmentValue(control);
+            if (pending?.ClearExisting == true)
+                return "Attachment will be cleared";
+            if (pending?.Bytes is { Length: > 0 } pendingBytes)
+            {
+                string pendingSize = FormatByteSize(pendingBytes.LongLength);
+                return string.IsNullOrWhiteSpace(pending.FileName)
+                    ? $"Pending upload ({pendingSize})"
+                    : $"Pending upload: {pending.FileName} ({pendingSize})";
+            }
+
+            return "Attachment table";
+        }
+
+        byte[]? bytes = GetBlobBytes(fieldName);
+        if (bytes is null || bytes.Length == 0)
+            return "No file";
+
+        string fileNameField = GetProp(control, "fileNameField", string.Empty);
+        string fileName = string.IsNullOrWhiteSpace(fileNameField) ? string.Empty : GetFieldValue(fileNameField);
+        string size = FormatByteSize(bytes.LongLength);
+        return string.IsNullOrWhiteSpace(fileName)
+            ? size
+            : $"{fileName} ({size})";
+    }
+
+    private byte[]? GetBlobBytes(string? fieldName)
+    {
+        object? value = GetFieldObjectValue(fieldName);
+        return value switch
+        {
+            byte[] bytes => bytes,
+            JsonElement json when json.ValueKind == JsonValueKind.String && TryReadBase64(json.GetString(), out byte[]? bytes) => bytes,
+            string text when TryReadBase64(text, out byte[]? bytes) => bytes,
+            _ => null,
+        };
+    }
+
+    private string? GetImageDataUrl(ControlDefinition control, string? fieldName)
+    {
+        if (IsAttachmentTableMode(control) && GetPendingAttachmentValue(control)?.Bytes is { Length: > 0 } pendingBytes)
+        {
+            string pendingContentType = GetPendingAttachmentValue(control)?.ContentType ?? "image/png";
+            if (string.IsNullOrWhiteSpace(pendingContentType))
+                pendingContentType = "image/png";
+
+            return $"data:{pendingContentType};base64,{Convert.ToBase64String(pendingBytes)}";
+        }
+
+        byte[]? bytes = GetBlobBytes(fieldName);
+        if (bytes is null || bytes.Length == 0)
+            return null;
+
+        string contentTypeField = GetProp(control, "contentTypeField", string.Empty);
+        string contentType = string.IsNullOrWhiteSpace(contentTypeField) ? string.Empty : GetFieldValue(contentTypeField);
+        if (string.IsNullOrWhiteSpace(contentType))
+            contentType = "image/png";
+
+        return $"data:{contentType};base64,{Convert.ToBase64String(bytes)}";
+    }
+
+    private bool IsAttachmentTableMode(ControlDefinition control)
+        => string.Equals(GetProp(control, "storageMode", "blobField"), "attachmentTable", StringComparison.OrdinalIgnoreCase);
+
+    private FormAttachmentValue? GetPendingAttachmentValue(ControlDefinition control)
+        => Record.TryGetValue(FormAttachmentValue.GetRecordKey(control.ControlId), out object? value) && value is FormAttachmentValue attachment
+            ? attachment
+            : null;
+
+    private static bool TryReadBase64(string? value, out byte[]? bytes)
+    {
+        bytes = null;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        try
+        {
+            bytes = Convert.FromBase64String(value);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static string FormatByteSize(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB"];
+        double size = bytes;
+        int unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return unit == 0
+            ? $"{bytes} {units[unit]}"
+            : $"{size:0.#} {units[unit]}";
+    }
+
+    private string GetImageStyle(ControlDefinition control)
+    {
+        string fit = GetProp(control, "fit", "contain");
+        if (fit is not ("contain" or "cover" or "fill" or "scale-down"))
+            fit = "contain";
+
+        return $"object-fit: {fit};";
     }
 
     private async Task InvokeCommandButtonAsync(ControlDefinition control)
@@ -677,10 +1443,164 @@
         await OnFieldChanged.InvokeAsync(key);
     }
 
+    private IReadOnlyList<TabPageInfo> GetTabPages(ControlDefinition control)
+    {
+        if (!control.Props.Values.TryGetValue("tabs", out object? value) || value is null)
+            return [];
+
+        if (value is JsonElement json && json.ValueKind == JsonValueKind.Array)
+        {
+            return json.EnumerateArray()
+                .Select(element => ReadTabPage(element))
+                .Where(tab => tab is not null)
+                .Select(tab => tab!)
+                .ToArray();
+        }
+
+        if (value is IEnumerable<object?> items)
+        {
+            return items
+                .Select(item => ReadTabPage(item))
+                .Where(tab => tab is not null)
+                .Select(tab => tab!)
+                .ToArray();
+        }
+
+        return [];
+    }
+
+    private static TabPageInfo? ReadTabPage(object? value)
+    {
+        if (value is null)
+            return null;
+
+        if (value is JsonElement json)
+        {
+            if (json.ValueKind != JsonValueKind.Object)
+                return null;
+
+            string id = json.TryGetProperty("id", out JsonElement idElement) ? ReadJsonText(idElement) : string.Empty;
+            string label = json.TryGetProperty("label", out JsonElement labelElement) ? ReadJsonText(labelElement) : id;
+            return string.IsNullOrWhiteSpace(id) ? null : new TabPageInfo(id, string.IsNullOrWhiteSpace(label) ? id : label);
+        }
+
+        if (value is IReadOnlyDictionary<string, object?> readOnly)
+            return ReadTabPage(readOnly);
+
+        if (value is IDictionary<string, object?> dictionary)
+            return ReadTabPage(dictionary);
+
+        return null;
+    }
+
+    private static TabPageInfo? ReadTabPage(IReadOnlyDictionary<string, object?> dictionary)
+    {
+        string id = ReadDictionaryText(dictionary, "id");
+        if (string.IsNullOrWhiteSpace(id))
+            return null;
+
+        string label = ReadDictionaryText(dictionary, "label");
+        return new TabPageInfo(id, string.IsNullOrWhiteSpace(label) ? id : label);
+    }
+
+    private TabPageInfo GetActiveTabPage(ControlDefinition control, IReadOnlyList<TabPageInfo> tabs)
+    {
+        if (_activeTabs.TryGetValue(control.ControlId, out string? activeId))
+        {
+            TabPageInfo? active = tabs.FirstOrDefault(tab => string.Equals(tab.Id, activeId, StringComparison.Ordinal));
+            if (active is not null)
+                return active;
+        }
+
+        _activeTabs[control.ControlId] = tabs[0].Id;
+        return tabs[0];
+    }
+
+    private void SetActiveTab(string controlId, string tabId)
+        => _activeTabs[controlId] = tabId;
+
+    private string GetTabButtonClass(string activeTabId, string tabId)
+        => string.Equals(activeTabId, tabId, StringComparison.Ordinal)
+            ? "fr-tab-button active"
+            : "fr-tab-button";
+
+    private FormDefinition BuildTabChildForm(ControlDefinition tabControl, string tabId)
+    {
+        var childControls = Form.Controls
+            .Where(control => IsTabChildControl(control, tabControl.ControlId, tabId))
+            .ToArray();
+
+        return Form with { Controls = childControls };
+    }
+
+    private static double GetTabChildCanvasWidth(ControlDefinition tabControl)
+        => Math.Max(24, tabControl.Rect.Width - 24);
+
+    private double GetTabChildCanvasHeight(ControlDefinition tabControl, string tabId)
+    {
+        double designHeight = Form.Controls
+            .Where(control => IsTabChildControl(control, tabControl.ControlId, tabId))
+            .Select(control => control.Rect.Y + control.Rect.Height + 24)
+            .DefaultIfEmpty(0)
+            .Max();
+        double tabPageHeight = Math.Max(16, tabControl.Rect.Height - 56);
+
+        return Math.Max(designHeight, tabPageHeight);
+    }
+
+    private static bool IsTabChildControl(ControlDefinition control, string parentControlId, string tabId)
+        => TryGetControlProp(control, "parentControlId", out string configuredParentId)
+           && string.Equals(configuredParentId, parentControlId, StringComparison.Ordinal)
+           && TryGetControlProp(control, "parentTabId", out string configuredTabId)
+           && string.Equals(configuredTabId, tabId, StringComparison.Ordinal);
+
+    private static bool TryGetControlProp(ControlDefinition control, string key, out string value)
+    {
+        value = string.Empty;
+        if (!control.Props.Values.TryGetValue(key, out object? raw) || raw is null)
+            return false;
+
+        if (raw is JsonElement json)
+            raw = json.ValueKind == JsonValueKind.String ? json.GetString() : json.ToString();
+
+        value = raw?.ToString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static string ReadDictionaryText(IReadOnlyDictionary<string, object?> dictionary, string key)
+    {
+        if (!dictionary.TryGetValue(key, out object? value) || value is null)
+            return string.Empty;
+
+        if (value is JsonElement json)
+            return ReadJsonText(json);
+
+        return value.ToString() ?? string.Empty;
+    }
+
+    private static string ReadJsonText(JsonElement value)
+        => value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? string.Empty
+            : value.ToString();
+
+    private string BuildSubformKey(ControlDefinition control, object? parentValue)
+        => $"{control.ControlId}:{parentValue}";
+
+    private static string BuildSubformFilterExpression(string foreignKeyField)
+        => $"[{foreignKeyField}] = @parentValue";
+
+    private static IReadOnlyDictionary<string, object?> BuildSubformFilterParameters(object? parentValue)
+        => new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["parentValue"] = parentValue,
+        };
+
     private FormFieldDefinition? GetFieldDefinition(string? fieldName)
         => fieldName is null
             ? null
             : TableDefinition?.Fields.FirstOrDefault(field => string.Equals(field.Name, fieldName, StringComparison.OrdinalIgnoreCase));
+
+    private sealed record TabPageInfo(string Id, string Label);
 
     private static int GetTabIndex(ControlDefinition c)
     {
@@ -745,6 +1665,59 @@
         => TryGetEffectiveProperty(c, key, out object? value)
             ? ReadBoolean(value, fallback)
             : fallback;
+
+    private int GetIntProp(ControlDefinition c, string key, int fallback)
+        => TryGetEffectiveProperty(c, key, out object? value)
+            ? ReadInteger(value, fallback)
+            : fallback;
+
+    private double GetDoubleProp(ControlDefinition c, string key, double fallback)
+        => TryGetEffectiveProperty(c, key, out object? value)
+            ? ReadDouble(value, fallback)
+            : fallback;
+
+    private long GetLongProp(ControlDefinition c, string key, long fallback)
+        => TryGetEffectiveProperty(c, key, out object? value)
+            ? ReadLong(value, fallback)
+            : fallback;
+
+    private static int ReadInteger(object? value, int fallback)
+    {
+        long parsed = ReadLong(value, fallback);
+        return parsed > int.MaxValue || parsed < int.MinValue
+            ? fallback
+            : (int)parsed;
+    }
+
+    private static long ReadLong(object? value, long fallback)
+    {
+        return value switch
+        {
+            int i => i,
+            long l => l,
+            double d => (long)d,
+            decimal m => (long)m,
+            JsonElement json when json.ValueKind == JsonValueKind.Number && json.TryGetInt64(out long l) => l,
+            _ when long.TryParse(value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed) => parsed,
+            _ => fallback,
+        };
+    }
+
+    private static double ReadDouble(object? value, double fallback)
+    {
+        return value switch
+        {
+            int i => i,
+            long l => l,
+            float f => f,
+            double d => d,
+            decimal m => (double)m,
+            JsonElement json when json.ValueKind == JsonValueKind.Number && json.TryGetDouble(out double d) => d,
+            JsonElement json when json.ValueKind == JsonValueKind.String && double.TryParse(json.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) => parsed,
+            _ when double.TryParse(value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) => parsed,
+            _ => fallback,
+        };
+    }
 
     private bool TryGetEffectiveProperty(ControlDefinition control, string key, out object? value)
     {
