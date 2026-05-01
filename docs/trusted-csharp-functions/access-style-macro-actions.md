@@ -11,7 +11,7 @@ Phase 8 extends Admin Forms action sequences with Access-style UI and data actio
 | `applyFilter` | Filters the current form record list when `target` is `form`; filters a rendered `datagrid` control when `target` is that control id. |
 | `clearFilter` | Clears the form or data-grid filter selected by `target`. |
 | `runSql` | Executes SQL only when the host enables SQL actions. `@name` parameters are resolved from action arguments. |
-| `runProcedure` | Executes a named database procedure only when the host enables procedure actions. |
+| `runProcedure` | Executes a named database procedure only when the host enables procedure actions. `target` is the procedure name; action arguments become procedure arguments. |
 | `setControlProperty` | Overrides rendered control properties such as `visible`, `enabled`, `readOnly`, `text`, `placeholder`, and bound `value`. |
 | `setControlVisibility`, `setControlEnabled`, `setControlReadOnly` | Short forms for the corresponding `setControlProperty` calls. |
 
@@ -52,6 +52,35 @@ Use `target: "form"` for the parent form list. Use a DataGrid control id for chi
 ```
 
 The built-in admin tab host forwards those values to `DataEntry` as initial state. `mode: "new"` starts a writable form on a new record. `recordId` navigates to the requested primary key after load. `filter` or `where` applies an initial form filter.
+
+## SQL And Procedure Actions
+
+Use `runProcedure` when the workflow should invoke reusable database-owned SQL,
+for example allocating an order, receiving a purchase order, processing a
+return, or returning a packaged operational snapshot. A procedure body can run
+multiple SQL statements in one execution and can return follow-up result sets.
+
+```json
+{
+  "kind": "runProcedure",
+  "target": "AllocateOrder",
+  "arguments": {
+    "orderId": 7005,
+    "allocatedBy": "Wave Planner",
+    "note": "Allocated from form action sequence."
+  },
+  "stopOnFailure": true
+}
+```
+
+Use `runCommand` instead when the workflow needs host-owned C# behavior such as
+email, queues, external APIs, filesystem access, or other services. A common
+sequence is `runProcedure` for database updates followed by `runCommand` for a
+host notification.
+
+Rendered Admin form runtimes can leave `runSql` and `runProcedure` disabled by
+policy. That keeps database-mutating actions explicit at the host boundary even
+though procedure definitions themselves are database metadata.
 
 ## Conditional UI Rules
 

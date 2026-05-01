@@ -134,3 +134,9 @@ workflows." The highest leverage model changes are:
 - form-mode model
 
 Those foundations should be added before expanding the control palette too far.
+
+## Developer Extensibility
+
+Custom form controls can now be registered without changing saved form JSON. See
+[Form Control Extensibility](form-control-extensibility.md) for the registry API,
+component contexts, generic property schema, and the sample rating control.
