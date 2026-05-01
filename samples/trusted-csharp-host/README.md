@@ -32,6 +32,51 @@ only.
 6. Inspect the generated starter C# registration stub.
 7. Put breakpoints in `Slugify` or the `AuditCustomerChange` command callback.
 
+## Developer Handoff Story
+
+The intended production workflow has two roles:
+
+1. An app builder creates metadata in Admin, such as a calculated expression
+   that calls `Slugify(...)` or a form action sequence that runs
+   `AuditCustomerChange`.
+2. A host developer owns the C# implementation, registers that callback during
+   startup, and debugs it from VS Code.
+
+The database/form metadata stores callback names, argument values, and
+reference locations. It does not store C# source or compiled assemblies.
+
+`Program.cs` shows both registration paths:
+
+```csharp
+builder.AddScalar(
+    "Slugify",
+    arity: 1,
+    options: new DbScalarFunctionOptions(
+        ReturnType: DbType.Text,
+        IsDeterministic: true,
+        NullPropagating: true),
+    invoke: static (_, args) => DbValue.FromText(Slugify(args[0].AsText)));
+```
+
+```csharp
+builder.AddCommand(
+    "AuditCustomerChange",
+    new DbCommandOptions("Records a customer workflow event."),
+    context =>
+    {
+        long customerId = context.Arguments["Id"].AsInteger;
+        string status = context.Arguments["Status"].AsText;
+
+        return DbCommandResult.Success(
+            $"Customer {customerId} changed to {status}.");
+    });
+```
+
+When Admin reports a missing callback, use the generated stub as the handoff
+artifact. The host developer pastes the registration shape into the host app,
+replaces the stub body with reviewed C# code, sets a breakpoint, then runs the
+host with `F5` to verify the metadata reference reaches the callback.
+
 ## Run From Terminal
 
 ```powershell

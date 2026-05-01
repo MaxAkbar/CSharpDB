@@ -4,6 +4,10 @@ CSharpDB can call host-registered C# scalar functions from SQL and the embedded 
 
 This feature is intentionally trusted and in-process. It does not store C# source code in the database, sandbox user code, load plugin assemblies from database files, or serialize delegates over HTTP or gRPC.
 
+For an end-to-end app-builder walkthrough that combines Admin Forms, collections,
+macro actions, reports, trusted callbacks, and callback readiness, see the
+[Fulfillment Ops Admin Automation tutorial](../tutorials/fulfillment-ops-admin-automation.md).
+
 ---
 
 ## Trusted Commands
@@ -191,6 +195,103 @@ The sample demonstrates:
 The VS Code story stays host-owned: VS Code is the editor/debugger for the C#
 host project, while database metadata stores names and declarative action data
 only.
+
+### End-To-End Developer Handoff
+
+The production workflow is a handoff between an app builder and a host
+developer:
+
+1. The app builder creates database metadata that references a callback by name.
+   Examples include a formula such as `=Slugify([Name])` or a form action step
+   such as `RunCommand` with command name `SendOpsDigest`.
+2. Admin records only the callback name, arity/kind metadata, action arguments,
+   and reference location. It does not store C# source.
+3. The callback catalog compares referenced names with the callbacks registered
+   by the current host. Missing names appear as missing callback readiness.
+4. The app builder copies the generated registration stub from Admin and gives
+   it to the host developer.
+5. The host developer implements the C# function or command in the host
+   project, registers it during startup, and debugs it in VS Code like normal
+   application code.
+6. The host is restarted. Admin refreshes callback readiness, and the reference
+   changes from missing to registered/allowed when the name, kind, and arity
+   match.
+
+For Admin itself, host-owned demo callbacks are registered in
+`src/CSharpDB.Admin/Services/AdminHostCallbacks.cs`. A scalar function is
+registered with `DbFunctionRegistry`:
+
+```csharp
+functions.AddScalar(
+    "Slugify",
+    arity: 1,
+    options: new DbScalarFunctionOptions(
+        ReturnType: DbType.Text,
+        IsDeterministic: true,
+        NullPropagating: true),
+    invoke: static (_, args) => DbValue.FromText(Slugify(args[0].AsText)));
+```
+
+A command callback is registered with `DbCommandRegistry`:
+
+```csharp
+commands.AddCommand(
+    "SendOpsDigest",
+    new DbCommandOptions("Sends a fulfillment operations digest."),
+    static context =>
+    {
+        string source = context.Arguments.TryGetValue("source", out DbValue value)
+            ? value.AsText
+            : "unknown";
+
+        // Call host-owned services here.
+        return DbCommandResult.Success($"Digest requested by {source}.");
+    });
+```
+
+That C# code belongs to the host application. The database still stores only the
+name `SendOpsDigest` and any declarative action arguments.
+
+### Stored Procedures In The Mix
+
+Stored procedures are different from trusted callbacks. They are database-owned
+SQL definitions with parameter metadata. They are useful when the logic should
+stay inside CSharpDB and can be expressed as SQL:
+
+| Need | Prefer |
+| --- | --- |
+| Reusable multi-statement table work | Stored procedure |
+| Transactional updates plus follow-up result sets | Stored procedure |
+| A form button that runs reviewed database logic | `RunProcedure` |
+| External API, email, filesystem, queue, or host service call | Trusted command callback |
+| Custom scalar calculation inside SQL expressions | Trusted scalar function |
+| UI-only behavior such as filtering or control state | Declarative macro action |
+
+A stored procedure can be executed directly through the client API:
+
+```csharp
+ProcedureExecutionResult result = await client.ExecuteProcedureAsync(
+    "AllocateOrder",
+    new Dictionary<string, object?>
+    {
+        ["orderId"] = 7005,
+        ["allocatedBy"] = "Wave Planner",
+        ["note"] = "Allocated from a reviewed procedure.",
+    });
+```
+
+Admin's SQL editor also accepts `EXEC` as an Admin command surface:
+
+```sql
+EXEC AllocateOrder @orderId = 7005, @allocatedBy = 'Wave Planner';
+EXEC RefreshOperationalStats;
+EXEC tutorial_OpenOrderSnapshot { "status": "released" };
+```
+
+Use `RunProcedure` from form metadata only when the rendered host enables
+procedure actions. Use `RunCommand` when the same button needs host-owned C#.
+When both are needed, run the procedure first for database work and the command
+second for the external side effect.
 
 ---
 
@@ -641,9 +742,10 @@ form lifecycle dispatch can still run `SetFieldValue`, `ShowMessage`, `Stop`,
 and `RunCommand`, but it reports a failure if a sequence asks for rendered-form
 navigation or save/delete actions.
 
-V1 action sequences do not include loops, stored C# source, database-owned
-plugins, direct SQL/procedure execution actions, or remote delegate
-serialization.
+Action sequences do not include loops, stored C# source, database-owned
+plugins, or remote delegate serialization. Rendered Admin form runtimes support
+direct SQL and procedure actions only when the host explicitly enables those
+capabilities.
 
 ---
 
@@ -914,4 +1016,4 @@ V1 does not support:
 - Sending delegates over HTTP, gRPC, or pipeline package files.
 - Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.
 - Additional Access-style control events such as double-click, key, mouse, timer, and dirty/current events.
-- Richer macro/action scripts with loops, direct SQL/procedure actions, conditional UI rules, or database-owned executable code.
+- Richer macro/action scripts with loops, reusable UI rule presets, additional event surfaces, or database-owned executable code.
