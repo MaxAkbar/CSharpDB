@@ -4,6 +4,7 @@ using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Admin.Reports.Services;
 using CSharpDB.Admin.Services;
 using CSharpDB.Client;
+using CSharpDB.Primitives;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,10 +13,14 @@ builder.Services.AddRazorComponents()
 
 builder.Services.AddSingleton(sp =>
     AdminClientOptionsBuilder.BindHostDatabaseOptions(sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddSingleton(AdminHostCallbacks.CreateFunctionRegistry());
+builder.Services.AddSingleton(AdminHostCallbacks.CreateCommandRegistry());
+builder.Services.AddSingleton(AdminHostCallbacks.CreatePolicy());
 builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     var hostDatabaseOptions = sp.GetRequiredService<AdminHostDatabaseOptions>();
+    var functions = sp.GetRequiredService<DbFunctionRegistry>();
     string? endpoint = configuration["CSharpDB:Endpoint"];
     CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
 
@@ -23,9 +28,10 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
         configuration,
         hostDatabaseOptions,
         transport,
-        endpoint);
+        endpoint,
+        functions);
 
-    return new DatabaseClientHolder(CSharpDbClient.Create(options), hostDatabaseOptions);
+    return new DatabaseClientHolder(CSharpDbClient.Create(options), hostDatabaseOptions, functions);
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddScoped<TabManagerService>();
@@ -33,6 +39,8 @@ builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
 builder.Services.AddScoped<ModalService>();
 builder.Services.AddScoped<DatabaseChangeService>();
+builder.Services.AddScoped<HostCallbackCatalogService>();
+builder.Services.AddScoped<HostCallbackPolicyService>();
 builder.Services.AddCSharpDbAdminForms();
 builder.Services.AddCSharpDbAdminReports();
 

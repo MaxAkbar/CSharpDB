@@ -10,7 +10,17 @@ public sealed class TrustedCommandRegistryTests
         var registry = DbCommandRegistry.Create(commands =>
             commands.AddCommand(
                 "RecalculateInventory",
-                new DbCommandOptions("Rebuilds inventory summaries.", IsLongRunning: true),
+                new DbCommandOptions(
+                    "Rebuilds inventory summaries.",
+                    Timeout: TimeSpan.FromSeconds(5),
+                    IsLongRunning: true,
+                    AdditionalCapabilities:
+                    [
+                        new DbExtensionCapabilityRequest(
+                            DbExtensionCapability.ReadDatabase,
+                            Reason: "Reads product inventory tables.",
+                            Tables: ["Products", "Inventory"]),
+                    ]),
                 static context =>
                 {
                     Assert.Equal("RecalculateInventory", context.CommandName);
@@ -21,7 +31,19 @@ public sealed class TrustedCommandRegistryTests
 
         Assert.True(registry.TryGetCommand("recalculateinventory", out DbCommandDefinition definition));
         Assert.Equal("Rebuilds inventory summaries.", definition.Options.Description);
+        Assert.Equal(TimeSpan.FromSeconds(5), definition.Options.Timeout);
         Assert.True(definition.Options.IsLongRunning);
+        Assert.Equal(AutomationCallbackKind.Command, definition.Descriptor.Kind);
+        Assert.Equal(DbExtensionRuntimeKind.HostCallback, definition.Descriptor.Runtime);
+        Assert.Equal("RecalculateInventory", definition.Descriptor.Name);
+        Assert.Null(definition.Descriptor.Arity);
+        Assert.Equal("Rebuilds inventory summaries.", definition.Descriptor.Description);
+        Assert.Equal(TimeSpan.FromSeconds(5), definition.Descriptor.Timeout);
+        Assert.True(definition.Descriptor.IsLongRunning);
+        Assert.Equal(
+            [DbExtensionCapability.Commands, DbExtensionCapability.ReadDatabase],
+            definition.Descriptor.Capabilities.Select(static capability => capability.Name).ToArray());
+        Assert.Same(definition.Descriptor, Assert.Single(registry.Callbacks));
 
         DbCommandResult result = await definition.InvokeAsync(
             new Dictionary<string, DbValue>(StringComparer.OrdinalIgnoreCase)

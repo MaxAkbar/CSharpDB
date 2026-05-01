@@ -7,6 +7,7 @@ public enum TabKind
     TableData,
     ViewData,
     CollectionData,
+    HostCallbacks,
     Procedure,
     Pipeline,
     Storage,
@@ -35,7 +36,7 @@ public sealed class TabDescriptor
         Closable = closable;
     }
 
-    /// <summary>Get the object name for data/view/collection tabs (e.g. table name, view name, collection name).</summary>
+    /// <summary>Get the object name for table, view, collection, and other object-backed tabs.</summary>
     public string? ObjectName
     {
         get => State.TryGetValue("ObjectName", out var v) ? v as string : null;

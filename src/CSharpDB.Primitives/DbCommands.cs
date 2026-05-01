@@ -12,7 +12,9 @@ public sealed record DbCommandContext(
 public sealed record DbCommandOptions(
     string? Description = null,
     TimeSpan? Timeout = null,
-    bool IsLongRunning = false);
+    bool IsLongRunning = false,
+    IReadOnlyList<DbExtensionCapabilityRequest>? AdditionalCapabilities = null,
+    IReadOnlyDictionary<string, string>? Metadata = null);
 
 public sealed record DbCommandResult(
     bool Succeeded,
@@ -41,12 +43,15 @@ public sealed class DbCommandDefinition
     {
         Name = name;
         Options = options;
+        Descriptor = DbHostCallbackDescriptorFactory.CreateCommand(name, options);
         _invoke = invoke;
     }
 
     public string Name { get; }
 
     public DbCommandOptions Options { get; }
+
+    public DbHostCallbackDescriptor Descriptor { get; }
 
     public ValueTask<DbCommandResult> InvokeAsync(
         IReadOnlyDictionary<string, DbValue>? arguments = null,
@@ -186,6 +191,7 @@ public sealed class DbCommandRegistry
 {
     private readonly Dictionary<string, DbCommandDefinition> _commands;
     private readonly DbCommandDefinition[] _commandList;
+    private readonly DbHostCallbackDescriptor[] _callbackList;
 
     public static DbCommandRegistry Empty { get; } = new();
 
@@ -193,6 +199,7 @@ public sealed class DbCommandRegistry
     {
         _commands = new Dictionary<string, DbCommandDefinition>(StringComparer.OrdinalIgnoreCase);
         _commandList = [];
+        _callbackList = [];
     }
 
     internal DbCommandRegistry(Dictionary<string, DbCommandDefinition> commands)
@@ -201,9 +208,14 @@ public sealed class DbCommandRegistry
         _commandList = commands.Values
             .OrderBy(static definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        _callbackList = _commandList
+            .Select(static definition => definition.Descriptor)
+            .ToArray();
     }
 
     public IReadOnlyCollection<DbCommandDefinition> Commands => _commandList;
+
+    public IReadOnlyCollection<DbHostCallbackDescriptor> Callbacks => _callbackList;
 
     public static DbCommandRegistry Create(Action<DbCommandRegistryBuilder> configure)
     {

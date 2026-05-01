@@ -83,6 +83,37 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenCallbacksTab_CreatesHostCallbacksTab()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenCallbacksTab("normalize_name", "ScalarFunction", 1);
+
+        Assert.Equal("callbacks:host", tab.Id);
+        Assert.Equal("Callbacks", tab.Title);
+        Assert.Equal(TabKind.HostCallbacks, tab.Kind);
+        Assert.Equal("normalize_name", tab.State["SelectedCallbackName"]);
+        Assert.Equal("ScalarFunction", tab.State["SelectedCallbackKind"]);
+        Assert.Equal(1, tab.State["SelectedCallbackArity"]);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenCallbacksTab_DeduplicatesAndUpdatesSelection()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenCallbacksTab("normalize_name", "ScalarFunction", 1);
+        TabDescriptor second = manager.OpenCallbacksTab("refresh_cache", "Command");
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal("refresh_cache", second.State["SelectedCallbackName"]);
+        Assert.Equal("Command", second.State["SelectedCallbackKind"]);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
     public void CloseTabsForObject_ClosesCollectionTab()
     {
         var manager = new TabManagerService();

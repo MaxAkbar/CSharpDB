@@ -16,13 +16,35 @@ public sealed class TrustedScalarFunctionTests
             functions.AddScalar(
                 "Bump",
                 1,
-                new DbScalarFunctionOptions(DbType.Integer, IsDeterministic: true, NullPropagating: true),
+                new DbScalarFunctionOptions(
+                    DbType.Integer,
+                    IsDeterministic: true,
+                    NullPropagating: true,
+                    Description: "Adds one to an integer.",
+                    AdditionalCapabilities:
+                    [
+                        new DbExtensionCapabilityRequest(
+                            DbExtensionCapability.Clock,
+                            Reason: "Demonstrates additional host-visible capability metadata."),
+                    ]),
                 static (_, args) => DbValue.FromInteger(args[0].AsInteger + 1)));
 
         Assert.True(registry.TryGetScalar("bump", 1, out var definition));
         Assert.Equal(DbType.Integer, definition.Options.ReturnType);
         Assert.True(definition.Options.IsDeterministic);
         Assert.True(definition.Options.NullPropagating);
+        Assert.Equal(AutomationCallbackKind.ScalarFunction, definition.Descriptor.Kind);
+        Assert.Equal(DbExtensionRuntimeKind.HostCallback, definition.Descriptor.Runtime);
+        Assert.Equal("Bump", definition.Descriptor.Name);
+        Assert.Equal(1, definition.Descriptor.Arity);
+        Assert.Equal(DbType.Integer, definition.Descriptor.ReturnType);
+        Assert.Equal("Adds one to an integer.", definition.Descriptor.Description);
+        Assert.True(definition.Descriptor.IsDeterministic);
+        Assert.True(definition.Descriptor.NullPropagating);
+        Assert.Equal(
+            [DbExtensionCapability.ScalarFunctions, DbExtensionCapability.Clock],
+            definition.Descriptor.Capabilities.Select(static capability => capability.Name).ToArray());
+        Assert.Same(definition.Descriptor, Assert.Single(registry.Callbacks));
 
         Assert.Throws<ArgumentException>(() => DbFunctionRegistry.Create(functions =>
         {

@@ -26,7 +26,10 @@ public sealed record DbScalarFunctionContext(string FunctionName)
 public sealed record DbScalarFunctionOptions(
     DbType? ReturnType = null,
     bool IsDeterministic = false,
-    bool NullPropagating = false);
+    bool NullPropagating = false,
+    string? Description = null,
+    IReadOnlyList<DbExtensionCapabilityRequest>? AdditionalCapabilities = null,
+    IReadOnlyDictionary<string, string>? Metadata = null);
 
 public sealed class DbScalarFunctionDefinition
 {
@@ -41,6 +44,7 @@ public sealed class DbScalarFunctionDefinition
         Name = name;
         Arity = arity;
         Options = options;
+        Descriptor = DbHostCallbackDescriptorFactory.CreateScalar(name, arity, options);
         _invoke = invoke;
     }
 
@@ -49,6 +53,8 @@ public sealed class DbScalarFunctionDefinition
     public int Arity { get; }
 
     public DbScalarFunctionOptions Options { get; }
+
+    public DbHostCallbackDescriptor Descriptor { get; }
 
     public DbValue Invoke(ReadOnlySpan<DbValue> arguments)
         => Invoke(arguments, metadata: null);
@@ -106,6 +112,7 @@ public sealed class DbFunctionRegistry
 {
     private readonly Dictionary<string, Dictionary<int, DbScalarFunctionDefinition>> _scalarFunctions;
     private readonly DbScalarFunctionDefinition[] _scalarFunctionList;
+    private readonly DbHostCallbackDescriptor[] _callbackList;
 
     public static DbFunctionRegistry Empty { get; } = new();
 
@@ -113,6 +120,7 @@ public sealed class DbFunctionRegistry
     {
         _scalarFunctions = new Dictionary<string, Dictionary<int, DbScalarFunctionDefinition>>(StringComparer.OrdinalIgnoreCase);
         _scalarFunctionList = [];
+        _callbackList = [];
     }
 
     internal DbFunctionRegistry(Dictionary<string, Dictionary<int, DbScalarFunctionDefinition>> scalarFunctions)
@@ -123,9 +131,14 @@ public sealed class DbFunctionRegistry
             .OrderBy(static definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static definition => definition.Arity)
             .ToArray();
+        _callbackList = _scalarFunctionList
+            .Select(static definition => definition.Descriptor)
+            .ToArray();
     }
 
     public IReadOnlyCollection<DbScalarFunctionDefinition> ScalarFunctions => _scalarFunctionList;
+
+    public IReadOnlyCollection<DbHostCallbackDescriptor> Callbacks => _callbackList;
 
     public static DbFunctionRegistry Create(Action<DbFunctionRegistryBuilder> configure)
     {

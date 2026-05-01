@@ -100,6 +100,23 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenCallbacksTab(string? selectedCallbackName = null, string? selectedCallbackKind = null, int? selectedCallbackArity = null)
+    {
+        const string tabId = "callbacks:host";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ApplyCallbackSelection(existing, selectedCallbackName, selectedCallbackKind, selectedCallbackArity);
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(tabId, "Callbacks", "bi-plug", TabKind.HostCallbacks);
+        ApplyCallbackSelection(tab, selectedCallbackName, selectedCallbackKind, selectedCallbackArity);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenQueryTab(string? initialSql = null)
     {
         int num = Interlocked.Increment(ref _queryCounter);
@@ -228,6 +245,20 @@ public sealed class TabManagerService
         tab.InitialFormEntryMode = string.IsNullOrWhiteSpace(initialMode) ? null : initialMode.Trim();
         tab.InitialFilterExpression = string.IsNullOrWhiteSpace(initialFilterExpression) ? null : initialFilterExpression.Trim();
         tab.InitialFilterParameters = initialFilterParameters;
+    }
+
+    private static void ApplyCallbackSelection(
+        TabDescriptor tab,
+        string? selectedCallbackName,
+        string? selectedCallbackKind,
+        int? selectedCallbackArity)
+    {
+        if (string.IsNullOrWhiteSpace(selectedCallbackName))
+            return;
+
+        tab.State["SelectedCallbackName"] = selectedCallbackName.Trim();
+        tab.State["SelectedCallbackKind"] = string.IsNullOrWhiteSpace(selectedCallbackKind) ? null : selectedCallbackKind.Trim();
+        tab.State["SelectedCallbackArity"] = selectedCallbackArity;
     }
 
     /// <summary>Open a table tab and switch it to Schema view.</summary>

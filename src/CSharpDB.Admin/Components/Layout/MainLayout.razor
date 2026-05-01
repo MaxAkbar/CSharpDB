@@ -47,6 +47,10 @@
                                                Tab="tab"
                                                CollectionName="@(tab.ObjectName ?? string.Empty)" />
                                 break;
+                            case TabKind.HostCallbacks:
+                                <CallbacksTab @key="tab.Id"
+                                              Tab="tab" />
+                                break;
                             case TabKind.Procedure:
                                 <ProcedureTab @key="tab.Id"
                                               Tab="tab" />

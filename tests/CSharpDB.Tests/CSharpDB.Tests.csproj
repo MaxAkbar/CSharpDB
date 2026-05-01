@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\CSharpDB.Native\CSharpDB.Native.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Generators\CSharpDB.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
+    <ProjectReference Include="..\CSharpDB.ExtensionSandbox.Worker\CSharpDB.ExtensionSandbox.Worker.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,7 +1,9 @@
+@using CSharpDB.Primitives
 @inject ICSharpDbClient DbClient
 @inject IFormRepository FormRepository
 @inject IReportRepository ReportRepository
 @inject TabManagerService TabManager
+@inject HostCallbackCatalogService CallbackCatalog
 @inject DatabaseChangeService Changes
 @inject ModalService Modal
 @inject ToastService Toast
@@ -98,6 +100,7 @@
         {
             _items.Clear();
             AddCoreCommands();
+            await AddCallbackCommandsAsync();
 
             IReadOnlyCollection<string> tables = await DbClient.GetTableNamesAsync();
             foreach (string tableName in tables.Where(static name => !name.StartsWith("_", StringComparison.Ordinal)).OrderBy(name => name))
@@ -214,11 +217,31 @@
         _items.Add(new PaletteItem("Command", "New Query", "Open a SQL editor", "bi-terminal", "icon-system", () => { TabManager.OpenQueryTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Table", "Open table designer", "bi-table", "icon-table", () => { TabManager.OpenTableDesignerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Collection", "Create or open a document collection", "bi-braces", "icon-view", OpenNewCollectionAsync));
+        _items.Add(new PaletteItem("Command", "Callbacks", "Open host callback catalog", "bi-plug", "icon-system", () => { TabManager.OpenCallbacksTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Form", "Open form designer", "bi-ui-checks-grid", "icon-form", () => { TabManager.OpenFormDesignerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Report", "Open report designer", "bi-file-earmark-richtext", "icon-report", () => { TabManager.OpenReportDesignerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Procedure", "Open procedure editor", "bi-gear-wide-connected", "icon-trigger", () => { TabManager.OpenNewProcedureTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Pipeline", "Open pipeline builder", "bi-diagram-3", "icon-view", () => { TabManager.OpenPipelineTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Storage Inspector", "Open storage diagnostics", "bi-hdd-stack", "icon-system", () => { TabManager.OpenStorageTab(); return Task.CompletedTask; }));
+    }
+
+    private async Task AddCallbackCommandsAsync()
+    {
+        foreach (HostCallbackCatalogEntry callback in await CallbackCatalog.GetEntriesAsync())
+        {
+            HostCallbackCatalogEntry captured = callback;
+            _items.Add(new PaletteItem(
+                captured.IsMissingRegistration ? "Missing callback" : GetCallbackKindLabel(captured.Kind),
+                captured.Name,
+                FormatCallbackSubtitle(captured),
+                captured.IsMissingRegistration ? "bi-exclamation-triangle" : "bi-plug",
+                captured.IsMissingRegistration ? "icon-report" : "icon-system",
+                () =>
+                {
+                    TabManager.OpenCallbacksTab(captured.Name, captured.Kind.ToString(), captured.Arity);
+                    return Task.CompletedTask;
+                }));
+        }
     }
 
     private async Task OpenNewCollectionAsync()
@@ -289,6 +312,27 @@
     public void Dispose()
     {
         Changes.Changed -= OnChanged;
+    }
+
+    private static string GetCallbackKindLabel(AutomationCallbackKind kind)
+        => kind switch
+        {
+            AutomationCallbackKind.ScalarFunction => "Scalar function",
+            AutomationCallbackKind.Command => "Command",
+            _ => kind.ToString(),
+        };
+
+    private static string FormatCallbackSubtitle(HostCallbackCatalogEntry callback)
+    {
+        if (callback.IsMissingRegistration)
+            return $"Missing registration, referenced {callback.References.Count} time{(callback.References.Count == 1 ? "" : "s")}";
+
+        if (!string.IsNullOrWhiteSpace(callback.Descriptor?.Description))
+            return callback.Descriptor.Description;
+
+        return callback.Descriptor is null || callback.Descriptor.Capabilities.Count == 0
+            ? callback.Descriptor?.Runtime.ToString() ?? "Callback"
+            : $"{callback.Descriptor.Runtime} · {string.Join(", ", callback.Descriptor.Capabilities.Select(static capability => capability.Name))}";
     }
 
     private sealed record PaletteItem(

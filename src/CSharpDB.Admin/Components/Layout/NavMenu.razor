@@ -4,6 +4,7 @@
 @inject IFormRepository FormRepository
 @inject IReportRepository ReportRepository
 @inject TabManagerService TabManager
+@inject HostCallbackCatalogService CallbackCatalog
 @inject ToastService Toast
 @inject ModalService Modal
 @inject IJSRuntime JS
@@ -37,6 +38,7 @@
         <button class="@GetFilterChipClass("all")" @onclick='() => SetObjectFilter("all")'>All</button>
         <button class="@GetFilterChipClass("tables")" @onclick='() => SetObjectFilter("tables")'>Tables</button>
         <button class="@GetFilterChipClass("collections")" @onclick='() => SetObjectFilter("collections")'>Collections</button>
+        <button class="@GetFilterChipClass("callbacks")" @onclick='() => SetObjectFilter("callbacks")'>Callbacks</button>
         <button class="@GetFilterChipClass("forms")" @onclick='() => SetObjectFilter("forms")'>Forms</button>
         <button class="@GetFilterChipClass("reports")" @onclick='() => SetObjectFilter("reports")'>Reports</button>
     </div>
@@ -561,6 +563,39 @@
             }
         </div>
         }
+
+        @* Host callbacks *@
+        @if (ShouldShowGroup("callbacks"))
+        {
+        <div class="tree-group">
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("callbacks")'
+                 @oncontextmenu="e => ShowCallbacksGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
+                <i class="bi @(_expandedGroups.Contains("callbacks") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-plug icon-system"></i>
+                <span>Callbacks</span>
+                <span class="group-count">@_callbacks.Count</span>
+            </div>
+            @if (_expandedGroups.Contains("callbacks"))
+            {
+                <div class="tree-items">
+                    @foreach (HostCallbackCatalogEntry callback in FilterCallbacks())
+                    {
+                        var currentCallback = callback;
+                        <div class="tree-item @(IsActiveCallback(currentCallback) ? "active" : "")"
+                             @onclick="() => OpenCallback(currentCallback)"
+                             @oncontextmenu="e => ShowCallbackItemMenu(e, currentCallback)"
+                             @oncontextmenu:preventDefault>
+                            <i class="bi @(currentCallback.IsMissingRegistration ? "bi-exclamation-triangle" : "bi-plug") @(currentCallback.IsMissingRegistration ? "icon-report" : "icon-system")"></i>
+                            <span class="item-label">@currentCallback.Name</span>
+                            <span class="item-hint">@(currentCallback.IsMissingRegistration ? "missing" : GetCallbackKindLabel(currentCallback.Kind))</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+        }
     </div>
 
     <div class="sidebar-resize" @onmousedown="StartResize" @onmousedown:preventDefault></div>
@@ -598,11 +633,12 @@
     private IReadOnlyList<IndexSchema>? _indexes;
     private IReadOnlyList<TriggerSchema>? _triggers;
     private IReadOnlyList<ProcedureDefinition>? _procedures;
+    private IReadOnlyList<HostCallbackCatalogEntry> _callbacks = [];
     private IReadOnlyList<FormDefinition>? _forms;
     private IReadOnlyList<ReportDefinition>? _reports;
     private string _searchQuery = string.Empty;
     private string _objectFilter = "all";
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "collections", "forms", "reports", "system", "views", "procedures" };
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "collections", "forms", "reports", "system", "views", "procedures", "callbacks" };
     private readonly HashSet<string> _expandedTableNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _tableSchemaLoadFailures = new(StringComparer.OrdinalIgnoreCase);
@@ -669,6 +705,8 @@
 
     private async Task LoadObjects()
     {
+        _callbacks = await CallbackCatalog.GetEntriesAsync();
+
         try
         {
             var allTables = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
@@ -740,6 +778,7 @@
             "all" => true,
             "tables" => group is "tables" or "views",
             "collections" => group == "collections",
+            "callbacks" => group == "callbacks",
             "forms" => group == "forms",
             "reports" => group == "reports",
             _ => string.Equals(group, _objectFilter, StringComparison.OrdinalIgnoreCase),
@@ -891,6 +930,14 @@
     private static string GetTriggerTypeLabel(TriggerSchema trigger)
         => trigger.Timing.ToString().ToUpperInvariant();
 
+    private static string GetCallbackKindLabel(CSharpDB.Primitives.AutomationCallbackKind kind)
+        => kind switch
+        {
+            CSharpDB.Primitives.AutomationCallbackKind.ScalarFunction => "scalar",
+            CSharpDB.Primitives.AutomationCallbackKind.Command => "command",
+            _ => kind.ToString().ToLowerInvariant(),
+        };
+
     private IEnumerable<IndexSchema> FilterIndexes()
     {
         if (_indexes is null) return Enumerable.Empty<IndexSchema>();
@@ -913,6 +960,30 @@
         if (string.IsNullOrWhiteSpace(_searchQuery)) return _procedures;
         return _procedures.Where(p => p.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                                    || (p.Description?.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
+    private IEnumerable<HostCallbackCatalogEntry> FilterCallbacks()
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return _callbacks;
+
+        return _callbacks.Where(CallbackMatchesSearch);
+    }
+
+    private bool CallbackMatchesSearch(HostCallbackCatalogEntry callback)
+    {
+        string query = _searchQuery.Trim();
+        return callback.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || callback.Kind.ToString().Contains(query, StringComparison.OrdinalIgnoreCase)
+               || (callback.IsMissingRegistration && "missing".Contains(query, StringComparison.OrdinalIgnoreCase))
+               || (callback.Descriptor?.Runtime.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (callback.Descriptor?.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (callback.Descriptor?.Capabilities.Any(capability => capability.Name.ToString().Contains(query, StringComparison.OrdinalIgnoreCase)) ?? false)
+               || callback.References.Any(reference =>
+                   reference.OwnerName.Contains(query, StringComparison.OrdinalIgnoreCase)
+                   || reference.OwnerKind.Contains(query, StringComparison.OrdinalIgnoreCase)
+                   || reference.Surface.Contains(query, StringComparison.OrdinalIgnoreCase)
+                   || reference.Location.Contains(query, StringComparison.OrdinalIgnoreCase));
     }
 
     private IEnumerable<FormDefinition> FilterForms()
@@ -946,6 +1017,9 @@
     private void OpenSystemCatalogTab(SystemCatalogItem item)
         => TabManager.OpenSystemCatalogTab(item.Name, item.Sql);
 
+    private void OpenCallback(HostCallbackCatalogEntry callback)
+        => TabManager.OpenCallbacksTab(callback.Name, callback.Kind.ToString(), callback.Arity);
+
     private bool IsActive(string type, string name)
     {
         var activeTab = TabManager.ActiveTab;
@@ -958,6 +1032,35 @@
         var activeTab = TabManager.ActiveTab;
         if (activeTab is null) return false;
         return activeTab.Id == $"{type}:{name}";
+    }
+
+    private bool IsActiveCallback(HostCallbackCatalogEntry callback)
+    {
+        var activeTab = TabManager.ActiveTab;
+        if (activeTab?.Id != "callbacks:host")
+            return false;
+
+        if (!activeTab.State.TryGetValue("SelectedCallbackName", out object? nameValue)
+            || nameValue is not string selectedName
+            || !selectedName.Equals(callback.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (activeTab.State.TryGetValue("SelectedCallbackKind", out object? kindValue)
+            && kindValue is string selectedKind
+            && !selectedKind.Equals(callback.Kind.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (activeTab.State.TryGetValue("SelectedCallbackArity", out object? arityValue)
+            && arityValue is int selectedArity)
+        {
+            return callback.Arity == selectedArity;
+        }
+
+        return true;
     }
 
     private bool IsActiveForm(string formId)
@@ -1149,6 +1252,26 @@
         });
     }
 
+    private void ShowCallbacksGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-plug", OnClick = () => TabManager.OpenCallbacksTab() },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowCallbackItemMenu(MouseEventArgs e, HostCallbackCatalogEntry callback)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-plug", OnClick = () => OpenCallback(callback) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyCallbackNameAsync(callback.Name) },
+        });
+    }
+
     private async Task OpenNewCollectionAsync()
     {
         string? enteredName = await Modal.PromptAsync(
@@ -1193,6 +1316,19 @@
         {
             await JS.InvokeVoidAsync("clipboardInterop.writeText", collectionName);
             Toast.Success($"Copied '{collectionName}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task CopyCallbackNameAsync(string callbackName)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", callbackName);
+            Toast.Success($"Copied '{callbackName}'.");
         }
         catch (Exception ex)
         {

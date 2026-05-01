@@ -1,0 +1,485 @@
+@using CSharpDB.Primitives
+@inject HostCallbackCatalogService CallbackCatalog
+@inject HostCallbackPolicyService CallbackPolicy
+
+<div class="callbacks-tab data-tab">
+    <div class="data-toolbar">
+        <div class="data-crumb">
+            <button type="button">
+                <i class="bi bi-hdd-stack"></i>
+                system
+            </button>
+            <span>/</span>
+            <strong><i class="bi bi-plug icon-system"></i>callbacks</strong>
+        </div>
+
+        <div class="data-toolbar-group">
+            <button type="button" class="data-toolbar-btn" @onclick="RefreshAsync">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+        </div>
+
+        <div class="data-toolbar-group callbacks-filter-bar">
+            <select class="callbacks-filter" value="@_kindFilter" @onchange="OnKindFilterChanged">
+                <option value="">All kinds</option>
+                <option value="@AutomationCallbackKind.ScalarFunction">Scalar functions</option>
+                <option value="@AutomationCallbackKind.Command">Commands</option>
+            </select>
+            <select class="callbacks-filter status" value="@_statusFilter" @onchange="OnStatusFilterChanged">
+                <option value="">All status</option>
+                <option value="missing">Missing</option>
+                <option value="registered">Registered</option>
+                <option value="referenced">Referenced</option>
+            </select>
+            <input class="callbacks-search"
+                   value="@_query"
+                   @oninput="OnQueryChanged"
+                   placeholder="Filter callbacks" />
+        </div>
+
+        <div class="data-pager">
+            <span>@FilteredEntries.Count of @_entries.Count callbacks</span>
+        </div>
+    </div>
+
+    <div class="callbacks-layout">
+        <section class="callbacks-list-panel">
+            @if (_entries.Count == 0)
+            {
+                <div class="callbacks-empty">No host callbacks registered or referenced.</div>
+            }
+            else if (FilteredEntries.Count == 0)
+            {
+                <div class="callbacks-empty">No matching callbacks.</div>
+            }
+            else
+            {
+                <table class="schema-table callbacks-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Kind</th>
+                            <th>Runtime</th>
+                            <th>Arity</th>
+                            <th>Refs</th>
+                            <th>Capabilities</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (HostCallbackCatalogEntry entry in FilteredEntries)
+                        {
+                            string key = GetEntryKey(entry);
+                            <tr class="callbacks-row @(key == _selectedKey ? "selected" : "") @(entry.IsMissingRegistration ? "missing" : "")"
+                                @onclick="() => SelectEntry(entry)">
+                                <td class="mono-cell">
+                                    @if (entry.IsMissingRegistration)
+                                    {
+                                        <i class="bi bi-exclamation-triangle callbacks-missing-icon"></i>
+                                    }
+                                    @entry.Name
+                                </td>
+                                <td>@GetKindLabel(entry.Kind)</td>
+                                <td>@FormatRuntime(entry)</td>
+                                <td>@FormatArity(entry.Arity)</td>
+                                <td>@entry.References.Count</td>
+                                <td class="callbacks-capability-cell">@FormatCapabilitySummary(entry)</td>
+                                <td><span class="@GetEntryStatusBadgeClass(entry)">@GetEntryStatus(entry)</span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <section class="callbacks-detail-panel">
+            @if (SelectedEntry is { } selected)
+            {
+                <div class="callbacks-detail-head">
+                    <div>
+                        <div class="callbacks-eyebrow">@GetKindLabel(selected.Kind)</div>
+                        <h3>@selected.Name</h3>
+                    </div>
+                    <span class="@GetEntryStatusBadgeClass(selected)">@GetEntryStatus(selected)</span>
+                </div>
+
+                @if (selected.Descriptor is { } descriptor)
+                {
+                    DbExtensionPolicyDecision policy = CallbackPolicy.Evaluate(descriptor);
+
+                    @if (!string.IsNullOrWhiteSpace(descriptor.Description))
+                    {
+                        <p class="callbacks-description">@descriptor.Description</p>
+                    }
+
+                    <table class="schema-table callbacks-detail-table">
+                        <tbody>
+                            <tr><th>Registration</th><td>Registered</td></tr>
+                            <tr><th>References</th><td>@selected.References.Count</td></tr>
+                            <tr><th>Policy</th><td><span class="@GetPolicyBadgeClass(policy)">@GetPolicyStatus(policy)</span></td></tr>
+                            <tr><th>Policy Reason</th><td>@(policy.DenialReason ?? "Granted by host policy.")</td></tr>
+                            <tr><th>Runtime</th><td>@descriptor.Runtime</td></tr>
+                            <tr><th>Return Type</th><td>@(descriptor.ReturnType?.ToString() ?? "-")</td></tr>
+                            <tr><th>Arity</th><td>@FormatArity(descriptor.Arity)</td></tr>
+                            <tr><th>Timeout</th><td>@FormatTimeout(descriptor.Timeout)</td></tr>
+                            <tr><th>Effective Timeout</th><td>@FormatTimeout(policy.Timeout)</td></tr>
+                            <tr><th>Max Memory</th><td>@FormatBytes(policy.MaxMemoryBytes)</td></tr>
+                            <tr><th>Flags</th><td>@FormatFlags(descriptor)</td></tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callbacks-section">
+                        <h4>Capability Decisions</h4>
+                        @if (policy.Capabilities.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-policy-list">
+                                @foreach (DbExtensionCapabilityDecision capability in policy.Capabilities)
+                                {
+                                    <div class="callbacks-policy-item">
+                                        <div class="callbacks-policy-main">
+                                            <strong>@capability.Name</strong>
+                                            <span>@(capability.PolicySource ?? "No policy source")</span>
+                                            <p>@(capability.Reason ?? "No policy reason.")</p>
+                                        </div>
+                                        <span class="@GetCapabilityBadgeClass(capability)">@capability.Status</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <div class="callbacks-section">
+                        <h4>Capability Requests</h4>
+                        @if (descriptor.Capabilities.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-capabilities">
+                                @foreach (DbExtensionCapabilityRequest capability in descriptor.Capabilities)
+                                {
+                                    <span class="callbacks-chip">@FormatCapability(capability)</span>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <div class="callbacks-section">
+                        <h4>References</h4>
+                        @if (selected.References.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-reference-list">
+                                @foreach (HostCallbackReference reference in selected.References)
+                                {
+                                    <div class="callbacks-reference-item">
+                                        <strong>@reference.OwnerKind: @reference.OwnerName</strong>
+                                        <span>@reference.Surface</span>
+                                        <code>@reference.Location</code>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <div class="callbacks-section">
+                        <h4>Metadata</h4>
+                        @if (descriptor.Metadata is { Count: > 0 } metadata)
+                        {
+                            <table class="schema-table callbacks-metadata-table">
+                                <tbody>
+                                    @foreach (var item in metadata.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        <tr>
+                                            <th>@item.Key</th>
+                                            <td class="mono-cell">@item.Value</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                        else
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="callbacks-description">
+                        This callback is referenced by saved database metadata, but it is not registered in the current Admin host.
+                    </p>
+
+                    <table class="schema-table callbacks-detail-table">
+                        <tbody>
+                            <tr><th>Registration</th><td><span class="callbacks-policy-badge missing">Missing</span></td></tr>
+                            <tr><th>Kind</th><td>@GetKindLabel(selected.Kind)</td></tr>
+                            <tr><th>Arity</th><td>@FormatArity(selected.Arity)</td></tr>
+                            <tr><th>References</th><td>@selected.References.Count</td></tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callbacks-section">
+                        <h4>References</h4>
+                        @if (selected.References.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-reference-list">
+                                @foreach (HostCallbackReference reference in selected.References)
+                                {
+                                    <div class="callbacks-reference-item">
+                                        <strong>@reference.OwnerKind: @reference.OwnerName</strong>
+                                        <span>@reference.Surface</span>
+                                        <code>@reference.Location</code>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="callbacks-empty">Select a callback.</div>
+            }
+        </section>
+    </div>
+</div>
+
+@code {
+    [Parameter] public TabDescriptor Tab { get; set; } = null!;
+
+    private IReadOnlyList<HostCallbackCatalogEntry> _entries = [];
+    private string _query = string.Empty;
+    private string _kindFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string? _selectedKey;
+
+    private IReadOnlyList<HostCallbackCatalogEntry> FilteredEntries
+        => _entries.Where(MatchesFilter).ToArray();
+
+    private HostCallbackCatalogEntry? SelectedEntry
+        => _entries.FirstOrDefault(entry => GetEntryKey(entry) == _selectedKey);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        ApplyTabSelection();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _entries = await CallbackCatalog.GetEntriesAsync();
+        ApplyTabSelection();
+
+        if (_selectedKey is null || !_entries.Any(entry => GetEntryKey(entry) == _selectedKey))
+            _selectedKey = _entries.Count > 0 ? GetEntryKey(_entries[0]) : null;
+    }
+
+    private void ApplyTabSelection()
+    {
+        if (Tab.State.TryGetValue("SelectedCallbackName", out object? nameValue) && nameValue is string name && !string.IsNullOrWhiteSpace(name))
+        {
+            string? kind = Tab.State.TryGetValue("SelectedCallbackKind", out object? kindValue) ? kindValue as string : null;
+            int? arity = Tab.State.TryGetValue("SelectedCallbackArity", out object? arityValue) && arityValue is int value ? value : null;
+
+            HostCallbackCatalogEntry? match = _entries.FirstOrDefault(entry =>
+                entry.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                && (string.IsNullOrWhiteSpace(kind) || entry.Kind.ToString().Equals(kind, StringComparison.OrdinalIgnoreCase))
+                && (!arity.HasValue || entry.Arity == arity));
+
+            if (match is not null)
+                _selectedKey = GetEntryKey(match);
+        }
+    }
+
+    private void SelectEntry(HostCallbackCatalogEntry entry)
+    {
+        _selectedKey = GetEntryKey(entry);
+        Tab.State["SelectedCallbackName"] = entry.Name;
+        Tab.State["SelectedCallbackKind"] = entry.Kind.ToString();
+        Tab.State["SelectedCallbackArity"] = entry.Arity;
+    }
+
+    private void OnQueryChanged(ChangeEventArgs args)
+    {
+        _query = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnKindFilterChanged(ChangeEventArgs args)
+    {
+        _kindFilter = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnStatusFilterChanged(ChangeEventArgs args)
+    {
+        _statusFilter = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private bool MatchesFilter(HostCallbackCatalogEntry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(_kindFilter)
+            && !entry.Kind.ToString().Equals(_kindFilter, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_statusFilter))
+        {
+            bool matchesStatus = _statusFilter switch
+            {
+                "missing" => entry.IsMissingRegistration,
+                "registered" => entry.IsRegistered,
+                "referenced" => entry.IsReferenced,
+                _ => true,
+            };
+
+            if (!matchesStatus)
+                return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_query))
+            return true;
+
+        string query = _query.Trim();
+        return entry.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || entry.Kind.ToString().Contains(query, StringComparison.OrdinalIgnoreCase)
+               || FormatRuntime(entry).Contains(query, StringComparison.OrdinalIgnoreCase)
+               || GetEntryStatus(entry).Contains(query, StringComparison.OrdinalIgnoreCase)
+               || (entry.Descriptor?.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+               || entry.References.Any(reference => ReferenceMatchesSearch(reference, query))
+               || (entry.Descriptor?.Capabilities.Any(capability => FormatCapability(capability).Contains(query, StringComparison.OrdinalIgnoreCase)) ?? false);
+    }
+
+    private static bool ReferenceMatchesSearch(HostCallbackReference reference, string query)
+        => reference.Surface.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.Location.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.OwnerKind.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.OwnerName.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.OwnerId.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+    private static string GetEntryKey(HostCallbackCatalogEntry entry)
+        => $"{entry.Kind}:{entry.Name}:{entry.Arity?.ToString() ?? "-"}";
+
+    private static string GetKindLabel(AutomationCallbackKind kind)
+        => kind switch
+        {
+            AutomationCallbackKind.ScalarFunction => "Scalar function",
+            AutomationCallbackKind.Command => "Command",
+            _ => kind.ToString(),
+        };
+
+    private static string FormatRuntime(HostCallbackCatalogEntry entry)
+        => entry.Descriptor?.Runtime.ToString() ?? "Missing";
+
+    private static string FormatArity(int? arity)
+        => arity?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
+
+    private static string FormatTimeout(TimeSpan? timeout)
+    {
+        if (timeout is null)
+            return "-";
+
+        return timeout.Value.TotalMilliseconds < 1000
+            ? $"{timeout.Value.TotalMilliseconds:0.###}ms"
+            : $"{timeout.Value.TotalSeconds:0.###}s";
+    }
+
+    private static string FormatBytes(long? bytes)
+    {
+        if (bytes is null)
+            return "-";
+
+        const decimal kilo = 1024m;
+        decimal value = bytes.Value;
+        string[] units = ["B", "KB", "MB", "GB"];
+        int unitIndex = 0;
+        while (value >= kilo && unitIndex < units.Length - 1)
+        {
+            value /= kilo;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+
+    private static string FormatFlags(DbHostCallbackDescriptor callback)
+    {
+        List<string> flags = [];
+        if (callback.IsDeterministic)
+            flags.Add("deterministic");
+        if (callback.NullPropagating)
+            flags.Add("null-propagating");
+        if (callback.IsLongRunning)
+            flags.Add("long-running");
+
+        return flags.Count == 0 ? "-" : string.Join(", ", flags);
+    }
+
+    private static string FormatCapabilitySummary(HostCallbackCatalogEntry entry)
+        => entry.Descriptor is null || entry.Descriptor.Capabilities.Count == 0
+            ? "-"
+            : string.Join(", ", entry.Descriptor.Capabilities.Select(static capability => capability.Name));
+
+    private static string FormatCapability(DbExtensionCapabilityRequest capability)
+    {
+        List<string> parts = [capability.Name.ToString()];
+
+        if (capability.Exports is { Count: > 0 })
+            parts.Add($"exports={string.Join("|", capability.Exports)}");
+        if (capability.Tables is { Count: > 0 })
+            parts.Add($"tables={string.Join("|", capability.Tables)}");
+        if (capability.Scope is { Count: > 0 })
+            parts.Add($"scope={string.Join("|", capability.Scope.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase).Select(static pair => $"{pair.Key}:{pair.Value}"))}");
+
+        return string.Join(" ", parts);
+    }
+
+    private string GetEntryStatus(HostCallbackCatalogEntry entry)
+    {
+        if (entry.IsMissingRegistration)
+            return "Missing";
+
+        return entry.Descriptor is { } descriptor
+            ? GetPolicyStatus(CallbackPolicy.Evaluate(descriptor))
+            : "Unknown";
+    }
+
+    private string GetEntryStatusBadgeClass(HostCallbackCatalogEntry entry)
+    {
+        if (entry.IsMissingRegistration)
+            return "callbacks-policy-badge missing";
+
+        return entry.Descriptor is { } descriptor
+            ? GetPolicyBadgeClass(CallbackPolicy.Evaluate(descriptor))
+            : "callbacks-policy-badge denied";
+    }
+
+    private static string GetPolicyStatus(DbExtensionPolicyDecision decision)
+        => decision.Allowed ? "Allowed" : "Denied";
+
+    private static string GetPolicyBadgeClass(DbExtensionPolicyDecision decision)
+        => decision.Allowed
+            ? "callbacks-policy-badge allowed"
+            : "callbacks-policy-badge denied";
+
+    private static string GetCapabilityBadgeClass(DbExtensionCapabilityDecision decision)
+        => decision.Status == DbExtensionCapabilityGrantStatus.Granted
+            ? "callbacks-policy-badge allowed"
+            : "callbacks-policy-badge denied";
+}

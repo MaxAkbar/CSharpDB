@@ -54,6 +54,7 @@
     <Project Path="tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj" />
     <Project Path="tests/CSharpDB.Admin.Forms.Tests/CSharpDB.Admin.Forms.Tests.csproj" />
     <Project Path="tests/CSharpDB.Admin.Reports.Tests/CSharpDB.Admin.Reports.Tests.csproj" />
+    <Project Path="tests/CSharpDB.ExtensionSandbox.Worker/CSharpDB.ExtensionSandbox.Worker.csproj" />
     <Project Path="tests/CSharpDB.Benchmarks/CSharpDB.Benchmarks.csproj" />
     <Project Path="tests/CSharpDB.DataGen/CSharpDB.DataGen.csproj" />
   </Folder>
