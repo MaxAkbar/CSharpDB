@@ -1,6 +1,9 @@
 @using CSharpDB.Primitives
 @inject HostCallbackCatalogService CallbackCatalog
 @inject HostCallbackPolicyService CallbackPolicy
+@inject HostCallbackReadinessService CallbackReadiness
+@inject ToastService Toast
+@inject IJSRuntime JS
 
 <div class="callbacks-tab data-tab">
     <div class="data-toolbar">
@@ -13,9 +16,20 @@
             <strong><i class="bi bi-plug icon-system"></i>callbacks</strong>
         </div>
 
-        <div class="data-toolbar-group">
+        <div class="data-toolbar-group callbacks-readiness-group">
+            <span class="@GetReadinessBadgeClass()">@GetReadinessText()</span>
+        </div>
+
+        <div class="data-toolbar-group callbacks-actions">
             <button type="button" class="data-toolbar-btn" @onclick="RefreshAsync">
                 <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <button type="button"
+                    class="data-toolbar-btn"
+                    title="Copy missing callback stubs"
+                    @onclick="CopyMissingStubsAsync"
+                    disabled="@(!HasMissingEntries)">
+                <i class="bi bi-clipboard"></i> Stubs
             </button>
         </div>
 
@@ -218,6 +232,12 @@
                         This callback is referenced by saved database metadata, but it is not registered in the current Admin host.
                     </p>
 
+                    <div class="callbacks-detail-actions">
+                        <button type="button" class="data-toolbar-btn" @onclick="() => CopySelectedStubAsync(selected)">
+                            <i class="bi bi-clipboard"></i> Copy Stub
+                        </button>
+                    </div>
+
                     <table class="schema-table callbacks-detail-table">
                         <tbody>
                             <tr><th>Registration</th><td><span class="callbacks-policy-badge missing">Missing</span></td></tr>
@@ -265,12 +285,15 @@
     private string _kindFilter = string.Empty;
     private string _statusFilter = string.Empty;
     private string? _selectedKey;
+    private HostCallbackReadinessReport? _readiness;
 
     private IReadOnlyList<HostCallbackCatalogEntry> FilteredEntries
         => _entries.Where(MatchesFilter).ToArray();
 
     private HostCallbackCatalogEntry? SelectedEntry
         => _entries.FirstOrDefault(entry => GetEntryKey(entry) == _selectedKey);
+
+    private bool HasMissingEntries => _entries.Any(static entry => entry.IsMissingRegistration);
 
     protected override async Task OnInitializedAsync()
     {
@@ -285,6 +308,7 @@
     private async Task RefreshAsync()
     {
         _entries = await CallbackCatalog.GetEntriesAsync();
+        _readiness = await CallbackReadiness.GetReadinessAsync();
         ApplyTabSelection();
 
         if (_selectedKey is null || !_entries.Any(entry => GetEntryKey(entry) == _selectedKey))
@@ -329,6 +353,40 @@
     private void OnStatusFilterChanged(ChangeEventArgs args)
     {
         _statusFilter = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private async Task CopyMissingStubsAsync()
+    {
+        if (!HasMissingEntries)
+        {
+            Toast.Info("All referenced callbacks are registered.");
+            return;
+        }
+
+        try
+        {
+            string source = await CallbackReadiness.GenerateMissingStubSourceAsync();
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", source);
+            Toast.Success("Copied missing callback registration stubs.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task CopySelectedStubAsync(HostCallbackCatalogEntry entry)
+    {
+        try
+        {
+            string source = CallbackReadiness.GenerateStubSource(entry);
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", source);
+            Toast.Success($"Copied stub for '{entry.Name}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
     }
 
     private bool MatchesFilter(HostCallbackCatalogEntry entry)
@@ -469,6 +527,21 @@
             ? GetPolicyBadgeClass(CallbackPolicy.Evaluate(descriptor))
             : "callbacks-policy-badge denied";
     }
+
+    private string GetReadinessText()
+    {
+        if (_readiness is null)
+            return "Checking";
+
+        return _readiness.Ready
+            ? $"Ready · {_readiness.RegisteredCount} registered"
+            : $"{_readiness.MissingCount} missing · {_readiness.ReferencedCount} referenced";
+    }
+
+    private string GetReadinessBadgeClass()
+        => _readiness?.Ready == true
+            ? "callbacks-readiness-badge ready"
+            : "callbacks-readiness-badge missing";
 
     private static string GetPolicyStatus(DbExtensionPolicyDecision decision)
         => decision.Allowed ? "Allowed" : "Denied";
