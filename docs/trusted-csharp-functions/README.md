@@ -51,6 +51,11 @@ same surface-specific failure path as other command errors. `IsLongRunning` is
 metadata for hosts and UI surfaces; it does not move the command out of process
 or run it on a separate scheduler.
 
+Every registered command exposes a `DbHostCallbackDescriptor` through
+`DbCommandDefinition.Descriptor` and `DbCommandRegistry.Callbacks`. The
+descriptor is read-only metadata for policy checks, diagnostics, and Admin
+visibility. It does not sandbox the command.
+
 ---
 
 ## What You Can Register
@@ -214,7 +219,12 @@ Each function can include `DbScalarFunctionOptions`:
 new DbScalarFunctionOptions(
     ReturnType: DbType.Text,
     IsDeterministic: true,
-    NullPropagating: true)
+    NullPropagating: true,
+    Description: "Formats a URL slug.",
+    AdditionalCapabilities:
+    [
+        new DbExtensionCapabilityRequest(DbExtensionCapability.Clock)
+    ])
 ```
 
 | Option | Meaning |
@@ -222,6 +232,9 @@ new DbScalarFunctionOptions(
 | `ReturnType` | Optional metadata describing the expected return type. |
 | `IsDeterministic` | Marks the function as returning the same output for the same inputs. V1 exposes the metadata but does not use it for constant folding or index planning. |
 | `NullPropagating` | If any argument is `NULL`, CSharpDB returns `NULL` without invoking the delegate. |
+| `Description` | Optional human-readable text for host tools and Admin visibility. |
+| `AdditionalCapabilities` | Optional capability metadata beyond the implicit `ScalarFunctions` capability. This is for CSharpDB policy mediation and visibility, not a .NET sandbox. |
+| `Metadata` | Optional host-defined descriptor metadata. |
 
 Without `NullPropagating`, `DbValue.Null` is passed to the delegate and the function decides what to do.
 
@@ -233,6 +246,41 @@ functions.AddScalar(
     invoke: static (_, args) =>
         args[0].IsNull ? args[1] : args[0]);
 ```
+
+Registered scalar functions expose `DbScalarFunctionDefinition.Descriptor` and
+`DbFunctionRegistry.Callbacks`. The descriptor always uses
+`DbExtensionRuntimeKind.HostCallback`, records the callback kind, name, arity,
+return type, deterministic/null behavior, and includes the implicit
+`ScalarFunctions` capability plus any additional capabilities declared in the
+options.
+
+Commands expose the same descriptor shape through `DbCommandDefinition`.
+Command descriptors include the implicit `Commands` capability plus any
+additional capabilities declared in `DbCommandOptions`, along with description,
+timeout, and long-running metadata.
+
+Hosts can evaluate descriptor capabilities with `DbExtensionPolicyEvaluator`:
+
+```csharp
+DbHostCallbackDescriptor descriptor = commandRegistry.Callbacks.Single();
+DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+    descriptor,
+    new DbExtensionPolicy(
+        AllowExtensions: true,
+        Grants:
+        [
+            new DbExtensionCapabilityGrant(
+                DbExtensionCapability.Commands,
+                DbExtensionCapabilityGrantStatus.Granted),
+            new DbExtensionCapabilityGrant(
+                DbExtensionCapability.ReadDatabase,
+                DbExtensionCapabilityGrantStatus.Granted),
+        ]),
+    DbExtensionHostMode.Embedded);
+```
+
+Policy evaluation controls what CSharpDB-mediated APIs should allow. It does
+not restrict arbitrary in-process .NET calls made by trusted host code.
 
 ---
 
