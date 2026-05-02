@@ -11,17 +11,20 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
     private readonly IPipelineCheckpointStore _checkpointStore;
     private readonly IPipelineRunLogger _runLogger;
     private readonly DbCommandRegistry _commands;
+    private readonly DbExtensionPolicy _callbackPolicy;
 
     public PipelineOrchestrator(
         IPipelineComponentFactory componentFactory,
         IPipelineCheckpointStore checkpointStore,
         IPipelineRunLogger runLogger,
-        DbCommandRegistry? commands = null)
+        DbCommandRegistry? commands = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         _componentFactory = componentFactory;
         _checkpointStore = checkpointStore;
         _runLogger = runLogger;
         _commands = commands ?? DbCommandRegistry.Empty;
+        _callbackPolicy = callbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy;
     }
 
     public async Task<PipelineRunResult> ExecuteAsync(PipelineRunRequest request, CancellationToken ct = default)
@@ -332,7 +335,12 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
                 throw new InvalidOperationException($"Pipeline hook '{eventKind}' has an empty command name.");
 
             if (!_commands.TryGetCommand(hook.CommandName, out DbCommandDefinition definition))
+            {
+                Dictionary<string, string> missingMetadata = BuildHookMetadata(package, eventKind, context.RunId, context.Mode);
+                string message = $"Unknown pipeline command '{hook.CommandName}' for hook '{eventKind}'.";
+                DbCallbackDiagnostics.WriteMissingCommandInvocation(hook.CommandName, missingMetadata, message);
                 throw new InvalidOperationException($"Unknown pipeline command '{hook.CommandName}' for hook '{eventKind}'.");
+            }
 
             Dictionary<string, DbValue> arguments = DbCommandArguments.FromObjectDictionary(
                 BuildHookArguments(package, eventKind, context.RunId, context.Mode, metrics, batch, status, errorSummary),
@@ -342,7 +350,12 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             DbCommandResult result;
             try
             {
-                result = await definition.InvokeAsync(arguments, metadata, ct);
+                result = await definition.InvokeAsync(
+                    arguments,
+                    metadata,
+                    _callbackPolicy,
+                    DbExtensionHostMode.Embedded,
+                    ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -417,6 +430,11 @@ public sealed class PipelineOrchestrator : IPipelineOrchestrator
             ["runId"] = runId,
             ["mode"] = mode.ToString(),
             ["event"] = eventKind.ToString(),
+            ["location"] = $"hooks.{eventKind}",
+            ["ownerKind"] = "Pipeline",
+            ["ownerId"] = package.Name,
+            ["ownerName"] = package.Name,
+            ["correlationId"] = runId,
         };
 
     private static string FormatErrorSummary(string step, string? component, PipelineRowBatch? batch, Exception exception)

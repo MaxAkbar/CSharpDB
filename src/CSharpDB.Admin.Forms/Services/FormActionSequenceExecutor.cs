@@ -21,6 +21,7 @@ internal static class FormActionSequenceExecutor
         Func<string, Task>? showMessage = null,
         Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction = null,
         IFormActionRuntime? actionRuntime = null,
+        DbExtensionPolicy? callbackPolicy = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(sequence);
@@ -39,6 +40,7 @@ internal static class FormActionSequenceExecutor
             showMessage,
             executeBuiltInFormAction,
             actionRuntime ?? NullFormActionRuntime.Instance,
+            callbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy,
             ct,
             depth: 0);
     }
@@ -55,6 +57,7 @@ internal static class FormActionSequenceExecutor
         Func<string, Task>? showMessage,
         Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
         IFormActionRuntime actionRuntime,
+        DbExtensionPolicy callbackPolicy,
         CancellationToken ct,
         int depth)
     {
@@ -68,6 +71,7 @@ internal static class FormActionSequenceExecutor
                 step,
                 i,
                 commands,
+                callbackPolicy,
                 record,
                 bindingArguments,
                 runtimeArguments,
@@ -98,6 +102,7 @@ internal static class FormActionSequenceExecutor
         DbActionStep step,
         int stepIndex,
         DbCommandRegistry commands,
+        DbExtensionPolicy callbackPolicy,
         IReadOnlyDictionary<string, object?>? record,
         IReadOnlyDictionary<string, object?>? bindingArguments,
         IReadOnlyDictionary<string, object?>? runtimeArguments,
@@ -123,6 +128,7 @@ internal static class FormActionSequenceExecutor
                 step,
                 stepIndex,
                 commands,
+                callbackPolicy,
                 record,
                 bindingArguments,
                 runtimeArguments,
@@ -163,6 +169,7 @@ internal static class FormActionSequenceExecutor
         DbActionStep step,
         int stepIndex,
         DbCommandRegistry commands,
+        DbExtensionPolicy callbackPolicy,
         IReadOnlyDictionary<string, object?>? record,
         IReadOnlyDictionary<string, object?>? bindingArguments,
         IReadOnlyDictionary<string, object?>? runtimeArguments,
@@ -193,7 +200,7 @@ internal static class FormActionSequenceExecutor
 
         return step.Kind switch
         {
-            DbActionKind.RunCommand => await RunCommandAsync(sequence, step, stepIndex, commands, record, bindingArguments, runtimeArguments, metadata, ct),
+            DbActionKind.RunCommand => await RunCommandAsync(sequence, step, stepIndex, commands, callbackPolicy, record, bindingArguments, runtimeArguments, metadata, ct),
             DbActionKind.SetFieldValue => await SetFieldValueAsync(step, record, setFieldValue),
             DbActionKind.ShowMessage => await ShowMessageAsync(step, showMessage),
             DbActionKind.Stop => FormEventDispatchResult.Success(ReadMessage(step)),
@@ -209,6 +216,7 @@ internal static class FormActionSequenceExecutor
                 showMessage,
                 executeBuiltInFormAction,
                 actionRuntime,
+                callbackPolicy,
                 ct,
                 depth),
             DbActionKind.OpenForm => await OpenFormAsync(sequence, step, stepIndex, record, bindingArguments, runtimeArguments, metadata, actionRuntime, executeBuiltInFormAction, ct),
@@ -541,6 +549,7 @@ internal static class FormActionSequenceExecutor
         DbActionStep step,
         int stepIndex,
         DbCommandRegistry commands,
+        DbExtensionPolicy callbackPolicy,
         IReadOnlyDictionary<string, object?>? record,
         IReadOnlyDictionary<string, object?>? bindingArguments,
         IReadOnlyDictionary<string, object?>? runtimeArguments,
@@ -551,7 +560,12 @@ internal static class FormActionSequenceExecutor
             return FormEventDispatchResult.Failure("RunCommand action requires a command name.");
 
         if (!commands.TryGetCommand(step.CommandName, out DbCommandDefinition definition))
-            return FormEventDispatchResult.Failure($"Unknown form command '{step.CommandName}' for action sequence.");
+        {
+            Dictionary<string, string> missingMetadata = BuildStepMetadata(sequence, step, stepIndex, metadata);
+            string message = $"Unknown form command '{step.CommandName}' for action sequence.";
+            DbCallbackDiagnostics.WriteMissingCommandInvocation(step.CommandName, missingMetadata, message);
+            return FormEventDispatchResult.Failure(message);
+        }
 
         Dictionary<string, DbValue> arguments = DbCommandArguments.FromObjectDictionaries(
             record,
@@ -562,7 +576,12 @@ internal static class FormActionSequenceExecutor
 
         try
         {
-            DbCommandResult result = await definition.InvokeAsync(arguments, stepMetadata, ct);
+            DbCommandResult result = await definition.InvokeAsync(
+                arguments,
+                stepMetadata,
+                callbackPolicy,
+                DbExtensionHostMode.Embedded,
+                ct);
             if (result.Succeeded)
                 return FormEventDispatchResult.Success(result.Message);
 
@@ -594,6 +613,7 @@ internal static class FormActionSequenceExecutor
         Func<string, Task>? showMessage,
         Func<DbActionStep, CancellationToken, Task<FormEventDispatchResult>>? executeBuiltInFormAction,
         IFormActionRuntime actionRuntime,
+        DbExtensionPolicy callbackPolicy,
         CancellationToken ct,
         int depth)
     {
@@ -631,6 +651,7 @@ internal static class FormActionSequenceExecutor
             showMessage,
             executeBuiltInFormAction,
             actionRuntime,
+            callbackPolicy,
             ct,
             depth + 1);
     }

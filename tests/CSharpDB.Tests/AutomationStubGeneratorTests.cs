@@ -19,6 +19,10 @@ public sealed class AutomationStubGeneratorTests
             [
                 new DbAutomationScalarFunctionReference("NormalizeName", 2, "pipelines", "transforms[0].filterExpression"),
                 new DbAutomationScalarFunctionReference("normalizeName", 2, "admin.forms", "controls.name.formula"),
+            ],
+            ValidationRules:
+            [
+                new DbAutomationValidationRuleReference("ValidateCreditLimit", "admin.forms", "controls.credit.validationRules.ValidateCreditLimit"),
             ]);
 
         string source = AutomationStubGenerator.GenerateCSharp(
@@ -36,10 +40,11 @@ public sealed class AutomationStubGeneratorTests
 
             public static class CSharpDbAutomationRegistration
             {
-                public static void Register(DbFunctionRegistryBuilder functions, DbCommandRegistryBuilder commands)
+                public static void Register(DbFunctionRegistryBuilder functions, DbCommandRegistryBuilder commands, DbValidationRuleRegistryBuilder validationRules)
                 {
                     ArgumentNullException.ThrowIfNull(functions);
                     ArgumentNullException.ThrowIfNull(commands);
+                    ArgumentNullException.ThrowIfNull(validationRules);
 
                     functions.AddScalar(
                         "NormalizeName",
@@ -60,12 +65,22 @@ public sealed class AutomationStubGeneratorTests
                             // References:
                             // - admin.forms: form.events.AfterUpdate
                             // - admin.forms: form.events.BeforeInsert
-                            await Task.CompletedTask;
-                            throw new NotImplementedException("Implement trusted command 'AuditOrder'.");
-                        });
-                }
+                        await Task.CompletedTask;
+                        throw new NotImplementedException("Implement trusted command 'AuditOrder'.");
+                    });
+
+                validationRules.AddRule(
+                    "ValidateCreditLimit",
+                    static async (context, ct) =>
+                    {
+                        // References:
+                        // - admin.forms: controls.credit.validationRules.ValidateCreditLimit
+                        await Task.CompletedTask;
+                        throw new NotImplementedException("Implement trusted validation rule 'ValidateCreditLimit'.");
+                    });
             }
-            """;
+        }
+        """;
 
         Assert.Equal(Normalize(expected), Normalize(source));
     }
@@ -135,5 +150,11 @@ public sealed class AutomationStubGeneratorTests
     }
 
     private static string Normalize(string source)
-        => source.ReplaceLineEndings("\n").TrimEnd('\n');
+        => string.Join(
+            "\n",
+            source
+                .ReplaceLineEndings("\n")
+                .Trim()
+                .Split('\n')
+                .Select(static line => line.Trim()));
 }

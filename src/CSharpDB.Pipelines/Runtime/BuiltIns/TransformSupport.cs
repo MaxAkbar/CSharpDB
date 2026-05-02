@@ -53,7 +53,8 @@ internal static class TransformSupport
     public static bool EvaluateFilter(
         string expression,
         IReadOnlyDictionary<string, object?> row,
-        DbFunctionRegistry? functions = null)
+        DbFunctionRegistry? functions = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         string[] operators = ["==", "!=", ">=", "<=", ">", "<"];
         foreach (string op in operators)
@@ -66,8 +67,8 @@ internal static class TransformSupport
 
             string left = expression[..index].Trim();
             string right = expression[(index + op.Length)..].Trim();
-            object? leftValue = EvaluateFilterLeft(left, row, functions);
-            object? rightValue = ParseLiteral(right, row, functions);
+            object? leftValue = EvaluateFilterLeft(left, row, functions, callbackPolicy);
+            object? rightValue = ParseLiteral(right, row, functions, callbackPolicy);
             int comparison = Compare(leftValue, rightValue);
 
             return op switch
@@ -88,7 +89,8 @@ internal static class TransformSupport
     public static object? EvaluateDerivedExpression(
         string expression,
         IReadOnlyDictionary<string, object?> row,
-        DbFunctionRegistry? functions = null)
+        DbFunctionRegistry? functions = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         string trimmed = expression.Trim();
         if (row.TryGetValue(trimmed, out var columnValue))
@@ -96,29 +98,31 @@ internal static class TransformSupport
             return columnValue;
         }
 
-        return ParseLiteral(trimmed, row, functions);
+        return ParseLiteral(trimmed, row, functions, callbackPolicy);
     }
 
     private static object? EvaluateValue(
         string token,
         IReadOnlyDictionary<string, object?> row,
-        DbFunctionRegistry? functions)
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
     {
         if (row.TryGetValue(token, out var columnValue))
             return columnValue;
 
-        return ParseLiteral(token, row, functions);
+        return ParseLiteral(token, row, functions, callbackPolicy);
     }
 
     private static object? EvaluateFilterLeft(
         string token,
         IReadOnlyDictionary<string, object?> row,
-        DbFunctionRegistry? functions)
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
     {
         if (row.TryGetValue(token, out var columnValue))
             return columnValue;
 
-        if (TryEvaluateFunctionCall(token, row, functions, out object? functionValue))
+        if (TryEvaluateFunctionCall(token, row, functions, callbackPolicy, out object? functionValue))
             return functionValue;
 
         return null;
@@ -127,9 +131,10 @@ internal static class TransformSupport
     private static object? ParseLiteral(
         string token,
         IReadOnlyDictionary<string, object?> row,
-        DbFunctionRegistry? functions)
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
     {
-        if (TryEvaluateFunctionCall(token, row, functions, out object? functionValue))
+        if (TryEvaluateFunctionCall(token, row, functions, callbackPolicy, out object? functionValue))
             return functionValue;
 
         if (token.StartsWith('\'') && token.EndsWith('\'') && token.Length >= 2)
@@ -174,6 +179,7 @@ internal static class TransformSupport
         string expression,
         IReadOnlyDictionary<string, object?> row,
         DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy,
         out object? value)
     {
         value = null;
@@ -190,11 +196,19 @@ internal static class TransformSupport
 
         DbFunctionRegistry registry = functions ?? DbFunctionRegistry.Empty;
         if (!registry.TryGetScalar(name, argumentTokens.Length, out var definition))
+        {
+            IReadOnlyDictionary<string, string>? metadata = CreatePipelineCallbackMetadata(name);
+            DbCallbackDiagnostics.WriteMissingScalarInvocation(
+                name,
+                argumentTokens.Length,
+                metadata,
+                $"Unknown pipeline scalar function '{name}'.");
             throw new InvalidOperationException($"Unknown scalar function '{name}'.");
+        }
 
         var arguments = new DbValue[argumentTokens.Length];
         for (int i = 0; i < argumentTokens.Length; i++)
-            arguments[i] = ToDbValue(ParseLiteral(argumentTokens[i].Trim(), row, functions));
+            arguments[i] = ToDbValue(ParseLiteral(argumentTokens[i].Trim(), row, functions, callbackPolicy));
 
         if (definition.Options.NullPropagating && arguments.Any(static argument => argument.IsNull))
         {
@@ -204,7 +218,11 @@ internal static class TransformSupport
 
         try
         {
-            value = FromDbValue(definition.Invoke(arguments, CreatePipelineCallbackMetadata(name)));
+            IReadOnlyDictionary<string, string>? metadata = CreatePipelineCallbackMetadata(name);
+            DbValue result = callbackPolicy is null
+                ? definition.Invoke(arguments, metadata)
+                : definition.Invoke(arguments, metadata, callbackPolicy, DbExtensionHostMode.Embedded);
+            value = FromDbValue(result);
             return true;
         }
         catch (Exception ex)
@@ -334,11 +352,10 @@ internal static class TransformSupport
     }
 
     private static IReadOnlyDictionary<string, string>? CreatePipelineCallbackMetadata(string functionName)
-        => DbCallbackDiagnostics.IsInvocationEnabled
-            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["surface"] = "Pipelines",
-                ["location"] = $"transforms.functions.{functionName}",
-            }
-            : null;
+        => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["surface"] = "Pipelines",
+            ["location"] = $"transforms.functions.{functionName}",
+            ["correlationId"] = Guid.NewGuid().ToString("N"),
+        };
 }

@@ -9,6 +9,7 @@ public class DesignerState
     private readonly List<FormEventBinding> _eventBindings = [];
     private readonly List<DbActionSequence> _actionSequences = [];
     private readonly List<ControlRuleDefinition> _rules = [];
+    private readonly List<ValidationRule> _validationRules = [];
     private readonly Stack<List<ControlDefinition>> _undoStack = new();
     private readonly Stack<List<ControlDefinition>> _redoStack = new();
 
@@ -23,6 +24,7 @@ public class DesignerState
     public IReadOnlyList<FormEventBinding> EventBindings => _eventBindings;
     public IReadOnlyList<DbActionSequence> ActionSequences => _actionSequences;
     public IReadOnlyList<ControlRuleDefinition> Rules => _rules;
+    public IReadOnlyList<ValidationRule> ValidationRules => _validationRules;
     public HashSet<string> SelectedIds { get; } = [];
 
     // Active tool from toolbox (null = select mode)
@@ -93,6 +95,8 @@ public class DesignerState
         _actionSequences.AddRange(form.ActionSequences ?? []);
         _rules.Clear();
         _rules.AddRange(form.Rules ?? []);
+        _validationRules.Clear();
+        _validationRules.AddRange(form.ValidationRules ?? []);
         _undoStack.Clear();
         _redoStack.Clear();
         SelectedIds.Clear();
@@ -117,7 +121,7 @@ public class DesignerState
     {
         return new FormDefinition(
             FormId, FormName, TableName, DefinitionVersion, SourceSchemaSignature,
-            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList(), ActionSequences: _actionSequences.ToList(), Rules: _rules.ToList());
+            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList(), ActionSequences: _actionSequences.ToList(), Rules: _rules.ToList(), ValidationRules: _validationRules.ToList());
     }
 
     public void UpdateEventBindings(IReadOnlyList<FormEventBinding> bindings)
@@ -138,6 +142,22 @@ public class DesignerState
     {
         _rules.Clear();
         _rules.AddRange(rules);
+        NotifyChanged();
+    }
+
+    public void UpdateValidationRules(IReadOnlyList<ValidationRule> rules)
+    {
+        _validationRules.Clear();
+        _validationRules.AddRange(rules);
+        NotifyChanged();
+    }
+
+    public void UpdateControlValidationOverride(string controlId, ValidationOverride? validationOverride)
+    {
+        var idx = _controls.FindIndex(c => c.ControlId == controlId);
+        if (idx < 0) return;
+        PushUndo();
+        _controls[idx] = _controls[idx] with { ValidationOverride = validationOverride };
         NotifyChanged();
     }
 

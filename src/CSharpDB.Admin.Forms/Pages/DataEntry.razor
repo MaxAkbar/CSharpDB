@@ -11,6 +11,8 @@
 @inject IFormRecordService RecordService
 @inject ISchemaProvider SchemaProvider
 @inject IValidationInferenceService ValidationService
+@inject DbFunctionRegistry Functions
+@inject DbExtensionPolicy CallbackPolicy
 @inject IJSRuntime JS
 
 <div class="@GetDataEntryLayoutClass()" @ref="_layoutRef">
@@ -594,11 +596,24 @@
             return;
         }
 
-        var errors = ValidationService.Evaluate(_form, _currentRecord);
+        var errors = await ValidationService.EvaluateAsync(_form, _currentRecord);
         if (errors.Count > 0)
         {
-            _validationErrors = errors.ToDictionary(error => error.FieldName, error => error.Message, StringComparer.OrdinalIgnoreCase);
-            _error = $"Please fix {errors.Count} validation error(s) before saving.";
+            _validationErrors = errors
+                .Where(error => !string.IsNullOrWhiteSpace(error.FieldName))
+                .GroupBy(error => error.FieldName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First().Message, StringComparer.OrdinalIgnoreCase);
+
+            string[] globalErrors = errors
+                .Where(error => string.IsNullOrWhiteSpace(error.FieldName))
+                .Select(error => error.Message)
+                .Where(static message => !string.IsNullOrWhiteSpace(message))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(3)
+                .ToArray();
+            _error = globalErrors.Length > 0
+                ? string.Join(" ", globalErrors)
+                : $"Please fix {errors.Count} validation error(s) before saving.";
             return;
         }
 
@@ -2121,7 +2136,7 @@
                     }
 
                     return null;
-                });
+                }, Functions, CallbackPolicy);
             }
         }
     }

@@ -68,23 +68,57 @@ public sealed class DbCommandDefinition
         return InvokeCoreAsync(context, ct);
     }
 
+    public ValueTask<DbCommandResult> InvokeAsync(
+        IReadOnlyDictionary<string, DbValue>? arguments,
+        IReadOnlyDictionary<string, string>? metadata,
+        DbExtensionPolicy policy,
+        DbExtensionHostMode hostMode = DbExtensionHostMode.Embedded,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        var context = new DbCommandContext(
+            Name,
+            arguments ?? EmptyDbValueDictionary.Instance,
+            metadata ?? EmptyStringDictionary.Instance);
+        DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+            Descriptor,
+            policy,
+            hostMode);
+
+        if (!decision.Allowed)
+        {
+            DbCallbackDiagnostics.WritePolicyDeniedInvocation(Descriptor, context.Metadata, decision);
+            throw new DbCallbackPolicyException(Descriptor, decision);
+        }
+
+        if (DbCallbackDiagnostics.IsInvocationEnabled)
+            return InvokeWithDiagnosticsAsync(context, ct, decision.Timeout, decision);
+
+        return InvokeCoreAsync(context, ct, decision.Timeout);
+    }
+
     private ValueTask<DbCommandResult> InvokeCoreAsync(
         DbCommandContext context,
-        CancellationToken ct)
+        CancellationToken ct,
+        TimeSpan? timeoutOverride = null)
     {
-        return Options.Timeout is { } timeout
-            ? InvokeWithTimeoutAsync(context, timeout, ct)
+        TimeSpan? timeout = timeoutOverride ?? Options.Timeout;
+        return timeout is { } value
+            ? InvokeWithTimeoutAsync(context, value, ct)
             : _invoke(context, ct);
     }
 
     private async ValueTask<DbCommandResult> InvokeWithDiagnosticsAsync(
         DbCommandContext context,
-        CancellationToken ct)
+        CancellationToken ct,
+        TimeSpan? timeoutOverride = null,
+        DbExtensionPolicyDecision? policyDecision = null)
     {
         long started = DbCallbackDiagnostics.GetTimestamp();
         try
         {
-            DbCommandResult result = await InvokeCoreAsync(context, ct).ConfigureAwait(false);
+            DbCommandResult result = await InvokeCoreAsync(context, ct, timeoutOverride).ConfigureAwait(false);
             DbCallbackDiagnostics.WriteCommandInvocation(
                 Name,
                 context.Metadata,
@@ -93,7 +127,8 @@ public sealed class DbCommandDefinition
                 timedOut: false,
                 canceled: false,
                 result.Message,
-                exceptionMessage: null);
+                exceptionMessage: null,
+                policyDecision: policyDecision);
             return result;
         }
         catch (TimeoutException ex) when (IsCommandTimeoutException(ex))
@@ -106,7 +141,10 @@ public sealed class DbCommandDefinition
                 timedOut: true,
                 canceled: false,
                 resultMessage: null,
-                ex.Message);
+                exceptionMessage: ex.Message,
+                policyDecision: policyDecision,
+                errorCode: "Timeout",
+                exceptionType: ex.GetType().FullName);
             throw;
         }
         catch (OperationCanceledException ex)
@@ -119,7 +157,10 @@ public sealed class DbCommandDefinition
                 timedOut: false,
                 canceled: true,
                 resultMessage: null,
-                ex.Message);
+                exceptionMessage: ex.Message,
+                policyDecision: policyDecision,
+                errorCode: "Canceled",
+                exceptionType: ex.GetType().FullName);
             throw;
         }
         catch (Exception ex)
@@ -132,7 +173,10 @@ public sealed class DbCommandDefinition
                 timedOut: false,
                 canceled: false,
                 resultMessage: null,
-                ex.Message);
+                exceptionMessage: ex.Message,
+                policyDecision: policyDecision,
+                errorCode: "Exception",
+                exceptionType: ex.GetType().FullName);
             throw;
         }
     }

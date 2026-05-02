@@ -45,6 +45,19 @@ internal static class DbHostCallbackDescriptorFactory
             IsLongRunning: options.IsLongRunning,
             Metadata: options.Metadata);
 
+    public static DbHostCallbackDescriptor CreateValidationRule(
+        string name,
+        DbValidationRuleOptions options)
+        => new(
+            AutomationCallbackKind.ValidationRule,
+            name,
+            DbExtensionRuntimeKind.HostCallback,
+            CreateCapabilities(DbExtensionCapability.ValidationRules, name, options.AdditionalCapabilities),
+            Description: options.Description,
+            Timeout: options.Timeout,
+            IsLongRunning: options.IsLongRunning,
+            Metadata: options.Metadata);
+
     private static IReadOnlyList<DbExtensionCapabilityRequest> CreateCapabilities(
         DbExtensionCapability baseCapability,
         string exportName,

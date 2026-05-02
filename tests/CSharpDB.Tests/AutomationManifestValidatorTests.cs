@@ -15,11 +15,16 @@ public sealed class AutomationManifestValidatorTests
             ScalarFunctions:
             [
                 new DbAutomationScalarFunctionReference("Slugify", 1, "admin.forms", "controls.slug.formula"),
+            ],
+            ValidationRules:
+            [
+                new DbAutomationValidationRuleReference("CreditLimit", "admin.forms", "controls.credit.validationRules.CreditLimit"),
             ]);
         DbFunctionRegistry functions = CreateFunctions(("Slugify", 1));
         DbCommandRegistry commands = CreateCommands("AuditOrder");
+        DbValidationRuleRegistry validationRules = CreateValidationRules("CreditLimit");
 
-        AutomationValidationResult result = AutomationManifestValidator.Validate(metadata, functions, commands);
+        AutomationValidationResult result = AutomationManifestValidator.Validate(metadata, functions, commands, validationRules);
 
         Assert.True(result.Succeeded);
         Assert.Empty(result.Issues);
@@ -36,15 +41,20 @@ public sealed class AutomationManifestValidatorTests
             ScalarFunctions:
             [
                 new DbAutomationScalarFunctionReference("Slugify", 1, "admin.forms", "controls.slug.formula"),
+            ],
+            ValidationRules:
+            [
+                new DbAutomationValidationRuleReference("CreditLimit", "admin.forms", "form.validationRules.CreditLimit"),
             ]);
 
         AutomationValidationResult result = AutomationManifestValidator.Validate(
             metadata,
             DbFunctionRegistry.Empty,
-            DbCommandRegistry.Empty);
+            DbCommandRegistry.Empty,
+            DbValidationRuleRegistry.Empty);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(2, result.Issues.Count);
+        Assert.Equal(3, result.Issues.Count);
 
         AutomationValidationIssue commandIssue = Assert.Single(
             result.Issues,
@@ -63,6 +73,14 @@ public sealed class AutomationManifestValidatorTests
         Assert.Equal(1, functionIssue.ExpectedArity);
         Assert.Equal("controls.slug.formula", functionIssue.Location);
         Assert.Contains("not registered", functionIssue.Message);
+
+        AutomationValidationIssue validationIssue = Assert.Single(
+            result.Issues,
+            issue => issue.CallbackKind == AutomationCallbackKind.ValidationRule);
+        Assert.Equal(AutomationValidationSeverity.Error, validationIssue.Severity);
+        Assert.Equal("CreditLimit", validationIssue.Name);
+        Assert.Equal("form.validationRules.CreditLimit", validationIssue.Location);
+        Assert.Contains("not registered", validationIssue.Message);
     }
 
     [Fact]
@@ -103,17 +121,24 @@ public sealed class AutomationManifestValidatorTests
             [
                 new DbAutomationScalarFunctionReference("Slugify", 1, "admin.forms", "controls.slug.formula"),
                 new DbAutomationScalarFunctionReference("slugify", 1, "admin.forms", "controls.slug.formula"),
+            ],
+            ValidationRules:
+            [
+                new DbAutomationValidationRuleReference("CreditLimit", "admin.forms", "form.validationRules.CreditLimit"),
+                new DbAutomationValidationRuleReference("creditlimit", "admin.forms", "form.validationRules.CreditLimit"),
             ]);
         DbFunctionRegistry functions = CreateFunctions(("Slugify", 1));
         DbCommandRegistry commands = CreateCommands("AuditOrder");
+        DbValidationRuleRegistry validationRules = CreateValidationRules("CreditLimit");
 
-        AutomationValidationResult result = AutomationManifestValidator.Validate(metadata, functions, commands);
+        AutomationValidationResult result = AutomationManifestValidator.Validate(metadata, functions, commands, validationRules);
 
         Assert.True(result.Succeeded);
-        Assert.Equal(2, result.Issues.Count);
+        Assert.Equal(3, result.Issues.Count);
         Assert.All(result.Issues, issue => Assert.Equal(AutomationValidationSeverity.Warning, issue.Severity));
         Assert.Contains(result.Issues, issue => issue.CallbackKind == AutomationCallbackKind.Command);
         Assert.Contains(result.Issues, issue => issue.CallbackKind == AutomationCallbackKind.ScalarFunction);
+        Assert.Contains(result.Issues, issue => issue.CallbackKind == AutomationCallbackKind.ValidationRule);
     }
 
     [Fact]
@@ -151,5 +176,12 @@ public sealed class AutomationManifestValidatorTests
         {
             foreach (string command in commands)
                 builder.AddCommand(command, static _ => DbCommandResult.Success());
+        });
+
+    private static DbValidationRuleRegistry CreateValidationRules(params string[] rules)
+        => DbValidationRuleRegistry.Create(builder =>
+        {
+            foreach (string rule in rules)
+                builder.AddRule(rule, static (_, _) => ValueTask.FromResult(DbValidationRuleResult.Success()));
         });
 }

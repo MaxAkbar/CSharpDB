@@ -3,12 +3,14 @@ namespace CSharpDB.Primitives;
 public sealed record DbAutomationMetadata(
     int MetadataVersion = DbAutomationMetadata.CurrentMetadataVersion,
     IReadOnlyList<DbAutomationCommandReference>? Commands = null,
-    IReadOnlyList<DbAutomationScalarFunctionReference>? ScalarFunctions = null)
+    IReadOnlyList<DbAutomationScalarFunctionReference>? ScalarFunctions = null,
+    IReadOnlyList<DbAutomationValidationRuleReference>? ValidationRules = null)
 {
     public const int CurrentMetadataVersion = 1;
 
     public bool IsEmpty => (Commands is null || Commands.Count == 0)
-        && (ScalarFunctions is null || ScalarFunctions.Count == 0);
+        && (ScalarFunctions is null || ScalarFunctions.Count == 0)
+        && (ValidationRules is null || ValidationRules.Count == 0);
 }
 
 public sealed record DbAutomationCommandReference(
@@ -22,12 +24,18 @@ public sealed record DbAutomationScalarFunctionReference(
     string Surface,
     string Location);
 
+public sealed record DbAutomationValidationRuleReference(
+    string Name,
+    string Surface,
+    string Location);
+
 public sealed record DbAutomationScalarFunctionCall(string Name, int Arity);
 
 public sealed class DbAutomationMetadataBuilder
 {
     private readonly List<DbAutomationCommandReference> _commands = [];
     private readonly List<DbAutomationScalarFunctionReference> _scalarFunctions = [];
+    private readonly List<DbAutomationValidationRuleReference> _validationRules = [];
 
     public DbAutomationMetadataBuilder AddCommand(string? name, string surface, string location)
     {
@@ -52,11 +60,23 @@ public sealed class DbAutomationMetadataBuilder
         return this;
     }
 
+    public DbAutomationMetadataBuilder AddValidationRule(string? name, string surface, string location)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return this;
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(surface);
+        ArgumentException.ThrowIfNullOrWhiteSpace(location);
+        _validationRules.Add(new DbAutomationValidationRuleReference(name.Trim(), surface.Trim(), location.Trim()));
+        return this;
+    }
+
     public DbAutomationMetadata Build()
         => new(
             DbAutomationMetadata.CurrentMetadataVersion,
             SortCommands(_commands),
-            SortScalarFunctions(_scalarFunctions));
+            SortScalarFunctions(_scalarFunctions),
+            SortValidationRules(_validationRules));
 
     private static IReadOnlyList<DbAutomationCommandReference> SortCommands(IEnumerable<DbAutomationCommandReference> commands)
         => commands
@@ -79,6 +99,17 @@ public sealed class DbAutomationMetadataBuilder
             .ThenBy(static function => function.Arity)
             .ThenBy(static function => function.Surface, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static function => function.Location, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static IReadOnlyList<DbAutomationValidationRuleReference> SortValidationRules(IEnumerable<DbAutomationValidationRuleReference> rules)
+        => rules
+            .GroupBy(
+                static rule => $"{rule.Name}|{rule.Surface}|{rule.Location}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .OrderBy(static rule => rule.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static rule => rule.Surface, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static rule => rule.Location, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 }
 

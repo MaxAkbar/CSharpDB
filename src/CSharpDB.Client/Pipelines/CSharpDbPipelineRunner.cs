@@ -12,12 +12,14 @@ public sealed class CSharpDbPipelineRunner
     public CSharpDbPipelineRunner(
         ICSharpDbClient client,
         DbFunctionRegistry? functions = null,
-        DbCommandRegistry? commands = null)
+        DbCommandRegistry? commands = null,
+        DbExtensionPolicy? callbackPolicy = null)
         : this(new PipelineOrchestrator(
-            new CSharpDbPipelineComponentFactory(client, functions),
+            new CSharpDbPipelineComponentFactory(client, functions, callbackPolicy),
             new CSharpDbPipelineCheckpointStore(client),
             new CSharpDbPipelineRunLogger(client),
-            commands))
+            commands,
+            callbackPolicy))
     {
     }
 

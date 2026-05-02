@@ -43,12 +43,14 @@ builder.Services.AddScoped<DatabaseChangeService>();
 builder.Services.AddScoped<HostCallbackCatalogService>();
 builder.Services.AddScoped<HostCallbackPolicyService>();
 builder.Services.AddScoped<HostCallbackReadinessService>();
+builder.Services.AddSingleton<HostCallbackDiagnosticsHistoryService>();
 builder.Services.AddCSharpDbAdminForms();
 if (builder.Configuration.GetValue<bool>("AdminForms:EnableSampleControls"))
     builder.Services.AddSampleFormControls();
 builder.Services.AddCSharpDbAdminReports();
 
 var app = builder.Build();
+_ = app.Services.GetRequiredService<HostCallbackDiagnosticsHistoryService>();
 
 // Warm the in-process database instance before any requests arrive.
 await using (var scope = app.Services.CreateAsyncScope())

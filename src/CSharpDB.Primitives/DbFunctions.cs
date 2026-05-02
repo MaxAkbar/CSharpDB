@@ -62,6 +62,33 @@ public sealed class DbScalarFunctionDefinition
     public DbValue Invoke(
         ReadOnlySpan<DbValue> arguments,
         IReadOnlyDictionary<string, string>? metadata)
+        => InvokeCore(arguments, metadata, policyDecision: null);
+
+    public DbValue Invoke(
+        ReadOnlySpan<DbValue> arguments,
+        IReadOnlyDictionary<string, string>? metadata,
+        DbExtensionPolicy policy,
+        DbExtensionHostMode hostMode = DbExtensionHostMode.Embedded)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+            Descriptor,
+            policy,
+            hostMode);
+        if (!decision.Allowed)
+        {
+            DbCallbackDiagnostics.WritePolicyDeniedInvocation(Descriptor, metadata, decision);
+            throw new DbCallbackPolicyException(Descriptor, decision);
+        }
+
+        return InvokeCore(arguments, metadata, decision);
+    }
+
+    private DbValue InvokeCore(
+        ReadOnlySpan<DbValue> arguments,
+        IReadOnlyDictionary<string, string>? metadata,
+        DbExtensionPolicyDecision? policyDecision)
     {
         DbScalarFunctionContext context = DbScalarFunctionContext.Create(Name, metadata);
         if (!DbCallbackDiagnostics.IsInvocationEnabled)
@@ -78,7 +105,8 @@ public sealed class DbScalarFunctionDefinition
                 DbCallbackDiagnostics.GetElapsedTime(started),
                 succeeded: true,
                 canceled: false,
-                exceptionMessage: null);
+                exceptionMessage: null,
+                policyDecision: policyDecision);
             return result;
         }
         catch (OperationCanceledException ex)
@@ -90,7 +118,10 @@ public sealed class DbScalarFunctionDefinition
                 DbCallbackDiagnostics.GetElapsedTime(started),
                 succeeded: false,
                 canceled: true,
-                ex.Message);
+                exceptionMessage: ex.Message,
+                policyDecision: policyDecision,
+                errorCode: "Canceled",
+                exceptionType: ex.GetType().FullName);
             throw;
         }
         catch (Exception ex)
@@ -102,7 +133,10 @@ public sealed class DbScalarFunctionDefinition
                 DbCallbackDiagnostics.GetElapsedTime(started),
                 succeeded: false,
                 canceled: false,
-                ex.Message);
+                exceptionMessage: ex.Message,
+                policyDecision: policyDecision,
+                errorCode: "Exception",
+                exceptionType: ex.GetType().FullName);
             throw;
         }
     }

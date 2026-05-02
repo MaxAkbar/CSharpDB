@@ -5354,6 +5354,82 @@ body {
     overflow-wrap: anywhere;
 }
 
+.callbacks-diagnostics-panel {
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    min-height: 180px;
+    max-height: 280px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.callbacks-diagnostics-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.callbacks-diagnostics-head h3 {
+    margin: 2px 0 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.callbacks-diagnostics-table-wrap {
+    min-height: 0;
+    overflow: auto;
+}
+
+.callbacks-diagnostics-table {
+    min-width: 1180px;
+    border: none;
+    border-radius: 0;
+}
+
+.callbacks-diagnostics-table th,
+.callbacks-diagnostics-table td {
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.callbacks-diagnostics-table td {
+    font-size: 11px;
+}
+
+.callbacks-diagnostics-table td strong,
+.callbacks-diagnostics-table td span,
+.callbacks-diagnostics-table td small,
+.callbacks-diagnostics-table td code {
+    display: block;
+}
+
+.callbacks-diagnostics-table td strong {
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.callbacks-diagnostics-table td span,
+.callbacks-diagnostics-table td small {
+    color: var(--text-muted);
+    margin-top: 3px;
+}
+
+.callbacks-diagnostics-table td code {
+    color: var(--text-secondary);
+    font-size: 11px;
+    white-space: normal;
+}
+
+.callbacks-diagnostics-table .callbacks-policy-badge {
+    display: inline-flex;
+    margin-top: 0;
+}
+
 @media (max-width: 1200px) {
     .titlebar-toolbar .titlebar-action-btn span,
     .titlebar-action-btn {

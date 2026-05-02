@@ -151,7 +151,7 @@ public sealed class DbExtensionPolicyTests
             DbExtensionHostMode.Embedded);
 
         Assert.False(decision.Allowed);
-        Assert.Equal("Capability 'Network' is not granted.", decision.DenialReason);
+        Assert.Equal("No grant exists for capability 'Network'.", decision.DenialReason);
     }
 
     [Fact]
@@ -214,7 +214,158 @@ public sealed class DbExtensionPolicyTests
             DbExtensionHostMode.Embedded);
 
         Assert.False(decision.Allowed);
-        Assert.Equal("Capability 'ReadDatabase' is not granted.", decision.DenialReason);
+        Assert.Equal("No grant exists for capability 'ReadDatabase'.", decision.DenialReason);
+    }
+
+    [Fact]
+    public void Evaluate_AllowsExtensionWhenScopedGrantMatchesRequestedTable()
+    {
+        DbExtensionManifest manifest = CreateCommandManifest(signature: "trusted-signature") with
+        {
+            Capabilities =
+            [
+                new DbExtensionCapabilityRequest(DbExtensionCapability.Commands),
+                new DbExtensionCapabilityRequest(DbExtensionCapability.ReadDatabase, Tables: ["Orders"]),
+            ],
+        };
+        var policy = new DbExtensionPolicy(
+            AllowExtensions: true,
+            Grants:
+            [
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.Commands,
+                    DbExtensionCapabilityGrantStatus.Granted),
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.ReadDatabase,
+                    DbExtensionCapabilityGrantStatus.Granted,
+                    Tables: ["Orders"]),
+            ],
+            RequireSignature: true);
+
+        DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+            manifest,
+            policy,
+            DbExtensionHostMode.Embedded);
+
+        Assert.True(decision.Allowed, decision.DenialReason);
+        Assert.All(decision.Capabilities, capability =>
+            Assert.Equal(DbExtensionCapabilityGrantStatus.Granted, capability.Status));
+    }
+
+    [Fact]
+    public void Evaluate_DeniesExtensionWhenScopedGrantDoesNotMatchRequestedTable()
+    {
+        DbExtensionManifest manifest = CreateCommandManifest(signature: "trusted-signature") with
+        {
+            Capabilities =
+            [
+                new DbExtensionCapabilityRequest(DbExtensionCapability.Commands),
+                new DbExtensionCapabilityRequest(DbExtensionCapability.ReadDatabase, Tables: ["Orders"]),
+            ],
+        };
+        var policy = new DbExtensionPolicy(
+            AllowExtensions: true,
+            Grants:
+            [
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.Commands,
+                    DbExtensionCapabilityGrantStatus.Granted),
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.ReadDatabase,
+                    DbExtensionCapabilityGrantStatus.Granted,
+                    Tables: ["Customers"]),
+            ],
+            RequireSignature: true);
+
+        DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+            manifest,
+            policy,
+            DbExtensionHostMode.Embedded);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal(
+            "No grant for capability 'ReadDatabase' matches requested exports [*], tables [Orders], scope [*].",
+            decision.DenialReason);
+    }
+
+    [Fact]
+    public void Evaluate_DenyGrantWinsOverMatchingAllowGrant()
+    {
+        DbExtensionManifest manifest = CreateCommandManifest(signature: "trusted-signature") with
+        {
+            Capabilities =
+            [
+                new DbExtensionCapabilityRequest(DbExtensionCapability.Commands),
+                new DbExtensionCapabilityRequest(DbExtensionCapability.ReadDatabase, Tables: ["Orders"]),
+            ],
+        };
+        var policy = new DbExtensionPolicy(
+            AllowExtensions: true,
+            Grants:
+            [
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.Commands,
+                    DbExtensionCapabilityGrantStatus.Granted),
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.ReadDatabase,
+                    DbExtensionCapabilityGrantStatus.Granted,
+                    Tables: ["Orders"]),
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.ReadDatabase,
+                    DbExtensionCapabilityGrantStatus.Denied,
+                    Reason: "Orders reads are blocked for this host.",
+                    Tables: ["Orders"]),
+            ],
+            RequireSignature: true);
+
+        DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+            manifest,
+            policy,
+            DbExtensionHostMode.Embedded);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("Orders reads are blocked for this host.", decision.DenialReason);
+        DbExtensionCapabilityDecision readDecision = Assert.Single(
+            decision.Capabilities,
+            capability => capability.Name == DbExtensionCapability.ReadDatabase);
+        Assert.Equal(DbExtensionCapabilityGrantStatus.Denied, readDecision.Status);
+    }
+
+    [Fact]
+    public void Evaluate_ScopedDenyDoesNotBlockDifferentScope()
+    {
+        DbExtensionManifest manifest = CreateCommandManifest(signature: "trusted-signature") with
+        {
+            Capabilities =
+            [
+                new DbExtensionCapabilityRequest(DbExtensionCapability.Commands),
+                new DbExtensionCapabilityRequest(DbExtensionCapability.ReadDatabase, Tables: ["Orders"]),
+            ],
+        };
+        var policy = new DbExtensionPolicy(
+            AllowExtensions: true,
+            Grants:
+            [
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.Commands,
+                    DbExtensionCapabilityGrantStatus.Granted),
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.ReadDatabase,
+                    DbExtensionCapabilityGrantStatus.Denied,
+                    Tables: ["Payroll"]),
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.ReadDatabase,
+                    DbExtensionCapabilityGrantStatus.Granted,
+                    Tables: ["Orders"]),
+            ],
+            RequireSignature: true);
+
+        DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+            manifest,
+            policy,
+            DbExtensionHostMode.Embedded);
+
+        Assert.True(decision.Allowed, decision.DenialReason);
     }
 
     [Fact]

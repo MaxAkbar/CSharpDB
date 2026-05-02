@@ -1,7 +1,9 @@
 @using CSharpDB.Primitives
+@implements IDisposable
 @inject HostCallbackCatalogService CallbackCatalog
 @inject HostCallbackPolicyService CallbackPolicy
 @inject HostCallbackReadinessService CallbackReadiness
+@inject HostCallbackDiagnosticsHistoryService CallbackDiagnosticsHistory
 @inject ToastService Toast
 @inject IJSRuntime JS
 
@@ -38,6 +40,7 @@
                 <option value="">All kinds</option>
                 <option value="@AutomationCallbackKind.ScalarFunction">Scalar functions</option>
                 <option value="@AutomationCallbackKind.Command">Commands</option>
+                <option value="@AutomationCallbackKind.ValidationRule">Validation rules</option>
             </select>
             <select class="callbacks-filter status" value="@_statusFilter" @onchange="OnStatusFilterChanged">
                 <option value="">All status</option>
@@ -275,6 +278,84 @@
             }
         </section>
     </div>
+
+    <section class="callbacks-diagnostics-panel">
+        <div class="callbacks-diagnostics-head">
+            <div>
+                <div class="callbacks-eyebrow">Runtime</div>
+                <h3>Diagnostics History</h3>
+            </div>
+            <button type="button"
+                    class="data-toolbar-btn"
+                    @onclick="ClearDiagnostics"
+                    disabled="@(_diagnostics.Count == 0)">
+                <i class="bi bi-trash"></i> Clear
+            </button>
+        </div>
+
+        @if (_diagnostics.Count == 0)
+        {
+            <div class="callbacks-empty small">No callback invocations captured.</div>
+        }
+        else
+        {
+            <div class="callbacks-diagnostics-table-wrap">
+                <table class="schema-table callbacks-diagnostics-table">
+                    <thead>
+                        <tr>
+                            <th>Started</th>
+                            <th>Callback</th>
+                            <th>Result</th>
+                            <th>Policy</th>
+                            <th>Error</th>
+                            <th>Exception</th>
+                            <th>Correlation</th>
+                            <th>Owner</th>
+                            <th>Location</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (DbCallbackInvocationDiagnostic diagnostic in _diagnostics.Take(50))
+                        {
+                            <tr>
+                                <td>@FormatStartedAt(diagnostic.StartedAtUtc)</td>
+                                <td>
+                                    <strong>@diagnostic.Name</strong>
+                                    <span>@GetKindLabel(diagnostic.CallbackKind) @FormatArity(diagnostic.Arity)</span>
+                                </td>
+                                <td>
+                                    <span class="@GetDiagnosticStatusClass(diagnostic)">@GetDiagnosticStatus(diagnostic)</span>
+                                    @if (!string.IsNullOrWhiteSpace(diagnostic.ResultMessage))
+                                    {
+                                        <small>@diagnostic.ResultMessage</small>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="@GetDiagnosticPolicyClass(diagnostic)">@FormatDiagnosticPolicy(diagnostic)</span>
+                                    @if (!string.IsNullOrWhiteSpace(diagnostic.PolicyDenialReason))
+                                    {
+                                        <small>@diagnostic.PolicyDenialReason</small>
+                                    }
+                                </td>
+                                <td>@(diagnostic.ErrorCode ?? "-")</td>
+                                <td class="mono-cell">@FormatExceptionType(diagnostic.ExceptionType)</td>
+                                <td class="mono-cell">@FormatText(diagnostic.CorrelationId)</td>
+                                <td>@FormatOwner(diagnostic)</td>
+                                <td>
+                                    <span>@FormatText(diagnostic.Surface)</span>
+                                    <code>@FormatText(diagnostic.Location)</code>
+                                    @if (!string.IsNullOrWhiteSpace(diagnostic.EventName))
+                                    {
+                                        <small>@diagnostic.EventName</small>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
 </div>
 
 @code {
@@ -286,6 +367,7 @@
     private string _statusFilter = string.Empty;
     private string? _selectedKey;
     private HostCallbackReadinessReport? _readiness;
+    private IReadOnlyList<DbCallbackInvocationDiagnostic> _diagnostics = [];
 
     private IReadOnlyList<HostCallbackCatalogEntry> FilteredEntries
         => _entries.Where(MatchesFilter).ToArray();
@@ -297,6 +379,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        CallbackDiagnosticsHistory.Changed += OnDiagnosticsChanged;
+        LoadDiagnostics();
         await RefreshAsync();
     }
 
@@ -309,10 +393,30 @@
     {
         _entries = await CallbackCatalog.GetEntriesAsync();
         _readiness = await CallbackReadiness.GetReadinessAsync();
+        LoadDiagnostics();
         ApplyTabSelection();
 
         if (_selectedKey is null || !_entries.Any(entry => GetEntryKey(entry) == _selectedKey))
             _selectedKey = _entries.Count > 0 ? GetEntryKey(_entries[0]) : null;
+    }
+
+    private void LoadDiagnostics()
+    {
+        _diagnostics = CallbackDiagnosticsHistory.Snapshot();
+    }
+
+    private void OnDiagnosticsChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            LoadDiagnostics();
+            StateHasChanged();
+        });
+    }
+
+    private void ClearDiagnostics()
+    {
+        CallbackDiagnosticsHistory.Clear();
     }
 
     private void ApplyTabSelection()
@@ -439,6 +543,7 @@
         {
             AutomationCallbackKind.ScalarFunction => "Scalar function",
             AutomationCallbackKind.Command => "Command",
+            AutomationCallbackKind.ValidationRule => "Validation rule",
             _ => kind.ToString(),
         };
 
@@ -555,4 +660,61 @@
         => decision.Status == DbExtensionCapabilityGrantStatus.Granted
             ? "callbacks-policy-badge allowed"
             : "callbacks-policy-badge denied";
+
+    private static string FormatStartedAt(DateTimeOffset? startedAt)
+        => startedAt?.ToLocalTime().ToString("HH:mm:ss") ?? "-";
+
+    private static string GetDiagnosticStatus(DbCallbackInvocationDiagnostic diagnostic)
+    {
+        if (diagnostic.TimedOut)
+            return "Timed out";
+        if (diagnostic.Canceled)
+            return "Canceled";
+        return diagnostic.Succeeded ? "Succeeded" : "Failed";
+    }
+
+    private static string GetDiagnosticStatusClass(DbCallbackInvocationDiagnostic diagnostic)
+        => diagnostic.Succeeded
+            ? "callbacks-policy-badge allowed"
+            : "callbacks-policy-badge denied";
+
+    private static string FormatDiagnosticPolicy(DbCallbackInvocationDiagnostic diagnostic)
+        => diagnostic.PolicyAllowed switch
+        {
+            true => "Allowed",
+            false => "Denied",
+            _ => "-",
+        };
+
+    private static string GetDiagnosticPolicyClass(DbCallbackInvocationDiagnostic diagnostic)
+        => diagnostic.PolicyAllowed switch
+        {
+            true => "callbacks-policy-badge allowed",
+            false => "callbacks-policy-badge denied",
+            _ => "callbacks-policy-badge missing",
+        };
+
+    private static string FormatExceptionType(string? exceptionType)
+    {
+        if (string.IsNullOrWhiteSpace(exceptionType))
+            return "-";
+
+        int lastDot = exceptionType.LastIndexOf('.');
+        return lastDot >= 0 && lastDot < exceptionType.Length - 1
+            ? exceptionType[(lastDot + 1)..]
+            : exceptionType;
+    }
+
+    private static string FormatText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "-" : value;
+
+    private static string FormatOwner(DbCallbackInvocationDiagnostic diagnostic)
+        => string.IsNullOrWhiteSpace(diagnostic.OwnerKind)
+            ? "-"
+            : $"{diagnostic.OwnerKind}: {FormatText(diagnostic.OwnerName ?? diagnostic.OwnerId)}";
+
+    public void Dispose()
+    {
+        CallbackDiagnosticsHistory.Changed -= OnDiagnosticsChanged;
+    }
 }

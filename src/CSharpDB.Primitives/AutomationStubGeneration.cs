@@ -21,6 +21,7 @@ public static class AutomationStubGenerator
 
         CallbackGroup[] scalarFunctions = GetScalarFunctionGroups(metadata);
         CallbackGroup[] commands = GetCommandGroups(metadata);
+        CallbackGroup[] validationRules = GetValidationRuleGroups(metadata);
 
         var source = new StringBuilder();
         source.AppendLine("using System;");
@@ -36,10 +37,11 @@ public static class AutomationStubGenerator
         source.AppendLine("{");
         source.Append("    public static void ");
         source.Append(options.MethodName);
-        source.AppendLine("(DbFunctionRegistryBuilder functions, DbCommandRegistryBuilder commands)");
+        source.AppendLine("(DbFunctionRegistryBuilder functions, DbCommandRegistryBuilder commands, DbValidationRuleRegistryBuilder validationRules)");
         source.AppendLine("    {");
         source.AppendLine("        ArgumentNullException.ThrowIfNull(functions);");
         source.AppendLine("        ArgumentNullException.ThrowIfNull(commands);");
+        source.AppendLine("        ArgumentNullException.ThrowIfNull(validationRules);");
 
         bool wroteRegistration = false;
         foreach (CallbackGroup function in scalarFunctions)
@@ -53,6 +55,13 @@ public static class AutomationStubGenerator
         {
             source.AppendLine();
             AppendCommand(source, command);
+            wroteRegistration = true;
+        }
+
+        foreach (CallbackGroup validationRule in validationRules)
+        {
+            source.AppendLine();
+            AppendValidationRule(source, validationRule);
             wroteRegistration = true;
         }
 
@@ -103,6 +112,22 @@ public static class AutomationStubGenerator
         source.AppendLine("            });");
     }
 
+    private static void AppendValidationRule(StringBuilder source, CallbackGroup validationRule)
+    {
+        source.AppendLine("        validationRules.AddRule(");
+        source.Append("            ");
+        source.Append(ToStringLiteral(validationRule.Name));
+        source.AppendLine(",");
+        source.AppendLine("            static async (context, ct) =>");
+        source.AppendLine("            {");
+        AppendReferenceComments(source, validationRule);
+        source.AppendLine("                await Task.CompletedTask;");
+        source.Append("                throw new NotImplementedException(");
+        source.Append(ToStringLiteral($"Implement trusted validation rule '{validationRule.Name}'."));
+        source.AppendLine(");");
+        source.AppendLine("            });");
+    }
+
     private static void AppendReferenceComments(StringBuilder source, CallbackGroup callback)
     {
         source.AppendLine("                // References:");
@@ -142,6 +167,23 @@ public static class AutomationStubGenerator
             .Select(static group =>
             {
                 DbAutomationCommandReference first = group.First();
+                return new CallbackGroup(
+                    first.Name.Trim(),
+                    Arity: null,
+                    GetLocations(group.Select(static reference => new CallbackLocation(reference.Surface, reference.Location))));
+            })
+            .OrderBy(static group => group.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static CallbackGroup[] GetValidationRuleGroups(DbAutomationMetadata metadata)
+        => (metadata.ValidationRules ?? [])
+            .Where(static reference => !string.IsNullOrWhiteSpace(reference.Name))
+            .GroupBy(
+                static reference => reference.Name.Trim(),
+                StringComparer.OrdinalIgnoreCase)
+            .Select(static group =>
+            {
+                DbAutomationValidationRuleReference first = group.First();
                 return new CallbackGroup(
                     first.Name.Trim(),
                     Arity: null,

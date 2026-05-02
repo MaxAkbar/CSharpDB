@@ -29,6 +29,7 @@ public enum AutomationCallbackKind
     Unknown,
     ScalarFunction,
     Command,
+    ValidationRule,
 }
 
 public static class AutomationManifestValidator
@@ -40,16 +41,32 @@ public static class AutomationManifestValidator
         DbAutomationMetadata? metadata,
         DbFunctionRegistry functions,
         DbCommandRegistry commands)
-        => Validate(metadata, functions, commands, AutomationManifestValidationOptions.Default);
+        => Validate(metadata, functions, commands, DbValidationRuleRegistry.Empty, AutomationManifestValidationOptions.Default);
+
+    public static AutomationValidationResult Validate(
+        DbAutomationMetadata? metadata,
+        DbFunctionRegistry functions,
+        DbCommandRegistry commands,
+        DbValidationRuleRegistry validationRules)
+        => Validate(metadata, functions, commands, validationRules, AutomationManifestValidationOptions.Default);
 
     public static AutomationValidationResult Validate(
         DbAutomationMetadata? metadata,
         DbFunctionRegistry functions,
         DbCommandRegistry commands,
         AutomationManifestValidationOptions? options)
+        => Validate(metadata, functions, commands, DbValidationRuleRegistry.Empty, options);
+
+    public static AutomationValidationResult Validate(
+        DbAutomationMetadata? metadata,
+        DbFunctionRegistry functions,
+        DbCommandRegistry commands,
+        DbValidationRuleRegistry validationRules,
+        AutomationManifestValidationOptions? options)
     {
         ArgumentNullException.ThrowIfNull(functions);
         ArgumentNullException.ThrowIfNull(commands);
+        ArgumentNullException.ThrowIfNull(validationRules);
 
         options ??= AutomationManifestValidationOptions.Default;
         var issues = new List<AutomationValidationIssue>();
@@ -72,8 +89,10 @@ public static class AutomationManifestValidator
 
         AddDuplicateCommandIssues(metadata.Commands, issues);
         AddDuplicateScalarFunctionIssues(metadata.ScalarFunctions, issues);
+        AddDuplicateValidationRuleIssues(metadata.ValidationRules, issues);
         ValidateCommands(metadata.Commands, commands, issues);
         ValidateScalarFunctions(metadata.ScalarFunctions, functions, issues);
+        ValidateValidationRules(metadata.ValidationRules, validationRules, issues);
 
         return CreateResult(issues);
     }
@@ -149,6 +168,42 @@ public static class AutomationManifestValidator
                 occurrence.Location,
                 $"Scalar function '{occurrence.Name}' with arity {occurrence.Arity} is referenced {occurrence.Count} times at {occurrence.Surface}:{occurrence.Location}. Remove duplicate metadata entries.",
                 occurrence.Arity));
+        }
+    }
+
+    private static void AddDuplicateValidationRuleIssues(
+        IReadOnlyList<DbAutomationValidationRuleReference>? references,
+        List<AutomationValidationIssue> issues)
+    {
+        if (references is null || references.Count == 0)
+            return;
+
+        var occurrences = new Dictionary<string, DuplicateOccurrence>(StringComparer.OrdinalIgnoreCase);
+        foreach (DbAutomationValidationRuleReference reference in references)
+        {
+            string name = NormalizeName(reference.Name);
+            string surface = NormalizeSurface(reference.Surface);
+            string location = NormalizeLocation(reference.Location);
+            string key = CreateKey(name, surface, location);
+
+            occurrences[key] = occurrences.TryGetValue(key, out DuplicateOccurrence? occurrence)
+                ? occurrence.Increment()
+                : new DuplicateOccurrence(name, surface, location, Count: 1, Arity: null);
+        }
+
+        foreach (DuplicateOccurrence occurrence in occurrences.Values
+            .Where(static occurrence => occurrence.Count > 1)
+            .OrderBy(static occurrence => occurrence.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static occurrence => occurrence.Surface, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static occurrence => occurrence.Location, StringComparer.OrdinalIgnoreCase))
+        {
+            issues.Add(new AutomationValidationIssue(
+                AutomationValidationSeverity.Warning,
+                AutomationCallbackKind.ValidationRule,
+                occurrence.Name,
+                occurrence.Surface,
+                occurrence.Location,
+                $"Validation rule '{occurrence.Name}' is referenced {occurrence.Count} times at {occurrence.Surface}:{occurrence.Location}. Remove duplicate metadata entries."));
         }
     }
 
@@ -263,6 +318,48 @@ public static class AutomationManifestValidator
                 location,
                 $"Scalar function '{name}' is referenced by {surface} at {location} with arity {reference.Arity}, but it is not registered in the host function registry.",
                 reference.Arity));
+        }
+    }
+
+    private static void ValidateValidationRules(
+        IReadOnlyList<DbAutomationValidationRuleReference>? references,
+        DbValidationRuleRegistry validationRules,
+        List<AutomationValidationIssue> issues)
+    {
+        if (references is null || references.Count == 0)
+            return;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (DbAutomationValidationRuleReference reference in references)
+        {
+            string name = NormalizeName(reference.Name);
+            string surface = NormalizeSurface(reference.Surface);
+            string location = NormalizeLocation(reference.Location);
+            if (!seen.Add(CreateKey(name, surface, location)))
+                continue;
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                issues.Add(new AutomationValidationIssue(
+                    AutomationValidationSeverity.Error,
+                    AutomationCallbackKind.ValidationRule,
+                    name,
+                    surface,
+                    location,
+                    $"Validation rule reference at {surface}:{location} has no rule name."));
+                continue;
+            }
+
+            if (!validationRules.ContainsRuleName(name))
+            {
+                issues.Add(new AutomationValidationIssue(
+                    AutomationValidationSeverity.Error,
+                    AutomationCallbackKind.ValidationRule,
+                    name,
+                    surface,
+                    location,
+                    $"Validation rule '{name}' is referenced by {surface} at {location}, but it is not registered in the host validation rule registry."));
+            }
         }
     }
 

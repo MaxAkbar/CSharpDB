@@ -7,6 +7,14 @@ public static class FormAutomationMetadata
 {
     private const string Surface = "admin.forms";
     private static readonly string[] IgnoredFormulaFunctions = ["SUM", "COUNT", "AVG", "MIN", "MAX"];
+    private static readonly HashSet<string> BuiltInValidationRuleIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "required",
+        "maxLength",
+        "range",
+        "regex",
+        "oneOf",
+    };
 
     public static FormDefinition NormalizeForExport(FormDefinition form)
     {
@@ -36,10 +44,13 @@ public static class FormAutomationMetadata
             AddActionSequence(builder, sequence, sequenceLocation);
         }
 
+        AddValidationRules(builder, form.ValidationRules, "form.validationRules");
+
         foreach (ControlDefinition control in form.Controls)
         {
             AddCommandButton(builder, control);
             AddComputedFormula(builder, control);
+            AddValidationRules(builder, control.ValidationOverride?.AddRules, $"controls.{control.ControlId}.validationRules");
             foreach (ControlEventBinding binding in control.EventBindings ?? [])
             {
                 string bindingLocation = $"controls.{control.ControlId}.events.{binding.Event}";
@@ -87,6 +98,23 @@ public static class FormAutomationMetadata
             DbActionStep step = sequence.Steps[i];
             if (step.Kind == DbActionKind.RunCommand)
                 builder.AddCommand(step.CommandName, Surface, $"{sequenceLocation}.steps[{i}]");
+        }
+    }
+
+    private static void AddValidationRules(
+        DbAutomationMetadataBuilder builder,
+        IReadOnlyList<ValidationRule>? rules,
+        string locationPrefix)
+    {
+        foreach (ValidationRule rule in rules ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(rule.RuleId) ||
+                BuiltInValidationRuleIds.Contains(rule.RuleId))
+            {
+                continue;
+            }
+
+            builder.AddValidationRule(rule.RuleId, Surface, $"{locationPrefix}.{rule.RuleId}");
         }
     }
 

@@ -7,19 +7,30 @@ namespace CSharpDB.Admin.Forms.Services;
 public sealed class DefaultFormEventDispatcher : IFormEventDispatcher
 {
     private readonly DbCommandRegistry _commands;
+    private readonly DbExtensionPolicy _callbackPolicy;
     private readonly IFormActionRuntime _actionRuntime;
 
     public DefaultFormEventDispatcher(DbCommandRegistry commands)
-        : this(commands, NullFormActionRuntime.Instance)
+        : this(commands, DbExtensionPolicies.DefaultHostCallbackPolicy, NullFormActionRuntime.Instance)
     {
     }
 
     public DefaultFormEventDispatcher(DbCommandRegistry commands, IFormActionRuntime actionRuntime)
+        : this(commands, DbExtensionPolicies.DefaultHostCallbackPolicy, actionRuntime)
+    {
+    }
+
+    public DefaultFormEventDispatcher(
+        DbCommandRegistry commands,
+        DbExtensionPolicy callbackPolicy,
+        IFormActionRuntime actionRuntime)
     {
         ArgumentNullException.ThrowIfNull(commands);
+        ArgumentNullException.ThrowIfNull(callbackPolicy);
         ArgumentNullException.ThrowIfNull(actionRuntime);
 
         _commands = commands;
+        _callbackPolicy = callbackPolicy;
         _actionRuntime = actionRuntime;
     }
 
@@ -49,14 +60,23 @@ public sealed class DefaultFormEventDispatcher : IFormEventDispatcher
             if (!string.IsNullOrWhiteSpace(binding.CommandName))
             {
                 if (!_commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
-                    return FormEventDispatchResult.Failure($"Unknown form command '{binding.CommandName}' for event '{eventKind}'.");
+                {
+                    string message = $"Unknown form command '{binding.CommandName}' for event '{eventKind}'.";
+                    DbCallbackDiagnostics.WriteMissingCommandInvocation(binding.CommandName, metadata, message);
+                    return FormEventDispatchResult.Failure(message);
+                }
 
                 Dictionary<string, DbValue> arguments = FormCommandInvocation.BuildArguments(record, binding.Arguments);
                 bool commandFailed = false;
                 string? commandFailureMessage = null;
                 try
                 {
-                    DbCommandResult result = await definition.InvokeAsync(arguments, metadata, ct);
+                    DbCommandResult result = await definition.InvokeAsync(
+                        arguments,
+                        metadata,
+                        _callbackPolicy,
+                        DbExtensionHostMode.Embedded,
+                        ct);
                     if (!result.Succeeded)
                     {
                         commandFailed = true;
@@ -100,6 +120,7 @@ public sealed class DefaultFormEventDispatcher : IFormEventDispatcher
                     metadata,
                     reusableSequences: form.ActionSequences,
                     actionRuntime: actionRuntime,
+                    callbackPolicy: _callbackPolicy,
                     ct: ct);
 
                 if (!actionResult.Succeeded && binding.StopOnFailure)

@@ -69,6 +69,7 @@ public sealed class HostCallbackReadinessService
     {
         var commands = new List<DbAutomationCommandReference>();
         var scalarFunctions = new List<DbAutomationScalarFunctionReference>();
+        var validationRules = new List<DbAutomationValidationRuleReference>();
 
         foreach (HostCallbackCatalogEntry entry in entries)
         {
@@ -90,13 +91,21 @@ public sealed class HostCallbackReadinessService
                         reference.Surface,
                         location));
                 }
+                else if (entry.Kind == AutomationCallbackKind.ValidationRule)
+                {
+                    validationRules.Add(new DbAutomationValidationRuleReference(
+                        entry.Name,
+                        reference.Surface,
+                        location));
+                }
             }
         }
 
         return new DbAutomationMetadata(
             DbAutomationMetadata.CurrentMetadataVersion,
             commands,
-            scalarFunctions);
+            scalarFunctions,
+            validationRules);
     }
 
     private static string FormatReferenceLocation(HostCallbackReference reference)

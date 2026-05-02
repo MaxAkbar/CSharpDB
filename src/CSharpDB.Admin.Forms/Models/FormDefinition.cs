@@ -14,4 +14,5 @@ public sealed record FormDefinition(
     IReadOnlyList<FormEventBinding>? EventBindings = null,
     DbAutomationMetadata? Automation = null,
     IReadOnlyList<DbActionSequence>? ActionSequences = null,
-    IReadOnlyList<ControlRuleDefinition>? Rules = null);
+    IReadOnlyList<ControlRuleDefinition>? Rules = null,
+    IReadOnlyList<ValidationRule>? ValidationRules = null);

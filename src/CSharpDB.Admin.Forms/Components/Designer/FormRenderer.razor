@@ -6,6 +6,7 @@
 @using CSharpDB.Admin.Forms.Services
 @using CSharpDB.Primitives
 @inject DbCommandRegistry Commands
+@inject DbExtensionPolicy? CallbackPolicy
 
 <div class="@GetRendererClass()" style="@GetRendererStyle()">
     @foreach (var control in GetControlsToRender())
@@ -477,6 +478,7 @@
     private const double DesktopCanvasWidth = 1200;
     private const double TabletCanvasWidth = 768;
     private const long DefaultMaxUploadBytes = 10 * 1024 * 1024;
+    private DbExtensionPolicy EffectiveCallbackPolicy => CallbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy;
 
     private bool TryGetRuntimeComponent(ControlDefinition control, out Type componentType)
     {
@@ -1251,7 +1253,10 @@
         DbCommandDefinition? definition = null;
         if (!string.IsNullOrWhiteSpace(commandName) && !Commands.TryGetCommand(commandName, out definition))
         {
-            await ReportCommandErrorAsync($"Unknown form command '{commandName}'.");
+            Dictionary<string, string> metadata = FormCommandInvocation.BuildControlMetadata(Form, control, "Click");
+            string message = $"Unknown form command '{commandName}'.";
+            DbCallbackDiagnostics.WriteMissingCommandInvocation(commandName, metadata, message);
+            await ReportCommandErrorAsync(message);
             return;
         }
 
@@ -1270,7 +1275,11 @@
                     FormCommandInvocation.ReadArgumentsProperty(configuredArguments));
                 Dictionary<string, string> metadata = FormCommandInvocation.BuildControlMetadata(Form, control, "Click");
 
-                DbCommandResult result = await definition.InvokeAsync(arguments, metadata);
+                DbCommandResult result = await definition.InvokeAsync(
+                    arguments,
+                    metadata,
+                    EffectiveCallbackPolicy,
+                    DbExtensionHostMode.Embedded);
                 if (!result.Succeeded)
                 {
                     string message = string.IsNullOrWhiteSpace(result.Message)
@@ -1329,7 +1338,9 @@
             {
                 if (!Commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
                 {
-                    await ReportCommandErrorAsync($"Unknown form command '{binding.CommandName}' for control event '{eventKind}'.");
+                    string message = $"Unknown form command '{binding.CommandName}' for control event '{eventKind}'.";
+                    DbCallbackDiagnostics.WriteMissingCommandInvocation(binding.CommandName, metadata, message);
+                    await ReportCommandErrorAsync(message);
                     return;
                 }
 
@@ -1342,7 +1353,11 @@
                 string? commandFailureMessage = null;
                 try
                 {
-                    DbCommandResult result = await definition.InvokeAsync(arguments, metadata);
+                    DbCommandResult result = await definition.InvokeAsync(
+                        arguments,
+                        metadata,
+                        EffectiveCallbackPolicy,
+                        DbExtensionHostMode.Embedded);
                     if (!result.Succeeded)
                     {
                         commandFailed = true;
@@ -1388,7 +1403,8 @@
                     setFieldValue: SetActionFieldValueAsync,
                     showMessage: ReportCommandErrorAsync,
                     executeBuiltInFormAction: OnBuiltInAction,
-                    actionRuntime: ActionRuntime);
+                    actionRuntime: ActionRuntime,
+                    callbackPolicy: EffectiveCallbackPolicy);
 
                 if (!actionResult.Succeeded && binding.StopOnFailure)
                 {

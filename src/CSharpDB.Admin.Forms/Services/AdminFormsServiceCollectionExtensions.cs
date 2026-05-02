@@ -10,6 +10,8 @@ public static class AdminFormsServiceCollectionExtensions
     public static IServiceCollection AddCSharpDbAdminForms(this IServiceCollection services)
     {
         services.TryAddSingleton(DbCommandRegistry.Empty);
+        services.TryAddSingleton(DbValidationRuleRegistry.Empty);
+        services.TryAddSingleton(DbExtensionPolicies.DefaultHostCallbackPolicy);
         services.TryAddSingleton<IFormActionRuntime>(NullFormActionRuntime.Instance);
         services.TryAddFormControlRegistry();
         services.AddScoped<IFormRepository, DbFormRepository>();
@@ -28,6 +30,16 @@ public static class AdminFormsServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configureCommands);
 
         services.AddSingleton(DbCommandRegistry.Create(configureCommands));
+        return services.AddCSharpDbAdminForms();
+    }
+
+    public static IServiceCollection AddCSharpDbAdminFormValidationRules(
+        this IServiceCollection services,
+        Action<DbValidationRuleRegistryBuilder> configureRules)
+    {
+        ArgumentNullException.ThrowIfNull(configureRules);
+
+        services.AddSingleton(DbValidationRuleRegistry.Create(configureRules));
         return services.AddCSharpDbAdminForms();
     }
 

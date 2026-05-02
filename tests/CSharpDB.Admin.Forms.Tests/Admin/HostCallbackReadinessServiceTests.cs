@@ -111,6 +111,10 @@ public sealed class HostCallbackReadinessServiceTests
                         [
                             new DbAutomationScalarFunctionReference("RegisteredFunction", 1, "admin.forms", "controls.slug.formula"),
                             new DbAutomationScalarFunctionReference("MissingFunction", 2, "admin.forms", "controls.total.formula"),
+                        ],
+                        ValidationRules:
+                        [
+                            new DbAutomationValidationRuleReference("MissingValidationRule", "admin.forms", "form.validationRules.MissingValidationRule"),
                         ]),
                 },
             ],
@@ -125,6 +129,8 @@ public sealed class HostCallbackReadinessServiceTests
         Assert.Contains("\"AuditOrder\"", source);
         Assert.Contains("functions.AddScalar", source);
         Assert.Contains("\"MissingFunction\"", source);
+        Assert.Contains("validationRules.AddRule", source);
+        Assert.Contains("\"MissingValidationRule\"", source);
         Assert.Contains("Form Orders Form (orders-form): form.events.OnLoad", source);
         Assert.DoesNotContain("\"RegisteredFunction\"", source);
     }

@@ -14,6 +14,13 @@ public static class ReportFormulaEvaluator
         string? expression,
         Func<string, double?> fieldResolver,
         DbFunctionRegistry? functions)
+        => EvaluateNumeric(expression, fieldResolver, functions, callbackPolicy: null);
+
+    public static double? EvaluateNumeric(
+        string? expression,
+        Func<string, double?> fieldResolver,
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
     {
         if (string.IsNullOrWhiteSpace(expression))
             return null;
@@ -28,7 +35,7 @@ public static class ReportFormulaEvaluator
 
         try
         {
-            var parser = new Parser(expr, fieldResolver, functions ?? DbFunctionRegistry.Empty);
+            var parser = new Parser(expr, fieldResolver, functions ?? DbFunctionRegistry.Empty, callbackPolicy);
             double? result = parser.ParseExpression();
             if (parser.Position < parser.Input.Length)
                 return null;
@@ -46,6 +53,14 @@ public static class ReportFormulaEvaluator
         Func<string, object?> fieldResolver,
         DbFunctionRegistry? functions,
         out object? value)
+        => TryEvaluateScalar(expression, fieldResolver, functions, callbackPolicy: null, out value);
+
+    public static bool TryEvaluateScalar(
+        string? expression,
+        Func<string, object?> fieldResolver,
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy,
+        out object? value)
     {
         value = null;
         if (functions == null || string.IsNullOrWhiteSpace(expression))
@@ -56,7 +71,7 @@ public static class ReportFormulaEvaluator
             return false;
 
         expr = expr[1..].Trim();
-        if (!TryEvaluateFunctionCall(expr, fieldResolver, functions, out DbValue dbValue))
+        if (!TryEvaluateFunctionCall(expr, fieldResolver, functions, callbackPolicy, out DbValue dbValue))
             return false;
 
         value = FromDbValue(dbValue);
@@ -141,13 +156,19 @@ public static class ReportFormulaEvaluator
 
         private readonly Func<string, double?> _fieldResolver;
         private readonly DbFunctionRegistry _functions;
+        private readonly DbExtensionPolicy? _callbackPolicy;
 
-        public Parser(string input, Func<string, double?> fieldResolver, DbFunctionRegistry functions)
+        public Parser(
+            string input,
+            Func<string, double?> fieldResolver,
+            DbFunctionRegistry functions,
+            DbExtensionPolicy? callbackPolicy)
         {
             Input = input.AsSpan();
             Position = 0;
             _fieldResolver = fieldResolver;
             _functions = functions;
+            _callbackPolicy = callbackPolicy;
         }
 
         public double? ParseExpression()
@@ -348,14 +369,25 @@ public static class ReportFormulaEvaluator
         private double? InvokeFunction(string functionName, List<DbValue> arguments)
         {
             if (!_functions.TryGetScalar(functionName, arguments.Count, out var definition))
+            {
+                DbCallbackDiagnostics.WriteMissingScalarInvocation(
+                    functionName,
+                    arguments.Count,
+                    CreateReportCallbackMetadata(functionName),
+                    $"Unknown scalar function '{functionName}'.");
                 return null;
+            }
 
             if (definition.Options.NullPropagating && arguments.Any(static argument => argument.IsNull))
                 return null;
 
             try
             {
-                DbValue value = definition.Invoke(arguments.ToArray(), CreateReportCallbackMetadata(functionName));
+                DbValue[] dbArguments = arguments.ToArray();
+                IReadOnlyDictionary<string, string>? metadata = CreateReportCallbackMetadata(functionName);
+                DbValue value = _callbackPolicy is null
+                    ? definition.Invoke(dbArguments, metadata)
+                    : definition.Invoke(dbArguments, metadata, _callbackPolicy, DbExtensionHostMode.Embedded);
                 return value.Type switch
                 {
                     DbType.Integer => value.AsInteger,
@@ -380,6 +412,7 @@ public static class ReportFormulaEvaluator
         string expression,
         Func<string, object?> fieldResolver,
         DbFunctionRegistry functions,
+        DbExtensionPolicy? callbackPolicy,
         out DbValue value)
     {
         value = DbValue.Null;
@@ -393,11 +426,18 @@ public static class ReportFormulaEvaluator
 
         string[] argumentTokens = SplitArguments(expression[(openParen + 1)..^1]);
         if (!functions.TryGetScalar(name, argumentTokens.Length, out var definition))
+        {
+            DbCallbackDiagnostics.WriteMissingScalarInvocation(
+                name,
+                argumentTokens.Length,
+                CreateReportCallbackMetadata(name),
+                $"Unknown scalar function '{name}'.");
             return false;
+        }
 
         var arguments = new DbValue[argumentTokens.Length];
         for (int i = 0; i < argumentTokens.Length; i++)
-            arguments[i] = EvaluateScalarArgument(argumentTokens[i].Trim(), fieldResolver, functions);
+            arguments[i] = EvaluateScalarArgument(argumentTokens[i].Trim(), fieldResolver, functions, callbackPolicy);
 
         if (definition.Options.NullPropagating && arguments.Any(static argument => argument.IsNull))
         {
@@ -405,16 +445,20 @@ public static class ReportFormulaEvaluator
             return true;
         }
 
-        value = definition.Invoke(arguments, CreateReportCallbackMetadata(name));
+        IReadOnlyDictionary<string, string>? metadata = CreateReportCallbackMetadata(name);
+        value = callbackPolicy is null
+            ? definition.Invoke(arguments, metadata)
+            : definition.Invoke(arguments, metadata, callbackPolicy, DbExtensionHostMode.Embedded);
         return true;
     }
 
     private static DbValue EvaluateScalarArgument(
         string token,
         Func<string, object?> fieldResolver,
-        DbFunctionRegistry functions)
+        DbFunctionRegistry functions,
+        DbExtensionPolicy? callbackPolicy)
     {
-        if (TryEvaluateFunctionCall(token, fieldResolver, functions, out DbValue nestedValue))
+        if (TryEvaluateFunctionCall(token, fieldResolver, functions, callbackPolicy, out DbValue nestedValue))
             return nestedValue;
 
         if (token.StartsWith('\'') && token.EndsWith('\'') && token.Length >= 2)
@@ -526,6 +570,7 @@ public static class ReportFormulaEvaluator
             {
                 ["surface"] = "AdminReports",
                 ["location"] = $"expressions.functions.{functionName}",
+                ["correlationId"] = Guid.NewGuid().ToString("N"),
             }
             : null;
 }

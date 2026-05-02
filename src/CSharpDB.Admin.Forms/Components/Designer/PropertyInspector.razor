@@ -59,6 +59,11 @@
                                 Controls="State.Controls"
                                 RulesChanged="OnRulesChanged" />
         </div>
+        <div class="pi-section">
+            <div class="pi-section-label">Validation</div>
+            <ValidationRulesEditor Rules="State.ValidationRules"
+                                   RulesChanged="OnFormValidationRulesChanged" />
+        </div>
     }
     else
     {
@@ -330,6 +335,11 @@
                     <input type="number" value="@GetProp(PropTabIndex, string.Empty)" min="0"
                            @onchange="@(e => OnPropChanged(PropTabIndex, ParseLong(e.Value)))" />
                 </div>
+            </div>
+            <div class="pi-section">
+                <div class="pi-section-label">Validation</div>
+                <ValidationRulesEditor Rules="@(_selected.ValidationOverride?.AddRules ?? [])"
+                                       RulesChanged="OnControlValidationRulesChanged" />
             </div>
         }
         else if (IsTabOrderControl(_selected))
@@ -1825,6 +1835,28 @@
     private Task OnRulesChanged(IReadOnlyList<ControlRuleDefinition> rules)
     {
         State.UpdateRules(rules);
+        return Task.CompletedTask;
+    }
+
+    private Task OnFormValidationRulesChanged(IReadOnlyList<ValidationRule> rules)
+    {
+        State.UpdateValidationRules(rules);
+        return Task.CompletedTask;
+    }
+
+    private Task OnControlValidationRulesChanged(IReadOnlyList<ValidationRule> rules)
+    {
+        if (_selected is null)
+            return Task.CompletedTask;
+
+        ValidationOverride? existing = _selected.ValidationOverride;
+        bool disableInferredRules = existing?.DisableInferredRules ?? false;
+        IReadOnlyList<string> disableRuleIds = existing?.DisableRuleIds ?? [];
+        ValidationOverride? updated = rules.Count == 0 && !disableInferredRules && disableRuleIds.Count == 0
+            ? null
+            : new ValidationOverride(disableInferredRules, rules.ToList(), disableRuleIds);
+
+        State.UpdateControlValidationOverride(_selected.ControlId, updated);
         return Task.CompletedTask;
     }
 

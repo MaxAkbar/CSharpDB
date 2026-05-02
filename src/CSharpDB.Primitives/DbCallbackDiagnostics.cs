@@ -10,10 +10,19 @@ public sealed record DbCallbackInvocationDiagnostic(
     string? Surface,
     string? Location,
     string? EventName,
+    DateTimeOffset? StartedAtUtc,
+    string? CorrelationId,
+    string? OwnerKind,
+    string? OwnerId,
+    string? OwnerName,
     TimeSpan Elapsed,
     bool Succeeded,
     bool TimedOut,
     bool Canceled,
+    bool? PolicyAllowed,
+    string? PolicyDenialReason,
+    string? ErrorCode,
+    string? ExceptionType,
     string? ResultMessage,
     string? ExceptionMessage,
     IReadOnlyDictionary<string, string> Metadata);
@@ -34,6 +43,112 @@ public static class DbCallbackDiagnostics
     internal static TimeSpan GetElapsedTime(long startingTimestamp)
         => Stopwatch.GetElapsedTime(startingTimestamp);
 
+    public static void WriteMissingScalarInvocation(
+        string name,
+        int arity,
+        IReadOnlyDictionary<string, string>? metadata,
+        string message)
+        => WriteScalarInvocation(
+            name,
+            arity,
+            metadata,
+            elapsed: TimeSpan.Zero,
+            succeeded: false,
+            canceled: false,
+            exceptionMessage: message,
+            policyDecision: null,
+            errorCode: "MissingCallback",
+            exceptionType: null);
+
+    public static void WriteMissingCommandInvocation(
+        string name,
+        IReadOnlyDictionary<string, string>? metadata,
+        string message)
+        => WriteCommandInvocation(
+            name,
+            metadata,
+            elapsed: TimeSpan.Zero,
+            succeeded: false,
+            timedOut: false,
+            canceled: false,
+            resultMessage: null,
+            exceptionMessage: message,
+            policyDecision: null,
+            errorCode: "MissingCallback",
+            exceptionType: null);
+
+    public static void WriteMissingValidationInvocation(
+        string name,
+        IReadOnlyDictionary<string, string>? metadata,
+        string message)
+        => WriteValidationInvocation(
+            name,
+            metadata,
+            elapsed: TimeSpan.Zero,
+            succeeded: false,
+            timedOut: false,
+            canceled: false,
+            resultMessage: null,
+            exceptionMessage: message,
+            policyDecision: null,
+            errorCode: "MissingCallback",
+            exceptionType: null);
+
+    public static void WritePolicyDeniedInvocation(
+        DbHostCallbackDescriptor callback,
+        IReadOnlyDictionary<string, string>? metadata,
+        DbExtensionPolicyDecision decision)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        ArgumentNullException.ThrowIfNull(decision);
+
+        if (callback.Kind == AutomationCallbackKind.Command)
+        {
+            WriteCommandInvocation(
+                callback.Name,
+                metadata,
+                elapsed: TimeSpan.Zero,
+                succeeded: false,
+                timedOut: false,
+                canceled: false,
+                resultMessage: null,
+                exceptionMessage: decision.DenialReason,
+                decision,
+                errorCode: "PolicyDenied",
+                exceptionType: typeof(DbCallbackPolicyException).FullName);
+            return;
+        }
+
+        if (callback.Kind == AutomationCallbackKind.ValidationRule)
+        {
+            WriteValidationInvocation(
+                callback.Name,
+                metadata,
+                elapsed: TimeSpan.Zero,
+                succeeded: false,
+                timedOut: false,
+                canceled: false,
+                resultMessage: null,
+                exceptionMessage: decision.DenialReason,
+                decision,
+                errorCode: "PolicyDenied",
+                exceptionType: typeof(DbCallbackPolicyException).FullName);
+            return;
+        }
+
+        WriteScalarInvocation(
+            callback.Name,
+            callback.Arity ?? 0,
+            metadata,
+            elapsed: TimeSpan.Zero,
+            succeeded: false,
+            canceled: false,
+            exceptionMessage: decision.DenialReason,
+            decision,
+            errorCode: "PolicyDenied",
+            exceptionType: typeof(DbCallbackPolicyException).FullName);
+    }
+
     [UnconditionalSuppressMessage(
         "Trimming",
         "IL2026",
@@ -45,7 +160,10 @@ public static class DbCallbackDiagnostics
         TimeSpan elapsed,
         bool succeeded,
         bool canceled,
-        string? exceptionMessage)
+        string? exceptionMessage,
+        DbExtensionPolicyDecision? policyDecision = null,
+        string? errorCode = null,
+        string? exceptionType = null)
     {
         if (!IsInvocationEnabled)
             return;
@@ -60,10 +178,19 @@ public static class DbCallbackDiagnostics
                 ReadMetadata(metadataSnapshot, "surface"),
                 BuildLocation(metadataSnapshot),
                 ReadMetadata(metadataSnapshot, "event"),
+                ReadStartedAt(metadataSnapshot, elapsed),
+                ReadMetadata(metadataSnapshot, "correlationId") ?? ReadMetadata(metadataSnapshot, "correlation"),
+                ReadMetadata(metadataSnapshot, "ownerKind"),
+                ReadMetadata(metadataSnapshot, "ownerId"),
+                ReadMetadata(metadataSnapshot, "ownerName"),
                 elapsed,
                 succeeded,
                 TimedOut: false,
                 canceled,
+                policyDecision?.Allowed,
+                policyDecision?.DenialReason,
+                errorCode,
+                exceptionType,
                 ResultMessage: null,
                 exceptionMessage,
                 metadataSnapshot));
@@ -81,7 +208,10 @@ public static class DbCallbackDiagnostics
         bool timedOut,
         bool canceled,
         string? resultMessage,
-        string? exceptionMessage)
+        string? exceptionMessage,
+        DbExtensionPolicyDecision? policyDecision = null,
+        string? errorCode = null,
+        string? exceptionType = null)
     {
         if (!IsInvocationEnabled)
             return;
@@ -96,10 +226,67 @@ public static class DbCallbackDiagnostics
                 ReadMetadata(metadataSnapshot, "surface"),
                 BuildLocation(metadataSnapshot),
                 ReadMetadata(metadataSnapshot, "event"),
+                ReadStartedAt(metadataSnapshot, elapsed),
+                ReadMetadata(metadataSnapshot, "correlationId") ?? ReadMetadata(metadataSnapshot, "correlation"),
+                ReadMetadata(metadataSnapshot, "ownerKind"),
+                ReadMetadata(metadataSnapshot, "ownerId"),
+                ReadMetadata(metadataSnapshot, "ownerName"),
                 elapsed,
                 succeeded,
                 timedOut,
                 canceled,
+                policyDecision?.Allowed,
+                policyDecision?.DenialReason,
+                errorCode,
+                exceptionType,
+                resultMessage,
+                exceptionMessage,
+                metadataSnapshot));
+    }
+
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2026",
+        Justification = "Callback diagnostics are emitted only for subscribed hosts; the strongly typed event payload is part of the public diagnostics contract.")]
+    internal static void WriteValidationInvocation(
+        string name,
+        IReadOnlyDictionary<string, string>? metadata,
+        TimeSpan elapsed,
+        bool succeeded,
+        bool timedOut,
+        bool canceled,
+        string? resultMessage,
+        string? exceptionMessage,
+        DbExtensionPolicyDecision? policyDecision = null,
+        string? errorCode = null,
+        string? exceptionType = null)
+    {
+        if (!IsInvocationEnabled)
+            return;
+
+        IReadOnlyDictionary<string, string> metadataSnapshot = CopyMetadata(metadata);
+        Listener.Write(
+            InvocationEventName,
+            new DbCallbackInvocationDiagnostic(
+                AutomationCallbackKind.ValidationRule,
+                name,
+                Arity: null,
+                ReadMetadata(metadataSnapshot, "surface"),
+                BuildLocation(metadataSnapshot),
+                ReadMetadata(metadataSnapshot, "event"),
+                ReadStartedAt(metadataSnapshot, elapsed),
+                ReadMetadata(metadataSnapshot, "correlationId") ?? ReadMetadata(metadataSnapshot, "correlation"),
+                ReadMetadata(metadataSnapshot, "ownerKind"),
+                ReadMetadata(metadataSnapshot, "ownerId"),
+                ReadMetadata(metadataSnapshot, "ownerName"),
+                elapsed,
+                succeeded,
+                timedOut,
+                canceled,
+                policyDecision?.Allowed,
+                policyDecision?.DenialReason,
+                errorCode,
+                exceptionType,
                 resultMessage,
                 exceptionMessage,
                 metadataSnapshot));
@@ -136,6 +323,23 @@ public static class DbCallbackDiagnostics
             return $"action.steps[{actionStep}]";
 
         return null;
+    }
+
+    private static DateTimeOffset ReadStartedAt(
+        IReadOnlyDictionary<string, string> metadata,
+        TimeSpan elapsed)
+    {
+        if (TryReadMetadata(metadata, "startedAtUtc", out string? rawStartedAt) &&
+            DateTimeOffset.TryParse(
+                rawStartedAt,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsed))
+        {
+            return parsed;
+        }
+
+        return DateTimeOffset.UtcNow - elapsed;
     }
 
     private static string? ReadMetadata(IReadOnlyDictionary<string, string> metadata, string key)

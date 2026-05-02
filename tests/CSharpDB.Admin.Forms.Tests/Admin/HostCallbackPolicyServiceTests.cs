@@ -45,7 +45,7 @@ public sealed class HostCallbackPolicyServiceTests
         DbExtensionPolicyDecision decision = service.Evaluate(callback);
 
         Assert.False(decision.Allowed);
-        Assert.Equal("Capability 'Network' is not granted.", decision.DenialReason);
+        Assert.Equal("No grant exists for capability 'Network'.", decision.DenialReason);
         Assert.Contains(decision.Capabilities, capability =>
             capability.Name == DbExtensionCapability.Commands
             && capability.Status == DbExtensionCapabilityGrantStatus.Granted);

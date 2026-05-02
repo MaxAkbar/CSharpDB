@@ -317,6 +317,22 @@ public class JsonRoundtripTests
                             ],
                             Name: "ScoreActions")),
                     ]),
+                new ControlDefinition(
+                    "credit",
+                    "number",
+                    new Rect(0, 80, 120, 32),
+                    new BindingDefinition("CreditLimit", "TwoWay"),
+                    PropertyBag.Empty,
+                    new ValidationOverride(
+                        DisableInferredRules: false,
+                        AddRules:
+                        [
+                            new ValidationRule(
+                                "ValidateCreditLimit",
+                                "Credit limit is invalid.",
+                                new Dictionary<string, object?>()),
+                        ],
+                        DisableRuleIds: [])),
             ],
             EventBindings:
             [
@@ -329,6 +345,13 @@ public class JsonRoundtripTests
                     new DbActionStep(DbActionKind.RunCommand, CommandName: "ReusableOrderAudit"),
                 ],
                 Name: "ReusableOrderActions"),
+            ],
+            ValidationRules:
+            [
+                new ValidationRule(
+                    "ValidateOrderTotals",
+                    "Order totals are invalid.",
+                    new Dictionary<string, object?>()),
             ]);
 
         FormDefinition normalized = FormAutomationMetadata.NormalizeForExport(form);
@@ -345,6 +368,8 @@ public class JsonRoundtripTests
         DbAutomationScalarFunctionReference function = Assert.Single(deserialized.Automation.ScalarFunctions!);
         Assert.Equal("BoostScore", function.Name);
         Assert.Equal(1, function.Arity);
+        Assert.Contains(deserialized.Automation.ValidationRules!, rule => rule.Name == "ValidateCreditLimit");
+        Assert.Contains(deserialized.Automation.ValidationRules!, rule => rule.Name == "ValidateOrderTotals");
         Assert.Contains("\"automation\"", json);
     }
 
@@ -577,6 +602,53 @@ public class JsonRoundtripTests
 
         Assert.Equal("maxLength", deserialized.RuleId);
         Assert.Equal(100L, deserialized.Parameters["max"]);
+    }
+
+    [Fact]
+    public void FormAndControlValidationRules_RoundTripWithoutMigration()
+    {
+        var form = new FormDefinition(
+            "f-validation",
+            "Validation Form",
+            "Orders",
+            1,
+            "orders:v1",
+            new LayoutDefinition("absolute", 8, true, []),
+            [
+                new ControlDefinition(
+                    "credit",
+                    "number",
+                    new Rect(0, 0, 160, 32),
+                    new BindingDefinition("CreditLimit", "TwoWay"),
+                    PropertyBag.Empty,
+                    new ValidationOverride(
+                        DisableInferredRules: false,
+                        AddRules:
+                        [
+                            new ValidationRule(
+                                "ValidateCreditLimit",
+                                "Credit limit is invalid.",
+                                new Dictionary<string, object?> { ["minimum"] = 0L }),
+                        ],
+                        DisableRuleIds: [])),
+            ],
+            ValidationRules:
+            [
+                new ValidationRule(
+                    "ValidateOrderTotals",
+                    "Order totals are invalid.",
+                    new Dictionary<string, object?> { ["allowZero"] = false }),
+            ]);
+
+        string json = JsonSerializer.Serialize(form, Options);
+        FormDefinition deserialized = JsonSerializer.Deserialize<FormDefinition>(json, Options)!;
+
+        ValidationRule formRule = Assert.Single(deserialized.ValidationRules!);
+        Assert.Equal("ValidateOrderTotals", formRule.RuleId);
+        Assert.Equal(false, formRule.Parameters["allowZero"]);
+        ValidationRule controlRule = Assert.Single(deserialized.Controls[0].ValidationOverride!.AddRules);
+        Assert.Equal("ValidateCreditLimit", controlRule.RuleId);
+        Assert.Equal(0L, controlRule.Parameters["minimum"]);
     }
 
     [Fact]

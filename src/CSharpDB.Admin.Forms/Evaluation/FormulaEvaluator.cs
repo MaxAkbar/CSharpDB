@@ -26,6 +26,13 @@ public static class FormulaEvaluator
         string? formula,
         Func<string, double?> fieldResolver,
         DbFunctionRegistry? functions)
+        => Evaluate(formula, fieldResolver, functions, callbackPolicy: null);
+
+    public static double? Evaluate(
+        string? formula,
+        Func<string, double?> fieldResolver,
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
     {
         if (string.IsNullOrWhiteSpace(formula)) return null;
 
@@ -36,7 +43,7 @@ public static class FormulaEvaluator
 
         try
         {
-            var parser = new Parser(expr, fieldResolver, functions ?? DbFunctionRegistry.Empty);
+            var parser = new Parser(expr, fieldResolver, functions ?? DbFunctionRegistry.Empty, callbackPolicy);
             var result = parser.ParseExpression();
             // Ensure we consumed all input
             if (parser.Position < parser.Input.Length)
@@ -124,13 +131,19 @@ public static class FormulaEvaluator
         public int Position;
         private readonly Func<string, double?> _fieldResolver;
         private readonly DbFunctionRegistry _functions;
+        private readonly DbExtensionPolicy? _callbackPolicy;
 
-        public Parser(string input, Func<string, double?> fieldResolver, DbFunctionRegistry functions)
+        public Parser(
+            string input,
+            Func<string, double?> fieldResolver,
+            DbFunctionRegistry functions,
+            DbExtensionPolicy? callbackPolicy)
         {
             Input = input.AsSpan();
             Position = 0;
             _fieldResolver = fieldResolver;
             _functions = functions;
+            _callbackPolicy = callbackPolicy;
         }
 
         public double? ParseExpression()
@@ -292,14 +305,25 @@ public static class FormulaEvaluator
         private double? InvokeFunction(string functionName, List<DbValue> arguments)
         {
             if (!_functions.TryGetScalar(functionName, arguments.Count, out var definition))
+            {
+                DbCallbackDiagnostics.WriteMissingScalarInvocation(
+                    functionName,
+                    arguments.Count,
+                    CreateFormCallbackMetadata(functionName),
+                    $"Unknown scalar function '{functionName}'.");
                 return null;
+            }
 
             if (definition.Options.NullPropagating && arguments.Any(static argument => argument.IsNull))
                 return null;
 
             try
             {
-                DbValue value = definition.Invoke(arguments.ToArray(), CreateFormCallbackMetadata(functionName));
+                DbValue[] dbArguments = arguments.ToArray();
+                IReadOnlyDictionary<string, string>? metadata = CreateFormCallbackMetadata(functionName);
+                DbValue value = _callbackPolicy is null
+                    ? definition.Invoke(dbArguments, metadata)
+                    : definition.Invoke(dbArguments, metadata, _callbackPolicy, DbExtensionHostMode.Embedded);
                 return value.Type switch
                 {
                     DbType.Integer => value.AsInteger,
@@ -326,6 +350,7 @@ public static class FormulaEvaluator
             {
                 ["surface"] = "AdminForms",
                 ["location"] = $"formulas.functions.{functionName}",
+                ["correlationId"] = Guid.NewGuid().ToString("N"),
             }
             : null;
 }

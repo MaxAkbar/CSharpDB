@@ -4,8 +4,12 @@ using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Reports.Services;
 
-public sealed class DefaultReportEventDispatcher(DbCommandRegistry commands) : IReportEventDispatcher
+public sealed class DefaultReportEventDispatcher(
+    DbCommandRegistry commands,
+    DbExtensionPolicy? callbackPolicy = null) : IReportEventDispatcher
 {
+    private readonly DbExtensionPolicy _callbackPolicy = callbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy;
+
     public async Task<ReportEventDispatchResult> DispatchAsync(
         ReportDefinition report,
         ReportSourceDefinition source,
@@ -23,7 +27,12 @@ public sealed class DefaultReportEventDispatcher(DbCommandRegistry commands) : I
                 return ReportEventDispatchResult.Failure($"Report event '{eventKind}' has an empty command name.");
 
             if (!commands.TryGetCommand(binding.CommandName, out DbCommandDefinition definition))
-                return ReportEventDispatchResult.Failure($"Unknown report command '{binding.CommandName}' for event '{eventKind}'.");
+            {
+                Dictionary<string, string> missingMetadata = BuildMetadata(report, source, eventKind);
+                string message = $"Unknown report command '{binding.CommandName}' for event '{eventKind}'.";
+                DbCallbackDiagnostics.WriteMissingCommandInvocation(binding.CommandName, missingMetadata, message);
+                return ReportEventDispatchResult.Failure(message);
+            }
 
             Dictionary<string, DbValue> arguments = DbCommandArguments.FromObjectDictionary(runtimeArguments, binding.Arguments);
             Dictionary<string, string> metadata = BuildMetadata(report, source, eventKind);
@@ -31,7 +40,12 @@ public sealed class DefaultReportEventDispatcher(DbCommandRegistry commands) : I
             DbCommandResult result;
             try
             {
-                result = await definition.InvokeAsync(arguments, metadata, ct);
+                result = await definition.InvokeAsync(
+                    arguments,
+                    metadata,
+                    _callbackPolicy,
+                    DbExtensionHostMode.Embedded,
+                    ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -64,6 +78,10 @@ public sealed class DefaultReportEventDispatcher(DbCommandRegistry commands) : I
             ["surface"] = "AdminReports",
             ["reportId"] = report.ReportId,
             ["reportName"] = report.Name,
+            ["ownerKind"] = "Report",
+            ["ownerId"] = report.ReportId,
+            ["ownerName"] = report.Name,
+            ["correlationId"] = Guid.NewGuid().ToString("N"),
             ["sourceKind"] = source.Kind.ToString(),
             ["sourceName"] = source.Name,
             ["event"] = eventKind.ToString(),

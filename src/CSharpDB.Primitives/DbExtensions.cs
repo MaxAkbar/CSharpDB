@@ -105,6 +105,56 @@ public sealed record DbExtensionCapabilityDecision(
     string? Reason,
     string? PolicySource);
 
+public static class DbExtensionPolicies
+{
+    public const string DefaultHostCallbackPolicySource = "CSharpDB default host callback policy";
+
+    public static DbExtensionPolicy DefaultHostCallbackPolicy { get; } = new(
+        AllowExtensions: true,
+        Grants:
+        [
+            new DbExtensionCapabilityGrant(
+                DbExtensionCapability.ScalarFunctions,
+                DbExtensionCapabilityGrantStatus.Granted,
+                Reason: "Host-registered scalar functions are allowed by default.",
+                PolicySource: DefaultHostCallbackPolicySource),
+            new DbExtensionCapabilityGrant(
+                DbExtensionCapability.Commands,
+                DbExtensionCapabilityGrantStatus.Granted,
+                Reason: "Host-registered commands are allowed by default.",
+                PolicySource: DefaultHostCallbackPolicySource),
+            new DbExtensionCapabilityGrant(
+                DbExtensionCapability.ValidationRules,
+                DbExtensionCapabilityGrantStatus.Granted,
+                Reason: "Host-registered validation rules are allowed by default.",
+                PolicySource: DefaultHostCallbackPolicySource),
+        ],
+        DefaultTimeout: TimeSpan.FromSeconds(5),
+        RequireSignature: true,
+        AllowedHostModes: DbExtensionHostMode.Embedded);
+}
+
+public sealed class DbCallbackPolicyException : InvalidOperationException
+{
+    public DbCallbackPolicyException(
+        DbHostCallbackDescriptor callback,
+        DbExtensionPolicyDecision decision)
+        : base(CreateMessage(callback, decision))
+    {
+        Callback = callback;
+        Decision = decision;
+    }
+
+    public DbHostCallbackDescriptor Callback { get; }
+
+    public DbExtensionPolicyDecision Decision { get; }
+
+    private static string CreateMessage(
+        DbHostCallbackDescriptor callback,
+        DbExtensionPolicyDecision decision)
+        => $"Host callback '{callback.Name}' was denied by policy: {decision.DenialReason ?? "No denial reason was provided."}";
+}
+
 public sealed record DbExtensionInvocationRequest(
     string ExtensionId,
     DbExtensionExportKind Kind,
@@ -158,7 +208,7 @@ public static class DbExtensionPolicyEvaluator
             DbExtensionCapabilityDecision? deniedCapability = capabilityDecisions
                 .FirstOrDefault(static decision => decision.Status != DbExtensionCapabilityGrantStatus.Granted);
             if (deniedCapability is not null)
-                denialReason = $"Capability '{deniedCapability.Name}' is not granted.";
+                denialReason = deniedCapability.Reason ?? $"Capability '{deniedCapability.Name}' is not granted.";
         }
 
         return new DbExtensionPolicyDecision(
@@ -194,7 +244,7 @@ public static class DbExtensionPolicyEvaluator
             DbExtensionCapabilityDecision? deniedCapability = capabilityDecisions
                 .FirstOrDefault(static decision => decision.Status != DbExtensionCapabilityGrantStatus.Granted);
             if (deniedCapability is not null)
-                denialReason = $"Capability '{deniedCapability.Name}' is not granted.";
+                denialReason = deniedCapability.Reason ?? $"Capability '{deniedCapability.Name}' is not granted.";
         }
 
         TimeSpan timeout = callback.Timeout ?? policy.DefaultTimeout ?? DefaultExecutionTimeout;
@@ -216,34 +266,130 @@ public static class DbExtensionPolicyEvaluator
         if (requests is null || requests.Count == 0)
             return [];
 
-        var grantByCapability = (grants ?? [])
-            .GroupBy(static grant => grant.Name)
-            .ToDictionary(
-                static group => group.Key,
-                static group => group.Last(),
-                EqualityComparer<DbExtensionCapability>.Default);
-
         var decisions = new DbExtensionCapabilityDecision[requests.Count];
         for (int i = 0; i < requests.Count; i++)
         {
             DbExtensionCapabilityRequest request = requests[i];
-            if (!grantByCapability.TryGetValue(request.Name, out DbExtensionCapabilityGrant? grant))
+            DbExtensionCapabilityGrant[] candidateGrants = (grants ?? [])
+                .Where(grant => grant.Name == request.Name)
+                .ToArray();
+            if (candidateGrants.Length == 0)
             {
                 decisions[i] = new DbExtensionCapabilityDecision(
                     request.Name,
                     DbExtensionCapabilityGrantStatus.Denied,
-                    "No matching capability grant.",
+                    $"No grant exists for capability '{request.Name}'.",
                     PolicySource: null);
+                continue;
+            }
+
+            DbExtensionCapabilityGrant? deniedGrant = candidateGrants
+                .Where(grant => grant.Status == DbExtensionCapabilityGrantStatus.Denied)
+                .FirstOrDefault(grant => GrantMatchesRequest(grant, request));
+            if (deniedGrant is not null)
+            {
+                decisions[i] = new DbExtensionCapabilityDecision(
+                    request.Name,
+                    DbExtensionCapabilityGrantStatus.Denied,
+                    deniedGrant.Reason ?? $"Capability '{request.Name}' is denied for {FormatRequestScope(request)}.",
+                    deniedGrant.PolicySource);
+                continue;
+            }
+
+            DbExtensionCapabilityGrant? grantedGrant = candidateGrants
+                .Where(grant => grant.Status == DbExtensionCapabilityGrantStatus.Granted)
+                .FirstOrDefault(grant => GrantMatchesRequest(grant, request));
+            if (grantedGrant is not null)
+            {
+                decisions[i] = new DbExtensionCapabilityDecision(
+                    request.Name,
+                    DbExtensionCapabilityGrantStatus.Granted,
+                    grantedGrant.Reason,
+                    grantedGrant.PolicySource);
                 continue;
             }
 
             decisions[i] = new DbExtensionCapabilityDecision(
                 request.Name,
-                grant.Status,
-                grant.Reason,
-                grant.PolicySource);
+                DbExtensionCapabilityGrantStatus.Denied,
+                $"No grant for capability '{request.Name}' matches requested {FormatRequestScope(request)}.",
+                PolicySource: null);
         }
 
         return decisions;
     }
+
+    private static bool GrantMatchesRequest(
+        DbExtensionCapabilityGrant grant,
+        DbExtensionCapabilityRequest request)
+        => MatchesStringScope(grant.Exports, request.Exports)
+            && MatchesStringScope(grant.Tables, request.Tables)
+            && MatchesDictionaryScope(grant.Scope, request.Scope);
+
+    private static bool MatchesStringScope(
+        IReadOnlyList<string>? grantValues,
+        IReadOnlyList<string>? requestValues)
+    {
+        if (grantValues is null || grantValues.Count == 0)
+            return true;
+
+        if (requestValues is null || requestValues.Count == 0)
+            return false;
+
+        var allowed = new HashSet<string>(
+            grantValues.Where(static value => !string.IsNullOrWhiteSpace(value)),
+            StringComparer.OrdinalIgnoreCase);
+        if (allowed.Contains("*"))
+            return true;
+
+        return requestValues
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .All(allowed.Contains);
+    }
+
+    private static bool MatchesDictionaryScope(
+        IReadOnlyDictionary<string, string>? grantScope,
+        IReadOnlyDictionary<string, string>? requestScope)
+    {
+        if (grantScope is null || grantScope.Count == 0)
+            return true;
+
+        if (requestScope is null || requestScope.Count == 0)
+            return false;
+
+        foreach ((string key, string expectedValue) in grantScope)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                continue;
+
+            if (!requestScope.TryGetValue(key, out string? actualValue))
+                return false;
+
+            if (!string.Equals(expectedValue, "*", StringComparison.Ordinal) &&
+                !string.Equals(expectedValue, actualValue, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string FormatRequestScope(DbExtensionCapabilityRequest request)
+    {
+        string exports = FormatScopeList(request.Exports);
+        string tables = FormatScopeList(request.Tables);
+        string scope = request.Scope is { Count: > 0 }
+            ? string.Join(", ", request.Scope
+                .OrderBy(static item => item.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(static item => $"{item.Key}={item.Value}"))
+            : "*";
+
+        return $"exports [{exports}], tables [{tables}], scope [{scope}]";
+    }
+
+    private static string FormatScopeList(IReadOnlyList<string>? values)
+        => values is { Count: > 0 }
+            ? string.Join(", ", values)
+            : "*";
 }

@@ -10,6 +10,7 @@ public static class AdminReportsServiceCollectionExtensions
     public static IServiceCollection AddCSharpDbAdminReports(this IServiceCollection services)
     {
         services.TryAddSingleton(DbCommandRegistry.Empty);
+        services.TryAddSingleton(DbExtensionPolicies.DefaultHostCallbackPolicy);
         services.AddScoped<IReportRepository, DbReportRepository>();
         services.AddScoped<IReportSourceProvider, DbReportSourceProvider>();
         services.AddScoped<IReportGenerator, DefaultReportGenerator>();

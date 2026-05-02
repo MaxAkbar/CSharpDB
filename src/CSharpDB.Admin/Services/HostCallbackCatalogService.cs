@@ -1,9 +1,17 @@
+using System.Globalization;
 using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Models;
+using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Admin.Reports.Contracts;
 using CSharpDB.Admin.Reports.Models;
+using CSharpDB.Admin.Reports.Services;
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
+using CSharpDB.Client.Pipelines;
+using CSharpDB.Pipelines.Models;
 using CSharpDB.Primitives;
 using Microsoft.Extensions.DependencyInjection;
+using ClientTriggerSchema = CSharpDB.Client.Models.TriggerSchema;
 
 namespace CSharpDB.Admin.Services;
 
@@ -31,6 +39,40 @@ public sealed record HostCallbackCatalogEntry(
 
 public sealed class HostCallbackCatalogService
 {
+    private static readonly string[] SqlFunctionIgnoreList =
+    [
+        "ABS",
+        "AVG",
+        "CAST",
+        "CHECK",
+        "COALESCE",
+        "COUNT",
+        "DATE",
+        "DATETIME",
+        "IFNULL",
+        "JULIANDAY",
+        "KEY",
+        "LENGTH",
+        "LOWER",
+        "LTRIM",
+        "MAX",
+        "MIN",
+        "NULLIF",
+        "PRINTF",
+        "RAISE",
+        "RANDOM",
+        "ROUND",
+        "RTRIM",
+        "STRFTIME",
+        "SUBSTR",
+        "SUBSTRING",
+        "SUM",
+        "TIME",
+        "TRIM",
+        "TYPEOF",
+        "UPPER",
+    ];
+
     private readonly IServiceProvider _services;
 
     public HostCallbackCatalogService(IServiceProvider services)
@@ -42,9 +84,11 @@ public sealed class HostCallbackCatalogService
     {
         DbFunctionRegistry functions = _services.GetService<DbFunctionRegistry>() ?? DbFunctionRegistry.Empty;
         DbCommandRegistry commands = _services.GetService<DbCommandRegistry>() ?? DbCommandRegistry.Empty;
+        DbValidationRuleRegistry validationRules = _services.GetService<DbValidationRuleRegistry>() ?? DbValidationRuleRegistry.Empty;
 
         return functions.Callbacks
             .Concat(commands.Callbacks)
+            .Concat(validationRules.Callbacks)
             .OrderBy(static callback => callback.Kind)
             .ThenBy(static callback => callback.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static callback => callback.Arity ?? -1)
@@ -115,7 +159,12 @@ public sealed class HostCallbackCatalogService
             {
                 IReadOnlyList<FormDefinition> forms = await formRepository.ListAsync();
                 foreach (FormDefinition form in forms)
-                    AddReferences(references, form.Automation, "Form", form.FormId, form.Name);
+                    AddReferences(
+                        references,
+                        form.Automation ?? FormAutomationMetadata.Build(form),
+                        "Form",
+                        form.FormId,
+                        form.Name);
             }
             catch
             {
@@ -129,7 +178,12 @@ public sealed class HostCallbackCatalogService
             {
                 IReadOnlyList<ReportDefinition> reports = await reportRepository.ListAsync();
                 foreach (ReportDefinition report in reports)
-                    AddReferences(references, report.Automation, "Report", report.ReportId, report.Name);
+                    AddReferences(
+                        references,
+                        report.Automation ?? ReportAutomationMetadata.Build(report),
+                        "Report",
+                        report.ReportId,
+                        report.Name);
             }
             catch
             {
@@ -137,12 +191,139 @@ public sealed class HostCallbackCatalogService
             }
         }
 
+        if (_services.GetService<ICSharpDbClient>() is { } dbClient)
+            await AddDatabaseReferencesAsync(references, dbClient);
+
         return references
             .GroupBy(
                 static reference => GetReferenceKey(reference),
                 StringComparer.OrdinalIgnoreCase)
             .Select(static group => group.First())
             .ToArray();
+    }
+
+    private static async Task AddDatabaseReferencesAsync(List<HostCallbackReference> references, ICSharpDbClient dbClient)
+    {
+        try
+        {
+            IReadOnlyList<SavedQueryDefinition> savedQueries = await dbClient.GetSavedQueriesAsync();
+            foreach (SavedQueryDefinition query in savedQueries)
+            {
+                AddSqlScalarFunctionReferences(
+                    references,
+                    query.SqlText,
+                    surface: "savedQueries",
+                    locationPrefix: "sqlText",
+                    ownerKind: "SavedQuery",
+                    ownerId: query.Id.ToString(CultureInfo.InvariantCulture),
+                    ownerName: query.Name);
+            }
+        }
+        catch
+        {
+            // Keep the host callback catalog usable even if saved query metadata is unavailable.
+        }
+
+        try
+        {
+            IReadOnlyList<ProcedureDefinition> procedures = await dbClient.GetProceduresAsync(includeDisabled: true);
+            foreach (ProcedureDefinition procedure in procedures)
+            {
+                AddSqlScalarFunctionReferences(
+                    references,
+                    procedure.BodySql,
+                    surface: "procedures",
+                    locationPrefix: "bodySql",
+                    ownerKind: "Procedure",
+                    ownerId: procedure.Name,
+                    ownerName: procedure.Name);
+            }
+        }
+        catch
+        {
+            // Keep the host callback catalog usable even if procedure metadata is unavailable.
+        }
+
+        try
+        {
+            IReadOnlyList<ClientTriggerSchema> triggers = await dbClient.GetTriggersAsync();
+            foreach (ClientTriggerSchema trigger in triggers)
+            {
+                AddSqlScalarFunctionReferences(
+                    references,
+                    trigger.BodySql,
+                    surface: "triggers",
+                    locationPrefix: "bodySql",
+                    ownerKind: "Trigger",
+                    ownerId: trigger.TriggerName,
+                    ownerName: trigger.TriggerName);
+            }
+        }
+        catch
+        {
+            // Keep the host callback catalog usable even if trigger metadata is unavailable.
+        }
+
+        await AddPipelineReferencesAsync(references, dbClient);
+    }
+
+    private static async Task AddPipelineReferencesAsync(List<HostCallbackReference> references, ICSharpDbClient dbClient)
+    {
+        try
+        {
+            IReadOnlyList<string> tableNames = await dbClient.GetTableNamesAsync();
+            if (!tableNames.Contains("_etl_pipelines", StringComparer.OrdinalIgnoreCase)
+                || !tableNames.Contains("_etl_pipeline_versions", StringComparer.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var pipelines = new CSharpDbPipelineCatalogClient(dbClient);
+            IReadOnlyList<PipelineDefinitionSummary> summaries = await pipelines.ListPipelinesAsync(limit: 500);
+            foreach (PipelineDefinitionSummary summary in summaries)
+            {
+                PipelinePackageDefinition? package = await pipelines.GetPipelineAsync(summary.Name);
+                if (package is null)
+                    continue;
+
+                DbAutomationMetadata automation = package.Automation ?? PipelineAutomationMetadata.Build(package);
+                AddReferences(
+                    references,
+                    automation,
+                    ownerKind: "Pipeline",
+                    ownerId: summary.Name,
+                    ownerName: summary.Name);
+            }
+        }
+        catch
+        {
+            // Keep the host callback catalog usable even if pipeline metadata is unavailable.
+        }
+    }
+
+    private static void AddSqlScalarFunctionReferences(
+        List<HostCallbackReference> references,
+        string? sql,
+        string surface,
+        string locationPrefix,
+        string ownerKind,
+        string ownerId,
+        string ownerName)
+    {
+        int index = 0;
+        foreach (DbAutomationScalarFunctionCall call in DbAutomationExpressionInspector.FindScalarFunctionCalls(sql, SqlFunctionIgnoreList))
+        {
+            references.Add(new HostCallbackReference(
+                AutomationCallbackKind.ScalarFunction,
+                call.Name,
+                call.Arity,
+                surface,
+                $"{locationPrefix}.functions[{index}]",
+                ownerKind,
+                ownerId,
+                ownerName));
+            index++;
+        }
     }
 
     private static void AddReferences(
@@ -176,6 +357,19 @@ public sealed class HostCallbackCatalogService
                 function.Arity,
                 function.Surface,
                 function.Location,
+                ownerKind,
+                ownerId,
+                ownerName));
+        }
+
+        foreach (DbAutomationValidationRuleReference validationRule in metadata.ValidationRules ?? [])
+        {
+            references.Add(new HostCallbackReference(
+                AutomationCallbackKind.ValidationRule,
+                validationRule.Name,
+                Arity: null,
+                validationRule.Surface,
+                validationRule.Location,
                 ownerKind,
                 ownerId,
                 ownerName));

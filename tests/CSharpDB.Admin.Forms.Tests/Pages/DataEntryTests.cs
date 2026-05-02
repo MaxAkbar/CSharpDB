@@ -789,6 +789,8 @@ public sealed class DataEntryTests
     {
         public IReadOnlyList<ValidationRule> InferRules(FormFieldDefinition field) => [];
         public IReadOnlyList<ValidationError> Evaluate(FormDefinition form, IDictionary<string, object?> record) => [];
+        public Task<IReadOnlyList<ValidationError>> EvaluateAsync(FormDefinition form, IDictionary<string, object?> record, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<ValidationError>>([]);
     }
 
     private sealed class StubJsRuntime : IJSRuntime

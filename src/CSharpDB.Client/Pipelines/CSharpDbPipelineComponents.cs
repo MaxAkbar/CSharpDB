@@ -4,6 +4,7 @@ using CSharpDB.Pipelines.Runtime;
 using CSharpDB.Pipelines.Runtime.BuiltIns;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using DbExtensionPolicy = CSharpDB.Primitives.DbExtensionPolicy;
 using DbFunctionRegistry = CSharpDB.Primitives.DbFunctionRegistry;
 
 namespace CSharpDB.Client.Pipelines;
@@ -13,10 +14,13 @@ public sealed class CSharpDbPipelineComponentFactory : IPipelineComponentFactory
     private readonly ICSharpDbClient _client;
     private readonly DefaultPipelineComponentFactory _fallback;
 
-    public CSharpDbPipelineComponentFactory(ICSharpDbClient client, DbFunctionRegistry? functions = null)
+    public CSharpDbPipelineComponentFactory(
+        ICSharpDbClient client,
+        DbFunctionRegistry? functions = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         _client = client;
-        _fallback = new DefaultPipelineComponentFactory(functions);
+        _fallback = new DefaultPipelineComponentFactory(functions, callbackPolicy);
     }
 
     public IPipelineSource CreateSource(PipelineSourceDefinition definition) => definition.Kind switch

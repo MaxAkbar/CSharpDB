@@ -26,6 +26,10 @@ internal static class FormCommandInvocation
             ["formId"] = form.FormId,
             ["formName"] = form.Name,
             ["tableName"] = form.TableName,
+            ["ownerKind"] = "Form",
+            ["ownerId"] = form.FormId,
+            ["ownerName"] = form.Name,
+            ["correlationId"] = Guid.NewGuid().ToString("N"),
         };
     }
 
