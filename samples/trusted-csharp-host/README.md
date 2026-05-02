@@ -9,11 +9,14 @@ It demonstrates:
 - registering a trusted scalar function with `DbFunctionRegistry`
 - calling that function from SQL
 - registering a trusted command with `DbCommandRegistry`
+- registering trusted Admin Forms validation rules with
+  `DbValidationRuleRegistry`
 - exporting Admin Forms automation metadata
 - validating automation metadata against registered callbacks
 - generating starter C# registration stubs from automation metadata
 - running an Admin Forms action sequence that sets a field
 - invoking a reusable named Admin Forms action sequence that calls the command
+- running field-level and form-level validation callbacks
 - inspecting an Access-style macro form manifest with open form, filter,
   run SQL, and conditional UI rule actions
 - inspecting callback arguments and metadata in console output
@@ -30,7 +33,8 @@ only.
 4. Watch the sample print exported automation metadata.
 5. Watch validation confirm that referenced callbacks are registered.
 6. Inspect the generated starter C# registration stub.
-7. Put breakpoints in `Slugify` or the `AuditCustomerChange` command callback.
+7. Put breakpoints in `Slugify`, `AuditCustomerChange`, or one of the
+   validation rule callbacks.
 
 ## Developer Handoff Story
 
@@ -69,6 +73,28 @@ builder.AddCommand(
 
         return DbCommandResult.Success(
             $"Customer {customerId} changed to {status}.");
+});
+```
+
+Validation rules use the same host-owned pattern:
+
+```csharp
+builder.AddRule(
+    "CustomerNamePolicy",
+    new DbValidationRuleOptions(
+        Description: "Rejects placeholder customer names.",
+        Timeout: TimeSpan.FromSeconds(2)),
+    static (context, ct) =>
+    {
+        string text = context.Value.IsNull ? string.Empty : context.Value.AsText;
+
+        DbValidationRuleResult result = text.Contains("test", StringComparison.OrdinalIgnoreCase)
+            ? DbValidationRuleResult.Failure(
+                context.FallbackMessage ?? "Customer name is not allowed.",
+                context.FieldName,
+                context.RuleName)
+            : DbValidationRuleResult.Success();
+        return ValueTask.FromResult(result);
     });
 ```
 
@@ -90,10 +116,14 @@ Expected output includes:
 - generated starter registration code
 - slug values from SQL
 - an audit entry from the reusable form action sequence
+- validation errors from a field rule and a form rule
 
 The audit entry prints callback metadata such as the form event and reusable
 action sequence name, along with callback arguments passed from the form record
 and action sequence.
+
+The validation result prints the failing field, rule id, and message. The same
+rules block save in Admin Forms when referenced by saved form metadata.
 
 ## Files
 

@@ -8,6 +8,9 @@ For an end-to-end app-builder walkthrough that combines Admin Forms, collections
 macro actions, reports, trusted callbacks, and callback readiness, see the
 [Fulfillment Ops Admin Automation tutorial](../tutorials/fulfillment-ops-admin-automation.md).
 
+For Admin Forms save-time business validation, see
+[Trusted Validation Rules](validation-rules.md).
+
 ---
 
 ## Trusted Commands
@@ -59,6 +62,20 @@ Every registered command exposes a `DbHostCallbackDescriptor` through
 `DbCommandDefinition.Descriptor` and `DbCommandRegistry.Callbacks`. The
 descriptor is read-only metadata for policy checks, diagnostics, and Admin
 visibility. It does not sandbox the command.
+
+---
+
+## Trusted Validation Rules
+
+Admin Forms can also call host-registered validation rules before save. Rules
+are registered in the host app with `AddCSharpDbAdminFormValidationRules(...)`
+and referenced from form or control metadata by name. Missing, denied, timed
+out, throwing, or failed validation rules block save and appear in the callback
+diagnostics path.
+
+See [Trusted Validation Rules](validation-rules.md) for registration examples,
+field-level and form-level metadata, policy grants, diagnostics behavior, and
+the runnable sample.
 
 ---
 

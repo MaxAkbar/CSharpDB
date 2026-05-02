@@ -42,19 +42,71 @@ DbCommandRegistry commands = DbCommandRegistry.Create(builder =>
         });
 });
 
+DbValidationRuleRegistry validationRules = DbValidationRuleRegistry.Create(builder =>
+{
+    builder.AddRule(
+        "CustomerNamePolicy",
+        new DbValidationRuleOptions(
+            Description: "Rejects placeholder customer names.",
+            Timeout: TimeSpan.FromSeconds(2)),
+        static (context, _) =>
+        {
+            string text = context.Value.IsNull ? string.Empty : context.Value.AsText;
+            string blockedText = context.Parameters.TryGetValue("blockedText", out DbValue configured)
+                && !configured.IsNull
+                    ? configured.AsText
+                    : "test";
+
+            DbValidationRuleResult result = text.Contains(blockedText, StringComparison.OrdinalIgnoreCase)
+                ? DbValidationRuleResult.Failure(
+                    context.FallbackMessage ?? "Customer name is not allowed.",
+                    context.FieldName,
+                    context.RuleName)
+                : DbValidationRuleResult.Success();
+            return ValueTask.FromResult(result);
+        });
+
+    builder.AddRule(
+        "CustomerReadyForInsert",
+        new DbValidationRuleOptions(
+            Description: "Requires the customer workflow status before save."),
+        static context =>
+        {
+            string requiredStatus = context.Parameters.TryGetValue("requiredStatus", out DbValue configured)
+                && !configured.IsNull
+                    ? configured.AsText
+                    : "Ready";
+            string status = context.Record.TryGetValue("Status", out DbValue value) && !value.IsNull
+                ? value.AsText
+                : string.Empty;
+
+            return string.Equals(status, requiredStatus, StringComparison.OrdinalIgnoreCase)
+                ? DbValidationRuleResult.Success()
+                : DbValidationRuleResult.Failure(
+                    [
+                        new DbValidationFailure(
+                            "Status",
+                            context.FallbackMessage ?? $"Status must be {requiredStatus}.",
+                            context.RuleName),
+                    ],
+                    "Customer record is not ready.");
+        });
+});
+
 FormDefinition form = FormAutomationMetadata.NormalizeForExport(CreateCustomerEntryForm());
 DbAutomationMetadata automation = form.Automation
     ?? throw new InvalidOperationException("The sample form should export automation metadata.");
 
 PrintAutomationMetadata(automation);
-ValidateAutomationMetadata(automation, functions, commands);
+ValidateAutomationMetadata(automation, functions, commands, validationRules);
 PrintGeneratedStub(automation);
 
 await RunSqlScalarFunctionDemoAsync(functions);
 await RunAdminFormsAutomationDemoAsync(form, commands, auditLog);
+await RunAdminFormsValidationDemoAsync(form, validationRules);
 
 Console.WriteLine();
-Console.WriteLine("Set breakpoints inside Slugify or AuditCustomerChange, then run this sample from VS Code.");
+Console.WriteLine("Set breakpoints inside Slugify, AuditCustomerChange, or a validation rule, then run this sample from VS Code.");
 
 static async Task RunSqlScalarFunctionDemoAsync(DbFunctionRegistry functions)
 {
@@ -111,6 +163,26 @@ static async Task RunAdminFormsAutomationDemoAsync(
         Console.WriteLine($"  Audit: {auditEntry}");
 }
 
+static async Task RunAdminFormsValidationDemoAsync(
+    FormDefinition form,
+    DbValidationRuleRegistry validationRules)
+{
+    var record = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Id"] = 43L,
+        ["Name"] = "Test Account",
+        ["Status"] = "Draft",
+    };
+
+    var validation = new DefaultValidationInferenceService(validationRules, DbExtensionPolicies.DefaultHostCallbackPolicy);
+    IReadOnlyList<ValidationError> errors = await validation.EvaluateAsync(form, record);
+
+    Console.WriteLine();
+    Console.WriteLine("Admin Forms validation result:");
+    foreach (ValidationError error in errors)
+        Console.WriteLine($"  {error.FieldName}: {error.RuleId} - {error.Message}");
+}
+
 static void PrintAutomationMetadata(DbAutomationMetadata automation)
 {
     Console.WriteLine("Exported automation metadata:");
@@ -122,17 +194,22 @@ static void PrintAutomationMetadata(DbAutomationMetadata automation)
 
     foreach (DbAutomationCommandReference command in automation.Commands ?? [])
         Console.WriteLine($"  command {command.Name} from {command.Surface}:{command.Location}");
+
+    foreach (DbAutomationValidationRuleReference rule in automation.ValidationRules ?? [])
+        Console.WriteLine($"  validation {rule.Name} from {rule.Surface}:{rule.Location}");
 }
 
 static void ValidateAutomationMetadata(
     DbAutomationMetadata automation,
     DbFunctionRegistry functions,
-    DbCommandRegistry commands)
+    DbCommandRegistry commands,
+    DbValidationRuleRegistry validationRules)
 {
     AutomationValidationResult result = AutomationManifestValidator.Validate(
         automation,
         functions,
         commands,
+        validationRules,
         new AutomationManifestValidationOptions(RequireMetadata: true));
 
     Console.WriteLine();
@@ -180,6 +257,38 @@ static FormDefinition CreateCustomerEntryForm()
                     ["formula"] = "=Slugify(Name)",
                 }),
                 ValidationOverride: null),
+            new ControlDefinition(
+                "customer-name",
+                "text",
+                new Rect(24, 72, 240, 32),
+                Binding: new BindingDefinition("Name", "TwoWay"),
+                Props: new PropertyBag(new Dictionary<string, object?>
+                {
+                    ["label"] = "Name",
+                }),
+                ValidationOverride: new ValidationOverride(
+                    DisableInferredRules: false,
+                    AddRules:
+                    [
+                        new ValidationRule(
+                            "CustomerNamePolicy",
+                            "Use the real customer name, not a placeholder.",
+                            new Dictionary<string, object?>
+                            {
+                                ["blockedText"] = "test",
+                            }),
+                    ],
+                    DisableRuleIds: [])),
+            new ControlDefinition(
+                "customer-status",
+                "text",
+                new Rect(24, 120, 160, 32),
+                Binding: new BindingDefinition("Status", "TwoWay"),
+                Props: new PropertyBag(new Dictionary<string, object?>
+                {
+                    ["label"] = "Status",
+                }),
+                ValidationOverride: null),
         ],
         EventBindings:
         [
@@ -211,6 +320,16 @@ static FormDefinition CreateCustomerEntryForm()
                     CommandName: "AuditCustomerChange"),
             ],
             Name: "ReusableCustomerAudit"),
+        ],
+        ValidationRules:
+        [
+            new ValidationRule(
+                "CustomerReadyForInsert",
+                "Customer status must be Ready before save.",
+                new Dictionary<string, object?>
+                {
+                    ["requiredStatus"] = "Ready",
+                }),
         ]);
 
 static string Slugify(string text)

@@ -44,7 +44,7 @@
             </select>
             <select class="callbacks-filter status" value="@_statusFilter" @onchange="OnStatusFilterChanged">
                 <option value="">All status</option>
-                <option value="missing">Missing</option>
+                <option value="missing">Not registered</option>
                 <option value="registered">Registered</option>
                 <option value="referenced">Referenced</option>
             </select>
@@ -233,6 +233,7 @@
                 {
                     <p class="callbacks-description">
                         This callback is referenced by saved database metadata, but it is not registered in the current Admin host.
+                        Remove it by editing the referenced object below, or register the callback in host code.
                     </p>
 
                     <div class="callbacks-detail-actions">
@@ -243,7 +244,7 @@
 
                     <table class="schema-table callbacks-detail-table">
                         <tbody>
-                            <tr><th>Registration</th><td><span class="callbacks-policy-badge missing">Missing</span></td></tr>
+                            <tr><th>Registration</th><td><span class="callbacks-policy-badge missing">Not registered</span></td></tr>
                             <tr><th>Kind</th><td>@GetKindLabel(selected.Kind)</td></tr>
                             <tr><th>Arity</th><td>@FormatArity(selected.Arity)</td></tr>
                             <tr><th>References</th><td>@selected.References.Count</td></tr>
@@ -548,7 +549,7 @@
         };
 
     private static string FormatRuntime(HostCallbackCatalogEntry entry)
-        => entry.Descriptor?.Runtime.ToString() ?? "Missing";
+        => entry.Descriptor?.Runtime.ToString() ?? "Not registered";
 
     private static string FormatArity(int? arity)
         => arity?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
@@ -616,7 +617,7 @@
     private string GetEntryStatus(HostCallbackCatalogEntry entry)
     {
         if (entry.IsMissingRegistration)
-            return "Missing";
+            return "Not registered";
 
         return entry.Descriptor is { } descriptor
             ? GetPolicyStatus(CallbackPolicy.Evaluate(descriptor))
@@ -640,7 +641,7 @@
 
         return _readiness.Ready
             ? $"Ready · {_readiness.RegisteredCount} registered"
-            : $"{_readiness.MissingCount} missing · {_readiness.ReferencedCount} referenced";
+            : $"{_readiness.MissingCount} unregistered · {_readiness.ReferencedCount} referenced";
     }
 
     private string GetReadinessBadgeClass()

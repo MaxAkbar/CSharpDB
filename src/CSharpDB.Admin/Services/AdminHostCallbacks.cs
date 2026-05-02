@@ -59,6 +59,11 @@ public static class AdminHostCallbacks
                     DbExtensionCapabilityGrantStatus.Granted,
                     Reason: "Admin host registered trusted commands.",
                     PolicySource: PolicySource),
+                new DbExtensionCapabilityGrant(
+                    DbExtensionCapability.ValidationRules,
+                    DbExtensionCapabilityGrantStatus.Granted,
+                    Reason: "Admin host registered validation rules.",
+                    PolicySource: PolicySource),
             ],
             DefaultTimeout: TimeSpan.FromSeconds(5),
             RequireSignature: true,

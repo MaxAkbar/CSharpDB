@@ -352,7 +352,13 @@ public class HostCallbackCatalogServiceTests
                     {
                         Id = 12,
                         Name = "Customer Score Query",
-                        SqlText = "SELECT NormalizeName(Name), COUNT(*) FROM Customers GROUP BY NormalizeName(Name);",
+                        SqlText = """
+                            SELECT NormalizeName(Name), COUNT(*)
+                            FROM Customers
+                            WHERE Status IN ('Open', 'Ready')
+                              AND EXISTS (SELECT 1 FROM Regions WHERE Regions.Id = Customers.RegionId)
+                            GROUP BY NormalizeName(Name);
+                            """,
                     },
                 ],
                 procedures:
@@ -397,6 +403,9 @@ public class HostCallbackCatalogServiceTests
         Assert.Equal("Trigger", Assert.Single(auditScore.References).OwnerKind);
 
         Assert.DoesNotContain(entries, entry => entry.Name == "COUNT");
+        Assert.DoesNotContain(entries, entry => entry.Name == "EXISTS");
+        Assert.DoesNotContain(entries, entry => entry.Name == "IN");
+        Assert.DoesNotContain(entries, entry => entry.Name == "VALUES");
     }
 
     private static FormDefinition CreateForm(string formId, string tableName)

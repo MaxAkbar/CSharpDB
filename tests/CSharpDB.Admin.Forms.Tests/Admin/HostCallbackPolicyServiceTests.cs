@@ -13,6 +13,7 @@ public sealed class HostCallbackPolicyServiceTests
         [
             .. AdminHostCallbacks.CreateFunctionRegistry().Callbacks,
             .. AdminHostCallbacks.CreateCommandRegistry().Callbacks,
+            .. CreateValidationRuleRegistry().Callbacks,
         ];
 
         Assert.NotEmpty(callbacks);
@@ -70,4 +71,13 @@ public sealed class HostCallbackPolicyServiceTests
         Assert.True(decision.Allowed);
         Assert.Equal(TimeSpan.FromSeconds(17), decision.Timeout);
     }
+
+    private static DbValidationRuleRegistry CreateValidationRuleRegistry()
+        => DbValidationRuleRegistry.Create(builder =>
+        {
+            builder.AddRule(
+                "AdminHostValidationRule",
+                new DbValidationRuleOptions(Description: "Test validation rule for Admin host policy."),
+                static (_, _) => ValueTask.FromResult(DbValidationRuleResult.Success()));
+        });
 }

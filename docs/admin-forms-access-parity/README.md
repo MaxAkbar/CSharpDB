@@ -140,3 +140,8 @@ Those foundations should be added before expanding the control palette too far.
 Custom form controls can now be registered without changing saved form JSON. See
 [Form Control Extensibility](form-control-extensibility.md) for the registry API,
 component contexts, generic property schema, and the sample rating control.
+
+Host-owned validation callbacks can be registered for field-level and form-level
+save checks. See
+[Trusted Validation Rules](../trusted-csharp-functions/validation-rules.md) for
+registration, designer metadata, policy, diagnostics, and sample code.
