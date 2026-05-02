@@ -60,6 +60,7 @@ public sealed class HostCallbackCatalogService
         "GROUP",
         "IFNULL",
         "IN",
+        "INTO",
         "JULIANDAY",
         "KEY",
         "LENGTH",
@@ -330,8 +331,9 @@ public sealed class HostCallbackCatalogService
         string ownerId,
         string ownerName)
     {
+        string? inspectedSql = MaskSqlTableColumnListTargets(sql);
         int index = 0;
-        foreach (DbAutomationScalarFunctionCall call in DbAutomationExpressionInspector.FindScalarFunctionCalls(sql, SqlFunctionIgnoreList))
+        foreach (DbAutomationScalarFunctionCall call in DbAutomationExpressionInspector.FindScalarFunctionCalls(inspectedSql, SqlFunctionIgnoreList))
         {
             references.Add(new HostCallbackReference(
                 AutomationCallbackKind.ScalarFunction,
@@ -345,6 +347,204 @@ public sealed class HostCallbackCatalogService
             index++;
         }
     }
+
+    private static string? MaskSqlTableColumnListTargets(string? sql)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+            return sql;
+
+        ReadOnlySpan<char> input = sql.AsSpan();
+        char[] output = sql.ToCharArray();
+        for (int i = 0; i < input.Length; i++)
+        {
+            char current = input[i];
+            if (current is '\'' or '"')
+            {
+                i = SkipQuoted(input, i, current);
+                continue;
+            }
+
+            if (current == '[')
+            {
+                i = SkipBracketed(input, i);
+                continue;
+            }
+
+            if (!IsIdentifierStart(current))
+                continue;
+
+            int start = i;
+            i++;
+            while (i < input.Length && IsIdentifierPart(input[i]))
+                i++;
+
+            int end = i;
+            int cursor = SkipWhitespaceForward(input, end);
+            if (cursor < input.Length
+                && input[cursor] == '('
+                && IsSqlTableColumnListTarget(input, start))
+            {
+                for (int j = start; j < end; j++)
+                    output[j] = ' ';
+            }
+
+            i = end - 1;
+        }
+
+        return new string(output);
+    }
+
+    private static bool IsSqlTableColumnListTarget(ReadOnlySpan<char> input, int identifierStart)
+    {
+        int qualifiedStart = GetQualifiedIdentifierStart(input, identifierStart);
+        string? previous = GetPreviousIdentifier(input, qualifiedStart);
+        if (previous is null)
+            return false;
+
+        if (previous.Equals("INTO", StringComparison.OrdinalIgnoreCase)
+            || previous.Equals("TABLE", StringComparison.OrdinalIgnoreCase)
+            || previous.Equals("REFERENCES", StringComparison.OrdinalIgnoreCase)
+            || previous.Equals("WITH", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (previous.Equals("EXISTS", StringComparison.OrdinalIgnoreCase))
+            return HasEarlierStatementKeyword(input, qualifiedStart, "CREATE", "TABLE");
+
+        if (previous.Equals("ON", StringComparison.OrdinalIgnoreCase))
+            return HasEarlierStatementKeyword(input, qualifiedStart, "CREATE", "INDEX");
+
+        return false;
+    }
+
+    private static int GetQualifiedIdentifierStart(ReadOnlySpan<char> input, int identifierStart)
+    {
+        int result = identifierStart;
+        while (true)
+        {
+            int dot = SkipWhitespaceBackward(input, result - 1);
+            if (dot < 0 || input[dot] != '.')
+                return result;
+
+            int previousEnd = SkipWhitespaceBackward(input, dot - 1);
+            if (previousEnd < 0 || !IsIdentifierPart(input[previousEnd]))
+                return result;
+
+            int previousStart = previousEnd;
+            while (previousStart > 0 && IsIdentifierPart(input[previousStart - 1]))
+                previousStart--;
+
+            result = previousStart;
+        }
+    }
+
+    private static bool HasEarlierStatementKeyword(ReadOnlySpan<char> input, int beforeIndex, params string[] required)
+    {
+        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int cursor = beforeIndex - 1;
+        while (cursor >= 0)
+        {
+            char current = input[cursor];
+            if (current == ';')
+                break;
+
+            if (!IsIdentifierPart(current))
+            {
+                cursor--;
+                continue;
+            }
+
+            int end = cursor + 1;
+            while (cursor >= 0 && IsIdentifierPart(input[cursor]))
+                cursor--;
+
+            string keyword = input[(cursor + 1)..end].ToString();
+            foreach (string value in required)
+            {
+                if (keyword.Equals(value, StringComparison.OrdinalIgnoreCase))
+                    found.Add(value);
+            }
+
+            if (found.Count == required.Length)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string? GetPreviousIdentifier(ReadOnlySpan<char> input, int beforeIndex)
+    {
+        int end = SkipWhitespaceBackward(input, beforeIndex - 1);
+        if (end < 0)
+            return null;
+
+        if (input[end] == ']')
+        {
+            int start = end - 1;
+            while (start >= 0 && input[start] != '[')
+                start--;
+
+            return start >= 0
+                ? input[(start + 1)..end].ToString()
+                : null;
+        }
+
+        if (!IsIdentifierPart(input[end]))
+            return null;
+
+        int identifierStart = end;
+        while (identifierStart > 0 && IsIdentifierPart(input[identifierStart - 1]))
+            identifierStart--;
+
+        return input[identifierStart..(end + 1)].ToString();
+    }
+
+    private static int SkipWhitespaceForward(ReadOnlySpan<char> input, int start)
+    {
+        int cursor = start;
+        while (cursor < input.Length && char.IsWhiteSpace(input[cursor]))
+            cursor++;
+
+        return cursor;
+    }
+
+    private static int SkipWhitespaceBackward(ReadOnlySpan<char> input, int start)
+    {
+        int cursor = start;
+        while (cursor >= 0 && char.IsWhiteSpace(input[cursor]))
+            cursor--;
+
+        return cursor;
+    }
+
+    private static int SkipQuoted(ReadOnlySpan<char> input, int start, char quote)
+    {
+        for (int i = start + 1; i < input.Length; i++)
+        {
+            if (input[i] == quote)
+                return i;
+        }
+
+        return input.Length - 1;
+    }
+
+    private static int SkipBracketed(ReadOnlySpan<char> input, int start)
+    {
+        for (int i = start + 1; i < input.Length; i++)
+        {
+            if (input[i] == ']')
+                return i;
+        }
+
+        return input.Length - 1;
+    }
+
+    private static bool IsIdentifierStart(char value)
+        => char.IsLetter(value) || value == '_';
+
+    private static bool IsIdentifierPart(char value)
+        => char.IsLetterOrDigit(value) || value == '_';
 
     private static void AddReferences(
         List<HostCallbackReference> references,

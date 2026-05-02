@@ -366,7 +366,12 @@ public class HostCallbackCatalogServiceTests
                     new CSharpDB.Client.Models.ProcedureDefinition
                     {
                         Name = "RefreshCustomerRisk",
-                        BodySql = "UPDATE Customers SET Risk = RiskScore(Total, Region);",
+                        BodySql = """
+                            CREATE INDEX idx_ops_events_entity_date ON ops_events (entity_type, event_date);
+                            INSERT INTO ops_events (entity_type, entity_id, event_type)
+                            VALUES ('customer', @customerId, 'risk-refreshed');
+                            UPDATE Customers SET Risk = RiskScore(Total, Region);
+                            """,
                     },
                 ],
                 triggers:
@@ -377,7 +382,11 @@ public class HostCallbackCatalogServiceTests
                         TableName = "Customers",
                         Timing = CSharpDB.Client.Models.TriggerTiming.After,
                         Event = CSharpDB.Client.Models.TriggerEvent.Update,
-                        BodySql = "INSERT INTO Audit(Value) VALUES(AuditScore(new.Risk));",
+                        BodySql = """
+                            INSERT INTO Audit(Value) VALUES(AuditScore(new.Risk));
+                            INSERT INTO ops_events (entity_type, entity_id, event_type)
+                            VALUES ('customer', new.Id, 'updated');
+                            """,
                     },
                 ]))
             .AddScoped<HostCallbackCatalogService>()
@@ -405,6 +414,9 @@ public class HostCallbackCatalogServiceTests
         Assert.DoesNotContain(entries, entry => entry.Name == "COUNT");
         Assert.DoesNotContain(entries, entry => entry.Name == "EXISTS");
         Assert.DoesNotContain(entries, entry => entry.Name == "IN");
+        Assert.DoesNotContain(entries, entry => entry.Name == "INTO");
+        Assert.DoesNotContain(entries, entry => entry.Name == "Audit");
+        Assert.DoesNotContain(entries, entry => entry.Name == "ops_events");
         Assert.DoesNotContain(entries, entry => entry.Name == "VALUES");
     }
 
