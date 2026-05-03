@@ -285,10 +285,10 @@
                     <div class="roadmap-grid">
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
-                                <h4>User-Defined Functions</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <h4>User-Defined Functions and Commands</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Partial</span>
                             </div>
-                            <p>Broader built-in scalar function registry, user-registered C# functions, and native plugin extensions.</p>
+                            <p>Trusted in-process C# scalar functions are implemented for SQL, triggers/procedures, direct clients, Admin Forms/Reports, and pipelines; trusted commands now back supported Admin automation surfaces. Aggregate/table-valued UDFs, richer macro flow, native plugins, database-owned code modules, and sandboxed UDFs remain future work.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -458,6 +458,13 @@
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
+                                <h4>API-Level Sharding</h4>
+                                <span class="roadmap-badge roadmap-badge-research">Research</span>
+                            </div>
+                            <p>Route API/daemon requests across multiple warm CSharpDB database files so independent tenants or shard keys can use separate WAL and commit paths, with v1 focused on single-shard writes and point reads.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
                                 <h4>Replication &amp; Change Feed</h4>
                                 <span class="roadmap-badge roadmap-badge-research">Research</span>
                             </div>
@@ -480,7 +487,7 @@
                     <table class="doc-table">
                         <thead><tr><th>Area</th><th>Limitation</th></tr></thead>
                         <tbody>
-                            <tr><td>Functions</td><td>Very limited scalar function surface today: built-in <code>TEXT(expr)</code> plus aggregate functions; no broader built-in function library or user-defined functions yet</td></tr>
+                            <tr><td>Functions and automation</td><td>Trusted in-process C# scalar functions are supported when registered by the host; Admin Forms, Admin Reports, and pipelines can invoke trusted host commands from supported event/hook surfaces; Admin Forms support declarative action sequences for run-command, set-field, show-message, and stop steps. Broader built-in scalar functions, aggregate/table-valued UDFs, stored C# modules, remote delegate serialization, additional Access-style control events, richer macro flow, and sandboxed UDFs are not implemented</td></tr>
                             <tr><td>Query</td><td>Scalar/IN/EXISTS subqueries are supported, including correlated cases in WHERE, non-aggregate projection, and UPDATE/DELETE expressions; correlated subqueries are not yet supported in JOIN ON, GROUP BY, HAVING, ORDER BY, or aggregate projections</td></tr>
                             <tr><td>Query</td><td>UNION, INTERSECT, and EXCEPT are supported; UNION ALL is not implemented yet</td></tr>
                             <tr><td>Query</td><td>No window functions</td></tr>
@@ -490,12 +497,16 @@
                             <tr><td>Collections</td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates</td></tr>
                             <tr><td>Networking</td><td><code>CSharpDB.Daemon</code> now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today</td></tr>
                             <tr><td>Security</td><td>Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned</td></tr>
-                            <tr><td>Collation</td><td>Default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented for SQL and collection indexes; dedicated ordered SQL text index optimization remains planned</td></tr>
+                            <tr><td>Admin Forms</td><td>The Forms designer/runtime supports the core generated-form and data-entry path plus initial trusted command-backed automation, including lifecycle events, command buttons, selected control events, and declarative action sequences, but still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, broader built-in actions, additional events, advanced filtering/sorting, and broader controls</td></tr>
+                            <tr><td>Admin Reports</td><td>The Reports designer/runtime supports the core banded preview path plus trusted command-backed preview lifecycle events, but still needs Access-parity work for bounded saved-query previews, full report output/export, parameters, richer grouping and totals semantics, conditional formatting, subreports, and broader controls</td></tr>
+                            <tr><td>Text / Multilingual</td><td>Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned</td></tr>
                             <tr><td>Concurrency</td><td>Physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains depend on conflict shape and whether shared auto-commit INSERT is left on the default serialized path</td></tr>
                             <tr><td>Storage</td><td>No page-level compression</td></tr>
                             <tr><td>Storage</td><td>No at-rest encryption for database/WAL files; on-disk storage is plaintext only</td></tr>
                             <tr><td>Storage</td><td>Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path</td></tr>
                             <tr><td>Storage</td><td>By default, durable auto-commit single-row writes still pay a physical WAL flush per commit; opt-in <code>UseDurableCommitBatchWindow(...)</code> can trade some commit latency for higher throughput</td></tr>
+                            <tr><td>Query</td><td>Phase-2 cost-based planning is largely in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, internal histograms/heavy hitters/prefix stats, and bounded small-chain join reordering now feed join/access-path costing; remaining work is adaptive re-optimization and public histogram/diagnostic surfacing rather than missing core stats-guided costing</td></tr>
+                            <tr><td>Query</td><td>Internal row-batch transport is now the default scan-heavy execution foundation across batch-capable scans, joins, aggregates, and result boundaries; remaining work is broader kernel specialization and optional SIMD-style tuning rather than missing core batch coverage</td></tr>
                         </tbody>
                     </table>
                 </div>
