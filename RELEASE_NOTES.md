@@ -2,11 +2,17 @@
 
 ## v3.6.0
 
-v3.6.0 adds trusted, in-process C# scalar functions across CSharpDB's
-user-facing expression surfaces. Host applications can now register C#
-delegates when opening or hosting a database, then call those functions from
-SQL, SQL-backed triggers and procedures, Admin Forms formulas, Admin Reports
-calculated text, and pipeline filter/derive expressions.
+v3.6.0 adds trusted, in-process C# scalar functions and commands across
+CSharpDB's user-facing expression and automation surfaces. Host applications
+can now register C# callbacks when opening or hosting a database, then call
+those callbacks from SQL, SQL-backed triggers and procedures, Admin Forms
+formulas/events/actions, Admin Reports calculated text and preview lifecycle
+events, and pipeline filter/derive/hook expressions.
+
+The release also adds tableless scalar `SELECT` support, common built-in scalar
+functions, Admin callback catalog metadata, SQL autocomplete for built-ins and
+tableless-safe host callbacks, and local Admin artifact cleanup to keep
+incremental builds fast.
 
 ### Trusted C# Scalar Functions
 
@@ -27,7 +33,43 @@ calculated text, and pipeline filter/derive expressions.
 - Pipeline filter and derived-column expressions can call registered functions;
   package definitions store expressions plus generated automation metadata, but
   never C# function bodies.
+- Scalar callback registration now carries `CanRunWithoutFrom` metadata so
+  hosts can identify functions that are safe to discover in tableless
+  `SELECT ...` contexts.
 - Added the usage guide at `docs/trusted-csharp-functions/README.md`.
+
+### Tableless SELECT And Built-In Scalar Functions
+
+- SQL now supports scalar `SELECT` statements without a `FROM` clause through a
+  single-row planner source.
+- Tableless statements such as `SELECT Date();`, `SELECT abs(1123.34);`, and
+  `SELECT Slugify('Hello World');` can execute without inventing a dummy table
+  when the expression does not need row context.
+- Added a central built-in scalar dispatcher for common text, date/time,
+  numeric, conversion, and null helpers, including functions such as `ABS`,
+  `DATE`, `DATESERIAL`, `DATEADD`, `DATEDIFF`, `LEN`, `UCASE`, `LCASE`,
+  `ROUND`, `IFNULL`, and `NZ`.
+- Query planning now infers built-in scalar return types where possible.
+- Query paging and Admin result serialization now handle the internal
+  tableless single-row source.
+- BLOB procedure parameters can now round-trip through tableless
+  `SELECT @payload;` rather than failing on the old unsupported-path
+  assumption.
+
+### Admin Callback Catalog And Formula UX
+
+- The Admin navigation now groups callbacks under `Callbacks / Internal` and
+  `Callbacks / External`.
+- Internal callbacks show built-in formula functions separately from registered
+  host callbacks, so the list remains navigable as the built-in surface grows.
+- External callbacks show host-registered/user-created callbacks such as sample
+  functions and automation commands.
+- Callback details now surface whether a scalar callback is marked for
+  tableless `SELECT`.
+- SQL editor completion now suggests built-in scalar functions and host
+  callbacks marked with `CanRunWithoutFrom`.
+- Admin Forms formulas now have an Access-style function catalog/helper and
+  domain-function support for common form expressions.
 
 ### Trusted Commands And Form Events
 
@@ -135,6 +177,13 @@ calculated text, and pipeline filter/derive expressions.
   before invoking that command.
 - The sample includes local `.vscode` launch/tasks files so developers can open
   the sample folder, press `F5`, and set breakpoints inside callback code.
+- The direct Admin launcher now cleans stale Admin artifact snapshots, builds
+  once, and runs with `--no-build` so old generated artifacts do not slow
+  startup.
+- Added repo-level MSBuild cleanup for `src/CSharpDB.Admin/artifacts` and
+  default excludes for generated artifact folders.
+- Added the async I/O batching follow-up note at
+  `docs/query-and-durable-write-performance/async-io-batching-follow-up.md`.
 
 ### Behavior And Safety
 
@@ -183,6 +232,12 @@ calculated text, and pipeline filter/derive expressions.
 - Added conditional action tests for skip/run behavior, condition failure,
   rendered built-in action skipping, metadata propagation, and JSON
   round-tripping.
+- Added parser, planner, SQL execution, direct-client, procedure, query paging,
+  and Admin completion tests for tableless `SELECT`, built-in scalar functions,
+  BLOB parameter round-tripping, and tableless-safe callback autocomplete.
+- Added Admin callback catalog tests for tableless callback metadata.
+- Added Admin Forms formula evaluator tests for the built-in function catalog
+  and Access-style formula helpers.
 - Same-machine affected benchmark comparison against the pre-feature HEAD
   baseline showed no material regression in the main write/query guardrails:
 
@@ -237,6 +292,9 @@ otherwise neutral to improved.
     `CSharpDB.Storage`, and `CSharpDB.Storage.Diagnostics`.
 - `.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.6.0 -Runtime win-x64 -OutputRoot artifacts\daemon-release-local`
   - Produced `csharpdb-daemon-v3.6.0-win-x64.zip` and `SHA256SUMS.txt`.
+- Latest tableless/callback stabilization validation used
+  `dotnet test .\CSharpDB.slnx -m:1 --no-restore -v:minimal /nr:false /p:UseSharedCompilation=false /p:TestTfmsInParallel=false -- RunConfiguration.DisableParallelization=true`
+  - Debug non-parallel unit test run passed with `1,877` tests.
 
 ### Review Notes
 
@@ -251,6 +309,11 @@ otherwise neutral to improved.
   formulas stay expression-focused, command hooks invoke host-owned code by
   name, and declarative action sequences store only limited action metadata
   rather than executable scripts in database metadata.
+- `SELECT ...` without `FROM` is represented internally as a single-row source
+  and is intended for scalar expressions that do not need row context.
+- `CanRunWithoutFrom` is currently discovery metadata for the Admin catalog and
+  SQL editor autocomplete; it is not yet a hard runtime denial gate for manually
+  typed tableless callback calls.
 
 ## v3.5.0
 
