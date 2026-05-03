@@ -257,6 +257,8 @@
     private readonly Stack<Dictionary<string, object?>> _redoStack = new();
     private Dictionary<string, string>? _validationErrors;
     private readonly Dictionary<string, FormTableDefinition> _childTableDefs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, FormTableDefinition> _formulaDomainTableDefs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<Dictionary<string, object?>>> _formulaDomainRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ControlDefinition> _computedControls = [];
     private readonly HashSet<string> _computedFieldNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyDictionary<string, object?>> _controlPropertyOverrides = new(StringComparer.OrdinalIgnoreCase);
@@ -268,6 +270,7 @@
 
     private const int RecordPaneMinWidth = 320;
     private const int RecordPaneMaxWidth = 720;
+    private const int FormulaDomainRowLimit = 5000;
 
     private bool CanOpenDesigner => ShowDesignerButton && OnOpenDesigner.HasDelegate;
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRecords / (double)_pageSize));
@@ -358,6 +361,8 @@
         _error = null;
         _validationErrors = null;
         _childTableDefs.Clear();
+        _formulaDomainTableDefs.Clear();
+        _formulaDomainRows.Clear();
         _computedControls.Clear();
         _computedFieldNames.Clear();
         _controlPropertyOverrides.Clear();
@@ -2125,20 +2130,193 @@
             }
             else
             {
-                _currentRecord[fieldName] = FormulaEvaluator.Evaluate(formula, field =>
+                await LoadFormulaDomainReferencesAsync(formula);
+                _currentRecord[fieldName] = FormulaEvaluator.EvaluateValue(formula, field =>
                 {
-                    if (TryGetFieldValue(_currentRecord, field, out object? value) && value is not null)
-                    {
-                        if (value is double d) return d;
-                        if (value is long l) return l;
-                        if (value is int i) return i;
-                        if (double.TryParse(value.ToString(), out var parsed)) return parsed;
-                    }
-
-                    return null;
-                }, Functions, CallbackPolicy);
+                    return TryGetFieldValue(_currentRecord, field, out object? value)
+                        ? value
+                        : null;
+                }, Functions, CallbackPolicy, ResolveFormulaDomainFunction);
             }
         }
+    }
+
+    private async Task LoadFormulaDomainReferencesAsync(string formula)
+    {
+        foreach (string domain in FormulaEvaluator.GetDomainReferences(formula))
+        {
+            if (_formulaDomainRows.ContainsKey(domain))
+                continue;
+
+            FormTableDefinition? domainTable = await SchemaProvider.GetTableDefinitionAsync(domain);
+            if (domainTable is null)
+                continue;
+
+            FormRecordPage page = await RecordService.ListRecordPageAsync(domainTable, 1, FormulaDomainRowLimit);
+            _formulaDomainTableDefs[domain] = domainTable;
+            _formulaDomainRows[domain] = page.Records.Select(CloneRecord).ToList();
+        }
+    }
+
+    private object? ResolveFormulaDomainFunction(FormulaDomainFunctionRequest request)
+    {
+        if (!_formulaDomainTableDefs.TryGetValue(request.Domain, out FormTableDefinition? table) ||
+            !_formulaDomainRows.TryGetValue(request.Domain, out List<Dictionary<string, object?>>? rows))
+        {
+            return null;
+        }
+
+        IReadOnlyList<Dictionary<string, object?>> filteredRows = FilterDomainRows(table, rows, request.Criteria);
+        string function = request.FunctionName.ToUpperInvariant();
+        if (function == "DCOUNT")
+        {
+            if (string.Equals(request.Expression.Trim(), "*", StringComparison.Ordinal))
+                return filteredRows.Count;
+
+            return filteredRows.Count(row => ReadDomainExpressionValue(request.Expression, row) is not null);
+        }
+
+        if (function == "DLOOKUP")
+            return filteredRows.Select(row => ReadDomainExpressionValue(request.Expression, row)).FirstOrDefault(value => value is not null);
+
+        IEnumerable<double?> values = filteredRows.Select(row => TryConvertDomainNumber(ReadDomainExpressionValue(request.Expression, row), out double value)
+            ? value
+            : (double?)null);
+
+        return function switch
+        {
+            "DSUM" => FormulaEvaluator.EvaluateAggregate("SUM", values),
+            "DAVG" => FormulaEvaluator.EvaluateAggregate("AVG", values),
+            "DMIN" => FormulaEvaluator.EvaluateAggregate("MIN", values),
+            "DMAX" => FormulaEvaluator.EvaluateAggregate("MAX", values),
+            _ => null,
+        };
+    }
+
+    private static IReadOnlyList<Dictionary<string, object?>> FilterDomainRows(
+        FormTableDefinition table,
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        string? criteria)
+    {
+        if (string.IsNullOrWhiteSpace(criteria))
+            return rows;
+
+        string normalizedCriteria = NormalizeDomainCriteria(criteria, table);
+        return FormFilterExpression.TryParse(normalizedCriteria, table, out FormFilterExpression? filter, out _)
+            ? rows.Where(row => filter!.Evaluate(row)).ToArray()
+            : [];
+    }
+
+    private static object? ReadDomainExpressionValue(string expression, IReadOnlyDictionary<string, object?> row)
+    {
+        string fieldName = NormalizeDomainFieldReference(expression);
+        if (TryGetFieldValue(row, fieldName, out object? value))
+            return value;
+
+        return FormulaEvaluator.EvaluateValue(
+            expression.StartsWith('=') ? expression : $"={expression}",
+            field => TryGetFieldValue(row, field, out object? fieldValue) ? fieldValue : null);
+    }
+
+    private static string NormalizeDomainFieldReference(string expression)
+    {
+        string trimmed = expression.Trim();
+        if (trimmed.StartsWith('[') && trimmed.EndsWith(']') && trimmed.Length > 2)
+            return trimmed[1..^1].Trim();
+
+        return trimmed;
+    }
+
+    private static string NormalizeDomainCriteria(string criteria, FormTableDefinition table)
+    {
+        var fieldNames = new HashSet<string>(table.Fields.Select(static field => field.Name), StringComparer.OrdinalIgnoreCase);
+        var builder = new System.Text.StringBuilder(criteria.Length + 16);
+        for (int i = 0; i < criteria.Length;)
+        {
+            char ch = criteria[i];
+            if (ch is '\'' or '"')
+            {
+                int start = i;
+                i++;
+                while (i < criteria.Length)
+                {
+                    if (criteria[i] == ch)
+                    {
+                        i++;
+                        if (i < criteria.Length && criteria[i] == ch)
+                        {
+                            i++;
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    i++;
+                }
+
+                builder.Append(criteria, start, i - start);
+                continue;
+            }
+
+            if (ch == '[')
+            {
+                int start = i;
+                int end = criteria.IndexOf(']', i + 1);
+                if (end < 0)
+                {
+                    builder.Append(criteria[i..]);
+                    break;
+                }
+
+                builder.Append(criteria, start, end - start + 1);
+                i = end + 1;
+                continue;
+            }
+
+            if (char.IsLetter(ch) || ch == '_')
+            {
+                int start = i;
+                i++;
+                while (i < criteria.Length && (char.IsLetterOrDigit(criteria[i]) || criteria[i] == '_'))
+                    i++;
+
+                string identifier = criteria[start..i];
+                if (fieldNames.Contains(identifier))
+                    builder.Append('[').Append(identifier).Append(']');
+                else
+                    builder.Append(identifier);
+                continue;
+            }
+
+            builder.Append(ch);
+            i++;
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool TryConvertDomainNumber(object? value, out double result)
+    {
+        value = FormSql.NormalizeValue(value);
+        return value switch
+        {
+            byte number => Set(number, out result),
+            short number => Set(number, out result),
+            int number => Set(number, out result),
+            long number => Set(number, out result),
+            float number => Set(number, out result),
+            double number => Set(number, out result),
+            decimal number => Set((double)number, out result),
+            string text => double.TryParse(text, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out result),
+            _ => Set(0, out result, success: false),
+        };
+    }
+
+    private static bool Set(double value, out double result, bool success = true)
+    {
+        result = value;
+        return success;
     }
 
     private (string? ForeignKeyField, string? ParentKeyField) FindChildMapping(string childTableName)

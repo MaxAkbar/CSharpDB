@@ -18,7 +18,8 @@ public static class AdminHostCallbacks
                     IsDeterministic: true,
                     NullPropagating: true,
                     Description: "Formats text as a lowercase URL slug.",
-                    Metadata: CreateMetadata("CSharpDB.Admin")),
+                    Metadata: CreateMetadata("CSharpDB.Admin"),
+                    CanRunWithoutFrom: true),
                 invoke: static (_, args) => DbValue.FromText(Slugify(args[0].AsText)));
         });
 

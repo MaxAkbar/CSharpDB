@@ -414,19 +414,84 @@
                 <div class="pi-section-label">Formula Configuration</div>
                 <div class="pi-field">
                     <label>Formula</label>
-                    <input type="text" value="@GetProp(PropFormula, string.Empty)"
-                           placeholder="=Quantity * UnitPrice"
-                           @onchange="@(e => OnPropChanged(PropFormula, e.Value))" />
+                    <div class="pi-input-action-row">
+                        <input type="text" value="@GetProp(PropFormula, string.Empty)"
+                               placeholder="=Quantity * UnitPrice"
+                               @onchange="@(e => OnPropChanged(PropFormula, e.Value))" />
+                        <button type="button"
+                                class="pi-icon-btn"
+                                title="Formula functions"
+                                @onclick="ToggleFormulaHelper">fx</button>
+                    </div>
                 </div>
+                @if (_showFormulaHelper)
+                {
+                    <div class="pi-formula-helper">
+                        <div class="pi-formula-helper-toolbar">
+                            <select value="@_formulaFunctionCategory" @onchange="OnFormulaCategoryChanged">
+                                <option value="">All functions</option>
+                                @foreach (string category in FormulaFunctionCatalog.Categories)
+                                {
+                                    <option value="@category">@category</option>
+                                }
+                            </select>
+                            <input type="text"
+                                   value="@_formulaFunctionQuery"
+                                   placeholder="Search"
+                                   @oninput="OnFormulaQueryChanged" />
+                        </div>
+                        @if (_sourceTableDef?.Fields.Count > 0)
+                        {
+                            <div class="pi-formula-fields">
+                                @foreach (FormFieldDefinition field in _sourceTableDef.Fields.Where(static field => field.DataType != FieldDataType.Blob).Take(12))
+                                {
+                                    <button type="button"
+                                            class="pi-formula-field"
+                                            title="@field.Name"
+                                            @onclick="() => InsertFormulaField(field.Name)">
+                                        @field.Name
+                                    </button>
+                                }
+                            </div>
+                        }
+                        @foreach (FormulaFunctionGroup group in GetFormulaFunctionGroups())
+                        {
+                            <div class="pi-formula-group">
+                                <div class="pi-formula-group-label">@group.Category</div>
+                                @foreach (FormulaFunctionDescriptor function in group.Functions)
+                                {
+                                    <div class="pi-formula-function">
+                                        <button type="button"
+                                                class="pi-formula-function-main"
+                                                title="@($"Insert {function.Signature}")"
+                                                @onclick="() => InsertFormulaFunction(function)">
+                                            <strong>@function.Name</strong>
+                                            <code>@function.Signature</code>
+                                            <span>@function.Description</span>
+                                        </button>
+                                        <button type="button"
+                                                class="pi-formula-example-btn"
+                                                title="Use example"
+                                                @onclick="() => UseFormulaExample(function)">Example</button>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        @if (GetFormulaFunctionGroups().Count == 0)
+                        {
+                            <div class="pi-formula-empty">No matching functions.</div>
+                        }
+                    </div>
+                }
                 <div class="pi-field">
                     <label>Format</label>
                     <input type="text" value="@GetProp(PropFormat, string.Empty)"
                            placeholder="N2, C, P, etc."
                            @onchange="@(e => OnPropChanged(PropFormat, e.Value))" />
                 </div>
-                <div style="font-size: 10px; color: #999; margin-top: 4px;">
-                    Field: <code>=A * B + C</code><br/>
-                    Aggregate: <code>=SUM(Table.Field)</code>
+                <div class="pi-help-text">
+                    Examples: <code>=Nz(Quantity, 0) * Nz(UnitPrice, 0)</code><br/>
+                    <code>=DateDiff('d', OrderDate, Date())</code>
                 </div>
             </div>
         }
@@ -955,6 +1020,8 @@
 
     private enum RectPart { X, Y, W, H }
 
+    private sealed record FormulaFunctionGroup(string Category, IReadOnlyList<FormulaFunctionDescriptor> Functions);
+
     // DataGrid configuration state
     private IReadOnlyList<string>? _availableTables;
     private IReadOnlyList<FormDefinition>? _availableForms;
@@ -976,6 +1043,9 @@
     private string? _loadedTabPagesControlId;
     private string _tabPagesText = string.Empty;
     private string? _tabPagesError;
+    private bool _showFormulaHelper;
+    private string _formulaFunctionQuery = string.Empty;
+    private string _formulaFunctionCategory = string.Empty;
 
     private IReadOnlyList<DbCommandDefinition> RegisteredCommands => CommandRegistry.Commands.ToList();
 
@@ -1061,6 +1131,13 @@
             _loadedTabPagesControlId = null;
             _tabPagesText = string.Empty;
             _tabPagesError = null;
+        }
+
+        if (_selected?.ControlType != "computed")
+        {
+            _showFormulaHelper = false;
+            _formulaFunctionQuery = string.Empty;
+            _formulaFunctionCategory = string.Empty;
         }
 
         await InvokeAsync(StateHasChanged);
@@ -1154,6 +1231,83 @@
     {
         if (_selected is null) return;
         State.UpdateControlProp(_selected.ControlId, key, value);
+    }
+
+    private void ToggleFormulaHelper()
+    {
+        _showFormulaHelper = !_showFormulaHelper;
+    }
+
+    private void OnFormulaCategoryChanged(ChangeEventArgs e)
+    {
+        _formulaFunctionCategory = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnFormulaQueryChanged(ChangeEventArgs e)
+    {
+        _formulaFunctionQuery = e.Value?.ToString() ?? string.Empty;
+    }
+
+    private IReadOnlyList<FormulaFunctionGroup> GetFormulaFunctionGroups()
+    {
+        IEnumerable<FormulaFunctionDescriptor> functions = FormulaFunctionCatalog.AllFunctions;
+        if (!string.IsNullOrWhiteSpace(_formulaFunctionCategory))
+        {
+            functions = functions.Where(function =>
+                string.Equals(function.Category, _formulaFunctionCategory, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_formulaFunctionQuery))
+        {
+            string query = _formulaFunctionQuery.Trim();
+            functions = functions.Where(function => FormulaFunctionMatches(function, query));
+        }
+
+        return functions
+            .GroupBy(static function => function.Category, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => new FormulaFunctionGroup(group.Key, group.ToArray()))
+            .ToArray();
+    }
+
+    private static bool FormulaFunctionMatches(FormulaFunctionDescriptor function, string query)
+        => function.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || function.Signature.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || function.Description.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || function.Example.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+    private void InsertFormulaFunction(FormulaFunctionDescriptor function)
+    {
+        AppendFormulaText(function.InsertText);
+    }
+
+    private void UseFormulaExample(FormulaFunctionDescriptor function)
+    {
+        OnPropChanged(PropFormula, function.Example);
+    }
+
+    private void InsertFormulaField(string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(fieldName))
+            return;
+
+        AppendFormulaText($"[{fieldName}]");
+    }
+
+    private void AppendFormulaText(string text)
+    {
+        if (_selected is null || string.IsNullOrWhiteSpace(text))
+            return;
+
+        string current = GetProp(PropFormula, string.Empty).TrimEnd();
+        string updated = current switch
+        {
+            "" => $"={text}",
+            "=" => $"={text}",
+            _ when current.StartsWith('=') => $"{current} {text}",
+            _ => $"={current} {text}",
+        };
+
+        OnPropChanged(PropFormula, updated);
     }
 
     private string GetAnchorPreset()

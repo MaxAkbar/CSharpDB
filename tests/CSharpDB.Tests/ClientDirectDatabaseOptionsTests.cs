@@ -103,6 +103,50 @@ public sealed class ClientDirectDatabaseOptionsTests
     }
 
     [Fact]
+    public async Task DirectDatabaseOptions_FunctionsCanRunWithoutFromTable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using var client = Assert.IsType<CSharpDbClient>(CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+                DirectDatabaseOptions = new DatabaseOptions().ConfigureFunctions(functions =>
+                {
+                    functions.AddScalar(
+                        "HostName",
+                        0,
+                        new PrimitiveScalarFunctionOptions(PrimitiveDbType.Text, IsDeterministic: true),
+                        static (_, _) => PrimitiveDbValue.FromText("admin-host"));
+                    functions.AddScalar(
+                        "Slugify",
+                        1,
+                        new PrimitiveScalarFunctionOptions(PrimitiveDbType.Text, IsDeterministic: true, NullPropagating: true),
+                        static (_, args) => PrimitiveDbValue.FromText(args[0].AsText.Trim().ToLowerInvariant().Replace(' ', '-')));
+                }),
+            }));
+
+            var zeroArgResult = await client.ExecuteSqlAsync("SELECT HostName();", ct);
+            var literalArgResult = await client.ExecuteSqlAsync("SELECT Slugify('Hello World');", ct);
+
+            Assert.Null(zeroArgResult.Error);
+            Assert.NotNull(zeroArgResult.Rows);
+            Assert.Equal("admin-host", zeroArgResult.Rows![0][0]);
+
+            Assert.Null(literalArgResult.Error);
+            Assert.NotNull(literalArgResult.Rows);
+            Assert.Equal("hello-world", literalArgResult.Rows![0][0]);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task DirectDatabaseOptions_AreUsedAfterReleaseCachedDatabaseAsync()
     {
         var ct = TestContext.Current.CancellationToken;

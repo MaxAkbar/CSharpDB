@@ -5,11 +5,13 @@
 @using CSharpDB.Admin.Helpers
 @using CSharpDB.Admin.Models
 @using CSharpDB.Client.Models
+@using CSharpDB.Primitives
 @using CSharpDB.Sql
 @inject ICSharpDbClient DbClient
 @inject IJSRuntime JS
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
+@inject HostCallbackCatalogService CallbackCatalog
 @implements IDisposable
 
 <div class="query-tab" @ref="_queryTabRef" style="@($"--query-editor-height: {_editorHeightPx}px;")">
@@ -607,6 +609,7 @@
             var tableNamesTask = DbClient.GetTableNamesAsync();
             var viewNamesTask = DbClient.GetViewNamesAsync();
             var proceduresTask = DbClient.GetProceduresAsync(includeDisabled: false);
+            IReadOnlyList<DbHostCallbackDescriptor> callbacks = CallbackCatalog.GetCallbacks();
 
             await Task.WhenAll(tableNamesTask, viewNamesTask, proceduresTask);
 
@@ -642,6 +645,17 @@
                 Procedures = proceduresTask.Result
                     .Select(procedure => procedure.Name)
                     .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                Functions = callbacks
+                    .Where(callback => callback.Kind == AutomationCallbackKind.ScalarFunction
+                        && callback.CanRunWithoutFrom)
+                    .Select(callback => new SqlCompletionFunction(
+                        callback.Name,
+                        callback.Arity,
+                        callback.ReturnType?.ToString().ToUpperInvariant(),
+                        callback.Description,
+                        callback.CanRunWithoutFrom))
+                    .OrderBy(function => function.Name, StringComparer.OrdinalIgnoreCase)
                     .ToArray(),
             };
         }

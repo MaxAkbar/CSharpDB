@@ -97,6 +97,19 @@ window.resizeInterop = {
     _queryEditorMax: 560,
     _queryEditorLayout: null,
     _queryEditorDotNetRef: null,
+    _callbacksActive: false,
+    _callbacksStartX: 0,
+    _callbacksStartY: 0,
+    _callbacksStartSize: 0,
+    _callbacksLayout: null,
+    _callbacksTarget: null,
+    _callbacksVariableName: '',
+    _callbacksMin: 0,
+    _callbacksMax: 0,
+    _callbacksDirection: 1,
+    _callbacksStorageKey: '',
+    _callbacksAxis: 'y',
+    _callbacksTargetName: '',
 
     initSidebar: (dotNetRef, minWidth, maxWidth) => {
         window.resizeInterop._dotNetRef = dotNetRef;
@@ -259,6 +272,170 @@ window.resizeInterop = {
         document.body.style.userSelect = '';
         document.removeEventListener('mousemove', window.resizeInterop._onQueryEditorMove);
         document.removeEventListener('mouseup', window.resizeInterop._onQueryEditorUp);
+    },
+
+    initCallbacksLayout: (layout) => {
+        if (!layout) return;
+
+        const storedSizes = [
+            ['--callbacks-builtins-height', 'csharpdb-callbacks-builtins-height'],
+            ['--callbacks-detail-width', 'csharpdb-callbacks-detail-width'],
+            ['--callbacks-diagnostics-height', 'csharpdb-callbacks-diagnostics-height']
+        ];
+
+        for (const [variableName, storageKey] of storedSizes) {
+            const storedValue = localStorage.getItem(storageKey);
+            const size = parseInt(storedValue || '', 10);
+            if (Number.isFinite(size) && size > 0) {
+                layout.style.setProperty(variableName, size + 'px');
+            }
+        }
+    },
+
+    startCallbacksResize: (e, layout, targetElement, targetName, variableName, minSize, maxSize, direction, storageKey) => {
+        if (!layout || !variableName) return;
+
+        if (window.resizeInterop._callbacksActive) {
+            window.resizeInterop._onCallbacksResizeUp();
+        }
+
+        const target = window.resizeInterop._resolveCallbacksResizeTarget(layout, targetElement, targetName);
+        const axis = targetName === 'detail' ? 'x' : 'y';
+        const startSize = window.resizeInterop._getCallbacksResizeSize(layout, target, targetName, variableName, axis);
+
+        window.resizeInterop._callbacksActive = true;
+        window.resizeInterop._callbacksStartX = e?.clientX || 0;
+        window.resizeInterop._callbacksStartY = e?.clientY || 0;
+        window.resizeInterop._callbacksStartSize = startSize;
+        window.resizeInterop._callbacksLayout = layout;
+        window.resizeInterop._callbacksTarget = target;
+        window.resizeInterop._callbacksTargetName = targetName || '';
+        window.resizeInterop._callbacksVariableName = variableName;
+        window.resizeInterop._callbacksMin = minSize || 0;
+        window.resizeInterop._callbacksMax = maxSize || 1000;
+        window.resizeInterop._callbacksDirection = direction || 1;
+        window.resizeInterop._callbacksStorageKey = storageKey || '';
+        window.resizeInterop._callbacksAxis = axis;
+
+        document.body.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize';
+        document.body.style.userSelect = 'none';
+
+        document.addEventListener('mousemove', window.resizeInterop._onCallbacksResizeMove);
+        document.addEventListener('mouseup', window.resizeInterop._onCallbacksResizeUp);
+    },
+
+    _resolveCallbacksResizeTarget: (layout, targetElement, targetName) => {
+        if (targetElement && typeof targetElement.getBoundingClientRect === 'function') {
+            return targetElement;
+        }
+
+        if (!layout || typeof layout.querySelector !== 'function') {
+            return null;
+        }
+
+        if (targetName === 'builtins') {
+            return layout.querySelector('.callbacks-builtins-panel');
+        }
+
+        if (targetName === 'diagnostics') {
+            return layout.querySelector('.callbacks-diagnostics-panel');
+        }
+
+        if (targetName === 'detail') {
+            return layout.querySelector('.callbacks-detail-panel');
+        }
+
+        return null;
+    },
+
+    _getCallbacksResizeSize: (layout, target, targetName, variableName, axis) => {
+        const targetSize = axis === 'x'
+            ? target?.offsetWidth
+            : target?.offsetHeight;
+
+        if (Number.isFinite(targetSize) && targetSize > 0) {
+            return targetSize;
+        }
+
+        const cssSize = parseInt(getComputedStyle(layout).getPropertyValue(variableName) || '', 10);
+        if (Number.isFinite(cssSize) && cssSize > 0) {
+            return cssSize;
+        }
+
+        if (targetName === 'detail') return 420;
+        if (targetName === 'diagnostics') return 240;
+        return 240;
+    },
+
+    _getCallbacksResizeMax: () => {
+        const layout = window.resizeInterop._callbacksLayout;
+        const min = window.resizeInterop._callbacksMin;
+        const configuredMax = window.resizeInterop._callbacksMax;
+        const targetName = window.resizeInterop._callbacksTargetName;
+        const axis = window.resizeInterop._callbacksAxis;
+
+        if (!layout) {
+            return Math.max(min, configuredMax);
+        }
+
+        if (axis === 'x') {
+            const content = layout.querySelector?.('.callbacks-layout');
+            const contentWidth = content?.clientWidth || layout.clientWidth || window.innerWidth;
+            const layoutMax = Math.max(min, contentWidth - 368);
+            return Math.max(min, Math.min(configuredMax, layoutMax));
+        }
+
+        const toolbar = layout.querySelector?.('.data-toolbar');
+        const builtins = layout.querySelector?.('.callbacks-builtins-panel');
+        const diagnostics = layout.querySelector?.('.callbacks-diagnostics-panel');
+        const toolbarHeight = toolbar?.offsetHeight || 0;
+        const builtinsHeight = builtins?.offsetHeight || 0;
+        const diagnosticsHeight = diagnostics?.offsetHeight || 0;
+        const reservedMainHeight = 180;
+        const splitterHeight = 16;
+        const otherResizableHeight = targetName === 'builtins' ? diagnosticsHeight : builtinsHeight;
+        const layoutMax = Math.max(min, (layout.clientHeight || window.innerHeight) - toolbarHeight - splitterHeight - otherResizableHeight - reservedMainHeight);
+
+        return Math.max(min, Math.min(configuredMax, layoutMax));
+    },
+
+    _onCallbacksResizeMove: (e) => {
+        if (!window.resizeInterop._callbacksActive || !window.resizeInterop._callbacksLayout) return;
+
+        const axis = window.resizeInterop._callbacksAxis;
+        const delta = axis === 'x'
+            ? e.clientX - window.resizeInterop._callbacksStartX
+            : e.clientY - window.resizeInterop._callbacksStartY;
+        const min = window.resizeInterop._callbacksMin;
+        const max = window.resizeInterop._getCallbacksResizeMax();
+        let nextSize = window.resizeInterop._callbacksStartSize + (delta * window.resizeInterop._callbacksDirection);
+
+        nextSize = Math.max(min, Math.min(max, nextSize));
+        window.resizeInterop._callbacksLayout.style.setProperty(window.resizeInterop._callbacksVariableName, Math.round(nextSize) + 'px');
+    },
+
+    _onCallbacksResizeUp: () => {
+        const layout = window.resizeInterop._callbacksLayout;
+        const variableName = window.resizeInterop._callbacksVariableName;
+        const storageKey = window.resizeInterop._callbacksStorageKey;
+
+        if (layout && variableName && storageKey) {
+            const value = parseInt(getComputedStyle(layout).getPropertyValue(variableName) || '', 10);
+            if (Number.isFinite(value)) {
+                localStorage.setItem(storageKey, value + 'px');
+            }
+        }
+
+        window.resizeInterop._callbacksActive = false;
+        window.resizeInterop._callbacksLayout = null;
+        window.resizeInterop._callbacksTarget = null;
+        window.resizeInterop._callbacksVariableName = '';
+        window.resizeInterop._callbacksStorageKey = '';
+        window.resizeInterop._callbacksTargetName = '';
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', window.resizeInterop._onCallbacksResizeMove);
+        document.removeEventListener('mouseup', window.resizeInterop._onCallbacksResizeUp);
     }
 };
 

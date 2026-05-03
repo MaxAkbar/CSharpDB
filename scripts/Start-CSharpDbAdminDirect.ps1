@@ -6,11 +6,12 @@ Configures the admin site for direct mode, then starts only the admin host.
 This script is intended for local development and manual operator workflows.
 It updates `src/CSharpDB.Admin/appsettings.json` to use
 `CSharpDbTransport.Direct`, removes any daemon endpoint from the admin config,
-ensures a connection string exists, and then starts `CSharpDB.Admin`.
+ensures a connection string exists, builds `CSharpDB.Admin`, and then starts it.
 
-The script does not install a Windows service or a background task. It launches
-one `dotnet run` process. If you close the shell that launched this script, the
-child process continues running until you stop it explicitly.
+The script does not install a Windows service or a background task. It builds
+the admin project first, then launches one `dotnet run --no-build` process. If
+you close the shell that launched this script, the child process continues
+running until you stop it explicitly.
 
 .PARAMETER NoLaunch
 Only updates the admin configuration. Does not start the admin host.
@@ -26,7 +27,8 @@ later with `Stop-Process`.
 Overrides the admin database connection string before launch.
 
 .PARAMETER AdminStartupTimeoutSeconds
-How long to wait for the admin endpoint to start accepting TCP connections.
+How long to wait for the admin endpoint to start accepting TCP connections
+after the admin project has built and the app process has launched.
 
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File .\scripts\Start-CSharpDbAdminDirect.ps1
@@ -52,7 +54,7 @@ param(
     [switch]$OpenAdmin,
     [switch]$PassThru,
     [string]$ConnectionString,
-    [int]$AdminStartupTimeoutSeconds = 30
+    [int]$AdminStartupTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -182,6 +184,47 @@ function Select-PreferredUrl {
     return $urls[0]
 }
 
+function Get-LaunchUris {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationUrl
+    )
+
+    return @(
+        $ApplicationUrl.Split(';', [System.StringSplitOptions]::RemoveEmptyEntries) |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ } |
+            ForEach-Object { [Uri]$_ }
+    )
+}
+
+function Test-TcpEndpoint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Uri]$Uri
+    )
+
+    $client = $null
+
+    try {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        $connectTask = $client.ConnectAsync($Uri.Host, $Uri.Port)
+
+        if ($connectTask.Wait([TimeSpan]::FromSeconds(1)) -and $client.Connected) {
+            return $true
+        }
+    }
+    catch {
+    }
+    finally {
+        if ($null -ne $client) {
+            $client.Dispose()
+        }
+    }
+
+    return $false
+}
+
 function Wait-ForTcpEndpoint {
     param(
         [Parameter(Mandatory = $true)]
@@ -193,28 +236,45 @@ function Wait-ForTcpEndpoint {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 
     while ((Get-Date) -lt $deadline) {
-        $client = $null
-
-        try {
-            $client = [System.Net.Sockets.TcpClient]::new()
-            $connectTask = $client.ConnectAsync($Uri.Host, $Uri.Port)
-
-            if ($connectTask.Wait([TimeSpan]::FromSeconds(1)) -and $client.Connected) {
-                return $true
-            }
-        }
-        catch {
-        }
-        finally {
-            if ($null -ne $client) {
-                $client.Dispose()
-            }
+        if (Test-TcpEndpoint -Uri $Uri) {
+            return $true
         }
 
         Start-Sleep -Milliseconds 500
     }
 
     return $false
+}
+
+function Wait-ForAnyTcpEndpoint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Uri[]]$Uris,
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSeconds,
+        [System.Diagnostics.Process]$Process
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    while ((Get-Date) -lt $deadline) {
+        if ($null -ne $Process) {
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                return $null
+            }
+        }
+
+        foreach ($uri in $Uris) {
+            if (Test-TcpEndpoint -Uri $uri) {
+                return $uri
+            }
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    return $null
 }
 
 function Stop-ProcessIfRunning {
@@ -242,6 +302,7 @@ $originalAdminJson = $adminConfig | ConvertTo-Json -Depth 20
 
 $adminLaunchProfile = Get-LaunchProfile -LaunchSettings $adminLaunchSettings -PreferredProfileName 'CSharpDB.Admin'
 $adminUrl = Select-PreferredUrl -ApplicationUrl $adminLaunchProfile.Profile.applicationUrl -PreferredScheme 'https'
+$adminUris = @(Get-LaunchUris -ApplicationUrl $adminLaunchProfile.Profile.applicationUrl)
 
 $csharpDbSection = Get-OrAddProperty -Object $adminConfig -Name 'CSharpDB' -DefaultValue ([pscustomobject]@{})
 Set-JsonProperty -Object $csharpDbSection -Name 'Transport' -Value 'direct'
@@ -291,19 +352,30 @@ if ($NoLaunch) {
 
 $adminArgs = @(
     'run',
+    '--no-build',
     '--project', $adminProjectPath,
     '--launch-profile', $adminLaunchProfile.Name
 )
 
+Write-Host "Building admin project..."
+dotnet build $adminProjectPath | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "The admin project build failed with exit code $LASTEXITCODE."
+}
+
 Write-Host "Starting admin profile '$($adminLaunchProfile.Name)'..."
 $adminProcess = Start-Process -FilePath 'dotnet' -ArgumentList $adminArgs -WorkingDirectory $repoRoot -PassThru
 
-if ($adminUrl) {
-    if (-not (Wait-ForTcpEndpoint -Uri ([Uri]$adminUrl) -TimeoutSeconds $AdminStartupTimeoutSeconds)) {
+if ($adminUris.Count -gt 0) {
+    $listeningUri = Wait-ForAnyTcpEndpoint -Uris $adminUris -TimeoutSeconds $AdminStartupTimeoutSeconds -Process $adminProcess
+    if ($null -eq $listeningUri) {
         Stop-ProcessIfRunning -Process $adminProcess
-        throw "The admin site did not start listening on $adminUrl within $AdminStartupTimeoutSeconds seconds."
+
+        $configuredUrls = ($adminUris | ForEach-Object { $_.ToString().TrimEnd('/') }) -join ', '
+        throw "The admin site did not start listening on any configured URL ($configuredUrls) within $AdminStartupTimeoutSeconds seconds."
     }
 
+    $adminUrl = $listeningUri.ToString().TrimEnd('/')
     Write-Host "Admin is listening on $adminUrl (PID $($adminProcess.Id))."
 
     if ($OpenAdmin) {

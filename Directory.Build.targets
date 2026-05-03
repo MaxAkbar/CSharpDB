@@ -1,0 +1,8 @@
+<Project>
+  <Target Name="PurgeAdminArtifacts"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(MSBuildProjectName)' == 'CSharpDB.Admin'">
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\artifacts"
+               Condition="Exists('$(MSBuildProjectDirectory)\artifacts')" />
+  </Target>
+</Project>

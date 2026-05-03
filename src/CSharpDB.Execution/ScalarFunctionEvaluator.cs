@@ -1,4 +1,3 @@
-using System.Globalization;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
@@ -18,11 +17,20 @@ internal static class ScalarFunctionEvaluator
         DbFunctionRegistry? functions)
     {
         string functionName = func.FunctionName.ToUpperInvariant();
-        return functionName switch
+        if (DbBuiltInScalarFunctions.IsBuiltInFunctionName(functionName))
         {
-            "TEXT" => EvaluateText(func, evaluateArgument),
-            _ => EvaluateUserFunction(func, evaluateArgument, functions ?? DbFunctionRegistry.Empty),
-        };
+            if (func.IsStarArg || func.IsDistinct)
+                throw new CSharpDbException(ErrorCode.SyntaxError, $"Scalar function '{func.FunctionName}' does not support DISTINCT or * arguments.");
+
+            var arguments = new DbValue[func.Arguments.Count];
+            for (int i = 0; i < arguments.Length; i++)
+                arguments[i] = evaluateArgument(func.Arguments[i]);
+
+            if (DbBuiltInScalarFunctions.TryEvaluate(functionName, arguments, out DbValue builtInValue))
+                return builtInValue;
+        }
+
+        return EvaluateUserFunction(func, evaluateArgument, functions ?? DbFunctionRegistry.Empty);
     }
 
     public static DbValue Evaluate(
@@ -31,28 +39,20 @@ internal static class ScalarFunctionEvaluator
         DbFunctionRegistry? functions)
     {
         string functionName = func.FunctionName.ToUpperInvariant();
-        if (functionName == "TEXT")
+        if (DbBuiltInScalarFunctions.IsBuiltInFunctionName(functionName))
         {
-            if (func.IsStarArg || func.IsDistinct || arguments.Length != 1)
-                throw new CSharpDbException(ErrorCode.SyntaxError, "TEXT() requires exactly one argument.");
+            if (func.IsStarArg || func.IsDistinct)
+                throw new CSharpDbException(ErrorCode.SyntaxError, $"Scalar function '{func.FunctionName}' does not support DISTINCT or * arguments.");
 
-            return EvaluateTextValue(arguments[0]);
+            if (DbBuiltInScalarFunctions.TryEvaluate(functionName, arguments, out DbValue builtInValue))
+                return builtInValue;
         }
 
         return EvaluateUserFunction(func, arguments, functions ?? DbFunctionRegistry.Empty);
     }
 
-    private static DbValue EvaluateText(FunctionCallExpression func, Func<Expression, DbValue> evaluateArgument)
-    {
-        if (func.IsStarArg || func.IsDistinct || func.Arguments.Count != 1)
-            throw new CSharpDbException(ErrorCode.SyntaxError, "TEXT() requires exactly one argument.");
-
-        DbValue value = evaluateArgument(func.Arguments[0]);
-        return EvaluateTextValue(value);
-    }
-
     internal static DbValue EvaluateTextValue(DbValue value)
-        => DbValue.FromText(ToDisplayText(value));
+        => DbValue.FromText(DbBuiltInScalarFunctions.ToDisplayText(value));
 
     private static DbValue EvaluateUserFunction(
         FunctionCallExpression func,
@@ -119,16 +119,6 @@ internal static class ScalarFunctionEvaluator
                 ex);
         }
     }
-
-    private static string ToDisplayText(DbValue value) => value.Type switch
-    {
-        DbType.Null => "NULL",
-        DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
-        DbType.Real => value.AsReal.ToString(CultureInfo.InvariantCulture),
-        DbType.Text => value.AsText,
-        DbType.Blob => $"[{value.AsBlob.Length} bytes]",
-        _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported DbValue type '{value.Type}'."),
-    };
 
     private static IReadOnlyDictionary<string, string>? CreateSqlCallbackMetadata(string functionName)
         => DbCallbackDiagnostics.IsInvocationEnabled

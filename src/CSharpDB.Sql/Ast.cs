@@ -85,6 +85,10 @@ public sealed class SimpleTableRef : TableRef
     public string? Alias { get; init; }
 }
 
+public sealed class SingleRowTableRef : TableRef
+{
+}
+
 public sealed class JoinTableRef : TableRef
 {
     public required TableRef Left { get; init; }

@@ -1908,8 +1908,9 @@ public sealed class Parser
             } while (TryConsume(TokenType.Comma));
         }
 
-        Expect(TokenType.From);
-        var from = ParseTableRef();
+        TableRef from = TryConsume(TokenType.From)
+            ? ParseTableRef()
+            : new SingleRowTableRef();
 
         Expression? where = null;
         if (Peek().Type == TokenType.Where)
@@ -2428,7 +2429,14 @@ public sealed class Parser
         bool isDistinct = false;
         var args = new List<Expression>();
 
-        if (allowAggregateModifiers && Peek().Type == TokenType.Star)
+        if (Peek().Type == TokenType.RightParen)
+        {
+            if (allowAggregateModifiers)
+                throw Error($"{funcName}() requires an argument.");
+
+            // Zero-argument scalar functions, e.g. Date().
+        }
+        else if (allowAggregateModifiers && Peek().Type == TokenType.Star)
         {
             Advance();
             isStar = true;
@@ -2444,7 +2452,10 @@ public sealed class Parser
                 isDistinct = true;
             }
 
-            args.Add(ParseExpression());
+            do
+            {
+                args.Add(ParseExpression());
+            } while (TryConsume(TokenType.Comma));
         }
 
         Expect(TokenType.RightParen);

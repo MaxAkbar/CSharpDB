@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Forms.Models;
+using CSharpDB.Admin.Forms.Evaluation;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Services;
@@ -6,7 +7,8 @@ namespace CSharpDB.Admin.Forms.Services;
 public static class FormAutomationMetadata
 {
     private const string Surface = "admin.forms";
-    private static readonly string[] IgnoredFormulaFunctions = ["SUM", "COUNT", "AVG", "MIN", "MAX"];
+    private static readonly string[] IgnoredFormulaFunctions =
+        FormulaEvaluator.BuiltInFunctionNames.Concat(["SUM", "COUNT", "AVG", "MIN", "MAX"]).ToArray();
     private static readonly HashSet<string> BuiltInValidationRuleIds = new(StringComparer.OrdinalIgnoreCase)
     {
         "required",

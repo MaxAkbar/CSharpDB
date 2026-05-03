@@ -22,6 +22,13 @@ public sealed record SqlCompletionSource(string Name, SqlCompletionSourceKind Ki
 
 public sealed record SqlCompletionColumn(string Name, string? Type, string SourceName);
 
+public sealed record SqlCompletionFunction(
+    string Name,
+    int? Arity,
+    string? ReturnType,
+    string? Description,
+    bool CanRunWithoutFrom);
+
 public sealed class SqlCompletionCatalog
 {
     public static readonly SqlCompletionCatalog Empty = new();
@@ -32,6 +39,8 @@ public sealed class SqlCompletionCatalog
         new Dictionary<string, IReadOnlyList<SqlCompletionColumn>>(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyList<string> Procedures { get; init; } = [];
+
+    public IReadOnlyList<SqlCompletionFunction> Functions { get; init; } = [];
 
     public IReadOnlyList<SqlCompletionColumn> GetColumnsForSource(string sourceName)
         => ColumnsBySource.TryGetValue(sourceName, out var columns) ? columns : [];
@@ -92,8 +101,16 @@ public static partial class SqlCompletionProvider
         new("AVG", "AVG()", "aggregate"),
         new("MIN", "MIN()", "aggregate"),
         new("MAX", "MAX()", "aggregate"),
+        new("ABS", "ABS()", "function"),
         new("COALESCE", "COALESCE()", "function"),
+        new("DATE", "DATE()", "function"),
+        new("DATETIME", "DATETIME()", "function"),
+        new("IFNULL", "IFNULL()", "function"),
+        new("LEN", "LEN()", "function"),
         new("LOWER", "LOWER()", "function"),
+        new("NOW", "NOW()", "function"),
+        new("ROUND", "ROUND()", "function"),
+        new("TIME", "TIME()", "function"),
         new("UPPER", "UPPER()", "function"),
         new("LENGTH", "LENGTH()", "function"),
     ];
@@ -192,11 +209,25 @@ public static partial class SqlCompletionProvider
 
         if (TryFindSourceAfterCaret(statement, relativeCaret, out string sourceAfterCaret))
         {
-            result = BuildColumnSuggestions(catalog, sourceAfterCaret, token.Prefix, token.Start, caret);
+            result = BuildSelectListSuggestions(
+                BuildColumnSuggestions(catalog, sourceAfterCaret, token.Prefix, token.Start, caret),
+                BuildFunctionSuggestions(catalog, token.Prefix, token.Start, caret),
+                token.Prefix,
+                token.Start,
+                caret,
+                includeSources: false,
+                catalog);
             return result.Suggestions.Count > 0;
         }
 
-        result = BuildSourceSuggestions(catalog, token.Prefix, token.Start, caret, sourceForSelectList: true);
+        result = BuildSelectListSuggestions(
+            SqlCompletionResult.Empty,
+            BuildFunctionSuggestions(catalog, token.Prefix, token.Start, caret),
+            token.Prefix,
+            token.Start,
+            caret,
+            includeSources: true,
+            catalog);
         return result.Suggestions.Count > 0;
     }
 
@@ -266,6 +297,34 @@ public static partial class SqlCompletionProvider
             .ToArray();
 
         return suggestions.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(suggestions);
+    }
+
+    private static SqlCompletionResult BuildSelectListSuggestions(
+        SqlCompletionResult columns,
+        SqlCompletionResult functions,
+        string prefix,
+        int replacementStart,
+        int replacementEnd,
+        bool includeSources,
+        SqlCompletionCatalog catalog)
+    {
+        var suggestions = new List<SqlCompletionSuggestion>(MaxSuggestions);
+
+        if (columns.Suggestions.Count > 0)
+            suggestions.AddRange(columns.Suggestions);
+
+        if (includeSources)
+            suggestions.AddRange(BuildSourceSuggestions(catalog, prefix, replacementStart, replacementEnd, sourceForSelectList: true).Suggestions);
+
+        suggestions.AddRange(functions.Suggestions);
+
+        SqlCompletionSuggestion[] distinct = suggestions
+            .GroupBy(static suggestion => $"{(int)suggestion.Kind}\u001f{suggestion.Label}", StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .Take(MaxSuggestions)
+            .ToArray();
+
+        return distinct.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(distinct);
     }
 
     private static SqlCompletionResult BuildSourceSuggestions(
@@ -367,6 +426,72 @@ public static partial class SqlCompletionProvider
             .ToArray();
 
         return suggestions.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(suggestions);
+    }
+
+    private static SqlCompletionResult BuildFunctionSuggestions(
+        SqlCompletionCatalog catalog,
+        string prefix,
+        int replacementStart,
+        int replacementEnd)
+    {
+        var catalogFunctions = catalog.Functions
+            .Where(function => function.CanRunWithoutFrom && MatchesPrefix(function.Name, prefix))
+            .OrderBy(function => function.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(function =>
+            {
+                string insertText = $"{function.Name}()";
+                int caretOffset = function.Arity == 0 ? insertText.Length : insertText.Length - 1;
+                string detail = BuildFunctionDetail(function);
+                return new SqlCompletionSuggestion(
+                    function.Name,
+                    insertText,
+                    detail,
+                    SqlCompletionSuggestionKind.Function,
+                    replacementStart,
+                    replacementEnd,
+                    caretOffset);
+            });
+
+        var builtIns = s_functions
+            .Where(function => MatchesPrefix(function.Label, prefix))
+            .OrderBy(function => function.Label, StringComparer.OrdinalIgnoreCase)
+            .Select(function =>
+            {
+                int caretOffset = function.InsertText.EndsWith("()", StringComparison.Ordinal)
+                    ? function.InsertText.Length - 1
+                    : function.InsertText.Length;
+                return new SqlCompletionSuggestion(
+                    function.Label,
+                    function.InsertText,
+                    function.Detail,
+                    SqlCompletionSuggestionKind.Function,
+                    replacementStart,
+                    replacementEnd,
+                    caretOffset);
+            });
+
+        SqlCompletionSuggestion[] suggestions = builtIns
+            .Concat(catalogFunctions)
+            .GroupBy(static suggestion => suggestion.Label, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .Take(MaxSuggestions)
+            .ToArray();
+
+        return suggestions.Length == 0 ? SqlCompletionResult.Empty : new SqlCompletionResult(suggestions);
+    }
+
+    private static string BuildFunctionDetail(SqlCompletionFunction function)
+    {
+        string arity = function.Arity switch
+        {
+            0 => "0 args",
+            1 => "1 arg",
+            int count => $"{count} args",
+            _ => "scalar",
+        };
+        string type = string.IsNullOrWhiteSpace(function.ReturnType) ? "scalar" : function.ReturnType;
+        string description = string.IsNullOrWhiteSpace(function.Description) ? string.Empty : $" - {function.Description}";
+        return $"host function - {type} - {arity}{description}";
     }
 
     private static SqlCompletionToken ReadCurrentToken(string sql, int caret)

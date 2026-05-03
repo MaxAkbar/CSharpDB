@@ -557,6 +557,20 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_ZeroArgumentScalarFunctionWithoutFrom()
+    {
+        var stmt = Parser.Parse("SELECT Date();");
+        var select = Assert.IsType<SelectStatement>(stmt);
+
+        Assert.IsType<SingleRowTableRef>(select.From);
+        var projection = Assert.IsType<FunctionCallExpression>(select.Columns[0].Expression);
+        Assert.Equal("DATE", projection.FunctionName);
+        Assert.Empty(projection.Arguments);
+        Assert.False(projection.IsDistinct);
+        Assert.False(projection.IsStarArg);
+    }
+
+    [Fact]
     public void Parse_ScalarTextAroundAggregate()
     {
         var stmt = Parser.Parse("SELECT TEXT(COUNT(*)) FROM t");

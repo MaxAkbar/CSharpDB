@@ -983,8 +983,11 @@ public sealed class QueryPlanner
         parts.Add(string.Join(", ", colParts));
 
         // FROM
-        parts.Add("FROM");
-        parts.Add(TableRefToSql(stmt.From));
+        if (stmt.From is not SingleRowTableRef)
+        {
+            parts.Add("FROM");
+            parts.Add(TableRefToSql(stmt.From));
+        }
 
         // WHERE
         if (stmt.Where != null)
@@ -1048,6 +1051,7 @@ public sealed class QueryPlanner
 
     private static string TableRefToSql(TableRef tableRef) => tableRef switch
     {
+        SingleRowTableRef => string.Empty,
         SimpleTableRef s => s.Alias != null ? $"{s.TableName} AS {s.Alias}" : s.TableName,
         JoinTableRef j => $"{TableRefToSql(j.Left)} {JoinTypeToSql(j.JoinType)} {TableRefToSql(j.Right)}"
                           + (j.Condition != null ? $" ON {ExprToSql(j.Condition)}" : ""),
@@ -1752,6 +1756,9 @@ public sealed class QueryPlanner
         TableSchema resolved;
         switch (tableRef)
         {
+            case SingleRowTableRef:
+                resolved = CreateSingleRowSchema();
+                break;
             case SimpleTableRef simple:
                 resolved = ResolveCorrelationSimpleTableSchema(simple);
                 break;
@@ -1854,6 +1861,14 @@ public sealed class QueryPlanner
             QualifiedMappings = qualifiedMappings,
         };
     }
+
+    private static TableSchema CreateSingleRowSchema()
+        => new()
+        {
+            TableName = string.Empty,
+            Columns = Array.Empty<ColumnDefinition>(),
+            QualifiedMappings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+        };
 
     private TableSchema CreateQueryOutputScope(QueryStatement query)
         => new()
@@ -6333,6 +6348,12 @@ public sealed class QueryPlanner
         bool allowJoinReorder = true,
         HashSet<Expression>? consumedOuterPredicates = null)
     {
+        if (tableRef is SingleRowTableRef)
+        {
+            var schema = CreateSingleRowSchema();
+            return (new MaterializedOperator(new List<DbValue[]> { Array.Empty<DbValue>() }, schema.Columns.ToArray()), schema);
+        }
+
         if (tableRef is SimpleTableRef simple)
         {
             // Check if this is a CTE reference
@@ -8080,6 +8101,12 @@ public sealed class QueryPlanner
             {
                 return false;
             }
+        }
+
+        if (tableRef is SingleRowTableRef)
+        {
+            count = 1;
+            return true;
         }
 
         if (tableRef is not JoinTableRef join)
@@ -12366,10 +12393,16 @@ public sealed class QueryPlanner
 
         if (expr is FunctionCallExpression func)
         {
+            string argumentText = func.IsStarArg
+                ? "*"
+                : $"{(func.IsDistinct ? "DISTINCT " : "")}{string.Join(", ", func.Arguments.Select(ExprToSql))}";
             string name = func.IsStarArg
                 ? $"{func.FunctionName}(*)"
-                : $"{func.FunctionName}({(func.IsDistinct ? "DISTINCT " : "")}{func.Arguments[0]})";
-            return new ColumnDefinition { Name = name, Type = DbType.Null, Nullable = true };
+                : $"{func.FunctionName}({argumentText})";
+            DbType type = DbBuiltInScalarFunctions.TryGetReturnType(func.FunctionName, out DbType builtInType)
+                ? builtInType
+                : DbType.Null;
+            return new ColumnDefinition { Name = name, Type = type, Nullable = true };
         }
 
         return new ColumnDefinition { Name = $"expr{index}", Type = DbType.Null, Nullable = true };

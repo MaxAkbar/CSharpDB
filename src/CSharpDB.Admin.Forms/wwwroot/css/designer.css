@@ -376,6 +376,146 @@
     margin-top: 4px;
 }
 
+.pi-input-action-row {
+    display: flex;
+    gap: 4px;
+    align-items: stretch;
+}
+
+.pi-input-action-row input {
+    min-width: 0;
+}
+
+.pi-icon-btn {
+    flex: 0 0 auto;
+    min-width: 34px;
+    padding: 4px 8px;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    background: #fff;
+    color: #333;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.pi-icon-btn:hover {
+    background: #e8e8e8;
+}
+
+.pi-formula-helper {
+    margin: 6px 0 8px;
+    padding: 8px;
+    border: 1px solid #d0d0d0;
+    border-radius: 4px;
+    background: #fafafa;
+}
+
+.pi-formula-helper-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.pi-formula-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.pi-formula-field {
+    max-width: 100%;
+    padding: 3px 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 999px;
+    background: #fff;
+    color: #333;
+    cursor: pointer;
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pi-formula-group {
+    margin-top: 8px;
+}
+
+.pi-formula-group-label {
+    margin-bottom: 4px;
+    color: #777;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}
+
+.pi-formula-function {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px;
+    margin-bottom: 4px;
+}
+
+.pi-formula-function-main,
+.pi-formula-example-btn {
+    border: 1px solid #d0d0d0;
+    border-radius: 4px;
+    background: #fff;
+    color: #333;
+    cursor: pointer;
+}
+
+.pi-formula-function-main {
+    min-width: 0;
+    padding: 6px;
+    text-align: left;
+}
+
+.pi-formula-function-main strong,
+.pi-formula-function-main code,
+.pi-formula-function-main span {
+    display: block;
+}
+
+.pi-formula-function-main strong {
+    color: #1a73e8;
+    font-size: 12px;
+}
+
+.pi-formula-function-main code {
+    margin-top: 2px;
+    color: #555;
+    font-size: 10px;
+    white-space: normal;
+}
+
+.pi-formula-function-main span {
+    margin-top: 2px;
+    color: #777;
+    font-size: 10px;
+    line-height: 1.3;
+}
+
+.pi-formula-example-btn {
+    padding: 0 6px;
+    font-size: 10px;
+}
+
+.pi-formula-function-main:hover,
+.pi-formula-example-btn:hover,
+.pi-formula-field:hover {
+    background: #e8f0fe;
+}
+
+.pi-formula-empty {
+    color: #999;
+    font-size: 11px;
+    padding: 6px 0 2px;
+}
+
 .pi-readonly {
     background: #f5f5f5 !important;
     color: #888;
@@ -2544,6 +2684,10 @@
 .designer-toolbar button,
 .de-btn,
 .pi-btn,
+.pi-icon-btn,
+.pi-formula-field,
+.pi-formula-function-main,
+.pi-formula-example-btn,
 .cdg-btn,
 .tce-btn,
 .breakpoint-switcher button,
@@ -2642,6 +2786,10 @@
 .designer-toolbar button:hover,
 .de-btn:hover,
 .pi-btn:hover,
+.pi-icon-btn:hover,
+.pi-formula-field:hover,
+.pi-formula-function-main:hover,
+.pi-formula-example-btn:hover,
 .cdg-btn:hover,
 .tce-btn:hover,
 .feb-btn:hover,
@@ -2844,6 +2992,21 @@
     background: var(--fd-bg-elevated);
     color: var(--fd-text);
     border-color: var(--fd-border);
+}
+
+.pi-formula-helper {
+    background: var(--fd-bg-tertiary);
+    border-color: var(--fd-border);
+}
+
+.pi-formula-group-label,
+.pi-formula-function-main code,
+.pi-formula-function-main span {
+    color: var(--fd-text-secondary);
+}
+
+.pi-formula-function-main strong {
+    color: var(--fd-accent);
 }
 
 .pi-id-value {

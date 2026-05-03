@@ -29,7 +29,8 @@ public sealed record DbScalarFunctionOptions(
     bool NullPropagating = false,
     string? Description = null,
     IReadOnlyList<DbExtensionCapabilityRequest>? AdditionalCapabilities = null,
-    IReadOnlyDictionary<string, string>? Metadata = null);
+    IReadOnlyDictionary<string, string>? Metadata = null,
+    bool CanRunWithoutFrom = false);
 
 public sealed class DbScalarFunctionDefinition
 {

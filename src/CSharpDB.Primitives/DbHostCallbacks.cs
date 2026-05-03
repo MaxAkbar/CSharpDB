@@ -12,7 +12,8 @@ public sealed record DbHostCallbackDescriptor(
     bool NullPropagating = false,
     TimeSpan? Timeout = null,
     bool IsLongRunning = false,
-    IReadOnlyDictionary<string, string>? Metadata = null);
+    IReadOnlyDictionary<string, string>? Metadata = null,
+    bool CanRunWithoutFrom = false);
 
 internal static class DbHostCallbackDescriptorFactory
 {
@@ -30,7 +31,8 @@ internal static class DbHostCallbackDescriptorFactory
             Description: options.Description,
             IsDeterministic: options.IsDeterministic,
             NullPropagating: options.NullPropagating,
-            Metadata: options.Metadata);
+            Metadata: options.Metadata,
+            CanRunWithoutFrom: options.CanRunWithoutFrom);
 
     public static DbHostCallbackDescriptor CreateCommand(
         string name,

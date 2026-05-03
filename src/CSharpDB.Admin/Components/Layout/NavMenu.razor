@@ -1,3 +1,4 @@
+@using CSharpDB.Admin.Forms.Evaluation
 @inject ICSharpDbClient DbClient
 @inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
@@ -575,21 +576,44 @@
                 <i class="bi @(_expandedGroups.Contains("callbacks") ? "bi-chevron-down" : "bi-chevron-right")"></i>
                 <i class="bi bi-plug icon-system"></i>
                 <span>Callbacks</span>
-                <span class="group-count">@_callbacks.Count</span>
+                <span class="group-count">@CallbackObjectCount</span>
             </div>
             @if (_expandedGroups.Contains("callbacks"))
             {
                 <div class="tree-items">
-                    @foreach (HostCallbackCatalogEntry callback in FilterCallbacks())
+                    @{
+                        int internalCount = InternalCallbackObjectCount;
+                        int externalCount = ExternalCallbackObjectCount;
+                    }
+
+                    @if (internalCount == 0 && externalCount == 0)
                     {
-                        var currentCallback = callback;
-                        <div class="tree-item @(IsActiveCallback(currentCallback) ? "active" : "")"
-                             @onclick="() => OpenCallback(currentCallback)"
-                             @oncontextmenu="e => ShowCallbackItemMenu(e, currentCallback)"
-                             @oncontextmenu:preventDefault>
-                            <i class="bi @(currentCallback.IsMissingRegistration ? "bi-exclamation-triangle" : "bi-plug") @(currentCallback.IsMissingRegistration ? "icon-report" : "icon-system")"></i>
-                            <span class="item-label">@currentCallback.Name</span>
-                            <span class="item-hint">@(currentCallback.IsMissingRegistration ? "missing" : GetCallbackKindLabel(currentCallback.Kind))</span>
+                        <div class="tree-empty">No matching callbacks.</div>
+                    }
+                    else
+                    {
+                        <div class="tree-child-group callback-tree-section">
+                            @if (internalCount > 0)
+                            {
+                                <button type="button"
+                                        class="tree-child-item callback-tree-item @(IsActiveCallbackScope(CallbackScopeInternal) ? "active" : "")"
+                                        @onclick='() => OpenCallbackScope(CallbackScopeInternal)'>
+                                    <i class="bi bi-code-slash icon-system"></i>
+                                    <span class="tree-child-label">Internal</span>
+                                    <span class="tree-child-type">@internalCount</span>
+                                </button>
+                            }
+
+                            @if (externalCount > 0)
+                            {
+                                <button type="button"
+                                        class="tree-child-item callback-tree-item @(IsActiveCallbackScope(CallbackScopeExternal) ? "active" : "")"
+                                        @onclick='() => OpenCallbackScope(CallbackScopeExternal)'>
+                                    <i class="bi bi-plug icon-system"></i>
+                                    <span class="tree-child-label">External</span>
+                                    <span class="tree-child-type">@externalCount</span>
+                                </button>
+                            }
                         </div>
                     }
                 </div>
@@ -607,6 +631,8 @@
     private const int SidebarColumnPreviewLimit = 12;
     private const int SidebarIndexPreviewLimit = 6;
     private const int SidebarTriggerPreviewLimit = 6;
+    private const string CallbackScopeInternal = "internal";
+    private const string CallbackScopeExternal = "external";
 
     private ContextMenu? _contextMenu;
     private List<ContextMenuItem> _contextMenuItems = new();
@@ -644,6 +670,14 @@
     private readonly HashSet<string> _tableSchemaLoadFailures = new(StringComparer.OrdinalIgnoreCase);
 
     private bool ShouldShowUtilityGroups => string.Equals(_objectFilter, "all", StringComparison.Ordinal);
+
+    private int CallbackObjectCount => 2;
+
+    private int InternalCallbackObjectCount
+        => FilterInternalCallbackFunctions().Count() + FilterInternalCallbacks().Count();
+
+    private int ExternalCallbackObjectCount
+        => FilterExternalCallbacks().Count();
 
     private IReadOnlyList<SidebarShortcut> PinnedItems
     {
@@ -935,6 +969,7 @@
         {
             CSharpDB.Primitives.AutomationCallbackKind.ScalarFunction => "scalar",
             CSharpDB.Primitives.AutomationCallbackKind.Command => "command",
+            CSharpDB.Primitives.AutomationCallbackKind.ValidationRule => "validation",
             _ => kind.ToString().ToLowerInvariant(),
         };
 
@@ -970,11 +1005,43 @@
         return _callbacks.Where(CallbackMatchesSearch);
     }
 
+    private IEnumerable<FormulaFunctionDescriptor> FilterInternalCallbackFunctions()
+    {
+        IEnumerable<FormulaFunctionDescriptor> functions = FormulaFunctionCatalog.AllFunctions
+            .OrderBy(static function => function.Category, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static function => function.Name, StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return functions;
+
+        return functions.Where(InternalFunctionMatchesSearch);
+    }
+
+    private IEnumerable<HostCallbackCatalogEntry> FilterInternalCallbacks()
+        => FilterCallbacks().Where(IsInternalHostCallback);
+
+    private IEnumerable<HostCallbackCatalogEntry> FilterExternalCallbacks()
+        => FilterCallbacks().Where(callback => !IsInternalHostCallback(callback));
+
+    private bool InternalFunctionMatchesSearch(FormulaFunctionDescriptor function)
+    {
+        string query = _searchQuery.Trim();
+        return function.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Category.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Signature.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Description.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "internal".Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "built-in".Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "formula".Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
     private bool CallbackMatchesSearch(HostCallbackCatalogEntry callback)
     {
         string query = _searchQuery.Trim();
         return callback.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
                || callback.Kind.ToString().Contains(query, StringComparison.OrdinalIgnoreCase)
+               || (IsInternalHostCallback(callback) && "internal".Contains(query, StringComparison.OrdinalIgnoreCase))
+               || (!IsInternalHostCallback(callback) && "external".Contains(query, StringComparison.OrdinalIgnoreCase))
                || (callback.IsMissingRegistration && "missing".Contains(query, StringComparison.OrdinalIgnoreCase))
                || (callback.Descriptor?.Runtime.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
                || (callback.Descriptor?.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
@@ -1017,8 +1084,51 @@
     private void OpenSystemCatalogTab(SystemCatalogItem item)
         => TabManager.OpenSystemCatalogTab(item.Name, item.Sql);
 
+    private void OpenInternalFunction(FormulaFunctionDescriptor function)
+    {
+        TabDescriptor tab = TabManager.OpenCallbacksTab();
+        tab.State["CallbackScope"] = CallbackScopeInternal;
+        tab.State["SelectedBuiltInFunctionName"] = function.Name;
+        tab.State.Remove("SelectedCallbackName");
+        tab.State.Remove("SelectedCallbackKind");
+        tab.State.Remove("SelectedCallbackArity");
+    }
+
+    private void OpenCallbackScope(string scope)
+    {
+        TabDescriptor tab = TabManager.OpenCallbacksTab();
+        tab.State["CallbackScope"] = scope;
+        tab.State.Remove("SelectedBuiltInFunctionName");
+        tab.State.Remove("SelectedCallbackName");
+        tab.State.Remove("SelectedCallbackKind");
+        tab.State.Remove("SelectedCallbackArity");
+        TabManager.ActivateTab(tab.Id);
+    }
+
     private void OpenCallback(HostCallbackCatalogEntry callback)
-        => TabManager.OpenCallbacksTab(callback.Name, callback.Kind.ToString(), callback.Arity);
+    {
+        TabDescriptor tab = TabManager.OpenCallbacksTab(callback.Name, callback.Kind.ToString(), callback.Arity);
+        tab.State["CallbackScope"] = IsInternalHostCallback(callback) ? CallbackScopeInternal : CallbackScopeExternal;
+        tab.State.Remove("SelectedBuiltInFunctionName");
+    }
+
+    private static bool IsInternalHostCallback(HostCallbackCatalogEntry callback)
+        => callback.Descriptor is { Metadata: { } metadata }
+           && IsSystemGeneratedCallbackMetadata(metadata);
+
+    private static bool IsSystemGeneratedCallbackMetadata(IReadOnlyDictionary<string, string> metadata)
+        => HasMetadataValue(metadata, "origin", "system")
+           || HasMetadataValue(metadata, "source", "system")
+           || HasMetadataValue(metadata, "scope", CallbackScopeInternal)
+           || HasMetadataValue(metadata, "generatedBy", "system")
+           || HasMetadataValue(metadata, "systemGenerated", "true");
+
+    private static bool HasMetadataValue(
+        IReadOnlyDictionary<string, string> metadata,
+        string key,
+        string expectedValue)
+        => metadata.TryGetValue(key, out string? value)
+           && string.Equals(value, expectedValue, StringComparison.OrdinalIgnoreCase);
 
     private bool IsActive(string type, string name)
     {
@@ -1061,6 +1171,30 @@
         }
 
         return true;
+    }
+
+    private bool IsActiveInternalFunction(FormulaFunctionDescriptor function)
+    {
+        var activeTab = TabManager.ActiveTab;
+        return activeTab?.Id == "callbacks:host"
+               && activeTab.State.TryGetValue("SelectedBuiltInFunctionName", out object? nameValue)
+               && nameValue is string selectedName
+               && selectedName.Equals(function.Name, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsActiveCallbackScope(string scope)
+    {
+        var activeTab = TabManager.ActiveTab;
+        if (activeTab?.Id != "callbacks:host")
+            return false;
+
+        string activeScope = activeTab.State.TryGetValue("CallbackScope", out object? scopeValue)
+                             && scopeValue is string value
+                             && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : CallbackScopeExternal;
+
+        return activeScope.Equals(scope, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsActiveForm(string formId)
@@ -1269,6 +1403,17 @@
             new() { Label = "Open", Icon = "bi-plug", OnClick = () => OpenCallback(callback) },
             ContextMenuItem.Separator(),
             new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyCallbackNameAsync(callback.Name) },
+        });
+    }
+
+    private void ShowInternalFunctionItemMenu(MouseEventArgs e, FormulaFunctionDescriptor function)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-code-slash", OnClick = () => OpenInternalFunction(function) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyCallbackNameAsync(function.Name) },
+            new() { Label = "Copy Signature", Icon = "bi-clipboard-plus", OnClick = async () => await CopyCallbackNameAsync(function.Signature) },
         });
     }
 

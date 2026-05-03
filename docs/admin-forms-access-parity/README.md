@@ -145,3 +145,6 @@ Host-owned validation callbacks can be registered for field-level and form-level
 save checks. See
 [Trusted Validation Rules](../trusted-csharp-functions/validation-rules.md) for
 registration, designer metadata, policy, diagnostics, and sample code.
+
+For Access-style expression functions and macro/action candidates, see
+[Access-Style Functions and Macros](access-style-functions-and-macros.md).

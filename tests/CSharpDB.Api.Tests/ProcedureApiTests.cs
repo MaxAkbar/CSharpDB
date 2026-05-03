@@ -88,7 +88,7 @@ public sealed class ProcedureApiTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ExecuteProcedure_BlobBindingError_ReturnsBadRequestWithStructuredPayload()
+    public async Task ExecuteProcedure_BlobParameter_TablelessSelectReturnsPayload()
     {
         var create = new CreateProcedureRequest(
             Name: "BlobProc",
@@ -101,11 +101,13 @@ public sealed class ProcedureApiTests : IAsyncLifetime
             new ExecuteProcedureRequest(new Dictionary<string, object?> { ["payload"] = "AQID" }),
             Ct);
 
-        Assert.Equal(HttpStatusCode.BadRequest, execResp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, execResp.StatusCode);
         var payload = await execResp.Content.ReadFromJsonAsync<ProcedureExecutionResponse>(Ct);
         Assert.NotNull(payload);
-        Assert.False(payload.Succeeded);
-        Assert.Contains("BLOB", payload.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.True(payload.Succeeded);
+        var statement = Assert.Single(payload.Statements);
+        var row = Assert.Single(statement.Rows!);
+        Assert.Equal("AQID", Assert.Single(row.Values)?.ToString());
     }
 
     [Fact]

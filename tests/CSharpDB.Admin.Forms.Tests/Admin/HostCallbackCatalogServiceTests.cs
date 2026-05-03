@@ -96,6 +96,7 @@ public class HostCallbackCatalogServiceTests
         Assert.Equal(DbType.Text, slugify.ReturnType);
         Assert.True(slugify.IsDeterministic);
         Assert.True(slugify.NullPropagating);
+        Assert.True(slugify.CanRunWithoutFrom);
 
         DbHostCallbackDescriptor echo = Assert.Single(
             callbacks,

@@ -57,6 +57,13 @@ public sealed class HostCallbackReadinessService
                 MethodName: "Register"));
     }
 
+    public string GenerateStubSource(IReadOnlyList<HostCallbackCatalogEntry> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+
+        return GenerateStubSource(entries, s_missingStubOptions);
+    }
+
     private static string GenerateStubSource(
         IReadOnlyList<HostCallbackCatalogEntry> entries,
         AutomationStubGenerationOptions options)
