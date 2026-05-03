@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "AspNetCoreIdentitySample": {
+      "commandName": "Project",
+      "applicationUrl": "http://localhost:5290",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

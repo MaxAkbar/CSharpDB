@@ -19,6 +19,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `efcore-provider/` | Runnable EF Core 10 embedded-provider sample | `.csproj`, `Program.cs`, `README.md` |
+| `aspnet-core-identity/` | Runnable ASP.NET Core 10 auth sample with a custom ADO.NET-backed user store, cookie + JWT auth, and role/policy authorization | `.csproj`, `Program.cs`, `UserStore.cs`, `AppUser.cs`, `Seed.cs`, `sample.http`, `README.md` |
 | `trusted-csharp-host/` | Runnable trusted callback host sample | scalar functions, commands, validation rules, form automation metadata, `.csproj`, `Program.cs`, `README.md` |
 
 ## Tutorials
@@ -126,6 +127,16 @@ Root-level helpers:
 - Domain: simple blog/posts model over the embedded EF Core provider
 - Good for: `UseCSharpDb(...)`, `EnsureCreatedAsync()`, `Include(...)`, and `dotnet ef` design-time flows
 
+### ASP.NET Core Authentication & Authorization
+
+- Project: [AspNetCoreIdentitySample.csproj](aspnet-core-identity/AspNetCoreIdentitySample.csproj)
+- Code: [Program.cs](aspnet-core-identity/Program.cs)
+- Store: [UserStore.cs](aspnet-core-identity/UserStore.cs)
+- Seed: [Seed.cs](aspnet-core-identity/Seed.cs)
+- Docs: [README.md](aspnet-core-identity/README.md)
+- Domain: ASP.NET Core 10 web app with users, roles, claims, lockout, and password hashing
+- Good for: cookie + JWT bearer authentication, role-based and policy-based authorization, `PasswordHasher<T>`, and an ADO.NET (`CSharpDB.Data`) custom user/role/claim store with single-column primary keys
+
 ## Running a Sample
 
 ### Option 1: Import through the REST API
@@ -232,7 +243,15 @@ dotnet run --project samples/efcore-provider/EfCoreProviderSample.csproj
 
 This sample is the quickest way to validate the embedded EF Core provider, `UseCSharpDb(...)`, navigation loading, and the design-time context setup used by `dotnet ef`.
 
-### Option 9: Run the Fulfillment Hub Sample
+### Option 9: Run The ASP.NET Core Identity Sample
+
+```bash
+dotnet run --project samples/aspnet-core-identity/AspNetCoreIdentitySample.csproj
+```
+
+This sample brings up an ASP.NET Core 10 web app with a custom `CSharpDB.Data` user store. On first start it seeds an admin (`admin@example.com` / `ChangeMe!2026`) and exposes minimal-API endpoints for cookie login, JWT issuance, role-based authorization, and policy-based authorization. The companion `sample.http` file walks through the full flow.
+
+### Option 10: Run the Fulfillment Hub Sample
 
 ```bash
 dotnet run --project samples/fulfillment-hub/FulfillmentHubSample.csproj

@@ -1,0 +1,54 @@
+@host = http://localhost:5290
+
+### List endpoints
+GET {{host}}/
+
+### Cookie login as the seeded admin
+# Captures the auth cookie for subsequent requests in this file.
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "ChangeMe!2026",
+  "rememberMe": false
+}
+
+### Whoami via cookie (uses cookie set by /auth/login)
+GET {{host}}/me/cookie
+
+### Cookie-protected logout
+POST {{host}}/auth/logout
+
+### Get a JWT bearer token
+# @name token
+POST {{host}}/auth/token
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "ChangeMe!2026"
+}
+
+### Whoami via JWT
+GET {{host}}/me/jwt
+Authorization: Bearer {{token.response.body.accessToken}}
+
+### Admin-only ping (role-based authorization)
+GET {{host}}/admin/ping
+Authorization: Bearer {{token.response.body.accessToken}}
+
+### Register a new user
+# @name register
+POST {{host}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "alice@example.com",
+  "displayName": "Alice",
+  "password": "AliceP@ssword2026"
+}
+
+### Lock the new user (policy: CanManageUsers)
+POST {{host}}/admin/users/{{register.response.body.id}}/lock
+Authorization: Bearer {{token.response.body.accessToken}}
