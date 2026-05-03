@@ -9,6 +9,8 @@ public sealed class CSharpDbClientOptions
     public string? ConnectionString { get; init; }
     public string? DataSource { get; init; }
     public HttpClient? HttpClient { get; init; }
+    public string? ApiKey { get; init; }
+    public string ApiKeyHeaderName { get; init; } = "X-CSharpDB-Api-Key";
     public DatabaseOptions? DirectDatabaseOptions { get; init; }
     public HybridDatabaseOptions? HybridDatabaseOptions { get; init; }
 }

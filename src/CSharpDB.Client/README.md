@@ -52,6 +52,7 @@ Resolution rules:
 - `Http` uses `http://` or `https://` endpoints and talks to `CSharpDB.Api`
 - `NamedPipes` still validates its endpoint shape and then fails with a not-implemented error
 - `HttpClient` is supported for both `Http` and `Grpc`
+- `ApiKey` and `ApiKeyHeaderName` are supported for both `Http` and `Grpc`
 
 Use `HybridDatabaseOptions` when the direct client should run with a lazy
 resident page cache while persisting committed state back to the resolved file
@@ -99,6 +100,23 @@ var client = CSharpDbClient.Create(new CSharpDbClientOptions
 ```
 
 This resolves to the dedicated `CSharpDB.Daemon` gRPC host.
+
+When the remote host is configured with API-key mode, set `ApiKey` once on the
+client options. The HTTP transport sends it as a request header, and the gRPC
+transport sends it as call metadata.
+
+```csharp
+var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "https://db-host:5821",
+    ApiKey = "replace-with-a-secret",
+    ApiKeyHeaderName = "X-CSharpDB-Api-Key"
+});
+```
+
+API-key mode is shared-secret authentication only. It does not provide JWT,
+RBAC, mTLS, or TLS termination.
 
 ## Supported Surface
 

@@ -2,8 +2,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Api.Endpoints;
 using CSharpDB.Api.Middleware;
+using CSharpDB.Api.Security;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Scalar.AspNetCore;
 
@@ -23,8 +25,28 @@ public sealed class CSharpDbRestApiHostOptions
 public static class CSharpDbRestApiHostExtensions
 {
     public static IServiceCollection AddCSharpDbRestApi(this IServiceCollection services)
+        => services.AddCSharpDbRestApi(configureSecurity: null);
+
+    public static IServiceCollection AddCSharpDbRestApi(
+        this IServiceCollection services,
+        IConfiguration securityConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(securityConfiguration);
+
+        services.AddCSharpDbRestApi(configureSecurity: null);
+        services.Configure<CSharpDbApiSecurityOptions>(securityConfiguration);
+        return services;
+    }
+
+    public static IServiceCollection AddCSharpDbRestApi(
+        this IServiceCollection services,
+        Action<CSharpDbApiSecurityOptions>? configureSecurity)
     {
         services.AddOpenApi();
+        services.AddOptions<CSharpDbApiSecurityOptions>();
+
+        if (configureSecurity is not null)
+            services.Configure(configureSecurity);
 
         services.AddCors(options =>
         {
@@ -67,12 +89,16 @@ public static class CSharpDbRestApiHostExtensions
                 {
                     branch.UseCors();
                     branch.UseMiddleware<ExceptionHandlingMiddleware>();
+                    branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
                 });
         }
         else
         {
             app.UseCors();
             app.UseMiddleware<ExceptionHandlingMiddleware>();
+            app.UseWhen(
+                context => context.Request.Path.StartsWithSegments(apiPath),
+                branch => branch.UseMiddleware<ApiKeyAuthenticationMiddleware>());
         }
 
         if (options.MapDevelopmentOpenApi && app.Environment.IsDevelopment())

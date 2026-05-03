@@ -35,7 +35,7 @@ It is not yet designed as:
 - a multi-tenant database server
 - a public internet-facing database endpoint
 - a multi-database host in one process
-- a hardened public production service with built-in auth, metrics, or health
+- a hardened public production service with authorization, metrics, or health
   endpoints
 
 ## Current Runtime Model
@@ -126,8 +126,8 @@ For best remote performance:
 
 For local development, plain `http://localhost:...` is enough.
 
-For remote deployment, prefer TLS termination and network controls in front of
-the daemon because the daemon currently has no built-in authentication layer.
+For remote deployment, enable API-key mode and still prefer TLS termination and
+network controls in front of the daemon.
 
 ## Configuration
 
@@ -136,6 +136,9 @@ section:
 
 - `ConnectionStrings:CSharpDB`
 - `CSharpDB:Daemon:EnableRestApi`
+- `CSharpDB:Daemon:Security:Mode`
+- `CSharpDB:Daemon:Security:ApiKey`
+- `CSharpDB:Daemon:Security:ApiKeyHeaderName`
 - `CSharpDB:HostDatabase:OpenMode`
 - `CSharpDB:HostDatabase:ImplicitInsertExecutionMode`
 - `CSharpDB:HostDatabase:UseWriteOptimizedPreset`
@@ -154,7 +157,11 @@ Default [`appsettings.json`](./appsettings.json):
   },
   "CSharpDB": {
     "Daemon": {
-      "EnableRestApi": true
+      "EnableRestApi": true,
+      "Security": {
+        "Mode": "None",
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+      }
     },
     "HostDatabase": {
       "OpenMode": "HybridIncrementalDurable",
@@ -176,6 +183,8 @@ Data Source=csharpdb.db
 Current daemon defaults:
 
 - `EnableRestApi = true`
+- `Security:Mode = None`
+- `Security:ApiKeyHeaderName = X-CSharpDB-Api-Key`
 - `OpenMode = HybridIncrementalDurable`
 - `ImplicitInsertExecutionMode = ConcurrentWriteTransactions`
 - `UseWriteOptimizedPreset = true`
@@ -187,6 +196,8 @@ Useful overrides:
 ```powershell
 $env:ConnectionStrings__CSharpDB = "Data Source=C:\\data\\app.db"
 $env:CSharpDB__Daemon__EnableRestApi = "false"
+$env:CSharpDB__Daemon__Security__Mode = "ApiKey"
+$env:CSharpDB__Daemon__Security__ApiKey = "replace-with-a-secret"
 $env:CSharpDB__HostDatabase__OpenMode = "Direct"
 $env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = "Serialized"
 $env:CSharpDB__HostDatabase__HotTableNames__0 = "users"
@@ -199,6 +210,8 @@ Linux/macOS shell:
 ```bash
 export ConnectionStrings__CSharpDB="Data Source=/var/lib/csharpdb/app.db"
 export CSharpDB__Daemon__EnableRestApi="false"
+export CSharpDB__Daemon__Security__Mode="ApiKey"
+export CSharpDB__Daemon__Security__ApiKey="replace-with-a-secret"
 export CSharpDB__HostDatabase__OpenMode="Direct"
 export CSharpDB__HostDatabase__ImplicitInsertExecutionMode="Serialized"
 export CSharpDB__HostDatabase__HotTableNames__0="users"
@@ -212,6 +225,30 @@ without the lazy-resident hybrid cache. `HotTableNames` and
 `HotCollectionNames` are optional hybrid-only preload hints. Set
 `CSharpDB:Daemon:EnableRestApi=false` only when the daemon should expose gRPC
 without the REST `/api` surface.
+
+### API-Key Security
+
+Set `CSharpDB:Daemon:Security:Mode=ApiKey` to protect both REST `/api/*` and
+gRPC calls. Missing or wrong REST keys return `401 Unauthorized`; missing or
+wrong gRPC keys return `Unauthenticated`.
+
+`CSharpDB.Client` sends the key for both HTTP and gRPC transports:
+
+```csharp
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "https://db-host:5821",
+    ApiKey = "replace-with-a-secret",
+});
+```
+
+The default header is `X-CSharpDB-Api-Key`. Override it with
+`CSharpDB:Daemon:Security:ApiKeyHeaderName` on the daemon and
+`CSharpDbClientOptions.ApiKeyHeaderName` on the client.
+
+This is shared-secret authentication only. It does not provide JWT, RBAC, mTLS,
+per-user auditing, or TLS termination.
 
 ## Local Development
 
@@ -275,6 +312,7 @@ Notes:
 - set `Endpoint` to the daemon base address, not the raw RPC path
 - the client handles the generated gRPC and REST contracts internally
 - for remote hosts, prefer `https://...` or private-network `http://...` endpoints with long-lived client reuse
+- set `ApiKey` when the daemon is running with `Security:Mode=ApiKey`
 
 ## Deployment Patterns
 
@@ -491,6 +529,9 @@ supported keys remain the standard daemon settings:
 - `ConnectionStrings__CSharpDB`
 - `ASPNETCORE_URLS`
 - `CSharpDB__Daemon__EnableRestApi`
+- `CSharpDB__Daemon__Security__Mode`
+- `CSharpDB__Daemon__Security__ApiKey`
+- `CSharpDB__Daemon__Security__ApiKeyHeaderName`
 - `CSharpDB__HostDatabase__OpenMode`
 - `CSharpDB__HostDatabase__ImplicitInsertExecutionMode`
 - `CSharpDB__HostDatabase__UseWriteOptimizedPreset`
@@ -523,8 +564,8 @@ Practical guidance:
 - internal deployments should prefer private networking
 - if you place the daemon behind a proxy or ingress, make sure that proxy
   correctly supports native gRPC or gRPC-Web, depending on the client path
-- do not expose the daemon directly to untrusted clients until authentication,
-  authorization, and stronger operational controls exist
+- do not expose the daemon directly to untrusted clients; API-key mode should be
+  combined with TLS termination, private networking, and operational controls
 
 ## Observability And Operations
 
@@ -538,7 +579,6 @@ Not implemented yet in this host:
 
 - `/health`
 - `/metrics`
-- authentication
 - authorization
 - TLS-specific configuration helpers
 - admin endpoints beyond the existing database REST API
@@ -591,6 +631,6 @@ Important files:
 ## Status
 
 This README documents the current daemon implementation, v3.4.0 service
-packaging, and v3.4.0 REST/gRPC host consolidation. Auth, TLS helpers, and
-marketplace distribution remain tracked in
+packaging, v3.4.0 REST/gRPC host consolidation, and opt-in API-key security.
+Authorization, TLS/mTLS helpers, and marketplace distribution remain tracked in
 [`docs/roadmap.md`](../../docs/roadmap.md).

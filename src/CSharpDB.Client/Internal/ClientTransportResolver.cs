@@ -16,8 +16,16 @@ internal static class ClientTransportResolver
         return resolution.Transport switch
         {
             CSharpDbTransport.Direct => CreateDirectClient(resolution),
-            CSharpDbTransport.Http => new HttpTransportClient(resolution.EndpointUri!, options.HttpClient),
-            CSharpDbTransport.Grpc => new GrpcTransportClient(resolution.EndpointUri!, options.HttpClient),
+            CSharpDbTransport.Http => new HttpTransportClient(
+                resolution.EndpointUri!,
+                options.HttpClient,
+                options.ApiKey,
+                options.ApiKeyHeaderName),
+            CSharpDbTransport.Grpc => new GrpcTransportClient(
+                resolution.EndpointUri!,
+                options.HttpClient,
+                options.ApiKey,
+                options.ApiKeyHeaderName),
             CSharpDbTransport.NamedPipes => throw CreateNotImplementedTransportException(CSharpDbTransport.NamedPipes),
             _ => throw new CSharpDbClientConfigurationException($"Unsupported transport '{resolution.Transport}'."),
         };

@@ -11,7 +11,7 @@ builder.Services.AddCSharpDbClient(sp => new CSharpDbClientOptions
         ?? "Data Source=csharpdb.db",
 });
 
-builder.Services.AddCSharpDbRestApi();
+builder.Services.AddCSharpDbRestApi(builder.Configuration.GetSection("CSharpDB:Api:Security"));
 
 var app = builder.Build();
 

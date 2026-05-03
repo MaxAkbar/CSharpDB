@@ -1,4 +1,5 @@
 using CSharpDB.Api;
+using CSharpDB.Api.Security;
 using CSharpDB.Client;
 using CSharpDB.Daemon.Configuration;
 using CSharpDB.Daemon.Grpc;
@@ -21,13 +22,18 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<DaemonHostDatabaseOptions>()));
 
 builder.Services.AddCSharpDbClient(sp => sp.GetRequiredService<CSharpDbClientOptions>());
+builder.Services.Configure<CSharpDbApiSecurityOptions>(
+    builder.Configuration.GetSection("CSharpDB:Daemon:Security"));
 
 if (enableRestApi)
 {
     builder.Services.AddCSharpDbRestApi();
 }
 
-builder.Services.AddGrpc();
+builder.Services.AddGrpc(options =>
+{
+    options.Interceptors.Add<CSharpDbApiKeyGrpcInterceptor>();
+});
 
 var app = builder.Build();
 

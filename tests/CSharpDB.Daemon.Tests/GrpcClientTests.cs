@@ -7,6 +7,7 @@ using CSharpDB.Daemon.Configuration;
 using CSharpDB.Engine;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -179,6 +180,88 @@ public sealed class GrpcClientTests : IAsyncLifetime
         DatabaseInfo info = await client.GetInfoAsync(Ct);
 
         Assert.Equal(Path.GetFullPath(_dbPath), info.DataSource);
+    }
+
+    [Fact]
+    public async Task Daemon_ApiKeyModeRejectsMissingAndWrongKeysForRestAndGrpc()
+    {
+        const string secret = "daemon-secret-value";
+        using var factory = new TestDaemonFactory(
+            _dbPath,
+            new Dictionary<string, string?>
+            {
+                ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+                ["CSharpDB:Daemon:Security:ApiKey"] = secret,
+            });
+
+        using var restTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://localhost"),
+        });
+
+        using HttpResponseMessage restMissing = await restTransportClient.GetAsync("/api/info", Ct);
+        Assert.Equal(HttpStatusCode.Unauthorized, restMissing.StatusCode);
+        string restMissingPayload = await restMissing.Content.ReadAsStringAsync(Ct);
+        Assert.DoesNotContain(secret, restMissingPayload, StringComparison.Ordinal);
+
+        using var restWrongRequest = new HttpRequestMessage(HttpMethod.Get, "/api/info");
+        restWrongRequest.Headers.TryAddWithoutValidation("X-CSharpDB-Api-Key", "wrong-secret");
+        using HttpResponseMessage restWrong = await restTransportClient.SendAsync(restWrongRequest, Ct);
+        Assert.Equal(HttpStatusCode.Unauthorized, restWrong.StatusCode);
+
+        using var grpcTransportClient = CreateGrpcHttpClient(factory);
+        using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions
+        {
+            HttpClient = grpcTransportClient,
+            DisposeHttpClient = false,
+        });
+
+        var rpcClient = new CSharpDbRpc.CSharpDbRpcClient(channel);
+
+        var missingGrpc = await Assert.ThrowsAsync<RpcException>(
+            () => rpcClient.GetInfoAsync(new Empty(), cancellationToken: Ct).ResponseAsync);
+        Assert.Equal(StatusCode.Unauthenticated, missingGrpc.StatusCode);
+
+        var wrongGrpc = await Assert.ThrowsAsync<RpcException>(
+            () => rpcClient.GetInfoAsync(
+                new Empty(),
+                headers: new Metadata { { "x-csharpdb-api-key", "wrong-secret" } },
+                cancellationToken: Ct).ResponseAsync);
+        Assert.Equal(StatusCode.Unauthenticated, wrongGrpc.StatusCode);
+    }
+
+    [Fact]
+    public async Task Daemon_ApiKeyModeAcceptsCorrectKeyForRestAndGrpcClients()
+    {
+        const string secret = "daemon-client-secret";
+        using var factory = new TestDaemonFactory(
+            _dbPath,
+            new Dictionary<string, string?>
+            {
+                ["CSharpDB:Daemon:Security:Mode"] = "ApiKey",
+                ["CSharpDB:Daemon:Security:ApiKey"] = secret,
+            });
+
+        using var grpcTransportClient = CreateGrpcHttpClient(factory);
+        await using var grpcClient = CreateGrpcClient(grpcTransportClient, secret);
+
+        DatabaseInfo grpcInfo = await grpcClient.GetInfoAsync(Ct);
+        Assert.Equal(Path.GetFullPath(_dbPath), grpcInfo.DataSource);
+
+        SqlExecutionResult create = await grpcClient.ExecuteSqlAsync(
+            "CREATE TABLE daemon_auth (id INTEGER PRIMARY KEY);",
+            Ct);
+        Assert.Null(create.Error);
+
+        using var restTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://localhost"),
+        });
+        await using var restClient = CreateHttpClient(restTransportClient, secret);
+
+        DatabaseInfo restInfo = await restClient.GetInfoAsync(Ct);
+        Assert.Equal(Path.GetFullPath(_dbPath), restInfo.DataSource);
+        Assert.Contains("daemon_auth", await restClient.GetTableNamesAsync(Ct));
     }
 
     [Fact]
@@ -587,12 +670,13 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal("contract", documentResponse.Value.ObjectValue.Fields["tags"].ArrayValue.Items[1].StringValue);
     }
 
-    private ICSharpDbClient CreateGrpcClient(HttpClient transportClient)
+    private ICSharpDbClient CreateGrpcClient(HttpClient transportClient, string? apiKey = null)
         => CSharpDbClient.Create(new CSharpDbClientOptions
         {
             Transport = CSharpDbTransport.Grpc,
             Endpoint = "http://localhost",
             HttpClient = transportClient,
+            ApiKey = apiKey,
         });
 
     private HttpClient CreateGrpcHttpClient()
@@ -614,12 +698,13 @@ public sealed class GrpcClientTests : IAsyncLifetime
         };
     }
 
-    private static ICSharpDbClient CreateHttpClient(HttpClient transportClient)
+    private static ICSharpDbClient CreateHttpClient(HttpClient transportClient, string? apiKey = null)
         => CSharpDbClient.Create(new CSharpDbClientOptions
         {
             Transport = CSharpDbTransport.Http,
             Endpoint = "http://localhost",
             HttpClient = transportClient,
+            ApiKey = apiKey,
         });
 
     private static DaemonHostDatabaseOptions GetResolvedHostDatabaseOptions(TestDaemonFactory factory)

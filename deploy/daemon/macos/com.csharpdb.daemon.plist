@@ -23,6 +23,10 @@
     <string>Data Source={{DATABASE_PATH}}</string>
     <key>CSharpDB__Daemon__EnableRestApi</key>
     <string>true</string>
+    <key>CSharpDB__Daemon__Security__Mode</key>
+    <string>None</string>
+    <key>CSharpDB__Daemon__Security__ApiKeyHeaderName</key>
+    <string>X-CSharpDB-Api-Key</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

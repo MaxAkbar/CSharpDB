@@ -74,7 +74,11 @@ cat > "$INSTALL_DIR/appsettings.Production.json" <<JSON
   },
   "CSharpDB": {
     "Daemon": {
-      "EnableRestApi": true
+      "EnableRestApi": true,
+      "Security": {
+        "Mode": "None",
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+      }
     },
     "HostDatabase": {
       "OpenMode": "HybridIncrementalDurable",
@@ -93,6 +97,8 @@ ASPNETCORE_ENVIRONMENT=Production
 ASPNETCORE_URLS=$URL
 ConnectionStrings__CSharpDB="Data Source=$DATABASE_PATH"
 CSharpDB__Daemon__EnableRestApi=true
+CSharpDB__Daemon__Security__Mode=None
+CSharpDB__Daemon__Security__ApiKeyHeaderName=X-CSharpDB-Api-Key
 ENV
 
 sed \

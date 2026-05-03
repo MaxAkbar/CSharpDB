@@ -61,7 +61,11 @@ cat > "$INSTALL_DIR/appsettings.Production.json" <<JSON
   },
   "CSharpDB": {
     "Daemon": {
-      "EnableRestApi": true
+      "EnableRestApi": true,
+      "Security": {
+        "Mode": "None",
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+      }
     },
     "HostDatabase": {
       "OpenMode": "HybridIncrementalDurable",

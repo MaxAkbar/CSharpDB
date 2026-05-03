@@ -42,6 +42,10 @@ function Write-ProductionSettings {
         CSharpDB = [ordered]@{
             Daemon = [ordered]@{
                 EnableRestApi = $true
+                Security = [ordered]@{
+                    Mode = 'None'
+                    ApiKeyHeaderName = 'X-CSharpDB-Api-Key'
+                }
             }
             HostDatabase = [ordered]@{
                 OpenMode = 'HybridIncrementalDurable'
@@ -105,7 +109,9 @@ if ($PSCmdlet.ShouldProcess($ServiceName, 'Install CSharpDB.Daemon Windows Servi
         'ASPNETCORE_ENVIRONMENT=Production',
         "ASPNETCORE_URLS=$Url",
         "ConnectionStrings__CSharpDB=Data Source=$databasePath",
-        'CSharpDB__Daemon__EnableRestApi=true'
+        'CSharpDB__Daemon__EnableRestApi=true',
+        'CSharpDB__Daemon__Security__Mode=None',
+        'CSharpDB__Daemon__Security__ApiKeyHeaderName=X-CSharpDB-Api-Key'
     )
     New-ItemProperty -Path $serviceKey -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
 

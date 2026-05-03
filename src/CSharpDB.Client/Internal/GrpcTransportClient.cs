@@ -3,6 +3,7 @@ using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
 using CSharpDB.Storage.Diagnostics;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using Grpc.Net.Client.Web;
 using CoreDbException = CSharpDB.Primitives.CSharpDbException;
@@ -19,7 +20,11 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
     private readonly CSharpDbRpc.CSharpDbRpcClient _client;
     private readonly string _endpoint;
 
-    public GrpcTransportClient(Uri endpoint, HttpClient? httpClient = null)
+    public GrpcTransportClient(
+        Uri endpoint,
+        HttpClient? httpClient = null,
+        string? apiKey = null,
+        string? apiKeyHeaderName = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -41,7 +46,15 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         }
 
         _channel = GrpcChannel.ForAddress(endpoint, channelOptions);
-        _client = new CSharpDbRpc.CSharpDbRpcClient(_channel);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            _client = new CSharpDbRpc.CSharpDbRpcClient(_channel);
+        }
+        else
+        {
+            var invoker = _channel.Intercept(new GrpcApiKeyClientInterceptor(apiKey, apiKeyHeaderName));
+            _client = new CSharpDbRpc.CSharpDbRpcClient(invoker);
+        }
     }
 
     public string DataSource => _endpoint;

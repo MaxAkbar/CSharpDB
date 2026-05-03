@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
@@ -116,6 +117,91 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.True(info.TableCount >= 1);
         Assert.True(info.SavedQueryCount >= 1);
         Assert.Equal(0, info.CollectionCount);
+    }
+
+    [Fact]
+    public async Task RestApi_DefaultNoAuthModeStillWorks()
+    {
+        DatabaseInfo info = await _client.GetInfoAsync(Ct);
+
+        Assert.Equal(Path.GetFullPath(_dbPath), info.DataSource);
+    }
+
+    [Fact]
+    public async Task RestApi_ApiKeyModeRejectsMissingAndWrongKeysWithoutEchoingSecret()
+    {
+        const string secret = "api-secret-value";
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_api_auth_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var factory = new TestApiFactory(
+                dbPath,
+                new Dictionary<string, string?>
+                {
+                    ["CSharpDB:Api:Security:Mode"] = "ApiKey",
+                    ["CSharpDB:Api:Security:ApiKey"] = secret,
+                });
+
+            using var httpClient = factory.CreateClient();
+
+            using HttpResponseMessage missingResponse = await httpClient.GetAsync("/api/info", Ct);
+            Assert.Equal(HttpStatusCode.Unauthorized, missingResponse.StatusCode);
+            string missingPayload = await missingResponse.Content.ReadAsStringAsync(Ct);
+            Assert.DoesNotContain(secret, missingPayload, StringComparison.Ordinal);
+
+            using var wrongRequest = new HttpRequestMessage(HttpMethod.Get, "/api/info");
+            wrongRequest.Headers.TryAddWithoutValidation("X-CSharpDB-Api-Key", "wrong-secret");
+            using HttpResponseMessage wrongResponse = await httpClient.SendAsync(wrongRequest, Ct);
+            Assert.Equal(HttpStatusCode.Unauthorized, wrongResponse.StatusCode);
+            string wrongPayload = await wrongResponse.Content.ReadAsStringAsync(Ct);
+            Assert.DoesNotContain(secret, wrongPayload, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await DeleteIfExistsAsync(dbPath);
+            await DeleteIfExistsAsync(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task RestApi_ApiKeyModeAcceptsCorrectKeyAndClientOption()
+    {
+        const string secret = "api-client-secret";
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_api_auth_client_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var factory = new TestApiFactory(
+                dbPath,
+                new Dictionary<string, string?>
+                {
+                    ["CSharpDB:Api:Security:Mode"] = "ApiKey",
+                    ["CSharpDB:Api:Security:ApiKey"] = secret,
+                });
+
+            using var httpClient = factory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/api/info");
+            request.Headers.TryAddWithoutValidation("X-CSharpDB-Api-Key", secret);
+            using HttpResponseMessage response = await httpClient.SendAsync(request, Ct);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                Transport = CSharpDbTransport.Http,
+                Endpoint = httpClient.BaseAddress!.ToString(),
+                HttpClient = httpClient,
+                ApiKey = secret,
+            });
+
+            DatabaseInfo info = await client.GetInfoAsync(Ct);
+            Assert.Equal(Path.GetFullPath(dbPath), info.DataSource);
+        }
+        finally
+        {
+            await DeleteIfExistsAsync(dbPath);
+            await DeleteIfExistsAsync(dbPath + ".wal");
+        }
     }
 
     [Fact]
@@ -366,7 +452,9 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         }
     }
 
-    private sealed class TestApiFactory(string dbPath) : WebApplicationFactory<Program>
+    private sealed class TestApiFactory(
+        string dbPath,
+        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -377,6 +465,10 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
                 {
                     ["ConnectionStrings:CSharpDB"] = $"Data Source={dbPath}",
                 });
+                if (extraConfig is not null)
+                {
+                    config.AddInMemoryCollection(extraConfig);
+                }
             });
         }
     }

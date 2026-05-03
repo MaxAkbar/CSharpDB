@@ -14,12 +14,23 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     private readonly Uri _endpoint;
     private readonly HttpClient _httpClient;
     private readonly bool _disposeHttpClient;
+    private readonly string? _apiKey;
+    private readonly string _apiKeyHeaderName;
 
-    public HttpTransportClient(Uri endpoint, HttpClient? httpClient = null)
+    public HttpTransportClient(
+        Uri endpoint,
+        HttpClient? httpClient = null,
+        string? apiKey = null,
+        string? apiKeyHeaderName = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
         _endpoint = EnsureTrailingSlash(endpoint);
+        _apiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey;
+        _apiKeyHeaderName = string.IsNullOrWhiteSpace(apiKeyHeaderName)
+            ? "X-CSharpDB-Api-Key"
+            : apiKeyHeaderName.Trim();
+
         if (httpClient is null)
         {
             _httpClient = new HttpClient();
@@ -656,6 +667,9 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     private async Task<HttpResponseMessage> SendAsync(HttpMethod method, Uri uri, object? payload, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(method, uri);
+        if (_apiKey is not null)
+            request.Headers.TryAddWithoutValidation(_apiKeyHeaderName, _apiKey);
+
         if (payload is not null)
             request.Content = JsonContent.Create(payload, options: s_jsonOptions);
 

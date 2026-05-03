@@ -49,6 +49,7 @@ Current request flow:
 ## Configuration
 
 The API reads the database connection string from `ConnectionStrings:CSharpDB`.
+Optional API-key protection is configured from `CSharpDB:Api:Security`.
 
 Default `appsettings.json`:
 
@@ -130,9 +131,37 @@ This is useful for local testing but is not a hardened production policy.
 
 ## Authentication
 
-There is currently no authentication or authorization in this project.
+Authentication defaults to `None` for backward compatibility. Enable API-key
+mode to require a shared key on every REST route under `/api`.
 
-Anyone who can reach the API can execute database operations.
+```json
+{
+  "CSharpDB": {
+    "Api": {
+      "Security": {
+        "Mode": "ApiKey",
+        "ApiKey": "replace-with-a-secret",
+        "ApiKeyHeaderName": "X-CSharpDB-Api-Key"
+      }
+    }
+  }
+}
+```
+
+Clients send the same key through `CSharpDbClientOptions`:
+
+```csharp
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Http,
+    Endpoint = "https://db-host",
+    ApiKey = "replace-with-a-secret",
+});
+```
+
+Missing or wrong keys return `401 Unauthorized`. API-key mode is a simple
+shared-secret guard; it is not JWT, RBAC, mTLS, or a replacement for TLS
+termination and network access controls.
 
 ## Endpoint Overview
 
@@ -445,6 +474,8 @@ Current status mapping:
   - constraint violations
 - `503 ServiceUnavailable`
   - busy database
+- `401 Unauthorized`
+  - missing or invalid API key when API-key mode is enabled
 - `500 InternalServerError`
   - unexpected runtime failures
 
@@ -454,7 +485,7 @@ Current status mapping:
 - there is no dedicated endpoint yet for creating tables outside raw SQL
 - the API uses the same authoritative client contract as other consumers
 - the standalone API host is suitable for local development, REST-only hosting,
-  and integration testing, but it is not yet production-hardened
+  and integration testing, but it is not a hardened multi-tenant server
 - use `CSharpDB.Daemon` when REST should share a warm hosted database instance
   with gRPC
 
