@@ -14,6 +14,7 @@ public static class CollectionEndpoints
         group.MapGet("/collections/{name}/document", GetDocument);
         group.MapPut("/collections/{name}/document", PutDocument);
         group.MapDelete("/collections/{name}/document", DeleteDocument);
+        group.MapDelete("/collections/{name}", DropCollection);
         return group;
     }
 
@@ -64,5 +65,11 @@ public static class CollectionEndpoints
         return deleted
             ? Results.NoContent()
             : Results.NotFound(new { error = $"Document '{key}' was not found in collection '{name}'." });
+    }
+
+    private static async Task<IResult> DropCollection(string name, ICSharpDbClient db)
+    {
+        await db.DropCollectionAsync(name);
+        return Results.NoContent();
     }
 }

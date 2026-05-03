@@ -1,0 +1,72 @@
+@namespace CSharpDB.Admin.Components.Samples.FormControls
+@using System.Globalization
+@using System.Text.Json
+@using CSharpDB.Admin.Forms.Models
+
+<div class="sample-rating-property-editor">
+    <div class="pi-field">
+        <label>Maximum Rating</label>
+        <input type="number"
+               min="1"
+               max="10"
+               value="@GetIntProp("max", 5)"
+               @onchange="@(e => SetIntPropAsync("max", e.Value, 5))" />
+    </div>
+    <div class="pi-field">
+        <label>Display Mode</label>
+        <select value="@GetStringProp("displayMode", "buttons")"
+                @onchange="@(e => Context.SetPropertyAsync("displayMode", e.Value?.ToString() ?? "buttons"))">
+            <option value="buttons">Buttons</option>
+            <option value="compact">Compact</option>
+        </select>
+    </div>
+    <div class="pi-field">
+        <label>Required</label>
+        <input type="checkbox"
+               checked="@GetBoolProp("required", false)"
+               @onchange="@(e => Context.SetPropertyAsync("required", e.Value is true))" />
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FormControlPropertyContext Context { get; set; } = default!;
+
+    private Task SetIntPropAsync(string key, object? value, int fallback)
+        => Context.SetPropertyAsync(key, Math.Clamp(ReadIntValue(value, fallback), 1, 10));
+
+    private int GetIntProp(string key, int fallback)
+        => Context.Control.Props.Values.TryGetValue(key, out object? value)
+            ? ReadIntValue(value, fallback)
+            : fallback;
+
+    private string GetStringProp(string key, string fallback)
+        => Context.Control.Props.Values.TryGetValue(key, out object? value) && value is not null
+            ? value.ToString() ?? fallback
+            : fallback;
+
+    private bool GetBoolProp(string key, bool fallback)
+    {
+        if (!Context.Control.Props.Values.TryGetValue(key, out object? value) || value is null)
+            return fallback;
+
+        return value switch
+        {
+            bool b => b,
+            JsonElement json when json.ValueKind == JsonValueKind.True => true,
+            JsonElement json when json.ValueKind == JsonValueKind.False => false,
+            _ when bool.TryParse(value.ToString(), out bool parsed) => parsed,
+            _ => fallback,
+        };
+    }
+
+    private static int ReadIntValue(object? value, int fallback)
+        => value switch
+        {
+            int i => i,
+            long l => (int)l,
+            double d => (int)d,
+            JsonElement json when json.ValueKind == JsonValueKind.Number && json.TryGetInt32(out int parsed) => parsed,
+            _ when int.TryParse(value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) => parsed,
+            _ => fallback,
+        };
+}

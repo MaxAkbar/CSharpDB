@@ -1,0 +1,65 @@
+@using CSharpDB.Primitives
+
+<div class="feb-container">
+    @if (ActionSequences.Count == 0)
+    {
+        <div class="feb-empty">No reusable action sequences</div>
+    }
+
+    @for (int i = 0; i < ActionSequences.Count; i++)
+    {
+        var idx = i;
+        var sequence = ActionSequences[idx];
+        <div class="feb-entry">
+            <ActionSequenceEditor ActionSequence="sequence"
+                                  AvailableActionSequences="ActionSequences"
+                                  ActionSequenceChanged="@(updated => UpdateSequence(idx, updated))" />
+        </div>
+    }
+
+    <button class="feb-btn feb-btn-add" @onclick="AddSequence">+ Add Reusable Sequence</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<DbActionSequence> ActionSequences { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<DbActionSequence>> ActionSequencesChanged { get; set; }
+
+    private async Task AddSequence()
+    {
+        var updated = ActionSequences
+            .Append(new DbActionSequence([], Name: NextSequenceName()))
+            .ToList();
+        await ActionSequencesChanged.InvokeAsync(updated);
+    }
+
+    private async Task UpdateSequence(int index, DbActionSequence? sequence)
+    {
+        var updated = ActionSequences.ToList();
+        if (index < 0 || index >= updated.Count)
+            return;
+
+        if (sequence is null)
+            updated.RemoveAt(index);
+        else
+            updated[index] = sequence;
+
+        await ActionSequencesChanged.InvokeAsync(updated);
+    }
+
+    private string NextSequenceName()
+    {
+        const string prefix = "Sequence";
+        HashSet<string> existing = ActionSequences
+            .Select(sequence => sequence.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 1; ; i++)
+        {
+            string candidate = $"{prefix}{i}";
+            if (!existing.Contains(candidate))
+                return candidate;
+        }
+    }
+}

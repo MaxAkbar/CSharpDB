@@ -493,6 +493,7 @@ public sealed class CSharpDbPipelineCatalogClient
             Destination = package.Destination,
             Options = package.Options,
             Incremental = package.Incremental,
+            Hooks = package.Hooks,
         };
 
         string packageJson = PipelinePackageSerializer.Serialize(normalized);

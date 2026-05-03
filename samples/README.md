@@ -19,6 +19,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `efcore-provider/` | Runnable EF Core 10 embedded-provider sample | `.csproj`, `Program.cs`, `README.md` |
+| `trusted-csharp-host/` | Runnable trusted callback host sample | scalar functions, commands, validation rules, form automation metadata, `.csproj`, `Program.cs`, `README.md` |
 
 ## Tutorials
 

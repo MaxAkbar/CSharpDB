@@ -15,6 +15,10 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - record paging, search, create, update, and delete services
 - validation rule inference and validation override support
 - child table/tab support for related records
+- trusted command-backed form events and command buttons
+- trusted command-backed selected-control events
+- declarative action sequences for form and selected-control events
+- generated automation metadata for import/export host callback requirements
 
 ## Main Components
 
@@ -39,6 +43,31 @@ using CSharpDB.Admin.Forms.Services;
 builder.Services.AddCSharpDbAdminForms();
 ```
 
+Trusted command callbacks can be registered with the overload:
+
+```csharp
+builder.Services.AddCSharpDbAdminForms(commands =>
+{
+    commands.AddAsyncCommand(
+        "AuditFormOpen",
+        new DbCommandOptions(
+            Description: "Writes a form audit entry.",
+            Timeout: TimeSpan.FromSeconds(5),
+            IsLongRunning: true),
+        async (context, ct) =>
+        {
+            await WriteAuditAsync(context.Metadata["formName"], ct);
+            return DbCommandResult.Success();
+        });
+});
+```
+
+The Forms runtime passes the command cancellation token to trusted callbacks.
+If a command timeout elapses, the runtime reports the timeout through the same
+form-event failure path as other command errors. Command buttons refresh their
+executing state around async callbacks so the clicked button is disabled while
+the callback is in flight.
+
 The extension registers:
 
 - `IFormRepository`
@@ -46,6 +75,8 @@ The extension registers:
 - `IFormRecordService`
 - `IFormGenerator`
 - `IValidationInferenceService`
+- `IFormEventDispatcher`
+- `DbCommandRegistry`
 
 ## Core Contracts
 
@@ -70,11 +101,43 @@ public sealed record FormDefinition(
     string SourceSchemaSignature,
     LayoutDefinition Layout,
     IReadOnlyList<ControlDefinition> Controls,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<FormEventBinding>? EventBindings = null,
+    DbAutomationMetadata? Automation = null,
+    IReadOnlyList<DbActionSequence>? ActionSequences = null);
 ```
 
 Controls are stored as `ControlDefinition` records with geometry, binding,
-properties, optional validation overrides, and optional renderer hints.
+properties, optional validation overrides, optional renderer hints, and optional
+`ControlEventBinding` entries for selected control events such as `OnClick`,
+`OnChange`, `OnGotFocus`, and `OnLostFocus`.
+
+Form and control event bindings can reference a trusted command name and can
+optionally include a `DbActionSequence`. Forms can also store reusable named
+action sequences in `ActionSequences`, and event/button sequences can invoke
+them with `RunActionSequence`. Action sequences store declarative steps such as
+`RunCommand`, `RunActionSequence`, `SetFieldValue`, `ShowMessage`, `Stop`,
+`NewRecord`, `SaveRecord`, `DeleteRecord`, `RefreshRecords`, `PreviousRecord`,
+`NextRecord`, and `GoToRecord`; they do not store C# source or serialized
+delegates. The property inspector exposes a visual action-sequence editor on
+form-level and selected-control event bindings plus a reusable action library
+when editing form properties. JSON editing is limited to optional command or
+nested-sequence argument payloads.
+
+The built-in record actions run only in the rendered Forms data-entry runtime.
+Headless form event dispatch can still run command, field, message, and stop
+steps, but navigation and save/delete actions require a rendered form instance.
+
+Every action step can also store a simple condition such as `Status = 'Ready'`,
+`Amount > 0`, or `IsActive`. False conditions skip that step; malformed
+conditions fail through the normal action failure path and honor
+`StopOnFailure`.
+
+`DbFormRepository` regenerates `Automation` on save/load. The manifest records
+trusted command and scalar-function names used by form events, command buttons,
+selected-control events, reusable action sequences, action sequences, and
+computed formulas so exported form JSON tells a host which callbacks it must
+register.
 
 ## Build
 

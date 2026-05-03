@@ -1,9 +1,19 @@
 using CSharpDB.Pipelines.Models;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Pipelines.Runtime.BuiltIns;
 
 public sealed class DefaultPipelineComponentFactory : IPipelineComponentFactory
 {
+    private readonly DbFunctionRegistry _functions;
+    private readonly DbExtensionPolicy _callbackPolicy;
+
+    public DefaultPipelineComponentFactory(DbFunctionRegistry? functions = null, DbExtensionPolicy? callbackPolicy = null)
+    {
+        _functions = functions ?? DbFunctionRegistry.Empty;
+        _callbackPolicy = callbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy;
+    }
+
     public IPipelineSource CreateSource(PipelineSourceDefinition definition) => definition.Kind switch
     {
         PipelineSourceKind.CsvFile => new CsvPipelineSource(definition),
@@ -27,13 +37,13 @@ public sealed class DefaultPipelineComponentFactory : IPipelineComponentFactory
         _ => throw new ArgumentOutOfRangeException(nameof(definition)),
     };
 
-    private static IPipelineTransform CreateTransform(PipelineTransformDefinition definition) => definition.Kind switch
+    private IPipelineTransform CreateTransform(PipelineTransformDefinition definition) => definition.Kind switch
     {
         PipelineTransformKind.Select => new SelectPipelineTransform(definition),
         PipelineTransformKind.Rename => new RenamePipelineTransform(definition),
         PipelineTransformKind.Cast => new CastPipelineTransform(definition),
-        PipelineTransformKind.Filter => new FilterPipelineTransform(definition),
-        PipelineTransformKind.Derive => new DerivePipelineTransform(definition),
+        PipelineTransformKind.Filter => new FilterPipelineTransform(definition, _functions, _callbackPolicy),
+        PipelineTransformKind.Derive => new DerivePipelineTransform(definition, _functions, _callbackPolicy),
         PipelineTransformKind.Deduplicate => new DeduplicatePipelineTransform(definition),
         _ => throw new ArgumentOutOfRangeException(nameof(definition)),
     };

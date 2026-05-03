@@ -56,6 +56,98 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenCollectionTab_CreatesCollectionDataTab()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenCollectionTab("profiles");
+
+        Assert.Equal("collection:profiles", tab.Id);
+        Assert.Equal("profiles", tab.Title);
+        Assert.Equal("profiles", tab.ObjectName);
+        Assert.Equal(TabKind.CollectionData, tab.Kind);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenCollectionTab_DeduplicatesByCollectionName()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenCollectionTab("profiles");
+        TabDescriptor second = manager.OpenCollectionTab("profiles");
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenCallbacksTab_CreatesHostCallbacksTab()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenCallbacksTab("normalize_name", "ScalarFunction", 1);
+
+        Assert.Equal("callbacks:host", tab.Id);
+        Assert.Equal("Callbacks", tab.Title);
+        Assert.Equal(TabKind.HostCallbacks, tab.Kind);
+        Assert.Equal("normalize_name", tab.State["SelectedCallbackName"]);
+        Assert.Equal("ScalarFunction", tab.State["SelectedCallbackKind"]);
+        Assert.Equal(1, tab.State["SelectedCallbackArity"]);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenCallbacksTab_DeduplicatesAndUpdatesSelection()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenCallbacksTab("normalize_name", "ScalarFunction", 1);
+        TabDescriptor second = manager.OpenCallbacksTab("refresh_cache", "Command");
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal("refresh_cache", second.State["SelectedCallbackName"]);
+        Assert.Equal("Command", second.State["SelectedCallbackKind"]);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void CloseTabsForObject_ClosesCollectionTab()
+    {
+        var manager = new TabManagerService();
+        manager.OpenCollectionTab("profiles");
+        manager.OpenTableTab("customers");
+
+        manager.CloseTabsForObject("profiles");
+
+        Assert.Equal(["welcome", "table:customers"], manager.Tabs.Select(tab => tab.Id).ToArray());
+        Assert.Equal("table:customers", manager.ActiveTab!.Id);
+    }
+
+    [Fact]
+    public void OpenFormEntryTab_UpdatesInitialStateWhenExistingTabIsReopened()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenFormEntryTab("form-1", "Customer Form", initialRecordId: 10L);
+        TabDescriptor second = manager.OpenFormEntryTab(
+            "form-1",
+            "Customer Form",
+            initialRecordId: 42L,
+            initialMode: "view",
+            initialFilterExpression: "[Status] = @status",
+            initialFilterParameters: new Dictionary<string, object?> { ["status"] = "Open" });
+
+        Assert.Same(first, second);
+        Assert.Equal(42L, second.InitialRecordId);
+        Assert.Equal("view", second.InitialFormEntryMode);
+        Assert.Equal("[Status] = @status", second.InitialFilterExpression);
+        Assert.Equal("Open", second.InitialFilterParameters!["status"]);
+    }
+
+    [Fact]
     public void CloseTabsForForm_ClosesDesignerAndEntryTabs()
     {
         var manager = new TabManagerService();

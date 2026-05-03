@@ -1,9 +1,11 @@
+@using CSharpDB.Admin.Forms.Evaluation
 @inject ICSharpDbClient DbClient
 @inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
 @inject IFormRepository FormRepository
 @inject IReportRepository ReportRepository
 @inject TabManagerService TabManager
+@inject HostCallbackCatalogService CallbackCatalog
 @inject ToastService Toast
 @inject ModalService Modal
 @inject IJSRuntime JS
@@ -12,18 +14,83 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <span>Object Explorer</span>
-        <button class="sidebar-collapse-btn" title="Collapse All" @onclick="CollapseAll">
-            <i class="bi bi-arrows-collapse"></i>
-        </button>
+        <div class="sidebar-header-actions">
+            <button class="sidebar-collapse-btn" title="Refresh" @onclick="RefreshObjectsAsync">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+            <button class="sidebar-collapse-btn" title="Collapse All" @onclick="CollapseAll">
+                <i class="bi bi-arrows-collapse"></i>
+            </button>
+        </div>
     </div>
 
     <div class="sidebar-search">
         <i class="bi bi-search"></i>
         <input type="text" placeholder="Filter objects..." @bind="_searchQuery" @bind:event="oninput" />
+        @if (!string.IsNullOrWhiteSpace(_searchQuery))
+        {
+            <button class="sidebar-clear-btn" title="Clear filter" @onclick="() => _searchQuery = string.Empty">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        }
+    </div>
+
+    <div class="sidebar-filter-chips">
+        <button class="@GetFilterChipClass("all")" @onclick='() => SetObjectFilter("all")'>All</button>
+        <button class="@GetFilterChipClass("tables")" @onclick='() => SetObjectFilter("tables")'>Tables</button>
+        <button class="@GetFilterChipClass("collections")" @onclick='() => SetObjectFilter("collections")'>Collections</button>
+        <button class="@GetFilterChipClass("callbacks")" @onclick='() => SetObjectFilter("callbacks")'>Callbacks</button>
+        <button class="@GetFilterChipClass("forms")" @onclick='() => SetObjectFilter("forms")'>Forms</button>
+        <button class="@GetFilterChipClass("reports")" @onclick='() => SetObjectFilter("reports")'>Reports</button>
     </div>
 
     <div class="tree-container">
+        @if (ShouldShowUtilityGroups)
+        {
+            <div class="tree-group utility-group">
+                <div class="tree-group-header compact">
+                    <i class="bi bi-pin-angle-fill icon-pin"></i>
+                    <span>Pinned</span>
+                    <span class="group-count">@PinnedItems.Count</span>
+                </div>
+                <div class="tree-items">
+                    @foreach (var item in PinnedItems)
+                    {
+                        <button class="tree-item command-item" @onclick="item.Open">
+                            <i class="bi @item.Icon @item.IconClass"></i>
+                            <span class="item-label">@item.Name</span>
+                            <i class="bi bi-star-fill item-pin"></i>
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="tree-group utility-group">
+                <div class="tree-group-header compact">
+                    <i class="bi bi-clock-history icon-recent"></i>
+                    <span>Recent</span>
+                    <span class="group-count">@RecentItems.Count</span>
+                </div>
+                @if (RecentItems.Count > 0)
+                {
+                    <div class="tree-items">
+                        @foreach (var tab in RecentItems)
+                        {
+                            <button class="tree-item command-item @(TabManager.ActiveTab?.Id == tab.Id ? "active" : "")"
+                                    @onclick="() => TabManager.ActivateTab(tab.Id)">
+                                <i class="bi @tab.Icon"></i>
+                                <span class="item-label">@tab.Title</span>
+                                <span class="item-hint">@tab.Kind</span>
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
         @* User Tables *@
+        @if (ShouldShowGroup("tables"))
+        {
         <div class="tree-group">
             <div class="tree-group-header"
                  @onclick='() => ToggleGroup("tables")'
@@ -37,21 +104,142 @@
             @if (_expandedGroups.Contains("tables") && _userTableNames is not null)
             {
                 <div class="tree-items">
-                    @foreach (var name in FilterItems(_userTableNames))
+                    @foreach (var name in FilterTableNames(_userTableNames))
                     {
                         var tableName = name;
-                        <div class="tree-item @(IsActive("table", tableName) ? "active" : "")"
+                        <div class="tree-item table-tree-item @(IsActive("table", tableName) ? "active" : "")"
                              @onclick="() => TabManager.OpenTableTab(tableName)"
                              @oncontextmenu="e => ShowTableItemMenu(e, tableName)"
                              @oncontextmenu:preventDefault>
+                            <button type="button"
+                                    class="tree-disclosure"
+                                    title="Show table objects"
+                                    @onclick="() => ToggleTableNodeAsync(tableName)"
+                                    @onclick:stopPropagation="true">
+                                <i class="bi @(IsTableNodeExpanded(tableName) ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                            </button>
                             <i class="bi bi-table icon-table"></i>
                             <span class="item-label">@tableName</span>
+                        </div>
+                        @if (ShouldShowTableChildren(tableName))
+                        {
+                            <div class="tree-child-group">
+                                @if (_tableSchemas.TryGetValue(tableName, out var schema))
+                                {
+                                    <div class="tree-child-head">Columns · @schema.Columns.Count</div>
+                                    @foreach (var column in schema.Columns.Take(SidebarColumnPreviewLimit))
+                                    {
+                                        var currentColumn = column;
+                                        <button type="button" class="tree-child-item" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            <i class="bi @GetColumnIconClass(currentColumn)"></i>
+                                            <span class="tree-child-label">@currentColumn.Name</span>
+                                            <span class="tree-child-type">@GetColumnTypeLabel(currentColumn)</span>
+                                        </button>
+                                    }
+                                    @if (schema.Columns.Count > SidebarColumnPreviewLimit)
+                                    {
+                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            +@(schema.Columns.Count - SidebarColumnPreviewLimit) more columns
+                                        </button>
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="tree-child-state">@GetSchemaLoadStateText(tableName)</div>
+                                }
+
+                                @{
+                                    var tableIndexes = GetIndexesForTable(tableName).ToList();
+                                    var tableTriggers = GetTriggersForTable(tableName).ToList();
+                                }
+                                @if (tableIndexes.Count > 0)
+                                {
+                                    <div class="tree-child-head">Indexes · @tableIndexes.Count</div>
+                                    @foreach (var index in tableIndexes.Take(SidebarIndexPreviewLimit))
+                                    {
+                                        var currentIndex = index;
+                                        <button type="button"
+                                                class="tree-child-item"
+                                                @onclick="() => TabManager.OpenTableSchemaTab(tableName)"
+                                                @oncontextmenu="e => ShowIndexItemMenu(e, currentIndex)"
+                                                @oncontextmenu:preventDefault>
+                                            <i class="bi bi-lightning icon-index"></i>
+                                            <span class="tree-child-label">@currentIndex.IndexName</span>
+                                            <span class="tree-child-type">@GetIndexTypeLabel(currentIndex)</span>
+                                        </button>
+                                    }
+                                    @if (tableIndexes.Count > SidebarIndexPreviewLimit)
+                                    {
+                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            +@(tableIndexes.Count - SidebarIndexPreviewLimit) more indexes
+                                        </button>
+                                    }
+                                }
+                                @if (tableTriggers.Count > 0)
+                                {
+                                    <div class="tree-child-head">Triggers · @tableTriggers.Count</div>
+                                    @foreach (var trigger in tableTriggers.Take(SidebarTriggerPreviewLimit))
+                                    {
+                                        var currentTrigger = trigger;
+                                        <button type="button"
+                                                class="tree-child-item"
+                                                @onclick="() => TabManager.OpenTableSchemaTab(tableName)"
+                                                @oncontextmenu="e => ShowTriggerItemMenu(e, currentTrigger)"
+                                                @oncontextmenu:preventDefault>
+                                            <i class="bi bi-lightning-charge icon-trigger"></i>
+                                            <span class="tree-child-label">@currentTrigger.TriggerName</span>
+                                            <span class="tree-child-type">@GetTriggerTypeLabel(currentTrigger)</span>
+                                        </button>
+                                    }
+                                    @if (tableTriggers.Count > SidebarTriggerPreviewLimit)
+                                    {
+                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            +@(tableTriggers.Count - SidebarTriggerPreviewLimit) more triggers
+                                        </button>
+                                    }
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+            }
+        </div>
+        }
+
+        @* Collections *@
+        @if (ShouldShowGroup("collections"))
+        {
+        <div class="tree-group">
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("collections")'
+                 @oncontextmenu="e => ShowCollectionsGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
+                <i class="bi @(_expandedGroups.Contains("collections") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-braces icon-view"></i>
+                <span>Collections</span>
+                <span class="group-count">@(_collectionNames?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("collections") && _collectionNames is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var name in FilterCollections())
+                    {
+                        var collectionName = name;
+                        <div class="tree-item @(IsActive("collection", collectionName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenCollectionTab(collectionName)"
+                             @oncontextmenu="e => ShowCollectionItemMenu(e, collectionName)"
+                             @oncontextmenu:preventDefault>
+                            <i class="bi bi-braces icon-view"></i>
+                            <span class="item-label">@collectionName</span>
                         </div>
                     }
                 </div>
             }
         </div>
+        }
 
+        @if (ShouldShowGroup("forms"))
+        {
         <div class="tree-group">
             <div class="tree-group-header"
                  @onclick='() => ToggleGroup("forms")'
@@ -80,7 +268,10 @@
                 </div>
             }
         </div>
+        }
 
+        @if (ShouldShowGroup("reports"))
+        {
         <div class="tree-group">
             <div class="tree-group-header"
                  @onclick='() => ToggleGroup("reports")'
@@ -109,7 +300,10 @@
                 </div>
             }
         </div>
+        }
 
+        @if (ShouldShowGroup("system"))
+        {
         <div class="tree-group">
             <div class="tree-group-header" @onclick='() => ToggleGroup("systemTables")'>
                 <i class="bi @(_expandedGroups.Contains("systemTables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
@@ -120,19 +314,109 @@
             @if (_expandedGroups.Contains("systemTables") && _systemTableNames is not null)
             {
                 <div class="tree-items">
-                    @foreach (var name in FilterItems(_systemTableNames))
+                    @foreach (var name in FilterTableNames(_systemTableNames))
                     {
-                        <div class="tree-item @(IsActive("table", name) ? "active" : "")"
-                             @onclick="() => TabManager.OpenTableTab(name)">
+                        var tableName = name;
+                        <div class="tree-item table-tree-item @(IsActive("table", tableName) ? "active" : "")"
+                             @onclick="() => TabManager.OpenTableTab(tableName)">
+                            <button type="button"
+                                    class="tree-disclosure"
+                                    title="Show table objects"
+                                    @onclick="() => ToggleTableNodeAsync(tableName)"
+                                    @onclick:stopPropagation="true">
+                                <i class="bi @(IsTableNodeExpanded(tableName) ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                            </button>
                             <i class="bi bi-hdd-stack icon-system"></i>
-                            <span class="item-label">@name</span>
+                            <span class="item-label">@tableName</span>
                         </div>
+                        @if (ShouldShowTableChildren(tableName))
+                        {
+                            <div class="tree-child-group">
+                                @if (_tableSchemas.TryGetValue(tableName, out var schema))
+                                {
+                                    <div class="tree-child-head">Columns · @schema.Columns.Count</div>
+                                    @foreach (var column in schema.Columns.Take(SidebarColumnPreviewLimit))
+                                    {
+                                        var currentColumn = column;
+                                        <button type="button" class="tree-child-item" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            <i class="bi @GetColumnIconClass(currentColumn)"></i>
+                                            <span class="tree-child-label">@currentColumn.Name</span>
+                                            <span class="tree-child-type">@GetColumnTypeLabel(currentColumn)</span>
+                                        </button>
+                                    }
+                                    @if (schema.Columns.Count > SidebarColumnPreviewLimit)
+                                    {
+                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            +@(schema.Columns.Count - SidebarColumnPreviewLimit) more columns
+                                        </button>
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="tree-child-state">@GetSchemaLoadStateText(tableName)</div>
+                                }
+
+                                @{
+                                    var tableIndexes = GetIndexesForTable(tableName).ToList();
+                                    var tableTriggers = GetTriggersForTable(tableName).ToList();
+                                }
+                                @if (tableIndexes.Count > 0)
+                                {
+                                    <div class="tree-child-head">Indexes · @tableIndexes.Count</div>
+                                    @foreach (var index in tableIndexes.Take(SidebarIndexPreviewLimit))
+                                    {
+                                        var currentIndex = index;
+                                        <button type="button"
+                                                class="tree-child-item"
+                                                @onclick="() => TabManager.OpenTableSchemaTab(tableName)"
+                                                @oncontextmenu="e => ShowIndexItemMenu(e, currentIndex)"
+                                                @oncontextmenu:preventDefault>
+                                            <i class="bi bi-lightning icon-index"></i>
+                                            <span class="tree-child-label">@currentIndex.IndexName</span>
+                                            <span class="tree-child-type">@GetIndexTypeLabel(currentIndex)</span>
+                                        </button>
+                                    }
+                                    @if (tableIndexes.Count > SidebarIndexPreviewLimit)
+                                    {
+                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            +@(tableIndexes.Count - SidebarIndexPreviewLimit) more indexes
+                                        </button>
+                                    }
+                                }
+                                @if (tableTriggers.Count > 0)
+                                {
+                                    <div class="tree-child-head">Triggers · @tableTriggers.Count</div>
+                                    @foreach (var trigger in tableTriggers.Take(SidebarTriggerPreviewLimit))
+                                    {
+                                        var currentTrigger = trigger;
+                                        <button type="button"
+                                                class="tree-child-item"
+                                                @onclick="() => TabManager.OpenTableSchemaTab(tableName)"
+                                                @oncontextmenu="e => ShowTriggerItemMenu(e, currentTrigger)"
+                                                @oncontextmenu:preventDefault>
+                                            <i class="bi bi-lightning-charge icon-trigger"></i>
+                                            <span class="tree-child-label">@currentTrigger.TriggerName</span>
+                                            <span class="tree-child-type">@GetTriggerTypeLabel(currentTrigger)</span>
+                                        </button>
+                                    }
+                                    @if (tableTriggers.Count > SidebarTriggerPreviewLimit)
+                                    {
+                                        <button type="button" class="tree-child-more" @onclick="() => TabManager.OpenTableSchemaTab(tableName)">
+                                            +@(tableTriggers.Count - SidebarTriggerPreviewLimit) more triggers
+                                        </button>
+                                    }
+                                }
+                            </div>
+                        }
                     }
                 </div>
             }
         </div>
+        }
 
         @* System Catalog (Virtual) *@
+        @if (ShouldShowGroup("system"))
+        {
         <div class="tree-group">
             <div class="tree-group-header" @onclick='() => ToggleGroup("system")'>
                 <i class="bi @(_expandedGroups.Contains("system") ? "bi-chevron-down" : "bi-chevron-right")"></i>
@@ -155,8 +439,11 @@
                 </div>
             }
         </div>
+        }
 
         @* Views *@
+        @if (ShouldShowGroup("views"))
+        {
         <div class="tree-group">
             <div class="tree-group-header"
                  @onclick='() => ToggleGroup("views")'
@@ -184,8 +471,11 @@
                 </div>
             }
         </div>
+        }
 
         @* Indexes *@
+        @if (ShouldShowGroup("system"))
+        {
         <div class="tree-group">
             <div class="tree-group-header" @onclick='() => ToggleGroup("indexes")'>
                 <i class="bi @(_expandedGroups.Contains("indexes") ? "bi-chevron-down" : "bi-chevron-right")"></i>
@@ -211,8 +501,11 @@
                 </div>
             }
         </div>
+        }
 
         @* Triggers *@
+        @if (ShouldShowGroup("system"))
+        {
         <div class="tree-group">
             <div class="tree-group-header" @onclick='() => ToggleGroup("triggers")'>
                 <i class="bi @(_expandedGroups.Contains("triggers") ? "bi-chevron-down" : "bi-chevron-right")"></i>
@@ -238,8 +531,11 @@
                 </div>
             }
         </div>
+        }
 
         @* Procedures *@
+        @if (ShouldShowGroup("procedures"))
+        {
         <div class="tree-group">
             <div class="tree-group-header"
                  @onclick='() => ToggleGroup("procedures")'
@@ -267,6 +563,63 @@
                 </div>
             }
         </div>
+        }
+
+        @* Host callbacks *@
+        @if (ShouldShowGroup("callbacks"))
+        {
+        <div class="tree-group">
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("callbacks")'
+                 @oncontextmenu="e => ShowCallbacksGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
+                <i class="bi @(_expandedGroups.Contains("callbacks") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-plug icon-system"></i>
+                <span>Callbacks</span>
+                <span class="group-count">@CallbackObjectCount</span>
+            </div>
+            @if (_expandedGroups.Contains("callbacks"))
+            {
+                <div class="tree-items">
+                    @{
+                        int internalCount = InternalCallbackObjectCount;
+                        int externalCount = ExternalCallbackObjectCount;
+                    }
+
+                    @if (internalCount == 0 && externalCount == 0)
+                    {
+                        <div class="tree-empty">No matching callbacks.</div>
+                    }
+                    else
+                    {
+                        <div class="tree-child-group callback-tree-section">
+                            @if (internalCount > 0)
+                            {
+                                <button type="button"
+                                        class="tree-child-item callback-tree-item @(IsActiveCallbackScope(CallbackScopeInternal) ? "active" : "")"
+                                        @onclick='() => OpenCallbackScope(CallbackScopeInternal)'>
+                                    <i class="bi bi-code-slash icon-system"></i>
+                                    <span class="tree-child-label">Internal</span>
+                                    <span class="tree-child-type">@internalCount</span>
+                                </button>
+                            }
+
+                            @if (externalCount > 0)
+                            {
+                                <button type="button"
+                                        class="tree-child-item callback-tree-item @(IsActiveCallbackScope(CallbackScopeExternal) ? "active" : "")"
+                                        @onclick='() => OpenCallbackScope(CallbackScopeExternal)'>
+                                    <i class="bi bi-plug icon-system"></i>
+                                    <span class="tree-child-label">External</span>
+                                    <span class="tree-child-type">@externalCount</span>
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+        }
     </div>
 
     <div class="sidebar-resize" @onmousedown="StartResize" @onmousedown:preventDefault></div>
@@ -275,6 +628,12 @@
 <ContextMenu @ref="_contextMenu" Items="_contextMenuItems" />
 
 @code {
+    private const int SidebarColumnPreviewLimit = 12;
+    private const int SidebarIndexPreviewLimit = 6;
+    private const int SidebarTriggerPreviewLimit = 6;
+    private const string CallbackScopeInternal = "internal";
+    private const string CallbackScopeExternal = "external";
+
     private ContextMenu? _contextMenu;
     private List<ContextMenuItem> _contextMenuItems = new();
 
@@ -296,13 +655,65 @@
     private IReadOnlyCollection<string>? _userTableNames;
     private IReadOnlyCollection<string>? _systemTableNames;
     private IReadOnlyCollection<string>? _viewNames;
+    private IReadOnlyCollection<string>? _collectionNames;
     private IReadOnlyList<IndexSchema>? _indexes;
     private IReadOnlyList<TriggerSchema>? _triggers;
     private IReadOnlyList<ProcedureDefinition>? _procedures;
+    private IReadOnlyList<HostCallbackCatalogEntry> _callbacks = [];
     private IReadOnlyList<FormDefinition>? _forms;
     private IReadOnlyList<ReportDefinition>? _reports;
     private string _searchQuery = string.Empty;
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "forms", "reports", "system", "views", "procedures" };
+    private string _objectFilter = "all";
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "collections", "forms", "reports", "system", "views", "procedures", "callbacks" };
+    private readonly HashSet<string> _expandedTableNodes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _tableSchemaLoadFailures = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool ShouldShowUtilityGroups => string.Equals(_objectFilter, "all", StringComparison.Ordinal);
+
+    private int CallbackObjectCount => 2;
+
+    private int InternalCallbackObjectCount
+        => FilterInternalCallbackFunctions().Count() + FilterInternalCallbacks().Count();
+
+    private int ExternalCallbackObjectCount
+        => FilterExternalCallbacks().Count();
+
+    private IReadOnlyList<SidebarShortcut> PinnedItems
+    {
+        get
+        {
+            var items = new List<SidebarShortcut>();
+            foreach (string tableName in (_userTableNames ?? []).Take(2))
+            {
+                string captured = tableName;
+                items.Add(new SidebarShortcut(captured, "bi-table", "icon-table", () => TabManager.OpenTableTab(captured)));
+            }
+
+            foreach (FormDefinition form in (_forms ?? []).Take(1))
+            {
+                FormDefinition captured = form;
+                items.Add(new SidebarShortcut(captured.Name, "bi-ui-checks-grid", "icon-form", () => TabManager.OpenFormDesignerTab(captured.FormId, title: captured.Name)));
+            }
+
+            foreach (string collectionName in (_collectionNames ?? []).Take(1))
+            {
+                string captured = collectionName;
+                items.Add(new SidebarShortcut(captured, "bi-braces", "icon-view", () => TabManager.OpenCollectionTab(captured)));
+            }
+
+            return items;
+        }
+    }
+
+    private IReadOnlyList<TabDescriptor> RecentItems
+        => TabManager.Tabs
+            .Where(tab => tab.Kind != TabKind.Welcome)
+            .Reverse()
+            .Take(5)
+            .ToList();
+
+    private sealed record SidebarShortcut(string Name, string Icon, string IconClass, Action Open);
 
     protected override async Task OnInitializedAsync()
     {
@@ -328,28 +739,40 @@
 
     private async Task LoadObjects()
     {
+        _callbacks = await CallbackCatalog.GetEntriesAsync();
+
         try
         {
             var allTables = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
             _userTableNames = allTables.Where(static n => !IsSystemTableName(n)).ToList();
             _systemTableNames = allTables.Where(IsSystemTableName).ToList();
             _viewNames = (await DbClient.GetViewNamesAsync()).OrderBy(n => n).ToList();
+            _collectionNames = (await DbClient.GetCollectionNamesAsync()).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
             _indexes = (await DbClient.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
             _triggers = (await DbClient.GetTriggersAsync()).OrderBy(t => t.TriggerName).ToList();
             _procedures = (await DbClient.GetProceduresAsync()).OrderBy(p => p.Name).ToList();
             _forms = (await FormRepository.ListAsync()).OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
             _reports = (await ReportRepository.ListAsync()).OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+
+            _expandedTableNodes.RemoveWhere(tableName => !allTables.Contains(tableName, StringComparer.OrdinalIgnoreCase));
+            _tableSchemas.Clear();
+            _tableSchemaLoadFailures.Clear();
+            foreach (string tableName in _expandedTableNodes.ToArray())
+                await TryLoadTableSchemaAsync(tableName);
         }
         catch
         {
             _userTableNames = null;
             _systemTableNames = null;
             _viewNames = null;
+            _collectionNames = null;
             _indexes = null;
             _triggers = null;
             _procedures = null;
             _forms = null;
             _reports = null;
+            _tableSchemas.Clear();
+            _tableSchemaLoadFailures.Clear();
         }
     }
 
@@ -359,7 +782,41 @@
             _expandedGroups.Add(group);
     }
 
-    private void CollapseAll() => _expandedGroups.Clear();
+    private void CollapseAll()
+    {
+        _expandedGroups.Clear();
+        _expandedTableNodes.Clear();
+    }
+
+    private async Task RefreshObjectsAsync()
+    {
+        await LoadObjects();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void SetObjectFilter(string filter)
+    {
+        _objectFilter = filter;
+        if (!string.Equals(filter, "all", StringComparison.OrdinalIgnoreCase))
+            _expandedGroups.Add(filter);
+    }
+
+    private string GetFilterChipClass(string filter)
+        => string.Equals(_objectFilter, filter, StringComparison.OrdinalIgnoreCase)
+            ? "active"
+            : string.Empty;
+
+    private bool ShouldShowGroup(string group)
+        => _objectFilter switch
+        {
+            "all" => true,
+            "tables" => group is "tables" or "views",
+            "collections" => group == "collections",
+            "callbacks" => group == "callbacks",
+            "forms" => group == "forms",
+            "reports" => group == "reports",
+            _ => string.Equals(group, _objectFilter, StringComparison.OrdinalIgnoreCase),
+        };
 
     private IEnumerable<string> FilterItems(IReadOnlyCollection<string> items)
     {
@@ -367,6 +824,154 @@
             return items;
         return items.Where(n => n.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
     }
+
+    private IEnumerable<string> FilterCollections()
+    {
+        if (_collectionNames is null)
+            return Enumerable.Empty<string>();
+
+        return FilterItems(_collectionNames);
+    }
+
+    private IEnumerable<string> FilterTableNames(IReadOnlyCollection<string> tableNames)
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return tableNames;
+
+        return tableNames.Where(TableMatchesSearch);
+    }
+
+    private bool TableMatchesSearch(string tableName)
+    {
+        if (tableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return TableChildMatchesSearch(tableName);
+    }
+
+    private bool TableChildMatchesSearch(string tableName)
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return false;
+
+        if (_tableSchemas.TryGetValue(tableName, out var schema)
+            && schema.Columns.Any(column => column.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return GetIndexesForTable(tableName).Any(index =>
+                   index.IndexName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                   || index.Columns.Any(column => column.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)))
+               || GetTriggersForTable(tableName).Any(trigger =>
+                   trigger.TriggerName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsTableNodeExpanded(string tableName)
+        => _expandedTableNodes.Contains(tableName);
+
+    private bool ShouldShowTableChildren(string tableName)
+        => IsTableNodeExpanded(tableName) || TableChildMatchesSearch(tableName);
+
+    private async Task ToggleTableNodeAsync(string tableName)
+    {
+        if (_expandedTableNodes.Remove(tableName))
+            return;
+
+        _expandedTableNodes.Add(tableName);
+        await EnsureTableSchemaLoadedAsync(tableName);
+    }
+
+    private async Task EnsureTableSchemaLoadedAsync(string tableName)
+    {
+        if (_tableSchemas.ContainsKey(tableName))
+            return;
+
+        await TryLoadTableSchemaAsync(tableName);
+    }
+
+    private async Task TryLoadTableSchemaAsync(string tableName)
+    {
+        try
+        {
+            var schema = await DbClient.GetTableSchemaAsync(tableName);
+            if (schema is not null)
+            {
+                _tableSchemas[tableName] = schema;
+                _tableSchemaLoadFailures.Remove(tableName);
+            }
+            else
+            {
+                _tableSchemaLoadFailures.Add(tableName);
+            }
+        }
+        catch
+        {
+            _tableSchemaLoadFailures.Add(tableName);
+        }
+    }
+
+    private string GetSchemaLoadStateText(string tableName)
+        => _tableSchemaLoadFailures.Contains(tableName)
+            ? "Schema unavailable"
+            : IsTableNodeExpanded(tableName)
+                ? "Loading schema..."
+                : "Expand to load columns";
+
+    private IEnumerable<IndexSchema> GetIndexesForTable(string tableName)
+        => _indexes?.Where(index => index.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase))
+           ?? Enumerable.Empty<IndexSchema>();
+
+    private IEnumerable<TriggerSchema> GetTriggersForTable(string tableName)
+        => _triggers?.Where(trigger => trigger.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase))
+           ?? Enumerable.Empty<TriggerSchema>();
+
+    private static string GetColumnIconClass(ColumnDefinition column)
+    {
+        if (column.IsPrimaryKey)
+            return "bi-key-fill icon-column-key";
+
+        return column.Type switch
+        {
+            DbType.Integer => "bi-123 icon-column-number",
+            DbType.Real => "bi-123 icon-column-number",
+            DbType.Text => "bi-fonts icon-column-text",
+            DbType.Blob => "bi-file-binary icon-column-blob",
+            _ => "bi-circle icon-column-generic",
+        };
+    }
+
+    private static string GetColumnTypeLabel(ColumnDefinition column)
+        => column.Type switch
+        {
+            DbType.Integer => column.IsPrimaryKey ? "int pk" : "int",
+            DbType.Real => "real",
+            DbType.Text => "text",
+            DbType.Blob => "blob",
+            _ => column.Type.ToString().ToLowerInvariant(),
+        };
+
+    private static string GetIndexTypeLabel(IndexSchema index)
+        => index.IsUnique
+            ? "unique"
+            : index.Columns.Count switch
+            {
+                0 => "index",
+                1 => "index",
+                _ => $"{index.Columns.Count} cols",
+            };
+
+    private static string GetTriggerTypeLabel(TriggerSchema trigger)
+        => trigger.Timing.ToString().ToUpperInvariant();
+
+    private static string GetCallbackKindLabel(CSharpDB.Primitives.AutomationCallbackKind kind)
+        => kind switch
+        {
+            CSharpDB.Primitives.AutomationCallbackKind.ScalarFunction => "scalar",
+            CSharpDB.Primitives.AutomationCallbackKind.Command => "command",
+            CSharpDB.Primitives.AutomationCallbackKind.ValidationRule => "validation",
+            _ => kind.ToString().ToLowerInvariant(),
+        };
 
     private IEnumerable<IndexSchema> FilterIndexes()
     {
@@ -390,6 +995,62 @@
         if (string.IsNullOrWhiteSpace(_searchQuery)) return _procedures;
         return _procedures.Where(p => p.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                                    || (p.Description?.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
+    private IEnumerable<HostCallbackCatalogEntry> FilterCallbacks()
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return _callbacks;
+
+        return _callbacks.Where(CallbackMatchesSearch);
+    }
+
+    private IEnumerable<FormulaFunctionDescriptor> FilterInternalCallbackFunctions()
+    {
+        IEnumerable<FormulaFunctionDescriptor> functions = FormulaFunctionCatalog.AllFunctions
+            .OrderBy(static function => function.Category, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static function => function.Name, StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return functions;
+
+        return functions.Where(InternalFunctionMatchesSearch);
+    }
+
+    private IEnumerable<HostCallbackCatalogEntry> FilterInternalCallbacks()
+        => FilterCallbacks().Where(IsInternalHostCallback);
+
+    private IEnumerable<HostCallbackCatalogEntry> FilterExternalCallbacks()
+        => FilterCallbacks().Where(callback => !IsInternalHostCallback(callback));
+
+    private bool InternalFunctionMatchesSearch(FormulaFunctionDescriptor function)
+    {
+        string query = _searchQuery.Trim();
+        return function.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Category.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Signature.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Description.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "internal".Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "built-in".Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "formula".Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool CallbackMatchesSearch(HostCallbackCatalogEntry callback)
+    {
+        string query = _searchQuery.Trim();
+        return callback.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || callback.Kind.ToString().Contains(query, StringComparison.OrdinalIgnoreCase)
+               || (IsInternalHostCallback(callback) && "internal".Contains(query, StringComparison.OrdinalIgnoreCase))
+               || (!IsInternalHostCallback(callback) && "external".Contains(query, StringComparison.OrdinalIgnoreCase))
+               || (callback.IsMissingRegistration && "missing".Contains(query, StringComparison.OrdinalIgnoreCase))
+               || (callback.Descriptor?.Runtime.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (callback.Descriptor?.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (callback.Descriptor?.Capabilities.Any(capability => capability.Name.ToString().Contains(query, StringComparison.OrdinalIgnoreCase)) ?? false)
+               || callback.References.Any(reference =>
+                   reference.OwnerName.Contains(query, StringComparison.OrdinalIgnoreCase)
+                   || reference.OwnerKind.Contains(query, StringComparison.OrdinalIgnoreCase)
+                   || reference.Surface.Contains(query, StringComparison.OrdinalIgnoreCase)
+                   || reference.Location.Contains(query, StringComparison.OrdinalIgnoreCase));
     }
 
     private IEnumerable<FormDefinition> FilterForms()
@@ -423,6 +1084,52 @@
     private void OpenSystemCatalogTab(SystemCatalogItem item)
         => TabManager.OpenSystemCatalogTab(item.Name, item.Sql);
 
+    private void OpenInternalFunction(FormulaFunctionDescriptor function)
+    {
+        TabDescriptor tab = TabManager.OpenCallbacksTab();
+        tab.State["CallbackScope"] = CallbackScopeInternal;
+        tab.State["SelectedBuiltInFunctionName"] = function.Name;
+        tab.State.Remove("SelectedCallbackName");
+        tab.State.Remove("SelectedCallbackKind");
+        tab.State.Remove("SelectedCallbackArity");
+    }
+
+    private void OpenCallbackScope(string scope)
+    {
+        TabDescriptor tab = TabManager.OpenCallbacksTab();
+        tab.State["CallbackScope"] = scope;
+        tab.State.Remove("SelectedBuiltInFunctionName");
+        tab.State.Remove("SelectedCallbackName");
+        tab.State.Remove("SelectedCallbackKind");
+        tab.State.Remove("SelectedCallbackArity");
+        TabManager.ActivateTab(tab.Id);
+    }
+
+    private void OpenCallback(HostCallbackCatalogEntry callback)
+    {
+        TabDescriptor tab = TabManager.OpenCallbacksTab(callback.Name, callback.Kind.ToString(), callback.Arity);
+        tab.State["CallbackScope"] = IsInternalHostCallback(callback) ? CallbackScopeInternal : CallbackScopeExternal;
+        tab.State.Remove("SelectedBuiltInFunctionName");
+    }
+
+    private static bool IsInternalHostCallback(HostCallbackCatalogEntry callback)
+        => callback.Descriptor is { Metadata: { } metadata }
+           && IsSystemGeneratedCallbackMetadata(metadata);
+
+    private static bool IsSystemGeneratedCallbackMetadata(IReadOnlyDictionary<string, string> metadata)
+        => HasMetadataValue(metadata, "origin", "system")
+           || HasMetadataValue(metadata, "source", "system")
+           || HasMetadataValue(metadata, "scope", CallbackScopeInternal)
+           || HasMetadataValue(metadata, "generatedBy", "system")
+           || HasMetadataValue(metadata, "systemGenerated", "true");
+
+    private static bool HasMetadataValue(
+        IReadOnlyDictionary<string, string> metadata,
+        string key,
+        string expectedValue)
+        => metadata.TryGetValue(key, out string? value)
+           && string.Equals(value, expectedValue, StringComparison.OrdinalIgnoreCase);
+
     private bool IsActive(string type, string name)
     {
         var activeTab = TabManager.ActiveTab;
@@ -435,6 +1142,59 @@
         var activeTab = TabManager.ActiveTab;
         if (activeTab is null) return false;
         return activeTab.Id == $"{type}:{name}";
+    }
+
+    private bool IsActiveCallback(HostCallbackCatalogEntry callback)
+    {
+        var activeTab = TabManager.ActiveTab;
+        if (activeTab?.Id != "callbacks:host")
+            return false;
+
+        if (!activeTab.State.TryGetValue("SelectedCallbackName", out object? nameValue)
+            || nameValue is not string selectedName
+            || !selectedName.Equals(callback.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (activeTab.State.TryGetValue("SelectedCallbackKind", out object? kindValue)
+            && kindValue is string selectedKind
+            && !selectedKind.Equals(callback.Kind.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (activeTab.State.TryGetValue("SelectedCallbackArity", out object? arityValue)
+            && arityValue is int selectedArity)
+        {
+            return callback.Arity == selectedArity;
+        }
+
+        return true;
+    }
+
+    private bool IsActiveInternalFunction(FormulaFunctionDescriptor function)
+    {
+        var activeTab = TabManager.ActiveTab;
+        return activeTab?.Id == "callbacks:host"
+               && activeTab.State.TryGetValue("SelectedBuiltInFunctionName", out object? nameValue)
+               && nameValue is string selectedName
+               && selectedName.Equals(function.Name, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsActiveCallbackScope(string scope)
+    {
+        var activeTab = TabManager.ActiveTab;
+        if (activeTab?.Id != "callbacks:host")
+            return false;
+
+        string activeScope = activeTab.State.TryGetValue("CallbackScope", out object? scopeValue)
+                             && scopeValue is string value
+                             && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : CallbackScopeExternal;
+
+        return activeScope.Equals(scope, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsActiveForm(string formId)
@@ -477,6 +1237,29 @@
             ContextMenuItem.Separator(),
             new() { Label = "New Query", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab() },
             new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowCollectionsGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "New Collection...", Icon = "bi-plus-lg", OnClick = async () => await OpenNewCollectionAsync() },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowCollectionItemMenu(MouseEventArgs e, string collectionName)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-braces", OnClick = () => TabManager.OpenCollectionTab(collectionName) },
+            new() { Label = "New Document...", Icon = "bi-plus-lg", OnClick = () => OpenNewDocumentForCollection(collectionName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyCollectionNameAsync(collectionName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Drop Collection", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropCollectionAsync(collectionName) },
         });
     }
 
@@ -603,6 +1386,101 @@
         });
     }
 
+    private void ShowCallbacksGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-plug", OnClick = () => TabManager.OpenCallbacksTab() },
+            ContextMenuItem.Separator(),
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowCallbackItemMenu(MouseEventArgs e, HostCallbackCatalogEntry callback)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-plug", OnClick = () => OpenCallback(callback) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyCallbackNameAsync(callback.Name) },
+        });
+    }
+
+    private void ShowInternalFunctionItemMenu(MouseEventArgs e, FormulaFunctionDescriptor function)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-code-slash", OnClick = () => OpenInternalFunction(function) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyCallbackNameAsync(function.Name) },
+            new() { Label = "Copy Signature", Icon = "bi-clipboard-plus", OnClick = async () => await CopyCallbackNameAsync(function.Signature) },
+        });
+    }
+
+    private async Task OpenNewCollectionAsync()
+    {
+        string? enteredName = await Modal.PromptAsync(
+            "New Collection",
+            CollectionNameValidator.HelpText,
+            "Create",
+            "collection_name");
+        if (enteredName is null)
+            return;
+
+        string collectionName = CollectionNameValidator.Normalize(enteredName);
+        if (!CollectionNameValidator.IsValid(collectionName))
+        {
+            Toast.Error(CollectionNameValidator.HelpText);
+            return;
+        }
+
+        try
+        {
+            await DbClient.BrowseCollectionAsync(collectionName, page: 1, pageSize: 1);
+            TabManager.OpenCollectionTab(collectionName);
+            Changes.NotifyChanged();
+            await LoadObjects();
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private void OpenNewDocumentForCollection(string collectionName)
+    {
+        var tab = TabManager.OpenCollectionTab(collectionName);
+        tab.State["StartNewDocument"] = true;
+        TabManager.ActivateTab(tab.Id);
+    }
+
+    private async Task CopyCollectionNameAsync(string collectionName)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", collectionName);
+            Toast.Success($"Copied '{collectionName}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task CopyCallbackNameAsync(string callbackName)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", callbackName);
+            Toast.Success($"Copied '{callbackName}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
     private async Task ConfirmDropTableAsync(string tableName)
     {
         var confirmed = await Modal.ConfirmAsync("Drop Table", $"Are you sure you want to drop table '{tableName}'? This action cannot be undone.", "Drop", isDanger: true);
@@ -612,6 +1490,20 @@
             await DbClient.DropTableAsync(tableName);
             Toast.Success($"Dropped table '{tableName}'.");
             TabManager.CloseTabsForObject(tableName);
+            Changes.NotifyChanged();
+        }
+        catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    private async Task ConfirmDropCollectionAsync(string collectionName)
+    {
+        var confirmed = await Modal.ConfirmAsync("Drop Collection", $"Are you sure you want to drop collection '{collectionName}'? All documents and collection indexes will be deleted. This action cannot be undone.", "Drop", isDanger: true);
+        if (!confirmed) return;
+        try
+        {
+            await DbClient.DropCollectionAsync(collectionName);
+            Toast.Success($"Dropped collection '{collectionName}'.");
+            TabManager.CloseTabsForObject(collectionName);
             Changes.NotifyChanged();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }

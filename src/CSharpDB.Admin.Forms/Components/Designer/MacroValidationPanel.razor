@@ -1,0 +1,45 @@
+@using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Services
+
+@if (_issues.Count > 0)
+{
+    <div class="designer-warning">
+        <strong>@GetSummaryText()</strong>
+        <ul>
+            @foreach (FormActionValidationIssue issue in _issues.Take(6))
+            {
+                <li>@issue.Message</li>
+            }
+        </ul>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public FormDefinition Form { get; set; } = default!;
+    [Parameter] public FormTableDefinition? Schema { get; set; }
+
+    private IReadOnlyList<FormActionValidationIssue> _issues = [];
+
+    protected override void OnParametersSet()
+    {
+        FormActionValidationResult result = FormActionManifestValidator.Validate(
+            Form,
+            new FormActionValidationOptions(
+                RuntimeCapabilities: FormActionRuntimeCapabilities.RenderedForm,
+                Schema: Schema));
+        _issues = result.Issues;
+    }
+
+    private string GetSummaryText()
+    {
+        int errors = _issues.Count(issue => issue.Severity == FormActionValidationSeverity.Error);
+        int warnings = _issues.Count - errors;
+        if (errors > 0 && warnings > 0)
+            return $"{errors} macro error(s), {warnings} warning(s)";
+
+        return errors > 0
+            ? $"{errors} macro error(s)"
+            : $"{warnings} macro warning(s)";
+    }
+}

@@ -157,6 +157,165 @@ public sealed class PipelinePackageValidatorTests
     }
 
     [Fact]
+    public void Validate_ReturnsError_WhenFunctionSyntaxIsMalformed()
+    {
+        var validPackage = CreateValidPackage();
+        var package = new PipelinePackageDefinition
+        {
+            Name = validPackage.Name,
+            Version = validPackage.Version,
+            Source = validPackage.Source,
+            Destination = validPackage.Destination,
+            Options = validPackage.Options,
+            Transforms =
+            [
+                new PipelineTransformDefinition
+                {
+                    Kind = PipelineTransformKind.Derive,
+                    DerivedColumns =
+                    [
+                        new PipelineDerivedColumn
+                        {
+                            Name = "slug",
+                            Expression = "Slugify(name",
+                        },
+                    ],
+                },
+            ],
+        };
+
+        PipelineValidationResult result = PipelinePackageValidator.Validate(package);
+
+        Assert.Contains(result.Errors, e => e.Code == "pipeline.expression.function.syntax");
+    }
+
+    [Fact]
+    public void Validate_ReturnsError_WhenHookCommandNameIsMissing()
+    {
+        var validPackage = CreateValidPackage();
+        var package = new PipelinePackageDefinition
+        {
+            Name = validPackage.Name,
+            Version = validPackage.Version,
+            Source = validPackage.Source,
+            Destination = validPackage.Destination,
+            Options = validPackage.Options,
+            Transforms = validPackage.Transforms,
+            Hooks =
+            [
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnRunSucceeded,
+                    CommandName = " ",
+                },
+            ],
+        };
+
+        PipelineValidationResult result = PipelinePackageValidator.Validate(package);
+
+        Assert.Contains(result.Errors, e => e.Code == "pipeline.hook.command.required");
+    }
+
+    [Fact]
+    public void Validate_ReturnsError_WhenHookArgumentNameIsMissing()
+    {
+        var validPackage = CreateValidPackage();
+        var package = new PipelinePackageDefinition
+        {
+            Name = validPackage.Name,
+            Version = validPackage.Version,
+            Source = validPackage.Source,
+            Destination = validPackage.Destination,
+            Options = validPackage.Options,
+            Transforms = validPackage.Transforms,
+            Hooks =
+            [
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnRunSucceeded,
+                    CommandName = "Notify",
+                    Arguments = new Dictionary<string, object?> { [" "] = "invalid" },
+                },
+            ],
+        };
+
+        PipelineValidationResult result = PipelinePackageValidator.Validate(package);
+
+        Assert.Contains(result.Errors, e => e.Code == "pipeline.hook.argument.name.required");
+    }
+
+    [Fact]
+    public void Validate_ReturnsSuccess_WhenAutomationMetadataIsCurrent()
+    {
+        var validPackage = CreateValidPackage();
+        PipelinePackageDefinition package = PipelineAutomationMetadata.NormalizeForExport(new PipelinePackageDefinition
+        {
+            Name = validPackage.Name,
+            Version = validPackage.Version,
+            Source = validPackage.Source,
+            Destination = validPackage.Destination,
+            Options = validPackage.Options,
+            Transforms =
+            [
+                new PipelineTransformDefinition
+                {
+                    Kind = PipelineTransformKind.Filter,
+                    FilterExpression = "NormalizeStatus(status) == 'active'",
+                },
+            ],
+            Hooks =
+            [
+                new PipelineCommandHookDefinition
+                {
+                    Event = PipelineCommandHookEvent.OnRunSucceeded,
+                    CommandName = "Notify",
+                },
+            ],
+        });
+
+        PipelineValidationResult result = PipelinePackageValidator.Validate(package);
+
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public void Validate_ReturnsError_WhenAutomationMetadataIsOutOfDate()
+    {
+        var validPackage = CreateValidPackage();
+        var package = new PipelinePackageDefinition
+        {
+            Name = validPackage.Name,
+            Version = validPackage.Version,
+            Source = validPackage.Source,
+            Destination = validPackage.Destination,
+            Options = validPackage.Options,
+            Transforms =
+            [
+                new PipelineTransformDefinition
+                {
+                    Kind = PipelineTransformKind.Derive,
+                    DerivedColumns =
+                    [
+                        new PipelineDerivedColumn
+                        {
+                            Name = "slug",
+                            Expression = "Slugify(name)",
+                        },
+                    ],
+                },
+            ],
+            Automation = new DbAutomationMetadata(
+                DbAutomationMetadata.CurrentMetadataVersion,
+                Commands: [],
+                ScalarFunctions: []),
+        };
+
+        PipelineValidationResult result = PipelinePackageValidator.Validate(package);
+
+        Assert.Contains(result.Errors, e => e.Code == "pipeline.automation.scalarFunctions.outOfDate");
+    }
+
+    [Fact]
     public void Validate_ReturnsMultipleErrors_ForCompoundInvalidPackage()
     {
         var package = new PipelinePackageDefinition

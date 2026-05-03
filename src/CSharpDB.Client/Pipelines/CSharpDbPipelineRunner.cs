@@ -1,6 +1,7 @@
 using CSharpDB.Pipelines.Models;
 using CSharpDB.Pipelines.Runtime;
 using CSharpDB.Pipelines.Serialization;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Client.Pipelines;
 
@@ -8,11 +9,17 @@ public sealed class CSharpDbPipelineRunner
 {
     private readonly IPipelineOrchestrator _orchestrator;
 
-    public CSharpDbPipelineRunner(ICSharpDbClient client)
+    public CSharpDbPipelineRunner(
+        ICSharpDbClient client,
+        DbFunctionRegistry? functions = null,
+        DbCommandRegistry? commands = null,
+        DbExtensionPolicy? callbackPolicy = null)
         : this(new PipelineOrchestrator(
-            new CSharpDbPipelineComponentFactory(client),
+            new CSharpDbPipelineComponentFactory(client, functions, callbackPolicy),
             new CSharpDbPipelineCheckpointStore(client),
-            new CSharpDbPipelineRunLogger(client)))
+            new CSharpDbPipelineRunLogger(client),
+            commands,
+            callbackPolicy))
     {
     }
 

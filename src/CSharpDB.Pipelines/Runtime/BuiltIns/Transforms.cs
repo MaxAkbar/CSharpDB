@@ -1,4 +1,5 @@
 using CSharpDB.Pipelines.Models;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Pipelines.Runtime.BuiltIns;
 
@@ -104,11 +105,18 @@ public sealed class CastPipelineTransform : IPipelineTransform
 public sealed class FilterPipelineTransform : IPipelineTransform
 {
     private readonly string _expression;
+    private readonly DbFunctionRegistry _functions;
+    private readonly DbExtensionPolicy _callbackPolicy;
 
-    public FilterPipelineTransform(PipelineTransformDefinition definition)
+    public FilterPipelineTransform(
+        PipelineTransformDefinition definition,
+        DbFunctionRegistry? functions = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         _expression = definition.FilterExpression
             ?? throw new InvalidOperationException("Filter transform requires an expression.");
+        _functions = functions ?? DbFunctionRegistry.Empty;
+        _callbackPolicy = callbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy;
     }
 
     public string Name => "filter";
@@ -116,7 +124,7 @@ public sealed class FilterPipelineTransform : IPipelineTransform
     public ValueTask<PipelineRowBatch> TransformAsync(PipelineRowBatch batch, PipelineExecutionContext context, CancellationToken ct = default)
     {
         var rows = batch.Rows
-            .Where(row => TransformSupport.EvaluateFilter(_expression, row))
+            .Where(row => TransformSupport.EvaluateFilter(_expression, row, _functions, _callbackPolicy))
             .Select(row => new Dictionary<string, object?>(row, StringComparer.OrdinalIgnoreCase))
             .ToArray();
 
@@ -127,11 +135,18 @@ public sealed class FilterPipelineTransform : IPipelineTransform
 public sealed class DerivePipelineTransform : IPipelineTransform
 {
     private readonly IReadOnlyList<PipelineDerivedColumn> _columns;
+    private readonly DbFunctionRegistry _functions;
+    private readonly DbExtensionPolicy _callbackPolicy;
 
-    public DerivePipelineTransform(PipelineTransformDefinition definition)
+    public DerivePipelineTransform(
+        PipelineTransformDefinition definition,
+        DbFunctionRegistry? functions = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         _columns = definition.DerivedColumns
             ?? throw new InvalidOperationException("Derive transform requires derived columns.");
+        _functions = functions ?? DbFunctionRegistry.Empty;
+        _callbackPolicy = callbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy;
     }
 
     public string Name => "derive";
@@ -143,7 +158,7 @@ public sealed class DerivePipelineTransform : IPipelineTransform
             var output = new Dictionary<string, object?>(row, StringComparer.OrdinalIgnoreCase);
             foreach (var column in _columns)
             {
-                output[column.Name] = TransformSupport.EvaluateDerivedExpression(column.Expression, output);
+                output[column.Name] = TransformSupport.EvaluateDerivedExpression(column.Expression, output, _functions, _callbackPolicy);
             }
 
             return output;

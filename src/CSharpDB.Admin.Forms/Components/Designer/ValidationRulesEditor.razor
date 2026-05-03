@@ -1,0 +1,198 @@
+@using System.Text.Json
+@using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Serialization
+@using CSharpDB.Primitives
+@inject DbValidationRuleRegistry ValidationRuleRegistry
+
+<div class="feb-container">
+    @if (Rules.Count == 0)
+    {
+        <div class="feb-empty">No validation rules</div>
+    }
+
+    @for (int i = 0; i < Rules.Count; i++)
+    {
+        var ruleIndex = i;
+        var rule = Rules[ruleIndex];
+        <div class="feb-entry">
+            <div class="feb-row">
+                <div class="feb-field">
+                    <label>Registered Rule</label>
+                    <select value="@GetRuleSelectValue(rule)"
+                            @onchange="@(e => UpdateRuleFromDropdown(ruleIndex, rule, e.Value?.ToString() ?? string.Empty))">
+                        <option value="">Manual / unknown</option>
+                        @foreach (DbValidationRuleDefinition definition in RegisteredRules)
+                        {
+                            <option value="@definition.Name">@definition.Name</option>
+                        }
+                    </select>
+                </div>
+                <button class="feb-btn feb-btn-remove" @onclick="@(() => RemoveRule(ruleIndex))" title="Remove rule">x</button>
+            </div>
+
+            <div class="feb-field">
+                <label>Rule Name</label>
+                <input type="text"
+                       value="@rule.RuleId"
+                       placeholder="RuleName"
+                       @onchange="@(e => UpdateRuleId(ruleIndex, rule, e.Value?.ToString() ?? string.Empty))" />
+            </div>
+
+            <div class="feb-field">
+                <label>Fallback Message</label>
+                <input type="text"
+                       value="@rule.Message"
+                       placeholder="Validation failed."
+                       @onchange="@(e => UpdateMessage(ruleIndex, rule, e.Value?.ToString() ?? string.Empty))" />
+            </div>
+
+            <div class="feb-field">
+                <label>Parameters JSON</label>
+                <textarea class="feb-arguments"
+                          value="@FormatParameters(rule.Parameters)"
+                          placeholder="{ }"
+                          @onchange="@(e => UpdateParameters(ruleIndex, rule, e.Value?.ToString() ?? string.Empty))"></textarea>
+                @if (_parameterErrors.TryGetValue(ruleIndex, out string? error))
+                {
+                    <div class="pi-field-error">@error</div>
+                }
+            </div>
+        </div>
+    }
+
+    <button class="feb-btn feb-btn-add" @onclick="AddRule">+ Add Validation Rule</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<ValidationRule> Rules { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<ValidationRule>> RulesChanged { get; set; }
+
+    private readonly Dictionary<int, string> _parameterErrors = [];
+
+    private IReadOnlyList<DbValidationRuleDefinition> RegisteredRules
+        => ValidationRuleRegistry.Rules
+            .OrderBy(static rule => rule.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private async Task AddRule()
+    {
+        var updated = Rules
+            .Append(new ValidationRule(NextRuleName(), string.Empty, new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)))
+            .ToList();
+        await RulesChanged.InvokeAsync(updated);
+    }
+
+    private async Task RemoveRule(int index)
+    {
+        var updated = Rules.ToList();
+        if (index < 0 || index >= updated.Count)
+            return;
+
+        updated.RemoveAt(index);
+        _parameterErrors.Remove(index);
+        await RulesChanged.InvokeAsync(updated);
+    }
+
+    private Task UpdateRuleFromDropdown(int index, ValidationRule rule, string value)
+        => string.IsNullOrWhiteSpace(value)
+            ? Task.CompletedTask
+            : ReplaceRule(index, rule with { RuleId = value.Trim() });
+
+    private Task UpdateRuleId(int index, ValidationRule rule, string value)
+        => ReplaceRule(index, rule with { RuleId = value.Trim() });
+
+    private Task UpdateMessage(int index, ValidationRule rule, string value)
+        => ReplaceRule(index, rule with { Message = value.Trim() });
+
+    private async Task UpdateParameters(int index, ValidationRule rule, string text)
+    {
+        try
+        {
+            IReadOnlyDictionary<string, object?> parameters = ParseParameters(text);
+            _parameterErrors.Remove(index);
+            await ReplaceRule(index, rule with { Parameters = parameters });
+        }
+        catch (JsonException ex)
+        {
+            _parameterErrors[index] = $"Invalid JSON: {ex.Message}";
+        }
+        catch (InvalidOperationException ex)
+        {
+            _parameterErrors[index] = ex.Message;
+        }
+    }
+
+    private async Task ReplaceRule(int index, ValidationRule rule)
+    {
+        var updated = Rules.ToList();
+        if (index < 0 || index >= updated.Count)
+            return;
+
+        updated[index] = rule;
+        await RulesChanged.InvokeAsync(updated);
+    }
+
+    private string GetRuleSelectValue(ValidationRule rule)
+        => RegisteredRules.Any(definition => string.Equals(definition.Name, rule.RuleId, StringComparison.OrdinalIgnoreCase))
+            ? rule.RuleId
+            : string.Empty;
+
+    private string NextRuleName()
+    {
+        HashSet<string> existing = Rules
+            .Select(static rule => rule.RuleId)
+            .Where(static ruleId => !string.IsNullOrWhiteSpace(ruleId))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (DbValidationRuleDefinition definition in RegisteredRules)
+        {
+            if (!existing.Contains(definition.Name))
+                return definition.Name;
+        }
+
+        for (int i = 1; ; i++)
+        {
+            string candidate = $"Rule{i}";
+            if (!existing.Contains(candidate))
+                return candidate;
+        }
+    }
+
+    private static string FormatParameters(IReadOnlyDictionary<string, object?> parameters)
+        => parameters.Count == 0
+            ? "{ }"
+            : JsonSerializer.Serialize(parameters, new JsonSerializerOptions(JsonDefaults.Options) { WriteIndented = true });
+
+    private static IReadOnlyDictionary<string, object?> ParseParameters(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+        using JsonDocument document = JsonDocument.Parse(text);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("Parameters must be a JSON object.");
+
+        return document.RootElement
+            .EnumerateObject()
+            .ToDictionary(
+                static property => property.Name,
+                static property => ReadJsonValue(property.Value),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static object? ReadJsonValue(JsonElement value)
+        => value.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.TryGetInt64(out long integer) ? integer : value.GetDouble(),
+            JsonValueKind.Object => value.EnumerateObject().ToDictionary(
+                static property => property.Name,
+                static property => ReadJsonValue(property.Value),
+                StringComparer.OrdinalIgnoreCase),
+            JsonValueKind.Array => value.EnumerateArray().Select(ReadJsonValue).ToArray(),
+            _ => value.ToString(),
+        };
+}

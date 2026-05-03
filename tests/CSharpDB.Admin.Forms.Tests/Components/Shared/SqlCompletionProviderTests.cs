@@ -124,6 +124,41 @@ public sealed class SqlCompletionProviderTests
     }
 
     [Fact]
+    public void GetCompletions_SelectListSuggestsTablelessCallbackFunction()
+    {
+        string sql = "SELECT Slu";
+
+        var result = SqlCompletionProvider.GetCompletions(sql, sql.Length, CreateCatalog());
+
+        var suggestion = Assert.Single(result.Suggestions, s => s.Label == "Slugify");
+        Assert.Equal("Slugify()", suggestion.InsertText);
+        Assert.Equal("host function - TEXT - 1 arg - Formats a slug.", suggestion.Detail);
+        Assert.Equal("SELECT Slugify(".Length, suggestion.CaretPosition);
+    }
+
+    [Fact]
+    public void GetCompletions_SelectListSuggestsZeroArgTablelessCallbackFunction()
+    {
+        string sql = "SELECT Host";
+
+        var result = SqlCompletionProvider.GetCompletions(sql, sql.Length, CreateCatalog());
+
+        var suggestion = Assert.Single(result.Suggestions, s => s.Label == "HostName");
+        Assert.Equal("HostName()", suggestion.InsertText);
+        Assert.Equal("SELECT HostName()".Length, suggestion.CaretPosition);
+    }
+
+    [Fact]
+    public void GetCompletions_SelectListDoesNotSuggestCallbackWithoutTablelessFlag()
+    {
+        string sql = "SELECT Row";
+
+        var result = SqlCompletionProvider.GetCompletions(sql, sql.Length, CreateCatalog());
+
+        Assert.DoesNotContain(result.Suggestions, s => s.Label == "RowAudit");
+    }
+
+    [Fact]
     public void GetCompletions_FromContextFiltersSources()
     {
         var result = SqlCompletionProvider.GetCompletions("SELECT * FROM Cu", "SELECT * FROM Cu".Length, CreateCatalog());
@@ -240,5 +275,11 @@ public sealed class SqlCompletionProviderTests
                 ],
             },
             Procedures = ["RefreshCustomerStats"],
+            Functions =
+            [
+                new SqlCompletionFunction("HostName", 0, "TEXT", "Returns the host name.", CanRunWithoutFrom: true),
+                new SqlCompletionFunction("Slugify", 1, "TEXT", "Formats a slug.", CanRunWithoutFrom: true),
+                new SqlCompletionFunction("RowAudit", 1, "TEXT", "Requires row context.", CanRunWithoutFrom: false),
+            ],
         };
 }

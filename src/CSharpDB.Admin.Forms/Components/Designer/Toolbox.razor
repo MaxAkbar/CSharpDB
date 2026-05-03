@@ -1,4 +1,6 @@
 @using CSharpDB.Admin.Forms.Components.Designer
+@using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Admin.Forms.Models
 @implements IDisposable
 
 <div class="toolbox">
@@ -13,77 +15,21 @@
         </button>
     </div>
 
-    <div class="toolbox-group">
-        <div class="toolbox-group-label">Layout</div>
-        <button class="@ToolClass(ToolLabel)"
-                @onclick="@(() => SetTool(ToolLabel))"
-                title="Static text label">
-            <span class="toolbox-icon">A</span> Label
-        </button>
-    </div>
-
-    <div class="toolbox-group">
-        <div class="toolbox-group-label">Input Controls</div>
-        <button class="@ToolClass(ToolText)"
-                @onclick="@(() => SetTool(ToolText))"
-                title="Text input field">
-            <span class="toolbox-icon">&#x2328;</span> Text
-        </button>
-        <button class="@ToolClass(ToolTextarea)"
-                @onclick="@(() => SetTool(ToolTextarea))"
-                title="Multi-line text area">
-            <span class="toolbox-icon">&#x2263;</span> Textarea
-        </button>
-        <button class="@ToolClass(ToolNumber)"
-                @onclick="@(() => SetTool(ToolNumber))"
-                title="Number input field">
-            <span class="toolbox-icon">#</span> Number
-        </button>
-        <button class="@ToolClass(ToolDate)"
-                @onclick="@(() => SetTool(ToolDate))"
-                title="Date picker">
-            <span class="toolbox-icon">&#x1F4C5;</span> Date
-        </button>
-        <button class="@ToolClass(ToolCheckbox)"
-                @onclick="@(() => SetTool(ToolCheckbox))"
-                title="Checkbox">
-            <span class="toolbox-icon">&#x2611;</span> Checkbox
-        </button>
-        <button class="@ToolClass(ToolRadio)"
-                @onclick="@(() => SetTool(ToolRadio))"
-                title="Radio button group">
-            <span class="toolbox-icon">&#x25C9;</span> Radio
-        </button>
-        <button class="@ToolClass(ToolSelect)"
-                @onclick="@(() => SetTool(ToolSelect))"
-                title="Dropdown select">
-            <span class="toolbox-icon">&#x25BE;</span> Select
-        </button>
-        <button class="@ToolClass(ToolLookup)"
-                @onclick="@(() => SetTool(ToolLookup))"
-                title="Lookup combo box (loads from table)">
-            <span class="toolbox-icon">&#x1F50D;</span> Lookup
-        </button>
-        <button class="@ToolClass(ToolComputed)"
-                @onclick="@(() => SetTool(ToolComputed))"
-                title="Computed field (formula-based)">
-            <span class="toolbox-icon">&#x03A3;</span> Computed
-        </button>
-    </div>
-
-    <div class="toolbox-group">
-        <div class="toolbox-group-label">Data</div>
-        <button class="@ToolClass(ToolDatagrid)"
-                @onclick="@(() => SetTool(ToolDatagrid))"
-                title="Child table data grid">
-            <span class="toolbox-icon">&#x2637;</span> DataGrid
-        </button>
-        <button class="@ToolClass(ToolChildTabs)"
-                @onclick="@(() => SetTool(ToolChildTabs))"
-                title="Tab-based child forms with nesting">
-            <span class="toolbox-icon">&#x2630;</span> Child Tabs
-        </button>
-    </div>
+    @foreach (var group in GetToolboxGroups())
+    {
+        <div class="toolbox-group">
+            <div class="toolbox-group-label">@group.Name</div>
+            @foreach (FormControlDescriptor control in group.Controls)
+            {
+                <button @key="control.ControlType"
+                        class="@ToolClass(control.ControlType)"
+                        @onclick="@(() => SetTool(control.ControlType))"
+                        title="@(control.Description ?? control.DisplayName)">
+                    <span class="toolbox-icon">@control.IconText</span> @control.DisplayName
+                </button>
+            }
+        </div>
+    }
 
     <div class="toolbox-group">
         <div class="toolbox-group-label">Clipboard</div>
@@ -146,23 +92,19 @@
 
 @code {
     [CascadingParameter] public DesignerState State { get; set; } = default!;
-
-    private const string ToolLabel = "label";
-    private const string ToolText = "text";
-    private const string ToolTextarea = "textarea";
-    private const string ToolNumber = "number";
-    private const string ToolDate = "date";
-    private const string ToolCheckbox = "checkbox";
-    private const string ToolRadio = "radio";
-    private const string ToolSelect = "select";
-    private const string ToolDatagrid = "datagrid";
-    private const string ToolChildTabs = "childtabs";
-    private const string ToolLookup = "lookup";
-    private const string ToolComputed = "computed";
+    [Inject] public IFormControlRegistry ControlRegistry { get; set; } = DefaultFormControlRegistry.Instance;
 
     protected override void OnInitialized() => State.OnChange += OnStateChanged;
     public void Dispose() => State.OnChange -= OnStateChanged;
     private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private IReadOnlyList<(string Name, IReadOnlyList<FormControlDescriptor> Controls)> GetToolboxGroups()
+        => ControlRegistry.GetToolboxControls()
+            .GroupBy(control => control.ToolboxGroup)
+            .Select(group => (
+                Name: group.Key,
+                Controls: (IReadOnlyList<FormControlDescriptor>)group.ToArray()))
+            .ToArray();
 
     private string ToolClass(string? tool) =>
         "toolbox-item" + (State.ActiveTool == tool ? " active" : "");

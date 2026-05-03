@@ -106,13 +106,16 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.True(await _client.DeleteDocumentAsync("profiles", "user-1", Ct));
         Assert.Null(await _client.GetDocumentAsync("profiles", "user-1", Ct));
         Assert.False(await _client.DeleteDocumentAsync("profiles", "missing", Ct));
+        await _client.DropCollectionAsync("profiles", Ct);
+        collections = await _client.GetCollectionNamesAsync(Ct);
+        Assert.DoesNotContain("profiles", collections);
 
         await _client.CheckpointAsync(Ct);
 
         var info = await _client.GetInfoAsync(Ct);
         Assert.True(info.TableCount >= 1);
         Assert.True(info.SavedQueryCount >= 1);
-        Assert.True(info.CollectionCount >= 1);
+        Assert.Equal(0, info.CollectionCount);
     }
 
     [Fact]

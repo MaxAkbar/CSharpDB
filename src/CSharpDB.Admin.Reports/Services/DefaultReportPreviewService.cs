@@ -1,19 +1,29 @@
 using CSharpDB.Admin.Reports.Contracts;
 using CSharpDB.Admin.Reports.Models;
 using CSharpDB.Client;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Reports.Services;
 
-public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IReportSourceProvider sourceProvider) : IReportPreviewService
+public sealed class DefaultReportPreviewService(
+    ICSharpDbClient dbClient,
+    IReportSourceProvider sourceProvider,
+    DbFunctionRegistry? functions = null,
+    IReportEventDispatcher? reportEvents = null,
+    DbExtensionPolicy? callbackPolicy = null) : IReportPreviewService
 {
     internal const int MaxPreviewRows = 10000;
     internal const int MaxPreviewPages = 250;
     private const double PixelsPerInch = 96.0;
+    private readonly IReportEventDispatcher _reportEvents = reportEvents ?? NullReportEventDispatcher.Instance;
+    private readonly DbExtensionPolicy _callbackPolicy = callbackPolicy ?? DbExtensionPolicies.DefaultHostCallbackPolicy;
 
     public async Task<ReportPreviewResult> BuildPreviewAsync(ReportDefinition report, CancellationToken ct = default)
     {
         ReportSourceDefinition source = await sourceProvider.GetSourceDefinitionAsync(report.Source)
             ?? throw new InvalidOperationException($"Source '{report.Source.Name}' is no longer available.");
+
+        await DispatchReportEventOrThrowAsync(report, source, ReportEventKind.OnOpen, runtimeArguments: null, ct);
 
         IReadOnlyList<Dictionary<string, object?>> loadedRows = source.Kind switch
         {
@@ -25,11 +35,24 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
         bool rowTruncated = loadedRows.Count > MaxPreviewRows;
         List<Dictionary<string, object?>> rows = loadedRows.Take(MaxPreviewRows).ToList();
 
-        IReadOnlyList<ReportPreviewPage> pages = Paginate(report, rows, out bool pageTruncated);
+        await DispatchReportEventOrThrowAsync(
+            report,
+            source,
+            ReportEventKind.BeforeRender,
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["rowCount"] = rows.Count,
+                ["loadedRowCount"] = loadedRows.Count,
+                ["rowTruncated"] = rowTruncated,
+                ["maxPreviewRows"] = MaxPreviewRows,
+            },
+            ct);
+
+        IReadOnlyList<ReportPreviewPage> pages = Paginate(report, rows, functions ?? DbFunctionRegistry.Empty, _callbackPolicy, out bool pageTruncated);
         bool hasSchemaDrift = !string.Equals(source.SourceSchemaSignature, report.SourceSchemaSignature, StringComparison.Ordinal);
         string? warning = BuildWarning(rowTruncated, pageTruncated, hasSchemaDrift);
 
-        return new ReportPreviewResult(
+        var result = new ReportPreviewResult(
             report,
             source,
             pages,
@@ -38,6 +61,38 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
             hasSchemaDrift,
             warning,
             DateTime.UtcNow);
+
+        await DispatchReportEventOrThrowAsync(
+            report,
+            source,
+            ReportEventKind.AfterRender,
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["rowCount"] = result.TotalRows,
+                ["pageCount"] = result.Pages.Count,
+                ["isTruncated"] = result.IsTruncated,
+                ["hasSchemaDrift"] = result.HasSchemaDrift,
+            },
+            ct);
+
+        return result;
+    }
+
+    private async Task DispatchReportEventOrThrowAsync(
+        ReportDefinition report,
+        ReportSourceDefinition source,
+        ReportEventKind eventKind,
+        IReadOnlyDictionary<string, object?>? runtimeArguments,
+        CancellationToken ct)
+    {
+        ReportEventDispatchResult dispatchResult = await _reportEvents.DispatchAsync(report, source, eventKind, runtimeArguments, ct);
+        if (!dispatchResult.Succeeded)
+        {
+            string message = string.IsNullOrWhiteSpace(dispatchResult.Message)
+                ? $"Report event '{eventKind}' failed."
+                : dispatchResult.Message;
+            throw new InvalidOperationException(message);
+        }
     }
 
     private static string? BuildWarning(bool rowTruncated, bool pageTruncated, bool hasSchemaDrift)
@@ -120,7 +175,12 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
             Convert.ToString(normalizedRight, System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    private static IReadOnlyList<ReportPreviewPage> Paginate(ReportDefinition report, List<Dictionary<string, object?>> rows, out bool pageTruncated)
+    private static IReadOnlyList<ReportPreviewPage> Paginate(
+        ReportDefinition report,
+        List<Dictionary<string, object?>> rows,
+        DbFunctionRegistry functions,
+        DbExtensionPolicy callbackPolicy,
+        out bool pageTruncated)
     {
         pageTruncated = false;
         var pages = new List<ReportPreviewPage>();
@@ -159,7 +219,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
             remainingBodyHeight = bodyHeight;
 
             if (pageHeader is not null)
-                currentBands.Add(RenderBand(pageHeader, row: null, rows: [], pageNumber: pages.Count + 1, generatedUtc));
+                currentBands.Add(RenderBand(pageHeader, row: null, rows: [], pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy));
         }
 
         void FinalizePage()
@@ -168,7 +228,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
                 return;
 
             if (pageFooter is not null)
-                currentBands.Add(RenderBand(pageFooter, row: null, rows: [], pageNumber: pages.Count + 1, generatedUtc));
+                currentBands.Add(RenderBand(pageFooter, row: null, rows: [], pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy));
 
             pages.Add(new ReportPreviewPage(pages.Count + 1, currentBands.ToArray()));
             currentBands = null;
@@ -202,7 +262,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
             return pages;
         }
 
-        if (reportHeader is not null && !TryAddBand(RenderBand(reportHeader, row: rows.FirstOrDefault(), rows, pageNumber: pages.Count + 1, generatedUtc)))
+        if (reportHeader is not null && !TryAddBand(RenderBand(reportHeader, row: rows.FirstOrDefault(), rows: rows, pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy)))
         {
             pageTruncated = truncated;
             return pages;
@@ -230,7 +290,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
                         continue;
 
                     IReadOnlyList<Dictionary<string, object?>> groupRows = rows.Skip(groupStartIndices[groupIndex]).Take(rowIndex - groupStartIndices[groupIndex]).ToArray();
-                    if (!TryAddBand(RenderBand(footerBand, row: rows[rowIndex - 1], groupRows, pageNumber: pages.Count + 1, generatedUtc)))
+                    if (!TryAddBand(RenderBand(footerBand, row: rows[rowIndex - 1], rows: groupRows, pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy)))
                     {
                         pageTruncated = truncated;
                         return pages;
@@ -253,7 +313,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
                     if (headerBand is null)
                         continue;
 
-                    if (!TryAddBand(RenderBand(headerBand, row, [row], pageNumber: pages.Count + 1, generatedUtc)))
+                    if (!TryAddBand(RenderBand(headerBand, row: row, rows: [row], pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy)))
                     {
                         pageTruncated = truncated;
                         return pages;
@@ -263,7 +323,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
 
             havePreviousRow = true;
 
-            if (detailBand is not null && !TryAddBand(RenderBand(detailBand, row, [row], pageNumber: pages.Count + 1, generatedUtc)))
+            if (detailBand is not null && !TryAddBand(RenderBand(detailBand, row: row, rows: [row], pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy)))
             {
                 pageTruncated = truncated;
                 return pages;
@@ -283,7 +343,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
                     continue;
 
                 IReadOnlyList<Dictionary<string, object?>> groupRows = rows.Skip(groupStartIndices[groupIndex]).ToArray();
-                if (!TryAddBand(RenderBand(footerBand, row: rows[^1], groupRows, pageNumber: pages.Count + 1, generatedUtc)))
+                if (!TryAddBand(RenderBand(footerBand, row: rows[^1], rows: groupRows, pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy)))
                 {
                     pageTruncated = truncated;
                     return pages;
@@ -292,7 +352,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
         }
 
         if (reportFooter is not null)
-            TryAddBand(RenderBand(reportFooter, row: rows.LastOrDefault(), rows, pageNumber: pages.Count + 1, generatedUtc));
+            TryAddBand(RenderBand(reportFooter, row: rows.LastOrDefault(), rows: rows, pageNumber: pages.Count + 1, generatedUtc: generatedUtc, functions: functions, callbackPolicy: callbackPolicy));
 
         FinalizePage();
         pageTruncated = truncated;
@@ -320,28 +380,49 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
     private static ReportBandDefinition? FindBand(ReportDefinition report, ReportBandKind kind, string? groupId)
         => report.Bands.FirstOrDefault(band => band.BandKind == kind && string.Equals(band.GroupId, groupId, StringComparison.Ordinal));
 
-    private static ReportRenderedBand RenderBand(ReportBandDefinition band, IReadOnlyDictionary<string, object?>? row, IReadOnlyList<Dictionary<string, object?>> rows, int pageNumber, DateTime generatedUtc)
+    private static ReportRenderedBand RenderBand(
+        ReportBandDefinition band,
+        IReadOnlyDictionary<string, object?>? row,
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        int pageNumber,
+        DateTime generatedUtc,
+        DbFunctionRegistry functions,
+        DbExtensionPolicy callbackPolicy)
     {
         ReportRenderedControl[] renderedControls = band.Controls
-            .Select(control => RenderControl(control, row, rows, pageNumber, generatedUtc))
+            .Select(control => RenderControl(control, row, rows, pageNumber, generatedUtc, functions, callbackPolicy))
             .ToArray();
         return new ReportRenderedBand(band.BandId, band.BandKind, band.GroupId, band.Height, renderedControls);
     }
 
-    private static ReportRenderedControl RenderControl(ReportControlDefinition control, IReadOnlyDictionary<string, object?>? row, IReadOnlyList<Dictionary<string, object?>> rows, int pageNumber, DateTime generatedUtc)
+    private static ReportRenderedControl RenderControl(
+        ReportControlDefinition control,
+        IReadOnlyDictionary<string, object?>? row,
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        int pageNumber,
+        DateTime generatedUtc,
+        DbFunctionRegistry functions,
+        DbExtensionPolicy callbackPolicy)
     {
         string? text = control.ControlType switch
         {
             ReportControlType.Label => LookupProp(control.Props, "text"),
             ReportControlType.BoundText => ReportSql.FormatDisplayValue(LookupFieldValue(row, control.BoundFieldName), control.FormatString),
-            ReportControlType.CalculatedText => RenderCalculatedText(control, row, rows, pageNumber, generatedUtc),
+            ReportControlType.CalculatedText => RenderCalculatedText(control, row, rows, pageNumber, generatedUtc, functions, callbackPolicy),
             _ => null,
         };
 
         return new ReportRenderedControl(control.ControlId, control.ControlType, control.Rect, text, control.Props);
     }
 
-    private static string RenderCalculatedText(ReportControlDefinition control, IReadOnlyDictionary<string, object?>? row, IReadOnlyList<Dictionary<string, object?>> rows, int pageNumber, DateTime generatedUtc)
+    private static string RenderCalculatedText(
+        ReportControlDefinition control,
+        IReadOnlyDictionary<string, object?>? row,
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        int pageNumber,
+        DateTime generatedUtc,
+        DbFunctionRegistry functions,
+        DbExtensionPolicy callbackPolicy)
     {
         string expression = control.Expression?.Trim() ?? string.Empty;
         string? prefix = LookupProp(control.Props, "prefix");
@@ -352,6 +433,8 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
             "=PrintDate" => ReportSql.FormatDisplayValue(generatedUtc, control.FormatString),
             _ when ReportFormulaEvaluator.TryParseAggregate(expression, out string functionName, out string fieldName)
                 => ReportSql.FormatDisplayValue(ReportFormulaEvaluator.EvaluateAggregate(functionName, rows.Select(item => LookupFieldValue(item, fieldName))), control.FormatString),
+            _ when ReportFormulaEvaluator.TryEvaluateScalar(expression, field => LookupFieldValue(row, field), functions, callbackPolicy, out object? scalarValue)
+                => ReportSql.FormatDisplayValue(scalarValue, control.FormatString),
             _ when row is not null && ReportFormulaEvaluator.TryReadFieldReference(expression.TrimStart('='), out string boundFieldName)
                 => ReportSql.FormatDisplayValue(LookupFieldValue(row, boundFieldName), control.FormatString),
             _ when row is not null
@@ -360,7 +443,7 @@ public sealed class DefaultReportPreviewService(ICSharpDbClient dbClient, IRepor
                     {
                         object? fieldValue = LookupFieldValue(row, field);
                         return ReportSql.TryConvertToDouble(fieldValue, out double numeric) ? numeric : null;
-                    }),
+                    }, functions, callbackPolicy),
                     control.FormatString),
             _ => string.Empty,
         };

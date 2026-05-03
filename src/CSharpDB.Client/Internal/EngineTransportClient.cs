@@ -415,6 +415,12 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         return await collection.DeleteAsync(key, ct);
     }
 
+    public async Task DropCollectionAsync(string collectionName, CancellationToken ct = default)
+    {
+        string normalizedName = RequireIdentifier(collectionName, nameof(collectionName));
+        await (await GetDatabaseAsync(ct)).DropCollectionAsync(normalizedName, ct);
+    }
+
     public async Task CheckpointAsync(CancellationToken ct = default)
         => await (await GetDatabaseAsync(ct)).CheckpointAsync(ct);
 
@@ -1013,7 +1019,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             long integer => integer.ToString(CultureInfo.InvariantCulture),
             double real => real.ToString(CultureInfo.InvariantCulture),
             string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
-            byte[] => throw new CSharpDbClientException("Blob parameters are not supported by the engine-only client."),
+            byte[] blob => $"X'{Convert.ToHexString(blob)}'",
             _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
         };
     }

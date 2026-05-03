@@ -22,6 +22,16 @@ The current forms surface already includes:
 - schema-change warnings
 - designer undo/redo, copy/paste, duplicate, layers, alignment, tab order, and
   mobile/tablet/desktop breakpoint editing
+- trusted host command registration for form lifecycle events
+- designer editing for form-level event bindings
+- command button controls that invoke trusted host commands
+- trusted command-backed selected-control events
+- declarative form action sequences for run-command, reusable sequence,
+  set-field, show-message, stop, built-in navigation, save, delete, refresh,
+  and go-to-record steps
+- conditional action steps and reusable named form action sequences
+- visual designer editing for form and selected-control action sequences
+- generated automation metadata for export/import host callback requirements
 
 ## Added Review Findings
 
@@ -96,9 +106,9 @@ Expected fix:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Command button control | Planned | Add buttons that can run form actions. |
-| Action model | Planned | Support actions such as open form, save, delete, navigate, apply filter, clear filter, run SQL/procedure, and show message. |
-| Event hooks | Planned | Add form/control events such as on load, before save, after save, before field change, after field change, and button click. |
+| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands, action-only click sequences, reusable action sequences, and built-in rendered-form navigation/save/delete actions; richer button styling and command presets remain future work. |
+| Action model | Partial | Declarative action sequences support run-command, reusable sequence, set-field, show-message, stop, built-in navigation/save/delete/refresh/go-to, simple per-step conditions, visual designer editing, and generated automation metadata for form and selected-control events; open form, apply filter, clear filter, run SQL/procedure, loops, and conditional UI rules remain future work. |
+| Event hooks | Partial | Form lifecycle events, command-button clicks, and selected control events can call trusted commands; additional Access-style events remain future work. |
 | Conditional UI rules | Planned | Add visible/enabled/read-only expressions for controls. |
 
 ### Phase 5: Broader Control and Property Coverage
@@ -124,3 +134,17 @@ workflows." The highest leverage model changes are:
 - form-mode model
 
 Those foundations should be added before expanding the control palette too far.
+
+## Developer Extensibility
+
+Custom form controls can now be registered without changing saved form JSON. See
+[Form Control Extensibility](form-control-extensibility.md) for the registry API,
+component contexts, generic property schema, and the sample rating control.
+
+Host-owned validation callbacks can be registered for field-level and form-level
+save checks. See
+[Trusted Validation Rules](../trusted-csharp-functions/validation-rules.md) for
+registration, designer metadata, policy, diagnostics, and sample code.
+
+For Access-style expression functions and macro/action candidates, see
+[Access-Style Functions and Macros](access-style-functions-and-macros.md).

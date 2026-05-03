@@ -5,11 +5,13 @@
 @using CSharpDB.Admin.Helpers
 @using CSharpDB.Admin.Models
 @using CSharpDB.Client.Models
+@using CSharpDB.Primitives
 @using CSharpDB.Sql
 @inject ICSharpDbClient DbClient
 @inject IJSRuntime JS
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
+@inject HostCallbackCatalogService CallbackCatalog
 @implements IDisposable
 
 <div class="query-tab" @ref="_queryTabRef" style="@($"--query-editor-height: {_editorHeightPx}px;")">
@@ -114,98 +116,177 @@
         </div>
 
         <div class="query-workspace">
-            <div class="query-editor-panel">
-                <SqlEditor @ref="_editor"
-                           @bind-Value="_sqlText"
-                           OnExecute="RunQuery"
-                           CompletionCatalog="_completionCatalog"
-                           Height="var(--query-editor-height)"
-                           Placeholder="Enter SQL query..." />
-            </div>
+            <div class="query-main-stack">
+                <div class="query-editor-panel">
+                    <SqlEditor @ref="_editor"
+                               @bind-Value="_sqlText"
+                               OnExecute="RunQuery"
+                               CompletionCatalog="_completionCatalog"
+                               Height="var(--query-editor-height)"
+                               Placeholder="Enter SQL query..." />
+                </div>
 
-            <div class="query-editor-splitter"
-                 title="Resize SQL editor"
-                 @onmousedown="StartEditorResizeAsync"
-                 @onmousedown:preventDefault></div>
+                <div class="query-editor-splitter"
+                     title="Resize SQL editor"
+                     @onmousedown="StartEditorResizeAsync"
+                     @onmousedown:preventDefault></div>
 
-            <div class="query-results-panel">
-                @if (_activeQuerySql is not null && !_loading)
-                {
-                    <DataGrid QuerySql="@_activeQuerySql"
-                              ReloadVersion="_queryReloadVersion"
-                              IsReadOnly="true"
-                              OnQueryStatusChanged="OnQueryResultsChanged" />
-                }
-                else
-                {
-                    <div class="grid-container">
-                        @if (_loading)
+                <div class="query-results-panel">
+                    <div class="query-result-tabs">
+                        <button class="@GetResultViewClass(QueryResultView.Results)" @onclick="() => SetResultView(QueryResultView.Results)">
+                            <i class="bi bi-table"></i> Results <span>@GetResultBadge()</span>
+                        </button>
+                        <button class="@GetResultViewClass(QueryResultView.Messages)" @onclick="() => SetResultView(QueryResultView.Messages)">
+                            <i class="bi bi-card-text"></i> Messages
+                        </button>
+                        <button class="@GetResultViewClass(QueryResultView.Stats)" @onclick="() => SetResultView(QueryResultView.Stats)">
+                            <i class="bi bi-speedometer2"></i> Stats
+                        </button>
+                        <button class="@GetResultViewClass(QueryResultView.Plan)" @onclick="() => SetResultView(QueryResultView.Plan)">
+                            <i class="bi bi-diagram-3"></i> Plan
+                        </button>
+                        <div class="query-result-meta">
+                            @if (_elapsed is not null)
+                            {
+                                <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
+                            }
+                            @if (_loading)
+                            {
+                                <span>Running</span>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="query-result-body">
+                        @if (_resultView == QueryResultView.Results)
                         {
-                            <div class="loading-overlay">
-                                <div class="spinner"></div>
-                            </div>
-                        }
-                        else if (_error is not null)
-                        {
-                            <div class="query-error">
-                                <i class="bi bi-exclamation-triangle"></i> @_error
-                            </div>
-                        }
-                        else if (_resultColumns is not null && _resultRows is not null)
-                        {
-                            <table class="data-grid query-results">
-                                <thead>
-                                    <tr>
-                                        <th class="row-num-header">#</th>
-                                        @foreach (var col in _resultColumns)
-                                        {
-                                            <th>@col</th>
-                                        }
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @for (int r = 0; r < _resultRows.Count; r++)
+                            @if (_activeQuerySql is not null && !_loading)
+                            {
+                                <DataGrid QuerySql="@_activeQuerySql"
+                                          ReloadVersion="_queryReloadVersion"
+                                          IsReadOnly="true"
+                                          OnQueryStatusChanged="OnQueryResultsChanged" />
+                            }
+                            else
+                            {
+                                <div class="grid-container">
+                                    @if (_loading)
                                     {
-                                        <tr>
-                                            <td class="row-num">@(r + 1)</td>
-                                            @foreach (var val in _resultRows[r])
-                                            {
-                                                <td>
-                                                    @if (val is null)
-                                                    {
-                                                        <span class="null-val">NULL</span>
-                                                    }
-                                                    else if (val is byte[] bytes)
-                                                    {
-                                                        <span class="blob-val">[@bytes.Length bytes]</span>
-                                                    }
-                                                    else
-                                                    {
-                                                        @val.ToString()
-                                                    }
-                                                </td>
-                                            }
-                                        </tr>
+                                        <div class="loading-overlay">
+                                            <div class="spinner"></div>
+                                        </div>
                                     }
-                                </tbody>
-                            </table>
+                                    else if (_error is not null)
+                                    {
+                                        <div class="query-error">
+                                            <i class="bi bi-exclamation-triangle"></i> @_error
+                                        </div>
+                                    }
+                                    else if (_resultColumns is not null && _resultRows is not null)
+                                    {
+                                        <table class="data-grid query-results">
+                                            <thead>
+                                                <tr>
+                                                    <th class="row-num-header">#</th>
+                                                    @foreach (var col in _resultColumns)
+                                                    {
+                                                        <th>@col</th>
+                                                    }
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @for (int r = 0; r < _resultRows.Count; r++)
+                                                {
+                                                    <tr>
+                                                        <td class="row-num">@(r + 1)</td>
+                                                        @foreach (var val in _resultRows[r])
+                                                        {
+                                                            <td>
+                                                                @if (val is null)
+                                                                {
+                                                                    <span class="null-val">NULL</span>
+                                                                }
+                                                                else if (val is byte[] bytes)
+                                                                {
+                                                                    <span class="blob-val">[@bytes.Length bytes]</span>
+                                                                }
+                                                                else
+                                                                {
+                                                                    @val.ToString()
+                                                                }
+                                                            </td>
+                                                        }
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    }
+                                    else if (_nonQueryMessage is not null)
+                                    {
+                                        <div class="query-message">
+                                            <i class="bi bi-check-circle"></i> @_nonQueryMessage
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="empty-state">
+                                            <i class="bi bi-terminal"></i>
+                                            <p>Run a query to see results</p>
+                                        </div>
+                                    }
+                                </div>
+                            }
                         }
-                        else if (_nonQueryMessage is not null)
+                        else if (_resultView == QueryResultView.Messages)
                         {
-                            <div class="query-message">
-                                <i class="bi bi-check-circle"></i> @_nonQueryMessage
+                            <div class="query-detail-pane">
+                                <h3>Messages</h3>
+                                <p class="@(_error is null ? "ok" : "danger")">@GetMessageText()</p>
+                            </div>
+                        }
+                        else if (_resultView == QueryResultView.Stats)
+                        {
+                            <div class="query-stat-grid">
+                                <div><span>Elapsed</span><strong>@(_elapsed?.TotalMilliseconds.ToString("F1") ?? "-") ms</strong></div>
+                                <div><span>Rows</span><strong>@GetResultSummary()</strong></div>
+                                <div><span>Mode</span><strong>@(_activeQuerySql is not null ? "Paged" : "Direct")</strong></div>
+                                <div><span>Status</span><strong>@(_error is null ? "Ready" : "Error")</strong></div>
                             </div>
                         }
                         else
                         {
-                            <div class="empty-state">
-                                <i class="bi bi-terminal"></i>
-                                <p>Run a query to see results</p>
+                            <div class="query-detail-pane">
+                                <h3>Plan</h3>
+                                <p>Planner output is not generated automatically from this panel. Use the stats shortcuts above for persisted table and column statistics before comparing plans.</p>
                             </div>
                         }
                     </div>
-                }
+                </div>
             </div>
+
+            <aside class="query-history-rail">
+                <header>
+                    <span>History</span>
+                    <button title="Clear history" @onclick="ClearHistory" disabled="@(_queryHistory.Count == 0)">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </header>
+                @if (_queryHistory.Count == 0)
+                {
+                    <p class="query-history-empty">Run SQL to build local history.</p>
+                }
+                else
+                {
+                    @foreach (QueryHistoryItem item in _queryHistory)
+                    {
+                        <button class="query-history-item" @onclick="() => LoadSql(item.Sql)">
+                            <strong>@item.Title</strong>
+                            <span>@item.Summary</span>
+                            <small>@item.ElapsedText</small>
+                        </button>
+                    }
+                }
+            </aside>
         </div>
     }
     else
@@ -216,8 +297,10 @@
 
 @code {
     private enum QueryMode { Sql, Designer }
+    private enum QueryResultView { Results, Messages, Stats, Plan }
 
     private QueryMode _mode = QueryMode.Sql;
+    private QueryResultView _resultView = QueryResultView.Results;
 
     private void SetMode(QueryMode mode)
     {
@@ -277,6 +360,9 @@
     private bool _editorHeightInitialized;
     private ElementReference _queryTabRef;
     private DotNetObjectReference<QueryTab>? _dotNetRef;
+    private readonly List<QueryHistoryItem> _queryHistory = [];
+
+    private sealed record QueryHistoryItem(string Title, string Summary, string ElapsedText, string Sql);
 
     protected override async Task OnInitializedAsync()
     {
@@ -337,12 +423,15 @@
         if (string.IsNullOrWhiteSpace(_sqlText)) return;
 
         _loading = true;
+        _resultView = QueryResultView.Results;
+        string? executedSql = null;
         ResetResultState(resetActiveQuery: true);
         StateHasChanged();
 
         try
         {
             string trimmedSql = _sqlText.Trim();
+            executedSql = trimmedSql;
             if (TryParseExecuteCommand(trimmedSql, out var procedureName, out var args, out var parseError))
             {
                 if (parseError is not null)
@@ -380,6 +469,8 @@
             _loading = false;
             // Save SQL text back to tab state for preservation
             if (Tab is not null) Tab.SqlText = _sqlText;
+            if (executedSql is not null)
+                AddQueryHistory(executedSql);
             StateHasChanged();
         }
     }
@@ -518,6 +609,7 @@
             var tableNamesTask = DbClient.GetTableNamesAsync();
             var viewNamesTask = DbClient.GetViewNamesAsync();
             var proceduresTask = DbClient.GetProceduresAsync(includeDisabled: false);
+            IReadOnlyList<DbHostCallbackDescriptor> callbacks = CallbackCatalog.GetCallbacks();
 
             await Task.WhenAll(tableNamesTask, viewNamesTask, proceduresTask);
 
@@ -553,6 +645,17 @@
                 Procedures = proceduresTask.Result
                     .Select(procedure => procedure.Name)
                     .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                Functions = callbacks
+                    .Where(callback => callback.Kind == AutomationCallbackKind.ScalarFunction
+                        && callback.CanRunWithoutFrom)
+                    .Select(callback => new SqlCompletionFunction(
+                        callback.Name,
+                        callback.Arity,
+                        callback.ReturnType?.ToString().ToUpperInvariant(),
+                        callback.Description,
+                        callback.CanRunWithoutFrom))
+                    .OrderBy(function => function.Name, StringComparer.OrdinalIgnoreCase)
                     .ToArray(),
             };
         }
@@ -604,6 +707,59 @@
         if (Tab is not null)
             Tab.SqlText = _sqlText;
     }
+
+    private void SetResultView(QueryResultView view) => _resultView = view;
+
+    private string GetResultViewClass(QueryResultView view)
+        => _resultView == view ? "active" : string.Empty;
+
+    private string GetResultBadge()
+    {
+        if (_activeQuerySql is not null)
+            return _queryResultsStatus.VisibleRows > 0 ? _queryResultsStatus.VisibleRows.ToString(CultureInfo.InvariantCulture) : string.Empty;
+
+        return _resultRows is { Count: > 0 } rows ? rows.Count.ToString(CultureInfo.InvariantCulture) : string.Empty;
+    }
+
+    private string GetMessageText()
+    {
+        if (_error is not null)
+            return _error;
+
+        if (_nonQueryMessage is not null)
+            return _nonQueryMessage;
+
+        if (_loading)
+            return "Query is running.";
+
+        if (_elapsed is not null)
+            return "Query completed.";
+
+        return "No messages yet.";
+    }
+
+    private void AddQueryHistory(string sql)
+    {
+        string normalized = sql.ReplaceLineEndings(" ").Trim();
+        if (normalized.Length > 86)
+            normalized = normalized[..83] + "...";
+
+        string summary = _error is not null
+            ? "Error"
+            : _nonQueryMessage
+                ?? (_activeQuerySql is not null ? "Paged results" : GetResultSummary());
+
+        string elapsedText = _elapsed is null
+            ? "pending"
+            : $"{_elapsed.Value.TotalMilliseconds:F1} ms";
+
+        _queryHistory.RemoveAll(item => string.Equals(item.Sql, sql, StringComparison.Ordinal));
+        _queryHistory.Insert(0, new QueryHistoryItem(normalized, summary, elapsedText, sql));
+        if (_queryHistory.Count > 12)
+            _queryHistory.RemoveRange(12, _queryHistory.Count - 12);
+    }
+
+    private void ClearHistory() => _queryHistory.Clear();
 
     private async Task RunSqlWithoutPagingAsync(string sql)
     {

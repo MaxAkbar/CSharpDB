@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
     <ProjectReference Include="..\CSharpDB.Admin.Forms\CSharpDB.Admin.Forms.csproj" />
     <ProjectReference Include="..\CSharpDB.Admin.Reports\CSharpDB.Admin.Reports.csproj" />

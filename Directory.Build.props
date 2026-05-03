@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep ignored/generated local outputs out of SDK-style default item globs. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**;**/artifacts/**;.tmp/**;**/.tmp/**;tmp/**;**/tmp/**;temp/**;**/temp/**;publish/**;**/publish/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

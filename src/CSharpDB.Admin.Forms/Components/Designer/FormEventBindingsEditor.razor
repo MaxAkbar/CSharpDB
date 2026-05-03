@@ -1,0 +1,205 @@
+@using System.Text.Json
+@using CSharpDB.Admin.Forms.Serialization
+@using CSharpDB.Primitives
+@inject DbCommandRegistry CommandRegistry
+
+<div class="feb-container">
+    @if (EventBindings.Count == 0)
+    {
+        <div class="feb-empty">No form events</div>
+    }
+
+    @for (int i = 0; i < EventBindings.Count; i++)
+    {
+        var idx = i;
+        var binding = EventBindings[idx];
+        <div class="feb-entry">
+            <div class="feb-row">
+                <div class="feb-field">
+                    <label>Event</label>
+                    <select value="@binding.Event" @onchange="@(e => UpdateEvent(idx, binding, e.Value?.ToString()))">
+                        @foreach (var eventKind in EventKinds)
+                        {
+                            <option value="@eventKind">@eventKind</option>
+                        }
+                    </select>
+                </div>
+                <button class="feb-btn feb-btn-remove" @onclick="@(() => RemoveBinding(idx))" title="Remove event">x</button>
+            </div>
+
+            <div class="feb-field">
+                <label>Command</label>
+                @if (RegisteredCommands.Count > 0)
+                {
+                    <select value="@binding.CommandName" @onchange="@(e => UpdateCommand(idx, binding, e.Value?.ToString() ?? string.Empty))">
+                        <option value="">-- Select command --</option>
+                        @if (ShouldRenderMissingCommand(binding.CommandName))
+                        {
+                            <option value="@binding.CommandName">@($"{binding.CommandName} (missing)")</option>
+                        }
+                        @foreach (DbCommandDefinition command in RegisteredCommands)
+                        {
+                            <option value="@command.Name">@command.Name</option>
+                        }
+                    </select>
+                }
+                else
+                {
+                    <input type="text"
+                           value="@binding.CommandName"
+                           @onchange="@(e => UpdateCommand(idx, binding, e.Value?.ToString() ?? string.Empty))" />
+                }
+            </div>
+
+            <div class="feb-field">
+                <label>
+                    <input type="checkbox"
+                           checked="@binding.StopOnFailure"
+                           @onchange="@(e => UpdateStopOnFailure(idx, binding, e.Value is bool b && b))" />
+                    Stop On Failure
+                </label>
+            </div>
+
+            <div class="feb-field">
+                <label>Arguments</label>
+                <textarea class="feb-arguments"
+                          value="@GetArgumentsText(idx, binding)"
+                          placeholder="{&quot;reason&quot;:&quot;manual&quot;}"
+                          @onchange="@(e => UpdateArguments(idx, binding, e.Value?.ToString() ?? string.Empty))"></textarea>
+            </div>
+
+            <div class="feb-field">
+                <label>Action Sequence</label>
+                <ActionSequenceEditor ActionSequence="binding.ActionSequence"
+                                      AvailableActionSequences="ActionSequences"
+                                      ActionSequenceChanged="@(sequence => UpdateActionSequence(idx, binding, sequence))" />
+            </div>
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_argumentError))
+    {
+        <div class="feb-error">@_argumentError</div>
+    }
+
+    <button class="feb-btn feb-btn-add" @onclick="AddBinding">+ Add Event</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<FormEventBinding> EventBindings { get; set; } = [];
+    [Parameter] public IReadOnlyList<DbActionSequence> ActionSequences { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<FormEventBinding>> EventBindingsChanged { get; set; }
+
+    private readonly Dictionary<int, string> _argumentText = [];
+    private string? _argumentError;
+
+    private static readonly FormEventKind[] EventKinds = Enum.GetValues<FormEventKind>();
+
+    private IReadOnlyList<DbCommandDefinition> RegisteredCommands => CommandRegistry.Commands.ToList();
+
+    protected override void OnParametersSet()
+    {
+        for (int i = 0; i < EventBindings.Count; i++)
+            _argumentText.TryAdd(i, FormatArguments(EventBindings[i].Arguments));
+
+        foreach (int staleIndex in _argumentText.Keys.Where(index => index >= EventBindings.Count).ToList())
+            _argumentText.Remove(staleIndex);
+    }
+
+    private async Task AddBinding()
+    {
+        string commandName = RegisteredCommands.Count > 0 ? RegisteredCommands[0].Name : string.Empty;
+        var updated = EventBindings
+            .Append(new FormEventBinding(FormEventKind.OnLoad, commandName))
+            .ToList();
+        _argumentText[updated.Count - 1] = string.Empty;
+        await EventBindingsChanged.InvokeAsync(updated);
+    }
+
+    private async Task RemoveBinding(int index)
+    {
+        var updated = EventBindings.ToList();
+        if (index < 0 || index >= updated.Count)
+            return;
+
+        updated.RemoveAt(index);
+        RebuildArgumentText(updated);
+        await EventBindingsChanged.InvokeAsync(updated);
+    }
+
+    private Task UpdateEvent(int index, FormEventBinding binding, string? value)
+    {
+        if (!Enum.TryParse(value, ignoreCase: true, out FormEventKind eventKind))
+            return Task.CompletedTask;
+
+        return ReplaceBinding(index, binding with { Event = eventKind });
+    }
+
+    private Task UpdateCommand(int index, FormEventBinding binding, string commandName)
+        => ReplaceBinding(index, binding with { CommandName = commandName.Trim() });
+
+    private Task UpdateStopOnFailure(int index, FormEventBinding binding, bool stopOnFailure)
+        => ReplaceBinding(index, binding with { StopOnFailure = stopOnFailure });
+
+    private async Task UpdateArguments(int index, FormEventBinding binding, string text)
+    {
+        _argumentText[index] = text;
+        _argumentError = null;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            await ReplaceBinding(index, binding with { Arguments = null });
+            return;
+        }
+
+        try
+        {
+            IReadOnlyDictionary<string, object?>? arguments =
+                JsonSerializer.Deserialize<IReadOnlyDictionary<string, object?>>(text, JsonDefaults.Options);
+            await ReplaceBinding(index, binding with { Arguments = arguments });
+        }
+        catch (JsonException ex)
+        {
+            _argumentError = $"Invalid arguments JSON: {ex.Message}";
+        }
+    }
+
+    private Task UpdateActionSequence(int index, FormEventBinding binding, DbActionSequence? actionSequence)
+        => ReplaceBinding(index, binding with { ActionSequence = actionSequence });
+
+    private async Task ReplaceBinding(int index, FormEventBinding binding)
+    {
+        var updated = EventBindings.ToList();
+        if (index < 0 || index >= updated.Count)
+            return;
+
+        updated[index] = binding;
+        await EventBindingsChanged.InvokeAsync(updated);
+    }
+
+    private string GetArgumentsText(int index, FormEventBinding binding)
+    {
+        if (_argumentText.TryGetValue(index, out string? text))
+            return text;
+
+        text = FormatArguments(binding.Arguments);
+        _argumentText[index] = text;
+        return text;
+    }
+
+    private void RebuildArgumentText(IReadOnlyList<FormEventBinding> updated)
+    {
+        _argumentText.Clear();
+        for (int i = 0; i < updated.Count; i++)
+            _argumentText[i] = FormatArguments(updated[i].Arguments);
+    }
+
+    private bool ShouldRenderMissingCommand(string commandName)
+        => !string.IsNullOrWhiteSpace(commandName)
+            && RegisteredCommands.All(command => !string.Equals(command.Name, commandName, StringComparison.OrdinalIgnoreCase));
+
+    private static string FormatArguments(IReadOnlyDictionary<string, object?>? arguments)
+        => arguments is null || arguments.Count == 0
+            ? string.Empty
+            : JsonSerializer.Serialize(arguments, new JsonSerializerOptions(JsonDefaults.Options) { WriteIndented = true });
+}

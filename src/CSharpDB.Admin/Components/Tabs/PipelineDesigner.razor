@@ -749,6 +749,7 @@
         _state.IncrementalEnabled = false;
         _state.IncrementalWatermarkColumn = string.Empty;
         _state.IncrementalLastProcessedValue = string.Empty;
+        _state.Hooks = [];
         _state.Transforms.Clear();
         _sourceFileColumns = [];
         _sourcePreviewError = null;
@@ -787,6 +788,7 @@
         _state.IncrementalEnabled = package.Incremental is not null;
         _state.IncrementalWatermarkColumn = package.Incremental?.WatermarkColumn ?? string.Empty;
         _state.IncrementalLastProcessedValue = package.Incremental?.LastProcessedValue ?? string.Empty;
+        _state.Hooks = package.Hooks ?? [];
 
         _state.Transforms.Clear();
         foreach (var transform in transforms)
@@ -1042,6 +1044,7 @@
                     LastProcessedValue = NullIfBlank(_state.IncrementalLastProcessedValue),
                 }
                 : null,
+            Hooks = _state.Hooks,
         };
     }
 
@@ -1748,6 +1751,7 @@
         public bool IncrementalEnabled { get; set; }
         public string IncrementalWatermarkColumn { get; set; } = string.Empty;
         public string IncrementalLastProcessedValue { get; set; } = string.Empty;
+        public IReadOnlyList<PipelineCommandHookDefinition> Hooks { get; set; } = [];
         public string VersionOrDefault => string.IsNullOrWhiteSpace(Version) ? "1.0.0" : Version;
     }
 

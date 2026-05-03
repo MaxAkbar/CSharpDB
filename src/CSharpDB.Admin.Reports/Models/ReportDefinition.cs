@@ -1,3 +1,5 @@
+using CSharpDB.Primitives;
+
 namespace CSharpDB.Admin.Reports.Models;
 
 public sealed record ReportDefinition(
@@ -10,4 +12,6 @@ public sealed record ReportDefinition(
     IReadOnlyList<ReportGroupDefinition> Groups,
     IReadOnlyList<ReportSortDefinition> Sorts,
     IReadOnlyList<ReportBandDefinition> Bands,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<ReportEventBinding>? EventBindings = null,
+    DbAutomationMetadata? Automation = null);

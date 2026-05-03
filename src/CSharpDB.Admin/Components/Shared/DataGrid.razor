@@ -39,13 +39,15 @@
                     {
                         var colIdx = c;
                         var sortIndicator = _sortCol == colIdx ? (_sortAsc ? " \u2191" : " \u2193") : "";
-                        <th @onclick="() => SortColumn(colIdx)" class="sortable">
+                        var isPrimaryKeyColumn = PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn;
+                        <th @onclick="() => SortColumn(colIdx)" class="sortable @(_sortCol == colIdx ? "sorted" : "")">
+                            <i class="bi @GetColumnHeaderIconClass(colIdx, isPrimaryKeyColumn)"></i>
                             <span class="col-name">@Columns[colIdx]</span>
                             @if (ColumnTypes is not null && colIdx < ColumnTypes.Length)
                             {
                                 <span class="col-type-badge @GetTypeBadgeClass(ColumnTypes[colIdx])">@ColumnTypes[colIdx]</span>
                             }
-                            @if (PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn)
+                            @if (isPrimaryKeyColumn)
                             {
                                 <span class="col-pk-badge">PK</span>
                             }
@@ -121,7 +123,7 @@
                                 }
                                 else
                                 {
-                                    <td class="@(isPk ? "pk-val" : "") @(row.IsColumnModified(colIdx) ? "modified-cell" : "")"
+                                    <td class="@GetCellClass(colIdx, cellValue, isPk, row.IsColumnModified(colIdx))"
                                         @ondblclick="() => StartEdit(rowIdx, colIdx, isPk)">
                                         @if (cellValue is null)
                                         {
@@ -130,6 +132,10 @@
                                         else if (cellValue is byte[] bytes)
                                         {
                                             <span class="blob-val">[@bytes.Length bytes]</span>
+                                        }
+                                        else if (IsStatusColumn(colIdx))
+                                        {
+                                            <span class="pill-status @GetStatusPillClass(cellValue)">@cellValue</span>
                                         }
                                         else
                                         {
@@ -191,6 +197,7 @@
     [Parameter] public EventCallback<string> OnStatusMessage { get; set; }
     [Parameter] public EventCallback<int> OnSelectionChanged { get; set; }
     [Parameter] public EventCallback<QueryResultsStatus> OnQueryStatusChanged { get; set; }
+    [Parameter] public EventCallback<IReadOnlyList<DataGridFilterSummary>> OnFiltersChanged { get; set; }
 
     private List<DataGridRow> _allRows = new();
     private List<DataGridRow> _rows = new();
@@ -265,6 +272,7 @@
             _hasExactTotal = false;
             _hasNextPage = false;
             _bypassViewCursorForNextLoad = false;
+            await NotifyFiltersChangedAsync();
         }
 
         await LoadDataAsync();
@@ -308,6 +316,7 @@
         {
             _loading = false;
             await NotifyQueryStatusChangedAsync();
+            await NotifyFiltersChangedAsync();
             StateHasChanged();
         }
     }
@@ -336,6 +345,7 @@
 
             ApplyFiltersAndSort();
             await NotifySelectionChangedAsync();
+            await NotifyFiltersChangedAsync();
             StateHasChanged();
             return;
         }
@@ -416,6 +426,45 @@
         await RefreshAfterFilterChangeAsync();
     }
 
+    public async Task ClearFilterAsync(int columnIndex)
+    {
+        _filters.Remove(columnIndex);
+        _filterInputs.Remove(columnIndex);
+        _filterModes.Remove(columnIndex);
+        await RefreshAfterFilterChangeAsync();
+    }
+
+    public async Task ApplyFilterAsync(string columnName, DataGridFilterMatchMode matchMode, string value)
+    {
+        if (Columns is null || Columns.Length == 0)
+            throw new InvalidOperationException("No columns are loaded for filtering.");
+
+        int colIdx = Array.FindIndex(
+            Columns,
+            column => string.Equals(column, columnName, StringComparison.OrdinalIgnoreCase));
+        if (colIdx < 0)
+            throw new InvalidOperationException($"Column '{columnName}' was not found.");
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            _filters.Remove(colIdx);
+            _filterInputs.Remove(colIdx);
+            _filterModes.Remove(colIdx);
+        }
+        else
+        {
+            _filters[colIdx] = value;
+            _filterInputs[colIdx] = value;
+
+            if (matchMode == DataGridFilterMatchMode.Contains)
+                _filterModes.Remove(colIdx);
+            else
+                _filterModes[colIdx] = matchMode;
+        }
+
+        await RefreshAfterFilterChangeAsync();
+    }
+
     private void ResetFilterDraft(int colIdx)
     {
         if (_filters.TryGetValue(colIdx, out var activeValue))
@@ -439,6 +488,7 @@
 
             ApplyFiltersAndSort();
             await NotifySelectionChangedAsync();
+            await NotifyFiltersChangedAsync();
             StateHasChanged();
             return;
         }
@@ -512,7 +562,7 @@
     {
         if (_editingCell is null) return;
         var row = _rows[rowIdx];
-        var newValue = ParseCellValue(_editingCell.Value, colIdx);
+        var newValue = ParseCellValue(_editingCell.Value, colIdx, emptyTextAsNull: true);
         row.CurrentValues[colIdx] = newValue;
 
         if (row.State == RowState.Unmodified)
@@ -530,10 +580,14 @@
             _editingCell = null;
     }
 
-    private object? ParseCellValue(string text, int colIdx)
+    private object? ParseCellValue(string text, int colIdx, bool emptyTextAsNull)
     {
-        if (string.IsNullOrEmpty(text) || text.Equals("NULL", StringComparison.OrdinalIgnoreCase))
+        if ((emptyTextAsNull && string.IsNullOrEmpty(text))
+            || text.Equals("NULL", StringComparison.OrdinalIgnoreCase))
+        {
             return null;
+        }
+
         if (ColumnTypes is not null && colIdx < ColumnTypes.Length)
         {
             var type = ColumnTypes[colIdx];
@@ -578,6 +632,51 @@
         _selectedRows.Clear();
         ApplyFiltersAndSort();
         await NotifySelectionChangedAsync();
+    }
+
+    public async Task<int> BulkEditSelectedRowsAsync(string columnName, string text, bool setNull)
+    {
+        if (IsReadOnly || Columns is null || _selectedRows.Count == 0)
+            return 0;
+
+        int colIdx = Array.FindIndex(
+            Columns,
+            column => string.Equals(column, columnName, StringComparison.OrdinalIgnoreCase));
+        if (colIdx < 0)
+            throw new InvalidOperationException($"Column '{columnName}' was not found.");
+
+        if (PrimaryKeyColumn is not null
+            && string.Equals(Columns[colIdx], PrimaryKeyColumn, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Primary key columns cannot be bulk edited.");
+        }
+
+        object? newValue = setNull
+            ? null
+            : ParseCellValue(text, colIdx, emptyTextAsNull: false);
+        int changed = 0;
+
+        foreach (var row in _selectedRows.ToList())
+        {
+            if (row.State == RowState.Deleted || colIdx >= row.CurrentValues.Length)
+                continue;
+
+            if (CellValuesEqual(row.CurrentValues[colIdx], newValue))
+                continue;
+
+            row.CurrentValues[colIdx] = newValue;
+            if (row.State == RowState.Unmodified)
+                row.State = RowState.Modified;
+            changed++;
+        }
+
+        _editingCell = null;
+        ApplyFiltersAndSort();
+        await NotifySelectionChangedAsync();
+        await NotifyQueryStatusChangedAsync();
+        await NotifyFiltersChangedAsync();
+        StateHasChanged();
+        return changed;
     }
 
     public async Task SaveChangesAsync()
@@ -645,6 +744,25 @@
     public bool HasPendingChanges => _allRows.Any(r => r.State != RowState.Unmodified);
     public bool HasSelectedRows => _selectedRows.Count > 0;
     public int SelectedRowCount => _selectedRows.Count;
+
+    public (string[] Columns, IReadOnlyList<object?[]> Rows) GetVisibleRowsSnapshot()
+        => ((Columns ?? Array.Empty<string>()).ToArray(),
+            _rows.Select(row => row.CurrentValues.ToArray()).ToList());
+
+    public (string[] Columns, IReadOnlyList<object?[]> Rows) GetSelectedRowsSnapshot()
+        => ((Columns ?? Array.Empty<string>()).ToArray(),
+            _selectedRows.Select(row => row.CurrentValues.ToArray()).ToList());
+
+    private static bool CellValuesEqual(object? left, object? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left is null || right is null)
+            return false;
+        if (left is byte[] leftBytes && right is byte[] rightBytes)
+            return leftBytes.SequenceEqual(rightBytes);
+        return left.Equals(right);
+    }
 
     private void ApplyFiltersAndSort()
     {
@@ -754,7 +872,34 @@
             await OnSelectionChanged.InvokeAsync(_selectedRows.Count);
     }
 
+    private async Task NotifyFiltersChangedAsync()
+    {
+        if (!OnFiltersChanged.HasDelegate)
+            return;
+
+        await OnFiltersChanged.InvokeAsync(GetActiveFilterSummaries());
+    }
+
+    private IReadOnlyList<DataGridFilterSummary> GetActiveFilterSummaries()
+    {
+        if (Columns is null || Columns.Length == 0)
+            return Array.Empty<DataGridFilterSummary>();
+
+        return _filters
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value)
+                           && pair.Key >= 0
+                           && pair.Key < Columns.Length)
+            .OrderBy(pair => pair.Key)
+            .Select(pair => new DataGridFilterSummary(pair.Key, Columns[pair.Key], GetFilterMode(pair.Key), pair.Value))
+            .ToArray();
+    }
+
     // ─── Pagination ─────────────────
+    public Task GoToFirstPageAsync() => GoToPage(1);
+    public Task GoToPreviousPageAsync() => GoToPage(_page - 1);
+    public Task GoToNextPageAsync() => GoToPage(_page + 1);
+    public Task GoToLastPageAsync() => _hasExactTotal ? GoToPage(TotalPages) : Task.CompletedTask;
+
     private async Task GoToPage(int page)
     {
         int currentPage = _page;
@@ -777,6 +922,7 @@
         {
             ApplyFiltersAndSort();
             await NotifySelectionChangedAsync();
+            await NotifyFiltersChangedAsync();
             StateHasChanged();
             return;
         }
@@ -1398,6 +1544,92 @@
         "BLOB" => "type-blob",
         _ => "type-other"
     };
+
+    private string GetColumnHeaderIconClass(int colIdx, bool isPrimaryKeyColumn)
+    {
+        if (isPrimaryKeyColumn)
+            return "bi-key col-icon key";
+
+        if (Columns is not null
+            && colIdx >= 0
+            && colIdx < Columns.Length
+            && IsDateLikeColumnName(Columns[colIdx]))
+        {
+            return "bi-calendar3 col-icon date";
+        }
+
+        return (GetColumnType(colIdx)?.ToUpperInvariant()) switch
+        {
+            "INTEGER" or "INT" => "bi-hash col-icon int",
+            "REAL" => "bi-123 col-icon int",
+            "TEXT" or "VARCHAR" or "CHAR" => "bi-fonts col-icon text",
+            "BLOB" => "bi-file-binary col-icon blob",
+            _ => "bi-circle col-icon",
+        };
+    }
+
+    private string GetCellClass(int colIdx, object? cellValue, bool isPrimaryKey, bool isModified)
+    {
+        var classes = new List<string>();
+        if (isPrimaryKey)
+            classes.Add("pk-val data-id-cell");
+        if (isModified)
+            classes.Add("modified-cell");
+        if (cellValue is null)
+            classes.Add("data-null-cell");
+
+        string? type = GetColumnType(colIdx);
+        if (type is not null && (IsIntegerColumnType(type) || IsRealColumnType(type)))
+            classes.Add("data-number-cell");
+        else if (Columns is not null
+                 && colIdx >= 0
+                 && colIdx < Columns.Length
+                 && IsDateLikeColumnName(Columns[colIdx]))
+        {
+            classes.Add("data-date-cell");
+        }
+
+        return string.Join(" ", classes);
+    }
+
+    private bool IsStatusColumn(int colIdx)
+        => Columns is not null
+           && colIdx >= 0
+           && colIdx < Columns.Length
+           && (Columns[colIdx].Contains("status", StringComparison.OrdinalIgnoreCase)
+               || Columns[colIdx].Contains("state", StringComparison.OrdinalIgnoreCase));
+
+    private static string GetStatusPillClass(object value)
+    {
+        string text = value.ToString() ?? string.Empty;
+        if (text.Contains("inactive", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("closed", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("disabled", StringComparison.OrdinalIgnoreCase))
+        {
+            return "inactive";
+        }
+
+        if (text.Contains("pending", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("waiting", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("draft", StringComparison.OrdinalIgnoreCase))
+        {
+            return "pending";
+        }
+
+        if (text.Contains("active", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("ready", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("open", StringComparison.OrdinalIgnoreCase))
+        {
+            return "active";
+        }
+
+        return "neutral";
+    }
+
+    private static bool IsDateLikeColumnName(string columnName)
+        => columnName.Contains("date", StringComparison.OrdinalIgnoreCase)
+           || columnName.Contains("time", StringComparison.OrdinalIgnoreCase)
+           || columnName.EndsWith("_at", StringComparison.OrdinalIgnoreCase);
 
     public async ValueTask DisposeAsync()
     {

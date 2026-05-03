@@ -50,7 +50,11 @@ internal static class TransformSupport
         };
     }
 
-    public static bool EvaluateFilter(string expression, IReadOnlyDictionary<string, object?> row)
+    public static bool EvaluateFilter(
+        string expression,
+        IReadOnlyDictionary<string, object?> row,
+        DbFunctionRegistry? functions = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         string[] operators = ["==", "!=", ">=", "<=", ">", "<"];
         foreach (string op in operators)
@@ -63,8 +67,8 @@ internal static class TransformSupport
 
             string left = expression[..index].Trim();
             string right = expression[(index + op.Length)..].Trim();
-            object? leftValue = row.TryGetValue(left, out var value) ? value : null;
-            object? rightValue = ParseLiteral(right, row);
+            object? leftValue = EvaluateFilterLeft(left, row, functions, callbackPolicy);
+            object? rightValue = ParseLiteral(right, row, functions, callbackPolicy);
             int comparison = Compare(leftValue, rightValue);
 
             return op switch
@@ -82,7 +86,11 @@ internal static class TransformSupport
         throw new InvalidOperationException($"Unsupported filter expression '{expression}'.");
     }
 
-    public static object? EvaluateDerivedExpression(string expression, IReadOnlyDictionary<string, object?> row)
+    public static object? EvaluateDerivedExpression(
+        string expression,
+        IReadOnlyDictionary<string, object?> row,
+        DbFunctionRegistry? functions = null,
+        DbExtensionPolicy? callbackPolicy = null)
     {
         string trimmed = expression.Trim();
         if (row.TryGetValue(trimmed, out var columnValue))
@@ -90,11 +98,45 @@ internal static class TransformSupport
             return columnValue;
         }
 
-        return ParseLiteral(trimmed, row);
+        return ParseLiteral(trimmed, row, functions, callbackPolicy);
     }
 
-    private static object? ParseLiteral(string token, IReadOnlyDictionary<string, object?> row)
+    private static object? EvaluateValue(
+        string token,
+        IReadOnlyDictionary<string, object?> row,
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
     {
+        if (row.TryGetValue(token, out var columnValue))
+            return columnValue;
+
+        return ParseLiteral(token, row, functions, callbackPolicy);
+    }
+
+    private static object? EvaluateFilterLeft(
+        string token,
+        IReadOnlyDictionary<string, object?> row,
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
+    {
+        if (row.TryGetValue(token, out var columnValue))
+            return columnValue;
+
+        if (TryEvaluateFunctionCall(token, row, functions, callbackPolicy, out object? functionValue))
+            return functionValue;
+
+        return null;
+    }
+
+    private static object? ParseLiteral(
+        string token,
+        IReadOnlyDictionary<string, object?> row,
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy)
+    {
+        if (TryEvaluateFunctionCall(token, row, functions, callbackPolicy, out object? functionValue))
+            return functionValue;
+
         if (token.StartsWith('\'') && token.EndsWith('\'') && token.Length >= 2)
         {
             return token[1..^1];
@@ -133,6 +175,150 @@ internal static class TransformSupport
         return token;
     }
 
+    private static bool TryEvaluateFunctionCall(
+        string expression,
+        IReadOnlyDictionary<string, object?> row,
+        DbFunctionRegistry? functions,
+        DbExtensionPolicy? callbackPolicy,
+        out object? value)
+    {
+        value = null;
+        int openParen = expression.IndexOf('(');
+        if (openParen <= 0 || !expression.EndsWith(')'))
+            return false;
+
+        string name = expression[..openParen].Trim();
+        if (!IsIdentifier(name))
+            return false;
+
+        string argumentsText = expression[(openParen + 1)..^1];
+        string[] argumentTokens = SplitArguments(argumentsText);
+
+        DbFunctionRegistry registry = functions ?? DbFunctionRegistry.Empty;
+        if (!registry.TryGetScalar(name, argumentTokens.Length, out var definition))
+        {
+            IReadOnlyDictionary<string, string>? metadata = CreatePipelineCallbackMetadata(name);
+            DbCallbackDiagnostics.WriteMissingScalarInvocation(
+                name,
+                argumentTokens.Length,
+                metadata,
+                $"Unknown pipeline scalar function '{name}'.");
+            throw new InvalidOperationException($"Unknown scalar function '{name}'.");
+        }
+
+        var arguments = new DbValue[argumentTokens.Length];
+        for (int i = 0; i < argumentTokens.Length; i++)
+            arguments[i] = ToDbValue(ParseLiteral(argumentTokens[i].Trim(), row, functions, callbackPolicy));
+
+        if (definition.Options.NullPropagating && arguments.Any(static argument => argument.IsNull))
+        {
+            value = null;
+            return true;
+        }
+
+        try
+        {
+            IReadOnlyDictionary<string, string>? metadata = CreatePipelineCallbackMetadata(name);
+            DbValue result = callbackPolicy is null
+                ? definition.Invoke(arguments, metadata)
+                : definition.Invoke(arguments, metadata, callbackPolicy, DbExtensionHostMode.Embedded);
+            value = FromDbValue(result);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Scalar function '{definition.Name}' failed: {ex.Message}", ex);
+        }
+    }
+
+    private static string[] SplitArguments(string argumentsText)
+    {
+        if (string.IsNullOrWhiteSpace(argumentsText))
+            return [];
+
+        var arguments = new List<string>();
+        int start = 0;
+        int depth = 0;
+        bool inString = false;
+        for (int i = 0; i < argumentsText.Length; i++)
+        {
+            char ch = argumentsText[i];
+            if (ch == '\'')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+                continue;
+
+            if (ch == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch == ')')
+            {
+                depth--;
+                if (depth < 0)
+                    throw new InvalidOperationException($"Malformed function expression '{argumentsText}'.");
+                continue;
+            }
+
+            if (ch == ',' && depth == 0)
+            {
+                arguments.Add(argumentsText[start..i].Trim());
+                start = i + 1;
+            }
+        }
+
+        if (inString || depth != 0)
+            throw new InvalidOperationException($"Malformed function expression '{argumentsText}'.");
+
+        arguments.Add(argumentsText[start..].Trim());
+        if (arguments.Any(static argument => argument.Length == 0))
+            throw new InvalidOperationException($"Malformed function expression '{argumentsText}'.");
+
+        return arguments.ToArray();
+    }
+
+    private static DbValue ToDbValue(object? value) => value switch
+    {
+        null => DbValue.Null,
+        DbValue dbValue => dbValue,
+        bool boolValue => DbValue.FromInteger(boolValue ? 1 : 0),
+        byte or sbyte or short or ushort or int or uint or long => DbValue.FromInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
+        float or double or decimal => DbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
+        string text => DbValue.FromText(text),
+        byte[] bytes => DbValue.FromBlob(bytes),
+        _ => DbValue.FromText(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty),
+    };
+
+    private static object? FromDbValue(DbValue value) => value.Type switch
+    {
+        DbType.Null => null,
+        DbType.Integer => value.AsInteger,
+        DbType.Real => value.AsReal,
+        DbType.Text => value.AsText,
+        DbType.Blob => value.AsBlob,
+        _ => null,
+    };
+
+    private static bool IsIdentifier(string value)
+    {
+        if (value.Length == 0 || (!char.IsLetter(value[0]) && value[0] != '_'))
+            return false;
+
+        for (int i = 1; i < value.Length; i++)
+        {
+            if (!char.IsLetterOrDigit(value[i]) && value[i] != '_')
+                return false;
+        }
+
+        return true;
+    }
+
     private static int Compare(object? left, object? right)
     {
         if (left is null && right is null)
@@ -164,4 +350,12 @@ internal static class TransformSupport
 
         return string.CompareOrdinal(left.ToString(), right.ToString());
     }
+
+    private static IReadOnlyDictionary<string, string>? CreatePipelineCallbackMetadata(string functionName)
+        => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["surface"] = "Pipelines",
+            ["location"] = $"transforms.functions.{functionName}",
+            ["correlationId"] = Guid.NewGuid().ToString("N"),
+        };
 }

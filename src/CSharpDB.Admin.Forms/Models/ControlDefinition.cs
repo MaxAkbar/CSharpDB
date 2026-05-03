@@ -7,4 +7,5 @@ public sealed record ControlDefinition(
     BindingDefinition? Binding,
     PropertyBag Props,
     ValidationOverride? ValidationOverride,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<ControlEventBinding>? EventBindings = null);

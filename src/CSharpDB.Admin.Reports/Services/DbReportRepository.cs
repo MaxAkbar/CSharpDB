@@ -288,30 +288,33 @@ public sealed class DbReportRepository(ICSharpDbClient dbClient) : IReportReposi
 
     private static ReportDefinition DeserializeReportJson(string json)
     {
-        return JsonSerializer.Deserialize<ReportDefinition>(json, JsonDefaults.Options)
+        ReportDefinition report = JsonSerializer.Deserialize<ReportDefinition>(json, JsonDefaults.Options)
             ?? throw new InvalidOperationException("Stored report definition JSON could not be deserialized.");
+        return ReportAutomationMetadata.NormalizeForExport(report);
     }
 
     private static ReportDefinition NormalizeForCreate(ReportDefinition report)
     {
         ValidateForPersistence(report);
-        return report with
+        ReportDefinition stored = report with
         {
             ReportId = string.IsNullOrWhiteSpace(report.ReportId) ? Guid.NewGuid().ToString("N") : report.ReportId,
             Name = string.IsNullOrWhiteSpace(report.Name) ? $"{report.Source.Name} Report" : report.Name.Trim(),
             DefinitionVersion = 1,
         };
+        return ReportAutomationMetadata.NormalizeForExport(stored);
     }
 
     private static ReportDefinition NormalizeForUpdate(string reportId, int expectedVersion, ReportDefinition report)
     {
         ValidateForPersistence(report);
-        return report with
+        ReportDefinition stored = report with
         {
             ReportId = reportId,
             Name = string.IsNullOrWhiteSpace(report.Name) ? $"{report.Source.Name} Report" : report.Name.Trim(),
             DefinitionVersion = expectedVersion + 1,
         };
+        return ReportAutomationMetadata.NormalizeForExport(stored);
     }
 
     private static void ValidateForPersistence(ReportDefinition report)

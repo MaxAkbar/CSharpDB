@@ -1,5 +1,6 @@
 using CSharpDB.Client;
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
 using Microsoft.Extensions.Configuration;
 
 namespace CSharpDB.Admin.Configuration;
@@ -49,7 +50,8 @@ public static class AdminClientOptionsBuilder
         IConfiguration configuration,
         AdminHostDatabaseOptions hostDatabaseOptions,
         CSharpDbTransport? transport,
-        string? endpoint)
+        string? endpoint,
+        DbFunctionRegistry? functions = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
@@ -58,7 +60,7 @@ public static class AdminClientOptionsBuilder
         {
             if (transport == CSharpDbTransport.Direct || (transport is null && EndpointLooksLikeDirectPath(endpoint)))
             {
-                return BuildDirectEndpoint(endpoint, hostDatabaseOptions, transport);
+                return BuildDirectEndpoint(endpoint, hostDatabaseOptions, transport, functions);
             }
 
             return new CSharpDbClientOptions
@@ -79,12 +81,14 @@ public static class AdminClientOptionsBuilder
         return BuildDirectConnectionString(
             configuration.GetConnectionString("CSharpDB") ?? FallbackConnectionString,
             hostDatabaseOptions,
-            transport);
+            transport,
+            functions);
     }
 
     public static CSharpDbClientOptions BuildDirectDataSource(
         string dataSource,
-        AdminHostDatabaseOptions hostDatabaseOptions)
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry? functions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataSource);
         ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
@@ -93,17 +97,20 @@ public static class AdminClientOptionsBuilder
         {
             Transport = CSharpDbTransport.Direct,
             DataSource = dataSource,
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions),
             HybridDatabaseOptions = BuildHybridDatabaseOptionsOrNull(hostDatabaseOptions),
         };
     }
 
-    public static DatabaseOptions BuildDirectDatabaseOptions(AdminHostDatabaseOptions hostDatabaseOptions)
+    public static DatabaseOptions BuildDirectDatabaseOptions(
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry? functions = null)
     {
         ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
 
         var options = new DatabaseOptions
         {
+            Functions = functions ?? DbFunctionRegistry.Empty,
             ImplicitInsertExecutionMode = hostDatabaseOptions.ImplicitInsertExecutionMode,
         };
 
@@ -131,13 +138,14 @@ public static class AdminClientOptionsBuilder
     private static CSharpDbClientOptions BuildDirectConnectionString(
         string connectionString,
         AdminHostDatabaseOptions hostDatabaseOptions,
-        CSharpDbTransport? transport)
+        CSharpDbTransport? transport,
+        DbFunctionRegistry? functions)
     {
         return new CSharpDbClientOptions
         {
             Transport = transport,
             ConnectionString = connectionString,
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions),
             HybridDatabaseOptions = BuildHybridDatabaseOptionsOrNull(hostDatabaseOptions),
         };
     }
@@ -145,13 +153,14 @@ public static class AdminClientOptionsBuilder
     private static CSharpDbClientOptions BuildDirectEndpoint(
         string endpoint,
         AdminHostDatabaseOptions hostDatabaseOptions,
-        CSharpDbTransport? transport)
+        CSharpDbTransport? transport,
+        DbFunctionRegistry? functions)
     {
         return new CSharpDbClientOptions
         {
             Transport = transport,
             Endpoint = endpoint,
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions),
             HybridDatabaseOptions = BuildHybridDatabaseOptionsOrNull(hostDatabaseOptions),
         };
     }

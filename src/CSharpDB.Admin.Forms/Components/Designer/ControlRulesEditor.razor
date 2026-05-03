@@ -1,0 +1,246 @@
+@using System.Text.Json
+@using CSharpDB.Admin.Forms.Models
+@using CSharpDB.Admin.Forms.Serialization
+
+<div class="feb-container">
+    @if (Rules.Count == 0)
+    {
+        <div class="feb-empty">No control rules</div>
+    }
+
+    @for (int i = 0; i < Rules.Count; i++)
+    {
+        var ruleIndex = i;
+        var rule = Rules[ruleIndex];
+        <div class="feb-entry">
+            <div class="feb-row">
+                <div class="feb-field">
+                    <label>Rule ID</label>
+                    <input type="text"
+                           value="@rule.RuleId"
+                           @onchange="@(e => UpdateRuleId(ruleIndex, rule, e.Value?.ToString() ?? string.Empty))" />
+                </div>
+                <button class="feb-btn feb-btn-remove" @onclick="@(() => RemoveRule(ruleIndex))" title="Remove rule">x</button>
+            </div>
+
+            <div class="feb-field">
+                <label>Description</label>
+                <input type="text"
+                       value="@rule.Description"
+                       @onchange="@(e => UpdateDescription(ruleIndex, rule, e.Value?.ToString()))" />
+            </div>
+
+            <div class="feb-field">
+                <label>Condition</label>
+                <textarea class="feb-arguments"
+                          value="@rule.Condition"
+                          placeholder="[Status] = 'Closed'"
+                          @onchange="@(e => UpdateCondition(ruleIndex, rule, e.Value?.ToString() ?? string.Empty))"></textarea>
+            </div>
+
+            <div class="feb-field">
+                <label>Effects</label>
+                @for (int effectIndex = 0; effectIndex < rule.Effects.Count; effectIndex++)
+                {
+                    var idx = effectIndex;
+                    var effect = rule.Effects[idx];
+                    <div class="feb-entry">
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Control</label>
+                                <select value="@effect.ControlId" @onchange="@(e => UpdateEffectControl(ruleIndex, idx, rule, effect, e.Value?.ToString() ?? string.Empty))">
+                                    <option value="">-- Select control --</option>
+                                    @if (ShouldRenderMissingControl(effect.ControlId))
+                                    {
+                                        <option value="@effect.ControlId">@($"{effect.ControlId} (missing)")</option>
+                                    }
+                                    @foreach (ControlDefinition control in Controls)
+                                    {
+                                        <option value="@control.ControlId">@GetControlLabel(control)</option>
+                                    }
+                                </select>
+                            </div>
+                            <button class="feb-btn feb-btn-remove" @onclick="@(() => RemoveEffect(ruleIndex, idx, rule))" title="Remove effect">x</button>
+                        </div>
+                        <div class="feb-field">
+                            <label>Property</label>
+                            <select value="@effect.Property" @onchange="@(e => UpdateEffectProperty(ruleIndex, idx, rule, effect, e.Value?.ToString() ?? string.Empty))">
+                                @foreach (string property in SupportedProperties)
+                                {
+                                    <option value="@property">@property</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="feb-field">
+                            <label>Value</label>
+                            <textarea class="feb-arguments"
+                                      value="@FormatValue(effect.Value)"
+                                      @onchange="@(e => UpdateEffectValue(ruleIndex, idx, rule, effect, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                    </div>
+                }
+
+                <button class="feb-btn feb-btn-add" @onclick="@(() => AddEffect(ruleIndex, rule))">+ Add Effect</button>
+            </div>
+        </div>
+    }
+
+    <button class="feb-btn feb-btn-add" @onclick="AddRule">+ Add Rule</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<ControlRuleDefinition> Rules { get; set; } = [];
+    [Parameter] public IReadOnlyList<ControlDefinition> Controls { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<ControlRuleDefinition>> RulesChanged { get; set; }
+
+    private static readonly string[] SupportedProperties =
+    [
+        "visible",
+        "enabled",
+        "readOnly",
+        "required",
+        "styleVariant",
+        "validationMessage",
+        "text",
+        "value",
+        "placeholder",
+    ];
+
+    private async Task AddRule()
+    {
+        var updated = Rules
+            .Append(new ControlRuleDefinition(NextRuleId(), string.Empty, []))
+            .ToList();
+        await RulesChanged.InvokeAsync(updated);
+    }
+
+    private async Task RemoveRule(int index)
+    {
+        var updated = Rules.ToList();
+        if (index < 0 || index >= updated.Count)
+            return;
+
+        updated.RemoveAt(index);
+        await RulesChanged.InvokeAsync(updated);
+    }
+
+    private Task UpdateRuleId(int index, ControlRuleDefinition rule, string value)
+        => ReplaceRule(index, rule with { RuleId = value.Trim() });
+
+    private Task UpdateDescription(int index, ControlRuleDefinition rule, string? value)
+        => ReplaceRule(index, rule with { Description = string.IsNullOrWhiteSpace(value) ? null : value.Trim() });
+
+    private Task UpdateCondition(int index, ControlRuleDefinition rule, string value)
+        => ReplaceRule(index, rule with { Condition = value.Trim() });
+
+    private async Task AddEffect(int ruleIndex, ControlRuleDefinition rule)
+    {
+        string controlId = Controls.FirstOrDefault()?.ControlId ?? string.Empty;
+        var updatedEffects = rule.Effects
+            .Append(new ControlRuleEffect(controlId, "visible", true))
+            .ToList();
+        await ReplaceRule(ruleIndex, rule with { Effects = updatedEffects });
+    }
+
+    private async Task RemoveEffect(int ruleIndex, int effectIndex, ControlRuleDefinition rule)
+    {
+        var updatedEffects = rule.Effects.ToList();
+        if (effectIndex < 0 || effectIndex >= updatedEffects.Count)
+            return;
+
+        updatedEffects.RemoveAt(effectIndex);
+        await ReplaceRule(ruleIndex, rule with { Effects = updatedEffects });
+    }
+
+    private Task UpdateEffectControl(int ruleIndex, int effectIndex, ControlRuleDefinition rule, ControlRuleEffect effect, string value)
+        => ReplaceEffect(ruleIndex, effectIndex, rule, effect with { ControlId = value.Trim() });
+
+    private Task UpdateEffectProperty(int ruleIndex, int effectIndex, ControlRuleDefinition rule, ControlRuleEffect effect, string value)
+        => ReplaceEffect(ruleIndex, effectIndex, rule, effect with { Property = value.Trim() });
+
+    private Task UpdateEffectValue(int ruleIndex, int effectIndex, ControlRuleDefinition rule, ControlRuleEffect effect, string value)
+        => ReplaceEffect(ruleIndex, effectIndex, rule, effect with { Value = ParseValue(value) });
+
+    private async Task ReplaceEffect(int ruleIndex, int effectIndex, ControlRuleDefinition rule, ControlRuleEffect effect)
+    {
+        var updatedEffects = rule.Effects.ToList();
+        if (effectIndex < 0 || effectIndex >= updatedEffects.Count)
+            return;
+
+        updatedEffects[effectIndex] = effect;
+        await ReplaceRule(ruleIndex, rule with { Effects = updatedEffects });
+    }
+
+    private async Task ReplaceRule(int index, ControlRuleDefinition rule)
+    {
+        var updated = Rules.ToList();
+        if (index < 0 || index >= updated.Count)
+            return;
+
+        updated[index] = rule;
+        await RulesChanged.InvokeAsync(updated);
+    }
+
+    private string NextRuleId()
+    {
+        const string prefix = "Rule";
+        HashSet<string> existing = Rules
+            .Select(rule => rule.RuleId)
+            .Where(ruleId => !string.IsNullOrWhiteSpace(ruleId))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 1; ; i++)
+        {
+            string candidate = $"{prefix}{i}";
+            if (!existing.Contains(candidate))
+                return candidate;
+        }
+    }
+
+    private bool ShouldRenderMissingControl(string controlId)
+        => !string.IsNullOrWhiteSpace(controlId) &&
+            Controls.All(control => !string.Equals(control.ControlId, controlId, StringComparison.OrdinalIgnoreCase));
+
+    private static string GetControlLabel(ControlDefinition control)
+        => $"{control.ControlId} ({control.ControlType})";
+
+    private static string FormatValue(object? value)
+        => value switch
+        {
+            null => "null",
+            string text => text,
+            _ => JsonSerializer.Serialize(value, JsonDefaults.Options),
+        };
+
+    private static object? ParseValue(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(text);
+            return ReadJsonValue(doc.RootElement);
+        }
+        catch (JsonException)
+        {
+            return text;
+        }
+    }
+
+    private static object? ReadJsonValue(JsonElement value)
+        => value.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.TryGetInt64(out long integer) ? integer : value.GetDouble(),
+            JsonValueKind.Object => value.EnumerateObject().ToDictionary(
+                static property => property.Name,
+                static property => ReadJsonValue(property.Value),
+                StringComparer.OrdinalIgnoreCase),
+            JsonValueKind.Array => value.EnumerateArray().Select(ReadJsonValue).ToArray(),
+            _ => value.ToString(),
+        };
+}

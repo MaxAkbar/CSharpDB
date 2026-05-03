@@ -1,10 +1,15 @@
 using CSharpDB.Admin.Forms.Models;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Components.Designer;
 
 public class DesignerState
 {
     private readonly List<ControlDefinition> _controls = [];
+    private readonly List<FormEventBinding> _eventBindings = [];
+    private readonly List<DbActionSequence> _actionSequences = [];
+    private readonly List<ControlRuleDefinition> _rules = [];
+    private readonly List<ValidationRule> _validationRules = [];
     private readonly Stack<List<ControlDefinition>> _undoStack = new();
     private readonly Stack<List<ControlDefinition>> _redoStack = new();
 
@@ -16,6 +21,10 @@ public class DesignerState
     public LayoutDefinition Layout { get; private set; } = new("absolute", 8, true, [new Breakpoint("md", 0, null)]);
 
     public IReadOnlyList<ControlDefinition> Controls => _controls;
+    public IReadOnlyList<FormEventBinding> EventBindings => _eventBindings;
+    public IReadOnlyList<DbActionSequence> ActionSequences => _actionSequences;
+    public IReadOnlyList<ControlRuleDefinition> Rules => _rules;
+    public IReadOnlyList<ValidationRule> ValidationRules => _validationRules;
     public HashSet<string> SelectedIds { get; } = [];
 
     // Active tool from toolbox (null = select mode)
@@ -48,6 +57,28 @@ public class DesignerState
     public double GridSize => Layout.GridSize;
     public bool SnapToGrid => Layout.SnapToGrid;
 
+    public void SetLayoutMode(string layoutMode)
+    {
+        if (string.IsNullOrWhiteSpace(layoutMode) || string.Equals(Layout.LayoutMode, layoutMode, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        Layout = Layout with { LayoutMode = layoutMode };
+        NotifyChanged();
+    }
+
+    public void SetFormName(string? formName)
+    {
+        string normalized = string.IsNullOrWhiteSpace(formName)
+            ? "Untitled Form"
+            : formName.Trim();
+
+        if (string.Equals(FormName, normalized, StringComparison.Ordinal))
+            return;
+
+        FormName = normalized;
+        NotifyChanged();
+    }
+
     public double Snap(double v)
     {
         if (!SnapToGrid) return v;
@@ -58,6 +89,14 @@ public class DesignerState
     {
         _controls.Clear();
         _controls.AddRange(form.Controls);
+        _eventBindings.Clear();
+        _eventBindings.AddRange(form.EventBindings ?? []);
+        _actionSequences.Clear();
+        _actionSequences.AddRange(form.ActionSequences ?? []);
+        _rules.Clear();
+        _rules.AddRange(form.Rules ?? []);
+        _validationRules.Clear();
+        _validationRules.AddRange(form.ValidationRules ?? []);
         _undoStack.Clear();
         _redoStack.Clear();
         SelectedIds.Clear();
@@ -82,7 +121,53 @@ public class DesignerState
     {
         return new FormDefinition(
             FormId, FormName, TableName, DefinitionVersion, SourceSchemaSignature,
-            Layout, _controls.ToList());
+            Layout, _controls.ToList(), EventBindings: _eventBindings.ToList(), ActionSequences: _actionSequences.ToList(), Rules: _rules.ToList(), ValidationRules: _validationRules.ToList());
+    }
+
+    public void UpdateEventBindings(IReadOnlyList<FormEventBinding> bindings)
+    {
+        _eventBindings.Clear();
+        _eventBindings.AddRange(bindings);
+        NotifyChanged();
+    }
+
+    public void UpdateActionSequences(IReadOnlyList<DbActionSequence> sequences)
+    {
+        _actionSequences.Clear();
+        _actionSequences.AddRange(sequences);
+        NotifyChanged();
+    }
+
+    public void UpdateRules(IReadOnlyList<ControlRuleDefinition> rules)
+    {
+        _rules.Clear();
+        _rules.AddRange(rules);
+        NotifyChanged();
+    }
+
+    public void UpdateValidationRules(IReadOnlyList<ValidationRule> rules)
+    {
+        _validationRules.Clear();
+        _validationRules.AddRange(rules);
+        NotifyChanged();
+    }
+
+    public void UpdateControlValidationOverride(string controlId, ValidationOverride? validationOverride)
+    {
+        var idx = _controls.FindIndex(c => c.ControlId == controlId);
+        if (idx < 0) return;
+        PushUndo();
+        _controls[idx] = _controls[idx] with { ValidationOverride = validationOverride };
+        NotifyChanged();
+    }
+
+    public void UpdateControlEventBindings(string controlId, IReadOnlyList<ControlEventBinding> bindings)
+    {
+        var idx = _controls.FindIndex(c => c.ControlId == controlId);
+        if (idx < 0) return;
+        PushUndo();
+        _controls[idx] = _controls[idx] with { EventBindings = bindings.ToList() };
+        NotifyChanged();
     }
 
     public void PushUndo()
@@ -146,7 +231,23 @@ public class DesignerState
     {
         if (SelectedIds.Count == 0) return;
         PushUndo();
-        _controls.RemoveAll(c => SelectedIds.Contains(c.ControlId));
+        var idsToDelete = new HashSet<string>(SelectedIds, StringComparer.Ordinal);
+        bool added;
+        do
+        {
+            added = false;
+            foreach (var child in _controls)
+            {
+                if (TryGetParentControlId(child, out string parentControlId) &&
+                    idsToDelete.Contains(parentControlId) &&
+                    idsToDelete.Add(child.ControlId))
+                {
+                    added = true;
+                }
+            }
+        } while (added);
+
+        _controls.RemoveAll(c => idsToDelete.Contains(c.ControlId));
         SelectedIds.Clear();
         NotifyChanged();
     }
@@ -173,6 +274,22 @@ public class DesignerState
         PushUndo();
         var c = _controls[idx];
         var newValues = new Dictionary<string, object?>(c.Props.Values) { [key] = value };
+        _controls[idx] = c with { Props = new PropertyBag(newValues) };
+        NotifyChanged();
+    }
+
+    public void UpdateControlProps(string controlId, IReadOnlyDictionary<string, object?> values)
+    {
+        if (values.Count == 0) return;
+        var idx = _controls.FindIndex(c => c.ControlId == controlId);
+        if (idx < 0) return;
+        PushUndo();
+        var c = _controls[idx];
+        var newValues = new Dictionary<string, object?>(c.Props.Values);
+
+        foreach (var (key, value) in values)
+            newValues[key] = value;
+
         _controls[idx] = c with { Props = new PropertyBag(newValues) };
         NotifyChanged();
     }
@@ -261,8 +378,24 @@ public class DesignerState
 
     public void CopySelected()
     {
+        var idsToCopy = new HashSet<string>(SelectedIds, StringComparer.Ordinal);
+        bool added;
+        do
+        {
+            added = false;
+            foreach (var child in _controls)
+            {
+                if (TryGetParentControlId(child, out string parentControlId) &&
+                    idsToCopy.Contains(parentControlId) &&
+                    idsToCopy.Add(child.ControlId))
+                {
+                    added = true;
+                }
+            }
+        } while (added);
+
         _clipboard = _controls
-            .Where(c => SelectedIds.Contains(c.ControlId))
+            .Where(c => idsToCopy.Contains(c.ControlId))
             .ToList();
     }
 
@@ -272,12 +405,25 @@ public class DesignerState
         PushUndo();
         SelectedIds.Clear();
 
+        var idMap = _clipboard.ToDictionary(
+            control => control.ControlId,
+            _ => Guid.NewGuid().ToString("N"),
+            StringComparer.Ordinal);
+
         foreach (var original in _clipboard)
         {
+            var props = new Dictionary<string, object?>(original.Props.Values);
+            if (TryGetParentControlId(original, out string parentControlId) &&
+                idMap.TryGetValue(parentControlId, out string? pastedParentId))
+            {
+                props["parentControlId"] = pastedParentId;
+            }
+
             var pasted = original with
             {
-                ControlId = Guid.NewGuid().ToString("N"),
-                Rect = original.Rect with { X = original.Rect.X + 16, Y = original.Rect.Y + 16 }
+                ControlId = idMap[original.ControlId],
+                Rect = original.Rect with { X = original.Rect.X + 16, Y = original.Rect.Y + 16 },
+                Props = new PropertyBag(props)
             };
             _controls.Add(pasted);
             SelectedIds.Add(pasted.ControlId);
@@ -369,6 +515,19 @@ public class DesignerState
         if (idx < 0) return;
         var c = _controls[idx];
         _controls[idx] = c with { Rect = c.Rect with { X = x, Y = y } };
+    }
+
+    private static bool TryGetParentControlId(ControlDefinition control, out string parentControlId)
+    {
+        parentControlId = string.Empty;
+        if (!control.Props.Values.TryGetValue("parentControlId", out object? value) || value is null)
+            return false;
+
+        if (value is System.Text.Json.JsonElement json)
+            value = json.ValueKind == System.Text.Json.JsonValueKind.String ? json.GetString() : json.ToString();
+
+        parentControlId = value?.ToString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(parentControlId);
     }
 
     // ===== Responsive Breakpoints =====

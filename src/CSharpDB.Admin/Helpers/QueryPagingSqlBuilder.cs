@@ -729,8 +729,11 @@ internal static class QueryAstSqlWriter
             parts.Add("DISTINCT");
 
         parts.Add(string.Join(", ", statement.Columns.Select(WriteSelectColumn)));
-        parts.Add("FROM");
-        parts.Add(WriteTableRef(statement.From));
+        if (statement.From is not SingleRowTableRef)
+        {
+            parts.Add("FROM");
+            parts.Add(WriteTableRef(statement.From));
+        }
 
         if (statement.Where is not null)
         {
@@ -804,6 +807,7 @@ internal static class QueryAstSqlWriter
     private static string WriteTableRef(TableRef tableRef)
         => tableRef switch
         {
+            SingleRowTableRef => string.Empty,
             SimpleTableRef simple => simple.Alias is null
                 ? simple.TableName
                 : $"{simple.TableName} AS {simple.Alias}",

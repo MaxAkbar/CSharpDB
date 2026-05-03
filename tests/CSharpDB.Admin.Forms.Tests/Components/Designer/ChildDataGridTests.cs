@@ -35,19 +35,131 @@ public sealed class ChildDataGridTests
         Assert.Equal([201L], ReadRows(component).Select(row => (long)row["PaymentId"]!).ToArray());
     }
 
+    [Fact]
+    public async Task OnParametersSetAsync_StandaloneGridLoadsFirstPage()
+    {
+        var service = new TableSpecificRecordService();
+        var component = new ChildDataGrid();
+        SetProperty(component, "RecordService", service);
+
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Orders");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), null);
+        SetProperty(component, nameof(ChildDataGrid.IsStandalone), true);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Orders", "OrderId", "CustomerId"));
+
+        await InvokeNonPublicAsync(component, "OnParametersSetAsync");
+
+        Assert.Empty(service.RequestedTables);
+        Assert.Empty(service.RequestedAllTables);
+        Assert.Equal([("Orders", 1, 25)], service.RequestedPages);
+        Assert.Equal(30, ReadIntField(component, "_totalCount"));
+        Assert.Equal(1, ReadIntField(component, "_pageNumber"));
+        Assert.Equal(Enumerable.Range(101, 25).Select(i => (long)i).ToArray(), ReadRows(component).Select(row => (long)row["OrderId"]!).ToArray());
+    }
+
+    [Fact]
+    public async Task GoToPageAsync_StandaloneGridLoadsRequestedPage()
+    {
+        var service = new TableSpecificRecordService();
+        var component = new ChildDataGrid();
+        SetProperty(component, "RecordService", service);
+
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Orders");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), null);
+        SetProperty(component, nameof(ChildDataGrid.IsStandalone), true);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Orders", "OrderId", "CustomerId"));
+
+        await InvokeNonPublicAsync(component, "OnParametersSetAsync");
+        await InvokeNonPublicAsync(component, "GoToPageAsync", 2);
+
+        Assert.Equal([("Orders", 1, 25), ("Orders", 2, 25)], service.RequestedPages);
+        Assert.Equal(2, ReadIntField(component, "_pageNumber"));
+        Assert.Equal(Enumerable.Range(126, 5).Select(i => (long)i).ToArray(), ReadRows(component).Select(row => (long)row["OrderId"]!).ToArray());
+    }
+
+    [Fact]
+    public async Task OnParametersSetAsync_StandaloneGridAppliesFilterExpression()
+    {
+        var service = new TableSpecificRecordService();
+        var component = new ChildDataGrid();
+        SetProperty(component, "RecordService", service);
+
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Orders");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), null);
+        SetProperty(component, nameof(ChildDataGrid.IsStandalone), true);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Orders", "OrderId", "CustomerId"));
+        SetProperty(component, nameof(ChildDataGrid.FilterExpression), "[CustomerId] = @customerId");
+        SetProperty(
+            component,
+            nameof(ChildDataGrid.FilterParameters),
+            new Dictionary<string, object?> { ["customerId"] = 7L });
+
+        await InvokeNonPublicAsync(component, "OnParametersSetAsync");
+
+        Assert.Empty(service.RequestedPages);
+        Assert.Equal(["Orders"], service.RequestedAllTables);
+        Assert.Equal(15, ReadIntField(component, "_totalCount"));
+        Assert.Equal(Enumerable.Range(101, 30).Where(id => id % 2 != 0).Select(id => (long)id).ToArray(),
+            ReadRows(component).Select(row => (long)row["OrderId"]!).ToArray());
+    }
+
+    [Fact]
+    public async Task AddRow_StandaloneGridDoesNotSeedForeignKey()
+    {
+        var service = new TableSpecificRecordService();
+        var component = new ChildDataGrid();
+        SetProperty(component, "RecordService", service);
+
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Orders");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), null);
+        SetProperty(component, nameof(ChildDataGrid.IsStandalone), true);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Orders", "OrderId", "CustomerId"));
+
+        await InvokeNonPublicAsync(component, "AddRow");
+
+        Dictionary<string, object?> createdValues = Assert.Single(service.CreatedValues);
+        Assert.Empty(createdValues);
+    }
+
+    [Fact]
+    public async Task AddRow_RelatedGridSeedsForeignKey()
+    {
+        var service = new TableSpecificRecordService();
+        var component = new ChildDataGrid();
+        SetProperty(component, "RecordService", service);
+
+        SetProperty(component, nameof(ChildDataGrid.ChildTableName), "Orders");
+        SetProperty(component, nameof(ChildDataGrid.ForeignKeyField), "CustomerId");
+        SetProperty(component, nameof(ChildDataGrid.ParentKeyValue), 7L);
+        SetProperty(component, nameof(ChildDataGrid.ChildFormTableDefinition), CreateTableDefinition("Orders", "OrderId", "CustomerId"));
+
+        await InvokeNonPublicAsync(component, "AddRow");
+
+        Dictionary<string, object?> createdValues = Assert.Single(service.CreatedValues);
+        Assert.Equal(7L, createdValues["CustomerId"]);
+    }
+
     private static FormTableDefinition CreateTableDefinition(string tableName, string primaryKeyField, string foreignKeyField)
         => new(
             tableName,
             $"sig:{tableName}",
             [
                 new FormFieldDefinition(primaryKeyField, FieldDataType.Int64, false, false),
-                new FormFieldDefinition(foreignKeyField, FieldDataType.Int64, false, false)
+                new FormFieldDefinition(foreignKeyField, FieldDataType.Int64, false, false),
+                new FormFieldDefinition("Status", FieldDataType.String, false, false)
             ],
             [primaryKeyField],
             []);
 
     private static List<Dictionary<string, object?>> ReadRows(ChildDataGrid component)
         => GetField<List<Dictionary<string, object?>>>(component, "_rows");
+
+    private static int ReadIntField(ChildDataGrid component, string fieldName)
+        => GetField<int>(component, fieldName);
 
     private static T GetField<T>(object instance, string fieldName)
     {
@@ -63,11 +175,11 @@ public sealed class ChildDataGridTests
         property.SetValue(instance, value);
     }
 
-    private static async Task InvokeNonPublicAsync(object instance, string methodName)
+    private static async Task InvokeNonPublicAsync(object instance, string methodName, params object?[] args)
     {
         MethodInfo method = instance.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"Method '{methodName}' was not found.");
-        var task = (Task?)method.Invoke(instance, null)
+        var task = (Task?)method.Invoke(instance, args)
             ?? throw new InvalidOperationException($"Method '{methodName}' did not return a task.");
         await task;
     }
@@ -75,6 +187,9 @@ public sealed class ChildDataGridTests
     private sealed class TableSpecificRecordService : IFormRecordService
     {
         public List<string> RequestedTables { get; } = [];
+        public List<string> RequestedAllTables { get; } = [];
+        public List<(string TableName, int PageNumber, int PageSize)> RequestedPages { get; } = [];
+        public List<Dictionary<string, object?>> CreatedValues { get; } = [];
 
         public string GetPrimaryKeyColumn(FormTableDefinition table) => table.PrimaryKey[0];
 
@@ -88,13 +203,30 @@ public sealed class ChildDataGridTests
             => Task.FromResult<Dictionary<string, object?>?>(null);
 
         public Task<FormRecordPage> ListRecordPageAsync(FormTableDefinition table, int pageNumber, int pageSize, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            RequestedPages.Add((table.TableName, pageNumber, pageSize));
+
+            List<Dictionary<string, object?>> allRows = GetAllRows(table.TableName);
+            int totalCount = allRows.Count;
+            int totalPages = totalCount == 0 ? 1 : (int)Math.Ceiling(totalCount / (double)pageSize);
+            int effectivePage = Math.Min(Math.Max(1, pageNumber), totalPages);
+            List<Dictionary<string, object?>> pageRows = allRows
+                .Skip((effectivePage - 1) * pageSize)
+                .Take(pageSize)
+                .ToList();
+
+            return Task.FromResult(new FormRecordPage(effectivePage, pageSize, totalCount, pageRows));
+        }
 
         public Task<FormRecordPage> SearchRecordPageAsync(FormTableDefinition table, string searchField, string searchValue, int pageNumber, int pageSize, CancellationToken ct = default)
             => throw new NotSupportedException();
 
         public Task<List<Dictionary<string, object?>>> ListRecordsAsync(FormTableDefinition table, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            RequestedAllTables.Add(table.TableName);
+
+            return Task.FromResult(GetAllRows(table.TableName));
+        }
 
         public Task<int?> GetRecordOrdinalAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
             => throw new NotSupportedException();
@@ -113,7 +245,8 @@ public sealed class ChildDataGridTests
                     new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["OrderId"] = 101L,
-                        [filterField] = filterValue
+                        [filterField] = filterValue,
+                        ["Status"] = "Open"
                     }
                 ],
                 "Payments" =>
@@ -121,7 +254,8 @@ public sealed class ChildDataGridTests
                     new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["PaymentId"] = 201L,
-                        [filterField] = filterValue
+                        [filterField] = filterValue,
+                        ["Status"] = "Open"
                     }
                 ],
                 _ => []
@@ -131,12 +265,36 @@ public sealed class ChildDataGridTests
         }
 
         public Task<Dictionary<string, object?>> CreateRecordAsync(FormTableDefinition table, Dictionary<string, object?> values, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            CreatedValues.Add(new Dictionary<string, object?>(values, StringComparer.OrdinalIgnoreCase));
+            var created = new Dictionary<string, object?>(values, StringComparer.OrdinalIgnoreCase)
+            {
+                [table.PrimaryKey[0]] = 301L
+            };
+            return Task.FromResult(created);
+        }
 
         public Task<Dictionary<string, object?>> UpdateRecordAsync(FormTableDefinition table, object pkValue, Dictionary<string, object?> values, CancellationToken ct = default)
             => throw new NotSupportedException();
 
+        public Task SaveAttachmentAsync(FormAttachmentTableBinding binding, object parentValue, FormAttachmentValue attachment, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task DeleteRecordAsync(FormTableDefinition table, object pkValue, CancellationToken ct = default)
             => throw new NotSupportedException();
+
+        private static List<Dictionary<string, object?>> GetAllRows(string tableName)
+            => tableName switch
+            {
+                "Orders" => Enumerable.Range(101, 30)
+                    .Select(id => new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["OrderId"] = (long)id,
+                        ["CustomerId"] = id % 2 == 0 ? 9L : 7L,
+                        ["Status"] = id % 3 == 0 ? "Closed" : "Open"
+                    })
+                    .ToList(),
+                _ => []
+            };
     }
 }

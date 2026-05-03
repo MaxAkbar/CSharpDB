@@ -3,6 +3,9 @@ using CSharpDB.Client;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
 using CSharpDB.Storage.Paging;
+using PrimitiveDbType = CSharpDB.Primitives.DbType;
+using PrimitiveDbValue = CSharpDB.Primitives.DbValue;
+using PrimitiveScalarFunctionOptions = CSharpDB.Primitives.DbScalarFunctionOptions;
 
 namespace CSharpDB.Tests;
 
@@ -46,6 +49,95 @@ public sealed class ClientDirectDatabaseOptionsTests
             Assert.True(
                 interceptor.GetReadSourceCount(PageReadSource.MemoryMappedMainFile) > 0,
                 "Expected the first direct open to honor UseMemoryMappedReads from DirectDatabaseOptions.");
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DirectDatabaseOptions_FunctionsAreUsedByDirectClient()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using var client = Assert.IsType<CSharpDbClient>(CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+                DirectDatabaseOptions = new DatabaseOptions().ConfigureFunctions(functions =>
+                    functions.AddScalar(
+                        "AddOne",
+                        1,
+                        new PrimitiveScalarFunctionOptions(PrimitiveDbType.Integer, IsDeterministic: true, NullPropagating: true),
+                        static (_, args) => PrimitiveDbValue.FromInteger(args[0].AsInteger + 1))),
+            }));
+
+            Assert.Null((await client.ExecuteSqlAsync("CREATE TABLE numbers (value INTEGER);", ct)).Error);
+            Assert.Null((await client.ExecuteSqlAsync("INSERT INTO numbers VALUES (41);", ct)).Error);
+
+            var result = await client.ExecuteSqlAsync("SELECT AddOne(value) FROM numbers;", ct);
+
+            Assert.Null(result.Error);
+            Assert.NotNull(result.Rows);
+            Assert.Equal(42L, result.Rows![0][0]);
+
+            await client.CreateProcedureAsync(new ProcedureDefinition
+            {
+                Name = "select_add_one",
+                BodySql = "SELECT AddOne(value) FROM numbers;",
+            }, ct);
+
+            var procedureResult = await client.ExecuteProcedureAsync("select_add_one", new Dictionary<string, object?>(), ct);
+            Assert.True(procedureResult.Succeeded, procedureResult.Error);
+            Assert.Equal(42L, procedureResult.Statements[0].Rows![0][0]);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DirectDatabaseOptions_FunctionsCanRunWithoutFromTable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using var client = Assert.IsType<CSharpDbClient>(CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+                DirectDatabaseOptions = new DatabaseOptions().ConfigureFunctions(functions =>
+                {
+                    functions.AddScalar(
+                        "HostName",
+                        0,
+                        new PrimitiveScalarFunctionOptions(PrimitiveDbType.Text, IsDeterministic: true),
+                        static (_, _) => PrimitiveDbValue.FromText("admin-host"));
+                    functions.AddScalar(
+                        "Slugify",
+                        1,
+                        new PrimitiveScalarFunctionOptions(PrimitiveDbType.Text, IsDeterministic: true, NullPropagating: true),
+                        static (_, args) => PrimitiveDbValue.FromText(args[0].AsText.Trim().ToLowerInvariant().Replace(' ', '-')));
+                }),
+            }));
+
+            var zeroArgResult = await client.ExecuteSqlAsync("SELECT HostName();", ct);
+            var literalArgResult = await client.ExecuteSqlAsync("SELECT Slugify('Hello World');", ct);
+
+            Assert.Null(zeroArgResult.Error);
+            Assert.NotNull(zeroArgResult.Rows);
+            Assert.Equal("admin-host", zeroArgResult.Rows![0][0]);
+
+            Assert.Null(literalArgResult.Error);
+            Assert.NotNull(literalArgResult.Rows);
+            Assert.Equal("hello-world", literalArgResult.Rows![0][0]);
         }
         finally
         {

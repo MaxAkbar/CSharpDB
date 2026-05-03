@@ -8,10 +8,12 @@ database objects.
 
 ## What This Project Provides
 
-- object explorer for user tables, system tables, forms, reports, views,
+- object explorer for user tables, system tables, document collections, forms, reports, views,
   triggers, saved queries, and procedures
 - table browsing with insert, update, delete, per-column `LIKE` placement and `=` filters,
   and schema views
+- collection browsing with paged JSON document inspection, create, update,
+  delete, and exact-key lookup
 - table designer for creating tables
 - SQL query tabs with paged results and guided SQL completions
 - procedure editor and execution surface
@@ -105,8 +107,8 @@ dotnet run --project src/CSharpDB.Admin/CSharpDB.Admin.csproj
 
 - `Program.cs` - Blazor host startup and database client wiring
 - `Components/Layout` - shell layout, object explorer, tabs, and status UI
-- `Components/Tabs` - table, query, procedure, storage, pipeline, form, and
-  report tab surfaces
+- `Components/Tabs` - table, collection, query, procedure, storage, pipeline,
+  form, and report tab surfaces
 - `Components/Shared` - shared grid, editor, modal, context menu, and toast UI
 - `Services` - tab manager, database holder, change notifications, modal, toast,
   and theme services

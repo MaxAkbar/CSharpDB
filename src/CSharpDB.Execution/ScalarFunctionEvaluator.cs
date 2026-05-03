@@ -1,4 +1,3 @@
-using System.Globalization;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
@@ -10,34 +9,123 @@ internal static class ScalarFunctionEvaluator
         => functionName.ToUpperInvariant() is "COUNT" or "SUM" or "AVG" or "MIN" or "MAX";
 
     public static DbValue Evaluate(FunctionCallExpression func, Func<Expression, DbValue> evaluateArgument)
+        => Evaluate(func, evaluateArgument, DbFunctionRegistry.Empty);
+
+    public static DbValue Evaluate(
+        FunctionCallExpression func,
+        Func<Expression, DbValue> evaluateArgument,
+        DbFunctionRegistry? functions)
     {
         string functionName = func.FunctionName.ToUpperInvariant();
-        return functionName switch
+        if (DbBuiltInScalarFunctions.IsBuiltInFunctionName(functionName))
         {
-            "TEXT" => EvaluateText(func, evaluateArgument),
-            _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown scalar function: {func.FunctionName}"),
-        };
+            if (func.IsStarArg || func.IsDistinct)
+                throw new CSharpDbException(ErrorCode.SyntaxError, $"Scalar function '{func.FunctionName}' does not support DISTINCT or * arguments.");
+
+            var arguments = new DbValue[func.Arguments.Count];
+            for (int i = 0; i < arguments.Length; i++)
+                arguments[i] = evaluateArgument(func.Arguments[i]);
+
+            if (DbBuiltInScalarFunctions.TryEvaluate(functionName, arguments, out DbValue builtInValue))
+                return builtInValue;
+        }
+
+        return EvaluateUserFunction(func, evaluateArgument, functions ?? DbFunctionRegistry.Empty);
     }
 
-    private static DbValue EvaluateText(FunctionCallExpression func, Func<Expression, DbValue> evaluateArgument)
+    public static DbValue Evaluate(
+        FunctionCallExpression func,
+        DbValue[] arguments,
+        DbFunctionRegistry? functions)
     {
-        if (func.IsStarArg || func.IsDistinct || func.Arguments.Count != 1)
-            throw new CSharpDbException(ErrorCode.SyntaxError, "TEXT() requires exactly one argument.");
+        string functionName = func.FunctionName.ToUpperInvariant();
+        if (DbBuiltInScalarFunctions.IsBuiltInFunctionName(functionName))
+        {
+            if (func.IsStarArg || func.IsDistinct)
+                throw new CSharpDbException(ErrorCode.SyntaxError, $"Scalar function '{func.FunctionName}' does not support DISTINCT or * arguments.");
 
-        DbValue value = evaluateArgument(func.Arguments[0]);
-        return EvaluateTextValue(value);
+            if (DbBuiltInScalarFunctions.TryEvaluate(functionName, arguments, out DbValue builtInValue))
+                return builtInValue;
+        }
+
+        return EvaluateUserFunction(func, arguments, functions ?? DbFunctionRegistry.Empty);
     }
 
     internal static DbValue EvaluateTextValue(DbValue value)
-        => DbValue.FromText(ToDisplayText(value));
+        => DbValue.FromText(DbBuiltInScalarFunctions.ToDisplayText(value));
 
-    private static string ToDisplayText(DbValue value) => value.Type switch
+    private static DbValue EvaluateUserFunction(
+        FunctionCallExpression func,
+        Func<Expression, DbValue> evaluateArgument,
+        DbFunctionRegistry functions)
     {
-        DbType.Null => "NULL",
-        DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
-        DbType.Real => value.AsReal.ToString(CultureInfo.InvariantCulture),
-        DbType.Text => value.AsText,
-        DbType.Blob => $"[{value.AsBlob.Length} bytes]",
-        _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unsupported DbValue type '{value.Type}'."),
-    };
+        if (func.IsStarArg || func.IsDistinct)
+            throw new CSharpDbException(ErrorCode.SyntaxError, $"Scalar function '{func.FunctionName}' does not support DISTINCT or * arguments.");
+
+        if (!functions.TryGetScalar(func.FunctionName, func.Arguments.Count, out var definition))
+        {
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                $"Unknown scalar function: {func.FunctionName}");
+        }
+
+        var arguments = new DbValue[func.Arguments.Count];
+        for (int i = 0; i < arguments.Length; i++)
+            arguments[i] = evaluateArgument(func.Arguments[i]);
+
+        if (definition.Options.NullPropagating && arguments.Any(static value => value.IsNull))
+            return DbValue.Null;
+
+        try
+        {
+            return definition.Invoke(arguments, CreateSqlCallbackMetadata(func.FunctionName));
+        }
+        catch (Exception ex)
+        {
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                $"Scalar function '{definition.Name}' failed: {ex.Message}",
+                ex);
+        }
+    }
+
+    private static DbValue EvaluateUserFunction(
+        FunctionCallExpression func,
+        DbValue[] arguments,
+        DbFunctionRegistry functions)
+    {
+        if (func.IsStarArg || func.IsDistinct)
+            throw new CSharpDbException(ErrorCode.SyntaxError, $"Scalar function '{func.FunctionName}' does not support DISTINCT or * arguments.");
+
+        if (!functions.TryGetScalar(func.FunctionName, arguments.Length, out var definition))
+        {
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                $"Unknown scalar function: {func.FunctionName}");
+        }
+
+        if (definition.Options.NullPropagating && arguments.Any(static value => value.IsNull))
+            return DbValue.Null;
+
+        try
+        {
+            return definition.Invoke(arguments, CreateSqlCallbackMetadata(func.FunctionName));
+        }
+        catch (Exception ex)
+        {
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                $"Scalar function '{definition.Name}' failed: {ex.Message}",
+                ex);
+        }
+    }
+
+    private static IReadOnlyDictionary<string, string>? CreateSqlCallbackMetadata(string functionName)
+        => DbCallbackDiagnostics.IsInvocationEnabled
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["surface"] = "SQL",
+                ["location"] = $"functions.{functionName}",
+            }
+            : null;
 }

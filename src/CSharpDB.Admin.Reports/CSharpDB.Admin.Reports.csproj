@@ -10,6 +10,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
   </ItemGroup>
 
 </Project>

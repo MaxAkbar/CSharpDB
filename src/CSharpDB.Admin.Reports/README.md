@@ -16,6 +16,8 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - grouping, sorting, bands, bound text, calculated text, labels, lines, and box
   controls
 - preview pagination and simple expression evaluation
+- trusted command-backed preview lifecycle events
+- generated automation metadata for import/export host callback requirements
 
 ## Main Components
 
@@ -39,11 +41,38 @@ using CSharpDB.Admin.Reports.Services;
 builder.Services.AddCSharpDbAdminReports();
 ```
 
+Hosts that want Access-style report automation can register trusted commands:
+
+```csharp
+using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminReports(commands =>
+{
+    commands.AddAsyncCommand(
+        "PublishReportRendered",
+        new DbCommandOptions(
+            Description: "Publishes report render metrics.",
+            Timeout: TimeSpan.FromSeconds(5),
+            IsLongRunning: true),
+        static async (context, ct) =>
+        {
+            long pageCount = context.Arguments["pageCount"].AsInteger;
+            await PublishReportMetricAsync(context.Metadata["reportName"], pageCount, ct);
+            return DbCommandResult.Success($"Rendered {pageCount} page(s).");
+        });
+});
+```
+
+Report event dispatch preserves caller cancellation. Command timeouts and other
+callback exceptions are returned as failed preview results with the command name
+included in the message.
+
 The extension registers:
 
 - `IReportRepository`
 - `IReportSourceProvider`
 - `IReportGenerator`
+- `IReportEventDispatcher`
 - `IReportPreviewService`
 
 ## Core Contracts
@@ -70,11 +99,20 @@ public sealed record ReportDefinition(
     IReadOnlyList<ReportGroupDefinition> Groups,
     IReadOnlyList<ReportSortDefinition> Sorts,
     IReadOnlyList<ReportBandDefinition> Bands,
-    IReadOnlyDictionary<string, object?>? RendererHints = null);
+    IReadOnlyDictionary<string, object?>? RendererHints = null,
+    IReadOnlyList<ReportEventBinding>? EventBindings = null,
+    DbAutomationMetadata? Automation = null);
 ```
 
 Report layout is band-based. Each `ReportBandDefinition` owns a list of
 `ReportControlDefinition` records positioned within that band.
+
+`EventBindings` can reference host-registered commands for `OnOpen`,
+`BeforeRender`, and `AfterRender`. Report JSON stores event names, command
+names, and optional arguments only; C# command bodies stay in the host process.
+`DbReportRepository` regenerates `Automation` on save/load so exported report
+JSON lists required trusted commands and scalar functions from event bindings
+and calculated text expressions.
 
 ## Build
 

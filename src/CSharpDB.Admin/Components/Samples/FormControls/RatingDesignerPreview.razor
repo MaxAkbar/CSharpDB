@@ -1,0 +1,43 @@
+@namespace CSharpDB.Admin.Components.Samples.FormControls
+@using System.Globalization
+@using System.Text.Json
+@using CSharpDB.Admin.Forms.Models
+
+<div class="sample-rating-preview" title="@Context.Descriptor.DisplayName">
+    <div class="sample-rating-preview-label">@Label</div>
+    <div class="sample-rating-preview-scale">
+        @for (int value = 1; value <= MaxRating; value++)
+        {
+            <span class="sample-rating-preview-step @(value <= PreviewValue ? "active" : null)">@value</span>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public FormControlDesignContext Context { get; set; } = default!;
+
+    private string Label
+        => string.IsNullOrWhiteSpace(Context.Control.Binding?.FieldName)
+            ? "Rating"
+            : Context.Control.Binding!.FieldName;
+
+    private int MaxRating => Math.Clamp(ReadIntProp("max", 5), 1, 10);
+
+    private int PreviewValue => Math.Min(3, MaxRating);
+
+    private int ReadIntProp(string key, int fallback)
+    {
+        if (!Context.Control.Props.Values.TryGetValue(key, out object? value) || value is null)
+            return fallback;
+
+        return value switch
+        {
+            int i => i,
+            long l => (int)l,
+            double d => (int)d,
+            JsonElement json when json.ValueKind == JsonValueKind.Number && json.TryGetInt32(out int parsed) => parsed,
+            _ when int.TryParse(value.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) => parsed,
+            _ => fallback,
+        };
+    }
+}

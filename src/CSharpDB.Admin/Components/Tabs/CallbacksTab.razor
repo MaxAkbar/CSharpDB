@@ -1,0 +1,1036 @@
+@using CSharpDB.Admin.Forms.Evaluation
+@using CSharpDB.Primitives
+@implements IDisposable
+@inject HostCallbackCatalogService CallbackCatalog
+@inject HostCallbackPolicyService CallbackPolicy
+@inject HostCallbackReadinessService CallbackReadiness
+@inject HostCallbackDiagnosticsHistoryService CallbackDiagnosticsHistory
+@inject ToastService Toast
+@inject IJSRuntime JS
+
+<div class="callbacks-tab data-tab" @ref="_callbacksLayoutRef">
+    <div class="data-toolbar">
+        <div class="data-crumb">
+            <button type="button">
+                <i class="bi bi-hdd-stack"></i>
+                system
+            </button>
+            <span>/</span>
+            <strong><i class="bi bi-plug icon-system"></i>callbacks</strong>
+            <span>/</span>
+            <strong>@GetScopeLabel(_callbackScope)</strong>
+        </div>
+
+        <div class="data-toolbar-group callbacks-readiness-group">
+            <span class="@GetReadinessBadgeClass()">@GetReadinessText()</span>
+        </div>
+
+        <div class="data-toolbar-group callbacks-actions">
+            <button type="button" class="data-toolbar-btn" @onclick="RefreshAsync">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <button type="button"
+                    class="data-toolbar-btn"
+                    title="Copy missing callback stubs"
+                    @onclick="CopyMissingStubsAsync"
+                    disabled="@(!HasMissingEntries)">
+                <i class="bi bi-clipboard"></i> Stubs
+            </button>
+        </div>
+
+        <div class="data-toolbar-group callbacks-scope-toggle">
+            <button type="button"
+                    class="@GetScopeButtonClass(CallbackScopeInternal)"
+                    @onclick='() => SelectCallbackScope(CallbackScopeInternal)'>
+                Internal
+            </button>
+            <button type="button"
+                    class="@GetScopeButtonClass(CallbackScopeExternal)"
+                    @onclick='() => SelectCallbackScope(CallbackScopeExternal)'>
+                External
+            </button>
+        </div>
+
+        <div class="data-toolbar-group callbacks-filter-bar">
+            <select class="callbacks-filter" value="@_kindFilter" @onchange="OnKindFilterChanged">
+                <option value="">All kinds</option>
+                <option value="@AutomationCallbackKind.ScalarFunction">Scalar functions</option>
+                <option value="@AutomationCallbackKind.Command">Commands</option>
+                <option value="@AutomationCallbackKind.ValidationRule">Validation rules</option>
+            </select>
+            <select class="callbacks-filter status" value="@_statusFilter" @onchange="OnStatusFilterChanged">
+                <option value="">All status</option>
+                <option value="missing">Not registered</option>
+                <option value="registered">Registered</option>
+                <option value="referenced">Referenced</option>
+            </select>
+            <input class="callbacks-search"
+                   value="@_query"
+                   @oninput="OnQueryChanged"
+                   placeholder="Filter callbacks" />
+        </div>
+
+        <div class="data-pager">
+            <span>@GetPagerText()</span>
+        </div>
+    </div>
+
+    @if (IsInternalScope)
+    {
+        <section class="callbacks-builtins-panel">
+            <div class="callbacks-builtins-head">
+                <div>
+                    <div class="callbacks-eyebrow">Internal</div>
+                    <h3>Formula Functions</h3>
+                </div>
+                <span class="callbacks-policy-badge allowed">@FilteredBuiltInFunctions.Count of @FormulaFunctionCatalog.AllFunctions.Count built in</span>
+            </div>
+            <p class="callbacks-description">
+                These functions are available in Admin Forms formulas and do not need host registration.
+            </p>
+            @if (FilteredBuiltInFunctions.Count == 0)
+            {
+                <div class="callbacks-empty small">No matching internal functions.</div>
+            }
+            else
+            {
+                <div class="callbacks-builtins-grid">
+                    @foreach (BuiltInFormulaFunctionGroup group in GetBuiltInFunctionGroups())
+                    {
+                        <div class="callbacks-builtins-group">
+                            <h4>@group.Category</h4>
+                            <div class="callbacks-builtins-list">
+                                @foreach (FormulaFunctionDescriptor function in group.Functions)
+                                {
+                                    <div class="callbacks-builtin-item">
+                                        <strong>@function.Name</strong>
+                                        <code>@function.Signature</code>
+                                        <span>@function.Description</span>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+
+        <div class="callbacks-splitter callbacks-splitter-horizontal"
+             title="Resize built-in functions"
+             @onmousedown="StartBuiltInsResizeAsync"
+             @onmousedown:preventDefault></div>
+    }
+
+    <div class="callbacks-layout">
+        <section class="callbacks-list-panel">
+            @if (ScopedEntries.Count == 0)
+            {
+                <div class="callbacks-empty">@GetEmptyScopeText()</div>
+            }
+            else if (FilteredEntries.Count == 0)
+            {
+                <div class="callbacks-empty">No matching @(GetScopeLabel(_callbackScope).ToLowerInvariant()) callbacks.</div>
+            }
+            else
+            {
+                <table class="schema-table callbacks-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Kind</th>
+                            <th>Runtime</th>
+                            <th>Arity</th>
+                            <th>Refs</th>
+                            <th>Capabilities</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (HostCallbackCatalogEntry entry in FilteredEntries)
+                        {
+                            string key = GetEntryKey(entry);
+                            <tr class="callbacks-row @(key == _selectedKey ? "selected" : "") @(entry.IsMissingRegistration ? "missing" : "")"
+                                @onclick="() => SelectEntry(entry)">
+                                <td class="mono-cell">
+                                    @if (entry.IsMissingRegistration)
+                                    {
+                                        <i class="bi bi-exclamation-triangle callbacks-missing-icon"></i>
+                                    }
+                                    @entry.Name
+                                </td>
+                                <td>@GetKindLabel(entry.Kind)</td>
+                                <td>@FormatRuntime(entry)</td>
+                                <td>@FormatArity(entry.Arity)</td>
+                                <td>@entry.References.Count</td>
+                                <td class="callbacks-capability-cell">@FormatCapabilitySummary(entry)</td>
+                                <td><span class="@GetEntryStatusBadgeClass(entry)">@GetEntryStatus(entry)</span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <div class="callbacks-splitter callbacks-splitter-vertical"
+             title="Resize details"
+             @onmousedown="StartDetailResizeAsync"
+             @onmousedown:preventDefault></div>
+
+        <section class="callbacks-detail-panel" @ref="_callbacksDetailRef">
+            @if (SelectedEntry is { } selected)
+            {
+                <div class="callbacks-detail-head">
+                    <div>
+                        <div class="callbacks-eyebrow">@GetKindLabel(selected.Kind)</div>
+                        <h3>@selected.Name</h3>
+                    </div>
+                    <span class="@GetEntryStatusBadgeClass(selected)">@GetEntryStatus(selected)</span>
+                </div>
+
+                @if (selected.Descriptor is { } descriptor)
+                {
+                    DbExtensionPolicyDecision policy = CallbackPolicy.Evaluate(descriptor);
+
+                    @if (!string.IsNullOrWhiteSpace(descriptor.Description))
+                    {
+                        <p class="callbacks-description">@descriptor.Description</p>
+                    }
+
+                    <table class="schema-table callbacks-detail-table">
+                        <tbody>
+                            <tr><th>Registration</th><td>Registered</td></tr>
+                            <tr><th>References</th><td>@selected.References.Count</td></tr>
+                            <tr><th>Policy</th><td><span class="@GetPolicyBadgeClass(policy)">@GetPolicyStatus(policy)</span></td></tr>
+                            <tr><th>Policy Reason</th><td>@(policy.DenialReason ?? "Granted by host policy.")</td></tr>
+                            <tr><th>Runtime</th><td>@descriptor.Runtime</td></tr>
+                            <tr><th>Return Type</th><td>@(descriptor.ReturnType?.ToString() ?? "-")</td></tr>
+                            <tr><th>Arity</th><td>@FormatArity(descriptor.Arity)</td></tr>
+                            <tr><th>Tableless SELECT</th><td>@(descriptor.CanRunWithoutFrom ? "Allowed" : "Not marked")</td></tr>
+                            <tr><th>Timeout</th><td>@FormatTimeout(descriptor.Timeout)</td></tr>
+                            <tr><th>Effective Timeout</th><td>@FormatTimeout(policy.Timeout)</td></tr>
+                            <tr><th>Max Memory</th><td>@FormatBytes(policy.MaxMemoryBytes)</td></tr>
+                            <tr><th>Flags</th><td>@FormatFlags(descriptor)</td></tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callbacks-section">
+                        <h4>Capability Decisions</h4>
+                        @if (policy.Capabilities.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-policy-list">
+                                @foreach (DbExtensionCapabilityDecision capability in policy.Capabilities)
+                                {
+                                    <div class="callbacks-policy-item">
+                                        <div class="callbacks-policy-main">
+                                            <strong>@capability.Name</strong>
+                                            <span>@(capability.PolicySource ?? "No policy source")</span>
+                                            <p>@(capability.Reason ?? "No policy reason.")</p>
+                                        </div>
+                                        <span class="@GetCapabilityBadgeClass(capability)">@capability.Status</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <div class="callbacks-section">
+                        <h4>Capability Requests</h4>
+                        @if (descriptor.Capabilities.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-capabilities">
+                                @foreach (DbExtensionCapabilityRequest capability in descriptor.Capabilities)
+                                {
+                                    <span class="callbacks-chip">@FormatCapability(capability)</span>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <div class="callbacks-section">
+                        <h4>References</h4>
+                        @if (selected.References.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-reference-list">
+                                @foreach (HostCallbackReference reference in selected.References)
+                                {
+                                    <div class="callbacks-reference-item">
+                                        <strong>@reference.OwnerKind: @reference.OwnerName</strong>
+                                        <span>@reference.Surface</span>
+                                        <code>@reference.Location</code>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <div class="callbacks-section">
+                        <h4>Metadata</h4>
+                        @if (descriptor.Metadata is { Count: > 0 } metadata)
+                        {
+                            <table class="schema-table callbacks-metadata-table">
+                                <tbody>
+                                    @foreach (var item in metadata.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        <tr>
+                                            <th>@item.Key</th>
+                                            <td class="mono-cell">@item.Value</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                        else
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="callbacks-description">
+                        This callback is referenced by saved database metadata, but it is not registered in the current Admin host.
+                        Remove it by editing the referenced object below, or register the callback in host code.
+                    </p>
+
+                    <div class="callbacks-detail-actions">
+                        <button type="button" class="data-toolbar-btn" @onclick="() => CopySelectedStubAsync(selected)">
+                            <i class="bi bi-clipboard"></i> Copy Stub
+                        </button>
+                    </div>
+
+                    <table class="schema-table callbacks-detail-table">
+                        <tbody>
+                            <tr><th>Registration</th><td><span class="callbacks-policy-badge missing">Not registered</span></td></tr>
+                            <tr><th>Kind</th><td>@GetKindLabel(selected.Kind)</td></tr>
+                            <tr><th>Arity</th><td>@FormatArity(selected.Arity)</td></tr>
+                            <tr><th>References</th><td>@selected.References.Count</td></tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callbacks-section">
+                        <h4>References</h4>
+                        @if (selected.References.Count == 0)
+                        {
+                            <div class="callbacks-empty small">None</div>
+                        }
+                        else
+                        {
+                            <div class="callbacks-reference-list">
+                                @foreach (HostCallbackReference reference in selected.References)
+                                {
+                                    <div class="callbacks-reference-item">
+                                        <strong>@reference.OwnerKind: @reference.OwnerName</strong>
+                                        <span>@reference.Surface</span>
+                                        <code>@reference.Location</code>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="callbacks-empty">Select a callback.</div>
+            }
+        </section>
+    </div>
+
+    <div class="callbacks-splitter callbacks-splitter-horizontal"
+         title="Resize diagnostics"
+         @onmousedown="StartDiagnosticsResizeAsync"
+         @onmousedown:preventDefault></div>
+
+    <section class="callbacks-diagnostics-panel" @ref="_callbacksDiagnosticsRef">
+        <div class="callbacks-diagnostics-head">
+            <div>
+                <div class="callbacks-eyebrow">Runtime</div>
+                <h3>Diagnostics History</h3>
+            </div>
+            <button type="button"
+                    class="data-toolbar-btn"
+                    @onclick="ClearDiagnostics"
+                    disabled="@(_diagnostics.Count == 0)">
+                <i class="bi bi-trash"></i> Clear
+            </button>
+        </div>
+
+        @if (_diagnostics.Count == 0)
+        {
+            <div class="callbacks-empty small">No callback invocations captured.</div>
+        }
+        else
+        {
+            <div class="callbacks-diagnostics-table-wrap">
+                <table class="schema-table callbacks-diagnostics-table">
+                    <thead>
+                        <tr>
+                            <th>Started</th>
+                            <th>Callback</th>
+                            <th>Result</th>
+                            <th>Policy</th>
+                            <th>Error</th>
+                            <th>Exception</th>
+                            <th>Correlation</th>
+                            <th>Owner</th>
+                            <th>Location</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (DbCallbackInvocationDiagnostic diagnostic in _diagnostics.Take(50))
+                        {
+                            <tr>
+                                <td>@FormatStartedAt(diagnostic.StartedAtUtc)</td>
+                                <td>
+                                    <strong>@diagnostic.Name</strong>
+                                    <span>@GetKindLabel(diagnostic.CallbackKind) @FormatArity(diagnostic.Arity)</span>
+                                </td>
+                                <td>
+                                    <span class="@GetDiagnosticStatusClass(diagnostic)">@GetDiagnosticStatus(diagnostic)</span>
+                                    @if (!string.IsNullOrWhiteSpace(diagnostic.ResultMessage))
+                                    {
+                                        <small>@diagnostic.ResultMessage</small>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="@GetDiagnosticPolicyClass(diagnostic)">@FormatDiagnosticPolicy(diagnostic)</span>
+                                    @if (!string.IsNullOrWhiteSpace(diagnostic.PolicyDenialReason))
+                                    {
+                                        <small>@diagnostic.PolicyDenialReason</small>
+                                    }
+                                </td>
+                                <td>@(diagnostic.ErrorCode ?? "-")</td>
+                                <td class="mono-cell">@FormatExceptionType(diagnostic.ExceptionType)</td>
+                                <td class="mono-cell">@FormatText(diagnostic.CorrelationId)</td>
+                                <td>@FormatOwner(diagnostic)</td>
+                                <td>
+                                    <span>@FormatText(diagnostic.Surface)</span>
+                                    <code>@FormatText(diagnostic.Location)</code>
+                                    @if (!string.IsNullOrWhiteSpace(diagnostic.EventName))
+                                    {
+                                        <small>@diagnostic.EventName</small>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+</div>
+
+@code {
+    private const string CallbackScopeInternal = "internal";
+    private const string CallbackScopeExternal = "external";
+
+    [Parameter] public TabDescriptor Tab { get; set; } = null!;
+
+    private IReadOnlyList<HostCallbackCatalogEntry> _entries = [];
+    private string _query = string.Empty;
+    private string _kindFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _callbackScope = CallbackScopeExternal;
+    private string? _selectedKey;
+    private HostCallbackReadinessReport? _readiness;
+    private IReadOnlyList<DbCallbackInvocationDiagnostic> _diagnostics = [];
+    private ElementReference _callbacksLayoutRef;
+    private ElementReference _callbacksDetailRef;
+    private ElementReference _callbacksDiagnosticsRef;
+
+    private sealed record BuiltInFormulaFunctionGroup(string Category, IReadOnlyList<FormulaFunctionDescriptor> Functions);
+
+    private bool IsInternalScope => _callbackScope.Equals(CallbackScopeInternal, StringComparison.OrdinalIgnoreCase);
+
+    private IReadOnlyList<HostCallbackCatalogEntry> ScopedEntries
+        => _entries.Where(IsEntryInSelectedScope).ToArray();
+
+    private IReadOnlyList<HostCallbackCatalogEntry> FilteredEntries
+        => ScopedEntries.Where(MatchesFilter).ToArray();
+
+    private IReadOnlyList<FormulaFunctionDescriptor> FilteredBuiltInFunctions
+        => FormulaFunctionCatalog.AllFunctions
+            .Where(MatchesBuiltInFunctionFilter)
+            .OrderBy(static function => function.Category, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static function => function.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private HostCallbackCatalogEntry? SelectedEntry
+        => ScopedEntries.FirstOrDefault(entry => GetEntryKey(entry) == _selectedKey);
+
+    private bool HasMissingEntries => ScopedEntries.Any(static entry => entry.IsMissingRegistration);
+
+    private IReadOnlyList<BuiltInFormulaFunctionGroup> GetBuiltInFunctionGroups()
+        => FilteredBuiltInFunctions
+            .GroupBy(static function => function.Category, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => new BuiltInFormulaFunctionGroup(group.Key, group.ToArray()))
+            .ToArray();
+
+    protected override async Task OnInitializedAsync()
+    {
+        CallbackDiagnosticsHistory.Changed += OnDiagnosticsChanged;
+        LoadDiagnostics();
+        await RefreshAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("resizeInterop.initCallbacksLayout", _callbacksLayoutRef);
+        }
+        catch
+        {
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        ApplyTabSelection();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _entries = await CallbackCatalog.GetEntriesAsync();
+        _readiness = await CallbackReadiness.GetReadinessAsync();
+        LoadDiagnostics();
+        ApplyTabSelection();
+
+        EnsureSelectedEntryInScope();
+    }
+
+    private void LoadDiagnostics()
+    {
+        _diagnostics = CallbackDiagnosticsHistory.Snapshot();
+    }
+
+    private void OnDiagnosticsChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            LoadDiagnostics();
+            StateHasChanged();
+        });
+    }
+
+    private void ClearDiagnostics()
+    {
+        CallbackDiagnosticsHistory.Clear();
+    }
+
+    private void ApplyTabSelection()
+    {
+        if (Tab.State.TryGetValue("CallbackScope", out object? scopeValue)
+            && scopeValue is string scope
+            && !string.IsNullOrWhiteSpace(scope))
+        {
+            _callbackScope = NormalizeCallbackScope(scope);
+        }
+
+        if (Tab.State.TryGetValue("SelectedBuiltInFunctionName", out object? builtInNameValue)
+            && builtInNameValue is string builtInName
+            && !string.IsNullOrWhiteSpace(builtInName))
+        {
+            _callbackScope = CallbackScopeInternal;
+            Tab.State["CallbackScope"] = _callbackScope;
+            _selectedKey = null;
+            return;
+        }
+
+        if (Tab.State.TryGetValue("SelectedCallbackName", out object? nameValue) && nameValue is string name && !string.IsNullOrWhiteSpace(name))
+        {
+            string? kind = Tab.State.TryGetValue("SelectedCallbackKind", out object? kindValue) ? kindValue as string : null;
+            int? arity = Tab.State.TryGetValue("SelectedCallbackArity", out object? arityValue) && arityValue is int value ? value : null;
+
+            HostCallbackCatalogEntry? match = _entries.FirstOrDefault(entry =>
+                entry.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                && (string.IsNullOrWhiteSpace(kind) || entry.Kind.ToString().Equals(kind, StringComparison.OrdinalIgnoreCase))
+                && (!arity.HasValue || entry.Arity == arity));
+
+            if (match is not null)
+            {
+                _callbackScope = GetEntryScope(match);
+                Tab.State["CallbackScope"] = _callbackScope;
+                _selectedKey = GetEntryKey(match);
+            }
+        }
+    }
+
+    private void SelectEntry(HostCallbackCatalogEntry entry)
+    {
+        _selectedKey = GetEntryKey(entry);
+        _callbackScope = GetEntryScope(entry);
+        Tab.State["CallbackScope"] = _callbackScope;
+        Tab.State["SelectedCallbackName"] = entry.Name;
+        Tab.State["SelectedCallbackKind"] = entry.Kind.ToString();
+        Tab.State["SelectedCallbackArity"] = entry.Arity;
+        Tab.State.Remove("SelectedBuiltInFunctionName");
+    }
+
+    private void SelectCallbackScope(string scope)
+    {
+        _callbackScope = NormalizeCallbackScope(scope);
+        Tab.State["CallbackScope"] = _callbackScope;
+        Tab.State.Remove("SelectedBuiltInFunctionName");
+
+        if (SelectedEntry is null)
+        {
+            _selectedKey = null;
+            Tab.State.Remove("SelectedCallbackName");
+            Tab.State.Remove("SelectedCallbackKind");
+            Tab.State.Remove("SelectedCallbackArity");
+        }
+
+        EnsureSelectedEntryInScope();
+    }
+
+    private void OnQueryChanged(ChangeEventArgs args)
+    {
+        _query = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnKindFilterChanged(ChangeEventArgs args)
+    {
+        _kindFilter = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnStatusFilterChanged(ChangeEventArgs args)
+    {
+        _statusFilter = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void EnsureSelectedEntryInScope()
+    {
+        IReadOnlyList<HostCallbackCatalogEntry> scopedEntries = ScopedEntries;
+        if (_selectedKey is null || !scopedEntries.Any(entry => GetEntryKey(entry) == _selectedKey))
+        {
+            _selectedKey = scopedEntries.Count > 0 ? GetEntryKey(scopedEntries[0]) : null;
+        }
+
+        if (_selectedKey is null)
+        {
+            Tab.State.Remove("SelectedCallbackName");
+            Tab.State.Remove("SelectedCallbackKind");
+            Tab.State.Remove("SelectedCallbackArity");
+        }
+    }
+
+    private async Task CopyMissingStubsAsync()
+    {
+        if (!HasMissingEntries)
+        {
+            Toast.Info("All referenced callbacks are registered.");
+            return;
+        }
+
+        try
+        {
+            HostCallbackCatalogEntry[] missingEntries = ScopedEntries
+                .Where(static entry => entry.IsMissingRegistration)
+                .ToArray();
+            string source = CallbackReadiness.GenerateStubSource(missingEntries);
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", source);
+            Toast.Success("Copied missing callback registration stubs.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task CopySelectedStubAsync(HostCallbackCatalogEntry entry)
+    {
+        try
+        {
+            string source = CallbackReadiness.GenerateStubSource(entry);
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", source);
+            Toast.Success($"Copied stub for '{entry.Name}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
+    private async Task StartBuiltInsResizeAsync(MouseEventArgs e)
+    {
+        await StartCallbacksResizeAsync(
+            e,
+            target: "builtins",
+            variableName: "--callbacks-builtins-height",
+            minSize: 120,
+            maxSize: 520,
+            direction: 1,
+            storageKey: "csharpdb-callbacks-builtins-height");
+    }
+
+    private async Task StartDetailResizeAsync(MouseEventArgs e)
+    {
+        await StartCallbacksResizeAsync(
+            e,
+            target: "detail",
+            variableName: "--callbacks-detail-width",
+            minSize: 320,
+            maxSize: 760,
+            direction: -1,
+            storageKey: "csharpdb-callbacks-detail-width",
+            targetElement: _callbacksDetailRef);
+    }
+
+    private async Task StartDiagnosticsResizeAsync(MouseEventArgs e)
+    {
+        await StartCallbacksResizeAsync(
+            e,
+            target: "diagnostics",
+            variableName: "--callbacks-diagnostics-height",
+            minSize: 140,
+            maxSize: 520,
+            direction: -1,
+            storageKey: "csharpdb-callbacks-diagnostics-height",
+            targetElement: _callbacksDiagnosticsRef);
+    }
+
+    private async Task StartCallbacksResizeAsync(
+        MouseEventArgs e,
+        string target,
+        string variableName,
+        int minSize,
+        int maxSize,
+        int direction,
+        string storageKey,
+        ElementReference targetElement = default)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "resizeInterop.startCallbacksResize",
+                new { clientX = e.ClientX, clientY = e.ClientY },
+                _callbacksLayoutRef,
+                targetElement,
+                target,
+                variableName,
+                minSize,
+                maxSize,
+                direction,
+                storageKey);
+        }
+        catch
+        {
+        }
+    }
+
+    private bool MatchesFilter(HostCallbackCatalogEntry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(_kindFilter)
+            && !entry.Kind.ToString().Equals(_kindFilter, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_statusFilter))
+        {
+            bool matchesStatus = _statusFilter switch
+            {
+                "missing" => entry.IsMissingRegistration,
+                "registered" => entry.IsRegistered,
+                "referenced" => entry.IsReferenced,
+                _ => true,
+            };
+
+            if (!matchesStatus)
+                return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_query))
+            return true;
+
+        string query = _query.Trim();
+        return entry.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || entry.Kind.ToString().Contains(query, StringComparison.OrdinalIgnoreCase)
+               || FormatRuntime(entry).Contains(query, StringComparison.OrdinalIgnoreCase)
+               || GetEntryStatus(entry).Contains(query, StringComparison.OrdinalIgnoreCase)
+               || (entry.Descriptor?.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+               || entry.References.Any(reference => ReferenceMatchesSearch(reference, query))
+               || (entry.Descriptor?.Capabilities.Any(capability => FormatCapability(capability).Contains(query, StringComparison.OrdinalIgnoreCase)) ?? false);
+    }
+
+    private bool MatchesBuiltInFunctionFilter(FormulaFunctionDescriptor function)
+    {
+        if (string.IsNullOrWhiteSpace(_query))
+            return true;
+
+        string query = _query.Trim();
+        return function.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Category.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Signature.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || function.Description.Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "internal".Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "built-in".Contains(query, StringComparison.OrdinalIgnoreCase)
+               || "formula".Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsEntryInSelectedScope(HostCallbackCatalogEntry entry)
+        => GetEntryScope(entry).Equals(_callbackScope, StringComparison.OrdinalIgnoreCase);
+
+    private static string GetEntryScope(HostCallbackCatalogEntry entry)
+        => IsInternalHostCallback(entry) ? CallbackScopeInternal : CallbackScopeExternal;
+
+    private static bool IsInternalHostCallback(HostCallbackCatalogEntry entry)
+        => entry.Descriptor is { Metadata: { } metadata }
+           && IsSystemGeneratedCallbackMetadata(metadata);
+
+    private static bool IsSystemGeneratedCallbackMetadata(IReadOnlyDictionary<string, string> metadata)
+        => HasMetadataValue(metadata, "origin", "system")
+           || HasMetadataValue(metadata, "source", "system")
+           || HasMetadataValue(metadata, "scope", CallbackScopeInternal)
+           || HasMetadataValue(metadata, "generatedBy", "system")
+           || HasMetadataValue(metadata, "systemGenerated", "true");
+
+    private static bool HasMetadataValue(
+        IReadOnlyDictionary<string, string> metadata,
+        string key,
+        string expectedValue)
+        => metadata.TryGetValue(key, out string? value)
+           && string.Equals(value, expectedValue, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeCallbackScope(string? scope)
+        => string.Equals(scope, CallbackScopeInternal, StringComparison.OrdinalIgnoreCase)
+            ? CallbackScopeInternal
+            : CallbackScopeExternal;
+
+    private string GetPagerText()
+    {
+        if (IsInternalScope)
+        {
+            int builtIns = FilteredBuiltInFunctions.Count;
+            int hostCallbacks = FilteredEntries.Count;
+            int totalBuiltIns = FormulaFunctionCatalog.AllFunctions.Count;
+            int totalHostCallbacks = ScopedEntries.Count;
+            return $"{builtIns} of {totalBuiltIns} functions · {hostCallbacks} of {totalHostCallbacks} callbacks";
+        }
+
+        return $"{FilteredEntries.Count} of {ScopedEntries.Count} callbacks";
+    }
+
+    private string GetEmptyScopeText()
+        => IsInternalScope
+            ? "No internal host callbacks registered."
+            : "No external callbacks registered or referenced.";
+
+    private static string GetScopeLabel(string scope)
+        => string.Equals(scope, CallbackScopeInternal, StringComparison.OrdinalIgnoreCase)
+            ? "Internal"
+            : "External";
+
+    private string GetScopeButtonClass(string scope)
+        => _callbackScope.Equals(scope, StringComparison.OrdinalIgnoreCase)
+            ? "callbacks-scope-btn active"
+            : "callbacks-scope-btn";
+
+    private static bool ReferenceMatchesSearch(HostCallbackReference reference, string query)
+        => reference.Surface.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.Location.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.OwnerKind.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.OwnerName.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || reference.OwnerId.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+    private static string GetEntryKey(HostCallbackCatalogEntry entry)
+        => $"{entry.Kind}:{entry.Name}:{entry.Arity?.ToString() ?? "-"}";
+
+    private static string GetKindLabel(AutomationCallbackKind kind)
+        => kind switch
+        {
+            AutomationCallbackKind.ScalarFunction => "Scalar function",
+            AutomationCallbackKind.Command => "Command",
+            AutomationCallbackKind.ValidationRule => "Validation rule",
+            _ => kind.ToString(),
+        };
+
+    private static string FormatRuntime(HostCallbackCatalogEntry entry)
+        => entry.Descriptor?.Runtime.ToString() ?? "Not registered";
+
+    private static string FormatArity(int? arity)
+        => arity?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
+
+    private static string FormatTimeout(TimeSpan? timeout)
+    {
+        if (timeout is null)
+            return "-";
+
+        return timeout.Value.TotalMilliseconds < 1000
+            ? $"{timeout.Value.TotalMilliseconds:0.###}ms"
+            : $"{timeout.Value.TotalSeconds:0.###}s";
+    }
+
+    private static string FormatBytes(long? bytes)
+    {
+        if (bytes is null)
+            return "-";
+
+        const decimal kilo = 1024m;
+        decimal value = bytes.Value;
+        string[] units = ["B", "KB", "MB", "GB"];
+        int unitIndex = 0;
+        while (value >= kilo && unitIndex < units.Length - 1)
+        {
+            value /= kilo;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+
+    private static string FormatFlags(DbHostCallbackDescriptor callback)
+    {
+        List<string> flags = [];
+        if (callback.IsDeterministic)
+            flags.Add("deterministic");
+        if (callback.NullPropagating)
+            flags.Add("null-propagating");
+        if (callback.CanRunWithoutFrom)
+            flags.Add("tableless SELECT");
+        if (callback.IsLongRunning)
+            flags.Add("long-running");
+
+        return flags.Count == 0 ? "-" : string.Join(", ", flags);
+    }
+
+    private static string FormatCapabilitySummary(HostCallbackCatalogEntry entry)
+        => entry.Descriptor is null || entry.Descriptor.Capabilities.Count == 0
+            ? "-"
+            : string.Join(", ", entry.Descriptor.Capabilities.Select(static capability => capability.Name));
+
+    private static string FormatCapability(DbExtensionCapabilityRequest capability)
+    {
+        List<string> parts = [capability.Name.ToString()];
+
+        if (capability.Exports is { Count: > 0 })
+            parts.Add($"exports={string.Join("|", capability.Exports)}");
+        if (capability.Tables is { Count: > 0 })
+            parts.Add($"tables={string.Join("|", capability.Tables)}");
+        if (capability.Scope is { Count: > 0 })
+            parts.Add($"scope={string.Join("|", capability.Scope.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase).Select(static pair => $"{pair.Key}:{pair.Value}"))}");
+
+        return string.Join(" ", parts);
+    }
+
+    private string GetEntryStatus(HostCallbackCatalogEntry entry)
+    {
+        if (entry.IsMissingRegistration)
+            return "Not registered";
+
+        return entry.Descriptor is { } descriptor
+            ? GetPolicyStatus(CallbackPolicy.Evaluate(descriptor))
+            : "Unknown";
+    }
+
+    private string GetEntryStatusBadgeClass(HostCallbackCatalogEntry entry)
+    {
+        if (entry.IsMissingRegistration)
+            return "callbacks-policy-badge missing";
+
+        return entry.Descriptor is { } descriptor
+            ? GetPolicyBadgeClass(CallbackPolicy.Evaluate(descriptor))
+            : "callbacks-policy-badge denied";
+    }
+
+    private string GetReadinessText()
+    {
+        if (_readiness is null)
+            return "Checking";
+
+        return _readiness.Ready
+            ? $"Ready · {_readiness.RegisteredCount} registered"
+            : $"{_readiness.MissingCount} unregistered · {_readiness.ReferencedCount} referenced";
+    }
+
+    private string GetReadinessBadgeClass()
+        => _readiness?.Ready == true
+            ? "callbacks-readiness-badge ready"
+            : "callbacks-readiness-badge missing";
+
+    private static string GetPolicyStatus(DbExtensionPolicyDecision decision)
+        => decision.Allowed ? "Allowed" : "Denied";
+
+    private static string GetPolicyBadgeClass(DbExtensionPolicyDecision decision)
+        => decision.Allowed
+            ? "callbacks-policy-badge allowed"
+            : "callbacks-policy-badge denied";
+
+    private static string GetCapabilityBadgeClass(DbExtensionCapabilityDecision decision)
+        => decision.Status == DbExtensionCapabilityGrantStatus.Granted
+            ? "callbacks-policy-badge allowed"
+            : "callbacks-policy-badge denied";
+
+    private static string FormatStartedAt(DateTimeOffset? startedAt)
+        => startedAt?.ToLocalTime().ToString("HH:mm:ss") ?? "-";
+
+    private static string GetDiagnosticStatus(DbCallbackInvocationDiagnostic diagnostic)
+    {
+        if (diagnostic.TimedOut)
+            return "Timed out";
+        if (diagnostic.Canceled)
+            return "Canceled";
+        return diagnostic.Succeeded ? "Succeeded" : "Failed";
+    }
+
+    private static string GetDiagnosticStatusClass(DbCallbackInvocationDiagnostic diagnostic)
+        => diagnostic.Succeeded
+            ? "callbacks-policy-badge allowed"
+            : "callbacks-policy-badge denied";
+
+    private static string FormatDiagnosticPolicy(DbCallbackInvocationDiagnostic diagnostic)
+        => diagnostic.PolicyAllowed switch
+        {
+            true => "Allowed",
+            false => "Denied",
+            _ => "-",
+        };
+
+    private static string GetDiagnosticPolicyClass(DbCallbackInvocationDiagnostic diagnostic)
+        => diagnostic.PolicyAllowed switch
+        {
+            true => "callbacks-policy-badge allowed",
+            false => "callbacks-policy-badge denied",
+            _ => "callbacks-policy-badge missing",
+        };
+
+    private static string FormatExceptionType(string? exceptionType)
+    {
+        if (string.IsNullOrWhiteSpace(exceptionType))
+            return "-";
+
+        int lastDot = exceptionType.LastIndexOf('.');
+        return lastDot >= 0 && lastDot < exceptionType.Length - 1
+            ? exceptionType[(lastDot + 1)..]
+            : exceptionType;
+    }
+
+    private static string FormatText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "-" : value;
+
+    private static string FormatOwner(DbCallbackInvocationDiagnostic diagnostic)
+        => string.IsNullOrWhiteSpace(diagnostic.OwnerKind)
+            ? "-"
+            : $"{diagnostic.OwnerKind}: {FormatText(diagnostic.OwnerName ?? diagnostic.OwnerId)}";
+
+    public void Dispose()
+    {
+        CallbackDiagnosticsHistory.Changed -= OnDiagnosticsChanged;
+    }
+}

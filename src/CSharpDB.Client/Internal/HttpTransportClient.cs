@@ -550,6 +550,16 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         return true;
     }
 
+    public async Task DropCollectionAsync(string collectionName, CancellationToken ct = default)
+    {
+        using var response = await SendAsync(
+            HttpMethod.Delete,
+            BuildUri($"api/collections/{Escape(collectionName)}"),
+            payload: null,
+            ct);
+        await EnsureSuccessAsync(response, ct);
+    }
+
     public async Task CheckpointAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Post, BuildUri("api/maintenance/checkpoint"), payload: null, ct);

@@ -1,0 +1,581 @@
+@using System.Text.Json
+@using CSharpDB.Admin.Forms.Serialization
+@using CSharpDB.Primitives
+@inject DbCommandRegistry CommandRegistry
+
+<div class="ase-container">
+    @if (ActionSequence is null)
+    {
+        <button class="feb-btn feb-btn-add" @onclick="CreateSequence">+ Add Action Sequence</button>
+    }
+    else
+    {
+        <div class="ase-header">
+            <div class="feb-field">
+                <label>Name</label>
+                <input type="text"
+                       value="@(ActionSequence.Name ?? string.Empty)"
+                       @onchange="@(e => UpdateName(e.Value?.ToString()))" />
+            </div>
+            <button class="feb-btn feb-btn-remove" @onclick="ClearSequence" title="Remove action sequence">x</button>
+        </div>
+
+        @if (ActionSequence.Steps.Count == 0)
+        {
+            <div class="feb-empty">No action steps</div>
+        }
+
+        @for (int i = 0; i < ActionSequence.Steps.Count; i++)
+        {
+            var idx = i;
+            var step = ActionSequence.Steps[idx];
+            <div class="ase-step">
+                <div class="feb-row">
+                    <div class="feb-field">
+                        <label>Action</label>
+                        <select value="@step.Kind" @onchange="@(e => UpdateKind(idx, step, e.Value?.ToString()))">
+                            @foreach (DbActionKind kind in ActionKinds)
+                            {
+                                <option value="@kind">@GetActionLabel(kind)</option>
+                            }
+                        </select>
+                    </div>
+                    <button class="feb-btn" @onclick="@(() => MoveStep(idx, -1))" disabled="@(idx == 0)" title="Move step up">Up</button>
+                    <button class="feb-btn" @onclick="@(() => MoveStep(idx, 1))" disabled="@(idx == ActionSequence.Steps.Count - 1)" title="Move step down">Down</button>
+                    <button class="feb-btn feb-btn-remove" @onclick="@(() => RemoveStep(idx))" title="Remove step">x</button>
+                </div>
+
+                @switch (step.Kind)
+                {
+                    case DbActionKind.RunCommand:
+                        <div class="feb-field">
+                            <label>Command</label>
+                            @if (RegisteredCommands.Count > 0)
+                            {
+                                <select value="@(step.CommandName ?? string.Empty)" @onchange="@(e => UpdateCommandName(idx, step, e.Value?.ToString()))">
+                                    <option value="">-- Select command --</option>
+                                    @if (ShouldRenderMissingCommand(step.CommandName))
+                                    {
+                                        <option value="@step.CommandName">@($"{step.CommandName} (missing)")</option>
+                                    }
+                                    @foreach (DbCommandDefinition command in RegisteredCommands)
+                                    {
+                                        <option value="@command.Name">@command.Name</option>
+                                    }
+                                </select>
+                            }
+                            else
+                            {
+                                <input type="text"
+                                       value="@(step.CommandName ?? string.Empty)"
+                                       @onchange="@(e => UpdateCommandName(idx, step, e.Value?.ToString()))" />
+                            }
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;source&quot;:&quot;form-action&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.RunActionSequence:
+                        <div class="feb-field">
+                            <label>Action Sequence</label>
+                            @if (AvailableActionSequences.Count > 0)
+                            {
+                                <select value="@(step.SequenceName ?? string.Empty)" @onchange="@(e => UpdateSequenceName(idx, step, e.Value?.ToString()))">
+                                    <option value="">-- Select sequence --</option>
+                                    @if (ShouldRenderMissingActionSequence(step.SequenceName))
+                                    {
+                                        <option value="@step.SequenceName">@($"{step.SequenceName} (missing)")</option>
+                                    }
+                                    @foreach (DbActionSequence sequence in AvailableActionSequences.Where(sequence => !string.IsNullOrWhiteSpace(sequence.Name)))
+                                    {
+                                        <option value="@sequence.Name">@sequence.Name</option>
+                                    }
+                                </select>
+                            }
+                            else
+                            {
+                                <input type="text"
+                                       value="@(step.SequenceName ?? string.Empty)"
+                                       @onchange="@(e => UpdateSequenceName(idx, step, e.Value?.ToString()))" />
+                            }
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;source&quot;:&quot;nested-sequence&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.SetFieldValue:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Target Field</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Value</label>
+                                <input type="text"
+                                       value="@FormatValue(step.Value)"
+                                       @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))" />
+                            </div>
+                        </div>
+                        break;
+                    case DbActionKind.GoToRecord:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Record Value</label>
+                                <input type="text"
+                                       value="@FormatValue(step.Value)"
+                                       @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Value From Field</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       placeholder="Optional field name"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                        </div>
+                        break;
+                    case DbActionKind.OpenForm:
+                        <div class="feb-field">
+                            <label>Target Form</label>
+                            <input type="text"
+                                   value="@(step.Target ?? string.Empty)"
+                                   placeholder="Form id or name"
+                                   @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;mode&quot;:&quot;edit&quot;,&quot;recordId&quot;:&quot;$record.Id&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.ApplyFilter:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Target</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       placeholder="form or control id"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Filter</label>
+                                <input type="text"
+                                       value="@FormatValue(step.Value)"
+                                       placeholder="[Status] = 'Open'"
+                                       @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))" />
+                            </div>
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;parameters&quot;:{&quot;customerId&quot;:&quot;$record.CustomerId&quot;}}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.ClearFilter:
+                        <div class="feb-field">
+                            <label>Target</label>
+                            <input type="text"
+                                   value="@(step.Target ?? string.Empty)"
+                                   placeholder="form or control id"
+                                   @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                        </div>
+                        break;
+                    case DbActionKind.RunSql:
+                        <div class="feb-field">
+                            <label>SQL Or Saved Query</label>
+                            <textarea class="feb-arguments"
+                                      value="@FormatValue(step.Value)"
+                                      placeholder="UPDATE Orders SET Status = @@status WHERE Id = @@id"
+                                      @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))"></textarea>
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;status&quot;:&quot;Closed&quot;,&quot;id&quot;:&quot;$record.Id&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.RunProcedure:
+                        <div class="feb-field">
+                            <label>Procedure</label>
+                            <input type="text"
+                                   value="@(step.Target ?? string.Empty)"
+                                   @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                        </div>
+                        <div class="feb-field">
+                            <label>Arguments</label>
+                            <textarea class="feb-arguments"
+                                      value="@GetArgumentsText(idx, step)"
+                                      placeholder="{&quot;orderId&quot;:&quot;$record.Id&quot;}"
+                                      @onchange="@(e => UpdateArguments(idx, step, e.Value?.ToString() ?? string.Empty))"></textarea>
+                        </div>
+                        break;
+                    case DbActionKind.SetControlProperty:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Control</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Property</label>
+                                <input type="text"
+                                       value="@GetArgumentText(step, "property")"
+                                       placeholder="visible, enabled, readOnly, text, value"
+                                       @onchange='@(e => UpdateArgument(idx, step, "property", e.Value?.ToString()))' />
+                            </div>
+                            <div class="feb-field">
+                                <label>Value</label>
+                                <input type="text"
+                                       value="@FormatValue(step.Value)"
+                                       @onchange="@(e => UpdateValue(idx, step, e.Value?.ToString()))" />
+                            </div>
+                        </div>
+                        break;
+                    case DbActionKind.SetControlVisibility:
+                    case DbActionKind.SetControlEnabled:
+                    case DbActionKind.SetControlReadOnly:
+                        <div class="feb-row">
+                            <div class="feb-field">
+                                <label>Control</label>
+                                <input type="text"
+                                       value="@(step.Target ?? string.Empty)"
+                                       @onchange="@(e => UpdateTarget(idx, step, e.Value?.ToString()))" />
+                            </div>
+                            <div class="feb-field">
+                                <label>Value</label>
+                                <select value="@FormatValue(step.Value)" @onchange="@(e => UpdateBooleanValue(idx, step, e.Value?.ToString()))">
+                                    <option value="true">True</option>
+                                    <option value="false">False</option>
+                                </select>
+                            </div>
+                        </div>
+                        break;
+                    case DbActionKind.ShowMessage:
+                    case DbActionKind.Stop:
+                        <div class="feb-field">
+                            <label>Message</label>
+                            <input type="text"
+                                   value="@(step.Message ?? string.Empty)"
+                                   @onchange="@(e => UpdateMessage(idx, step, e.Value?.ToString()))" />
+                        </div>
+                        break;
+                }
+
+                <div class="feb-field">
+                    <label>Condition</label>
+                    <input type="text"
+                           value="@(step.Condition ?? string.Empty)"
+                           placeholder="Status = 'Ready'"
+                           @onchange="@(e => UpdateCondition(idx, step, e.Value?.ToString()))" />
+                </div>
+
+                <div class="feb-field">
+                    <label>
+                        <input type="checkbox"
+                               checked="@step.StopOnFailure"
+                               @onchange="@(e => UpdateStepStopOnFailure(idx, step, e.Value is bool b && b))" />
+                        Stop On Failure
+                    </label>
+                </div>
+            </div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_argumentError))
+        {
+            <div class="feb-error">@_argumentError</div>
+        }
+
+        <div class="ase-actions">
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunCommand))">+ Command</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunActionSequence))">+ Sequence</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SetFieldValue))">+ Set Field</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.NewRecord))">+ New</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SaveRecord))">+ Save</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.DeleteRecord))">+ Delete</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RefreshRecords))">+ Refresh</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.PreviousRecord))">+ Previous</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.NextRecord))">+ Next</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.GoToRecord))">+ Go To</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.OpenForm))">+ Open Form</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.ApplyFilter))">+ Filter</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.ClearFilter))">+ Clear Filter</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunSql))">+ SQL</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.RunProcedure))">+ Procedure</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.SetControlProperty))">+ Control Prop</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.ShowMessage))">+ Message</button>
+            <button class="feb-btn feb-btn-add" @onclick="@(() => AddStep(DbActionKind.Stop))">+ Stop</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public DbActionSequence? ActionSequence { get; set; }
+    [Parameter] public EventCallback<DbActionSequence?> ActionSequenceChanged { get; set; }
+    [Parameter] public IReadOnlyList<DbActionSequence> AvailableActionSequences { get; set; } = [];
+
+    private readonly Dictionary<int, string> _argumentText = [];
+    private string? _argumentError;
+
+    private static readonly DbActionKind[] ActionKinds = Enum.GetValues<DbActionKind>();
+    private IReadOnlyList<DbCommandDefinition> RegisteredCommands => CommandRegistry.Commands.ToList();
+
+    protected override void OnParametersSet()
+    {
+        if (ActionSequence is null)
+        {
+            _argumentText.Clear();
+            return;
+        }
+
+        for (int i = 0; i < ActionSequence.Steps.Count; i++)
+            _argumentText.TryAdd(i, FormatArguments(ActionSequence.Steps[i].Arguments));
+
+        foreach (int staleIndex in _argumentText.Keys.Where(index => index >= ActionSequence.Steps.Count).ToList())
+            _argumentText.Remove(staleIndex);
+    }
+
+    private Task CreateSequence()
+        => ActionSequenceChanged.InvokeAsync(new DbActionSequence([]));
+
+    private Task ClearSequence()
+    {
+        _argumentText.Clear();
+        _argumentError = null;
+        return ActionSequenceChanged.InvokeAsync(null);
+    }
+
+    private Task UpdateName(string? name)
+        => UpdateSequence(CurrentSequence() with { Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim() });
+
+    private Task AddStep(DbActionKind kind)
+    {
+        DbActionSequence sequence = CurrentSequence();
+        List<DbActionStep> steps = sequence.Steps.ToList();
+        steps.Add(CreateDefaultStep(kind));
+        return UpdateSequence(sequence with { Steps = steps });
+    }
+
+    private Task RemoveStep(int index)
+    {
+        DbActionSequence sequence = CurrentSequence();
+        List<DbActionStep> steps = sequence.Steps.ToList();
+        if (index < 0 || index >= steps.Count)
+            return Task.CompletedTask;
+
+        steps.RemoveAt(index);
+        RebuildArgumentText(steps);
+        return UpdateSequence(sequence with { Steps = steps });
+    }
+
+    private Task MoveStep(int index, int delta)
+    {
+        DbActionSequence sequence = CurrentSequence();
+        List<DbActionStep> steps = sequence.Steps.ToList();
+        int target = index + delta;
+        if (index < 0 || index >= steps.Count || target < 0 || target >= steps.Count)
+            return Task.CompletedTask;
+
+        (steps[index], steps[target]) = (steps[target], steps[index]);
+        RebuildArgumentText(steps);
+        return UpdateSequence(sequence with { Steps = steps });
+    }
+
+    private Task UpdateKind(int index, DbActionStep step, string? value)
+    {
+        if (!Enum.TryParse(value, ignoreCase: true, out DbActionKind kind))
+            return Task.CompletedTask;
+
+        DbActionStep updated = CreateDefaultStep(kind) with
+        {
+            Arguments = kind is DbActionKind.RunCommand or DbActionKind.RunActionSequence ? step.Arguments : null,
+            SequenceName = kind == DbActionKind.RunActionSequence ? step.SequenceName : null,
+            StopOnFailure = step.StopOnFailure,
+            Condition = step.Condition,
+        };
+        return ReplaceStep(index, updated);
+    }
+
+    private Task UpdateCommandName(int index, DbActionStep step, string? commandName)
+        => ReplaceStep(index, step with { CommandName = string.IsNullOrWhiteSpace(commandName) ? null : commandName.Trim() });
+
+    private Task UpdateSequenceName(int index, DbActionStep step, string? sequenceName)
+        => ReplaceStep(index, step with { SequenceName = string.IsNullOrWhiteSpace(sequenceName) ? null : sequenceName.Trim() });
+
+    private Task UpdateTarget(int index, DbActionStep step, string? target)
+        => ReplaceStep(index, step with { Target = string.IsNullOrWhiteSpace(target) ? null : target.Trim() });
+
+    private Task UpdateValue(int index, DbActionStep step, string? value)
+        => ReplaceStep(index, step with { Value = string.IsNullOrEmpty(value) ? null : value });
+
+    private Task UpdateBooleanValue(int index, DbActionStep step, string? value)
+        => ReplaceStep(index, step with { Value = bool.TryParse(value, out bool parsed) ? parsed : null });
+
+    private Task UpdateMessage(int index, DbActionStep step, string? message)
+        => ReplaceStep(index, step with { Message = string.IsNullOrWhiteSpace(message) ? null : message });
+
+    private Task UpdateCondition(int index, DbActionStep step, string? condition)
+        => ReplaceStep(index, step with { Condition = string.IsNullOrWhiteSpace(condition) ? null : condition.Trim() });
+
+    private Task UpdateStepStopOnFailure(int index, DbActionStep step, bool stopOnFailure)
+        => ReplaceStep(index, step with { StopOnFailure = stopOnFailure });
+
+    private async Task UpdateArguments(int index, DbActionStep step, string text)
+    {
+        _argumentText[index] = text;
+        _argumentError = null;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            await ReplaceStep(index, step with { Arguments = null });
+            return;
+        }
+
+        try
+        {
+            IReadOnlyDictionary<string, object?>? arguments =
+                JsonSerializer.Deserialize<IReadOnlyDictionary<string, object?>>(text, JsonDefaults.Options);
+            await ReplaceStep(index, step with { Arguments = arguments });
+        }
+        catch (JsonException ex)
+        {
+            _argumentError = $"Invalid step arguments JSON: {ex.Message}";
+        }
+    }
+
+    private Task UpdateArgument(int index, DbActionStep step, string key, object? value)
+    {
+        var arguments = step.Arguments?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        if (value is string text && string.IsNullOrWhiteSpace(text))
+            arguments.Remove(key);
+        else
+            arguments[key] = value;
+
+        _argumentText[index] = FormatArguments(arguments);
+        return ReplaceStep(index, step with { Arguments = arguments.Count == 0 ? null : arguments });
+    }
+
+    private Task ReplaceStep(int index, DbActionStep step)
+    {
+        DbActionSequence sequence = CurrentSequence();
+        List<DbActionStep> steps = sequence.Steps.ToList();
+        if (index < 0 || index >= steps.Count)
+            return Task.CompletedTask;
+
+        steps[index] = step;
+        return UpdateSequence(sequence with { Steps = steps });
+    }
+
+    private Task UpdateSequence(DbActionSequence sequence)
+        => ActionSequenceChanged.InvokeAsync(sequence);
+
+    private DbActionSequence CurrentSequence()
+        => ActionSequence ?? new DbActionSequence([]);
+
+    private DbActionStep CreateDefaultStep(DbActionKind kind)
+        => kind switch
+        {
+            DbActionKind.RunCommand => new DbActionStep(kind, CommandName: RegisteredCommands.FirstOrDefault()?.Name),
+            DbActionKind.RunActionSequence => new DbActionStep(kind, SequenceName: FirstAvailableActionSequenceName()),
+            DbActionKind.SetFieldValue => new DbActionStep(kind, Target: string.Empty, Value: string.Empty),
+            DbActionKind.GoToRecord => new DbActionStep(kind, Value: string.Empty),
+            DbActionKind.OpenForm => new DbActionStep(kind, Target: string.Empty),
+            DbActionKind.ApplyFilter => new DbActionStep(kind, Target: "form", Value: string.Empty),
+            DbActionKind.ClearFilter => new DbActionStep(kind, Target: "form"),
+            DbActionKind.RunSql => new DbActionStep(kind, Value: string.Empty),
+            DbActionKind.RunProcedure => new DbActionStep(kind, Target: string.Empty),
+            DbActionKind.SetControlProperty => new DbActionStep(
+                kind,
+                Target: string.Empty,
+                Value: string.Empty,
+                Arguments: new Dictionary<string, object?> { ["property"] = "visible" }),
+            DbActionKind.SetControlVisibility or
+            DbActionKind.SetControlEnabled or
+            DbActionKind.SetControlReadOnly => new DbActionStep(kind, Target: string.Empty, Value: true),
+            DbActionKind.ShowMessage => new DbActionStep(kind, Message: string.Empty),
+            DbActionKind.Stop => new DbActionStep(kind),
+            _ => new DbActionStep(kind),
+        };
+
+    private static string GetArgumentText(DbActionStep step, string key)
+        => step.Arguments is not null && step.Arguments.TryGetValue(key, out object? value)
+            ? value?.ToString() ?? string.Empty
+            : string.Empty;
+
+    private string GetArgumentsText(int index, DbActionStep step)
+    {
+        if (_argumentText.TryGetValue(index, out string? text))
+            return text;
+
+        text = FormatArguments(step.Arguments);
+        _argumentText[index] = text;
+        return text;
+    }
+
+    private void RebuildArgumentText(IReadOnlyList<DbActionStep> steps)
+    {
+        _argumentText.Clear();
+        for (int i = 0; i < steps.Count; i++)
+            _argumentText[i] = FormatArguments(steps[i].Arguments);
+    }
+
+    private bool ShouldRenderMissingCommand(string? commandName)
+        => !string.IsNullOrWhiteSpace(commandName)
+            && RegisteredCommands.All(command => !string.Equals(command.Name, commandName, StringComparison.OrdinalIgnoreCase));
+
+    private bool ShouldRenderMissingActionSequence(string? sequenceName)
+        => !string.IsNullOrWhiteSpace(sequenceName)
+            && AvailableActionSequences.All(sequence => !string.Equals(sequence.Name, sequenceName, StringComparison.OrdinalIgnoreCase));
+
+    private string? FirstAvailableActionSequenceName()
+        => AvailableActionSequences.FirstOrDefault(sequence => !string.IsNullOrWhiteSpace(sequence.Name))?.Name;
+
+    private static string FormatArguments(IReadOnlyDictionary<string, object?>? arguments)
+        => arguments is null || arguments.Count == 0
+            ? string.Empty
+            : JsonSerializer.Serialize(arguments, new JsonSerializerOptions(JsonDefaults.Options) { WriteIndented = true });
+
+    private static string FormatValue(object? value)
+        => value switch
+        {
+            null => string.Empty,
+            JsonElement { ValueKind: JsonValueKind.String } json => json.GetString() ?? string.Empty,
+            JsonElement json => json.ToString(),
+            _ => value.ToString() ?? string.Empty,
+        };
+
+    private static string GetActionLabel(DbActionKind kind)
+        => kind switch
+        {
+            DbActionKind.RunCommand => "Run Command",
+            DbActionKind.RunActionSequence => "Run Action Sequence",
+            DbActionKind.SetFieldValue => "Set Field Value",
+            DbActionKind.ShowMessage => "Show Message",
+            DbActionKind.Stop => "Stop",
+            DbActionKind.NewRecord => "New Record",
+            DbActionKind.SaveRecord => "Save Record",
+            DbActionKind.DeleteRecord => "Delete Record",
+            DbActionKind.RefreshRecords => "Refresh Records",
+            DbActionKind.PreviousRecord => "Previous Record",
+            DbActionKind.NextRecord => "Next Record",
+            DbActionKind.GoToRecord => "Go To Record",
+            _ => kind.ToString(),
+        };
+}

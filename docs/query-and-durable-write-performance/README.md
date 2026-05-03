@@ -42,7 +42,7 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
 - The remaining phase-4 write-path question is now narrower than "shared auto-commit in general":
   - non-insert shared auto-commit fan-in is working
   - hot insert auto-commit still needs a dedicated design decision if we want it to coalesce without reopening structural conflict costs
-- Async I/O batching still has room for more auditing outside the WAL hot path, but the main write-path batching pieces are already in place.
+- Async I/O batching still has room for more auditing outside the WAL hot path, but the main write-path batching pieces are already in place. See [Async I/O Batching Follow-Up](async-io-batching-follow-up.md).
 
 ## Phase 4 Status
 

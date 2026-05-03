@@ -71,6 +71,7 @@ service CSharpDbRpc {
   rpc GetDocument (GetDocumentRequest) returns (OptionalVariantValueResponse);
   rpc PutDocument (PutDocumentRequest) returns (google.protobuf.Empty);
   rpc DeleteDocument (DeleteDocumentRequest) returns (google.protobuf.BoolValue);
+  rpc DropCollection (CollectionNameRequest) returns (google.protobuf.Empty);
 
   rpc Checkpoint (google.protobuf.Empty) returns (google.protobuf.Empty);
   rpc Backup (BackupRequestMessage) returns (BackupResultMessage);

@@ -43,6 +43,15 @@
         <div class="toolbar-sep"></div>
         <button class="@(_state.ShowTabOrder ? "toolbar-active" : "")" @onclick="ToggleTabOrder">Tab Order</button>
         <div class="toolbar-sep"></div>
+        <div class="layout-mode-switcher" title="Runtime form layout mode">
+            <button class="@(IsLayoutMode(LayoutModeAbsolute) ? "bp-active" : "")"
+                    @onclick="@(() => SetLayoutMode(LayoutModeAbsolute))"
+                    title="Fixed pixel layout">Fixed</button>
+            <button class="@(IsLayoutMode(LayoutModeElastic) ? "bp-active" : "")"
+                    @onclick="@(() => SetLayoutMode(LayoutModeElastic))"
+                    title="Elastic grid layout">Elastic</button>
+        </div>
+        <div class="toolbar-sep"></div>
         <div class="breakpoint-switcher">
             <button class="@(_state.ActiveBreakpoint == BpMobile ? "bp-active" : "")"
                     @onclick="@(() => SetBreakpoint(BpMobile))"
@@ -72,6 +81,10 @@
     @if (string.IsNullOrWhiteSpace(_state.TableName))
     {
         <div class="designer-warning">Select a source before saving this form.</div>
+    }
+    else
+    {
+        <MacroValidationPanel Form="_state.ToFormDefinition()" Schema="_currentSourceDefinition" />
     }
 
     <CascadingValue Value="_state" IsFixed="true">
@@ -117,6 +130,7 @@
     private bool _saving;
     private string? _error;
     private string? _schemaWarning;
+    private FormTableDefinition? _currentSourceDefinition;
     private bool _saved;
     private System.Timers.Timer? _savedTimer;
     private bool _editingName;
@@ -217,6 +231,7 @@
             }
 
             var generated = FormGenerator.GenerateDefault(source) with { FormId = string.Empty };
+            _currentSourceDefinition = source;
             _state.LoadForm(generated);
         }
         catch (Exception ex)
@@ -228,6 +243,7 @@
 
     private void LoadBlankDesigner(FormTableDefinition? source)
     {
+        _currentSourceDefinition = source;
         _state.LoadForm(new FormDefinition(
             string.Empty,
             source is null ? "Untitled Form" : $"{source.TableName} Form",
@@ -241,9 +257,12 @@
     private async Task OnTableChanged(ChangeEventArgs e)
     {
         string? tableName = e.Value?.ToString();
+        string previousTableName = _state.TableName;
+        bool shouldUseDefaultName = ShouldUseDefaultFormName(_state.FormName, previousTableName);
         if (string.IsNullOrWhiteSpace(tableName))
         {
             _state.SetTableContext(null);
+            _currentSourceDefinition = null;
             _schemaWarning = null;
             return;
         }
@@ -258,11 +277,10 @@
             }
 
             _state.SetTableContext(source);
-            if (string.IsNullOrWhiteSpace(_state.FormId) &&
-                (_state.FormName == "Untitled Form" || _state.Controls.Count == 0))
+            _currentSourceDefinition = source;
+            if (string.IsNullOrWhiteSpace(_state.FormId) && shouldUseDefaultName)
             {
-                _state.FormName = $"{source.TableName} Form";
-                _state.NotifyChanged();
+                _state.SetFormName($"{source.TableName} Form");
             }
 
             _schemaWarning = null;
@@ -328,6 +346,7 @@
         }
 
         FormTableDefinition? current = await SchemaProvider.GetTableDefinitionAsync(form.TableName);
+        _currentSourceDefinition = current;
         _schemaWarning = current is not null && !string.Equals(current.SourceSchemaSignature, form.SourceSchemaSignature, StringComparison.Ordinal)
             ? "The source schema has changed since this form was last saved."
             : null;
@@ -361,6 +380,16 @@
     private const string BpMobile = "mobile";
     private const string BpTablet = "tablet";
     private const string BpDesktop = "desktop";
+    private const string LayoutModeAbsolute = "absolute";
+    private const string LayoutModeElastic = "elastic";
+
+    private bool IsLayoutMode(string layoutMode)
+        => string.Equals(_state.Layout.LayoutMode, layoutMode, StringComparison.OrdinalIgnoreCase);
+
+    private void SetLayoutMode(string layoutMode)
+    {
+        _state.SetLayoutMode(layoutMode);
+    }
 
     private void SetBreakpoint(string breakpoint)
     {
@@ -380,10 +409,14 @@
     private void CommitNameEdit()
     {
         _editingName = false;
-        string? trimmed = _editNameValue?.Trim();
-        if (!string.IsNullOrEmpty(trimmed))
-            _state.FormName = trimmed;
+        _state.SetFormName(_editNameValue);
     }
+
+    private static bool ShouldUseDefaultFormName(string formName, string? previousTableName)
+        => string.IsNullOrWhiteSpace(formName)
+            || string.Equals(formName, "Untitled Form", StringComparison.Ordinal)
+            || (!string.IsNullOrWhiteSpace(previousTableName)
+                && string.Equals(formName, $"{previousTableName} Form", StringComparison.Ordinal));
 
     private void OnNameKeyDown(KeyboardEventArgs e)
     {

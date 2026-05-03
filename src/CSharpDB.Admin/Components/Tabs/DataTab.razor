@@ -3,49 +3,128 @@
 @inject TabManagerService TabManager
 @inject ToastService Toast
 @inject ModalService Modal
+@inject IJSRuntime JS
 
 <div class="data-tab">
-    <div class="toolbar">
-        <div class="view-switcher">
-            <button class="@(_showData ? "active" : "")" @onclick='() => SwitchView(true)'>
-                <i class="bi bi-grid-3x3"></i> Data
+    <div class="data-toolbar">
+        <div class="data-crumb">
+            <button type="button" @onclick="@OpenObjectListQuery">
+                <i class="bi @(IsView ? "bi-eye" : "bi-table")"></i>
+                @(IsView ? "views" : "tables")
             </button>
-            <button class="@(!_showData ? "active" : "")" @onclick='() => SwitchView(false)'>
-                <i class="bi bi-file-earmark-code"></i> Schema
-            </button>
+            <span>/</span>
+            <strong><i class="bi @(IsView ? "bi-eye icon-view" : "bi-table icon-table")"></i>@ObjectName</strong>
         </div>
 
-        @if (_showData && !IsReadOnly)
+        <div class="data-view-switcher">
+            <button type="button" class="@GetDataViewClass()" @onclick="ShowDataView">
+                <i class="bi bi-grid-3x3-gap"></i> Data
+            </button>
+            <button type="button" class="@GetSchemaViewClass(SchemaPanel.Columns)" @onclick="() => ShowSchemaPanel(SchemaPanel.Columns)">
+                <i class="bi bi-list-columns"></i> Schema <span>@ColumnCount</span>
+            </button>
+            @if (!IsView)
+            {
+                <button type="button" class="@GetSchemaViewClass(SchemaPanel.Indexes)" @onclick="() => ShowSchemaPanel(SchemaPanel.Indexes)">
+                    <i class="bi bi-lightning"></i> Indexes <span>@IndexCount</span>
+                </button>
+                <button type="button" class="@GetSchemaViewClass(SchemaPanel.Triggers)" @onclick="() => ShowSchemaPanel(SchemaPanel.Triggers)">
+                    <i class="bi bi-lightning-charge"></i> Triggers <span>@TriggerCount</span>
+                </button>
+            }
+        </div>
+
+        <div class="data-toolbar-group">
+            <button type="button" class="data-toolbar-btn" @onclick="Refresh">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            @if (_showData && !IsReadOnly)
+            {
+                <button type="button" class="data-toolbar-btn primary" @onclick="AddRow">
+                    <i class="bi bi-plus-lg"></i> Insert row
+                </button>
+            }
+        </div>
+
+        @if (_showData)
         {
-            <div class="toolbar-separator"></div>
-            <button class="toolbar-btn" @onclick="AddRow">
-                <i class="bi bi-plus-lg"></i> Add Row
-            </button>
-            <button class="toolbar-btn danger" @onclick="DeleteSelectedAsync" disabled="@(!HasSelection)">
-                <i class="bi bi-trash"></i> Delete Rows (@_selectedRowCount)
-            </button>
-            <div class="toolbar-separator"></div>
-            <button class="toolbar-btn primary" @onclick="SaveChanges" disabled="@(!_grid?.HasPendingChanges ?? true)">
-                <i class="bi bi-check-lg"></i> Save
-            </button>
-            <button class="toolbar-btn" @onclick="DiscardChanges" disabled="@(!_grid?.HasPendingChanges ?? true)">
-                <i class="bi bi-x-lg"></i> Discard
-            </button>
+            <div class="data-toolbar-group">
+                <button type="button" class="data-toolbar-btn @(_activeFilters.Count > 0 ? "active" : "")" @onclick="OpenFilterDialogAsync">
+                    <i class="bi bi-funnel"></i> Filter
+                </button>
+                <button type="button" class="data-toolbar-btn" @onclick="ShowSortHint">
+                    <i class="bi bi-sort-down"></i> Sort
+                </button>
+                <button type="button" class="data-toolbar-btn" @onclick="() => ShowSchemaPanel(SchemaPanel.Columns)">
+                    <i class="bi bi-eye"></i> Columns
+                </button>
+            </div>
         }
 
-        <div class="toolbar-separator"></div>
-        <button class="toolbar-btn" @onclick="Refresh">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
-        </button>
-        @if (!IsView)
-        {
-            <button class="toolbar-btn danger" @onclick="ConfirmDropTableAsync">
-                <i class="bi bi-trash3"></i> Drop Table
+        <div class="data-toolbar-group">
+            <button type="button" class="data-toolbar-btn" @onclick="ExportVisibleRowsAsync" disabled="@(!_showData)">
+                <i class="bi bi-download"></i> Export CSV
             </button>
-        }
-        <div class="toolbar-spacer"></div>
-        <div class="toolbar-info">@ObjectName</div>
+            <button type="button" class="data-toolbar-btn" @onclick="OpenImportPipeline">
+                <i class="bi bi-upload"></i> Import
+            </button>
+            @if (_showData && !IsReadOnly)
+            {
+                <button type="button" class="data-toolbar-btn primary" @onclick="SaveChanges" disabled="@(!CanSave)">
+                    <i class="bi bi-check-lg"></i> Save
+                </button>
+                <button type="button" class="data-toolbar-btn" @onclick="DiscardChanges" disabled="@(!HasPendingChanges)">
+                    <i class="bi bi-x-lg"></i> Discard
+                </button>
+            }
+            @if (!IsView)
+            {
+                <button type="button" class="data-toolbar-btn danger" @onclick="ConfirmDropTableAsync">
+                    <i class="bi bi-trash3"></i> Drop
+                </button>
+            }
+        </div>
+
+        <div class="data-pager">
+            <span>@GetToolbarRowRangeText()</span>
+            <button type="button" disabled="@(!CanGoToPreviousPage)" @onclick="GoToPreviousPageAsync" title="Previous page">
+                <i class="bi bi-chevron-left"></i>
+            </button>
+            <button type="button" disabled="@(!CanGoToNextPage)" @onclick="GoToNextPageAsync" title="Next page">
+                <i class="bi bi-chevron-right"></i>
+            </button>
+        </div>
     </div>
+
+    @if (_showData)
+    {
+        <div class="data-filter-bar">
+            <span class="data-filter-label">Filters:</span>
+            @if (_activeFilters.Count == 0)
+            {
+                <span class="data-filter-empty">No active filters</span>
+            }
+            else
+            {
+                @foreach (var filter in _activeFilters)
+                {
+                    var currentFilter = filter;
+                    <span class="data-filter-chip">
+                        <span class="col">@currentFilter.ColumnName</span>
+                        <span class="op">@GetFilterOperatorLabel(currentFilter.MatchMode)</span>
+                        <span class="val">@FormatFilterValue(currentFilter.Value)</span>
+                        <button type="button" title="Remove filter" @onclick="() => ClearFilterAsync(currentFilter.ColumnIndex)">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </span>
+                }
+            }
+            <button type="button" class="data-add-filter" @onclick="OpenFilterDialogAsync">
+                <i class="bi bi-plus-lg"></i> Add filter
+            </button>
+            <span class="data-filter-summary">@GetFilterSummaryText()</span>
+        </div>
+    }
 
     @if (_showData)
     {
@@ -53,7 +132,34 @@
                   TableName="@(IsView ? null : ObjectName)"
                   ViewName="@(IsView ? ObjectName : null)"
                   IsReadOnly="@IsReadOnly"
-                  OnSelectionChanged="OnGridSelectionChanged" />
+                  ShowFilters="false"
+                  OnSelectionChanged="OnGridSelectionChanged"
+                  OnQueryStatusChanged="OnGridStatusChanged"
+                  OnFiltersChanged="OnGridFiltersChanged" />
+        @if (HasSelection)
+        {
+            <div class="data-bulk-bar">
+                <span class="count">@_selectedRowCount selected</span>
+                <span>Apply an action to the selected rows:</span>
+                <div class="actions">
+                    <button type="button" class="data-toolbar-btn" @onclick="OpenBulkEditAsync" disabled="@IsReadOnly">
+                        <i class="bi bi-pencil"></i> Bulk edit
+                    </button>
+                    <button type="button" class="data-toolbar-btn" @onclick="CopySelectedAsInsertAsync" disabled="@IsReadOnly">
+                        <i class="bi bi-clipboard"></i> Copy as INSERT
+                    </button>
+                    <button type="button" class="data-toolbar-btn" @onclick="ExportSelectedRowsAsync">
+                        <i class="bi bi-download"></i> Export
+                    </button>
+                    @if (!IsReadOnly)
+                    {
+                        <button type="button" class="data-toolbar-btn danger" @onclick="DeleteSelectedAsync">
+                            <i class="bi bi-trash3"></i> Delete
+                        </button>
+                    }
+                </div>
+            </div>
+        }
     }
     else
     {
@@ -62,8 +168,44 @@
             {
                 @* ═══ TABLE SCHEMA ═══ *@
 
+                <div class="schema-subnav">
+                    <button class="@GetSchemaPanelClass(SchemaPanel.Overview)" @onclick="() => SetSchemaPanel(SchemaPanel.Overview)">
+                        <i class="bi bi-speedometer2"></i> Overview
+                    </button>
+                    <button class="@GetSchemaPanelClass(SchemaPanel.Columns)" @onclick="() => SetSchemaPanel(SchemaPanel.Columns)">
+                        <i class="bi bi-list-columns"></i> Columns <span>@ColumnCount</span>
+                    </button>
+                    <button class="@GetSchemaPanelClass(SchemaPanel.Indexes)" @onclick="() => SetSchemaPanel(SchemaPanel.Indexes)">
+                        <i class="bi bi-lightning"></i> Indexes <span>@IndexCount</span>
+                    </button>
+                    <button class="@GetSchemaPanelClass(SchemaPanel.Triggers)" @onclick="() => SetSchemaPanel(SchemaPanel.Triggers)">
+                        <i class="bi bi-lightning-charge"></i> Triggers <span>@TriggerCount</span>
+                    </button>
+                </div>
+
+                @if (_schemaPanel == SchemaPanel.Overview)
+                {
+                    <div class="schema-summary-grid">
+                        <button class="schema-summary-card" @onclick="() => SetSchemaPanel(SchemaPanel.Columns)">
+                            <span>Columns</span>
+                            <strong>@ColumnCount</strong>
+                            <small>@PrimaryKeyLabel</small>
+                        </button>
+                        <button class="schema-summary-card" @onclick="() => SetSchemaPanel(SchemaPanel.Indexes)">
+                            <span>Indexes</span>
+                            <strong>@IndexCount</strong>
+                            <small>@UniqueIndexLabel</small>
+                        </button>
+                        <button class="schema-summary-card" @onclick="() => SetSchemaPanel(SchemaPanel.Triggers)">
+                            <span>Triggers</span>
+                            <strong>@TriggerCount</strong>
+                            <small>@TriggerEventsLabel</small>
+                        </button>
+                    </div>
+                }
+
                 @* ─── Columns ─── *@
-                @if (_schema is not null)
+                @if (_schemaPanel == SchemaPanel.Columns && _schema is not null)
                 {
                     <div class="schema-section">
                         <h3>Columns</h3>
@@ -192,6 +334,8 @@
                 }
 
                 @* ─── Indexes ─── *@
+                @if (_schemaPanel == SchemaPanel.Indexes)
+                {
                 <div class="schema-section">
                     <h3>Indexes</h3>
                     @if (_indexes is not null && _indexes.Count > 0)
@@ -286,8 +430,11 @@
                         </div>
                     </div>
                 </div>
+                }
 
                 @* ─── Triggers ─── *@
+                @if (_schemaPanel == SchemaPanel.Triggers)
+                {
                 <div class="schema-section">
                     <h3>Triggers</h3>
                     @if (_triggers is not null && _triggers.Count > 0)
@@ -356,6 +503,7 @@
                         </div>
                     </div>
                 </div>
+                }
             }
             else
             {
@@ -393,6 +541,148 @@
     }
 </div>
 
+@if (_showBulkEdit)
+{
+    <div class="modal-overlay" @onclick="CancelBulkEdit">
+        <div class="modal bulk-edit-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>Bulk Edit Rows</h3>
+                <button class="modal-close" @onclick="CancelBulkEdit" title="Close">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="bulk-edit-summary">
+                    Stage one value across <strong>@_selectedRowCount</strong> selected row@(_selectedRowCount == 1 ? string.Empty : "s") in <strong>@ObjectName</strong>.
+                    Click Save after reviewing the staged changes.
+                </p>
+
+                @if (BulkEditableColumns.Count == 0)
+                {
+                    <div class="empty-state compact">
+                        <i class="bi bi-lock"></i>
+                        <p>This table has no non-key editable columns.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="bulk-edit-form">
+                        <label>
+                            Column
+                            <select class="modal-input" value="@_bulkEditColumnName" @onchange="OnBulkEditColumnChanged">
+                                @foreach (var column in BulkEditableColumns)
+                                {
+                                    <option value="@column.Name">@column.Name (@column.Type)</option>
+                                }
+                            </select>
+                        </label>
+
+                        <label>
+                            Value
+                            <input type="text"
+                                   class="modal-input"
+                                   placeholder="@GetBulkEditPlaceholder()"
+                                   disabled="@_bulkEditSetNull"
+                                   @bind="_bulkEditValue"
+                                   @bind:event="oninput"
+                                   @onkeydown="OnBulkEditKeyDown" />
+                        </label>
+
+                        <label class="bulk-null-row">
+                            <input type="checkbox"
+                                   checked="@_bulkEditSetNull"
+                                   disabled="@(!CanSetBulkEditNull)"
+                                   @onchange="OnBulkEditNullChanged" />
+                            <span>Set value to NULL</span>
+                        </label>
+
+                        @if (!CanSetBulkEditNull && BulkEditSelectedColumn is not null)
+                        {
+                            <div class="bulk-edit-note">
+                                <i class="bi bi-info-circle"></i>
+                                @($"{BulkEditSelectedColumn.Name} is not nullable.")
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" @onclick="CancelBulkEdit">Cancel</button>
+                <button class="btn btn-primary" @onclick="ApplyBulkEditAsync" disabled="@(!CanApplyBulkEdit)">
+                    Apply to selected rows
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_showFilterDialog)
+{
+    <div class="modal-overlay" @onclick="CancelFilterDialog">
+        <div class="modal table-filter-modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>Add Filter</h3>
+                <button class="modal-close" @onclick="CancelFilterDialog" title="Close">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="table-filter-summary">
+                    Filter <strong>@ObjectName</strong> by one column. Active filters appear as chips above the grid.
+                </p>
+
+                @if (FilterColumnNames.Count == 0)
+                {
+                    <div class="empty-state compact">
+                        <i class="bi bi-funnel"></i>
+                        <p>No columns are loaded for filtering yet.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="table-filter-form">
+                        <label>
+                            Column
+                            <select class="modal-input" value="@_filterColumnName" @onchange="OnFilterColumnChanged">
+                                @foreach (var columnName in FilterColumnNames)
+                                {
+                                    <option value="@columnName">@columnName</option>
+                                }
+                            </select>
+                        </label>
+
+                        <label>
+                            Match
+                            <select class="modal-input" value="@_filterMode" @onchange="OnFilterModeChanged">
+                                <option value="@DataGridFilterMatchMode.Contains">Contains</option>
+                                <option value="@DataGridFilterMatchMode.StartsWith">Starts with</option>
+                                <option value="@DataGridFilterMatchMode.EndsWith">Ends with</option>
+                                <option value="@DataGridFilterMatchMode.Exact">Equals</option>
+                            </select>
+                        </label>
+
+                        <label>
+                            Value
+                            <input type="text"
+                                   class="modal-input"
+                                   placeholder="@GetFilterValuePlaceholder()"
+                                   @bind="_filterValue"
+                                   @bind:event="oninput"
+                                   @onkeydown="OnFilterDialogKeyDown" />
+                        </label>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" @onclick="CancelFilterDialog">Cancel</button>
+                <button class="btn btn-primary" @onclick="ApplyFilterDialogAsync" disabled="@(!CanApplyTableFilter)">
+                    Apply filter
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public TabDescriptor? Tab { get; set; }
     [Parameter] public string ObjectName { get; set; } = string.Empty;
@@ -403,6 +693,81 @@
     private bool IsReadOnly => IsView;
     private int _selectedRowCount;
     private bool HasSelection => _selectedRowCount > 0;
+    private bool HasPendingChanges => _grid?.HasPendingChanges == true;
+    private bool CanSave => HasPendingChanges || HasSelection;
+    private SchemaPanel _schemaPanel = SchemaPanel.Columns;
+    private QueryResultsStatus _gridStatus = new()
+    {
+        Page = 1,
+        PageSize = 25,
+        HasExactTotal = true,
+    };
+    private IReadOnlyList<DataGridFilterSummary> _activeFilters = Array.Empty<DataGridFilterSummary>();
+    private bool _showBulkEdit;
+    private string _bulkEditColumnName = string.Empty;
+    private string _bulkEditValue = string.Empty;
+    private bool _bulkEditSetNull;
+    private bool _showFilterDialog;
+    private string _filterColumnName = string.Empty;
+    private DataGridFilterMatchMode _filterMode = DataGridFilterMatchMode.Contains;
+    private string _filterValue = string.Empty;
+
+    private enum SchemaPanel { Overview, Columns, Indexes, Triggers }
+
+    private int ColumnCount => _schema?.Columns.Count ?? 0;
+    private int IndexCount => _indexes?.Count ?? 0;
+    private int TriggerCount => _triggers?.Count ?? 0;
+    private IReadOnlyList<string> FilterColumnNames
+        => _schema?.Columns.Select(static column => column.Name).ToArray()
+           ?? _grid?.Columns?.ToArray()
+           ?? Array.Empty<string>();
+
+    private bool CanApplyTableFilter
+        => _grid is not null
+           && FilterColumnNames.Count > 0
+           && !string.IsNullOrWhiteSpace(_filterColumnName)
+           && !string.IsNullOrWhiteSpace(_filterValue);
+
+    private IReadOnlyList<ColumnDefinition> BulkEditableColumns
+        => _schema?.Columns
+            .Where(static column => !column.IsPrimaryKey && !column.IsIdentity)
+            .ToArray()
+           ?? Array.Empty<ColumnDefinition>();
+
+    private ColumnDefinition? BulkEditSelectedColumn
+        => BulkEditableColumns.FirstOrDefault(
+            column => string.Equals(column.Name, _bulkEditColumnName, StringComparison.OrdinalIgnoreCase));
+
+    private bool CanSetBulkEditNull => BulkEditSelectedColumn?.Nullable == true;
+
+    private bool CanApplyBulkEdit
+        => _grid is not null
+           && _selectedRowCount > 0
+           && BulkEditSelectedColumn is not null
+           && (!_bulkEditSetNull || CanSetBulkEditNull);
+
+    private string PrimaryKeyLabel
+        => _schema?.Columns.FirstOrDefault(static column => column.IsPrimaryKey)?.Name is { Length: > 0 } name
+            ? $"Primary key: {name}"
+            : "No primary key";
+
+    private string UniqueIndexLabel
+        => _indexes?.Count(index => index.IsUnique) is > 0
+            ? $"{_indexes.Count(index => index.IsUnique)} unique"
+            : "No unique indexes";
+
+    private string TriggerEventsLabel
+        => _triggers is { Count: > 0 }
+            ? string.Join(", ", _triggers.Select(trigger => trigger.Event.ToString()).Distinct().OrderBy(name => name))
+            : "No trigger events";
+
+    private bool CanGoToPreviousPage => _showData && _gridStatus.Page > 1;
+
+    private bool CanGoToNextPage
+        => _showData
+           && (_gridStatus.HasExactTotal
+               ? _gridStatus.Page * _gridStatus.PageSize < _gridStatus.TotalRows
+               : _gridStatus.HasNextPage);
 
     // ─── Schema data ────────────────────
     private TableSchema? _schema;
@@ -461,8 +826,25 @@
         {
             _loadedObjectName = ObjectName;
             _loadedIsView = IsView;
+            _schemaPanel = SchemaPanel.Columns;
             await LoadSchemaAsync();
         }
+    }
+
+    private void SetSchemaPanel(SchemaPanel panel) => _schemaPanel = panel;
+
+    private string GetSchemaPanelClass(SchemaPanel panel)
+        => _schemaPanel == panel ? "active" : string.Empty;
+
+    private string GetObjectStatusText()
+    {
+        if (!_showData)
+            return $"{ColumnCount} columns";
+
+        if (HasSelection)
+            return $"{_selectedRowCount} selected";
+
+        return IsReadOnly ? "Read-only data" : "Editable data";
     }
 
     private async Task LoadSchemaAsync()
@@ -502,7 +884,18 @@
     }
 
     // ─── View switching ─────────────────
-    private void SwitchView(bool showData) => _showData = showData;
+    private void ShowDataView() => _showData = true;
+
+    private void ShowSchemaPanel(SchemaPanel panel)
+    {
+        _showData = false;
+        _schemaPanel = panel;
+    }
+
+    private string GetDataViewClass() => _showData ? "active" : string.Empty;
+
+    private string GetSchemaViewClass(SchemaPanel panel)
+        => !_showData && _schemaPanel == panel ? "active" : string.Empty;
 
     // ─── Data grid actions ──────────────
     private void AddRow() => _grid?.AddNewRow();
@@ -526,8 +919,16 @@
     }
     private async Task SaveChanges()
     {
-        if (_grid is not null)
-            await _grid.SaveChangesAsync();
+        if (_grid is null)
+            return;
+
+        if (!HasPendingChanges)
+        {
+            Toast.Info("Rows are selected. Use Bulk edit or Delete to stage a change before saving.");
+            return;
+        }
+
+        await _grid.SaveChangesAsync();
     }
     private async Task DiscardChanges()
     {
@@ -541,10 +942,397 @@
         await LoadSchemaAsync();
     }
 
+    private void ShowSortHint()
+        => Toast.Info("Click any column header to sort. Click it again to reverse direction.");
+
+    private async Task OpenFilterDialogAsync()
+    {
+        if (_schema is null && !IsView)
+            await LoadSchemaAsync();
+
+        if (FilterColumnNames.Count == 0)
+        {
+            Toast.Info("Columns are still loading. Try again in a moment.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_filterColumnName)
+            || !FilterColumnNames.Contains(_filterColumnName, StringComparer.OrdinalIgnoreCase))
+        {
+            _filterColumnName = FilterColumnNames[0];
+        }
+
+        _filterMode = DataGridFilterMatchMode.Contains;
+        _filterValue = string.Empty;
+        _showFilterDialog = true;
+    }
+
+    private void CancelFilterDialog() => _showFilterDialog = false;
+
+    private void OnFilterColumnChanged(ChangeEventArgs e)
+        => _filterColumnName = e.Value?.ToString() ?? string.Empty;
+
+    private void OnFilterModeChanged(ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<DataGridFilterMatchMode>(e.Value?.ToString(), ignoreCase: true, out var mode))
+            mode = DataGridFilterMatchMode.Contains;
+        _filterMode = mode;
+    }
+
+    private async Task OnFilterDialogKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && CanApplyTableFilter)
+            await ApplyFilterDialogAsync();
+        else if (e.Key == "Escape")
+            CancelFilterDialog();
+    }
+
+    private async Task ApplyFilterDialogAsync()
+    {
+        if (_grid is null || string.IsNullOrWhiteSpace(_filterColumnName))
+            return;
+
+        try
+        {
+            await _grid.ApplyFilterAsync(_filterColumnName, _filterMode, _filterValue);
+            _showFilterDialog = false;
+            Toast.Success($"Filter applied to {_filterColumnName}.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Filter failed: {ex.Message}");
+        }
+    }
+
+    private async Task OpenBulkEditAsync()
+    {
+        if (IsReadOnly)
+            return;
+
+        if (_grid is null || _selectedRowCount <= 0)
+        {
+            Toast.Info("Select rows before bulk editing.");
+            return;
+        }
+
+        if (_schema is null)
+            await LoadSchemaAsync();
+
+        if (BulkEditableColumns.Count == 0)
+        {
+            Toast.Warning("This table has no non-key editable columns.");
+            return;
+        }
+
+        if (BulkEditSelectedColumn is null)
+            _bulkEditColumnName = BulkEditableColumns[0].Name;
+
+        _bulkEditValue = string.Empty;
+        _bulkEditSetNull = false;
+        _showBulkEdit = true;
+    }
+
+    private void CancelBulkEdit() => _showBulkEdit = false;
+
+    private void OnBulkEditColumnChanged(ChangeEventArgs e)
+    {
+        _bulkEditColumnName = e.Value?.ToString() ?? string.Empty;
+        if (!CanSetBulkEditNull)
+            _bulkEditSetNull = false;
+    }
+
+    private void OnBulkEditNullChanged(ChangeEventArgs e)
+    {
+        if (e.Value is bool value)
+            _bulkEditSetNull = value && CanSetBulkEditNull;
+        else
+            _bulkEditSetNull = string.Equals(e.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase) && CanSetBulkEditNull;
+    }
+
+    private async Task OnBulkEditKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && CanApplyBulkEdit)
+            await ApplyBulkEditAsync();
+        else if (e.Key == "Escape")
+            CancelBulkEdit();
+    }
+
+    private async Task ApplyBulkEditAsync()
+    {
+        if (_grid is null || BulkEditSelectedColumn is null)
+            return;
+
+        if (_bulkEditSetNull && !CanSetBulkEditNull)
+        {
+            Toast.Warning($"{BulkEditSelectedColumn.Name} is not nullable.");
+            return;
+        }
+
+        try
+        {
+            int changed = await _grid.BulkEditSelectedRowsAsync(
+                BulkEditSelectedColumn.Name,
+                _bulkEditValue,
+                _bulkEditSetNull);
+            _selectedRowCount = _grid.SelectedRowCount;
+            _showBulkEdit = false;
+
+            if (changed == 0)
+                Toast.Info("No selected rows changed.");
+            else
+                Toast.Success($"Staged {changed} bulk edit(s). Click Save to persist.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Bulk edit failed: {ex.Message}");
+        }
+    }
+
+    private void OpenImportPipeline()
+    {
+        TabManager.OpenPipelineTab();
+        Toast.Info($"Opened a pipeline tab. Set '{ObjectName}' as the destination table to import data.");
+    }
+
+    private void OpenObjectListQuery()
+        => TabManager.OpenSystemCatalogTab(
+            IsView ? "sys.views" : "sys.tables",
+            IsView
+                ? "SELECT * FROM sys.views ORDER BY view_name;"
+                : "SELECT * FROM sys.tables ORDER BY table_name;");
+
     private Task OnGridSelectionChanged(int count)
     {
         _selectedRowCount = count;
         return InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnGridStatusChanged(QueryResultsStatus status)
+    {
+        _gridStatus = status;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnGridFiltersChanged(IReadOnlyList<DataGridFilterSummary> filters)
+    {
+        _activeFilters = filters;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ClearFilterAsync(int columnIndex)
+    {
+        if (_grid is not null)
+            await _grid.ClearFilterAsync(columnIndex);
+    }
+
+    private async Task GoToPreviousPageAsync()
+    {
+        if (_grid is not null)
+            await _grid.GoToPreviousPageAsync();
+    }
+
+    private async Task GoToNextPageAsync()
+    {
+        if (_grid is not null)
+            await _grid.GoToNextPageAsync();
+    }
+
+    private async Task ExportVisibleRowsAsync()
+    {
+        if (_grid is null)
+            return;
+
+        var snapshot = _grid.GetVisibleRowsSnapshot();
+        if (snapshot.Rows.Count == 0)
+        {
+            Toast.Info("There are no visible rows to export.");
+            return;
+        }
+
+        await DownloadCsvAsync(snapshot.Columns, snapshot.Rows, $"{SanitizeFileName(ObjectName)}-visible.csv");
+        Toast.Success($"Exported {snapshot.Rows.Count} visible row(s).");
+    }
+
+    private async Task ExportSelectedRowsAsync()
+    {
+        if (_grid is null)
+            return;
+
+        var snapshot = _grid.GetSelectedRowsSnapshot();
+        if (snapshot.Rows.Count == 0)
+        {
+            Toast.Info("Select rows before exporting.");
+            return;
+        }
+
+        await DownloadCsvAsync(snapshot.Columns, snapshot.Rows, $"{SanitizeFileName(ObjectName)}-selected.csv");
+        Toast.Success($"Exported {snapshot.Rows.Count} selected row(s).");
+    }
+
+    private async Task DownloadCsvAsync(string[] columns, IReadOnlyList<object?[]> rows, string fileName)
+    {
+        string csv = BuildCsv(columns, rows);
+        await JS.InvokeVoidAsync("fileInterop.downloadText", fileName, "text/csv;charset=utf-8", csv);
+    }
+
+    private async Task CopySelectedAsInsertAsync()
+    {
+        if (_grid is null)
+            return;
+
+        var snapshot = _grid.GetSelectedRowsSnapshot();
+        if (snapshot.Rows.Count == 0)
+        {
+            Toast.Info("Select rows before copying INSERT statements.");
+            return;
+        }
+
+        string sql = BuildInsertStatements(ObjectName, snapshot.Columns, snapshot.Rows);
+        await JS.InvokeVoidAsync("clipboardInterop.writeText", sql);
+        Toast.Success($"Copied {snapshot.Rows.Count} INSERT statement(s).");
+    }
+
+    private string GetToolbarRowRangeText()
+    {
+        if (!_showData)
+            return $"{ColumnCount} columns";
+
+        if (_gridStatus.Error is not null)
+            return "Load failed";
+
+        if (_gridStatus.VisibleRows <= 0)
+            return "No rows";
+
+        int firstRow = ((_gridStatus.Page - 1) * _gridStatus.PageSize) + 1;
+        int lastRow = firstRow + _gridStatus.VisibleRows - 1;
+        string total = _gridStatus.HasExactTotal
+            ? _gridStatus.TotalRows.ToString("N0")
+            : $"{lastRow:N0}+";
+
+        return $"Rows {firstRow:N0}-{lastRow:N0} of {total}";
+    }
+
+    private string GetFilterSummaryText()
+    {
+        if (_gridStatus.VisibleRows <= 0)
+            return _activeFilters.Count == 0 ? "No rows visible" : "No matches";
+
+        string visible = _gridStatus.VisibleRows.ToString("N0");
+        if (!_gridStatus.HasExactTotal)
+            return _activeFilters.Count == 0 ? $"{visible} visible" : $"{visible}+ visible";
+
+        return _activeFilters.Count == 0
+            ? $"{visible} visible"
+            : $"Showing {visible} of {_gridStatus.TotalRows:N0} rows";
+    }
+
+    private string GetFilterValuePlaceholder() => _filterMode switch
+    {
+        DataGridFilterMatchMode.Exact => "Exact value",
+        DataGridFilterMatchMode.StartsWith => "Starts with...",
+        DataGridFilterMatchMode.EndsWith => "Ends with...",
+        _ => "Contains...",
+    };
+
+    private string GetBulkEditPlaceholder()
+    {
+        var column = BulkEditSelectedColumn;
+        if (column is null)
+            return "Value";
+
+        return column.Type switch
+        {
+            DbType.Integer => "Integer value",
+            DbType.Real => "Decimal value",
+            DbType.Blob => "Blob value",
+            _ => "Text value",
+        };
+    }
+
+    private static string GetFilterOperatorLabel(DataGridFilterMatchMode mode) => mode switch
+    {
+        DataGridFilterMatchMode.Exact => "=",
+        DataGridFilterMatchMode.StartsWith => "starts",
+        DataGridFilterMatchMode.EndsWith => "ends",
+        _ => "contains",
+    };
+
+    private static string FormatFilterValue(string value)
+        => value.Equals("NULL", StringComparison.OrdinalIgnoreCase)
+            ? "NULL"
+            : $"'{value}'";
+
+    private static string BuildCsv(string[] columns, IReadOnlyList<object?[]> rows)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.AppendLine(string.Join(",", columns.Select(EscapeCsvField)));
+
+        foreach (object?[] row in rows)
+        {
+            builder.AppendLine(string.Join(",", row.Select(value => EscapeCsvField(FormatExportValue(value)))));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string EscapeCsvField(string value)
+    {
+        bool mustQuote = value.Contains(',', StringComparison.Ordinal)
+                         || value.Contains('"', StringComparison.Ordinal)
+                         || value.Contains('\r', StringComparison.Ordinal)
+                         || value.Contains('\n', StringComparison.Ordinal);
+
+        return mustQuote
+            ? $"\"{value.Replace("\"", "\"\"", StringComparison.Ordinal)}\""
+            : value;
+    }
+
+    private static string BuildInsertStatements(string tableName, string[] columns, IReadOnlyList<object?[]> rows)
+    {
+        string columnList = string.Join(", ", columns.Select(FormatSqlIdentifier));
+        var builder = new System.Text.StringBuilder();
+
+        foreach (object?[] row in rows)
+        {
+            string values = string.Join(", ", row.Select(FormatSqlValue));
+            builder.Append("INSERT INTO ")
+                .Append(FormatSqlIdentifier(tableName))
+                .Append(" (")
+                .Append(columnList)
+                .Append(") VALUES (")
+                .Append(values)
+                .AppendLine(");");
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatSqlIdentifier(string identifier)
+        => identifier;
+
+    private static string FormatSqlValue(object? value) => value switch
+    {
+        null => "NULL",
+        byte[] bytes => $"X'{Convert.ToHexString(bytes)}'",
+        string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
+        bool boolean => boolean ? "1" : "0",
+        IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+        _ => $"'{value.ToString()?.Replace("'", "''", StringComparison.Ordinal)}'",
+    };
+
+    private static string FormatExportValue(object? value) => value switch
+    {
+        null => string.Empty,
+        byte[] bytes => Convert.ToHexString(bytes),
+        IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? string.Empty,
+    };
+
+    private static string SanitizeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        string sanitized = new(name.Select(ch => invalid.Contains(ch) ? '-' : ch).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? "data" : sanitized;
     }
 
     // ═══════════════════════════════════════

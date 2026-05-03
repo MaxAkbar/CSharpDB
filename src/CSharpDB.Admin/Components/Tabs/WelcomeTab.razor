@@ -1,140 +1,303 @@
 @inject ICSharpDbClient DbClient
+@inject IFormRepository FormRepository
+@inject IReportRepository ReportRepository
 @inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
 @implements IDisposable
 
-<div class="welcome-tab">
-    <div class="empty-state">
-        <img src="icon2.png?v=20260310"
-             alt="CSharpDB Studio"
-             class="welcome-brand-image"
-             width="96"
-             height="96" />
-        <h2>Welcome to CSharpDB Studio</h2>
-        <p class="text-secondary">Select a table from the sidebar to browse data, or open a new query tab.</p>
-
-        <div class="welcome-shortcuts">
-            <div class="shortcut-item">
-                <span class="kbd">Ctrl+N</span> New query tab
-            </div>
-            <div class="shortcut-item">
-                <span class="kbd">Ctrl+B</span> Toggle sidebar
-            </div>
-            <div class="shortcut-item">
-                <span class="kbd">Ctrl+Enter</span> Run query
-            </div>
-            <div class="shortcut-item">
-                <span class="kbd">Ctrl+Shift+L</span> Toggle theme
-            </div>
+<div class="dashboard-tab">
+    <header class="dashboard-header">
+        <div>
+            <div class="dashboard-crumb">@DbClient.DataSource</div>
+            <h1>Dashboard</h1>
         </div>
-    </div>
+        <div class="dashboard-actions">
+            <button class="toolbar-btn" @onclick="LoadDashboardAsync" disabled="@_loading">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <button class="toolbar-btn primary" @onclick="() => TabManager.OpenQueryTab()">
+                <i class="bi bi-plus-lg"></i> New Query
+            </button>
+        </div>
+    </header>
 
-    @if (_tableNames is not null && _tableNames.Count > 0)
+    @if (_loading)
     {
-        <div class="welcome-tables">
-            <div class="d-flex align-items-center justify-content-between gap-2 mb-3">
-                <h3 class="mb-0">Tables</h3>
-                <button class="btn btn-sm btn-outline-secondary"
-                        @onclick="LoadRowCountsAsync"
-                        disabled="@(_loadingRowCounts || _tableNames.Count == 0)">
-                    @(_loadingRowCounts ? "Loading counts..." : "Load row counts")
-                </button>
-            </div>
-            <div class="welcome-table-grid">
-                @foreach (var name in _tableNames)
-                {
-                    <button class="welcome-table-card" @onclick="() => TabManager.OpenTableTab(name)">
-                        <i class="bi bi-table"></i>
-                        <span>@name</span>
-                        @if (_rowCounts.TryGetValue(name, out var count))
-                        {
-                            <span class="welcome-row-count">@count rows</span>
-                        }
+        <div class="loading-overlay"><span class="spinner"></span></div>
+    }
+    else
+    {
+        <section class="dashboard-stats">
+            <button class="dashboard-stat" @onclick="OpenFirstTable">
+                <span class="label">Tables</span>
+                <strong>@_userTables.Count</strong>
+                <span class="meta">@_rowCounts.Count counted</span>
+                <i class="bi bi-table icon-table"></i>
+            </button>
+            <button class="dashboard-stat" @onclick="OpenFirstView">
+                <span class="label">Views</span>
+                <strong>@_viewCount</strong>
+                <span class="meta">query sources</span>
+                <i class="bi bi-eye icon-view"></i>
+            </button>
+            <button class="dashboard-stat" @onclick="() => TabManager.OpenNewProcedureTab()">
+                <span class="label">Procedures</span>
+                <strong>@_procedureCount</strong>
+                <span class="meta">stored SQL</span>
+                <i class="bi bi-gear-wide-connected icon-trigger"></i>
+            </button>
+            <button class="dashboard-stat" @onclick="() => TabManager.OpenFormDesignerTab()">
+                <span class="label">Forms</span>
+                <strong>@_formCount</strong>
+                <span class="meta">data entry</span>
+                <i class="bi bi-ui-checks-grid icon-form"></i>
+            </button>
+            <button class="dashboard-stat" @onclick="() => TabManager.OpenReportDesignerTab()">
+                <span class="label">Reports</span>
+                <strong>@_reportCount</strong>
+                <span class="meta">print layouts</span>
+                <i class="bi bi-file-earmark-richtext icon-report"></i>
+            </button>
+        </section>
+
+        <div class="dashboard-grid">
+            <section class="dashboard-panel dashboard-main-panel">
+                <header>
+                    <div class="dashboard-panel-title">
+                        <h3>Top Tables</h3>
+                        <span>@TopTablesScopeText</span>
+                    </div>
+                    <button class="panel-link" @onclick="LoadRowCountsAsync" disabled="@_loadingRowCounts">
+                        @(_loadingRowCounts ? "Counting..." : "Refresh counts")
                     </button>
+                </header>
+                @if (_userTables.Count == 0)
+                {
+                    <p class="dashboard-empty">No user tables yet.</p>
                 }
+                else
+                {
+                    @foreach (string tableName in TopTables)
+                    {
+                        <button class="dashboard-table-row" @onclick="() => TabManager.OpenTableTab(tableName)">
+                            <span class="table-name"><i class="bi bi-table icon-table"></i>@tableName</span>
+                            <span class="row-count">@FormatRows(tableName)</span>
+                            <span class="row-meter" title="@GetRowMeterTitle(tableName)" aria-hidden="true">
+                                <span style="@($"width:{GetRowMeterWidth(tableName).ToString(System.Globalization.CultureInfo.InvariantCulture)}%")"></span>
+                            </span>
+                            <i class="bi bi-arrow-right-short"></i>
+                        </button>
+                    }
+                }
+            </section>
+
+            <div class="dashboard-side">
+                <section class="dashboard-panel">
+                    <header><h3>Quick Actions</h3></header>
+                    <div class="dashboard-actions-grid">
+                        <button @onclick="() => TabManager.OpenQueryTab()">
+                            <i class="bi bi-terminal icon-system"></i>
+                            <strong>New Query</strong>
+                            <small>Ctrl+N</small>
+                        </button>
+                        <button @onclick="() => TabManager.OpenTableDesignerTab()">
+                            <i class="bi bi-table icon-table"></i>
+                            <strong>New Table</strong>
+                            <small>Design schema</small>
+                        </button>
+                        <button @onclick="() => TabManager.OpenFormDesignerTab()">
+                            <i class="bi bi-ui-checks-grid icon-form"></i>
+                            <strong>New Form</strong>
+                            <small>Data entry</small>
+                        </button>
+                        <button @onclick="() => TabManager.OpenReportDesignerTab()">
+                            <i class="bi bi-file-earmark-richtext icon-report"></i>
+                            <strong>New Report</strong>
+                            <small>Preview/print</small>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="dashboard-panel">
+                    <header><h3>Recent Tabs</h3></header>
+                    @if (RecentTabs.Count == 0)
+                    {
+                        <p class="dashboard-empty">No recent tabs yet.</p>
+                    }
+                    else
+                    {
+                        @foreach (TabDescriptor tab in RecentTabs)
+                        {
+                            <button class="dashboard-recent-row" @onclick="() => TabManager.ActivateTab(tab.Id)">
+                                <i class="bi @tab.Icon"></i>
+                                <span>@tab.Title</span>
+                                <small>@tab.Kind</small>
+                            </button>
+                        }
+                    }
+                </section>
+
+                <section class="dashboard-panel">
+                    <header><h3>Health</h3></header>
+                    <div class="dashboard-health-row"><span>Connection</span><strong class="ok">Connected</strong></div>
+                    <div class="dashboard-health-row"><span>Database</span><strong>@DatabaseName</strong></div>
+                    <div class="dashboard-health-row"><span>Objects</span><strong>@(_userTables.Count + _viewCount + _procedureCount)</strong></div>
+                    <div class="dashboard-health-row"><span>Forms/Reports</span><strong>@(_formCount + _reportCount)</strong></div>
+                </section>
             </div>
         </div>
     }
 </div>
 
 @code {
-    private IReadOnlyCollection<string>? _tableNames;
-    private readonly Dictionary<string, int> _rowCounts = new();
-    private CancellationTokenSource? _countLoadCts;
+    private const int RowCountLimit = 12;
+    private const int TopTablesDisplayLimit = 8;
+
+    private readonly Dictionary<string, int> _rowCounts = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<string> _userTables = [];
+    private IReadOnlyList<string> _views = [];
+    private int _viewCount;
+    private int _procedureCount;
+    private int _formCount;
+    private int _reportCount;
+    private bool _loading;
     private bool _loadingRowCounts;
+
+    private string DatabaseName => Path.GetFileName(DbClient.DataSource) is { Length: > 0 } name ? name : DbClient.DataSource;
+
+    private IReadOnlyList<TabDescriptor> RecentTabs
+        => TabManager.Tabs
+            .Where(tab => tab.Kind != TabKind.Welcome)
+            .Reverse()
+            .Take(5)
+            .ToList();
+
+    private IReadOnlyList<string> TopTables
+        => _userTables
+            .OrderByDescending(name => _rowCounts.TryGetValue(name, out int count) ? count : -1)
+            .ThenBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Take(TopTablesDisplayLimit)
+            .ToList();
+
+    private int MaxCountedRows
+        => _rowCounts.Values.Count == 0 ? 0 : _rowCounts.Values.Max();
+
+    private string TopTablesScopeText
+    {
+        get
+        {
+            if (_userTables.Count == 0)
+                return "No user tables";
+
+            int displayed = Math.Min(TopTablesDisplayLimit, _userTables.Count);
+            int countLimit = Math.Min(RowCountLimit, _userTables.Count);
+            return $"Showing {displayed:n0} of {_userTables.Count:n0} tables; row counts loaded for {_rowCounts.Count:n0} of {countLimit:n0}.";
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
         Changes.Changed += OnChanged;
-        await LoadTablesAsync();
+        await LoadDashboardAsync();
     }
 
     private async void OnChanged()
     {
-        await LoadTablesAsync();
+        await LoadDashboardAsync();
         await InvokeAsync(StateHasChanged);
     }
 
-    private async Task LoadTablesAsync()
+    private async Task LoadDashboardAsync()
     {
-        CancelCountLoad();
-
+        _loading = true;
         try
         {
-            _tableNames = (await DbClient.GetTableNamesAsync())
-                .Where(n => !n.StartsWith("_", StringComparison.Ordinal))
-                .OrderBy(n => n).ToList();
+            IReadOnlyCollection<string> tables = await DbClient.GetTableNamesAsync();
+            _userTables = tables
+                .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
             _rowCounts.Clear();
-            _loadingRowCounts = false;
+            _views = (await DbClient.GetViewNamesAsync()).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
+            _viewCount = _views.Count;
+            _procedureCount = (await DbClient.GetProceduresAsync()).Count;
+            _formCount = (await FormRepository.ListAsync()).Count;
+            _reportCount = (await ReportRepository.ListAsync()).Count;
+            await LoadRowCountsAsync();
         }
-        catch { /* ignore */ }
+        catch
+        {
+            _userTables = [];
+            _rowCounts.Clear();
+            _views = [];
+            _viewCount = 0;
+            _procedureCount = 0;
+            _formCount = 0;
+            _reportCount = 0;
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 
     private async Task LoadRowCountsAsync()
     {
-        if (_loadingRowCounts || _tableNames is not { Count: > 0 } tableNames)
+        if (_loadingRowCounts)
             return;
 
-        CancelCountLoad();
-        _countLoadCts = new CancellationTokenSource();
         _loadingRowCounts = true;
-
         try
         {
-            foreach (var name in tableNames)
+            foreach (string tableName in _userTables.Take(RowCountLimit))
             {
                 try
                 {
-                    _rowCounts[name] = await DbClient.GetRowCountAsync(name, _countLoadCts.Token);
-                    await InvokeAsync(StateHasChanged);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
+                    _rowCounts[tableName] = await DbClient.GetRowCountAsync(tableName);
                 }
                 catch
                 {
-                    // Ignore per-table count failures so one bad object does not block the rest.
                 }
             }
         }
         finally
         {
             _loadingRowCounts = false;
-            await InvokeAsync(StateHasChanged);
         }
     }
 
-    private void CancelCountLoad()
+    private void OpenFirstTable()
     {
-        _countLoadCts?.Cancel();
-        _countLoadCts?.Dispose();
-        _countLoadCts = null;
+        if (_userTables.Count > 0)
+            TabManager.OpenTableTab(_userTables[0]);
     }
+
+    private void OpenFirstView()
+    {
+        if (_views.Count > 0)
+            TabManager.OpenViewTab(_views[0]);
+    }
+
+    private string FormatRows(string tableName)
+        => _rowCounts.TryGetValue(tableName, out int count)
+            ? $"{count:n0} rows"
+            : "not counted";
+
+    private double GetRowMeterWidth(string tableName)
+    {
+        if (!_rowCounts.TryGetValue(tableName, out int count) || MaxCountedRows <= 0)
+            return 0;
+
+        return Math.Max(4, count * 100d / MaxCountedRows);
+    }
+
+    private string GetRowMeterTitle(string tableName)
+        => _rowCounts.TryGetValue(tableName, out int count) && MaxCountedRows > 0
+            ? $"{count:n0} of {MaxCountedRows:n0} rows among shown tables"
+            : "Row count not available";
 
     public void Dispose()
     {
         Changes.Changed -= OnChanged;
-        CancelCountLoad();
     }
 }

@@ -14,6 +14,10 @@ runtime for batch ETL work. A pipeline package describes the source,
 transformations, destination, execution options, and optional incremental state.
 The built-in runtime can validate packages, serialize them to JSON, execute them
 in batches, capture checkpoints, and report rejects and run metrics.
+Packages can also name trusted host commands for lifecycle hooks; command bodies
+are registered by the process that runs the pipeline and are not serialized into
+the package. Package JSON includes generated automation metadata that lists the
+trusted commands and scalar functions a host must register.
 
 Current boundary:
 - Built-in runtime components currently support CSV and JSON file sources/destinations
@@ -29,6 +33,8 @@ Current boundary:
 - **Built-in connectors**: CSV and JSON file readers/writers
 - **Built-in transforms**: select, rename, cast, filter, derive, deduplicate
 - **Checkpointing hooks**: pluggable checkpoint store and run logger abstractions
+- **Trusted command hooks**: host-registered commands for run started, batch completed, run succeeded, and run failed events
+- **Automation metadata**: generated import/export manifest for trusted command and scalar function names
 - **Batch metrics**: rows read/written/rejected plus batch counts
 
 ## Usage
@@ -118,6 +124,18 @@ var package = new PipelinePackageDefinition
         CheckpointInterval = 1,
         ErrorMode = PipelineErrorMode.FailFast,
     },
+    Hooks =
+    [
+        new PipelineCommandHookDefinition
+        {
+            Event = PipelineCommandHookEvent.OnRunSucceeded,
+            CommandName = "NotifyPipeline",
+            Arguments = new Dictionary<string, object?>
+            {
+                ["channel"] = "ops",
+            },
+        },
+    ],
 };
 
 PipelineValidationResult validation = PipelinePackageValidator.Validate(package);
@@ -135,7 +153,23 @@ PipelinePackageDefinition loadedPackage =
 var orchestrator = new PipelineOrchestrator(
     new DefaultPipelineComponentFactory(),
     new NullPipelineCheckpointStore(),
-    new NullPipelineRunLogger());
+    new NullPipelineRunLogger(),
+    DbCommandRegistry.Create(commands =>
+    {
+        commands.AddAsyncCommand(
+            "NotifyPipeline",
+            new DbCommandOptions(
+                Description: "Publishes pipeline run metrics.",
+                Timeout: TimeSpan.FromSeconds(10),
+                IsLongRunning: true),
+            static async (context, ct) =>
+            {
+                string pipelineName = context.Metadata["pipelineName"];
+                long rowsWritten = context.Arguments["rowsWritten"].AsInteger;
+                await NotifyOpsAsync(pipelineName, rowsWritten, ct);
+                return DbCommandResult.Success();
+            });
+    }));
 
 PipelineRunResult result = await orchestrator.ExecuteAsync(new PipelineRunRequest
 {
@@ -184,6 +218,9 @@ The output file contains the active customers only, with duplicate IDs removed:
 - Use `NullPipelineCheckpointStore` and `NullPipelineRunLogger` when you want a minimal in-process setup
 - Relative source file paths are searched from the current directory and app base directory; relative output paths are written relative to the current directory
 - `Derive` expressions are intentionally simple today: use a source column name or a literal such as `'csv'`, `123`, `true`, or `null`
+- Trusted command hooks are skipped in `Validate` mode. Missing command registration, a timed-out command, or a failing hook with `StopOnFailure = true` fails the run through `PipelineRunResult`.
+- Pipeline command callbacks receive the run cancellation token; hosts should pass it to async I/O and set `DbCommandOptions.Timeout` for hooks that call external systems.
+- `PipelinePackageSerializer` regenerates `Automation` during save/load and string serialization. Validation accepts legacy packages without automation metadata, but reports stale manifests when present.
 
 ## Installation
 

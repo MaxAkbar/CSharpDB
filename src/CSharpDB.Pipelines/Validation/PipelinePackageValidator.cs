@@ -1,4 +1,5 @@
 using CSharpDB.Pipelines.Models;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Pipelines.Validation;
 
@@ -25,6 +26,8 @@ public static class PipelinePackageValidator
         ValidateOptions(package.Options, errors);
         ValidateIncremental(package.Incremental, errors);
         ValidateTransforms(package.Transforms, errors);
+        ValidateHooks(package.Hooks, errors);
+        ValidateAutomation(package, errors);
 
         return errors.Count == 0
             ? PipelineValidationResult.Success
@@ -179,6 +182,10 @@ public static class PipelinePackageValidator
                     {
                         errors.Add(Error("pipeline.transform.filter.expression.required", $"{path}.filterExpression", "Filter transforms require an expression."));
                     }
+                    else
+                    {
+                        ValidateFunctionSyntax(transform.FilterExpression, $"{path}.filterExpression", errors);
+                    }
                     break;
 
                 case PipelineTransformKind.Derive:
@@ -195,6 +202,10 @@ public static class PipelinePackageValidator
                         {
                             errors.Add(Error("pipeline.transform.derive.column.invalid", $"{path}.derivedColumns[{derivedIndex}]", "Derived columns require both a name and an expression."));
                         }
+                        else
+                        {
+                            ValidateFunctionSyntax(derived.Expression, $"{path}.derivedColumns[{derivedIndex}].expression", errors);
+                        }
                     }
                     break;
 
@@ -207,6 +218,201 @@ public static class PipelinePackageValidator
             }
         }
     }
+
+    private static void ValidateHooks(IReadOnlyList<PipelineCommandHookDefinition>? hooks, List<PipelineValidationIssue> errors)
+    {
+        if (hooks is null)
+            return;
+
+        for (int i = 0; i < hooks.Count; i++)
+        {
+            PipelineCommandHookDefinition hook = hooks[i];
+            string path = $"hooks[{i}]";
+
+            if (string.IsNullOrWhiteSpace(hook.CommandName))
+            {
+                errors.Add(Error("pipeline.hook.command.required", $"{path}.commandName", "Pipeline command hooks require a command name."));
+            }
+
+            if (hook.Arguments is null)
+                continue;
+
+            foreach (string key in hook.Arguments.Keys)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    errors.Add(Error("pipeline.hook.argument.name.required", $"{path}.arguments", "Pipeline command hook arguments require non-empty names."));
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void ValidateAutomation(PipelinePackageDefinition package, List<PipelineValidationIssue> errors)
+    {
+        DbAutomationMetadata? automation = package.Automation;
+        if (automation is null)
+            return;
+
+        if (automation.MetadataVersion != DbAutomationMetadata.CurrentMetadataVersion)
+        {
+            errors.Add(Error(
+                "pipeline.automation.version.unsupported",
+                "automation.metadataVersion",
+                $"Automation metadata version {automation.MetadataVersion} is not supported."));
+        }
+
+        DbAutomationMetadata expected = PipelineAutomationMetadata.Build(package);
+        HashSet<string> expectedCommands = CommandKeys(expected.Commands);
+        HashSet<string> actualCommands = CommandKeys(automation.Commands);
+        HashSet<string> expectedFunctions = ScalarFunctionKeys(expected.ScalarFunctions);
+        HashSet<string> actualFunctions = ScalarFunctionKeys(automation.ScalarFunctions);
+
+        if (!expectedCommands.SetEquals(actualCommands))
+        {
+            errors.Add(Error(
+                "pipeline.automation.commands.outOfDate",
+                "automation.commands",
+                "Automation command metadata is out of date. Re-export the package to refresh it."));
+        }
+
+        if (!expectedFunctions.SetEquals(actualFunctions))
+        {
+            errors.Add(Error(
+                "pipeline.automation.scalarFunctions.outOfDate",
+                "automation.scalarFunctions",
+                "Automation scalar function metadata is out of date. Re-export the package to refresh it."));
+        }
+    }
+
+    private static HashSet<string> CommandKeys(IReadOnlyList<DbAutomationCommandReference>? commands)
+        => commands is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : commands
+                .Select(static command => $"{command.Name}|{command.Surface}|{command.Location}")
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static HashSet<string> ScalarFunctionKeys(IReadOnlyList<DbAutomationScalarFunctionReference>? functions)
+        => functions is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : functions
+                .Select(static function => $"{function.Name}|{function.Arity}|{function.Surface}|{function.Location}")
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static void ValidateFunctionSyntax(string expression, string path, List<PipelineValidationIssue> errors)
+    {
+        bool inString = false;
+        for (int i = 0; i < expression.Length; i++)
+        {
+            if (expression[i] == '\'')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+                continue;
+
+            if (!IsIdentifierStart(expression[i]))
+                continue;
+
+            int nameStart = i;
+            i++;
+            while (i < expression.Length && IsIdentifierPart(expression[i]))
+                i++;
+
+            int cursor = i;
+            while (cursor < expression.Length && char.IsWhiteSpace(expression[cursor]))
+                cursor++;
+
+            if (cursor >= expression.Length || expression[cursor] != '(')
+                continue;
+
+            if (!TryValidateFunctionArguments(expression, cursor, out int closeParen))
+            {
+                errors.Add(Error(
+                    "pipeline.expression.function.syntax",
+                    path,
+                    $"Function call '{expression[nameStart..Math.Min(expression.Length, cursor + 1)]}...' is malformed."));
+                return;
+            }
+
+            i = closeParen;
+        }
+    }
+
+    private static bool TryValidateFunctionArguments(string expression, int openParen, out int closeParen)
+    {
+        closeParen = -1;
+        int depth = 0;
+        bool inString = false;
+        bool expectingArgument = true;
+        bool sawArgument = false;
+
+        for (int i = openParen; i < expression.Length; i++)
+        {
+            char ch = expression[i];
+            if (ch == '\'')
+            {
+                inString = !inString;
+                expectingArgument = false;
+                sawArgument = true;
+                continue;
+            }
+
+            if (inString)
+                continue;
+
+            if (ch == '(')
+            {
+                depth++;
+                if (depth > 1)
+                {
+                    expectingArgument = false;
+                    sawArgument = true;
+                }
+                continue;
+            }
+
+            if (ch == ')')
+            {
+                depth--;
+                if (depth < 0)
+                    return false;
+
+                if (depth == 0)
+                {
+                    closeParen = i;
+                    return !inString && (!expectingArgument || !sawArgument);
+                }
+
+                continue;
+            }
+
+            if (ch == ',' && depth == 1)
+            {
+                if (expectingArgument)
+                    return false;
+
+                expectingArgument = true;
+                continue;
+            }
+
+            if (!char.IsWhiteSpace(ch))
+            {
+                expectingArgument = false;
+                sawArgument = true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsIdentifierStart(char value)
+        => char.IsLetter(value) || value == '_';
+
+    private static bool IsIdentifierPart(char value)
+        => char.IsLetterOrDigit(value) || value == '_';
 
     private static PipelineValidationIssue Error(string code, string path, string message) => new()
     {

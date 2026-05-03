@@ -63,6 +63,7 @@ public sealed class DefaultFormGenerator : IFormGenerator
         {
             FieldDataType.Boolean => "checkbox",
             FieldDataType.Date or FieldDataType.DateTime => "date",
+            FieldDataType.Blob => "attachment",
             FieldDataType.Int32 or FieldDataType.Int64 or FieldDataType.Decimal or FieldDataType.Double => "number",
             _ => "text",
         };

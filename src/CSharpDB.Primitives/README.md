@@ -27,6 +27,9 @@ dotnet add package CSharpDB
 | `ColumnDefinition` | Column metadata: name, type, nullability, primary key flag, and identity flag |
 | `IndexSchema` | Index metadata: name, table, columns, uniqueness |
 | `TriggerSchema` | Trigger metadata: name, table, timing, event, and body SQL |
+| `DbFunctionRegistry` | Host-registered trusted scalar functions for SQL and expression surfaces |
+| `DbCommandRegistry` | Host-registered trusted commands for Forms, Reports, and pipeline automation surfaces |
+| `DbCommandOptions` | Command description plus optional timeout and long-running metadata |
 | `CSharpDbException` | Typed exception with `ErrorCode` covering 15+ error conditions |
 
 ## Usage

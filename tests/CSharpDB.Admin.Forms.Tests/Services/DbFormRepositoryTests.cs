@@ -2,6 +2,7 @@ using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Models;
 using CSharpDB.Admin.Forms.Services;
 using CSharpDB.Client.Models;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Tests.Services;
 
@@ -43,6 +44,39 @@ public class DbFormRepositoryTests
         Assert.False(string.IsNullOrWhiteSpace(created.FormId));
         Assert.Equal("Customers Form", created.Name);
         Assert.Equal(1, created.DefinitionVersion);
+    }
+
+    [Fact]
+    public async Task CreateAsync_StoresGeneratedAutomationMetadata()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        var repository = new DbFormRepository(db.Client);
+
+        FormDefinition created = await repository.CreateAsync(CreateForm("f-auto", "Orders", "Order Form", "sig:orders:v1") with
+        {
+            EventBindings =
+            [
+                new FormEventBinding(
+                    FormEventKind.OnLoad,
+                    "LoadOrder",
+                    ActionSequence: new DbActionSequence(
+                    [
+                        new DbActionStep(DbActionKind.RunCommand, CommandName: "AuditOrderLoad"),
+                    ],
+                    Name: "LoadActions")),
+            ],
+        });
+        FormDefinition loaded = (await repository.GetAsync(created.FormId))!;
+
+        Assert.NotNull(created.Automation);
+        Assert.NotNull(loaded.Automation);
+        Assert.Contains(loaded.Automation!.Commands!, command => command.Name == "LoadOrder");
+        Assert.Contains(loaded.Automation.Commands!, command => command.Name == "AuditOrderLoad");
+
+        IReadOnlyList<Dictionary<string, object?>> rows = await db.QueryRowsAsync(
+            "SELECT definition_json FROM __forms WHERE id = 'f-auto';");
+        string json = Assert.Single(rows)["definition_json"]!.ToString()!;
+        Assert.Contains("\"automation\"", json);
     }
 
     [Fact]
@@ -146,7 +180,7 @@ public class DbFormRepositoryTests
         FormTableDefinition originalTable = (await provider.GetTableDefinitionAsync("Customers"))!;
         await repository.CreateAsync(CreateForm("f1", "Customers", "Customer Form", originalTable.SourceSchemaSignature));
 
-        await db.Client.AddColumnAsync("Customers", "Email", DbType.Text, notNull: false, ct: TestContext.Current.CancellationToken);
+        await db.Client.AddColumnAsync("Customers", "Email", CSharpDB.Client.Models.DbType.Text, notNull: false, ct: TestContext.Current.CancellationToken);
 
         FormDefinition stored = (await repository.GetAsync("f1"))!;
         FormTableDefinition currentTable = (await provider.GetTableDefinitionAsync("Customers"))!;

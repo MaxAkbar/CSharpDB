@@ -6,6 +6,8 @@ public enum TabKind
     Query,
     TableData,
     ViewData,
+    CollectionData,
+    HostCallbacks,
     Procedure,
     Pipeline,
     Storage,
@@ -34,7 +36,7 @@ public sealed class TabDescriptor
         Closable = closable;
     }
 
-    /// <summary>Get the object name for data/view tabs (e.g. table name, view name).</summary>
+    /// <summary>Get the object name for table, view, collection, and other object-backed tabs.</summary>
     public string? ObjectName
     {
         get => State.TryGetValue("ObjectName", out var v) ? v as string : null;
@@ -71,6 +73,30 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("InitialTableName", out var v) ? v as string : null;
         set => State["InitialTableName"] = value;
+    }
+
+    public object? InitialRecordId
+    {
+        get => State.TryGetValue("InitialRecordId", out var v) ? v : null;
+        set => State["InitialRecordId"] = value;
+    }
+
+    public string? InitialFormEntryMode
+    {
+        get => State.TryGetValue("InitialFormEntryMode", out var v) ? v as string : null;
+        set => State["InitialFormEntryMode"] = value;
+    }
+
+    public string? InitialFilterExpression
+    {
+        get => State.TryGetValue("InitialFilterExpression", out var v) ? v as string : null;
+        set => State["InitialFilterExpression"] = value;
+    }
+
+    public IReadOnlyDictionary<string, object?>? InitialFilterParameters
+    {
+        get => State.TryGetValue("InitialFilterParameters", out var v) ? v as IReadOnlyDictionary<string, object?> : null;
+        set => State["InitialFilterParameters"] = value;
     }
 
     public string? ReportId

@@ -1,10 +1,11 @@
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Admin.Forms.Services
 @inject IFormRecordService RecordService
 
 <div class="child-datagrid">
     <div class="cdg-toolbar">
-        <span class="cdg-title">@ChildTableName (@_rows.Count)</span>
+        <span class="cdg-title">@GetTitleText()</span>
         @if (AllowAdd)
         {
             <button class="cdg-btn cdg-btn-add" @onclick="AddRow" disabled="@_saving">+ New</button>
@@ -76,14 +77,35 @@
                     @if (_rows.Count == 0)
                     {
                         <tr>
-                            <td colspan="@(VisibleColumns.Count + (AllowDelete ? 1 : 0))" class="cdg-empty">
-                                No child records.
+                            <td colspan="@GetEmptyColumnSpan()" class="cdg-empty">
+                                @(IsStandalone ? "No records." : "No child records.")
                             </td>
                         </tr>
                     }
                 </tbody>
             </table>
         </div>
+        @if (IsStandalone)
+        {
+            <div class="cdg-pagination">
+                <div class="cdg-page-size">
+                    <select value="@_pageSize" @onchange="OnPageSizeChanged" disabled="@_saving">
+                        <option value="10">10 rows</option>
+                        <option value="25">25 rows</option>
+                        <option value="50">50 rows</option>
+                        <option value="100">100 rows</option>
+                    </select>
+                </div>
+                <div class="cdg-page-controls">
+                    <button type="button" class="cdg-page-btn" disabled="@(_pageNumber <= 1 || _saving)" @onclick="() => GoToPageAsync(1)">&laquo;</button>
+                    <button type="button" class="cdg-page-btn" disabled="@(_pageNumber <= 1 || _saving)" @onclick="() => GoToPageAsync(_pageNumber - 1)">&lsaquo;</button>
+                    <span class="cdg-page-info">Page @_pageNumber of @TotalPages</span>
+                    <button type="button" class="cdg-page-btn" disabled="@(_pageNumber >= TotalPages || _saving)" @onclick="() => GoToPageAsync(_pageNumber + 1)">&rsaquo;</button>
+                    <button type="button" class="cdg-page-btn" disabled="@(_pageNumber >= TotalPages || _saving)" @onclick="() => GoToPageAsync(TotalPages)">&raquo;</button>
+                </div>
+                <div class="cdg-row-count">@GetVisibleRangeText()</div>
+            </div>
+        }
     }
 </div>
 
@@ -91,6 +113,7 @@
     [Parameter, EditorRequired] public string ChildTableName { get; set; } = "";
     [Parameter, EditorRequired] public string ForeignKeyField { get; set; } = "";
     [Parameter, EditorRequired] public object? ParentKeyValue { get; set; }
+    [Parameter] public bool IsStandalone { get; set; }
     [Parameter] public List<string> VisibleColumns { get; set; } = [];
     [Parameter] public bool AllowAdd { get; set; } = true;
     [Parameter] public bool AllowEdit { get; set; } = true;
@@ -99,6 +122,8 @@
     [Parameter] public bool EnableRowSelection { get; set; }
     [Parameter] public EventCallback<Dictionary<string, object?>?> OnRowSelected { get; set; }
     [Parameter] public EventCallback OnRowsChanged { get; set; }
+    [Parameter] public string? FilterExpression { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, object?>? FilterParameters { get; set; }
 
     private List<Dictionary<string, object?>> _rows = [];
     private bool _loading = true;
@@ -111,6 +136,15 @@
     private string? _lastChildTableName;
     private string? _lastForeignKeyField;
     private string? _lastChildTableDefinitionName;
+    private string? _lastFilterExpression;
+    private string _lastFilterParametersKey = string.Empty;
+    private bool _lastIsStandalone;
+    private int _pageNumber = 1;
+    private int _pageSize = 25;
+    private int _totalCount;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalCount / (double)_pageSize));
+    private bool HasActiveFilter => !string.IsNullOrWhiteSpace(FilterExpression);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -118,13 +152,23 @@
         bool childTableChanged = !string.Equals(_lastChildTableName, ChildTableName, StringComparison.OrdinalIgnoreCase);
         bool foreignKeyChanged = !string.Equals(_lastForeignKeyField, ForeignKeyField, StringComparison.OrdinalIgnoreCase);
         bool definitionChanged = !string.Equals(_lastChildTableDefinitionName, ChildFormTableDefinition?.TableName, StringComparison.OrdinalIgnoreCase);
+        string filterParametersKey = FormatFilterParameterKey(FilterParameters);
+        bool filterChanged = !string.Equals(_lastFilterExpression, FilterExpression, StringComparison.Ordinal) ||
+            !string.Equals(_lastFilterParametersKey, filterParametersKey, StringComparison.Ordinal);
+        bool modeChanged = _lastIsStandalone != IsStandalone;
 
-        if (parentChanged || childTableChanged || foreignKeyChanged || definitionChanged)
+        if (parentChanged || childTableChanged || foreignKeyChanged || definitionChanged || filterChanged || modeChanged)
         {
+            if (childTableChanged || definitionChanged || filterChanged || modeChanged)
+                _pageNumber = 1;
+
             _lastParentKeyValue = ParentKeyValue;
             _lastChildTableName = ChildTableName;
             _lastForeignKeyField = ForeignKeyField;
             _lastChildTableDefinitionName = ChildFormTableDefinition?.TableName;
+            _lastFilterExpression = FilterExpression;
+            _lastFilterParametersKey = filterParametersKey;
+            _lastIsStandalone = IsStandalone;
             await LoadChildRecords();
         }
     }
@@ -143,15 +187,59 @@
             if (ChildFormTableDefinition is null)
             {
                 _rows = [];
+                _totalCount = 0;
                 return;
             }
 
+            if (IsStandalone)
+            {
+                if (TryGetActiveFilter(out FormFilterExpression? standaloneFilter, out IReadOnlyDictionary<string, object?> standaloneParameters, out string? standaloneFilterError))
+                {
+                    if (standaloneFilterError is not null)
+                        throw new InvalidOperationException(standaloneFilterError);
+
+                    List<Dictionary<string, object?>> filteredRows = (await RecordService.ListRecordsAsync(ChildFormTableDefinition))
+                        .Where(row => standaloneFilter!.Evaluate(row, standaloneParameters))
+                        .ToList();
+                    int totalPages = filteredRows.Count == 0 ? 1 : (int)Math.Ceiling(filteredRows.Count / (double)_pageSize);
+                    _pageNumber = Math.Clamp(_pageNumber, 1, totalPages);
+                    _totalCount = filteredRows.Count;
+                    _rows = filteredRows
+                        .Skip((_pageNumber - 1) * _pageSize)
+                        .Take(_pageSize)
+                        .ToList();
+                    return;
+                }
+
+                FormRecordPage page = await RecordService.ListRecordPageAsync(ChildFormTableDefinition, _pageNumber, _pageSize);
+                _pageNumber = page.PageNumber;
+                _pageSize = page.PageSize;
+                _totalCount = page.TotalCount;
+                _rows = page.Records.ToList();
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(ForeignKeyField))
+                throw new InvalidOperationException("The related DataGrid foreign key field is not configured.");
+
             _rows = await RecordService.ListFilteredRecordsAsync(ChildFormTableDefinition, ForeignKeyField, ParentKeyValue);
+            if (TryGetActiveFilter(out FormFilterExpression? relatedFilter, out IReadOnlyDictionary<string, object?> relatedParameters, out string? relatedFilterError))
+            {
+                if (relatedFilterError is not null)
+                    throw new InvalidOperationException(relatedFilterError);
+
+                _rows = _rows
+                    .Where(row => relatedFilter!.Evaluate(row, relatedParameters))
+                    .ToList();
+            }
+
+            _totalCount = _rows.Count;
         }
         catch (Exception ex)
         {
             _error = $"Failed to load: {ex.Message}";
             _rows = [];
+            _totalCount = 0;
         }
         finally
         {
@@ -168,12 +256,29 @@
             if (ChildFormTableDefinition is null)
                 throw new InvalidOperationException($"The child table '{ChildTableName}' is not available.");
 
-            var newRow = new Dictionary<string, object?>
+            var newRow = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            if (!IsStandalone)
             {
-                [ForeignKeyField] = ParentKeyValue
-            };
+                if (string.IsNullOrWhiteSpace(ForeignKeyField))
+                    throw new InvalidOperationException("The related DataGrid foreign key field is not configured.");
+
+                newRow[ForeignKeyField] = ParentKeyValue;
+            }
+
             var created = await RecordService.CreateRecordAsync(ChildFormTableDefinition, newRow);
-            _rows.Add(created);
+            if (IsStandalone || HasActiveFilter)
+            {
+                if (IsStandalone)
+                    _pageNumber = GetTotalPages(_totalCount + 1, _pageSize);
+
+                await LoadChildRecords();
+            }
+            else
+            {
+                _rows.Add(created);
+                _totalCount = _rows.Count;
+            }
+
             if (OnRowsChanged.HasDelegate)
                 await OnRowsChanged.InvokeAsync();
         }
@@ -242,19 +347,31 @@
                 throw new InvalidOperationException($"The child table '{ChildTableName}' is not available.");
 
             await RecordService.DeleteRecordAsync(ChildFormTableDefinition, pk);
-            _rows.RemoveAt(rowIdx);
+            if (IsStandalone)
+            {
+                if (_rows.Count == 1 && _pageNumber > 1)
+                    _pageNumber--;
+
+                await LoadChildRecords();
+            }
+            else
+            {
+                _rows.RemoveAt(rowIdx);
+                _totalCount = _rows.Count;
+                if (_editingRow == rowIdx) StopEditing();
+                if (_selectedRowIndex == rowIdx)
+                {
+                    _selectedRowIndex = -1;
+                    await OnRowSelected.InvokeAsync(null);
+                }
+                else if (_selectedRowIndex > rowIdx)
+                {
+                    _selectedRowIndex--;
+                }
+            }
+
             if (OnRowsChanged.HasDelegate)
                 await OnRowsChanged.InvokeAsync();
-            if (_editingRow == rowIdx) StopEditing();
-            if (_selectedRowIndex == rowIdx)
-            {
-                _selectedRowIndex = -1;
-                await OnRowSelected.InvokeAsync(null);
-            }
-            else if (_selectedRowIndex > rowIdx)
-            {
-                _selectedRowIndex--;
-            }
         }
         catch (Exception ex)
         {
@@ -317,5 +434,106 @@
             if (field?.DisplayName is not null) return field.DisplayName;
         }
         return fieldName;
+    }
+
+    private int GetEmptyColumnSpan()
+        => Math.Max(1, VisibleColumns.Count + (AllowDelete ? 1 : 0));
+
+    private async Task GoToPageAsync(int pageNumber)
+    {
+        if (!IsStandalone || _saving)
+            return;
+
+        int targetPage = Math.Clamp(pageNumber, 1, TotalPages);
+        if (targetPage == _pageNumber && _rows.Count > 0)
+            return;
+
+        _pageNumber = targetPage;
+        await LoadChildRecords();
+    }
+
+    private async Task OnPageSizeChanged(ChangeEventArgs e)
+    {
+        if (!IsStandalone || _saving)
+            return;
+
+        if (!int.TryParse(e.Value?.ToString(), out int pageSize) || pageSize < 1)
+            return;
+
+        pageSize = Math.Clamp(pageSize, 1, 500);
+        if (pageSize == _pageSize)
+            return;
+
+        _pageSize = pageSize;
+        _pageNumber = 1;
+        await LoadChildRecords();
+    }
+
+    private string GetTitleText()
+        => IsStandalone
+            ? $"{ChildTableName} ({_totalCount} rows)"
+            : $"{ChildTableName} ({_rows.Count})";
+
+    private string GetVisibleRangeText()
+    {
+        if (_totalCount == 0 || _rows.Count == 0)
+            return "0 rows";
+
+        int first = ((_pageNumber - 1) * _pageSize) + 1;
+        int last = first + _rows.Count - 1;
+        return $"{first}-{last} of {_totalCount}";
+    }
+
+    private static int GetTotalPages(int totalCount, int pageSize)
+        => Math.Max(1, (int)Math.Ceiling(totalCount / (double)pageSize));
+
+    private bool TryGetActiveFilter(
+        out FormFilterExpression? filter,
+        out IReadOnlyDictionary<string, object?> parameters,
+        out string? error)
+    {
+        filter = null;
+        parameters = FilterParameters ?? EmptyObjectDictionary.Instance;
+        error = null;
+
+        if (!HasActiveFilter)
+            return false;
+
+        if (!FormFilterExpression.TryParse(FilterExpression!, ChildFormTableDefinition, out filter, out string? parseError))
+        {
+            error = $"Invalid DataGrid filter: {parseError}";
+            return true;
+        }
+
+        IReadOnlyDictionary<string, object?> parameterSnapshot = parameters;
+        string? missingParameter = filter!.Parameters.FirstOrDefault(parameter => !parameterSnapshot.ContainsKey(parameter));
+        if (missingParameter is not null)
+        {
+            error = $"DataGrid filter is missing parameter '@{missingParameter}'.";
+            return true;
+        }
+
+        return true;
+    }
+
+    private static string FormatFilterParameterKey(IReadOnlyDictionary<string, object?>? parameters)
+    {
+        if (parameters is null || parameters.Count == 0)
+            return string.Empty;
+
+        return string.Join(
+            "\u001f",
+            parameters
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => $"{pair.Key}={FormatFilterParameterValue(pair.Value)}"));
+    }
+
+    private static string FormatFilterParameterValue(object? value)
+        => value is null ? "<null>" : $"{value.GetType().FullName}:{value}";
+
+    private static class EmptyObjectDictionary
+    {
+        public static readonly IReadOnlyDictionary<string, object?> Instance =
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
     }
 }

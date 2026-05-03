@@ -1,4 +1,6 @@
 @using CSharpDB.Admin.Forms.Components.Designer
+@using CSharpDB.Admin.Forms.Contracts
+@using CSharpDB.Admin.Forms.Models
 @implements IDisposable
 
 <div class="layers-panel">
@@ -36,6 +38,7 @@
 
 @code {
     [CascadingParameter] public DesignerState State { get; set; } = default!;
+    [Inject] public IFormControlRegistry ControlRegistry { get; set; } = DefaultFormControlRegistry.Instance;
 
     private int _dragStartIndex = -1;
     private int _dragOverIndex = -1;
@@ -76,32 +79,27 @@
         State.SelectControl(controlId, e.ShiftKey);
     }
 
-    private static string GetLabel(CSharpDB.Admin.Forms.Models.ControlDefinition c)
+    private string GetLabel(ControlDefinition c)
     {
         // Prefer binding field name, then text prop, then control type
         if (c.Binding?.FieldName is { Length: > 0 } fieldName)
             return fieldName;
         if (c.Props.Values.TryGetValue("text", out var textVal) && textVal is string s && s.Length > 0)
             return s;
-        return c.ControlType;
+        return GetControlDisplayName(c.ControlType);
     }
 
-    private static string GetTypeIcon(string controlType) => controlType switch
+    private string GetTypeIcon(string controlType)
     {
-        "label" => "A",
-        "text" => "\u2328",
-        "textarea" => "\u2263",
-        "number" => "#",
-        "date" => "\U0001F4C5",
-        "checkbox" => "\u2611",
-        "radio" => "\u25C9",
-        "select" => "\u25BE",
-        "lookup" => "\U0001F50D",
-        "datagrid" => "\u2637",
-        "childtabs" => "\u2630",
-        "computed" => "\u03A3",
-        _ => "?"
-    };
+        return ControlRegistry.TryGetControl(controlType, out FormControlDescriptor descriptor)
+            ? descriptor.IconText
+            : "?";
+    }
+
+    private string GetControlDisplayName(string controlType)
+        => ControlRegistry.TryGetControl(controlType, out FormControlDescriptor descriptor)
+            ? descriptor.DisplayName
+            : controlType;
 
     private static string LayerRowClass(bool selected, bool dragOver)
     {

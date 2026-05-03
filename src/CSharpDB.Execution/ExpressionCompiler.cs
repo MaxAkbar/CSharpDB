@@ -12,13 +12,13 @@ internal delegate DbValue JoinSpanExpressionEvaluator(ReadOnlySpan<DbValue> left
 /// </summary>
 internal static class ExpressionCompiler
 {
-    public static Func<DbValue[], DbValue> Compile(Expression expr, TableSchema schema)
+    public static Func<DbValue[], DbValue> Compile(Expression expr, TableSchema schema, DbFunctionRegistry? functions = null)
     {
-        var spanEvaluator = CompileSpan(expr, schema);
+        var spanEvaluator = CompileSpan(expr, schema, functions);
         return row => spanEvaluator(row);
     }
 
-    public static SpanExpressionEvaluator CompileSpan(Expression expr, TableSchema schema)
+    public static SpanExpressionEvaluator CompileSpan(Expression expr, TableSchema schema, DbFunctionRegistry? functions = null)
     {
         var evaluator = CompileMappedCore(
             expr,
@@ -26,20 +26,22 @@ internal static class ExpressionCompiler
             leftColumnCount: schema.Columns.Count,
             leftColumnMap: null,
             rightColumnMap: null,
-            singleRowOnly: true);
+            singleRowOnly: true,
+            functions: functions);
         return row => evaluator(row, default);
     }
 
-    public static JoinSpanExpressionEvaluator CompileJoinSpan(Expression expr, TableSchema schema, int leftColumnCount)
-        => CompileJoinSpan(expr, schema, leftColumnCount, leftColumnMap: null, rightColumnMap: null);
+    public static JoinSpanExpressionEvaluator CompileJoinSpan(Expression expr, TableSchema schema, int leftColumnCount, DbFunctionRegistry? functions = null)
+        => CompileJoinSpan(expr, schema, leftColumnCount, leftColumnMap: null, rightColumnMap: null, functions: functions);
 
     public static JoinSpanExpressionEvaluator CompileJoinSpan(
         Expression expr,
         TableSchema schema,
         int leftColumnCount,
         int[]? leftColumnMap,
-        int[]? rightColumnMap)
-        => CompileMappedCore(expr, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly: false);
+        int[]? rightColumnMap,
+        DbFunctionRegistry? functions = null)
+        => CompileMappedCore(expr, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly: false, functions: functions);
 
     /// <summary>
     /// Shared compiler for row spans and join spans. Single-row mode treats the left span
@@ -52,22 +54,23 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
         return expr switch
         {
             LiteralExpression lit => CompileMappedLiteral(lit),
             ParameterExpression param => CompileMappedParameter(param),
             ColumnRefExpression col => CompileMappedColumn(col, schema, leftColumnCount, leftColumnMap, rightColumnMap),
-            BinaryExpression bin => CompileMappedBinary(bin, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            UnaryExpression un => CompileMappedUnary(un, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            CollateExpression collate => CompileMappedCore(collate.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            FunctionCallExpression func => CompileMappedFunction(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            LikeExpression like => CompileMappedLike(like, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            InExpression inExpr => CompileMappedIn(inExpr, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            BetweenExpression between => CompileMappedBetween(between, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            IsNullExpression isNull => CompileMappedIsNull(isNull, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            _ => CompileMappedFallback(expr, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
+            BinaryExpression bin => CompileMappedBinary(bin, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            UnaryExpression un => CompileMappedUnary(un, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            CollateExpression collate => CompileMappedCore(collate.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            FunctionCallExpression func => CompileMappedFunction(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            LikeExpression like => CompileMappedLike(like, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            InExpression inExpr => CompileMappedIn(inExpr, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            BetweenExpression between => CompileMappedBetween(between, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            IsNullExpression isNull => CompileMappedIsNull(isNull, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            _ => CompileMappedFallback(expr, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
         };
     }
 
@@ -108,10 +111,11 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
-        var left = CompileMappedCore(bin.Left, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
-        var right = CompileMappedCore(bin.Right, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+        var left = CompileMappedCore(bin.Left, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        var right = CompileMappedCore(bin.Right, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         string? collation = CollationSupport.ResolveComparisonCollation(bin.Left, bin.Right, schema);
 
         return (leftRow, rightRow) =>
@@ -148,9 +152,10 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
-        var operand = CompileMappedCore(un.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+        var operand = CompileMappedCore(un.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
 
         return (leftRow, rightRow) =>
         {
@@ -175,16 +180,17 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
         string functionName = func.FunctionName.ToUpperInvariant();
         if (ScalarFunctionEvaluator.IsAggregateFunction(functionName))
-            return CompileMappedFallback(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+            return CompileMappedFallback(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
 
         return functionName switch
         {
-            "TEXT" => CompileMappedTextFunction(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
-            _ => CompileMappedFallback(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly),
+            "TEXT" => CompileMappedTextFunction(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            _ => CompileMappedUserFunction(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
         };
     }
 
@@ -194,13 +200,40 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
         if (func.IsStarArg || func.IsDistinct || func.Arguments.Count != 1)
-            return CompileMappedFallback(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+            return CompileMappedFallback(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
 
-        var argumentEvaluator = CompileMappedCore(func.Arguments[0], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+        var argumentEvaluator = CompileMappedCore(func.Arguments[0], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         return (leftRow, rightRow) => ScalarFunctionEvaluator.EvaluateTextValue(argumentEvaluator(leftRow, rightRow));
+    }
+
+    private static JoinSpanExpressionEvaluator CompileMappedUserFunction(
+        FunctionCallExpression func,
+        TableSchema schema,
+        int leftColumnCount,
+        int[]? leftColumnMap,
+        int[]? rightColumnMap,
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
+    {
+        if (func.IsStarArg || func.IsDistinct)
+            return CompileMappedFallback(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+
+        var argumentEvaluators = new JoinSpanExpressionEvaluator[func.Arguments.Count];
+        for (int i = 0; i < argumentEvaluators.Length; i++)
+            argumentEvaluators[i] = CompileMappedCore(func.Arguments[i], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+
+        return (leftRow, rightRow) =>
+        {
+            var arguments = new DbValue[argumentEvaluators.Length];
+            for (int i = 0; i < argumentEvaluators.Length; i++)
+                arguments[i] = argumentEvaluators[i](leftRow, rightRow);
+
+            return ScalarFunctionEvaluator.Evaluate(func, arguments, functions);
+        };
     }
 
     private static JoinSpanExpressionEvaluator CompileMappedLike(
@@ -209,12 +242,13 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
-        var operandEval = CompileMappedCore(like.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
-        var patternEval = CompileMappedCore(like.Pattern, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+        var operandEval = CompileMappedCore(like.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        var patternEval = CompileMappedCore(like.Pattern, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         var escapeEval = like.EscapeChar != null
-            ? CompileMappedCore(like.EscapeChar, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly)
+            ? CompileMappedCore(like.EscapeChar, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions)
             : null;
 
         return (leftRow, rightRow) =>
@@ -247,12 +281,13 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
-        var operandEval = CompileMappedCore(inExpr.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+        var operandEval = CompileMappedCore(inExpr.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         var valueEvals = new JoinSpanExpressionEvaluator[inExpr.Values.Count];
         for (int i = 0; i < inExpr.Values.Count; i++)
-            valueEvals[i] = CompileMappedCore(inExpr.Values[i], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+            valueEvals[i] = CompileMappedCore(inExpr.Values[i], schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         string? collation = CollationSupport.ResolveExpressionCollation(inExpr.Operand, schema);
 
         return (leftRow, rightRow) =>
@@ -293,11 +328,12 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
-        var operandEval = CompileMappedCore(between.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
-        var lowEval = CompileMappedCore(between.Low, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
-        var highEval = CompileMappedCore(between.High, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+        var operandEval = CompileMappedCore(between.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        var lowEval = CompileMappedCore(between.Low, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
+        var highEval = CompileMappedCore(between.High, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         string? collation = CollationSupport.ResolveExpressionCollation(between.Operand, schema);
 
         return (leftRow, rightRow) =>
@@ -321,9 +357,10 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
-        var operandEval = CompileMappedCore(isNull.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly);
+        var operandEval = CompileMappedCore(isNull.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions);
         return (leftRow, rightRow) =>
         {
             var operand = operandEval(leftRow, rightRow);
@@ -338,7 +375,8 @@ internal static class ExpressionCompiler
         int leftColumnCount,
         int[]? leftColumnMap,
         int[]? rightColumnMap,
-        bool singleRowOnly)
+        bool singleRowOnly,
+        DbFunctionRegistry? functions)
     {
         return (leftRow, rightRow) =>
         {
@@ -350,7 +388,7 @@ internal static class ExpressionCompiler
                 leftColumnMap,
                 rightColumnMap,
                 singleRowOnly);
-            return ExpressionEvaluator.Evaluate(expr, materializedRow, schema);
+            return ExpressionEvaluator.Evaluate(expr, materializedRow, schema, functions);
         };
     }
 

@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Inside CSharpDB v3.6.0: Admin Collections, Custom Form Controls &amp; Trusted C# &mdash; Blog &mdash; CSharpDB</title>
+    <meta name="description" content="A walkthrough of the v3.6.0 Admin update: a first-class Collections UI, extensible Admin Forms controls, Access-style macro actions, a runnable trusted C# host sample, and what's next for database-owned C# code modules.">
+    <link rel="canonical" href="https://csharpdb.com/blog/csharpdb-v3-6-0-admin-and-csharp-extensibility.html">
+    <meta property="og:title" content="Inside CSharpDB v3.6.0: Admin Collections, Custom Form Controls &amp; Trusted C#">
+    <meta property="og:description" content="A walkthrough of the v3.6.0 Admin update: a first-class Collections UI, extensible Admin Forms controls, Access-style macro actions, a runnable trusted C# host sample, and what's next for database-owned C# code modules.">
+    <meta property="og:url" content="https://csharpdb.com/blog/csharpdb-v3-6-0-admin-and-csharp-extensibility.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Inside CSharpDB v3.6.0: Admin Collections, Custom Form Controls & Trusted C#",
+        "description": "A walkthrough of the v3.6.0 Admin update: a first-class Collections UI, extensible Admin Forms controls, Access-style macro actions, a runnable trusted C# host sample, and what's next for database-owned C# code modules.",
+        "url": "https://csharpdb.com/blog/csharpdb-v3-6-0-admin-and-csharp-extensibility.html",
+        "datePublished": "2026-05-02",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 { margin-top: 48px; margin-bottom: 16px; }
+        .blog-post-content h3 { margin-top: 32px; margin-bottom: 12px; }
+        .blog-post-content p { margin-bottom: 16px; }
+        .blog-post-content ul, .blog-post-content ol { margin-bottom: 20px; }
+        .blog-post-content li { margin-bottom: 6px; }
+        .blog-post-content .code-block { margin: 20px 0 24px; }
+        .blog-post-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0 24px;
+            font-size: 0.92rem;
+        }
+        .blog-post-content th {
+            text-align: left;
+            padding: 10px 14px;
+            border-bottom: 2px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+        .blog-post-content td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }
+        .blog-post-content tr:hover td { background: var(--bg-tertiary); }
+        .blog-post-content td code { font-size: 0.88rem; }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+        .feature-pill-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin: 24px 0 32px;
+        }
+        .feature-pill {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px 18px;
+        }
+        .feature-pill-title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 6px;
+        }
+        .feature-pill-text {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Inside CSharpDB v3.6.0: Admin Collections, Custom Form Controls & Trusted C#',
+        description: "A walkthrough of the v3.6.0 Admin update: a first-class Collections UI, extensible Admin Forms controls, Access-style macro actions, a runnable trusted C# host sample, and what's next for database-owned C# code modules.",
+        keywords: 'CSharpDB v3.6.0, Admin Collections UI, custom form controls, Access-style macros, trusted C# callbacks, validation rules, database code modules, VS Code sync',
+        canonicalPath: 'blog/csharpdb-v3-6-0-admin-and-csharp-extensibility.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>Inside CSharpDB v3.6.0: Admin Collections, Custom Form Controls &amp; Trusted C#</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Release</span>
+                    <span>May 2, 2026</span>
+                    <span>&middot; 12 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB v3.6.0 is an Admin-and-extensibility release. The engine work from v3.3.0 still carries the durable-write story; this release pushes Admin further toward an Access-style application builder, and opens the door for host developers to extend Admin Forms with their own C# without forking the project.</p>
+                    <p>Five themes ship together:</p>
+                    <div class="feature-pill-grid">
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Collections UI</div>
+                            <div class="feature-pill-text">Document collections are now first-class Admin objects with a browser, JSON editor, and command-palette entries.</div>
+                        </div>
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Custom Form Controls</div>
+                            <div class="feature-pill-text">Register your own designer toolbox entries, runtime renderers, and property editors without touching saved form JSON.</div>
+                        </div>
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Access-Style Macros</div>
+                            <div class="feature-pill-text">Phase 8 actions: <code>openForm</code>, <code>applyFilter</code>, <code>runSql</code>, <code>runProcedure</code>, <code>setControlProperty</code>, plus form-level conditional rules.</div>
+                        </div>
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Trusted C# Sample</div>
+                            <div class="feature-pill-text">A runnable VS Code project that shows scalar functions, commands, and validation rules wired to a real Admin form.</div>
+                        </div>
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Reports Parity Plan</div>
+                            <div class="feature-pill-text">A six-phase roadmap for closing the highest-impact gaps against Access reports, starting with bounded saved-query previews and full export.</div>
+                        </div>
+                    </div>
+                    <p>The rest of this post walks each theme, with the code shapes you actually need to use it, and ends with a look at the database-owned C# code modules planned for the next major chunk of work.</p>
+
+                    <h2>Document Collections Get a First-Class UI</h2>
+                    <p>CSharpDB has supported document collections through <code>ICSharpDbClient</code> for several releases. v3.6.0 finally treats them as first-class Admin objects alongside tables, views, forms, and reports.</p>
+                    <p>The Object Explorer now has a <strong>Collections</strong> filter chip and group. The collection group menu offers <em>New Collection&hellip;</em> and <em>Refresh</em>. Each collection item supports <em>Open</em>, <em>New Document&hellip;</em>, and <em>Copy Name</em>. The command palette adds <code>New Collection</code> plus one entry per existing collection.</p>
+                    <p>Each collection opens in its own <code>collection:{name}</code> tab using the same toolbar, pager, grid, and detail-panel language as table data tabs:</p>
+                    <ul>
+                        <li>The grid shows row number, document key, JSON kind, and a compact preview.</li>
+                        <li>The detail panel shows indented JSON for the selected document.</li>
+                        <li>Existing document keys are read-only.</li>
+                        <li>New documents require a nonblank key and valid JSON before save is enabled.</li>
+                        <li>Save writes through <code>PutDocumentAsync(collectionName, key, document)</code>.</li>
+                        <li>Delete writes through <code>DeleteDocumentAsync(collectionName, key)</code> after confirmation.</li>
+                        <li>Exact-key lookup uses <code>GetDocumentAsync(collectionName, key)</code>.</li>
+                    </ul>
+                    <p>Defaults are deliberately conservative: page sizes are <code>10</code>, <code>25</code>, <code>50</code>, or <code>100</code> (default <code>25</code>); collection names follow the same identifier shape as the direct client (<code>^[A-Za-z_][A-Za-z0-9_]*$</code>); and deleting all documents leaves the collection itself in place because a drop-collection API is still future work.</p>
+                    <p>This is intentionally a v1: path-index management, document-content search, collection rename, and collection drop are queued for a follow-up. The point of v3.6.0 is to give document workloads the same browse/edit ergonomics SQL tables have had since day one.</p>
+
+                    <h2>Form Controls Are Now Extensible</h2>
+                    <p>Admin Forms have always persisted controls as <code>ControlDefinition.ControlType</code> plus a free-form <code>PropertyBag</code>. v3.6.0 turns that wire shape into a developer API. A host can add toolbox entries, placement defaults, property editing, designer previews, and runtime rendering &mdash; all without changing saved form JSON.</p>
+                    <p>Registration sits next to the existing services call:</p>
+                    <div class="code-block" data-title="Program.cs &mdash; registering a custom control">
+                        <pre><code><span class="kw">using</span> CSharpDB.Admin.Forms.Models;
+<span class="kw">using</span> CSharpDB.Admin.Forms.Services;
+
+builder.Services.AddCSharpDbAdminForms();
+builder.Services.AddCSharpDbAdminFormControls(controls =&gt;
+{
+    controls.Add(<span class="kw">new</span> <span class="tp">FormControlDescriptor</span>
+    {
+        ControlType = <span class="str">"rating"</span>,
+        DisplayName = <span class="str">"Rating"</span>,
+        ToolboxGroup = <span class="str">"Custom"</span>,
+        IconText = <span class="str">"*"</span>,
+        DefaultWidth = <span class="num">220</span>,
+        DefaultHeight = <span class="num">48</span>,
+        SupportsBinding = <span class="kw">true</span>,
+        ParticipatesInTabOrder = <span class="kw">true</span>,
+        DefaultProps = <span class="kw">new</span> <span class="tp">Dictionary</span>&lt;<span class="tp">string</span>, <span class="tp">object</span>?&gt;
+        {
+            [<span class="str">"max"</span>] = <span class="num">5</span>,
+            [<span class="str">"displayMode"</span>] = <span class="str">"buttons"</span>,
+        },
+        DesignerPreviewComponentType = <span class="kw">typeof</span>(<span class="tp">RatingDesignerPreview</span>),
+        RuntimeComponentType = <span class="kw">typeof</span>(<span class="tp">RatingRuntimeControl</span>),
+        PropertyEditorComponentType = <span class="kw">typeof</span>(<span class="tp">RatingPropertyEditor</span>),
+    });
+});</code></pre>
+                    </div>
+                    <p>Custom components receive a single typed <code>Context</code> parameter. Designer previews use <code>FormControlDesignContext</code>; runtime controls use <code>FormControlRuntimeContext</code>, which exposes the form, control metadata, current record, bound field/value, resolved choices, enabled/read-only state, validation error, tab index, <code>SetValueAsync</code>, and <code>DispatchEventAsync</code>; property editors use <code>FormControlPropertyContext</code> and write back through <code>Context.SetPropertyAsync(name, value)</code>.</p>
+                    <p>For controls that just need a few simple properties, you can skip a custom property editor entirely and define <code>PropertyDescriptors</code> instead. The generic editor supports <code>Text</code>, <code>TextArea</code>, <code>Number</code>, <code>Checkbox</code>, and <code>Select</code>:</p>
+                    <div class="code-block" data-title="FormControlDescriptor.PropertyDescriptors">
+                        <pre><code>PropertyDescriptors =
+[
+    <span class="kw">new</span> <span class="tp">FormControlPropertyDescriptor</span>
+    {
+        Name = <span class="str">"max"</span>,
+        Label = <span class="str">"Maximum Rating"</span>,
+        Editor = <span class="tp">FormControlPropertyEditor</span>.Number,
+        DefaultValue = <span class="num">5</span>,
+        HelpText = <span class="str">"Allowed values are 1 through 10."</span>,
+    },
+    <span class="kw">new</span> <span class="tp">FormControlPropertyDescriptor</span>
+    {
+        Name = <span class="str">"displayMode"</span>,
+        Label = <span class="str">"Display Mode"</span>,
+        Editor = <span class="tp">FormControlPropertyEditor</span>.Select,
+        Options =
+        [
+            <span class="kw">new</span> <span class="tp">FormControlPropertyOption</span>(<span class="str">"buttons"</span>, <span class="str">"Buttons"</span>),
+            <span class="kw">new</span> <span class="tp">FormControlPropertyOption</span>(<span class="str">"compact"</span>, <span class="str">"Compact"</span>),
+        ],
+    },
+];</code></pre>
+                    </div>
+                    <p>The Admin host already includes a compiled sample <code>sampleRating</code> control under the <code>Custom</code> toolbox group, gated behind an env var so you can flip it on for local testing without touching production:</p>
+                    <div class="code-block" data-title="Powershell &mdash; enable the sample rating control">
+                        <pre><code>$env:AdminForms__EnableSampleControls = <span class="str">'true'</span>
+dotnet run --project src\CSharpDB.Admin --urls http://127.0.0.1:61818</code></pre>
+                    </div>
+                    <p>V1 limits worth knowing about: custom controls are leaf controls. They can be placed inside existing <code>tabControl</code> pages, but custom containers do not own or render child controls yet. And because form JSON never loads arbitrary component assemblies, custom components must be compiled into the host app or referenced assemblies &mdash; the registry is a developer surface, not a runtime plug-in surface.</p>
+
+                    <h2>Access-Style Macro Actions</h2>
+                    <p>Phase 8 of the Admin Forms work extends action sequences with the Access-style verbs people actually reach for when building a form-driven app. Action metadata stays declarative; host applications still own executable C#, the SQL/procedure opt-in policy, database connections, and navigation behavior.</p>
+                    <p>The new actions are:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Action</th>
+                                <th>Runtime behavior</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>openForm</code></td>
+                                <td>Resolves a form by id or name and asks the host to open it. Arguments support <code>mode</code>, <code>recordId</code>, <code>primaryKey</code>, <code>id</code>, <code>filter</code>, and <code>where</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>closeForm</code></td>
+                                <td>Asks the host to close the active form entry tab or surface.</td>
+                            </tr>
+                            <tr>
+                                <td><code>applyFilter</code></td>
+                                <td>Filters the current form record list (<code>target: "form"</code>) or a rendered <code>datagrid</code> control.</td>
+                            </tr>
+                            <tr>
+                                <td><code>clearFilter</code></td>
+                                <td>Clears the form or data-grid filter selected by <code>target</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>runSql</code></td>
+                                <td>Executes SQL only when the host enables SQL actions. <code>@name</code> parameters resolve from action arguments.</td>
+                            </tr>
+                            <tr>
+                                <td><code>runProcedure</code></td>
+                                <td>Executes a named database procedure when procedure actions are enabled. Procedure body can run multiple statements.</td>
+                            </tr>
+                            <tr>
+                                <td><code>setControlProperty</code></td>
+                                <td>Overrides rendered control props such as <code>visible</code>, <code>enabled</code>, <code>readOnly</code>, <code>text</code>, <code>placeholder</code>, and bound <code>value</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>setControlVisibility</code>, <code>setControlEnabled</code>, <code>setControlReadOnly</code></td>
+                                <td>Short forms for the corresponding <code>setControlProperty</code> calls.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>Filters use the same bracketed field expression style as conditions, so the rest of the form metadata stays uniform:</p>
+                    <div class="code-block" data-title="Action JSON &mdash; filter a child grid">
+                        <pre><code>{
+  <span class="str">"kind"</span>: <span class="str">"applyFilter"</span>,
+  <span class="str">"target"</span>: <span class="str">"ordersGrid"</span>,
+  <span class="str">"value"</span>: <span class="str">"[Status] = @status AND [Total] &gt; @minimum"</span>,
+  <span class="str">"arguments"</span>: {
+    <span class="str">"status"</span>: <span class="str">"Open"</span>,
+    <span class="str">"minimum"</span>: <span class="num">100</span>
+  }
+}</code></pre>
+                    </div>
+                    <p><code>runProcedure</code> is the right verb when the workflow should invoke reusable database-owned SQL &mdash; allocating an order, receiving a purchase order, processing a return. <code>runCommand</code> is the right verb when the workflow needs host-owned C# behavior such as email, queues, external APIs, or filesystem access. A common pairing is <code>runProcedure</code> for the database update followed by <code>runCommand</code> for the host notification.</p>
+                    <p>Conditional UI now lives at the form level too. Rules apply control property effects whenever their condition is true:</p>
+                    <div class="code-block" data-title="Form rules &mdash; conditional UI">
+                        <pre><code>{
+  <span class="str">"ruleId"</span>: <span class="str">"archived-state"</span>,
+  <span class="str">"condition"</span>: <span class="str">"[Status] = 'Archived'"</span>,
+  <span class="str">"effects"</span>: [
+    { <span class="str">"controlId"</span>: <span class="str">"statusBox"</span>,    <span class="str">"property"</span>: <span class="str">"readOnly"</span>, <span class="str">"value"</span>: <span class="kw">true</span> },
+    { <span class="str">"controlId"</span>: <span class="str">"archiveButton"</span>, <span class="str">"property"</span>: <span class="str">"enabled"</span>,  <span class="str">"value"</span>: <span class="kw">false</span> }
+  ]
+}</code></pre>
+                    </div>
+                    <p>The designer's property inspector ships with a rules editor and a validation panel for action/rule readiness. For a worked example that combines open-form, data-grid filtering, SQL execution, control property changes, and conditional rules in one manifest, see <code>samples/trusted-csharp-host/access-style-macro-form.json</code> in the repo.</p>
+                    <p>Rendered Admin form runtimes can leave <code>runSql</code> and <code>runProcedure</code> disabled by policy, which keeps database-mutating actions explicit at the host boundary. Action execution is observable through <code>FormActionDiagnostics.Listener</code>, which carries action kind, target, form id, event name, action sequence name, step index, elapsed time, success/cancellation state, result message, exception message, and metadata for every invocation.</p>
+
+                    <h2>The Trusted C# Host Sample</h2>
+                    <p>Trusted in-process C# extensions for SQL and Admin Forms have been growing across the last few releases. v3.6.0 ships a single, self-contained sample that pulls all of it together as the recommended developer workflow: <code>samples/trusted-csharp-host</code>.</p>
+                    <p>Open the folder in VS Code, press <code>F5</code>, and the sample demonstrates &mdash; in one process &mdash;:</p>
+                    <ul>
+                        <li>registering a trusted scalar function with <code>DbFunctionRegistry</code></li>
+                        <li>calling that function from SQL</li>
+                        <li>registering a trusted command with <code>DbCommandRegistry</code></li>
+                        <li>registering trusted Admin Forms validation rules with <code>DbValidationRuleRegistry</code></li>
+                        <li>exporting Admin Forms automation metadata</li>
+                        <li>validating that metadata against the registered callbacks</li>
+                        <li>generating a starter C# registration stub from automation metadata</li>
+                        <li>running an Admin Forms action sequence that sets a field</li>
+                        <li>invoking a reusable named action sequence that calls the command</li>
+                        <li>running field-level and form-level validation callbacks</li>
+                        <li>inspecting an Access-style macro form manifest with open-form, filter, run-SQL, and conditional rule actions</li>
+                    </ul>
+                    <p>The runtime boundary the sample protects is simple: C# callback bodies live in the host project. The database and form metadata only store names and action data. That is what makes the workflow safe to hand off between roles.</p>
+
+                    <h3>The Scalar Function Path</h3>
+                    <p>Scalar functions are the smallest piece. Register a name and an arity, return a <code>DbValue</code>, and SQL can call it like any built-in:</p>
+                    <div class="code-block" data-title="Program.cs &mdash; register a scalar function">
+                        <pre><code><span class="tp">DbFunctionRegistry</span> functions = <span class="tp">DbFunctionRegistry</span>.Create(builder =&gt;
+{
+    builder.AddScalar(
+        <span class="str">"Slugify"</span>,
+        arity: <span class="num">1</span>,
+        options: <span class="kw">new</span> <span class="tp">DbScalarFunctionOptions</span>(
+            ReturnType: <span class="tp">DbType</span>.Text,
+            IsDeterministic: <span class="kw">true</span>,
+            NullPropagating: <span class="kw">true</span>),
+        invoke: <span class="kw">static</span> (_, args) =&gt;
+            <span class="tp">DbValue</span>.FromText(Slugify(args[<span class="num">0</span>].AsText)));
+});</code></pre>
+                    </div>
+                    <p>From SQL: <code>INSERT INTO articles VALUES (1, 'Hello From VS Code', Slugify('Hello From VS Code'));</code> and the C# body runs in-process.</p>
+
+                    <h3>The Command Path</h3>
+                    <p>Commands are the workflow verb &mdash; the thing Admin Forms action sequences invoke when a field changes, a button is clicked, or a record is about to insert. The handler receives arguments and metadata and returns a result the form pipeline can act on:</p>
+                    <div class="code-block" data-title="Program.cs &mdash; register a command">
+                        <pre><code><span class="tp">DbCommandRegistry</span> commands = <span class="tp">DbCommandRegistry</span>.Create(builder =&gt;
+{
+    builder.AddCommand(
+        <span class="str">"AuditCustomerChange"</span>,
+        <span class="kw">new</span> <span class="tp">DbCommandOptions</span>(<span class="str">"Records a customer workflow event."</span>),
+        context =&gt;
+        {
+            <span class="tp">long</span> customerId = context.Arguments[<span class="str">"Id"</span>].AsInteger;
+            <span class="tp">string</span> status = context.Arguments[<span class="str">"Status"</span>].AsText;
+            <span class="tp">string</span> source = context.Arguments[<span class="str">"source"</span>].AsText;
+            <span class="tp">string</span> eventName = context.Metadata[<span class="str">"event"</span>];
+
+            <span class="cm">// Audit, queue work, call a service &mdash; this is your code.</span>
+            <span class="kw">return</span> <span class="tp">DbCommandResult</span>.Success(
+                <span class="str">$"Customer {customerId} -&gt; {status}; from {source}"</span>);
+        });
+});</code></pre>
+                    </div>
+
+                    <h3>The Validation Rule Path</h3>
+                    <p>Validation rules are new in v3.6.0. They use the same host-owned pattern as scalar functions and commands, and they participate in the existing field-level and form-level validation pipelines:</p>
+                    <div class="code-block" data-title="Program.cs &mdash; register a validation rule">
+                        <pre><code><span class="tp">DbValidationRuleRegistry</span> validationRules = <span class="tp">DbValidationRuleRegistry</span>.Create(builder =&gt;
+{
+    builder.AddRule(
+        <span class="str">"CustomerNamePolicy"</span>,
+        <span class="kw">new</span> <span class="tp">DbValidationRuleOptions</span>(
+            Description: <span class="str">"Rejects placeholder customer names."</span>,
+            Timeout: <span class="tp">TimeSpan</span>.FromSeconds(<span class="num">2</span>)),
+        <span class="kw">static</span> (context, _) =&gt;
+        {
+            <span class="tp">string</span> text = context.Value.IsNull
+                ? <span class="tp">string</span>.Empty
+                : context.Value.AsText;
+
+            <span class="tp">DbValidationRuleResult</span> result = text.Contains(<span class="str">"test"</span>, <span class="tp">StringComparison</span>.OrdinalIgnoreCase)
+                ? <span class="tp">DbValidationRuleResult</span>.Failure(
+                    context.FallbackMessage ?? <span class="str">"Customer name is not allowed."</span>,
+                    context.FieldName,
+                    context.RuleName)
+                : <span class="tp">DbValidationRuleResult</span>.Success();
+
+            <span class="kw">return</span> <span class="tp">ValueTask</span>.FromResult(result);
+        });
+});</code></pre>
+                    </div>
+                    <p>The same rules block save in Admin Forms when referenced by saved form metadata. From a host developer's perspective, a missing rule is exactly as visible as a missing command &mdash; metadata validation reports it, and the stub generator can produce the registration shape.</p>
+
+                    <h3>Two Roles, One Repo</h3>
+                    <p>The reason this sample exists is to make the two-role workflow obvious:</p>
+                    <ol>
+                        <li>An <strong>app builder</strong> creates metadata in Admin &mdash; a calculated expression that calls <code>Slugify(&hellip;)</code>, an action sequence that runs <code>AuditCustomerChange</code>, a control rule that references <code>CustomerNamePolicy</code>.</li>
+                        <li>A <strong>host developer</strong> owns the C# implementation, registers the callback at startup, and debugs it from VS Code.</li>
+                    </ol>
+                    <p>When Admin reports a missing callback, the generated registration stub is the handoff artifact. Paste it into the host app, replace the body with reviewed C#, set a breakpoint, run the host with <code>F5</code>, and verify the metadata reference reaches your code.</p>
+                    <p>From a terminal, the same loop is one command:</p>
+                    <div class="code-block" data-title="Powershell &mdash; run the trusted C# host sample">
+                        <pre><code>dotnet run --project samples\trusted-csharp-host\TrustedCSharpHostSample.csproj</code></pre>
+                    </div>
+                    <p>Expected output includes the exported callback metadata, validation status, the generated registration stub, slug values from SQL, an audit entry from the reusable form action sequence, and validation errors from a field rule and a form rule.</p>
+
+                    <h2>Reports Access Parity: The Plan</h2>
+                    <p>The reports surface today already covers the core Access-style design loop &mdash; banded designer, grouping/sorting, calculated text and aggregates, preview pagination, browser print, schema-drift warnings, and trusted command-backed lifecycle events for <code>OnOpen</code>, <code>BeforeRender</code>, and <code>AfterRender</code>.</p>
+                    <p>The v3.6.0 review identified two issues that matter for production reporting:</p>
+                    <ul>
+                        <li><strong>Saved-query previews are unbounded before trimming.</strong> Saved-query reports run <code>source.BaseSql</code> directly and only trim rows after the full result has materialized. Table and view reports use the preview query builder with a row limit; saved-query reports bypass that path. Fix: apply the preview row cap before materializing saved-query results, while preserving group/sort ordering.</li>
+                        <li><strong>Preview and print are capped, with no full output/export pipeline.</strong> The preview service caps output at <code>10,000</code> rows and <code>250</code> pages &mdash; reasonable for an interactive preview, but Access-style reports also need a full render/export path. Fix: separate preview rendering from full rendering, add export targets (PDF first, then HTML, CSV, spreadsheet-friendly), and make full export explicit and cancellable.</li>
+                    </ul>
+                    <p>Those two findings drive Phase 1 of the Access-parity roadmap. The phase ordering is deliberate &mdash; runtime safety and output foundations come before broadening the designer surface:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Phase</th>
+                                <th>Focus</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>1</strong></td>
+                                <td>Runtime safety and output foundations &mdash; bounded saved-query previews, full report render pipeline, export support, print warnings</td>
+                            </tr>
+                            <tr>
+                                <td><strong>2</strong></td>
+                                <td>Record sources, parameters, and filters &mdash; parameter prompts, runtime filters, saved filter definitions, query designer integration</td>
+                            </tr>
+                            <tr>
+                                <td><strong>3</strong></td>
+                                <td>Grouping, totals, and pagination semantics &mdash; intervals, keep-together, force-new-page, running totals, overflow rules</td>
+                            </tr>
+                            <tr>
+                                <td><strong>4</strong></td>
+                                <td>Design productivity &mdash; Layout View, Report Wizard, Label Wizard, style themes</td>
+                            </tr>
+                            <tr>
+                                <td><strong>5</strong></td>
+                                <td>Broader controls and formatting &mdash; image, rich text, barcode, chart, page break, subreport, conditional formatting</td>
+                            </tr>
+                            <tr>
+                                <td><strong>6</strong></td>
+                                <td>Distribution and operations &mdash; email/report delivery, scheduled reports, artifact history, large-report cancellation</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>The product position is &ldquo;reliable report production and distribution&rdquo; before &ldquo;wider designer canvas.&rdquo; A printable preview engine is useful; an exportable, parameterized, distributable report is what makes the surface stand on its own against Access for operational reporting.</p>
+
+                    <h2>What's Next: Database-Owned C# Code Modules</h2>
+                    <p>The trusted C# story in v3.6.0 is host-owned. The host project registers callbacks, the database stores names and references, and the runtime joins them. That is the right model for application services, external integrations, and anything privileged.</p>
+                    <p>For the &ldquo;code travels with the database&rdquo; case &mdash; the Access tradition where a form's <code>Form_BeforeUpdate</code> and a button's <code>btnShip_Click</code> live alongside the form definition itself &mdash; we are working on a third lane: <strong>database code modules</strong>.</p>
+                    <p>The plan, captured in <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/docs/trusted-csharp-functions/database-code-modules-vscode-plan.md"><code>docs/trusted-csharp-functions/database-code-modules-vscode-plan.md</code></a>, has three product lanes that compose:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Lane</th>
+                                <th>Code Lives In</th>
+                                <th>Use For</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Declarative macros/actions</td>
+                                <td>Form JSON / database metadata</td>
+                                <td>No-code app behavior, navigation, field updates, command orchestration</td>
+                            </tr>
+                            <tr>
+                                <td>Host callbacks</td>
+                                <td>C# host project startup registration</td>
+                                <td>External services, compiled integrations, application-owned code</td>
+                            </tr>
+                            <tr>
+                                <td>Database code modules</td>
+                                <td>Database module metadata, synced to files for editing</td>
+                                <td>Access-like form/business logic that travels with the database</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>Generated form modules will look familiar to Access developers, but with real C# tooling underneath:</p>
+                    <div class="code-block" data-title="CustomersForm.cs &mdash; planned module shape">
+                        <pre><code><span class="kw">using</span> CSharpDB.CodeModules.Runtime;
+
+<span class="kw">namespace</span> CSharpDB.DatabaseCode.Forms;
+
+<span class="kw">public sealed class</span> <span class="tp">CustomersFormModule</span> : <span class="tp">FormCodeModule</span>
+{
+    <span class="kw">public void</span> Form_BeforeUpdate(<span class="tp">FormBeforeUpdateContext</span> context)
+    {
+        <span class="kw">if</span> (Me.Status == <span class="str">"Closed"</span> &amp;&amp; Me.ClosedDate <span class="kw">is null</span>)
+        {
+            context.Cancel = <span class="kw">true</span>;
+            context.Message = <span class="str">"Closed date is required."</span>;
+        }
+    }
+
+    <span class="kw">public void</span> btnShip_Click(<span class="tp">FormControlEventContext</span> context)
+    {
+        Me.Status = <span class="str">"Shipped"</span>;
+        DoCmd.SaveRecord();
+    }
+}</code></pre>
+                    </div>
+                    <p>The architecture deliberately splits responsibilities. Admin handles module discovery, trust prompts, event-stub creation, build status, and runtime execution. VS Code &mdash; with a small .NET sidecar exposing JSON-RPC &mdash; owns editing, file sync, Roslyn diagnostics, and a debug-harness workflow. There is no Monaco editor inside Admin and no in-browser IDE to maintain.</p>
+                    <p>Trust will fail closed by default: a database must be explicitly trusted, the module source hash must match the trusted hash, the build must be clean, runtime policy must allow execution, and the host must opt in. None of that is automatic just because a database file happens to contain modules.</p>
+                    <p>The phased delivery is straightforward: a <code>CSharpDB.CodeModules</code> core API first, then file-based import/export with conflict detection, Roslyn diagnostics, the Admin catalog and stub generator, the VS Code sidecar and extension, trusted runtime execution, and finally the debug-harness generator. There is no commitment to live Admin breakpoints in v1 &mdash; debugging is a normal C# project that happens to be generated from database modules.</p>
+
+                    <h2>Closing Thoughts</h2>
+                    <p>v3.6.0 is the release where Admin starts to feel like an application platform rather than just a database UI. Document collections are first-class, custom form controls are a real extension point, macro actions cover the verbs Access developers reach for, and the trusted C# story has a runnable sample that shows the whole loop end-to-end.</p>
+                    <p>What's intentionally <em>not</em> here: an in-browser code editor, an automatic remote-execution path for arbitrary database C#, or any change to how host callbacks are trusted. Those are deliberate gates &mdash; the database code modules plan walks toward them carefully, behind explicit trust, file-hash verification, and host opt-in.</p>
+                    <p>If you build on Admin Forms, the highest-value upgrade today is registering one custom control through <code>AddCSharpDbAdminFormControls</code> and one validation rule through <code>DbValidationRuleRegistry</code>. Both surfaces are stable, both ship with a working sample, and both are exactly the shape future code modules will hand control to.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="fulfillment-hub-sample-walkthrough.html">Next: Fulfillment Hub Sample &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

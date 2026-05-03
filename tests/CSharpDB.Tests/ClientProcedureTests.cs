@@ -278,7 +278,7 @@ public sealed class ClientProcedureTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ExecuteProcedure_BlobParameterBindingFailure_ReturnsStructuredFailure()
+    public async Task ExecuteProcedure_BlobParameter_TablelessSelectReturnsPayload()
     {
         await CreateProcedureAsync(new ClientModels.ProcedureDefinition
         {
@@ -298,9 +298,11 @@ public sealed class ClientProcedureTests : IAsyncLifetime
             ["payload"] = Convert.FromBase64String("AQID"),
         });
 
-        Assert.False(result.Succeeded);
-        Assert.Equal(0, result.FailedStatementIndex);
-        Assert.Contains("Blob parameters are not supported", result.Error ?? string.Empty);
+        Assert.True(result.Succeeded);
+        var statement = Assert.Single(result.Statements);
+        Assert.True(statement.IsQuery);
+        var row = Assert.Single(statement.Rows!);
+        Assert.Equal(Convert.FromBase64String("AQID"), Assert.IsType<byte[]>(row[0]));
     }
 
     [Fact]

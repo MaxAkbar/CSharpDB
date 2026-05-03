@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Trusted C# Host Sample",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build trusted C# host sample",
+      "program": "${workspaceFolder}/bin/Debug/net10.0/TrustedCSharpHostSample.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "stopAtEntry": false
+    }
+  ]
+}
