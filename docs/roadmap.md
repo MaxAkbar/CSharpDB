@@ -85,6 +85,7 @@ Advanced features and fundamental architecture enhancements.
 | **Group commit / deferred WAL flush** | Done in `v2.9.0`: opt-in `UseDurableCommitBatchWindow(...)` batches durable WAL flushes across contending in-process transactions and remains an expert measure-first knob rather than default behavior | Done |
 | **Initial multi-writer support** | Explicit `WriteTransaction` conflict-detected retry flow, shared auto-commit non-insert isolation, and opt-in `ConcurrentWriteTransactions` for shared implicit inserts | Done |
 | **Broader multi-writer insert optimization** | Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path | Research |
+| **API-level sharding** | Route API/daemon requests across multiple warm CSharpDB database files so independent tenants or shard keys can use separate WAL and commit paths, with v1 focused on single-shard writes and point reads | Research |
 | **Replication / change feed** | Stream committed changes for read replicas or event-driven architectures | Research |
 | **WebAssembly sandboxed UDFs** | Execute untrusted user-submitted functions in a WASM sandbox with resource limits (fuel, memory caps) via Wasmtime | Research |
 
@@ -182,6 +183,7 @@ Major features already implemented:
 - [Internals & Contributing](https://csharpdb.com/docs/internals.html) — How to extend the engine
 - [Deployment & Installation Plan](deployment/README.md) — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts
 - [Multi-Writer Follow-Up Plan](multi-writer-follow-up-plan.md) — Post-initial multi-writer roadmap, insert-path gaps, and release criteria for broader completion
+- [API-Level Sharding Plan](api-sharding.md) — API/daemon-level routing across multiple database files for write-throughput scaling
 - [Query And Durable Write Performance Plan](query-and-durable-write-performance/README.md) — Combined optimizer phase-2 plus durable-write completion plan, shipped state, and remaining benchmark/future-work boundaries
 - [Multilingual Text Support Plan](https://csharpdb.com/docs/collation-support.html) — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and `COLLATE` clause support for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
