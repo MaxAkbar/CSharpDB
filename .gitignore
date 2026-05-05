@@ -13,6 +13,8 @@ tmp/
 *.sln.docstates
 .dotnet-cli/
 .playwright-mcp/
+.claude
+.codex
 
 ## VS / Rider IDE
 .vs/

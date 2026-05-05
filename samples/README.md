@@ -17,6 +17,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `fulfillment-hub/` | Full-stack operations showcase with forms, reports, pipelines, collections, and full-text search | `schema.sql`, `procedures.json`, `saved-queries.json`, `queries.sql`, `pipelines/`, `imports/`, `.csproj`, `Program.cs`, `README.md` |
 | `csv-bulk-import/` | Runnable CSV-to-table bulk ingest walkthrough | `.csproj`, `Program.cs`, `README.md`, `events.csv` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
+| `compression-sdk/` | Runnable application-level payload compression helper and benchmark sample | `.csproj`, `Program.cs`, `PayloadCompression.cs`, `Benchmarks/`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `efcore-provider/` | Runnable EF Core 10 embedded-provider sample | `.csproj`, `Program.cs`, `README.md` |
 | `aspnet-core-identity/` | Runnable ASP.NET Core 10 auth sample with a custom ADO.NET-backed user store, cookie + JWT auth, and role/policy authorization | `.csproj`, `Program.cs`, `UserStore.cs`, `AppUser.cs`, `Seed.cs`, `sample.http`, `README.md` |
@@ -110,6 +111,14 @@ Root-level helpers:
 - Docs: [Collection Indexing Guide](https://csharpdb.com/docs/collection-indexing.html)
 - Domain: typed user documents with nested address, tags, and orders
 - Good for: `GetCollectionAsync<T>()`, `EnsureIndexAsync(...)`, `FindByIndexAsync(...)`, `FindByPathAsync(...)`, and `FindByPathRangeAsync(...)`
+
+### Compression SDK Sample
+
+- Project: [CompressionSdkSample.csproj](compression-sdk/CompressionSdkSample.csproj)
+- Code: [Program.cs](compression-sdk/Program.cs)
+- Helper: [PayloadCompression.cs](compression-sdk/PayloadCompression.cs)
+- Benchmarks: [Benchmarks](compression-sdk/Benchmarks)
+- Good for: opt-in application-level compression of large payload columns, codec metadata storage, and before/after benchmarking without changing the CSharpDB storage engine
 
 ### Generated Collections Walkthrough
 

@@ -130,6 +130,25 @@ jobs:
             --api-key "$NUGET_API_KEY" \
             --skip-duplicate
 
+      - name: Verify packages are visible on NuGet.org
+        shell: pwsh
+        run: |
+          ./scripts/Wait-NuGetPackageVersion.ps1 `
+            -Version "${{ steps.version.outputs.version }}" `
+            -PackageId @(
+              'CSharpDB',
+              'CSharpDB.Primitives',
+              'CSharpDB.Sql',
+              'CSharpDB.Storage',
+              'CSharpDB.Execution',
+              'CSharpDB.Engine',
+              'CSharpDB.Pipelines',
+              'CSharpDB.Data',
+              'CSharpDB.EntityFrameworkCore',
+              'CSharpDB.Storage.Diagnostics',
+              'CSharpDB.Client'
+            )
+
       - name: Upload NuGet artifacts
         uses: actions/upload-artifact@v4
         with:

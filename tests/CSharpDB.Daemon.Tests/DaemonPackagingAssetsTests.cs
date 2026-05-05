@@ -18,6 +18,60 @@ public sealed class DaemonPackagingAssetsTests
     }
 
     [Fact]
+    public void MainBranchCiPackSmoke_IncludesMetaPackage()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "ci.yml"));
+
+        Assert.Contains("src/CSharpDB/README.md", workflow);
+        Assert.Contains("dotnet pack src/CSharpDB/CSharpDB.csproj", workflow);
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_VerifiesNuGetPackagesBeforeCreatingGitHubRelease()
+    {
+        string repoRoot = FindRepoRoot();
+        string workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "release.yml"));
+
+        int verifyIndex = workflow.IndexOf("Wait-NuGetPackageVersion.ps1", StringComparison.Ordinal);
+        int releaseIndex = workflow.IndexOf("softprops/action-gh-release", StringComparison.Ordinal);
+
+        Assert.True(verifyIndex >= 0, "Release workflow must call the NuGet visibility verification script.");
+        Assert.True(releaseIndex > verifyIndex, "NuGet verification must run before the GitHub Release is created.");
+
+        string[] packageIds =
+        [
+            "CSharpDB",
+            "CSharpDB.Primitives",
+            "CSharpDB.Sql",
+            "CSharpDB.Storage",
+            "CSharpDB.Execution",
+            "CSharpDB.Engine",
+            "CSharpDB.Pipelines",
+            "CSharpDB.Data",
+            "CSharpDB.EntityFrameworkCore",
+            "CSharpDB.Storage.Diagnostics",
+            "CSharpDB.Client",
+        ];
+
+        foreach (string packageId in packageIds)
+            Assert.Contains($"'{packageId}'", workflow);
+    }
+
+    [Fact]
+    public void NuGetVerificationScript_PollsHandlesMissingPackagesAndTimesOut()
+    {
+        string repoRoot = FindRepoRoot();
+        string script = File.ReadAllText(Path.Combine(repoRoot, "scripts", "Wait-NuGetPackageVersion.ps1"));
+
+        Assert.Contains("Invoke-WebRequest", script);
+        Assert.Contains("-Method Head", script);
+        Assert.Contains("$statusCode -eq 404", script);
+        Assert.Contains("TimeoutSeconds", script);
+        Assert.Contains("Timed out waiting for NuGet package version", script);
+    }
+
+    [Fact]
     public void ServiceInstallAssets_ContainExpectedDefaults()
     {
         string repoRoot = FindRepoRoot();
@@ -46,18 +100,24 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("CSharpDB", windowsInstall);
         Assert.Contains("http://127.0.0.1:5820", windowsInstall);
         Assert.Contains("CSharpDB__Daemon__EnableRestApi=true", windowsInstall);
+        Assert.Contains("CSharpDB__Daemon__Security__Mode=None", windowsInstall);
+        Assert.Contains("CSharpDB__Daemon__Security__ApiKeyHeaderName=X-CSharpDB-Api-Key", windowsInstall);
 
         Assert.Contains("/opt/csharpdb-daemon", linuxInstall);
         Assert.Contains("/var/lib/csharpdb", linuxInstall);
         Assert.Contains("SERVICE_USER=\"csharpdb\"", linuxInstall);
         Assert.Contains("http://127.0.0.1:5820", linuxInstall);
         Assert.Contains("CSharpDB__Daemon__EnableRestApi=true", linuxInstall);
+        Assert.Contains("CSharpDB__Daemon__Security__Mode=None", linuxInstall);
+        Assert.Contains("CSharpDB__Daemon__Security__ApiKeyHeaderName=X-CSharpDB-Api-Key", linuxInstall);
 
         Assert.Contains("com.csharpdb.daemon", macInstall);
         Assert.Contains("/usr/local/lib/csharpdb-daemon", macInstall);
         Assert.Contains("/usr/local/var/csharpdb", macInstall);
         Assert.Contains("http://127.0.0.1:5820", macInstall);
         Assert.Contains("\"EnableRestApi\": true", macInstall);
+        Assert.Contains("\"Mode\": \"None\"", macInstall);
+        Assert.Contains("\"ApiKeyHeaderName\": \"X-CSharpDB-Api-Key\"", macInstall);
     }
 
     [Fact]
@@ -87,6 +147,8 @@ public sealed class DaemonPackagingAssetsTests
         Assert.Contains("{{DATABASE_PATH}}", launchdTemplate);
         Assert.Contains("{{URL}}", launchdTemplate);
         Assert.Contains("CSharpDB__Daemon__EnableRestApi", launchdTemplate);
+        Assert.Contains("CSharpDB__Daemon__Security__Mode", launchdTemplate);
+        Assert.Contains("CSharpDB__Daemon__Security__ApiKeyHeaderName", launchdTemplate);
     }
 
     private static string FindRepoRoot()

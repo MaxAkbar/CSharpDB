@@ -50,7 +50,8 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 | **`CHECK` constraints** | Arbitrary expression-based constraints per column or per table | Planned |
 | **Foreign key constraints** | v1 support for single-column, column-level `REFERENCES` with optional `ON DELETE CASCADE`, plus `sys.foreign_keys` and metadata/tooling surfaces | Done |
 | **Remote host consolidation** | `CSharpDB.Daemon` now hosts the existing REST/HTTP `/api` surface and gRPC from one long-running process backed by the same warm daemon-hosted client; standalone `CSharpDB.Api` remains supported for REST-only hosting | Done |
-| **Remote host security** | Add built-in authentication, authorization, and transport-security options for remote HTTP and gRPC access, including API keys, protected admin endpoints, and TLS/mTLS deployment support | Planned |
+| **Remote API-key protection** | Opt-in API-key mode protects REST `/api/*` and daemon gRPC calls with constant-time key comparison while keeping default no-auth behavior for compatibility | Done |
+| **Remote host security hardening** | Add authorization, protected admin endpoint scopes, JWT/RBAC options, and TLS/mTLS deployment helpers for remote HTTP and gRPC access | Planned |
 | **Daemon service packaging** | Package the existing `CSharpDB.Daemon` host as a persistent background service across systemd, Windows Service, and launchd | Done |
 | **Cross-platform deployment** | Self-contained daemon archives and install scripts ship for Windows, Linux, and macOS; dotnet tool, Docker, Homebrew, and winget distribution remain future work | In Progress |
 | **NuGet package** | Publish and maintain `CSharpDB.Engine`, `CSharpDB.Data`, `CSharpDB.Client`, and `CSharpDB.Primitives` as the primary NuGet packages | Done |
@@ -77,8 +78,8 @@ Advanced features and fundamental architecture enhancements.
 | **Advanced collection storage path** | Binary direct-payload format with direct binary hydration, path-based field extraction, and richer expression/path indexes | Done |
 | **SQL batched row transport** | Internal row-batch transport serves as the batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates | Done |
 | **Source-generated collection fast path** | In progress: `GetGeneratedCollectionAsync<T>(...)`, generated field descriptors/index bindings, analyzer-packaged collection model/codecs, trim/NativeAOT smoke coverage, and a dedicated sample are now in place while broader package ergonomics and remaining generator coverage continue | In Progress |
-| **Page-level compression** | Compress cell content within pages to reduce I/O and storage | Planned |
-| **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths | Research |
+| **Page-level compression** | Deep engine/page compression remains planned; application-level payload compression is available as a sample/SDK pattern without changing the storage format | Planned |
+| **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths; implementation must meet the database-encryption plan entry criteria before shipping | Research |
 | **Advanced cost-based query optimizer** | In progress: phase-2 stats-guided costing is now in place through internal equi-depth histograms, heavy hitters, composite-index prefix distinct-count summaries, skew-aware lookup/filter estimates, correlation-aware composite equality filters/joins, and bounded DP reordering for small inner-join chains; adaptive re-optimization and public histogram inspection remain future work | In Progress |
 | **Async I/O batching** | In progress: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities now cover the main storage and maintenance write paths; remaining auditing is outside the WAL hot path | In Progress |
 | **Low-latency durable writes** | Done in `v2.9.0`: advisory planner-stat persistence can stay deferred without weakening committed-row durability, and `sys.table_stats.row_count_is_exact` now makes exact versus estimated row-count semantics explicit to planner and `COUNT(*)` fast paths | Done |
@@ -106,12 +107,12 @@ These are known simplifications in the current implementation:
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates |
 | **Networking** | `CSharpDB.Daemon` now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today |
-| **Security** | Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned |
+| **Security** | Remote REST and daemon gRPC support opt-in API-key authentication, defaulting to `None` for backward compatibility. JWT, RBAC, mTLS helpers, TLS-specific configuration, and at-rest encryption are not implemented |
 | **Admin Forms** | The Forms designer/runtime supports the core generated-form and data-entry path plus initial trusted command-backed automation, including lifecycle events, command buttons, selected control events, and declarative action sequences, but still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, broader built-in actions, additional events, advanced filtering/sorting, and broader controls |
 | **Admin Reports** | The Reports designer/runtime supports the core banded preview path plus trusted command-backed preview lifecycle events, but still needs Access-parity work for bounded saved-query previews, full report output/export, parameters, richer grouping and totals semantics, conditional formatting, subreports, and broader controls |
 | **Text / Multilingual** | Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in `BINARY`, `NOCASE`, `NOCASE_AI`, and `ICU:<locale>` collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned |
 | **Concurrency** | The physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains still depend on conflict shape and whether shared auto-commit `INSERT` is left on the default serialized path |
-| **Storage** | No page-level compression |
+| **Storage** | No page-level compression; the compression SDK sample stores compressed payloads as ordinary application-managed `BLOB` values |
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
 | **Storage** | By default, durable auto-commit single-row writes still pay a physical WAL flush per commit; opt-in `UseDurableCommitBatchWindow(...)` can trade some commit latency for higher throughput across contending in-process writers, but default behavior remains per-commit durable |
@@ -155,6 +156,7 @@ Major features already implemented:
 - Maintenance report, `REINDEX`, and `VACUUM` flows across client, CLI, API, and Admin UI
 - Dedicated `CSharpDB.Daemon` gRPC host for remote `CSharpDB.Client` access
 - Remote host consolidation in `CSharpDB.Daemon`, with REST `/api` and gRPC sharing the same warm hosted database client
+- Opt-in API-key protection for REST `/api/*` and daemon gRPC access
 - Storage tuning presets, bounded WAL read caching, memory-mapped main-file reads, and sliced background WAL auto-checkpointing
 - SQL executor/read-path fast paths for compact projections, broader join/index coverage, grouped aggregates, and correlated subquery filters
 - Batch-first SQL row-batch execution foundation with batch-aware scan/index/join roots, shared predicate/projection kernels, and batch-native generic aggregate paths
@@ -188,6 +190,7 @@ Major features already implemented:
 - [Multilingual Text Support Plan](https://csharpdb.com/docs/collation-support.html) — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and `COLLATE` clause support for queries and index definitions
 - [Database Encryption Plan](database-encryption/README.md) — Encrypted storage format, key management, migration, and managed-surface rollout
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
+- [Compression SDK Sample](../samples/compression-sdk/README.md) — Application-level payload compression helpers, benchmarks, and storage-format boundaries
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
 - [User-Defined Functions Plan](user-defined-functions/README.md) — C# library functions callable by the database, native plugin extensions, and WASM sandboxing
 - [Pub/Sub Change Events Plan](pub-sub-events/README.md) — Engine-level change events with channel-based delivery for real-time data subscriptions

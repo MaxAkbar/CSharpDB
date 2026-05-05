@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/v/CSharpDB" alt="NuGet"></a>
   <a href="https://www.nuget.org/packages/CSharpDB"><img src="https://img.shields.io/nuget/dt/CSharpDB?label=Downloads" alt="NuGet downloads"></a>
+  <a href="https://github.com/MaxAkbar/CSharpDB/actions/workflows/ci.yml"><img src="https://github.com/MaxAkbar/CSharpDB/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB/stargazers"><img src="https://img.shields.io/github/stars/MaxAkbar/CSharpDB?label=Stars" alt="GitHub stars"></a>
   <a href="https://dotnet.microsoft.com/download/dotnet/10.0"><img src="https://img.shields.io/badge/.NET-10-512bd4" alt=".NET 10"></a>
   <a href="https://github.com/MaxAkbar/CSharpDB"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0f766e" alt="Platform: Windows, Linux, macOS"></a>
@@ -222,6 +223,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
+| [CSharpDB and SharpCoreDB](docs/comparisons/sharpcoredb.md) | Evidence-based comparison and fit guidance |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
 | [Internals & Contributing](https://csharpdb.com/docs/internals.html) | Project structure and concurrency model |
 | [FAQ](https://csharpdb.com/docs/faq.html) | Common questions |

@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>ASP.NET Core Authentication and Authorization with CSharpDB &mdash; Blog &mdash; CSharpDB</title>
+    <meta name="description" content="Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.">
+    <link rel="canonical" href="https://csharpdb.com/blog/csharpdb-aspnet-core-identity.html">
+    <meta property="og:title" content="ASP.NET Core Authentication and Authorization with CSharpDB">
+    <meta property="og:description" content="Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.">
+    <meta property="og:url" content="https://csharpdb.com/blog/csharpdb-aspnet-core-identity.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "ASP.NET Core Authentication and Authorization with CSharpDB",
+        "description": "Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.",
+        "url": "https://csharpdb.com/blog/csharpdb-aspnet-core-identity.html",
+        "datePublished": "2026-05-03",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 {
+            margin-top: 48px;
+            margin-bottom: 16px;
+        }
+        .blog-post-content h3 {
+            margin-top: 32px;
+            margin-bottom: 12px;
+        }
+        .blog-post-content p {
+            margin-bottom: 16px;
+        }
+        .blog-post-content .code-block {
+            margin: 20px 0 24px;
+        }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'ASP.NET Core Authentication and Authorization with CSharpDB',
+        description: 'Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.',
+        keywords: 'CSharpDB ASP.NET Core, ASP.NET Identity, EF Core identity provider, JWT bearer, role authorization, policy authorization, Data Protection, embedded database',
+        canonicalPath: 'blog/csharpdb-aspnet-core-identity.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 860px; margin: 0 auto;">
+                <h1>ASP.NET Core Authentication and Authorization with CSharpDB</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Guide</span>
+                    <span>May 3, 2026</span>
+                    <span>&middot; 12 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>ASP.NET Core ships with a battle-tested security stack: ASP.NET Core Identity for users, roles, claims, and tokens; pluggable authentication schemes for cookies and JWT bearer tokens; and a flexible authorization system built on roles and policies. All of it is database-agnostic — it asks the application to plug in a store.</p>
+                    <p>CSharpDB is a natural fit for that store. It is embedded, ACID, single-file, and ships with a real EF Core 10 provider, an ADO.NET provider, and a typed Collection API. For single-node web apps, internal tools, desktop apps, and dev or CI environments, you get a complete identity solution that lives entirely inside your application directory.</p>
+                    <p>This post walks through three integration patterns: ASP.NET Core Identity over the EF Core provider, JWT bearer with the same store, and a lightweight custom <code>IUserStore</code> when you do not want the full Identity surface. It closes with Data Protection key persistence so cookies survive process restarts.</p>
+
+                    <div class="callout callout-info" style="margin: 24px 0; padding: 16px 20px; border-left: 4px solid var(--accent); background: var(--bg-card);">
+                        <strong>v1 EF Core caveat.</strong> The CSharpDB EF Core provider in v1 does not support composite primary keys, and ASP.NET Core Identity's standard schema uses composite keys on <code>AspNetUserRoles</code>, <code>AspNetUserLogins</code>, and <code>AspNetUserTokens</code>. Until that lands, the runnable path is the lightweight custom store described later in this post — a small ADO.NET-backed user/role/claim store that uses the same <code>PasswordHasher</code>, cookie, and JWT pipeline shown for the EF Core flow. The companion sample at <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/aspnet-core-identity">samples/aspnet-core-identity</a> implements that path end-to-end.
+                    </div>
+
+                    <h2>When CSharpDB Fits Your Auth Stack</h2>
+                    <p>CSharpDB is single-process and single-file. That keeps the deployment story very small — one <code>.db</code> file beside your binaries, no server to provision. It is the right call for:</p>
+                    <ul>
+                        <li>Single-node web apps and internal tools.</li>
+                        <li>Desktop apps that wrap a Blazor or MAUI shell and need local sign-in.</li>
+                        <li>Edge or kiosk deployments where a database server is not an option.</li>
+                        <li>Dev and CI environments where you want a real identity database without a container.</li>
+                    </ul>
+                    <p>For multi-node web farms you typically want a shared identity store on a server database. In those cases CSharpDB is still useful for local concerns: per-node refresh-token caches, audit logs, or rate-limit counters.</p>
+
+                    <h2>Approach 1: ASP.NET Core Identity on the EF Core Provider</h2>
+                    <p>This is the path most teams will take. ASP.NET Core Identity is built on EF Core, and <code>CSharpDB.EntityFrameworkCore</code> is a standard EF Core 10 provider, so the integration is a one-line connection-string change.</p>
+
+                    <h3>Step 1: Install the Packages</h3>
+                    <div class="code-block" data-title="Terminal">
+                        <pre><code>dotnet add package CSharpDB.EntityFrameworkCore
+dotnet add package Microsoft.AspNetCore.Identity.EntityFrameworkCore
+dotnet add package Microsoft.EntityFrameworkCore.Design</code></pre>
+                    </div>
+                    <p><code>CSharpDB.EntityFrameworkCore</code> brings in <code>CSharpDB.Data</code> (the ADO.NET provider) and the engine. The Identity package adds the <code>IdentityDbContext</code> base class and stores. The design package lets <code>dotnet ef</code> generate migrations.</p>
+
+                    <h3>Step 2: Define the Identity DbContext</h3>
+                    <p>You can use the built-in <code>IdentityUser</code> or extend it. Most apps add a few profile fields, so a custom user is shown below.</p>
+                    <div class="code-block" data-title="AppUser.cs and AppDbContext.cs">
+                        <pre><code><span class="kw">using</span> CSharpDB.EntityFrameworkCore;
+<span class="kw">using</span> Microsoft.AspNetCore.Identity;
+<span class="kw">using</span> Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+<span class="kw">using</span> Microsoft.EntityFrameworkCore;
+
+<span class="kw">public sealed class</span> <span class="tp">AppUser</span> : <span class="tp">IdentityUser</span>
+{
+    <span class="kw">public string</span>? DisplayName { <span class="kw">get</span>; <span class="kw">set</span>; }
+    <span class="kw">public</span> <span class="tp">DateTime</span> CreatedUtc { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="tp">DateTime</span>.UtcNow;
+}
+
+<span class="kw">public sealed class</span> <span class="tp">AppDbContext</span> : <span class="tp">IdentityDbContext</span>&lt;<span class="tp">AppUser</span>&gt;
+{
+    <span class="kw">public</span> <span class="tp">AppDbContext</span>(<span class="tp">DbContextOptions</span>&lt;<span class="tp">AppDbContext</span>&gt; options)
+        : <span class="kw">base</span>(options) { }
+
+    <span class="kw">public</span> <span class="tp">DbSet</span>&lt;<span class="tp">AuditEntry</span>&gt; AuditLog =&gt; Set&lt;<span class="tp">AuditEntry</span>&gt;();
+}
+
+<span class="kw">public sealed class</span> <span class="tp">AuditEntry</span>
+{
+    <span class="kw">public int</span> Id { <span class="kw">get</span>; <span class="kw">set</span>; }
+    <span class="kw">public string</span> UserId { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
+    <span class="kw">public string</span> Action { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
+    <span class="kw">public</span> <span class="tp">DateTime</span> AtUtc { <span class="kw">get</span>; <span class="kw">set</span>; }
+}</code></pre>
+                    </div>
+                    <p>Inheriting <code>IdentityDbContext&lt;AppUser&gt;</code> brings in the standard tables: users, roles, user-roles, user-claims, role-claims, user-logins, and user-tokens. You can add your own <code>DbSet&lt;T&gt;</code> properties alongside them, and they all live in the same database file.</p>
+
+                    <h3>Step 3: Wire It Up in <code>Program.cs</code></h3>
+                    <div class="code-block" data-title="Program.cs">
+                        <pre><code><span class="kw">using</span> CSharpDB.EntityFrameworkCore;
+<span class="kw">using</span> Microsoft.AspNetCore.Identity;
+<span class="kw">using</span> Microsoft.EntityFrameworkCore;
+
+<span class="kw">var</span> builder = <span class="tp">WebApplication</span>.CreateBuilder(args);
+
+<span class="kw">var</span> dbPath = <span class="tp">Path</span>.Combine(builder.Environment.ContentRootPath, <span class="str">"app.db"</span>);
+
+builder.Services.AddDbContext&lt;<span class="tp">AppDbContext</span>&gt;(opt =&gt;
+    opt.UseCSharpDb(<span class="str">$"Data Source={dbPath}"</span>));
+
+builder.Services
+    .AddIdentity&lt;<span class="tp">AppUser</span>, <span class="tp">IdentityRole</span>&gt;(opt =&gt;
+    {
+        opt.Password.RequiredLength = <span class="num">10</span>;
+        opt.Password.RequireNonAlphanumeric = <span class="kw">true</span>;
+        opt.Lockout.MaxFailedAccessAttempts = <span class="num">5</span>;
+        opt.Lockout.DefaultLockoutTimeSpan = <span class="tp">TimeSpan</span>.FromMinutes(<span class="num">15</span>);
+        opt.User.RequireUniqueEmail = <span class="kw">true</span>;
+    })
+    .AddEntityFrameworkStores&lt;<span class="tp">AppDbContext</span>&gt;()
+    .AddDefaultTokenProviders();
+
+builder.Services.AddAuthorization(opt =&gt;
+{
+    opt.AddPolicy(<span class="str">"AdminOnly"</span>, p =&gt; p.RequireRole(<span class="str">"Admin"</span>));
+    opt.AddPolicy(<span class="str">"CanManageUsers"</span>, p =&gt; p.RequireClaim(<span class="str">"perm"</span>, <span class="str">"users.manage"</span>));
+});
+
+<span class="kw">var</span> app = builder.Build();
+
+<span class="kw">using</span> (<span class="kw">var</span> scope = app.Services.CreateScope())
+{
+    <span class="kw">var</span> db = scope.ServiceProvider.GetRequiredService&lt;<span class="tp">AppDbContext</span>&gt;();
+    <span class="kw">await</span> db.Database.MigrateAsync();
+}
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapRazorPages();
+app.MapControllers();
+
+app.Run();</code></pre>
+                    </div>
+                    <p>That is the full integration. <code>UseCSharpDb</code> tells EF Core where the file lives. <code>AddIdentity</code> registers <code>UserManager&lt;AppUser&gt;</code>, <code>SignInManager&lt;AppUser&gt;</code>, role manager, password hasher, and token providers. <code>AddEntityFrameworkStores&lt;AppDbContext&gt;</code> points the user and role stores at our context, which means they read and write through CSharpDB.</p>
+
+                    <h3>Step 4: Generate the Identity Tables</h3>
+                    <div class="code-block" data-title="Terminal">
+                        <pre><code>dotnet ef migrations add InitialIdentity
+dotnet ef database update</code></pre>
+                    </div>
+                    <p>The migration creates <code>AspNetUsers</code>, <code>AspNetRoles</code>, <code>AspNetUserRoles</code>, <code>AspNetUserClaims</code>, <code>AspNetRoleClaims</code>, <code>AspNetUserLogins</code>, <code>AspNetUserTokens</code>, plus your <code>AuditLog</code> table — all inside <code>app.db</code>. <code>db.Database.MigrateAsync()</code> at startup is fine for single-node apps.</p>
+
+                    <h3>Step 5: Register and Sign In</h3>
+                    <p>From here, every Identity API works the way it does on any other provider. The example below uses minimal-API endpoints, but the same calls work in MVC controllers, Razor Pages, or Blazor.</p>
+                    <div class="code-block" data-title="Auth endpoints">
+                        <pre><code>app.MapPost(<span class="str">"/auth/register"</span>, <span class="kw">async</span> (
+    <span class="tp">RegisterDto</span> dto,
+    <span class="tp">UserManager</span>&lt;<span class="tp">AppUser</span>&gt; users) =&gt;
+{
+    <span class="kw">var</span> user = <span class="kw">new</span> <span class="tp">AppUser</span>
+    {
+        UserName = dto.Email,
+        Email = dto.Email,
+        DisplayName = dto.DisplayName
+    };
+
+    <span class="kw">var</span> result = <span class="kw">await</span> users.CreateAsync(user, dto.Password);
+    <span class="kw">return</span> result.Succeeded
+        ? <span class="tp">Results</span>.Ok()
+        : <span class="tp">Results</span>.ValidationProblem(result.Errors.ToDictionary(e =&gt; e.Code, e =&gt; <span class="kw">new</span>[] { e.Description }));
+});
+
+app.MapPost(<span class="str">"/auth/login"</span>, <span class="kw">async</span> (
+    <span class="tp">LoginDto</span> dto,
+    <span class="tp">SignInManager</span>&lt;<span class="tp">AppUser</span>&gt; signIn) =&gt;
+{
+    <span class="kw">var</span> result = <span class="kw">await</span> signIn.PasswordSignInAsync(
+        dto.Email, dto.Password, dto.RememberMe, lockoutOnFailure: <span class="kw">true</span>);
+
+    <span class="kw">return</span> result.Succeeded ? <span class="tp">Results</span>.Ok() : <span class="tp">Results</span>.Unauthorized();
+});
+
+app.MapPost(<span class="str">"/auth/logout"</span>, <span class="kw">async</span> (<span class="tp">SignInManager</span>&lt;<span class="tp">AppUser</span>&gt; signIn) =&gt;
+{
+    <span class="kw">await</span> signIn.SignOutAsync();
+    <span class="kw">return</span> <span class="tp">Results</span>.Ok();
+}).RequireAuthorization();
+
+<span class="kw">public record</span> <span class="tp">RegisterDto</span>(<span class="kw">string</span> Email, <span class="kw">string</span> DisplayName, <span class="kw">string</span> Password);
+<span class="kw">public record</span> <span class="tp">LoginDto</span>(<span class="kw">string</span> Email, <span class="kw">string</span> Password, <span class="kw">bool</span> RememberMe);</code></pre>
+                    </div>
+                    <p>Behind the scenes <code>UserManager.CreateAsync</code> hashes the password with PBKDF2, writes the user row to CSharpDB, and emits any default tokens. <code>SignInManager.PasswordSignInAsync</code> verifies the hash, increments the lockout counter on failure, and issues the auth cookie on success.</p>
+
+                    <h2>Authorization: Roles and Policies</h2>
+                    <p>Role data lives in <code>AspNetUserRoles</code>, claim data in <code>AspNetUserClaims</code>. Every standard authorization attribute reads from those tables through the EF Core stores.</p>
+
+                    <h3>Seeding Roles and a First Admin</h3>
+                    <div class="code-block" data-title="Seed.cs">
+                        <pre><code><span class="kw">using</span> Microsoft.AspNetCore.Identity;
+
+<span class="kw">public static class</span> <span class="tp">Seed</span>
+{
+    <span class="kw">public static async</span> <span class="tp">Task</span> EnsureRolesAndAdminAsync(<span class="tp">IServiceProvider</span> sp)
+    {
+        <span class="kw">using var</span> scope = sp.CreateScope();
+        <span class="kw">var</span> roles = scope.ServiceProvider.GetRequiredService&lt;<span class="tp">RoleManager</span>&lt;<span class="tp">IdentityRole</span>&gt;&gt;();
+        <span class="kw">var</span> users = scope.ServiceProvider.GetRequiredService&lt;<span class="tp">UserManager</span>&lt;<span class="tp">AppUser</span>&gt;&gt;();
+
+        <span class="kw">foreach</span> (<span class="kw">var</span> role <span class="kw">in</span> <span class="kw">new</span>[] { <span class="str">"Admin"</span>, <span class="str">"Editor"</span>, <span class="str">"Viewer"</span> })
+            <span class="kw">if</span> (!<span class="kw">await</span> roles.RoleExistsAsync(role))
+                <span class="kw">await</span> roles.CreateAsync(<span class="kw">new</span> <span class="tp">IdentityRole</span>(role));
+
+        <span class="kw">var</span> admin = <span class="kw">await</span> users.FindByEmailAsync(<span class="str">"admin@example.com"</span>);
+        <span class="kw">if</span> (admin <span class="kw">is null</span>)
+        {
+            admin = <span class="kw">new</span> <span class="tp">AppUser</span> { UserName = <span class="str">"admin@example.com"</span>, Email = <span class="str">"admin@example.com"</span>, EmailConfirmed = <span class="kw">true</span> };
+            <span class="kw">await</span> users.CreateAsync(admin, <span class="str">"ChangeMe!2026"</span>);
+            <span class="kw">await</span> users.AddToRoleAsync(admin, <span class="str">"Admin"</span>);
+            <span class="kw">await</span> users.AddClaimAsync(admin, <span class="kw">new</span> <span class="tp">Claim</span>(<span class="str">"perm"</span>, <span class="str">"users.manage"</span>));
+        }
+    }
+}</code></pre>
+                    </div>
+                    <p>Call <code>await Seed.EnsureRolesAndAdminAsync(app.Services);</code> after <code>MigrateAsync()</code>. The seed runs idempotently against CSharpDB and gives you a working admin on first boot.</p>
+
+                    <h3>Protecting Endpoints</h3>
+                    <div class="code-block" data-title="Authorization examples">
+                        <pre><code><span class="cm">// Role-based</span>
+app.MapDelete(<span class="str">"/api/users/{id}"</span>, (<span class="kw">string</span> id) =&gt; <span class="tp">Results</span>.Ok())
+   .RequireAuthorization(<span class="kw">new</span> <span class="tp">AuthorizeAttribute</span> { Roles = <span class="str">"Admin"</span> });
+
+<span class="cm">// Policy-based (claim)</span>
+app.MapPost(<span class="str">"/api/users/{id}/lock"</span>, (<span class="kw">string</span> id) =&gt; <span class="tp">Results</span>.Ok())
+   .RequireAuthorization(<span class="str">"CanManageUsers"</span>);
+
+<span class="cm">// Multiple requirements</span>
+[<span class="tp">Authorize</span>(Roles = <span class="str">"Editor,Admin"</span>, Policy = <span class="str">"CanManageUsers"</span>)]
+<span class="kw">public class</span> <span class="tp">UsersController</span> : <span class="tp">ControllerBase</span> { <span class="cm">/* ... */</span> }</code></pre>
+                    </div>
+                    <p>Each attribute resolves through the standard <code>IAuthorizationService</code>. The role and claim lookups go through Identity's <code>UserManager</code>, which reads from CSharpDB through the EF Core stores. There is nothing CSharpDB-specific in your authorization code — that is the point.</p>
+
+                    <h2>Approach 2: JWT Bearer for APIs and SPAs</h2>
+                    <p>For APIs and single-page apps you typically issue JWTs instead of cookies. Identity still owns user creation, password verification, and refresh-token storage. CSharpDB is the durable store under all of it.</p>
+
+                    <div class="code-block" data-title="JWT setup in Program.cs">
+                        <pre><code><span class="kw">using</span> Microsoft.AspNetCore.Authentication.JwtBearer;
+<span class="kw">using</span> Microsoft.IdentityModel.Tokens;
+<span class="kw">using</span> System.Text;
+
+<span class="kw">var</span> jwtKey = builder.Configuration[<span class="str">"Jwt:Key"</span>]!;
+<span class="kw">var</span> jwtIssuer = builder.Configuration[<span class="str">"Jwt:Issuer"</span>]!;
+
+builder.Services
+    .AddAuthentication(<span class="tp">JwtBearerDefaults</span>.AuthenticationScheme)
+    .AddJwtBearer(opt =&gt;
+    {
+        opt.TokenValidationParameters = <span class="kw">new</span> <span class="tp">TokenValidationParameters</span>
+        {
+            ValidateIssuer = <span class="kw">true</span>,
+            ValidateAudience = <span class="kw">true</span>,
+            ValidateLifetime = <span class="kw">true</span>,
+            ValidateIssuerSigningKey = <span class="kw">true</span>,
+            ValidIssuer = jwtIssuer,
+            ValidAudience = jwtIssuer,
+            IssuerSigningKey = <span class="kw">new</span> <span class="tp">SymmetricSecurityKey</span>(<span class="tp">Encoding</span>.UTF8.GetBytes(jwtKey))
+        };
+    });
+
+builder.Services.AddIdentityCore&lt;<span class="tp">AppUser</span>&gt;(opt =&gt;
+    {
+        opt.Password.RequiredLength = <span class="num">10</span>;
+        opt.User.RequireUniqueEmail = <span class="kw">true</span>;
+    })
+    .AddRoles&lt;<span class="tp">IdentityRole</span>&gt;()
+    .AddEntityFrameworkStores&lt;<span class="tp">AppDbContext</span>&gt;()
+    .AddSignInManager()
+    .AddDefaultTokenProviders();</code></pre>
+                    </div>
+                    <p><code>AddIdentityCore</code> is the API-friendly counterpart to <code>AddIdentity</code>. It skips the cookie scheme since JWT bearer is doing the authentication.</p>
+
+                    <div class="code-block" data-title="Issuing tokens">
+                        <pre><code><span class="kw">using</span> System.IdentityModel.Tokens.Jwt;
+<span class="kw">using</span> System.Security.Claims;
+
+app.MapPost(<span class="str">"/auth/token"</span>, <span class="kw">async</span> (
+    <span class="tp">LoginDto</span> dto,
+    <span class="tp">UserManager</span>&lt;<span class="tp">AppUser</span>&gt; users,
+    <span class="tp">IConfiguration</span> config) =&gt;
+{
+    <span class="kw">var</span> user = <span class="kw">await</span> users.FindByEmailAsync(dto.Email);
+    <span class="kw">if</span> (user <span class="kw">is null</span> || !<span class="kw">await</span> users.CheckPasswordAsync(user, dto.Password))
+        <span class="kw">return</span> <span class="tp">Results</span>.Unauthorized();
+
+    <span class="kw">var</span> roles = <span class="kw">await</span> users.GetRolesAsync(user);
+    <span class="kw">var</span> claims = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="tp">Claim</span>&gt;
+    {
+        <span class="kw">new</span>(<span class="tp">JwtRegisteredClaimNames</span>.Sub, user.Id),
+        <span class="kw">new</span>(<span class="tp">JwtRegisteredClaimNames</span>.Email, user.Email!),
+        <span class="kw">new</span>(<span class="tp">JwtRegisteredClaimNames</span>.Jti, <span class="tp">Guid</span>.NewGuid().ToString())
+    };
+    claims.AddRange(roles.Select(r =&gt; <span class="kw">new</span> <span class="tp">Claim</span>(<span class="tp">ClaimTypes</span>.Role, r)));
+
+    <span class="kw">var</span> key = <span class="kw">new</span> <span class="tp">SymmetricSecurityKey</span>(<span class="tp">Encoding</span>.UTF8.GetBytes(config[<span class="str">"Jwt:Key"</span>]!));
+    <span class="kw">var</span> token = <span class="kw">new</span> <span class="tp">JwtSecurityToken</span>(
+        issuer: config[<span class="str">"Jwt:Issuer"</span>],
+        audience: config[<span class="str">"Jwt:Issuer"</span>],
+        claims: claims,
+        expires: <span class="tp">DateTime</span>.UtcNow.AddMinutes(<span class="num">15</span>),
+        signingCredentials: <span class="kw">new</span> <span class="tp">SigningCredentials</span>(key, <span class="tp">SecurityAlgorithms</span>.HmacSha256));
+
+    <span class="kw">return</span> <span class="tp">Results</span>.Ok(<span class="kw">new</span> { token = <span class="kw">new</span> <span class="tp">JwtSecurityTokenHandler</span>().WriteToken(token) });
+});</code></pre>
+                    </div>
+                    <p>Refresh tokens deserve durable storage. The cleanest place is <code>AspNetUserTokens</code> — Identity already exposes <code>UserManager.SetAuthenticationTokenAsync</code> and <code>GetAuthenticationTokenAsync</code> for it, which write through CSharpDB. If you want richer rotation metadata (issued IP, device, parent token), add a <code>RefreshToken</code> entity to <code>AppDbContext</code> and rotate yourself.</p>
+
+                    <h2>Approach 3: A Lightweight Custom Store with the Collection API</h2>
+                    <p>You do not always need the full Identity surface. If you have a small set of internal users and no plans to add external logins, two-factor, or claim trees, a custom <code>IUserStore&lt;TUser&gt;</code> backed by a typed CSharpDB collection is dramatically simpler.</p>
+                    <div class="code-block" data-title="Custom user store">
+                        <pre><code><span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> Microsoft.AspNetCore.Identity;
+
+<span class="kw">public sealed class</span> <span class="tp">SimpleUser</span>
+{
+    <span class="kw">public string</span> Id { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="tp">Guid</span>.NewGuid().ToString(<span class="str">"N"</span>);
+    <span class="kw">public string</span> UserName { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
+    <span class="kw">public string</span> NormalizedUserName { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
+    <span class="kw">public string</span> PasswordHash { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
+    <span class="kw">public</span> <span class="tp">List</span>&lt;<span class="kw">string</span>&gt; Roles { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="kw">new</span>();
+}
+
+<span class="kw">public sealed class</span> <span class="tp">CollectionUserStore</span> :
+    <span class="tp">IUserStore</span>&lt;<span class="tp">SimpleUser</span>&gt;,
+    <span class="tp">IUserPasswordStore</span>&lt;<span class="tp">SimpleUser</span>&gt;,
+    <span class="tp">IUserRoleStore</span>&lt;<span class="tp">SimpleUser</span>&gt;
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+    <span class="kw">private</span> <span class="tp">Collection</span>&lt;<span class="tp">SimpleUser</span>&gt;? _users;
+
+    <span class="kw">public</span> <span class="tp">CollectionUserStore</span>(<span class="tp">Database</span> db) =&gt; _db = db;
+
+    <span class="kw">private async</span> <span class="tp">Task</span>&lt;<span class="tp">Collection</span>&lt;<span class="tp">SimpleUser</span>&gt;&gt; UsersAsync()
+    {
+        <span class="kw">if</span> (_users <span class="kw">is not null</span>) <span class="kw">return</span> _users;
+        _users = <span class="kw">await</span> _db.GetCollectionAsync&lt;<span class="tp">SimpleUser</span>&gt;(<span class="str">"users"</span>);
+        <span class="kw">await</span> _users.EnsureIndexAsync(u =&gt; u.NormalizedUserName);
+        <span class="kw">return</span> _users;
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">IdentityResult</span>&gt; CreateAsync(<span class="tp">SimpleUser</span> user, <span class="tp">CancellationToken</span> ct)
+    {
+        <span class="kw">var</span> users = <span class="kw">await</span> UsersAsync();
+        <span class="kw">await</span> users.PutAsync(user.Id, user);
+        <span class="kw">return</span> <span class="tp">IdentityResult</span>.Success;
+    }
+
+    <span class="kw">public async</span> <span class="tp">Task</span>&lt;<span class="tp">SimpleUser</span>?&gt; FindByNameAsync(<span class="kw">string</span> normalizedName, <span class="tp">CancellationToken</span> ct)
+    {
+        <span class="kw">var</span> users = <span class="kw">await</span> UsersAsync();
+        <span class="kw">await foreach</span> (<span class="kw">var</span> hit <span class="kw">in</span> users.FindByIndexAsync(u =&gt; u.NormalizedUserName, normalizedName))
+            <span class="kw">return</span> hit.Value;
+        <span class="kw">return null</span>;
+    }
+
+    <span class="kw">public</span> <span class="tp">Task</span> SetPasswordHashAsync(<span class="tp">SimpleUser</span> user, <span class="kw">string</span>? hash, <span class="tp">CancellationToken</span> ct)
+    { user.PasswordHash = hash ?? <span class="str">""</span>; <span class="kw">return</span> <span class="tp">Task</span>.CompletedTask; }
+
+    <span class="kw">public</span> <span class="tp">Task</span>&lt;<span class="kw">string</span>?&gt; GetPasswordHashAsync(<span class="tp">SimpleUser</span> user, <span class="tp">CancellationToken</span> ct)
+        =&gt; <span class="tp">Task</span>.FromResult&lt;<span class="kw">string</span>?&gt;(user.PasswordHash);
+
+    <span class="cm">// Implement remaining IUserStore / IUserRoleStore members against the same collection.</span>
+}</code></pre>
+                    </div>
+                    <p>Register it in DI and Identity wires up the rest:</p>
+                    <div class="code-block" data-title="Registering the custom store">
+                        <pre><code>builder.Services.AddSingleton&lt;<span class="tp">Database</span>&gt;(_ =&gt;
+    <span class="tp">Database</span>.OpenAsync(<span class="str">"app.db"</span>).GetAwaiter().GetResult());
+
+builder.Services.AddScoped&lt;<span class="tp">IUserStore</span>&lt;<span class="tp">SimpleUser</span>&gt;, <span class="tp">CollectionUserStore</span>&gt;();
+
+builder.Services
+    .AddIdentityCore&lt;<span class="tp">SimpleUser</span>&gt;()
+    .AddDefaultTokenProviders();</code></pre>
+                    </div>
+                    <p>Two reasons to take this path: collection point reads are sub-microsecond, and there is no migration step. The trade-off is that you implement the <code>IUserStore</code> surface yourself for any feature you want — claims, lockout, two-factor, external logins. For most apps, the EF Core path is the right default. Reach for the Collection API when you specifically want minimal moving parts and can live with a smaller feature set.</p>
+
+                    <h2>Persisting Data Protection Keys</h2>
+                    <p>ASP.NET Core encrypts auth cookies and antiforgery tokens with a rotating key ring managed by the Data Protection system. By default that ring is written to <code>%LOCALAPPDATA%</code> on Windows or a profile directory on Linux. On a clean container or a fresh deploy, the keys are gone — and every existing cookie becomes invalid.</p>
+                    <p>For a single-node CSharpDB app, the cleanest fix is to store the key ring in the same database file. A small custom <code>IXmlRepository</code> handles it:</p>
+                    <div class="code-block" data-title="CSharpDbXmlRepository.cs">
+                        <pre><code><span class="kw">using</span> System.Xml.Linq;
+<span class="kw">using</span> CSharpDB.Engine;
+<span class="kw">using</span> Microsoft.AspNetCore.DataProtection.Repositories;
+
+<span class="kw">public sealed class</span> <span class="tp">DataProtectionKey</span>
+{
+    <span class="kw">public string</span> Id { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="tp">Guid</span>.NewGuid().ToString(<span class="str">"N"</span>);
+    <span class="kw">public string</span> Xml { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
+}
+
+<span class="kw">public sealed class</span> <span class="tp">CSharpDbXmlRepository</span> : <span class="tp">IXmlRepository</span>
+{
+    <span class="kw">private readonly</span> <span class="tp">Database</span> _db;
+
+    <span class="kw">public</span> <span class="tp">CSharpDbXmlRepository</span>(<span class="tp">Database</span> db) =&gt; _db = db;
+
+    <span class="kw">public</span> <span class="tp">IReadOnlyCollection</span>&lt;<span class="tp">XElement</span>&gt; GetAllElements()
+    {
+        <span class="kw">var</span> keys = _db.GetCollectionAsync&lt;<span class="tp">DataProtectionKey</span>&gt;(<span class="str">"dp_keys"</span>).Result;
+        <span class="kw">var</span> list = <span class="kw">new</span> <span class="tp">List</span>&lt;<span class="tp">XElement</span>&gt;();
+        <span class="kw">foreach</span> (<span class="kw">var</span> entry <span class="kw">in</span> keys.ScanAsync().ToBlockingEnumerable())
+            list.Add(<span class="tp">XElement</span>.Parse(entry.Value.Xml));
+        <span class="kw">return</span> list;
+    }
+
+    <span class="kw">public void</span> StoreElement(<span class="tp">XElement</span> element, <span class="kw">string</span> friendlyName)
+    {
+        <span class="kw">var</span> keys = _db.GetCollectionAsync&lt;<span class="tp">DataProtectionKey</span>&gt;(<span class="str">"dp_keys"</span>).Result;
+        keys.PutAsync(friendlyName, <span class="kw">new</span> <span class="tp">DataProtectionKey</span> { Id = friendlyName, Xml = element.ToString() }).Wait();
+    }
+}</code></pre>
+                    </div>
+                    <div class="code-block" data-title="Wiring it up">
+                        <pre><code>builder.Services
+    .AddDataProtection()
+    .SetApplicationName(<span class="str">"my-app"</span>)
+    .AddKeyManagementOptions(opt =&gt;
+    {
+        opt.XmlRepository = <span class="kw">new</span> <span class="tp">CSharpDbXmlRepository</span>(database);
+    });</code></pre>
+                    </div>
+                    <p>Now the key ring lives in <code>app.db</code> alongside the users it protects, and cookies survive every restart and redeploy.</p>
+
+                    <h2>Operations Notes</h2>
+                    <p>A few things worth knowing when you take this to production on a single node:</p>
+                    <ul>
+                        <li><strong>Concurrency.</strong> The Identity pipeline opens many short EF Core scopes per request. The CSharpDB EF Core provider handles the concurrent reader/writer story; just keep the connection lifetime owned by EF Core's scoped <code>DbContext</code>.</li>
+                        <li><strong>Backups.</strong> Because everything lives in one file, a backup is a copy. Use the engine's online backup API or stop the app and copy <code>app.db</code> plus its WAL.</li>
+                        <li><strong>Admin UI.</strong> The CSharpDB Admin app can open the same file (read-only or read-write) so ops can unlock an account or rotate a claim without writing screens.</li>
+                        <li><strong>Migrations on deploy.</strong> <code>db.Database.MigrateAsync()</code> at startup is fine for single-node deploys. The provider serializes concurrent migrations across processes with <code>__EFMigrationsLock</code>.</li>
+                        <li><strong>Storage tuning.</strong> For login-heavy workloads, <code>UseStoragePreset(CSharpDbStoragePreset.WriteOptimized)</code> on the EF Core builder noticeably improves lockout-counter and token-write throughput.</li>
+                    </ul>
+
+                    <h2>What You Get</h2>
+                    <p>With one EF Core provider swap and a normal Identity setup, your application gets PBKDF2-hashed passwords, lockout, two-factor scaffolding, external login slots, role and claim authorization, refresh-token storage, and a Data Protection key ring — all backed by a single ACID file you can copy, ship, and back up. The Identity code in your app stays the standard, well-documented surface, and CSharpDB is the part that goes away.</p>
+                    <p>If you are starting a new internal tool, a desktop Blazor app, or a self-hosted edge service, this is a complete identity story without a database server.</p>
+
+                    <h2>Try the Runnable Sample</h2>
+                    <p>The repo includes a runnable companion at <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/aspnet-core-identity">samples/aspnet-core-identity</a>. It implements the v1-friendly variant of this post — a small custom user store over the <code>CSharpDB.Data</code> ADO.NET provider, with the same cookie + JWT pipeline, role and policy authorization, lockout, and a seeded admin.</p>
+                    <div class="code-block" data-title="Terminal">
+                        <pre><code>dotnet run --project samples/aspnet-core-identity/AspNetCoreIdentitySample.csproj</code></pre>
+                    </div>
+                    <p>The sample boots an ASP.NET Core 10 web app at <code>http://localhost:5290</code>, seeds an admin (<code>admin@example.com</code> / <code>ChangeMe!2026</code>), and exposes minimal-API endpoints for cookie login, JWT issuance, role-based authorization, and policy-based authorization. A <code>sample.http</code> file in the project walks through the full flow.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="csharpdb-v3-6-0-admin-and-csharp-extensibility.html">Next: Inside CSharpDB v3.6.0 &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
