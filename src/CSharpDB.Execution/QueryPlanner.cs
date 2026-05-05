@@ -220,6 +220,7 @@ public sealed class QueryPlanner
     /// <summary>Cache of parsed trigger bodies to avoid re-parsing on every row.</summary>
     private readonly Dictionary<string, List<Statement>> _triggerBodyCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _nextRowIdCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RowIdReservationLease> _rowIdReservationLeases = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _dirtyNextRowIdTables = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CompiledExpressionCacheKey, Func<DbValue[], DbValue>> _compiledExpressionCache = new();
     private readonly Dictionary<CompiledExpressionCacheKey, SpanExpressionEvaluator> _compiledSpanExpressionCache = new();
@@ -255,6 +256,7 @@ public sealed class QueryPlanner
     private long _observedSchemaVersion;
     private readonly Func<string, long?>? _nextRowIdHintProvider;
     private readonly Func<string, long, long>? _nextRowIdReservationProvider;
+    private readonly Func<string, long, int, (long Start, long EndExclusive)>? _nextRowIdRangeReservationProvider;
     private readonly Action<string, long>? _nextRowIdObservationProvider;
     private readonly bool _useTransientNextRowIdHints;
 
@@ -324,6 +326,42 @@ public sealed class QueryPlanner
         public byte[] Buffer { get; set; } = Array.Empty<byte>();
     }
 
+    private sealed class RowIdReservationLease
+    {
+        public RowIdReservationLease(long nextRowId, long endExclusive)
+        {
+            NextRowId = nextRowId;
+            EndExclusive = endExclusive;
+        }
+
+        public long NextRowId { get; private set; }
+        public long EndExclusive { get; }
+
+        public bool TryReserve(long minimumNextRowId, out long rowId)
+        {
+            if (NextRowId < minimumNextRowId)
+                NextRowId = minimumNextRowId;
+
+            if (NextRowId >= EndExclusive)
+            {
+                rowId = 0;
+                return false;
+            }
+
+            rowId = NextRowId;
+            NextRowId = checked(NextRowId + 1);
+            return true;
+        }
+
+        public bool AdvanceTo(long nextRowId)
+        {
+            if (NextRowId < nextRowId)
+                NextRowId = nextRowId;
+
+            return NextRowId < EndExclusive;
+        }
+    }
+
     private sealed class ResolvedInsertIndexMutationPlan
     {
         public required IndexSchema Index { get; init; }
@@ -361,6 +399,31 @@ public sealed class QueryPlanner
         Action<string, long>? nextRowIdObservationProvider = null,
         bool useTransientNextRowIdHints = false,
         DbFunctionRegistry? functions = null)
+        : this(
+            pager,
+            catalog,
+            recordSerializer,
+            tableRowCountProvider,
+            nextRowIdHintProvider,
+            nextRowIdReservationProvider,
+            nextRowIdRangeReservationProvider: null,
+            nextRowIdObservationProvider,
+            useTransientNextRowIdHints,
+            functions)
+    {
+    }
+
+    internal QueryPlanner(
+        Pager pager,
+        SchemaCatalog catalog,
+        IRecordSerializer? recordSerializer,
+        Func<string, long?>? tableRowCountProvider,
+        Func<string, long?>? nextRowIdHintProvider,
+        Func<string, long, long>? nextRowIdReservationProvider,
+        Func<string, long, int, (long Start, long EndExclusive)>? nextRowIdRangeReservationProvider,
+        Action<string, long>? nextRowIdObservationProvider,
+        bool useTransientNextRowIdHints,
+        DbFunctionRegistry? functions)
     {
         _pager = pager;
         _catalog = catalog;
@@ -372,6 +435,7 @@ public sealed class QueryPlanner
         _tableRowCountProvider = tableRowCountProvider;
         _nextRowIdHintProvider = nextRowIdHintProvider;
         _nextRowIdReservationProvider = nextRowIdReservationProvider;
+        _nextRowIdRangeReservationProvider = nextRowIdRangeReservationProvider;
         _nextRowIdObservationProvider = nextRowIdObservationProvider;
         _observedSchemaVersion = catalog.SchemaVersion;
         _useTransientNextRowIdHints = useTransientNextRowIdHints;
@@ -511,6 +575,7 @@ public sealed class QueryPlanner
 
         _triggerBodyCache.Clear();
         _nextRowIdCache.Clear();
+        _rowIdReservationLeases.Clear();
         _dirtyNextRowIdTables.Clear();
         _compiledExpressionCache.Clear();
         _compiledSpanExpressionCache.Clear();
@@ -602,6 +667,7 @@ public sealed class QueryPlanner
         for (int i = 0; i < foreignKeys.Length; i++)
             await CreateForeignKeySupportIndexAsync(schema, foreignKeys[i], ct);
         _nextRowIdCache.Remove(stmt.TableName);
+        _rowIdReservationLeases.Remove(stmt.TableName);
         _dirtyNextRowIdTables.Remove(stmt.TableName);
         return new QueryResult(0);
     }
@@ -624,6 +690,7 @@ public sealed class QueryPlanner
 
         await _catalog.DropTableAsync(stmt.TableName, ct);
         _nextRowIdCache.Remove(stmt.TableName);
+        _rowIdReservationLeases.Remove(stmt.TableName);
         _dirtyNextRowIdTables.Remove(stmt.TableName);
         return new QueryResult(0);
     }
@@ -776,6 +843,8 @@ public sealed class QueryPlanner
                 await RenameTableWithDependenciesAsync(stmt.TableName, rename.NewTableName, schema, ct);
                 if (_nextRowIdCache.Remove(stmt.TableName, out long nextRowId))
                     _nextRowIdCache[rename.NewTableName] = nextRowId;
+                if (_rowIdReservationLeases.Remove(stmt.TableName, out RowIdReservationLease? rowIdLease))
+                    _rowIdReservationLeases[rename.NewTableName] = rowIdLease;
                 if (_dirtyNextRowIdTables.Remove(stmt.TableName))
                     _dirtyNextRowIdTables.Add(rename.NewTableName);
                 break;
@@ -2728,6 +2797,7 @@ public sealed class QueryPlanner
             foreach (var valueRow in stmt.ValueRows)
             {
                 var row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
+                int rowIdReservationCountHint = Math.Max(1, stmt.ValueRows.Count - inserted);
                 InsertRowResult insertRow = await ExecuteResolvedInsertRowAsync(
                     stmt.TableName,
                     schema,
@@ -2737,6 +2807,7 @@ public sealed class QueryPlanner
                     mutationContext,
                     adjustTableRowCount: false,
                     reusableEncodingBuffer,
+                    rowIdReservationCountHint,
                     ct);
                 if (stmt.ValueRows.Count == 1)
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
@@ -4471,6 +4542,7 @@ public sealed class QueryPlanner
             for (int i = 0; i < insert.RowCount; i++)
             {
                 DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i]);
+                int rowIdReservationCountHint = Math.Max(1, insert.RowCount - inserted);
 
                 InsertRowResult insertRow = await ExecuteResolvedInsertRowAsync(
                     insert.TableName,
@@ -4481,6 +4553,7 @@ public sealed class QueryPlanner
                     mutationContext,
                     adjustTableRowCount: false,
                     reusableEncodingBuffer,
+                    rowIdReservationCountHint,
                     ct);
                 if (insert.RowCount == 1)
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
@@ -4546,6 +4619,7 @@ public sealed class QueryPlanner
                     insertTraversalPath,
                     insertTraversalSet,
                     reusableEncodingBuffer,
+                    rowIdReservationCountHint: Math.Max(1, insert.RowCount - inserted),
                     ct);
                 if (insert.RowCount == 1)
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
@@ -4599,9 +4673,16 @@ public sealed class QueryPlanner
         List<uint>? traversalPath,
         HashSet<uint>? traversalSet,
         ReusableInsertEncodingBuffer? reusableEncodingBuffer,
+        int rowIdReservationCountHint,
         CancellationToken ct)
     {
-        var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+        var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(
+            tableName,
+            schema,
+            tree,
+            row,
+            rowIdReservationCountHint,
+            ct);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
             schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
@@ -4623,7 +4704,13 @@ public sealed class QueryPlanner
             catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
             {
                 InvalidateRowIdCache(tableName);
-                (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+                (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(
+                    tableName,
+                    schema,
+                    tree,
+                    row,
+                    rowIdReservationCountHint,
+                    ct);
                 generatedIntegerIdentity = autoGeneratedRowId &&
                     schema.PrimaryKeyColumnIndex >= 0 &&
                     schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
@@ -14807,12 +14894,19 @@ public sealed class QueryPlanner
         ForeignKeyMutationContext? mutationContext,
         bool adjustTableRowCount,
         ReusableInsertEncodingBuffer? reusableEncodingBuffer,
+        int rowIdReservationCountHint,
         CancellationToken ct)
     {
         // BEFORE INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Insert, null, row, schema, ct);
 
-        var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+        var (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(
+            tableName,
+            schema,
+            tree,
+            row,
+            rowIdReservationCountHint,
+            ct);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
             schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
@@ -14833,7 +14927,13 @@ public sealed class QueryPlanner
             {
                 // Another writer may have advanced rowids; reload the high-water mark once and retry.
                 InvalidateRowIdCache(tableName);
-                (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(tableName, schema, tree, row, ct);
+                (rowId, autoGeneratedRowId) = await ResolveRowIdForInsertAsync(
+                    tableName,
+                    schema,
+                    tree,
+                    row,
+                    rowIdReservationCountHint,
+                    ct);
                 generatedIntegerIdentity = autoGeneratedRowId &&
                     schema.PrimaryKeyColumnIndex >= 0 &&
                     schema.Columns[schema.PrimaryKeyColumnIndex].IsIdentity &&
@@ -14883,7 +14983,12 @@ public sealed class QueryPlanner
     }
 
     private async ValueTask<(long RowId, bool AutoGenerated)> ResolveRowIdForInsertAsync(
-        string tableName, TableSchema schema, BTree tree, DbValue[] row, CancellationToken ct)
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        DbValue[] row,
+        int rowIdReservationCountHint,
+        CancellationToken ct)
     {
         int pkIdx = schema.PrimaryKeyColumnIndex;
         if (pkIdx >= 0 &&
@@ -14898,7 +15003,7 @@ public sealed class QueryPlanner
                 return (explicitRowId, false);
             }
 
-            long rowId = await AllocateRowIdAsync(tableName, schema, tree, ct);
+            long rowId = await AllocateRowIdAsync(tableName, schema, tree, rowIdReservationCountHint, ct);
             row[pkIdx] = DbValue.FromInteger(rowId);
             return (rowId, true);
         }
@@ -14916,25 +15021,61 @@ public sealed class QueryPlanner
             return (rowId, false);
         }
 
-        return (await AllocateRowIdAsync(tableName, schema, tree, ct), true);
+        return (await AllocateRowIdAsync(tableName, schema, tree, rowIdReservationCountHint, ct), true);
     }
 
-    private async ValueTask<long> AllocateRowIdAsync(string tableName, TableSchema schema, BTree tree, CancellationToken ct)
+    private async ValueTask<long> AllocateRowIdAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        int rowIdReservationCountHint,
+        CancellationToken ct)
     {
         if (!_nextRowIdCache.TryGetValue(tableName, out long nextRowId))
             nextRowId = await LoadNextRowIdAsync(tableName, schema, tree, ct);
 
-        long rowId = _nextRowIdReservationProvider is not null
-            ? _nextRowIdReservationProvider(tableName, nextRowId)
-            : nextRowId;
+        long rowId;
+        if (_nextRowIdRangeReservationProvider is not null)
+            rowId = ReserveRowIdFromLease(tableName, nextRowId, rowIdReservationCountHint);
+        else if (_nextRowIdReservationProvider is not null)
+            rowId = _nextRowIdReservationProvider(tableName, nextRowId);
+        else
+            rowId = nextRowId;
 
         UpdateNextRowIdState(tableName, schema, checked(rowId + 1));
         return rowId;
     }
 
+    private long ReserveRowIdFromLease(string tableName, long minimumNextRowId, int rowIdReservationCountHint)
+    {
+        if (_rowIdReservationLeases.TryGetValue(tableName, out RowIdReservationLease? lease) &&
+            lease.TryReserve(minimumNextRowId, out long leasedRowId))
+        {
+            return leasedRowId;
+        }
+
+        _rowIdReservationLeases.Remove(tableName);
+
+        int reservationCount = Math.Max(1, rowIdReservationCountHint);
+        var (start, endExclusive) = _nextRowIdRangeReservationProvider!(tableName, minimumNextRowId, reservationCount);
+        if (start < minimumNextRowId || endExclusive <= start)
+        {
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                $"Invalid row-id reservation range [{start}, {endExclusive}) for table '{tableName}'.");
+        }
+
+        long nextLeaseRowId = checked(start + 1);
+        if (nextLeaseRowId < endExclusive)
+            _rowIdReservationLeases[tableName] = new RowIdReservationLease(nextLeaseRowId, endExclusive);
+
+        return start;
+    }
+
     private void InvalidateRowIdCache(string tableName)
     {
         _nextRowIdCache.Remove(tableName);
+        _rowIdReservationLeases.Remove(tableName);
     }
 
     private async ValueTask<long> LoadNextRowIdAsync(string tableName, TableSchema schema, BTree tree, CancellationToken ct)
@@ -15005,6 +15146,11 @@ public sealed class QueryPlanner
 
         _dirtyNextRowIdTables.Add(tableName);
         _nextRowIdObservationProvider?.Invoke(tableName, nextRowId);
+        if (_rowIdReservationLeases.TryGetValue(tableName, out RowIdReservationLease? lease) &&
+            !lease.AdvanceTo(nextRowId))
+        {
+            _rowIdReservationLeases.Remove(tableName);
+        }
 
         // Explicit rowid inserts can push the durable high-water mark forward, but persisting
         // every bump rewrites the schema catalog row on each commit. Mark the persisted hint as

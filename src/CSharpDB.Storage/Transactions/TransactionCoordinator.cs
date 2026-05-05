@@ -16,6 +16,7 @@ internal sealed class TransactionCoordinator : IDisposable
     private readonly SemaphoreSlim _writerLock = new(1, 1);
     private readonly SemaphoreSlim _commitLock = new(1, 1);
     private readonly Dictionary<uint, long> _pageLastWriteVersion = new();
+    private readonly Dictionary<uint, List<PendingPageImage>> _pendingPageImages = new();
     private readonly Dictionary<LogicalConflictKey, long> _logicalLastWriteVersion = new();
     private readonly Dictionary<long, long> _activeExplicitTransactions = new();
     private long _currentTransactionId;
@@ -395,6 +396,28 @@ internal sealed class TransactionCoordinator : IDisposable
             return _pageLastWriteVersion.TryGetValue(pageId, out lastWriteVersion);
     }
 
+    internal bool TryGetPendingPageImage(uint pageId, long commitVersion, out ReadOnlyMemory<byte> page)
+    {
+        lock (_pageVersionGate)
+        {
+            if (_pendingPageImages.TryGetValue(pageId, out List<PendingPageImage>? images))
+            {
+                for (int i = images.Count - 1; i >= 0; i--)
+                {
+                    PendingPageImage image = images[i];
+                    if (image.CommitVersion == commitVersion)
+                    {
+                        page = image.Page;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        page = default;
+        return false;
+    }
+
     public async ValueTask WaitForCommitStateChangeAsync(CancellationToken ct = default)
     {
         Task waitTask;
@@ -477,6 +500,13 @@ internal sealed class TransactionCoordinator : IDisposable
         uint[] pageIds,
         int pageCount,
         HashSet<LogicalConflictKey> logicalWriteKeys)
+        => ReservePendingCommit(pageIds, pageCount, pageImages: null, logicalWriteKeys: logicalWriteKeys);
+
+    internal PendingCommitReservation ReservePendingCommit(
+        uint[] pageIds,
+        int pageCount,
+        IReadOnlyDictionary<uint, byte[]>? pageImages,
+        HashSet<LogicalConflictKey> logicalWriteKeys)
     {
         ArgumentNullException.ThrowIfNull(pageIds);
         ArgumentNullException.ThrowIfNull(logicalWriteKeys);
@@ -486,14 +516,20 @@ internal sealed class TransactionCoordinator : IDisposable
 
         (PendingPageVersion[] previousVersions, int previousVersionCount) = BuildPendingPageVersionBuffer(pageIds, pageCount);
         (PendingLogicalVersion[] previousLogicalVersions, int previousLogicalVersionCount) = BuildPendingLogicalVersionBuffer(logicalWriteKeys);
-        return ReservePendingCommitCore(previousVersions, previousVersionCount, previousLogicalVersions, previousLogicalVersionCount);
+        return ReservePendingCommitCore(
+            previousVersions,
+            previousVersionCount,
+            previousLogicalVersions,
+            previousLogicalVersionCount,
+            pageImages);
     }
 
     private PendingCommitReservation ReservePendingCommitCore(
         PendingPageVersion[] previousVersions,
         int previousVersionCount,
         PendingLogicalVersion[] previousLogicalVersions,
-        int previousLogicalVersionCount)
+        int previousLogicalVersionCount,
+        IReadOnlyDictionary<uint, byte[]>? pageImages = null)
     {
         long commitVersion;
         lock (_pageVersionGate)
@@ -509,6 +545,8 @@ internal sealed class TransactionCoordinator : IDisposable
                     : null);
                 _pageLastWriteVersion[pageId] = commitVersion;
             }
+
+            TrackPendingPageImages_NoLock(commitVersion, previousVersions, previousVersionCount, pageImages);
 
             for (int i = 0; i < previousLogicalVersionCount; i++)
             {
@@ -557,6 +595,7 @@ internal sealed class TransactionCoordinator : IDisposable
         }
         finally
         {
+            RemovePendingPageImages(reservation);
             reservation.ReleaseBuffers();
         }
     }
@@ -604,6 +643,8 @@ internal sealed class TransactionCoordinator : IDisposable
                     else
                         _logicalLastWriteVersion.Remove(logicalWriteKey);
                 }
+
+                RemovePendingPageImages_NoLock(reservation);
             }
         }
         finally
@@ -646,6 +687,52 @@ internal sealed class TransactionCoordinator : IDisposable
 
         if (releaseBarrier)
             _beginBarrier.Release();
+    }
+
+    private void TrackPendingPageImages_NoLock(
+        long commitVersion,
+        PendingPageVersion[] previousVersions,
+        int previousVersionCount,
+        IReadOnlyDictionary<uint, byte[]>? pageImages)
+    {
+        if (pageImages is null)
+            return;
+
+        for (int i = 0; i < previousVersionCount; i++)
+        {
+            uint pageId = previousVersions[i].PageId;
+            if (!pageImages.TryGetValue(pageId, out byte[]? pageImage))
+                continue;
+
+            if (!_pendingPageImages.TryGetValue(pageId, out List<PendingPageImage>? images))
+            {
+                images = [];
+                _pendingPageImages[pageId] = images;
+            }
+
+            images.Add(new PendingPageImage(commitVersion, pageImage.ToArray()));
+        }
+    }
+
+    private void RemovePendingPageImages(PendingCommitReservation reservation)
+    {
+        lock (_pageVersionGate)
+            RemovePendingPageImages_NoLock(reservation);
+    }
+
+    private void RemovePendingPageImages_NoLock(PendingCommitReservation reservation)
+    {
+        PendingPageVersion[] previousPageVersions = reservation.PreviousPageVersions;
+        for (int i = 0; i < reservation.PreviousPageVersionCount; i++)
+        {
+            uint pageId = previousPageVersions[i].PageId;
+            if (!_pendingPageImages.TryGetValue(pageId, out List<PendingPageImage>? images))
+                continue;
+
+            images.RemoveAll(image => image.CommitVersion == reservation.CommitVersion);
+            if (images.Count == 0)
+                _pendingPageImages.Remove(pageId);
+        }
     }
 
     private static (PendingPageVersion[] Buffer, int Count) BuildPendingPageVersionBuffer(IEnumerable<uint> pageIds)
@@ -918,4 +1005,6 @@ internal sealed class TransactionCoordinator : IDisposable
     internal readonly record struct PendingPageVersion(uint PageId, long? PreviousVersion);
 
     internal readonly record struct PendingLogicalVersion(LogicalConflictKey LogicalWriteKey, long? PreviousVersion);
+
+    private readonly record struct PendingPageImage(long CommitVersion, byte[] Page);
 }

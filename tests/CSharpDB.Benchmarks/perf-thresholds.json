@@ -701,6 +701,38 @@
       ],
       "maxMeanRegressionPercent": 25.0,
       "skipAllocationComparison": true,
+      "requiredCurrentRows": [
+        {
+          "match": {
+            "Name": "InsertFanIn_AutoCommitConcurrent_ExplicitId_W8_Batch250us_5s"
+          },
+          "extraInfoChecks": [
+            {
+              "key": "rowsPerSec",
+              "minValue": 700.0
+            },
+            {
+              "key": "commitsPerFlush",
+              "minValue": 2.5
+            }
+          ]
+        },
+        {
+          "match": {
+            "Name": "InsertFanIn_AutoCommitConcurrent_AutoId_W8_Batch250us_5s"
+          },
+          "extraInfoChecks": [
+            {
+              "key": "rowsPerSec",
+              "minValue": 700.0
+            },
+            {
+              "key": "commitsPerFlush",
+              "minValue": 2.5
+            }
+          ]
+        },
+      ],
       "overrides": [
         {
           "match": {

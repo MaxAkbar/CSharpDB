@@ -442,6 +442,127 @@ function Test-ExtraInfoChecks
 
             $notes.Add("$key OK (baseline=$baselineRaw, current=$currentRaw)") | Out-Null
         }
+
+        $minValueText = [string](Get-OptionalProperty -Object $check -Name "minValue" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($minValueText))
+        {
+            $minValue = [double]$minValueText
+            if ($currentValue -lt $minValue)
+            {
+                $regressed = $true
+                $formattedMinValue = "{0:N2}" -f $minValue
+                $notes.Add("$key>=$formattedMinValue (current=$currentRaw)") | Out-Null
+                continue
+            }
+
+            $formattedMinValue = "{0:N2}" -f $minValue
+            $notes.Add("$key>=$formattedMinValue OK (current=$currentRaw)") | Out-Null
+        }
+
+        $maxValueText = [string](Get-OptionalProperty -Object $check -Name "maxValue" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($maxValueText))
+        {
+            $maxValue = [double]$maxValueText
+            if ($currentValue -gt $maxValue)
+            {
+                $regressed = $true
+                $formattedMaxValue = "{0:N2}" -f $maxValue
+                $notes.Add("$key<=$formattedMaxValue (current=$currentRaw)") | Out-Null
+                continue
+            }
+
+            $formattedMaxValue = "{0:N2}" -f $maxValue
+            $notes.Add("$key<=$formattedMaxValue OK (current=$currentRaw)") | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        Regressed = $regressed
+        Notes = [string[]]$notes.ToArray()
+    }
+}
+
+function Test-CurrentExtraInfoChecks
+{
+    param(
+        [Parameter(Mandatory = $true)]$CurrentRow,
+        [Parameter(Mandatory = $false)]$Checks
+    )
+
+    $notes = New-Object System.Collections.Generic.List[string]
+    $regressed = $false
+
+    if ($null -eq $Checks)
+    {
+        return [pscustomobject]@{
+            Regressed = $false
+            Notes = [string[]]@()
+        }
+    }
+
+    foreach ($check in @($Checks))
+    {
+        if ($null -eq $check)
+        {
+            continue
+        }
+
+        $key = [string](Get-OptionalProperty -Object $check -Name "key" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($key))
+        {
+            throw "requiredCurrentRows extraInfoChecks entries must define a key."
+        }
+
+        $currentRaw = Get-ExtraInfoValue -Row $CurrentRow -Key $key
+        if ($null -eq $currentRaw)
+        {
+            $regressed = $true
+            $notes.Add("ExtraInfo $key missing") | Out-Null
+            continue
+        }
+
+        $currentValue = Convert-ComparableNumber -Value $currentRaw -Description "current ExtraInfo '$key'"
+
+        $minRatioText = [string](Get-OptionalProperty -Object $check -Name "minRatio" -DefaultValue "")
+        $maxRatioText = [string](Get-OptionalProperty -Object $check -Name "maxRatio" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($minRatioText) -or -not [string]::IsNullOrWhiteSpace($maxRatioText))
+        {
+            $regressed = $true
+            $notes.Add("$key ratio check requires a baseline row") | Out-Null
+            continue
+        }
+
+        $minValueText = [string](Get-OptionalProperty -Object $check -Name "minValue" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($minValueText))
+        {
+            $minValue = [double]$minValueText
+            if ($currentValue -lt $minValue)
+            {
+                $regressed = $true
+                $formattedMinValue = "{0:N2}" -f $minValue
+                $notes.Add("$key>=$formattedMinValue (current=$currentRaw)") | Out-Null
+                continue
+            }
+
+            $formattedMinValue = "{0:N2}" -f $minValue
+            $notes.Add("$key>=$formattedMinValue OK (current=$currentRaw)") | Out-Null
+        }
+
+        $maxValueText = [string](Get-OptionalProperty -Object $check -Name "maxValue" -DefaultValue "")
+        if (-not [string]::IsNullOrWhiteSpace($maxValueText))
+        {
+            $maxValue = [double]$maxValueText
+            if ($currentValue -gt $maxValue)
+            {
+                $regressed = $true
+                $formattedMaxValue = "{0:N2}" -f $maxValue
+                $notes.Add("$key<=$formattedMaxValue (current=$currentRaw)") | Out-Null
+                continue
+            }
+
+            $formattedMaxValue = "{0:N2}" -f $maxValue
+            $notes.Add("$key<=$formattedMaxValue OK (current=$currentRaw)") | Out-Null
+        }
     }
 
     return [pscustomobject]@{
@@ -956,6 +1077,72 @@ foreach ($check in $config.checks)
     $baselineRows = Import-Csv -Path $baselineFile
     $currentRows = Import-Csv -Path $currentFile
 
+    $requiredCurrentRows = Get-OptionalProperty -Object $check -Name "requiredCurrentRows" -DefaultValue @()
+    foreach ($requiredCurrent in @($requiredCurrentRows))
+    {
+        if ($null -eq $requiredCurrent)
+        {
+            continue
+        }
+
+        $criteria = Get-OptionalProperty -Object $requiredCurrent -Name "match" -DefaultValue $requiredCurrent
+        $currentMatch = $currentRows |
+            Where-Object { Test-RowMatch -Row $_ -Criteria $criteria } |
+            Select-Object -First 1
+        $requiredCurrentKey = Build-RowKey -Row $criteria -KeyColumns @($criteria.PSObject.Properties.Name)
+        if ($null -eq $currentMatch)
+        {
+            Add-ComparisonResult -Results $results `
+                -Csv $csvName `
+                -Key $requiredCurrentKey `
+                -Enforcement $machineCompatibility.Summary `
+                -Status "FAIL" `
+                -Notes "Required current row missing"
+            $failureCount++
+            continue
+        }
+
+        $currentOnlyExtraInfoChecks = Get-OptionalProperty -Object $requiredCurrent -Name "extraInfoChecks" -DefaultValue @()
+        $currentOnlyExtraInfoEvaluation = Test-CurrentExtraInfoChecks -CurrentRow $currentMatch -Checks $currentOnlyExtraInfoChecks
+        $currentOnlyStatus =
+        if ($machineCompatibility.Classification -eq "different")
+        {
+            "SKIP"
+        }
+        elseif ($currentOnlyExtraInfoEvaluation.Regressed)
+        {
+            $(if ($machineCompatibility.Classification -eq "compatible") { "WARN" } else { "FAIL" })
+        }
+        else
+        {
+            "PASS"
+        }
+
+        if ($currentOnlyStatus -eq "FAIL")
+        {
+            $failureCount++
+        }
+
+        $currentOnlyNotes =
+        if ($currentOnlyExtraInfoEvaluation.Notes.Count -gt 0)
+        {
+            "Current row present ; $($currentOnlyExtraInfoEvaluation.Notes -join '; ')"
+        }
+        else
+        {
+            "Current row present"
+        }
+
+        Add-ComparisonResult -Results $results `
+            -Csv $csvName `
+            -Key $requiredCurrentKey `
+            -CurrentMean ([string](Get-OptionalProperty -Object $currentMatch -Name "Mean" -DefaultValue "")) `
+            -CurrentAlloc ([string](Get-OptionalProperty -Object $currentMatch -Name "Allocated" -DefaultValue "")) `
+            -Enforcement $machineCompatibility.Summary `
+            -Status $currentOnlyStatus `
+            -Notes $currentOnlyNotes
+    }
+
     $rowsToCompare = New-Object System.Collections.Generic.List[object]
     $requiredRows = Get-OptionalProperty -Object $check -Name "requiredRows" -DefaultValue $null
     if ($null -eq $requiredRows)
@@ -1105,6 +1292,7 @@ foreach ($check in $config.checks)
         $maxMeanRegression = [double](Get-OptionalProperty -Object $check -Name "maxMeanRegressionPercent" -DefaultValue $defaultMeanRegression)
         $maxAllocRegressionPct = [double](Get-OptionalProperty -Object $check -Name "maxAllocRegressionPercent" -DefaultValue $defaultAllocRegressionPct)
         $maxAllocRegressionBytes = [double](Get-OptionalProperty -Object $check -Name "maxAllocRegressionBytes" -DefaultValue $defaultAllocRegressionBytes)
+        $extraInfoChecks = Get-OptionalProperty -Object $check -Name "extraInfoChecks" -DefaultValue @()
 
         $overrides = Get-OptionalProperty -Object $check -Name "overrides" -DefaultValue @()
         foreach ($override in $overrides)
@@ -1114,11 +1302,15 @@ foreach ($check in $config.checks)
                 $maxMeanRegression = [double](Get-OptionalProperty -Object $override -Name "maxMeanRegressionPercent" -DefaultValue $maxMeanRegression)
                 $maxAllocRegressionPct = [double](Get-OptionalProperty -Object $override -Name "maxAllocRegressionPercent" -DefaultValue $maxAllocRegressionPct)
                 $maxAllocRegressionBytes = [double](Get-OptionalProperty -Object $override -Name "maxAllocRegressionBytes" -DefaultValue $maxAllocRegressionBytes)
+                $overrideExtraInfoChecks = Get-OptionalProperty -Object $override -Name "extraInfoChecks" -DefaultValue $null
+                if ($null -ne $overrideExtraInfoChecks)
+                {
+                    $extraInfoChecks = $overrideExtraInfoChecks
+                }
             }
         }
 
         $skipMeanComparison = [bool](Get-OptionalProperty -Object $check -Name "skipMeanComparison" -DefaultValue $false)
-        $extraInfoChecks = Get-OptionalProperty -Object $check -Name "extraInfoChecks" -DefaultValue @()
         $extraInfoEvaluation = Test-ExtraInfoChecks -BaselineRow $baselineRow -CurrentRow $currentRow -Checks $extraInfoChecks
 
         $meanRegressed = (-not $skipMeanComparison) -and ($meanDeltaPct -gt $maxMeanRegression)

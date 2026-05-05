@@ -148,6 +148,29 @@ Each row is total successful commits/sec across one shared engine. The intended 
 | SQLite WAL+FULL point lookup | 70.21K ops/sec | 0.0119 ms | 0.0369 ms |
 <!-- BENCHMARK_RESULTS_END -->
 
+## Focused Insert Fan-In Validation
+
+These rows are from the May 5, 2026 targeted validation run for the opt-in `ImplicitInsertExecutionMode.ConcurrentWriteTransactions` insert path. They are not promoted release-core scorecard rows yet; they document the current proof point for hot one-row concurrent inserts and are guarded by current-only release checks until a new baseline includes them.
+
+Command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --insert-fan-in-diagnostics --repro
+```
+
+Source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260505-173637.csv`
+
+| Insert shape | Writers/window | Commits/sec | Commits/flush | Notes |
+|---|---|---:|---:|---|
+| Serialized explicit hot right-edge | W8, 250us | 460.7 | 1.00 | Default serialized control |
+| Concurrent explicit hot right-edge | W8, 250us | 1,464.6 | 3.31 | New pending right-edge rebase path |
+| Concurrent auto-ID hot right-edge | W8, 250us | 1,456.6 | 3.34 | Row-ID reservation plus pending rebase |
+| Concurrent explicit disjoint ranges | W8, 250us | 1,780.5 | 3.99 | Existing best-case concurrent insert shape remains strong |
+
+Operational guidance: keep `Serialized` as the default. Use `ConcurrentWriteTransactions` only for workloads that can benefit from shared-engine one-row commit fan-in; `InsertBatch` remains the preferred bulk-ingest path.
+
 ## Core Benchmark Map
 
 | Performance question | Published surface | Benchmark source |
@@ -155,6 +178,7 @@ Each row is total successful commits/sec across one shared engine. The intended 
 | Durable SQL and collection top-line API speed | Single insert/put, batch x100, point lookup, concurrent reads | `--master-table --repeat 3 --repro` |
 | Single-writer durable ingest | `B1`, `B100`, `B1000`, optional `B10000` batch rows | `--durable-sql-batching --repeat 3 --repro` |
 | Concurrent durable writes | `W4` and `W8`, `0` vs `250us`, disjoint explicit-key auto-commit | `--concurrent-write-diagnostics --repeat 3 --repro` |
+| Concurrent insert fan-in | Serialized controls, disjoint explicit keys, hot explicit right-edge, hot auto-ID | `--insert-fan-in-diagnostics --repro` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |
 | Resident hot-set behavior | file-backed vs hybrid hot-set vs in-memory hot burst | `--hybrid-hot-set-read --repeat 3 --repro` |
 | Cold open / first read | startup cost and first lookup/get latency | `--hybrid-cold-open --repeat 3 --repro` |

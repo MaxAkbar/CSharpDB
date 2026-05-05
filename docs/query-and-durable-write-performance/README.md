@@ -29,7 +29,7 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
 - `UseLowLatencyDurableWritePreset()` and `UseDurableGroupCommit(...)` remain opt-in measure-first knobs.
 - Shared-`Database` implicit auto-commit is now split by workload shape:
   - non-insert SQL writes can queue behind the WAL pending-commit path and benefit from `UseDurableGroupCommit(...)`
-  - hot insert loops still use the legacy serialized path today, so they should still be benchmarked as insert-specific workloads rather than assumed to coalesce
+  - one-row insert loops can opt into `ImplicitInsertExecutionMode.ConcurrentWriteTransactions`; hot right-edge and auto-ID rows now use shared row-id reservation plus pending leaf-page rebases to build WAL fan-in
 
 ## Remaining Work
 
@@ -41,7 +41,7 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
   - queue-depth, commits-per-flush, and latency percentile diagnostics
 - The remaining phase-4 write-path question is now narrower than "shared auto-commit in general":
   - non-insert shared auto-commit fan-in is working
-  - hot insert auto-commit still needs a dedicated design decision if we want it to coalesce without reopening structural conflict costs
+  - hot insert auto-commit now has an opt-in concurrent path, but bulk ingest guidance still starts with application-level batching
 - Async I/O batching still has room for more auditing outside the WAL hot path, but the main write-path batching pieces are already in place. See [Async I/O Batching Follow-Up](async-io-batching-follow-up.md).
 
 ## Phase 4 Status
@@ -55,26 +55,25 @@ Current measured status:
    - The same rerun showed shared auto-commit `W8` at about `743 commits/sec` with `commitsPerFlush = 3.37`.
    - That is now effectively in the same commit-fan-in band as the explicit `WriteTransaction` disjoint-update rows on the same runner.
 
-2. The gain is intentionally scoped.
-   - Hot auto-commit inserts still use the legacy serialized path.
-   - The focused `insert-fan-in-diagnostics-20260411-165557.csv` rerun still kept every insert scenario at `commitsPerFlush = 1.00`.
-   - Shared auto-commit explicit-id inserts were about `458 commits/sec` at `W8`, auto-generated-id inserts were about `449 commits/sec`, and explicit `WriteTransaction` inserts were still only about `438 commits/sec` with explicit ids and about `413 commits/sec` with auto-generated ids.
-   - The shared row-id reservation pass removed the earlier duplicate-key failures from the explicit auto-generated-id rows, but it did not unlock any update-style fan-in. The remaining insert-side limitation is still structural rather than just "missing WAL fan-in."
-   - A rebuilt April 12, 2026 spot-check of `ExplicitTx_AutoId_W8_Batch250us` also landed at `441-445 commits/sec` with `extraAttempts = 0` and `dirtyParentRecoveries = 0` across `insert-fan-in-scenario-ExplicitTx_AutoId_W8_Batch250us-20260412-034728.csv` and `insert-fan-in-scenario-ExplicitTx_AutoId_W8_Batch250us-20260412-034745.csv`, so the earlier retry tail no longer reproduces on the current binaries.
-   - The current phase-4 result should therefore be read as "shared non-insert auto-commit fan-in works" rather than "every auto-commit workload now coalesces."
+2. Insert fan-in is now opt-in and shape-specific.
+   - `ConcurrentWriteTransactions` keeps serialized inserts as the default but lets shared auto-commit insert loops use explicit write-transaction state.
+   - The shared row-id reservation path reserves monotonic in-memory ranges, publishes only committed high-water metadata, and tolerates rollback/retry gaps without duplicates.
+   - Pending leaf-page rebases let hot right-edge writers merge insert-only deltas against staged WAL images instead of waiting for the earlier commit to publish.
+   - A May 5, 2026 spot-check of `AutoCommitConcurrent_AutoId_W8_Batch250us` reached about `1,441 commits/sec` with `commitsPerFlush = 3.32`.
+   - The same spot-check put `AutoCommitConcurrent_ExplicitId_W8_Batch250us` at about `1,433 commits/sec` with `commitsPerFlush = 3.29`, and `AutoCommitConcurrent_ExplicitIdDisjoint_W8_Batch250us` at about `1,754 commits/sec` with `commitsPerFlush = 3.99`.
 
 3. Defaults and presets should still stay where they are for now.
-   - The engine now has a real measured win for shared non-insert contention.
-   - It does not yet have a blanket insert-path win that would justify changing default batch-window guidance.
-   - `UseDurableGroupCommit(...)` should remain an opt-in measured knob until the insert-side question is settled.
+   - The engine now has measured wins for shared non-insert contention and opt-in concurrent one-row insert commits.
+   - This still does not replace `InsertBatch` or explicit transaction batching for bulk ingest.
+   - `UseDurableGroupCommit(...)` and `ConcurrentWriteTransactions` should remain opt-in measured knobs.
 
 Next clean steps:
 
-1. Keep hot inserts on the current path until there is a durable row-id reservation plus right-edge insert strategy for concurrent implicit inserts.
+1. Keep serialized inserts as the default until the broader release guardrails continue to show no single-writer or batch-ingest regression.
 2. Keep the compact validation matrix small:
    - single-writer no-regression
    - shared non-insert auto-commit `W4` / `W8`
    - explicit `WriteTransaction` disjoint updates
    - hot insert auto-commit contention
-3. If insert-side fan-in is revisited later, keep the new shared reservation correctness path and start the next pass with durable row-id reservation plus a right-edge insert strategy before touching defaults.
-4. Do not change default batch windows or preset recommendations until the insert-side behavior is intentionally resolved.
+3. Keep measuring disjoint explicit keys, hot explicit right-edge rows, and hot auto-generated IDs as separate shapes.
+4. Do not change default batch windows or preset recommendations based on the shared-writer case alone.

@@ -295,6 +295,7 @@ This is narrower than normal ingest: several writer tasks are hitting the same s
 - Keep the baseline at `UseWriteOptimizedPreset()`.
 - For `8` in-process writers, benchmark WAL preallocation first.
 - For `4` in-process writers, benchmark a small durable batch window first.
+- For concurrent one-row insert commits that cannot be application-batched, benchmark `ImplicitInsertExecutionMode.ConcurrentWriteTransactions` with a small durable batch window.
 - Do not cargo-cult batch-window tuning from the shared-writer case into the single-writer case.
 
 ### Why
@@ -305,6 +306,12 @@ The current concurrent write diagnostics say:
 - close followers: `W8_Batch250us` at `1070.4`, `W8_Batch0` at `1068.2`
 - best `4`-writer row: `W4_Batch250us` at about `553.4` commits/sec
 
+The insert fan-in diagnostics now split the insert shapes:
+
+- disjoint explicit keys remain the easiest case: `AutoCommitConcurrent_ExplicitIdDisjoint_W8_Batch250us` reached about `1,754 commits/sec` with `commitsPerFlush = 3.99`
+- hot explicit right-edge rows: `AutoCommitConcurrent_ExplicitId_W8_Batch250us` reached about `1,433 commits/sec` with `commitsPerFlush = 3.29`
+- hot auto-generated IDs: `AutoCommitConcurrent_AutoId_W8_Batch250us` reached about `1,441 commits/sec` with `commitsPerFlush = 3.32`
+
 But the single-writer durable diagnostics say the opposite for batch windows:
 
 - `BatchWindow(250us)`: about `267.2` ops/sec
@@ -314,6 +321,7 @@ So:
 
 - shared-writer contention can justify small wait windows or preallocation
 - single-writer durable paths usually cannot
+- `InsertBatch` and explicit transaction batching remain the high-throughput ingest path when the application can group rows
 
 ## Scenario 7: Cold File Reads, Tooling, And Cache-Pressured Workloads
 

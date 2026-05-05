@@ -299,6 +299,85 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_ImplicitIdentityMultiRowInsertsReserveRanges()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE identity_range_bench (id INTEGER PRIMARY KEY IDENTITY, writer INTEGER)", ct);
+        _db.ResetRowIdReservationDiagnostics();
+
+        await using var tx1 = await _db.BeginWriteTransactionAsync(ct);
+        await using var tx2 = await _db.BeginWriteTransactionAsync(ct);
+
+        await tx1.ExecuteAsync("INSERT INTO identity_range_bench (writer) VALUES (1), (1), (1)", ct);
+        await tx2.ExecuteAsync("INSERT INTO identity_range_bench (writer) VALUES (2), (2)", ct);
+
+        await tx1.CommitAsync(ct);
+        await tx2.CommitAsync(ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT id, writer FROM identity_range_bench ORDER BY id",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.Equal(5, rows.Count);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal(3L, rows[2][0].AsInteger);
+        Assert.Equal(4L, rows[3][0].AsInteger);
+        Assert.Equal(5L, rows[4][0].AsInteger);
+
+        RowIdReservationDiagnosticsSnapshot diagnostics = _db.GetRowIdReservationDiagnosticsSnapshot();
+        Assert.Equal(2, diagnostics.ReservationCount);
+        Assert.Equal(5, diagnostics.ReservedRowIdCount);
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_RolledBackIdentityRangeDoesNotDuplicateAfterReopen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_identity_range_reopen_{Guid.NewGuid():N}.db");
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, ct);
+            await db.ExecuteAsync("CREATE TABLE identity_range_reopen (id INTEGER PRIMARY KEY IDENTITY, writer INTEGER)", ct);
+
+            await using (var rollbackTx = await db.BeginWriteTransactionAsync(ct))
+            {
+                await rollbackTx.ExecuteAsync("INSERT INTO identity_range_reopen (writer) VALUES (1), (1), (1)", ct);
+            }
+
+            await using (var commitTx = await db.BeginWriteTransactionAsync(ct))
+            {
+                await commitTx.ExecuteAsync("INSERT INTO identity_range_reopen (writer) VALUES (2)", ct);
+                await commitTx.CommitAsync(ct);
+            }
+
+            await db.DisposeAsync();
+            db = await Database.OpenAsync(dbPath, ct);
+
+            await db.ExecuteAsync("INSERT INTO identity_range_reopen (writer) VALUES (3)", ct);
+
+            await using var result = await db.ExecuteAsync(
+                "SELECT id, writer FROM identity_range_reopen ORDER BY id",
+                ct);
+            var rows = await result.ToListAsync(ct);
+
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(4L, rows[0][0].AsInteger);
+            Assert.Equal(2L, rows[0][1].AsInteger);
+            Assert.Equal(5L, rows[1][0].AsInteger);
+            Assert.Equal(3L, rows[1][1].AsInteger);
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentExplicitWriteTransactions_ImplicitIdentityInsertBurst_CompletesUnderDurableGroupCommit()
     {
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -358,6 +437,66 @@ public sealed class DatabaseConcurrencyTests : IAsyncLifetime
             var diagnostics = db.GetCommitPathDiagnosticsSnapshot();
             Assert.True(diagnostics.ExplicitConflictResolutionCount > 0);
             Assert.True(diagnostics.ExplicitLeafRebaseAttemptCount > 0);
+        }
+        finally
+        {
+            if (db is not null)
+                await db.DisposeAsync();
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentExplicitWriteTransactions_PendingRightEdgeInsertRebasesBeforeDurablePublish()
+    {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        linkedCts.CancelAfter(TimeSpan.FromSeconds(10));
+        CancellationToken ct = linkedCts.Token;
+
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pending_leaf_rebase_{Guid.NewGuid():N}.db");
+        var options = new DatabaseOptions()
+            .ConfigureStorageEngine(builder => builder.UseDurableGroupCommit(TimeSpan.FromMilliseconds(250)));
+
+        Database? db = null;
+        try
+        {
+            db = await Database.OpenAsync(dbPath, options, ct);
+            await db.ExecuteAsync("CREATE TABLE pending_rebase (id INTEGER PRIMARY KEY, writer INTEGER)", ct);
+            db.ResetCommitPathDiagnostics();
+
+            await using var tx1 = await db.BeginWriteTransactionAsync(ct);
+            await using var tx2 = await db.BeginWriteTransactionAsync(ct);
+
+            await tx1.ExecuteAsync("INSERT INTO pending_rebase VALUES (1, 1)", ct);
+            await tx2.ExecuteAsync("INSERT INTO pending_rebase VALUES (2, 2)", ct);
+
+            Task tx1Commit = tx1.CommitAsync(ct).AsTask();
+            await WaitForConditionAsync(
+                () =>
+                {
+                    CommitPathDiagnosticsSnapshot diagnostics = db.GetCommitPathDiagnosticsSnapshot();
+                    return diagnostics.ExplicitPendingCommitReservationCount >= 1 && !tx1Commit.IsCompleted;
+                },
+                TimeSpan.FromSeconds(2),
+                ct);
+
+            await tx2.CommitAsync(ct);
+            await tx1Commit;
+
+            await using var result = await db.ExecuteAsync(
+                "SELECT id, writer FROM pending_rebase ORDER BY id",
+                ct);
+            var rows = await result.ToListAsync(ct);
+
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(1L, rows[0][0].AsInteger);
+            Assert.Equal(1L, rows[0][1].AsInteger);
+            Assert.Equal(2L, rows[1][0].AsInteger);
+            Assert.Equal(2L, rows[1][1].AsInteger);
+
+            CommitPathDiagnosticsSnapshot finalDiagnostics = db.GetCommitPathDiagnosticsSnapshot();
+            Assert.True(finalDiagnostics.ExplicitPendingLeafRebaseAttemptCount > 0);
+            Assert.True(finalDiagnostics.ExplicitPendingLeafRebaseSuccessCount > 0);
         }
         finally
         {
