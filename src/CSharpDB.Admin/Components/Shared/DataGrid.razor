@@ -9,180 +9,182 @@
 @inject ModalService Modal
 @implements IAsyncDisposable
 
-<div class="grid-container">
-    @if (_loading)
-    {
-        <div class="loading-overlay">
-            <div class="spinner"></div>
-        </div>
-    }
-    else if (_loadError is not null)
-    {
-        <div class="query-error">
-            <i class="bi bi-exclamation-triangle"></i> @_loadError
-        </div>
-    }
-    else if (Columns is null || Columns.Length == 0)
-    {
-        <div class="empty-state">
-            <i class="bi bi-table"></i>
-            <p>No data to display</p>
-        </div>
-    }
-    else
-    {
-        <table class="data-grid">
-            <thead>
-                <tr>
-                    <th class="row-num-header">#</th>
-                    @for (int c = 0; c < Columns.Length; c++)
-                    {
-                        var colIdx = c;
-                        var sortIndicator = _sortCol == colIdx ? (_sortAsc ? " \u2191" : " \u2193") : "";
-                        var isPrimaryKeyColumn = PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn;
-                        <th @onclick="() => SortColumn(colIdx)" class="sortable @(_sortCol == colIdx ? "sorted" : "")">
-                            <i class="bi @GetColumnHeaderIconClass(colIdx, isPrimaryKeyColumn)"></i>
-                            <span class="col-name">@Columns[colIdx]</span>
-                            @if (ColumnTypes is not null && colIdx < ColumnTypes.Length)
-                            {
-                                <span class="col-type-badge @GetTypeBadgeClass(ColumnTypes[colIdx])">@ColumnTypes[colIdx]</span>
-                            }
-                            @if (isPrimaryKeyColumn)
-                            {
-                                <span class="col-pk-badge">PK</span>
-                            }
-                            <span class="sort-indicator">@sortIndicator</span>
-                        </th>
-                    }
-                </tr>
-                @if (ShowFilters)
-                {
-                    <tr class="filter-row">
-                        <td class="row-num-header"></td>
+<div class="data-grid-shell">
+    <div class="grid-container">
+        @if (_loading)
+        {
+            <div class="loading-overlay">
+                <div class="spinner"></div>
+            </div>
+        }
+        else if (_loadError is not null)
+        {
+            <div class="query-error">
+                <i class="bi bi-exclamation-triangle"></i> @_loadError
+            </div>
+        }
+        else if (Columns is null || Columns.Length == 0)
+        {
+            <div class="empty-state">
+                <i class="bi bi-table"></i>
+                <p>No data to display</p>
+            </div>
+        }
+        else
+        {
+            <table class="data-grid">
+                <thead>
+                    <tr>
+                        <th class="row-num-header">#</th>
                         @for (int c = 0; c < Columns.Length; c++)
                         {
                             var colIdx = c;
-                            <td>
-                                <div class="filter-control">
-                                    <select class="filter-mode-select" title="Filter match mode"
-                                            value="@GetFilterMode(colIdx)"
-                                            @onchange="e => UpdateFilterModeAsync(colIdx, e.Value?.ToString())">
-                                        <option value="@DataGridFilterMatchMode.Contains">%x%</option>
-                                        <option value="@DataGridFilterMatchMode.StartsWith">x%</option>
-                                        <option value="@DataGridFilterMatchMode.EndsWith">%x</option>
-                                        <option value="@DataGridFilterMatchMode.Exact">=</option>
-                                    </select>
-                                    <input type="text" class="filter-input" placeholder="@GetFilterPlaceholder(colIdx)"
-                                           value="@GetFilterInput(colIdx)"
-                                           @oninput="e => UpdateFilterDraft(colIdx, e.Value?.ToString())"
-                                           @onkeydown="e => HandleFilterKeyDown(e, colIdx)" />
-                                </div>
-                            </td>
+                            var sortIndicator = _sortCol == colIdx ? (_sortAsc ? " \u2191" : " \u2193") : "";
+                            var isPrimaryKeyColumn = PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn;
+                            <th @onclick="() => SortColumn(colIdx)" class="sortable @(_sortCol == colIdx ? "sorted" : "")">
+                                <i class="bi @GetColumnHeaderIconClass(colIdx, isPrimaryKeyColumn)"></i>
+                                <span class="col-name">@Columns[colIdx]</span>
+                                @if (ColumnTypes is not null && colIdx < ColumnTypes.Length)
+                                {
+                                    <span class="col-type-badge @GetTypeBadgeClass(ColumnTypes[colIdx])">@ColumnTypes[colIdx]</span>
+                                }
+                                @if (isPrimaryKeyColumn)
+                                {
+                                    <span class="col-pk-badge">PK</span>
+                                }
+                                <span class="sort-indicator">@sortIndicator</span>
+                            </th>
                         }
                     </tr>
-                }
-            </thead>
-            <tbody>
-                @if (_rows.Count == 0)
-                {
-                    <tr>
-                        <td colspan="@(Columns.Length + 1)" class="empty-cell">No rows found</td>
-                    </tr>
-                }
-                else
-                {
-                    @for (int r = 0; r < _rows.Count; r++)
+                    @if (ShowFilters)
                     {
-                        var rowIdx = r;
-                        var row = _rows[rowIdx];
-                        var rowClass = GetRowClass(row);
-                        var isSelected = _selectedRows.Contains(row);
-                        <tr class="@rowClass @(isSelected ? "selected" : "")"
-                            @oncontextmenu="e => ShowRowContextMenu(e, row)"
-                            @oncontextmenu:preventDefault>
-                            <td class="row-num" @onclick="() => ToggleRowSelect(row)">
-                                @((_page - 1) * _pageSize + rowIdx + 1)
-                            </td>
+                        <tr class="filter-row">
+                            <td class="row-num-header"></td>
                             @for (int c = 0; c < Columns.Length; c++)
                             {
                                 var colIdx = c;
-                                var isPk = PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn;
-                                var cellValue = row.CurrentValues[colIdx];
-                                var isEditing = _editingCell?.RowIndex == rowIdx && _editingCell?.ColIndex == colIdx;
-
-                                @if (isEditing)
-                                {
-                                    <td class="editing">
-                                        <input type="text" class="cell-edit-input"
-                                               value="@_editingCell!.Value"
-                                               @oninput="e => _editingCell!.Value = e.Value?.ToString() ?? string.Empty"
-                                               @onblur="() => CommitEdit(rowIdx, colIdx)"
-                                               @onkeydown="e => HandleCellKeyDown(e, rowIdx, colIdx)"
-                                               autofocus />
-                                    </td>
-                                }
-                                else
-                                {
-                                    <td class="@GetCellClass(colIdx, cellValue, isPk, row.IsColumnModified(colIdx))"
-                                        @ondblclick="() => StartEdit(rowIdx, colIdx, isPk)">
-                                        @if (cellValue is null)
-                                        {
-                                            <span class="null-val">NULL</span>
-                                        }
-                                        else if (cellValue is byte[] bytes)
-                                        {
-                                            <span class="blob-val">[@bytes.Length bytes]</span>
-                                        }
-                                        else if (IsStatusColumn(colIdx))
-                                        {
-                                            <span class="pill-status @GetStatusPillClass(cellValue)">@cellValue</span>
-                                        }
-                                        else
-                                        {
-                                            @cellValue.ToString()
-                                        }
-                                    </td>
-                                }
+                                <td>
+                                    <div class="filter-control">
+                                        <select class="filter-mode-select" title="Filter match mode"
+                                                value="@GetFilterMode(colIdx)"
+                                                @onchange="e => UpdateFilterModeAsync(colIdx, e.Value?.ToString())">
+                                            <option value="@DataGridFilterMatchMode.Contains">%x%</option>
+                                            <option value="@DataGridFilterMatchMode.StartsWith">x%</option>
+                                            <option value="@DataGridFilterMatchMode.EndsWith">%x</option>
+                                            <option value="@DataGridFilterMatchMode.Exact">=</option>
+                                        </select>
+                                        <input type="text" class="filter-input" placeholder="@GetFilterPlaceholder(colIdx)"
+                                               value="@GetFilterInput(colIdx)"
+                                               @oninput="e => UpdateFilterDraft(colIdx, e.Value?.ToString())"
+                                               @onkeydown="e => HandleFilterKeyDown(e, colIdx)" />
+                                    </div>
+                                </td>
                             }
                         </tr>
                     }
-                }
-            </tbody>
-        </table>
-    }
-</div>
+                </thead>
+                <tbody>
+                    @if (_rows.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="@(Columns.Length + 1)" class="empty-cell">No rows found</td>
+                        </tr>
+                    }
+                    else
+                    {
+                        @for (int r = 0; r < _rows.Count; r++)
+                        {
+                            var rowIdx = r;
+                            var row = _rows[rowIdx];
+                            var rowClass = GetRowClass(row);
+                            var isSelected = _selectedRows.Contains(row);
+                            <tr class="@rowClass @(isSelected ? "selected" : "")"
+                                @oncontextmenu="e => ShowRowContextMenu(e, row)"
+                                @oncontextmenu:preventDefault>
+                                <td class="row-num" @onclick="() => ToggleRowSelect(row)">
+                                    @((_page - 1) * _pageSize + rowIdx + 1)
+                                </td>
+                                @for (int c = 0; c < Columns.Length; c++)
+                                {
+                                    var colIdx = c;
+                                    var isPk = PrimaryKeyColumn is not null && Columns[colIdx] == PrimaryKeyColumn;
+                                    var cellValue = row.CurrentValues[colIdx];
+                                    var isEditing = _editingCell?.RowIndex == rowIdx && _editingCell?.ColIndex == colIdx;
 
-@if (ShouldShowPaginationBar())
-{
-    <div class="pagination-bar">
-        <div class="page-size-select">
-            <select @bind="_pageSize" @bind:after="OnPageSizeChanged">
-                <option value="10">10 rows</option>
-                <option value="25">25 rows</option>
-                <option value="50">50 rows</option>
-                <option value="100">100 rows</option>
-            </select>
-        </div>
-        <div class="page-controls">
-            <button class="page-btn" disabled="@(_page <= 1)" @onclick="() => GoToPage(1)">
-                <i class="bi bi-chevron-double-left"></i>
-            </button>
-            <button class="page-btn" disabled="@(_page <= 1)" @onclick="() => GoToPage(_page - 1)">
-                <i class="bi bi-chevron-left"></i>
-            </button>
-            <span class="page-info">@GetPageInfoText()</span>
-            <button class="page-btn" disabled="@(!CanGoToNextPage())" @onclick="() => GoToPage(_page + 1)">
-                <i class="bi bi-chevron-right"></i>
-            </button>
-            <button class="page-btn" disabled="@(!CanGoToLastPage())" @onclick="() => GoToPage(TotalPages)">
-                <i class="bi bi-chevron-double-right"></i>
-            </button>
-        </div>
-        <div class="row-count">@GetRowCountText()</div>
+                                    @if (isEditing)
+                                    {
+                                        <td class="editing">
+                                            <input type="text" class="cell-edit-input"
+                                                   value="@_editingCell!.Value"
+                                                   @oninput="e => _editingCell!.Value = e.Value?.ToString() ?? string.Empty"
+                                                   @onblur="() => CommitEdit(rowIdx, colIdx)"
+                                                   @onkeydown="e => HandleCellKeyDown(e, rowIdx, colIdx)"
+                                                   autofocus />
+                                        </td>
+                                    }
+                                    else
+                                    {
+                                        <td class="@GetCellClass(colIdx, cellValue, isPk, row.IsColumnModified(colIdx))"
+                                            @ondblclick="() => StartEdit(rowIdx, colIdx, isPk)">
+                                            @if (cellValue is null)
+                                            {
+                                                <span class="null-val">NULL</span>
+                                            }
+                                            else if (cellValue is byte[] bytes)
+                                            {
+                                                <span class="blob-val">[@bytes.Length bytes]</span>
+                                            }
+                                            else if (IsStatusColumn(colIdx))
+                                            {
+                                                <span class="pill-status @GetStatusPillClass(cellValue)">@cellValue</span>
+                                            }
+                                            else
+                                            {
+                                                @cellValue.ToString()
+                                            }
+                                        </td>
+                                    }
+                                }
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        }
     </div>
-}
 
-<ContextMenu @ref="_contextMenu" Items="_contextMenuItems" />
+    @if (ShouldShowPaginationBar())
+    {
+        <div class="pagination-bar">
+            <div class="page-size-select">
+                <select @bind="_pageSize" @bind:after="OnPageSizeChanged">
+                    <option value="10">10 rows</option>
+                    <option value="25">25 rows</option>
+                    <option value="50">50 rows</option>
+                    <option value="100">100 rows</option>
+                </select>
+            </div>
+            <div class="page-controls">
+                <button class="page-btn" disabled="@(_page <= 1)" @onclick="() => GoToPage(1)">
+                    <i class="bi bi-chevron-double-left"></i>
+                </button>
+                <button class="page-btn" disabled="@(_page <= 1)" @onclick="() => GoToPage(_page - 1)">
+                    <i class="bi bi-chevron-left"></i>
+                </button>
+                <span class="page-info">@GetPageInfoText()</span>
+                <button class="page-btn" disabled="@(!CanGoToNextPage())" @onclick="() => GoToPage(_page + 1)">
+                    <i class="bi bi-chevron-right"></i>
+                </button>
+                <button class="page-btn" disabled="@(!CanGoToLastPage())" @onclick="() => GoToPage(TotalPages)">
+                    <i class="bi bi-chevron-double-right"></i>
+                </button>
+            </div>
+            <div class="row-count">@GetRowCountText()</div>
+        </div>
+    }
+
+    <ContextMenu @ref="_contextMenu" Items="_contextMenuItems" />
+</div>
 
 @code {
     [Parameter] public string? TableName { get; set; }
@@ -975,8 +977,8 @@
         if (ViewName is not null)
         {
             string viewName = RequireIdentifier(ViewName);
-            if (!await TryLoadViewCursorPageAsync(viewName))
-                await LoadUnknownTotalSourcePageAsync(viewName, captureColumnNames: true);
+            await DisposeViewCursorAsync();
+            await LoadUnknownTotalSourcePageAsync(viewName, captureColumnNames: true);
 
             Columns ??= Array.Empty<string>();
             ColumnTypes = null;

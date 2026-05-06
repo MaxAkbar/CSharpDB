@@ -778,8 +778,19 @@ body {
 
 .grid-container {
     flex: 1;
+    min-width: 0;
+    min-height: 0;
     overflow: auto;
     position: relative;
+}
+
+.data-grid-shell {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .data-grid {
@@ -1537,7 +1548,8 @@ body {
     overflow: hidden;
 }
 
-.query-results-panel > .grid-container {
+.query-results-panel > .grid-container,
+.query-results-panel > .data-grid-shell {
     flex: 1;
     min-height: 0;
 }
@@ -1670,6 +1682,7 @@ body {
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
 }
 
 .storage-tab {
@@ -4738,16 +4751,24 @@ body {
 }
 
 .query-result-body {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
 }
 
-.query-result-body > .grid-container {
-    height: 100%;
+.query-result-body > .grid-container,
+.query-result-body > .data-grid-shell {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
 }
 
 .query-detail-pane {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
     padding: 18px;
     color: var(--text-secondary);
 }
@@ -4769,7 +4790,10 @@ body {
 .query-stat-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    flex: 1;
     gap: 10px;
+    min-height: 0;
+    overflow: auto;
     padding: 14px;
 }
 

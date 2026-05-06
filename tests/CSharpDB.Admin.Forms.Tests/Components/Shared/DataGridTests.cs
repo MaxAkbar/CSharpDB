@@ -241,6 +241,18 @@ public sealed class DataGridTests
         Assert.Equal(7, GetAllRows(component).Count);
     }
 
+    [Fact]
+    public void BuildSelectSql_UsesBoundedLimitOffsetForUnknownTotalViewPages()
+    {
+        var component = new DataGrid();
+        SetField(component, "_page", 7);
+        SetField(component, "_pageSize", 50);
+
+        string sql = (string)InvokeNonPublic(component, "BuildSelectSql", "low_stock_watch", (int?)51)!;
+
+        Assert.Equal("SELECT * FROM low_stock_watch LIMIT 51 OFFSET 300", sql);
+    }
+
     private static Dictionary<int, string> GetFilters(DataGrid component)
         => GetField<Dictionary<int, string>>(component, "_filters");
 

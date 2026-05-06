@@ -18,6 +18,7 @@ public sealed class QueryPlanner
     private const int AnalyzeHistogramBucketCount = 16;
     private const int AnalyzeFrequentValueCount = 8;
     private const int MaxJoinReorderDpLeafCount = 6;
+    private const int MaxJoinOrderRowGoalRows = 4096;
 
     private sealed class AnalyzedTableStatisticsResult
     {
@@ -3668,8 +3669,19 @@ public sealed class QueryPlanner
         }
     }
 
-    private TableRef GetOrCreateCachedJoinReorder(SelectStatement stmt)
+    private TableRef GetOrCreateCachedJoinReorder(SelectStatement stmt, bool preserveJoinOrderForRowGoal)
     {
+        if (preserveJoinOrderForRowGoal)
+        {
+            if (stmt.From is JoinTableRef join &&
+                TryReorderInnerJoinChainForRowGoal(join, stmt.Where, out var reordered))
+            {
+                return reordered;
+            }
+
+            return stmt.From;
+        }
+
         if (!_selectJoinReorderCache.TryGetValue(stmt, out var cached))
         {
             cached = new CachedSelectJoinReorder();
@@ -3691,7 +3703,8 @@ public sealed class QueryPlanner
 
     private QueryResult ExecuteSelectGeneral(SelectStatement stmt)
     {
-        TableRef fromRef = GetOrCreateCachedJoinReorder(stmt);
+        bool preserveJoinOrderForRowGoal = ShouldPreserveJoinOrderForRowGoal(stmt);
+        TableRef fromRef = GetOrCreateCachedJoinReorder(stmt, preserveJoinOrderForRowGoal);
         HashSet<Expression>? consumedOuterPredicates = fromRef is JoinTableRef
             ? new HashSet<Expression>(ReferenceEqualityComparer.Instance)
             : null;
@@ -3702,7 +3715,8 @@ public sealed class QueryPlanner
             stmt.Where,
             pushDownOuterLocalPredicates: fromRef is JoinTableRef,
             allowJoinReorder: false,
-            consumedOuterPredicates: consumedOuterPredicates);
+            consumedOuterPredicates: consumedOuterPredicates,
+            preserveJoinOrderForRowGoal: preserveJoinOrderForRowGoal);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -3921,6 +3935,25 @@ public sealed class QueryPlanner
         op = ApplyOffsetAndLimit(op, stmt.Offset, stmt.Limit);
 
         return CreateQueryResult(op);
+    }
+
+    private static bool ShouldPreserveJoinOrderForRowGoal(SelectStatement stmt)
+    {
+        if (!stmt.Limit.HasValue || stmt.Limit.Value <= 0)
+            return false;
+
+        long rowGoal = (long)stmt.Limit.Value + Math.Max(stmt.Offset ?? 0, 0);
+        if (rowGoal > MaxJoinOrderRowGoalRows ||
+            stmt.Where != null ||
+            stmt.IsDistinct ||
+            stmt.GroupBy != null ||
+            stmt.Having != null ||
+            stmt.OrderBy is { Count: > 0 })
+        {
+            return false;
+        }
+
+        return !stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
     }
 
     private static IOperator ApplyOffsetAndLimit(IOperator op, int? offset, int? limit)
@@ -6433,7 +6466,8 @@ public sealed class QueryPlanner
         Expression? outerWhere = null,
         bool pushDownOuterLocalPredicates = false,
         bool allowJoinReorder = true,
-        HashSet<Expression>? consumedOuterPredicates = null)
+        HashSet<Expression>? consumedOuterPredicates = null,
+        bool preserveJoinOrderForRowGoal = false)
     {
         if (tableRef is SingleRowTableRef)
         {
@@ -6482,10 +6516,22 @@ public sealed class QueryPlanner
                 if (viewQuery is SelectStatement viewStmt && !ContainsSubqueries(viewStmt))
                 {
                     Expression? pushedOuterViewPredicate = TryRewriteOuterPredicateForSimpleView(simple, viewStmt, outerWhere);
+                    bool preserveViewJoinOrderForRowGoal =
+                        preserveJoinOrderForRowGoal &&
+                        CanPropagateJoinOrderRowGoalIntoSimpleView(viewStmt);
+                    TableRef viewFrom = viewStmt.From;
+                    if (preserveViewJoinOrderForRowGoal &&
+                        viewFrom is JoinTableRef viewJoin &&
+                        TryReorderInnerJoinChainForRowGoal(viewJoin, pushedOuterViewPredicate, out var rowGoalViewFrom))
+                    {
+                        viewFrom = rowGoalViewFrom;
+                    }
+
                     (viewOp, viewSchema) = BuildFromOperator(
-                        viewStmt.From,
+                        viewFrom,
                         pushedOuterViewPredicate,
-                        pushDownOuterLocalPredicates: pushedOuterViewPredicate != null);
+                        pushDownOuterLocalPredicates: pushedOuterViewPredicate != null,
+                        preserveJoinOrderForRowGoal: preserveViewJoinOrderForRowGoal);
 
                     bool hasAggregates = viewStmt.GroupBy != null ||
                                          viewStmt.Having != null ||
@@ -6645,13 +6691,32 @@ public sealed class QueryPlanner
         if (tableRef is JoinTableRef join)
         {
             if (allowJoinReorder &&
+                !preserveJoinOrderForRowGoal &&
                 TryReorderInnerJoinChain(join, outerWhere, out var reordered))
             {
-                return BuildFromOperator(reordered, outerWhere, pushDownOuterLocalPredicates, allowJoinReorder: false, consumedOuterPredicates);
+                return BuildFromOperator(
+                    reordered,
+                    outerWhere,
+                    pushDownOuterLocalPredicates,
+                    allowJoinReorder: false,
+                    consumedOuterPredicates,
+                    preserveJoinOrderForRowGoal);
             }
 
-            var (leftOp, leftSchema) = BuildFromOperator(join.Left, outerWhere, pushDownOuterLocalPredicates, allowJoinReorder, consumedOuterPredicates);
-            var (rightOp, rightSchema) = BuildFromOperator(join.Right, outerWhere, pushDownOuterLocalPredicates, allowJoinReorder, consumedOuterPredicates);
+            var (leftOp, leftSchema) = BuildFromOperator(
+                join.Left,
+                outerWhere,
+                pushDownOuterLocalPredicates,
+                allowJoinReorder,
+                consumedOuterPredicates,
+                preserveJoinOrderForRowGoal);
+            var (rightOp, rightSchema) = BuildFromOperator(
+                join.Right,
+                outerWhere,
+                pushDownOuterLocalPredicates,
+                allowJoinReorder,
+                consumedOuterPredicates,
+                preserveJoinOrderForRowGoal);
 
             // Build composite schema that inherits all qualified mappings
             var compositeSchema = TableSchema.CreateJoinSchema(leftSchema, rightSchema);
@@ -6794,6 +6859,22 @@ public sealed class QueryPlanner
     private static bool CanPushOuterPredicateIntoSimpleView(SelectStatement viewStmt)
     {
         if (viewStmt.IsDistinct ||
+            viewStmt.GroupBy != null ||
+            viewStmt.Having != null ||
+            viewStmt.OrderBy != null ||
+            viewStmt.Limit != null ||
+            viewStmt.Offset != null)
+        {
+            return false;
+        }
+
+        return !viewStmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
+    }
+
+    private static bool CanPropagateJoinOrderRowGoalIntoSimpleView(SelectStatement viewStmt)
+    {
+        if (viewStmt.IsDistinct ||
+            viewStmt.Where != null ||
             viewStmt.GroupBy != null ||
             viewStmt.Having != null ||
             viewStmt.OrderBy != null ||
@@ -7117,6 +7198,43 @@ public sealed class QueryPlanner
         if (originalOrder.SequenceEqual(reorderedOrder, StringComparer.OrdinalIgnoreCase))
             return false;
 
+        return TryBuildInnerJoinTreeFromOrder(orderedLeaves, predicates, out reordered);
+    }
+
+    private bool TryReorderInnerJoinChainForRowGoal(JoinTableRef join, Expression? outerWhere, out TableRef reordered)
+    {
+        reordered = join;
+
+        var leaves = new List<ReorderableJoinLeaf>();
+        var predicates = new List<ReorderableJoinPredicate>();
+        int leafIndex = 0;
+        int predicateIndex = 0;
+        if (!TryCollectReorderableInnerJoinChain(join, leaves, predicates, ref leafIndex, ref predicateIndex))
+            return false;
+
+        if (leaves.Count < 2)
+            return false;
+
+        ApplyLocalPredicateRowEstimates(leaves, predicates, outerWhere);
+
+        var originalOrder = leaves.OrderBy(static l => l.OriginalIndex).Select(static l => l.Identifier).ToArray();
+        if (!TryChooseStreamingLookupInnerJoinOrder(leaves, predicates, out var orderedLeaves))
+            return false;
+
+        var reorderedOrder = orderedLeaves.Select(static l => l.Identifier).ToArray();
+        if (originalOrder.SequenceEqual(reorderedOrder, StringComparer.OrdinalIgnoreCase))
+            return false;
+
+        return TryBuildInnerJoinTreeFromOrder(orderedLeaves, predicates, out reordered);
+    }
+
+    private static bool TryBuildInnerJoinTreeFromOrder(
+        IReadOnlyList<ReorderableJoinLeaf> orderedLeaves,
+        IReadOnlyList<ReorderableJoinPredicate> predicates,
+        out TableRef reordered)
+    {
+        reordered = orderedLeaves[0].TableRef;
+
         var orderedPredicates = predicates
             .OrderBy(static p => p.OriginalIndex)
             .ToList();
@@ -7407,6 +7525,193 @@ public sealed class QueryPlanner
 
         leaf = new ReorderableJoinLeaf(simple, qualifiedSchema, rowCount, originalIndex, identifier, referenceNames);
         return true;
+    }
+
+    private bool TryChooseStreamingLookupInnerJoinOrder(
+        IReadOnlyList<ReorderableJoinLeaf> leaves,
+        IReadOnlyList<ReorderableJoinPredicate> predicates,
+        out List<ReorderableJoinLeaf> orderedLeaves)
+    {
+        orderedLeaves = [];
+
+        List<ReorderableJoinLeaf>? bestOrder = null;
+        int bestLookupScore = int.MinValue;
+        int bestStartOriginalIndex = int.MaxValue;
+
+        foreach (var start in leaves.OrderBy(static l => l.OriginalIndex))
+        {
+            var candidateOrder = new List<ReorderableJoinLeaf> { start };
+            var selectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { start.Identifier };
+            var remaining = leaves
+                .Where(leaf => !string.Equals(leaf.Identifier, start.Identifier, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(static leaf => leaf.OriginalIndex)
+                .ToList();
+
+            int lookupScore = 0;
+            bool completeLookupChain = true;
+
+            while (remaining.Count > 0)
+            {
+                if (!TryFindNextStreamingLookupLeaf(
+                        candidateOrder,
+                        selectedIds,
+                        remaining,
+                        predicates,
+                        out var next,
+                        out int stepScore))
+                {
+                    completeLookupChain = false;
+                    break;
+                }
+
+                candidateOrder.Add(next);
+                selectedIds.Add(next.Identifier);
+                remaining.Remove(next);
+                lookupScore += stepScore;
+            }
+
+            if (!completeLookupChain)
+                continue;
+
+            if (bestOrder == null ||
+                lookupScore > bestLookupScore ||
+                (lookupScore == bestLookupScore && start.OriginalIndex < bestStartOriginalIndex))
+            {
+                bestOrder = candidateOrder;
+                bestLookupScore = lookupScore;
+                bestStartOriginalIndex = start.OriginalIndex;
+            }
+        }
+
+        if (bestOrder == null)
+            return false;
+
+        orderedLeaves = bestOrder;
+        return true;
+    }
+
+    private bool TryFindNextStreamingLookupLeaf(
+        IReadOnlyList<ReorderableJoinLeaf> selectedLeaves,
+        HashSet<string> selectedIds,
+        IReadOnlyList<ReorderableJoinLeaf> remainingLeaves,
+        IReadOnlyList<ReorderableJoinPredicate> predicates,
+        out ReorderableJoinLeaf next,
+        out int score)
+    {
+        next = default;
+        score = 0;
+        bool found = false;
+        int bestOriginalIndex = int.MaxValue;
+
+        for (int i = 0; i < remainingLeaves.Count; i++)
+        {
+            var candidate = remainingLeaves[i];
+            if (!TryScoreStreamingLookupLeaf(selectedLeaves, selectedIds, candidate, predicates, out int candidateScore))
+                continue;
+
+            if (!found ||
+                candidateScore > score ||
+                (candidateScore == score && candidate.OriginalIndex < bestOriginalIndex))
+            {
+                next = candidate;
+                score = candidateScore;
+                bestOriginalIndex = candidate.OriginalIndex;
+                found = true;
+            }
+        }
+
+        return found;
+    }
+
+    private bool TryScoreStreamingLookupLeaf(
+        IReadOnlyList<ReorderableJoinLeaf> selectedLeaves,
+        HashSet<string> selectedIds,
+        ReorderableJoinLeaf candidate,
+        IReadOnlyList<ReorderableJoinPredicate> predicates,
+        out int score)
+    {
+        score = 0;
+        var nextSelectedIds = new HashSet<string>(selectedIds, StringComparer.OrdinalIgnoreCase)
+        {
+            candidate.Identifier
+        };
+
+        var attachablePredicates = predicates
+            .Where(p =>
+                p.ReferencedTables.Contains(candidate.Identifier) &&
+                ShouldAttachInnerJoinPredicate(p, selectedIds, nextSelectedIds))
+            .OrderBy(static p => p.OriginalIndex)
+            .ToList();
+
+        if (attachablePredicates.Count == 0)
+            return false;
+
+        var condition = CombineConjuncts(attachablePredicates.Select(static p => p.Expression).ToList());
+        if (condition == null)
+            return false;
+
+        var selectedSchema = BuildJoinSchemaForLeaves(selectedLeaves);
+        var compositeSchema = TableSchema.CreateJoinSchema(selectedSchema, candidate.Schema);
+        if (!TryAnalyzeHashJoinCondition(
+                condition,
+                compositeSchema,
+                selectedSchema.Columns.Count,
+                out var leftKeyIndices,
+                out var rightKeyIndices,
+                out _))
+        {
+            return false;
+        }
+
+        if (leftKeyIndices.Length == 0 || leftKeyIndices.Length != rightKeyIndices.Length)
+            return false;
+
+        int rightPkIndex = candidate.Schema.PrimaryKeyColumnIndex;
+        if (rightKeyIndices.Length == 1 &&
+            rightPkIndex == rightKeyIndices[0] &&
+            candidate.Schema.Columns[rightPkIndex].Type == DbType.Integer)
+        {
+            score = 100;
+            return true;
+        }
+
+        var indexes = _catalog.GetSqlIndexesForTable(candidate.TableRef.TableName);
+        for (int i = 0; i < indexes.Count; i++)
+        {
+            var index = indexes[i];
+            if (!TryMatchJoinLookupIndex(
+                    index,
+                    selectedSchema,
+                    candidate.Schema,
+                    leftKeyIndices,
+                    rightKeyIndices,
+                    out _,
+                    out var orderedRightKeyIndices,
+                    out _))
+            {
+                continue;
+            }
+
+            bool directIntegerKey =
+                orderedRightKeyIndices.Length == 1 &&
+                candidate.Schema.Columns[orderedRightKeyIndices[0]].Type == DbType.Integer;
+            int indexScore = index.IsUnique ? 90 : 70;
+            if (directIntegerKey)
+                indexScore += 5;
+
+            score = Math.Max(score, indexScore);
+        }
+
+        return score > 0;
+    }
+
+    private static TableSchema BuildJoinSchemaForLeaves(IReadOnlyList<ReorderableJoinLeaf> leaves)
+    {
+        var schema = leaves[0].Schema;
+        for (int i = 1; i < leaves.Count; i++)
+            schema = TableSchema.CreateJoinSchema(schema, leaves[i].Schema);
+
+        return schema;
     }
 
     private bool TryChooseGreedyInnerJoinOrder(
