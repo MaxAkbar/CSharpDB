@@ -615,6 +615,22 @@ internal sealed class CatalogService
         return dirty;
     }
 
+    internal IReadOnlyCollection<ColumnDistributionStatistics> GetColumnDistributionStatistics()
+    {
+        if (_columnDistributionStatsCache.Count == 0)
+            return Array.Empty<ColumnDistributionStatistics>();
+
+        return _columnDistributionStatsCache.Values.ToArray();
+    }
+
+    internal IReadOnlyCollection<IndexPrefixStatistics> GetIndexPrefixStatistics()
+    {
+        if (_indexPrefixStatsCache.Count == 0)
+            return Array.Empty<IndexPrefixStatistics>();
+
+        return _indexPrefixStatsCache.Values.ToArray();
+    }
+
     public void ApplyCommittedAdvisoryStatisticsSnapshot(
         IReadOnlyCollection<TableStatistics> tableStatistics,
         IReadOnlyCollection<ColumnStatistics> columnStatistics,

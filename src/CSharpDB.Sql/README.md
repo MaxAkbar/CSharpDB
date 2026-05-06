@@ -107,7 +107,7 @@ The execution layer uses the same recursive pattern — `BuildFromOperator(Table
 
 ## AST Hierarchy
 
-**Statements**: `CreateTableStatement`, `DropTableStatement`, `InsertStatement`, `SelectStatement`, `CompoundSelectStatement`, `UpdateStatement`, `DeleteStatement`, `AlterTableStatement`, `CreateIndexStatement`, `DropIndexStatement`, `CreateViewStatement`, `DropViewStatement`, `CreateTriggerStatement`, `DropTriggerStatement`, `AnalyzeStatement`, `WithStatement`
+**Statements**: `CreateTableStatement`, `DropTableStatement`, `InsertStatement`, `SelectStatement`, `CompoundSelectStatement`, `UpdateStatement`, `DeleteStatement`, `AlterTableStatement`, `CreateIndexStatement`, `DropIndexStatement`, `CreateViewStatement`, `DropViewStatement`, `CreateTriggerStatement`, `DropTriggerStatement`, `AnalyzeStatement`, `ExplainEstimateStatement`, `WithStatement`
 
 **Expressions**: `LiteralExpression`, `ParameterExpression`, `ColumnRefExpression`, `BinaryExpression`, `UnaryExpression`, `LikeExpression`, `InExpression`, `InSubqueryExpression`, `ScalarSubqueryExpression`, `ExistsExpression`, `BetweenExpression`, `IsNullExpression`, `FunctionCallExpression`
 

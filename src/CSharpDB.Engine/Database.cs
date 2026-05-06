@@ -2401,7 +2401,13 @@ public sealed class Database : IAsyncDisposable
             string.Equals(tableName, "sys.table_stats", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys_table_stats", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys.column_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase);
+            string.Equals(tableName, "sys_column_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.planner_histograms", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_planner_histograms", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.planner_heavy_hitters", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_planner_heavy_hitters", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

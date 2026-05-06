@@ -26,8 +26,9 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
 
 - `sys.table_stats.row_count` keeps its existing numeric meaning.
 - `sys.table_stats.row_count_is_exact` is the new explicit exactness bit.
-- Histogram and prefix stats remain internal in this round; there are still no public histogram system tables.
-- Public histogram inspection and adaptive re-optimization are separate future roadmap items, not hidden requirements for the current optimizer phase.
+- `sys.planner_histograms`, `sys.planner_heavy_hitters`, and `sys.planner_index_prefix_stats` expose stable SQL projections over the internal planner statistics.
+- `EXPLAIN ESTIMATE FOR <query>` returns a bounded diagnostic rowset showing estimate sources, stale/missing-stat fallbacks, lookup decisions, join estimates, and join-reorder choices without executing the target query. The practical debugging guide is in [Debugging Slow Queries With EXPLAIN ESTIMATE](../query-execution-pipeline.md#debugging-slow-queries-with-explain-estimate).
+- Adaptive re-optimization remains a separate future roadmap item, not a hidden requirement for the current optimizer phase.
 - `UseWriteOptimizedPreset()` remains the default recommendation for durable file-backed workloads.
 - `UseLowLatencyDurableWritePreset()` and `UseDurableGroupCommit(...)` remain opt-in measure-first knobs.
 - Shared-`Database` implicit auto-commit is now split by workload shape:
@@ -48,7 +49,7 @@ The May 5, 2026 optimizer close-out run showed `ANALYZE`-driven plans improving 
 ## Future Work
 
 - Adaptive runtime re-optimization is still future work.
-- Histogram inspection remains internal; there is no SQL surface for planner histogram dumps yet.
+- Raw histogram/prefix storage payloads remain internal; future diagnostics should extend stable SQL projections or add typed DTOs deliberately rather than exposing storage encodings.
 - Durable group-commit guidance should keep following benchmark evidence, especially:
   - single-writer no-regression checks
   - 4-writer and 8-writer shared-`Database` contention runs

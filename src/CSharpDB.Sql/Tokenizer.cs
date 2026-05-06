@@ -82,6 +82,8 @@ public sealed class Tokenizer
         ["WITH"] = TokenType.With,
         ["RECURSIVE"] = TokenType.Recursive,
         ["ANALYZE"] = TokenType.Analyze,
+        ["EXPLAIN"] = TokenType.Explain,
+        ["ESTIMATE"] = TokenType.Estimate,
         ["TRIGGER"] = TokenType.Trigger,
         ["BEFORE"] = TokenType.Before,
         ["AFTER"] = TokenType.After,

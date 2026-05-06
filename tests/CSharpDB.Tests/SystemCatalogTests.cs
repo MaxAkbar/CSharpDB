@@ -527,6 +527,115 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_PlannerStats_ExposeHistogramsHeavyHittersAndPrefixes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync("CREATE TABLE planner_public_stats (id INTEGER PRIMARY KEY, region TEXT, city TEXT, score INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_public_region_city ON planner_public_stats(region, city)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (1, 'East', 'Seattle', 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (2, 'East', 'Seattle', 11)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (3, 'East', 'Bellevue', 12)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (4, 'West', 'Portland', 100)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (5, 'West', 'Portland', 101)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (6, 'West', 'Salem', 102)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (7, 'West', 'Salem', 103)", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (8, 'West', 'Salem', 104)", ct);
+        await _db.ExecuteAsync("ANALYZE planner_public_stats", ct);
+
+        await using (var histogramCount = await _db.ExecuteAsync(
+            """
+            SELECT COUNT(*)
+            FROM sys.planner_histograms
+            WHERE table_name = 'planner_public_stats' AND column_name = 'score' AND is_stale = 0
+            """,
+            ct))
+        {
+            Assert.True(Assert.Single(await histogramCount.ToListAsync(ct))[0].AsInteger > 0);
+        }
+
+        await using (var heavyHitters = await _db.ExecuteAsync(
+            """
+            SELECT value, row_count, frequency_ppm, is_stale
+            FROM sys.planner_heavy_hitters
+            WHERE table_name = 'planner_public_stats' AND column_name = 'region'
+            ORDER BY row_count DESC
+            LIMIT 1
+            """,
+            ct))
+        {
+            var row = Assert.Single(await heavyHitters.ToListAsync(ct));
+            Assert.Equal("West", row[0].AsText);
+            Assert.Equal(5L, row[1].AsInteger);
+            Assert.Equal(625000L, row[2].AsInteger);
+            Assert.Equal(0L, row[3].AsInteger);
+        }
+
+        await using (var prefixStats = await _db.ExecuteAsync(
+            """
+            SELECT prefix_length, prefix_columns, distinct_count, table_row_count, is_stale
+            FROM sys_planner_index_prefix_stats
+            WHERE index_name = 'idx_public_region_city'
+            ORDER BY prefix_length
+            """,
+            ct))
+        {
+            var rows = await prefixStats.ToListAsync(ct);
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(1L, rows[0][0].AsInteger);
+            Assert.Equal("region", rows[0][1].AsText);
+            Assert.Equal(2L, rows[0][2].AsInteger);
+            Assert.Equal(8L, rows[0][3].AsInteger);
+            Assert.Equal(0L, rows[0][4].AsInteger);
+            Assert.Equal(2L, rows[1][0].AsInteger);
+            Assert.Equal("region,city", rows[1][1].AsText);
+            Assert.Equal(4L, rows[1][2].AsInteger);
+        }
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using (var persistedCount = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.planner_histograms WHERE table_name = 'planner_public_stats'",
+            ct))
+        {
+            Assert.True(Assert.Single(await persistedCount.ToListAsync(ct))[0].AsInteger > 0);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO planner_public_stats VALUES (9, 'West', 'Salem', 105)", ct);
+
+        await using (var staleRows = await _db.ExecuteAsync(
+            """
+            SELECT
+                (SELECT is_stale FROM sys.planner_histograms WHERE table_name = 'planner_public_stats' LIMIT 1),
+                (SELECT is_stale FROM sys.planner_heavy_hitters WHERE table_name = 'planner_public_stats' LIMIT 1),
+                (SELECT is_stale FROM sys.planner_index_prefix_stats WHERE table_name = 'planner_public_stats' LIMIT 1)
+            """,
+            ct))
+        {
+            var row = Assert.Single(await staleRows.ToListAsync(ct));
+            Assert.Equal(1L, row[0].AsInteger);
+            Assert.Equal(1L, row[1].AsInteger);
+            Assert.Equal(1L, row[2].AsInteger);
+        }
+
+        await _db.ExecuteAsync("DROP TABLE planner_public_stats", ct);
+
+        await using var afterDrop = await _db.ExecuteAsync(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM sys.planner_histograms WHERE table_name = 'planner_public_stats'),
+                (SELECT COUNT(*) FROM sys.planner_heavy_hitters WHERE table_name = 'planner_public_stats'),
+                (SELECT COUNT(*) FROM sys.planner_index_prefix_stats WHERE table_name = 'planner_public_stats')
+            """,
+            ct);
+        var afterDropRow = Assert.Single(await afterDrop.ToListAsync(ct));
+        Assert.Equal(0L, afterDropRow[0].AsInteger);
+        Assert.Equal(0L, afterDropRow[1].AsInteger);
+        Assert.Equal(0L, afterDropRow[2].AsInteger);
+    }
+
+    [Fact]
     public async Task SystemCatalog_ColumnStats_BecomeStaleOnWriteAndRollbackRestoresFreshState()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -333,7 +333,7 @@ On database open, all schemas are loaded into in-memory dictionaries for fast lo
 | **CTEs** | `WITH ... AS (...) SELECT ...` |
 | **Set operations** | `UNION`, `INTERSECT`, `EXCEPT` (inside top-level queries, views, and CTE bodies) |
 | **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, correlated evaluation in `WHERE`, non-aggregate projection, `UPDATE`/`DELETE` expressions |
-| **Statistics** | `ANALYZE [table]` — refreshes `sys.table_stats` and `sys.column_stats` |
+| **Statistics** | `ANALYZE [table]` — refreshes `sys.table_stats`, `sys.column_stats`, and public planner-stat diagnostics under `sys.planner_*` |
 | **Identity** | `INTEGER PRIMARY KEY IDENTITY` — auto-increment columns with persisted high-water mark |
 | **Distinct** | `SELECT DISTINCT`, `DISTINCT` inside aggregates |
 

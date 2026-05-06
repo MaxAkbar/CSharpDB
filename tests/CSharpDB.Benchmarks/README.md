@@ -173,7 +173,7 @@ Operational guidance: keep `Serialized` as the default. Use `ConcurrentWriteTran
 
 ## Focused Optimizer And Async I/O Close-Out Validation
 
-These May 5, 2026 rows are diagnostic close-out proof for the current advanced optimizer and async I/O batching phases. They are not promoted release-core scorecard rows; they document workload-shaped gains and audited coverage while future adaptive re-optimization, public histogram inspection, and specialized maintenance tuning remain separate roadmap items.
+These May 5, 2026 rows are diagnostic close-out proof for the current advanced optimizer and async I/O batching phases. They are not promoted release-core scorecard rows; they document workload-shaped gains and audited coverage while future adaptive re-optimization and specialized maintenance tuning remain separate roadmap items. Public planner-stat inspection is now covered by the `sys.planner_*` catalog and `EXPLAIN ESTIMATE` diagnostic benchmarks.
 
 Optimizer command:
 
@@ -191,6 +191,20 @@ Optimizer source CSV:
 | Histogram cold range | 21,895 queries/sec | 23,175 queries/sec | 1.06x | Equi-depth range estimates avoid worse plans |
 | Composite correlation | 522 queries/sec | 987 queries/sec | 1.89x | Composite-prefix stats preserve correlated equality selectivity |
 | Bounded join reorder | 9,628 queries/sec | 11,247 queries/sec | 1.17x | Small inner-join chains use bounded DP reordering |
+
+Public planner diagnostics smoke command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *SystemCatalogBenchmarks*Planner* --job Dry
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *ExplainEstimate* --job Dry
+```
+
+| Public planner diagnostic shape | TableCount | Mean | Allocation | What it validates |
+|---|---:|---:|---:|---|
+| `COUNT(*) FROM sys.planner_histograms` | 100 | 235.3 ns | 552 B | Virtual histogram catalog count fast path |
+| `COUNT(*) FROM sys.planner_heavy_hitters` | 100 | 227.2 ns | 552 B | Virtual heavy-hitter catalog count fast path |
+| `COUNT(*) FROM sys.planner_index_prefix_stats` | 100 | 203.2 ns | 528 B | Virtual composite-prefix catalog count fast path |
+| `EXPLAIN ESTIMATE` skewed lookup | 100 | 345.8 us | 334.83 KB | Bounded estimate diagnostics without executing user rows |
 
 Async I/O command:
 
@@ -245,6 +259,7 @@ Interpretation: generated collections are worth using when collection payload CP
 | Concurrent durable writes | `W4` and `W8`, `0` vs `250us`, disjoint explicit-key auto-commit | `--concurrent-write-diagnostics --repeat 3 --repro` |
 | Concurrent insert fan-in | Serialized controls, disjoint explicit keys, hot explicit right-edge, hot auto-ID | `--insert-fan-in-diagnostics --repro` |
 | Advanced optimizer close-out | Heavy hitters, histogram ranges, composite-prefix correlation, bounded join reorder | `--optimizer-closeout --repro` |
+| Public planner diagnostics | Planner histogram/heavy-hitter/prefix catalogs and bounded estimate explanations | `--micro --filter *SystemCatalogBenchmarks*Planner*`; `--micro --filter *ExplainEstimate*` |
 | Async I/O batching close-out | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
 | Generated collection fast path | Generated binary payload encode/decode, direct field reads, UTF-8 text field reads, key matching | `--micro --filter *GeneratedCollection*` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |

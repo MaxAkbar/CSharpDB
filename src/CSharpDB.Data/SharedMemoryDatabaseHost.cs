@@ -524,7 +524,7 @@ internal sealed class SharedMemoryDatabaseHost
     }
 
     private static bool IsReadOnly(Statement statement)
-        => statement is QueryStatement or WithStatement;
+        => statement is QueryStatement or WithStatement or ExplainEstimateStatement;
 
     private static async ValueTask<QueryResult> DetachQueryResultAsync(QueryResult query, CancellationToken cancellationToken)
     {

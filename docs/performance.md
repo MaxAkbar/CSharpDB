@@ -189,7 +189,7 @@ This is the "real SQL" scenario: non-trivial joins, selective predicates, and pl
 
 - Create indexes on join keys and on selective filter columns.
 - Run `ANALYZE` after bulk loads and after major distribution changes.
-- Inspect `sys.table_stats` and `sys.column_stats` when a plan is not behaving as expected.
+- Inspect `sys.table_stats`, `sys.column_stats`, `sys.planner_histograms`, `sys.planner_heavy_hitters`, and `sys.planner_index_prefix_stats` when a plan is not behaving as expected. Use `EXPLAIN ESTIMATE FOR <query>` to see which stats were used or ignored without executing the query. See [Debugging Slow Queries With EXPLAIN ESTIMATE](query-execution-pipeline.md#debugging-slow-queries-with-explain-estimate) for how to interpret the Plan rows.
 
 ```sql
 CREATE INDEX idx_orders_customer ON orders(customer_id);

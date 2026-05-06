@@ -13,7 +13,7 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 
 ## Features
 
-- **SQL engine**: DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, views, triggers, indexes, `ANALYZE`, and `sys.*` catalogs including `sys.table_stats` and `sys.column_stats`
+- **SQL engine**: DDL, DML, JOINs, aggregates, GROUP BY, HAVING, CTEs, `UNION` / `INTERSECT` / `EXCEPT`, scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, views, triggers, indexes, `ANALYZE`, `EXPLAIN ESTIMATE FOR <query>`, and `sys.*` catalogs including `sys.table_stats`, `sys.column_stats`, and `sys.planner_*`
 - **NoSQL Collection API**: Typed `Collection<T>` with `Put`/`Get`/`Delete`/`Scan`/`Find`
 - **Single-file storage**: All data in one `.db` file with 4 KB B+tree pages
 - **In-memory mode**: Open empty in memory, load an existing `.db` + `.wal` into memory, then save back to disk
@@ -22,7 +22,7 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 - **Concurrent readers**: Snapshot-isolated readers alongside a single writer
 - **Statement + plan caching**: bounded caches for parsed SQL statements and SELECT plan reuse
 - **Fast-path lookups**: Direct B+tree access for `SELECT ... WHERE pk = value`
-- **Persisted statistics**: Exact row counts maintained on write, explicit `row_count_is_exact` semantics in `sys.table_stats`, `ANALYZE`-refreshed column distinct/min/max plus internal histograms/heavy hitters/composite-prefix stats, stale tracking after writes, and reuse of fresh stats for `COUNT(*)`, selective lookup planning, join method choice, and bounded small-chain inner-join reordering
+- **Persisted statistics**: Exact row counts maintained on write, explicit `row_count_is_exact` semantics in `sys.table_stats`, `ANALYZE`-refreshed column distinct/min/max plus histogram/heavy-hitter/composite-prefix diagnostics, stale tracking after writes, and reuse of fresh stats for `COUNT(*)`, selective lookup planning, join method choice, and bounded small-chain inner-join reordering
 - **Async-first**: All APIs are `async`/`await` from top to bottom
 
 Current boundary:

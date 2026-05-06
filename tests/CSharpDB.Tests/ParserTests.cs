@@ -361,6 +361,41 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_ExplainEstimateSelect()
+    {
+        var stmt = Parser.Parse("EXPLAIN ESTIMATE FOR SELECT * FROM users WHERE id = 1;");
+        var explain = Assert.IsType<ExplainEstimateStatement>(stmt);
+        var select = Assert.IsType<SelectStatement>(explain.Target);
+        Assert.IsType<BinaryExpression>(select.Where);
+    }
+
+    [Fact]
+    public void Parse_ExplainEstimateWithQuery()
+    {
+        var stmt = Parser.Parse("EXPLAIN ESTIMATE FOR WITH c AS (SELECT 1) SELECT * FROM c;");
+        var explain = Assert.IsType<ExplainEstimateStatement>(stmt);
+        var with = Assert.IsType<WithStatement>(explain.Target);
+        Assert.Single(with.Ctes);
+    }
+
+    [Fact]
+    public void Parse_ExplainEstimateCompoundSelect()
+    {
+        var stmt = Parser.Parse("EXPLAIN ESTIMATE FOR SELECT 1 UNION SELECT 2;");
+        var explain = Assert.IsType<ExplainEstimateStatement>(stmt);
+        Assert.IsType<CompoundSelectStatement>(explain.Target);
+    }
+
+    [Fact]
+    public void Parse_ExplainEstimateRejectsMutationTarget()
+    {
+        var ex = Assert.Throws<CSharpDbException>(() =>
+            Parser.Parse("EXPLAIN ESTIMATE FOR INSERT INTO users VALUES (1);"));
+
+        Assert.Contains("supports SELECT", ex.Message);
+    }
+
+    [Fact]
     public void Parse_ComplexExpression()
     {
         var stmt = Parser.Parse("SELECT * FROM t WHERE (a + b) * c > 10 AND name = 'test'");

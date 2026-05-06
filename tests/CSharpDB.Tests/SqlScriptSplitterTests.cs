@@ -96,6 +96,7 @@ public sealed class SqlScriptSplitterTests
 
     [Theory]
     [InlineData("SELECT * FROM t;", true)]
+    [InlineData("EXPLAIN ESTIMATE FOR SELECT * FROM t;", true)]
     [InlineData("INSERT INTO t VALUES (1);", false)]
     [InlineData("UPDATE t SET n = 1;", false)]
     [InlineData("DELETE FROM t WHERE id = 1;", false)]
