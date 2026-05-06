@@ -238,6 +238,24 @@ rejected common access paths.
    Expressions around indexed columns, non-equality joins, and unsupported predicates can
    force fallback estimates or operators.
 
+### Public Planner Observability Phases
+
+The current `EXPLAIN ESTIMATE` and `sys.planner_*` surfaces are phase 1 of public planner
+observability. They make the optimizer's existing statistics and costing choices visible,
+but they intentionally do not change normal query planning or execution behavior.
+
+| Phase | Scope | Runtime performance impact |
+|-------|-------|----------------------------|
+| Phase 1: SQL-first planner diagnostics | Stable `sys.planner_histograms`, `sys.planner_heavy_hitters`, `sys.planner_index_prefix_stats`, and `EXPLAIN ESTIMATE FOR <query>` rowsets. | No direct gain expected. The value is explaining slow or surprising plans without adding overhead to ordinary queries. |
+| Phase 2: Admin query debugger UX | Plan-tab warnings for missing/stale stats, clearer index chosen/rejected explanations, join-order visualization, copyable reports, and guided `ANALYZE` actions. | No direct engine gain expected. It shortens diagnosis time and reduces guesswork. |
+| Phase 3: Runtime actuals / `EXPLAIN ANALYZE` | Execute the query and report actual rows, elapsed time, and estimate-vs-actual gaps per plan node. | Small overhead while profiling. The main value is identifying where estimates diverge from reality. |
+| Phase 4: Adaptive re-optimization | Re-plan or adapt long-running queries when observed cardinality diverges materially from persisted statistics. | Direct gains are possible for stale-stat, skewed, and parameter-sensitive joins or filters, but this changes execution behavior and needs careful guardrails. |
+| Phase 5: Broader public stats management | Typed .NET APIs, richer stats health reports, explicit stats refresh helpers, and expanded multi-column statistics inspection. | Mostly operational value. Performance gains come indirectly from keeping stats healthy and making bad plans easier to prevent. |
+
+Phase 1 is complete for the current public surface. The next performance-enabling phase is
+runtime actuals, because adaptive re-optimization needs evidence about where the estimate
+was wrong before it can safely change an executing query.
+
 ### Index Selection
 
 For each AND-separated predicate in the WHERE clause, the planner checks whether an
