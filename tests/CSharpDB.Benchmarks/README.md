@@ -212,6 +212,30 @@ Async I/O source CSV:
 | Database inspector scan | 18,600 pages/sec | Specialized diagnostic path |
 | WAL inspector scan | 2,310 frames/sec | Specialized diagnostic path over a live 20-frame WAL |
 
+## Focused Generated Collection Fast-Path Validation
+
+These April 26, 2026 rows are diagnostic proof for the opt-in source-generated collection fast path. They compare source-generated JSON payloads with generated binary direct payloads for supported document graphs. They are not promoted release-core scorecard rows; durable single-row collection writes can still be flush-bound, so these numbers mainly describe CPU and allocation wins in encode/decode and field/index-reader paths.
+
+Command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *GeneratedCollection*
+```
+
+Source CSVs:
+
+`BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.GeneratedCollection*Benchmarks-report.csv`
+
+| Path | Source-gen JSON | Generated binary | Gain | Allocation |
+|---|---:|---:|---:|---|
+| Encode payload | 600.1 ns | 306.2 ns | 1.96x | 552 B to 136 B |
+| Decode payload | 2,277.9 ns | 371.9 ns | 6.12x | 1,240 B to 480 B |
+| Indexed int field read | 187.23 ns | 29.74 ns | 6.30x | 0 B to 0 B |
+| Text field UTF-8 read | 185.82 ns | 27.26 ns | 6.82x | 56 B to 0 B |
+| Key match | 21.48 ns | 19.91 ns | 1.08x | 0 B to 0 B |
+
+Interpretation: generated collections are worth using when collection payload CPU, direct field extraction, or index-reader cost is visible in the profile. They should not be sold as a durable commit-throughput feature, because WAL flush policy still dominates one-row durable writes.
+
 ## Core Benchmark Map
 
 | Performance question | Published surface | Benchmark source |
@@ -222,6 +246,7 @@ Async I/O source CSV:
 | Concurrent insert fan-in | Serialized controls, disjoint explicit keys, hot explicit right-edge, hot auto-ID | `--insert-fan-in-diagnostics --repro` |
 | Advanced optimizer close-out | Heavy hitters, histogram ranges, composite-prefix correlation, bounded join reorder | `--optimizer-closeout --repro` |
 | Async I/O batching close-out | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
+| Generated collection fast path | Generated binary payload encode/decode, direct field reads, UTF-8 text field reads, key matching | `--micro --filter *GeneratedCollection*` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |
 | Resident hot-set behavior | file-backed vs hybrid hot-set vs in-memory hot burst | `--hybrid-hot-set-read --repeat 3 --repro` |
 | Cold open / first read | startup cost and first lookup/get latency | `--hybrid-cold-open --repeat 3 --repro` |

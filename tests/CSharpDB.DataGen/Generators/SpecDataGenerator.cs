@@ -279,6 +279,7 @@ public static class SpecDataGenerator
                 "hotkeyrate" => Options.HotKeyRate,
                 "recentrate" => Options.RecentRate,
                 "avgdocsizebytes" or "avgsize" => Options.AvgDocSizeBytes,
+                "maxdirectdocumentsizebytes" or "maxdirectdocsize" => Options.MaxDirectDocumentSizeBytes,
                 "tenantcount" => Options.TenantCount,
                 "devicecount" => Options.DeviceCount,
                 "orderspercustomer" => Options.OrdersPerCustomer,
@@ -862,6 +863,17 @@ public static class SpecDataGenerator
                 ? EvaluateRequiredValues(bucketsRule, context, $"{path}.buckets").Select(value => ConvertToInt32(value, path)).ToArray()
                 : s_defaultDocumentSizeBuckets;
 
+            if (context.Options.DirectLoad)
+            {
+                int maxDirectSize = context.Options.MaxDirectDocumentSizeBytes;
+                averageBytes = Math.Min(averageBytes, maxDirectSize);
+                buckets = buckets
+                    .Where(bucket => bucket <= maxDirectSize)
+                    .Append(maxDirectSize)
+                    .Distinct()
+                    .ToArray();
+            }
+
             if (buckets.Length == 0)
                 throw new InvalidOperationException($"targetJsonSize rule at '{path}' requires at least one bucket.");
 
@@ -882,6 +894,9 @@ public static class SpecDataGenerator
             }
 
             int targetSize = ConvertToInt32(EvaluateRequired(rule, "targetSize", context, path), path);
+            if (context.Options.DirectLoad)
+                targetSize = Math.Min(targetSize, context.Options.MaxDirectDocumentSizeBytes);
+
             Random rng = CreateRandom(rule, context, path, "padObjectToSize");
             string? containerPath = GetOptionalString(rule, "containerPath");
             string blobField = GetOptionalString(rule, "blobField") ?? "blob";

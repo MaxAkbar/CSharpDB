@@ -36,15 +36,29 @@ public static class SqlSpecBuilder
         IReadOnlyDictionary<string, object?> row)
     {
         var values = new DbValue[table.Columns.Count];
+        WriteDbValues(table, row, values);
+        return values;
+    }
+
+    public static void WriteDbValues(
+        SqlTableSpec table,
+        IReadOnlyDictionary<string, object?> row,
+        Span<DbValue> destination)
+    {
+        if (destination.Length < table.Columns.Count)
+        {
+            throw new ArgumentException(
+                $"Destination must have at least {table.Columns.Count} values.",
+                nameof(destination));
+        }
+
         for (int i = 0; i < table.Columns.Count; i++)
         {
             SqlColumnSpec column = table.Columns[i];
             string sourceField = string.IsNullOrWhiteSpace(column.SourceField) ? column.Name : column.SourceField;
             row.TryGetValue(sourceField, out object? rawValue);
-            values[i] = ConvertToDbValue(column, rawValue);
+            destination[i] = ConvertToDbValue(column, rawValue);
         }
-
-        return values;
     }
 
     public static IReadOnlyList<string> GetCsvHeaders(SqlTableSpec table)

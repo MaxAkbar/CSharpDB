@@ -28,6 +28,7 @@ public sealed class DataGenOptions
     public double HotKeyRate { get; init; } = 0.20;
     public double RecentRate { get; init; } = 0.80;
     public int AvgDocSizeBytes { get; init; } = 1024;
+    public int MaxDirectDocumentSizeBytes { get; init; } = 2048;
     public int TenantCount { get; init; } = 250;
     public int DeviceCount { get; init; } = 100_000;
     public int OrdersPerCustomer { get; init; } = 5;
@@ -115,6 +116,7 @@ public sealed class DataGenOptions
             HotKeyRate = ParseDouble(values, "hot-key-rate", 0.20),
             RecentRate = ParseDouble(values, "recent-rate", 0.80),
             AvgDocSizeBytes = ParseInt(values, "avg-size", ParseInt(values, "avg-doc-size", 1024)),
+            MaxDirectDocumentSizeBytes = ParseInt(values, "max-direct-doc-size", ParseInt(values, "max-direct-document-size", 2048)),
             TenantCount = ParseInt(values, "tenant-count", 250),
             DeviceCount = ParseInt(values, "device-count", defaultDeviceCount),
             OrdersPerCustomer = ParseInt(values, "orders-per-customer", 5),
@@ -210,6 +212,9 @@ public sealed class DataGenOptions
 
         if (options.AvgDocSizeBytes <= 0)
             throw new DataGenUsageException("--avg-size must be a positive integer.");
+
+        if (options.MaxDirectDocumentSizeBytes <= 0)
+            throw new DataGenUsageException("--max-direct-doc-size must be a positive integer.");
 
         if (options.TenantCount <= 0)
             throw new DataGenUsageException("--tenant-count must be a positive integer.");

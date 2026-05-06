@@ -164,6 +164,10 @@ The spec format is documented in the [data generation plan](../../docs/CSharpDB-
 
 **Direct load** (`--load-direct`): writes rows or documents directly into a CSharpDB database file. This bypasses CSV/JSONL parsing entirely, which is useful when you want to isolate storage-engine performance from import overhead.
 
+Direct SQL loads use the current recommended bulk path: `Database.PrepareInsertBatch(...)`, one explicit transaction per batch, `UseWriteOptimizedPreset()`, monotonic generated keys when the spec defines them, and secondary indexes built after the hot ingest phase when `--build-indexes` is set. The loader also reuses its per-table row buffer before copying values into the reusable `InsertBatch` buffers, so it avoids allocating a new `DbValue[]` for every generated row.
+
+Direct collection loads use `Collection<JsonElement>` with one explicit transaction per batch and deferred index creation. That is the fastest general-purpose public API for arbitrary spec-shaped JSON today. The source-generated `GetGeneratedCollectionAsync<T>(...)` path is faster for known typed models, but DataGen specs intentionally emit dynamic `JsonElement` documents, so generated collection models are not a safe default for this project. When `--load-direct` is enabled, document target sizes are capped by `--max-direct-doc-size` so generated collection payloads stay within the current inline B-tree value envelope; file-only JSONL generation is not capped this way.
+
 **Skip files** (`--no-files`): when combined with `--load-direct`, skips file output entirely so you only get the database.
 
 ## Quick reference: all CLI options
@@ -187,5 +191,6 @@ The spec format is documented in the [data generation plan](../../docs/CSharpDB-
 | `--items-per-order <n>` | 4 | Relational: average items per order |
 | `--tenant-count <n>` | 250 | Relational/docs: number of distinct tenants |
 | `--avg-size <bytes>` | 1024 | Docs: target average document size |
+| `--max-direct-doc-size <bytes>` | 2048 | Docs/direct-load: max target JSON size for collection payloads |
 | `--source-database <path>` | -- | From-database: path to the existing CSharpDB to read schema from |
 | `--device-count <n>` | 100000 | Time-series: number of distinct devices |

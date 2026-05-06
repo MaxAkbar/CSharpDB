@@ -87,6 +87,7 @@ Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurr
 | `CollectionLookupFallbackBenchmarks` | `diagnostic` |
 | `CollectionPayloadBenchmarks` | `diagnostic` |
 | `CollectionSchemaBreadthBenchmarks` | `diagnostic` |
+| `GeneratedCollectionCodecBenchmarks` | `diagnostic` |
 | `CompositeGroupedIndexBenchmarks` | `diagnostic` |
 | `CoveringIndexBenchmarks` | `diagnostic` |
 | `DistinctBenchmarks` | `diagnostic` |

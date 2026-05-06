@@ -1,7 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using CSharpDB.DataGen.Specs;
 using CSharpDB.Engine;
-using System.Text.Json;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.DataGen.Output;
 
@@ -15,7 +16,7 @@ public static class BinaryDirectLoader
     {
         string dbPath = PrepareDatabasePath(options);
 
-        await using var db = await Database.OpenAsync(dbPath, ct);
+        await using var db = await Database.OpenAsync(dbPath, CreateDirectLoadOptions(), ct);
         foreach (string statement in SqlSpecBuilder.BuildSchemaScript(tables, includeIndexes: false)
                      .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
         {
@@ -52,7 +53,7 @@ public static class BinaryDirectLoader
     {
         string dbPath = PrepareDatabasePath(options);
 
-        await using var db = await Database.OpenAsync(dbPath, ct);
+        await using var db = await Database.OpenAsync(dbPath, CreateDirectLoadOptions(), ct);
         foreach (CollectionSpec collectionSpec in collections)
         {
             GeneratedCollectionSource source = GetRequiredCollectionSource(sources, collectionSpec.GeneratorKey);
@@ -85,10 +86,12 @@ public static class BinaryDirectLoader
         CancellationToken ct)
     {
         var batch = db.PrepareInsertBatch(table.Name, batchSize);
+        var rowValues = new DbValue[table.Columns.Count];
         foreach (IReadOnlyDictionary<string, object?> row in rows)
         {
             ct.ThrowIfCancellationRequested();
-            batch.AddRow(SqlSpecBuilder.BuildDbValues(table, row));
+            SqlSpecBuilder.WriteDbValues(table, row, rowValues);
+            batch.AddRow((ReadOnlySpan<DbValue>)rowValues);
             if (batch.Count >= batchSize)
                 await FlushInsertBatchAsync(db, batch, ct);
         }
@@ -197,6 +200,10 @@ public static class BinaryDirectLoader
 
         return fullPath;
     }
+
+    private static DatabaseOptions CreateDirectLoadOptions()
+        => new DatabaseOptions()
+            .ConfigureStorageEngine(static builder => builder.UseWriteOptimizedPreset());
 
     private static GeneratedSqlTableSource GetRequiredSource(
         IReadOnlyDictionary<string, GeneratedSqlTableSource> sources,
