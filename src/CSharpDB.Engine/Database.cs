@@ -18,6 +18,17 @@ internal readonly record struct RowIdReservationDiagnosticsSnapshot(
     long ReservationCount,
     long ReservedRowIdCount);
 
+internal readonly record struct AdaptiveQueryReoptimizationDiagnosticsSnapshot(
+    long EligibleQueryCount,
+    long AttemptCount,
+    long SuccessfulSwitchCount,
+    long RejectedSwitchCount,
+    long DivergenceEventCount,
+    long BufferedRowCount,
+    long MaxBufferedFallbackCount,
+    long UnsupportedFallbackCount,
+    long ReoptimizationLimitFallbackCount);
+
 /// <summary>
 /// Top-level entry point for the CSharpDB embedded database engine.
 /// </summary>
@@ -99,6 +110,24 @@ public sealed class Database : IAsyncDisposable
         Interlocked.Exchange(ref _rowIdReservedRowCount, 0);
     }
 
+    internal AdaptiveQueryReoptimizationDiagnosticsSnapshot GetAdaptiveQueryReoptimizationDiagnosticsSnapshot()
+    {
+        var snapshot = _planner.GetAdaptiveQueryReoptimizationDiagnosticsSnapshot();
+        return new AdaptiveQueryReoptimizationDiagnosticsSnapshot(
+            snapshot.EligibleQueryCount,
+            snapshot.AttemptCount,
+            snapshot.SuccessfulSwitchCount,
+            snapshot.RejectedSwitchCount,
+            snapshot.DivergenceEventCount,
+            snapshot.BufferedRowCount,
+            snapshot.MaxBufferedFallbackCount,
+            snapshot.UnsupportedFallbackCount,
+            snapshot.ReoptimizationLimitFallbackCount);
+    }
+
+    internal void ResetAdaptiveQueryReoptimizationDiagnostics() =>
+        _planner.ResetAdaptiveQueryReoptimizationDiagnostics();
+
     private Database(
         Pager pager,
         SchemaCatalog catalog,
@@ -108,6 +137,7 @@ public sealed class Database : IAsyncDisposable
         ICatalogStore catalogStore,
         AdvisoryStatisticsPersistenceMode advisoryStatisticsPersistenceMode,
         ImplicitInsertExecutionMode implicitInsertExecutionMode = ImplicitInsertExecutionMode.Serialized,
+        AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
         DbFunctionRegistry? functions = null,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
     {
@@ -131,7 +161,8 @@ public sealed class Database : IAsyncDisposable
             nextRowIdRangeReservationProvider: ReserveSharedNextRowIdRange,
             nextRowIdObservationProvider: ObserveSharedNextRowId,
             useTransientNextRowIdHints: false,
-            functions: _functions);
+            functions: _functions,
+            adaptiveQueryReoptimization: adaptiveQueryReoptimization);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -166,7 +197,8 @@ public sealed class Database : IAsyncDisposable
                 nextRowIdRangeReservationProvider: ReserveSharedNextRowIdRange,
                 nextRowIdObservationProvider: ObserveSharedNextRowId,
                 useTransientNextRowIdHints: true,
-                functions: _functions)
+                functions: _functions,
+                adaptiveQueryReoptimization: _planner.AdaptiveQueryReoptimization)
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
@@ -502,6 +534,7 @@ public sealed class Database : IAsyncDisposable
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
             options.Functions);
     }
 
@@ -565,6 +598,7 @@ public sealed class Database : IAsyncDisposable
                 snapshotContext.CatalogStore,
                 snapshotContext.AdvisoryStatisticsPersistenceMode,
                 options.ImplicitInsertExecutionMode,
+                options.AdaptiveQueryReoptimization,
                 options.Functions,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
             return snapshotDatabase;
@@ -580,6 +614,7 @@ public sealed class Database : IAsyncDisposable
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
             options.Functions);
         try
         {
@@ -639,6 +674,7 @@ public sealed class Database : IAsyncDisposable
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
             options.Functions);
     }
 
@@ -662,6 +698,7 @@ public sealed class Database : IAsyncDisposable
             context.CatalogStore,
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
             options.Functions);
     }
 
@@ -1059,6 +1096,7 @@ public sealed class Database : IAsyncDisposable
             snapshot,
             _statementCache,
             _functions,
+            _planner.AdaptiveQueryReoptimization,
             snapshotRowCounts);
     }
 
@@ -1964,6 +2002,7 @@ public sealed class Database : IAsyncDisposable
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
         private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
+        private readonly AdaptiveQueryReoptimizationOptions _adaptiveQueryReoptimization;
         private Pager? _snapshotPager;
         private QueryPlanner? _planner;
         private string? _lastSql;
@@ -1978,6 +2017,7 @@ public sealed class Database : IAsyncDisposable
             WalSnapshot snapshot,
             StatementCache statementCache,
             DbFunctionRegistry functions,
+            AdaptiveQueryReoptimizationOptions adaptiveQueryReoptimization,
             IReadOnlyDictionary<string, long> snapshotRowCounts)
         {
             _pager = pager;
@@ -1990,6 +2030,7 @@ public sealed class Database : IAsyncDisposable
             _releaseActiveQueryCallback = ReleaseActiveQueryAsync;
             _statementCache = statementCache;
             _snapshot = snapshot;
+            _adaptiveQueryReoptimization = adaptiveQueryReoptimization;
             _snapshotRowCounts = snapshotRowCounts;
         }
 
@@ -2061,7 +2102,12 @@ public sealed class Database : IAsyncDisposable
                     }
                 }
 
-                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer, functions: _functions);
+                _planner ??= new QueryPlanner(
+                    GetOrCreateSnapshotPager(),
+                    _catalog,
+                    _recordSerializer,
+                    functions: _functions,
+                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization);
                 ValueTask<QueryResult> plannerTask = _planner.ExecuteAsync(stmt, ct);
                 if (plannerTask.IsCompletedSuccessfully)
                 {
@@ -2109,7 +2155,12 @@ public sealed class Database : IAsyncDisposable
                     return fastLookupResult;
                 }
 
-                _planner ??= new QueryPlanner(GetOrCreateSnapshotPager(), _catalog, _recordSerializer, functions: _functions);
+                _planner ??= new QueryPlanner(
+                    GetOrCreateSnapshotPager(),
+                    _catalog,
+                    _recordSerializer,
+                    functions: _functions,
+                    adaptiveQueryReoptimization: _adaptiveQueryReoptimization);
                 QueryResult plannerResult = await _planner.ExecuteAsync(stmt, ct);
                 plannerResult.SetDisposeCallback(_releaseActiveQueryCallback);
                 return plannerResult;

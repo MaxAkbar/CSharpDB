@@ -249,12 +249,51 @@ but they intentionally do not change normal query planning or execution behavior
 | Phase 1: SQL-first planner diagnostics | Stable `sys.planner_histograms`, `sys.planner_heavy_hitters`, `sys.planner_index_prefix_stats`, and `EXPLAIN ESTIMATE FOR <query>` rowsets. | No direct gain expected. The value is explaining slow or surprising plans without adding overhead to ordinary queries. |
 | Phase 2: Admin query debugger UX | Plan-tab warnings for missing/stale stats, clearer index chosen/rejected explanations, join-order visualization, copyable reports, and guided `ANALYZE` actions. | No direct engine gain expected. It shortens diagnosis time and reduces guesswork. |
 | Phase 3: Runtime actuals / `EXPLAIN ANALYZE` | Execute the query and report actual rows, elapsed time, and estimate-vs-actual gaps per plan node. | Small overhead while profiling. The main value is identifying where estimates diverge from reality. |
-| Phase 4: Adaptive re-optimization | Re-plan or adapt long-running queries when observed cardinality diverges materially from persisted statistics. | Direct gains are possible for stale-stat, skewed, and parameter-sensitive joins or filters, but this changes execution behavior and needs careful guardrails. |
+| Phase 4: Adaptive join re-optimization | Opt-in adaptive wrappers for eligible joins. The current phase can switch lookup fan-out to hash join and flip inner hash build sides before rows are emitted. | Direct gains are possible for stale-stat, skewed, and parameter-sensitive joins. Default execution has no intended overhead because the feature is disabled unless the host opts in. |
 | Phase 5: Broader public stats management | Typed .NET APIs, richer stats health reports, explicit stats refresh helpers, and expanded multi-column statistics inspection. | Mostly operational value. Performance gains come indirectly from keeping stats healthy and making bad plans easier to prevent. |
 
-Phase 1 is complete for the current public surface. The next performance-enabling phase is
-runtime actuals, because adaptive re-optimization needs evidence about where the estimate
-was wrong before it can safely change an executing query.
+Phase 1 is complete for the current public surface. Phase 4 is implemented for the current
+join-focused opt-in scope. The next observability phase is still runtime actuals, because
+`EXPLAIN ANALYZE` would make estimate-vs-actual gaps visible instead of relying on internal
+adaptive counters.
+
+### Adaptive Join Re-Optimization
+
+Adaptive re-optimization is disabled by default. Direct embedded hosts can opt in:
+
+```csharp
+var options = new DatabaseOptions()
+    .EnableAdaptiveQueryReoptimization(builder => builder
+        .WithDivergenceFactor(8)
+        .WithMinimumObservedRows(4096)
+        .WithMaxBufferedRows(65536)
+        .WithMaxReoptimizationsPerQuery(1));
+```
+
+ADO.NET direct embedded connections can also use:
+
+```text
+Data Source=app.db;Adaptive Query Reoptimization=true
+```
+
+Remote `Endpoint` connections reject that connection-string key because remote hosts must
+enable adaptive behavior server-side.
+
+The current implementation adapts only at safe join boundaries before rows are emitted from
+the adaptive join. Eligible shapes are inner and left joins with extractable equi-join keys
+where both the original join and a semantic-preserving alternative are available. Unsupported
+or risky shapes fail closed and keep the original plan, including cross joins, right joins,
+compound queries, correlated subquery execution, and `SELECT *` cases where join reordering
+could change visible column order.
+
+Use it when `EXPLAIN ESTIMATE` shows a plausible join plan but the real workload is known to
+be stale-stat or parameter-sensitive. The expected wins are workload-shaped: stable plans and
+single-table lookups should not improve, while bad join fan-out or wrong hash build-side cases
+can improve materially. Benchmark diagnostics for this phase live behind:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --adaptive-reoptimization --repro
+```
 
 ### Index Selection
 

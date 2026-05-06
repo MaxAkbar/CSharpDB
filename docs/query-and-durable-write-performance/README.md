@@ -20,6 +20,7 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
 - Opt-in durable group commit remains exposed through `UseDurableGroupCommit(...)`; this round keeps it expert-only and documentation-led rather than changing defaults.
 - Shared auto-commit non-insert SQL writes on one `Database` can now use the same isolated commit path as explicit `WriteTransaction` work, so low-conflict `UPDATE` / `DELETE` contention can build real pending WAL commit fan-in instead of stalling above the queue.
 - The current advanced-optimizer phase is closed: heavy-hitter equality, histogram range, composite-prefix correlation, non-unique lookup costing, hash build-side choice, and bounded small-chain join reordering are covered by implementation, tests, and diagnostic close-out benchmarks.
+- Opt-in adaptive join re-optimization is available for the current phase. When enabled, eligible joins can adapt before rows are emitted: index nested-loop joins can switch to hash joins after large observed outer-cardinality divergence, and inner hash joins can flip the build side when the planned build side is materially larger than expected.
 - The current async I/O batching phase is closed: WAL, checkpoint, snapshot/export, backup/restore staging, logical rewrite, and inspector scan paths have been audited and covered by diagnostic close-out benchmarks.
 
 ## Public Surface
@@ -28,7 +29,8 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
 - `sys.table_stats.row_count_is_exact` is the new explicit exactness bit.
 - `sys.planner_histograms`, `sys.planner_heavy_hitters`, and `sys.planner_index_prefix_stats` expose stable SQL projections over the internal planner statistics.
 - `EXPLAIN ESTIMATE FOR <query>` returns a bounded diagnostic rowset showing estimate sources, stale/missing-stat fallbacks, lookup decisions, join estimates, and join-reorder choices without executing the target query. The practical debugging guide is in [Debugging Slow Queries With EXPLAIN ESTIMATE](../query-execution-pipeline.md#debugging-slow-queries-with-explain-estimate).
-- Adaptive re-optimization remains a separate future roadmap item, not a hidden requirement for the current optimizer phase.
+- `DatabaseOptions.AdaptiveQueryReoptimization` is disabled by default. Enable it explicitly with `EnableAdaptiveQueryReoptimization(...)` for direct embedded hosts that have measured stale-stat or parameter-sensitive join regressions.
+- ADO.NET direct embedded connections can opt in with `Adaptive Query Reoptimization=true` when no explicit `DirectDatabaseOptions` is supplied. Remote `Endpoint` connections reject that key because remote hosts must enable adaptive behavior server-side.
 - `UseWriteOptimizedPreset()` remains the default recommendation for durable file-backed workloads.
 - `UseLowLatencyDurableWritePreset()` and `UseDurableGroupCommit(...)` remain opt-in measure-first knobs.
 - Shared-`Database` implicit auto-commit is now split by workload shape:
@@ -41,14 +43,17 @@ The current advanced-optimizer and async I/O batching phases are backed by diagn
 
 ```powershell
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --optimizer-closeout --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --adaptive-reoptimization --repro
 dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --async-io-closeout --repro
 ```
 
 The May 5, 2026 optimizer close-out run showed `ANALYZE`-driven plans improving the targeted shapes by `1.06x-1.89x` on the local runner. The async I/O close-out run classified save/backup/restore as already batched, vacuum/FK migration as intentionally row-logical through `BTreeCopyUtility`, and inspector/WAL scans as specialized diagnostics.
 
+The adaptive re-optimization benchmark is diagnostic rather than a release-core scorecard row. It reports eligible query count, attempts, successful switches, rejected switches, divergence events, buffered rows, and fail-closed reasons for disabled baseline, enabled no-switch, stale-stat fan-out, parameter-sensitive skew, hash build-side shapes, and synthetic switch-counter rows.
+
 ## Future Work
 
-- Adaptive runtime re-optimization is still future work.
+- `EXPLAIN ANALYZE`, runtime actual-row plan output, adaptive stats persistence, automatic `ANALYZE`, and arbitrary mid-plan reordering remain future work.
 - Raw histogram/prefix storage payloads remain internal; future diagnostics should extend stable SQL projections or add typed DTOs deliberately rather than exposing storage encodings.
 - Durable group-commit guidance should keep following benchmark evidence, especially:
   - single-writer no-regression checks

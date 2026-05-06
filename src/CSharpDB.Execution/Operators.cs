@@ -8588,6 +8588,611 @@ public sealed class HashJoinOperator : IOperator, IBatchOperator, IBatchBackedRo
     }
 }
 
+internal sealed class BufferedReplayOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IRowBufferReuseController, IBatchBufferReuseController, IEstimatedRowCountProvider
+{
+    private const int DefaultBatchSize = 64;
+
+    private readonly List<DbValue[]> _bufferedRows;
+    private readonly IOperator _continuation;
+    private readonly bool _continuationAlreadyOpen;
+    private readonly bool _continuationExhausted;
+    private readonly int? _estimatedRowCount;
+    private IBatchOperator? _continuationBatchSource;
+    private int _bufferedIndex = -1;
+    private bool _opened;
+    private bool _bufferedComplete;
+    private bool _reuseCurrentBatch = true;
+    private RowBatch _currentBatch;
+
+    public BufferedReplayOperator(
+        ColumnDefinition[] outputSchema,
+        List<DbValue[]> bufferedRows,
+        IOperator continuation,
+        bool continuationAlreadyOpen,
+        bool continuationExhausted)
+    {
+        OutputSchema = outputSchema;
+        _bufferedRows = bufferedRows;
+        _continuation = continuation;
+        _continuationAlreadyOpen = continuationAlreadyOpen;
+        _continuationExhausted = continuationExhausted;
+        _estimatedRowCount = continuation is IEstimatedRowCountProvider estimated &&
+                             estimated.EstimatedRowCount is int continuationEstimate
+            ? Math.Max(bufferedRows.Count, continuationEstimate)
+            : bufferedRows.Count;
+        _currentBatch = new RowBatch(outputSchema.Length, DefaultBatchSize);
+    }
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => true;
+    public int? EstimatedRowCount => _estimatedRowCount;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_opened)
+            return;
+
+        _opened = true;
+        _bufferedIndex = -1;
+        _bufferedComplete = _bufferedRows.Count == 0;
+
+        if (!_continuationAlreadyOpen && !_continuationExhausted)
+            await _continuation.OpenAsync(ct);
+
+        _continuationBatchSource = !_continuationExhausted
+            ? BatchSourceHelper.TryGetBatchSource(_continuation)
+            : null;
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (!_bufferedComplete)
+        {
+            int next = _bufferedIndex + 1;
+            if (next < _bufferedRows.Count)
+            {
+                _bufferedIndex = next;
+                Current = _bufferedRows[next];
+                return true;
+            }
+
+            _bufferedComplete = true;
+        }
+
+        if (_continuationExhausted)
+            return false;
+
+        if (await _continuation.MoveNextAsync(ct))
+        {
+            Current = _continuation.Current;
+            return true;
+        }
+
+        return false;
+    }
+
+    public async ValueTask<bool> MoveNextBatchAsync(CancellationToken ct = default)
+    {
+        var batch = _reuseCurrentBatch ? EnsureBatch(OutputSchema.Length) : new RowBatch(OutputSchema.Length, DefaultBatchSize);
+        batch.Reset();
+
+        while (batch.Count < batch.Capacity && !_bufferedComplete)
+        {
+            int next = _bufferedIndex + 1;
+            if (next >= _bufferedRows.Count)
+            {
+                _bufferedComplete = true;
+                break;
+            }
+
+            _bufferedIndex = next;
+            _bufferedRows[next].CopyTo(batch.GetWritableRowSpan(batch.Count));
+            batch.CommitWrittenRow(batch.Count);
+        }
+
+        if (batch.Count > 0)
+        {
+            _currentBatch = batch;
+            return true;
+        }
+
+        if (_continuationExhausted)
+        {
+            _currentBatch = batch;
+            return false;
+        }
+
+        if (_continuationBatchSource != null)
+        {
+            bool hasBatch = await _continuationBatchSource.MoveNextBatchAsync(ct);
+            _currentBatch = hasBatch ? _continuationBatchSource.CurrentBatch : batch;
+            return hasBatch;
+        }
+
+        while (batch.Count < batch.Capacity && await _continuation.MoveNextAsync(ct))
+        {
+            _continuation.Current.CopyTo(batch.GetWritableRowSpan(batch.Count));
+            batch.CommitWrittenRow(batch.Count);
+        }
+
+        _currentBatch = batch;
+        return batch.Count > 0;
+    }
+
+    public void SetReuseCurrentRowBuffer(bool reuse)
+    {
+        if (_continuation is IRowBufferReuseController controller)
+            controller.SetReuseCurrentRowBuffer(reuse);
+    }
+
+    public void SetReuseCurrentBatch(bool reuse)
+    {
+        _reuseCurrentBatch = reuse;
+        if (_continuation is IBatchBufferReuseController controller)
+            controller.SetReuseCurrentBatch(reuse);
+        if (!reuse)
+            _currentBatch = new RowBatch(OutputSchema.Length, DefaultBatchSize);
+    }
+
+    public ValueTask DisposeAsync() => _continuation.DisposeAsync();
+
+    private RowBatch EnsureBatch(int columnCount)
+    {
+        if (_currentBatch.ColumnCount != columnCount)
+            _currentBatch = new RowBatch(columnCount, DefaultBatchSize);
+
+        return _currentBatch;
+    }
+}
+
+internal sealed class AdaptiveIndexNestedLoopJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+{
+    private const int DefaultBatchSize = 64;
+
+    private readonly IOperator _outer;
+    private readonly IOperator _unusedHashRight;
+    private readonly Func<IOperator, IOperator> _createLookupJoin;
+    private readonly Func<IOperator, IOperator> _createHashJoin;
+    private readonly AdaptiveQueryExecutionLease _lease;
+    private readonly AdaptiveQueryReoptimizationRuntimeDiagnostics _diagnostics;
+    private readonly long _estimatedOuterRows;
+    private readonly int? _estimatedRowCount;
+    private IOperator? _active;
+    private IBatchOperator? _activeBatchSource;
+    private int[]? _projectionColumnIndices;
+    private bool _reuseCurrentBatch = true;
+    private RowBatch _currentBatch;
+
+    public AdaptiveIndexNestedLoopJoinOperator(
+        IOperator outer,
+        IOperator unusedHashRight,
+        ColumnDefinition[] outputSchema,
+        Func<IOperator, IOperator> createLookupJoin,
+        Func<IOperator, IOperator> createHashJoin,
+        AdaptiveQueryExecutionLease lease,
+        AdaptiveQueryReoptimizationRuntimeDiagnostics diagnostics,
+        long estimatedOuterRows,
+        int? estimatedRowCount)
+    {
+        _outer = outer;
+        _unusedHashRight = unusedHashRight;
+        OutputSchema = outputSchema;
+        _createLookupJoin = createLookupJoin;
+        _createHashJoin = createHashJoin;
+        _lease = lease;
+        _diagnostics = diagnostics;
+        _estimatedOuterRows = Math.Max(estimatedOuterRows, 1);
+        _estimatedRowCount = estimatedRowCount;
+        _currentBatch = new RowBatch(outputSchema.Length, DefaultBatchSize);
+    }
+
+    public ColumnDefinition[] OutputSchema { get; private set; }
+    public bool ReusesCurrentRowBuffer => _active?.ReusesCurrentRowBuffer ?? false;
+    public int? EstimatedRowCount => _estimatedRowCount;
+    public DbValue[] Current => _active?.Current ?? throw new InvalidOperationException("Operator is not open.");
+    IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_active != null)
+            return;
+
+        _diagnostics.RecordAttempt();
+        var options = _lease.Options;
+        long threshold = ComputeThreshold(_estimatedOuterRows, options);
+        var buffered = new List<DbValue[]>(Math.Min(options.MaxBufferedRows, (int)Math.Min(threshold + 1, int.MaxValue)));
+        bool exhausted = false;
+        bool switchToHash = false;
+        bool disposeUnusedHashRight = true;
+
+        if (_outer is IRowBufferReuseController reuseController)
+            reuseController.SetReuseCurrentRowBuffer(false);
+
+        await _outer.OpenAsync(ct);
+        while (buffered.Count <= threshold && buffered.Count < options.MaxBufferedRows)
+        {
+            if (!await _outer.MoveNextAsync(ct))
+            {
+                exhausted = true;
+                break;
+            }
+
+            buffered.Add(CloneRow(_outer.Current));
+        }
+
+        _diagnostics.RecordBufferedRows(buffered.Count);
+
+        if (!exhausted && buffered.Count > threshold)
+        {
+            _diagnostics.RecordDivergence();
+            if (_lease.TryConsumeReoptimization())
+            {
+                switchToHash = true;
+                _diagnostics.RecordSuccessfulSwitch();
+            }
+            else
+            {
+                _diagnostics.RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason.ReoptimizationLimit);
+            }
+        }
+        else if (!exhausted && buffered.Count >= options.MaxBufferedRows)
+        {
+            _diagnostics.RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason.MaxBufferedRows);
+        }
+
+        var replay = new BufferedReplayOperator(
+            _outer.OutputSchema,
+            buffered,
+            _outer,
+            continuationAlreadyOpen: true,
+            continuationExhausted: exhausted);
+
+        _active = switchToHash
+            ? _createHashJoin(replay)
+            : _createLookupJoin(replay);
+        disposeUnusedHashRight = !switchToHash;
+
+        if (_projectionColumnIndices != null &&
+            _active is IProjectionPushdownTarget projectionTarget &&
+            !projectionTarget.TrySetOutputProjection(_projectionColumnIndices, OutputSchema))
+        {
+            _diagnostics.RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason.Unsupported);
+        }
+
+        if (_active is IBatchBufferReuseController batchController)
+            batchController.SetReuseCurrentBatch(_reuseCurrentBatch);
+
+        try
+        {
+            await _active.OpenAsync(ct);
+            _activeBatchSource = BatchSourceHelper.TryGetBatchSource(_active);
+        }
+        finally
+        {
+            if (disposeUnusedHashRight)
+                await _unusedHashRight.DisposeAsync();
+        }
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+        => _active?.MoveNextAsync(ct) ?? ValueTask.FromResult(false);
+
+    public async ValueTask<bool> MoveNextBatchAsync(CancellationToken ct = default)
+    {
+        if (_activeBatchSource != null)
+        {
+            bool hasBatch = await _activeBatchSource.MoveNextBatchAsync(ct);
+            _currentBatch = hasBatch
+                ? _activeBatchSource.CurrentBatch
+                : EnsureBatch(OutputSchema.Length);
+            return hasBatch;
+        }
+
+        var batch = _reuseCurrentBatch ? EnsureBatch(OutputSchema.Length) : new RowBatch(OutputSchema.Length, DefaultBatchSize);
+        batch.Reset();
+        while (batch.Count < batch.Capacity && _active != null && await _active.MoveNextAsync(ct))
+        {
+            _active.Current.CopyTo(batch.GetWritableRowSpan(batch.Count));
+            batch.CommitWrittenRow(batch.Count);
+        }
+
+        _currentBatch = batch;
+        return batch.Count > 0;
+    }
+
+    public bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema)
+    {
+        _projectionColumnIndices = (int[])columnIndices.Clone();
+        OutputSchema = outputSchema;
+        _currentBatch = new RowBatch(OutputSchema.Length, DefaultBatchSize);
+        return true;
+    }
+
+    public void SetReuseCurrentBatch(bool reuse)
+    {
+        _reuseCurrentBatch = reuse;
+        if (_active is IBatchBufferReuseController controller)
+            controller.SetReuseCurrentBatch(reuse);
+        if (!reuse)
+            _currentBatch = new RowBatch(OutputSchema.Length, DefaultBatchSize);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_active != null)
+        {
+            await _active.DisposeAsync();
+        }
+        else
+        {
+            await _outer.DisposeAsync();
+            await _unusedHashRight.DisposeAsync();
+        }
+    }
+
+    private RowBatch EnsureBatch(int columnCount)
+    {
+        if (_currentBatch.ColumnCount != columnCount)
+            _currentBatch = new RowBatch(columnCount, DefaultBatchSize);
+
+        return _currentBatch;
+    }
+
+    private static long ComputeThreshold(long estimatedRows, AdaptiveQueryReoptimizationOptions options)
+    {
+        long divergenceRows = estimatedRows > long.MaxValue / options.DivergenceFactor
+            ? long.MaxValue
+            : estimatedRows * options.DivergenceFactor;
+        return Math.Max(options.MinimumObservedRows, divergenceRows);
+    }
+
+    private static DbValue[] CloneRow(DbValue[] row) => row.Length == 0 ? Array.Empty<DbValue>() : (DbValue[])row.Clone();
+}
+
+internal sealed class AdaptiveHashJoinOperator : IOperator, IBatchOperator, IBatchBackedRowOperator, IProjectionPushdownTarget, IEstimatedRowCountProvider, IBatchBufferReuseController
+{
+    private const int DefaultBatchSize = 64;
+
+    private readonly IOperator _left;
+    private readonly IOperator _right;
+    private readonly JoinType _joinType;
+    private readonly Expression? _residualCondition;
+    private readonly TableSchema _compositeSchema;
+    private readonly int _leftColCount;
+    private readonly int _rightColCount;
+    private readonly int[] _leftKeyIndices;
+    private readonly int[] _rightKeyIndices;
+    private readonly bool _plannedBuildRightSide;
+    private readonly long _estimatedLeftRows;
+    private readonly long _estimatedRightRows;
+    private readonly int? _estimatedRowCount;
+    private readonly DbFunctionRegistry _functions;
+    private readonly AdaptiveQueryExecutionLease _lease;
+    private readonly AdaptiveQueryReoptimizationRuntimeDiagnostics _diagnostics;
+    private IOperator? _active;
+    private IBatchOperator? _activeBatchSource;
+    private int[]? _projectionColumnIndices;
+    private bool _reuseCurrentBatch = true;
+    private RowBatch _currentBatch;
+
+    public AdaptiveHashJoinOperator(
+        IOperator left,
+        IOperator right,
+        JoinType joinType,
+        Expression? residualCondition,
+        TableSchema compositeSchema,
+        int leftColCount,
+        int rightColCount,
+        int[] leftKeyIndices,
+        int[] rightKeyIndices,
+        bool plannedBuildRightSide,
+        long estimatedLeftRows,
+        long estimatedRightRows,
+        int? estimatedRowCount,
+        DbFunctionRegistry functions,
+        AdaptiveQueryExecutionLease lease,
+        AdaptiveQueryReoptimizationRuntimeDiagnostics diagnostics)
+    {
+        _left = left;
+        _right = right;
+        _joinType = joinType;
+        _residualCondition = residualCondition;
+        _compositeSchema = compositeSchema;
+        _leftColCount = leftColCount;
+        _rightColCount = rightColCount;
+        _leftKeyIndices = leftKeyIndices;
+        _rightKeyIndices = rightKeyIndices;
+        _plannedBuildRightSide = plannedBuildRightSide;
+        _estimatedLeftRows = Math.Max(estimatedLeftRows, 1);
+        _estimatedRightRows = Math.Max(estimatedRightRows, 1);
+        _estimatedRowCount = estimatedRowCount;
+        _functions = functions;
+        _lease = lease;
+        _diagnostics = diagnostics;
+        OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
+        _currentBatch = new RowBatch(OutputSchema.Length, DefaultBatchSize);
+    }
+
+    public ColumnDefinition[] OutputSchema { get; private set; }
+    public bool ReusesCurrentRowBuffer => _active?.ReusesCurrentRowBuffer ?? false;
+    public int? EstimatedRowCount => _estimatedRowCount;
+    public DbValue[] Current => _active?.Current ?? throw new InvalidOperationException("Operator is not open.");
+    IBatchOperator IBatchBackedRowOperator.BatchSource => this;
+    bool IBatchOperator.ReusesCurrentBatch => _reuseCurrentBatch;
+    RowBatch IBatchOperator.CurrentBatch => _currentBatch;
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_active != null)
+            return;
+
+        _diagnostics.RecordAttempt();
+        var options = _lease.Options;
+        var leftRows = new List<DbValue[]>(Math.Min(options.MaxBufferedRows, 1024));
+        var rightRows = new List<DbValue[]>(Math.Min(options.MaxBufferedRows, 1024));
+
+        bool leftExhausted = await BufferSourceAsync(_left, leftRows, options.MaxBufferedRows, ct);
+        bool rightExhausted = await BufferSourceAsync(_right, rightRows, options.MaxBufferedRows, ct);
+        _diagnostics.RecordBufferedRows(leftRows.Count + rightRows.Count);
+
+        bool buildRightSide = _plannedBuildRightSide;
+        if (_joinType == JoinType.Inner && leftExhausted && rightExhausted)
+        {
+            long plannedBuildEstimate = _plannedBuildRightSide ? _estimatedRightRows : _estimatedLeftRows;
+            long actualBuildRows = _plannedBuildRightSide ? rightRows.Count : leftRows.Count;
+            long actualProbeRows = _plannedBuildRightSide ? leftRows.Count : rightRows.Count;
+            if (actualBuildRows > ComputeThreshold(plannedBuildEstimate, options) &&
+                actualProbeRows < actualBuildRows)
+            {
+                _diagnostics.RecordDivergence();
+                if (_lease.TryConsumeReoptimization())
+                {
+                    buildRightSide = !_plannedBuildRightSide;
+                    _diagnostics.RecordSuccessfulSwitch();
+                }
+                else
+                {
+                    _diagnostics.RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason.ReoptimizationLimit);
+                }
+            }
+        }
+        else if (!leftExhausted || !rightExhausted)
+        {
+            _diagnostics.RecordRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason.MaxBufferedRows);
+        }
+
+        var leftReplay = new BufferedReplayOperator(_left.OutputSchema, leftRows, _left, true, leftExhausted);
+        var rightReplay = new BufferedReplayOperator(_right.OutputSchema, rightRows, _right, true, rightExhausted);
+        _active = new HashJoinOperator(
+            leftReplay,
+            rightReplay,
+            _joinType,
+            _residualCondition,
+            _compositeSchema,
+            _leftColCount,
+            _rightColCount,
+            _leftKeyIndices,
+            _rightKeyIndices,
+            buildRightSide,
+            buildRightSide ? rightRows.Count : leftRows.Count,
+            _estimatedRowCount,
+            _functions);
+
+        if (_projectionColumnIndices != null &&
+            _active is IProjectionPushdownTarget projectionTarget)
+        {
+            projectionTarget.TrySetOutputProjection(_projectionColumnIndices, OutputSchema);
+        }
+
+        if (_active is IBatchBufferReuseController batchController)
+            batchController.SetReuseCurrentBatch(_reuseCurrentBatch);
+
+        await _active.OpenAsync(ct);
+        _activeBatchSource = BatchSourceHelper.TryGetBatchSource(_active);
+    }
+
+    public ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+        => _active?.MoveNextAsync(ct) ?? ValueTask.FromResult(false);
+
+    public async ValueTask<bool> MoveNextBatchAsync(CancellationToken ct = default)
+    {
+        if (_activeBatchSource != null)
+        {
+            bool hasBatch = await _activeBatchSource.MoveNextBatchAsync(ct);
+            _currentBatch = hasBatch
+                ? _activeBatchSource.CurrentBatch
+                : EnsureBatch(OutputSchema.Length);
+            return hasBatch;
+        }
+
+        var batch = _reuseCurrentBatch ? EnsureBatch(OutputSchema.Length) : new RowBatch(OutputSchema.Length, DefaultBatchSize);
+        batch.Reset();
+        while (batch.Count < batch.Capacity && _active != null && await _active.MoveNextAsync(ct))
+        {
+            _active.Current.CopyTo(batch.GetWritableRowSpan(batch.Count));
+            batch.CommitWrittenRow(batch.Count);
+        }
+
+        _currentBatch = batch;
+        return batch.Count > 0;
+    }
+
+    public bool TrySetOutputProjection(int[] columnIndices, ColumnDefinition[] outputSchema)
+    {
+        _projectionColumnIndices = (int[])columnIndices.Clone();
+        OutputSchema = outputSchema;
+        _currentBatch = new RowBatch(OutputSchema.Length, DefaultBatchSize);
+        return true;
+    }
+
+    public void SetReuseCurrentBatch(bool reuse)
+    {
+        _reuseCurrentBatch = reuse;
+        if (_active is IBatchBufferReuseController controller)
+            controller.SetReuseCurrentBatch(reuse);
+        if (!reuse)
+            _currentBatch = new RowBatch(OutputSchema.Length, DefaultBatchSize);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_active != null)
+        {
+            await _active.DisposeAsync();
+        }
+        else
+        {
+            await _left.DisposeAsync();
+            await _right.DisposeAsync();
+        }
+    }
+
+    private RowBatch EnsureBatch(int columnCount)
+    {
+        if (_currentBatch.ColumnCount != columnCount)
+            _currentBatch = new RowBatch(columnCount, DefaultBatchSize);
+
+        return _currentBatch;
+    }
+
+    private static async ValueTask<bool> BufferSourceAsync(
+        IOperator source,
+        List<DbValue[]> rows,
+        int maxRows,
+        CancellationToken ct)
+    {
+        if (source is IRowBufferReuseController reuseController)
+            reuseController.SetReuseCurrentRowBuffer(false);
+
+        await source.OpenAsync(ct);
+        while (rows.Count < maxRows)
+        {
+            if (!await source.MoveNextAsync(ct))
+                return true;
+
+            rows.Add(CloneRow(source.Current));
+        }
+
+        return false;
+    }
+
+    private static long ComputeThreshold(long estimatedRows, AdaptiveQueryReoptimizationOptions options)
+    {
+        long divergenceRows = estimatedRows > long.MaxValue / options.DivergenceFactor
+            ? long.MaxValue
+            : estimatedRows * options.DivergenceFactor;
+        return Math.Max(options.MinimumObservedRows, divergenceRows);
+    }
+
+    private static DbValue[] CloneRow(DbValue[] row) => row.Length == 0 ? Array.Empty<DbValue>() : (DbValue[])row.Clone();
+}
+
 /// <summary>
 /// Index nested-loop join operator.
 /// Uses a right-side PRIMARY KEY or unique single-column index for lookup joins.

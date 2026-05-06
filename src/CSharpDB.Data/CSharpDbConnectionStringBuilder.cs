@@ -13,6 +13,7 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     private const string MaxPoolSizeKey = "Max Pool Size";
     private const string StoragePresetKey = "Storage Preset";
     private const string EmbeddedOpenModeKey = "Embedded Open Mode";
+    private const string AdaptiveQueryReoptimizationKey = "Adaptive Query Reoptimization";
 
     internal const bool DefaultPooling = false;
     internal const int DefaultMaxPoolSize = 32;
@@ -68,6 +69,12 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     {
         get => GetNullableEnum<CSharpDbEmbeddedOpenMode>(EmbeddedOpenModeKey);
         set => SetNullableEnum(EmbeddedOpenModeKey, value);
+    }
+
+    public bool AdaptiveQueryReoptimization
+    {
+        get => GetBoolean(AdaptiveQueryReoptimizationKey, defaultValue: false);
+        set => this[AdaptiveQueryReoptimizationKey] = value;
     }
 
     public CSharpDbConnectionStringBuilder() { }

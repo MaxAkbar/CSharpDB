@@ -206,6 +206,32 @@ dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.
 | `COUNT(*) FROM sys.planner_index_prefix_stats` | 100 | 203.2 ns | 528 B | Virtual composite-prefix catalog count fast path |
 | `EXPLAIN ESTIMATE` skewed lookup | 100 | 345.8 us | 334.83 KB | Bounded estimate diagnostics without executing user rows |
 
+## Focused Adaptive Re-Optimization Validation
+
+These May 6, 2026 rows are diagnostic proof for opt-in adaptive query re-optimization. The SQL rows measure default-disabled behavior, enabled wrapper overhead, and eligible join shapes on the benchmark seed data. The synthetic rows force the adaptive operator switch paths directly so the run records divergence and switch counters even when the normal planner already avoids a bad plan.
+
+Command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --adaptive-reoptimization
+```
+
+Source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/adaptive-reoptimization-20260506-073419.csv`
+
+| Adaptive shape | Throughput | P50 | P99 | Switches | What it validates |
+|---|---:|---:|---:|---:|---|
+| Disabled stable join | 251 queries/sec | 3.681 ms | 9.002 ms | 0 | Default path stays silent with no adaptive counters |
+| Enabled stable no-switch | 191 queries/sec | 4.666 ms | 9.588 ms | 0 | Opt-in wrapper overhead when thresholds avoid adaptation |
+| Stale-stat fan-out diagnostic | 48 queries/sec | 18.324 ms | 43.867 ms | 0 | Eligible stale/range workload shape on the current planner |
+| Parameter-sensitive small | 910 queries/sec | 0.747 ms | 4.448 ms | 0 | Small selective value with adaptive eligibility enabled |
+| Hash build-side diagnostic | 77 queries/sec | 12.687 ms | 22.376 ms | 0 | Eligible hash-build workload shape on the current planner |
+| Synthetic index switch | 8,651 ops/sec | 0.115 ms | 0.121 ms | 86 | Index-to-hash switch path, buffered replay, and divergence counters |
+| Synthetic hash build switch | 1,403 ops/sec | 0.594 ms | 2.246 ms | 86 | Hash build-side flip path and divergence counters |
+
+Interpretation: this feature is not a universal speedup. It should be enabled only for workloads where stale statistics or parameter-sensitive joins produce materially wrong join choices; stable, well-analyzed plans should expect no gain and some opt-in wrapper cost.
+
 Async I/O command:
 
 ```powershell
@@ -260,6 +286,7 @@ Interpretation: generated collections are worth using when collection payload CP
 | Concurrent insert fan-in | Serialized controls, disjoint explicit keys, hot explicit right-edge, hot auto-ID | `--insert-fan-in-diagnostics --repro` |
 | Advanced optimizer close-out | Heavy hitters, histogram ranges, composite-prefix correlation, bounded join reorder | `--optimizer-closeout --repro` |
 | Public planner diagnostics | Planner histogram/heavy-hitter/prefix catalogs and bounded estimate explanations | `--micro --filter *SystemCatalogBenchmarks*Planner*`; `--micro --filter *ExplainEstimate*` |
+| Adaptive query re-optimization | Default-disabled baseline, enabled wrapper overhead, eligible join shapes, synthetic switch counters | `--adaptive-reoptimization` |
 | Async I/O batching close-out | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
 | Generated collection fast path | Generated binary payload encode/decode, direct field reads, UTF-8 text field reads, key matching | `--micro --filter *GeneratedCollection*` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |

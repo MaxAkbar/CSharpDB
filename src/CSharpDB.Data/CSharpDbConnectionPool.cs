@@ -66,6 +66,7 @@ internal readonly record struct PoolKey(
     int MaxPoolSize,
     CSharpDbEmbeddedOpenMode EffectiveOpenMode,
     CSharpDbStoragePreset? EffectiveStoragePreset,
+    bool EffectiveAdaptiveQueryReoptimization,
     object? ExplicitDirectDatabaseOptions,
     object? ExplicitHybridDatabaseOptions);
 

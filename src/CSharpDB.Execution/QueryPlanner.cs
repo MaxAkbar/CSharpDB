@@ -22,6 +22,17 @@ public sealed class QueryPlanner
     private const int MaxJoinOrderRowGoalRows = 4096;
     private const int MaxExplainEstimateRows = 500;
 
+    internal readonly record struct AdaptiveQueryReoptimizationDiagnosticsSnapshot(
+        long EligibleQueryCount,
+        long AttemptCount,
+        long SuccessfulSwitchCount,
+        long RejectedSwitchCount,
+        long DivergenceEventCount,
+        long BufferedRowCount,
+        long MaxBufferedFallbackCount,
+        long UnsupportedFallbackCount,
+        long ReoptimizationLimitFallbackCount);
+
     private sealed record PlannerEstimateDiagnostic(
         int NodeId,
         int? ParentNodeId,
@@ -373,6 +384,15 @@ public sealed class QueryPlanner
     private long _selectPlanCacheMissCount;
     private long _selectPlanCacheReclassificationCount;
     private long _selectPlanCacheStoreCount;
+    private long _adaptiveEligibleQueryCount;
+    private long _adaptiveAttemptCount;
+    private long _adaptiveSuccessfulSwitchCount;
+    private long _adaptiveRejectedSwitchCount;
+    private long _adaptiveDivergenceEventCount;
+    private long _adaptiveBufferedRowCount;
+    private long _adaptiveMaxBufferedFallbackCount;
+    private long _adaptiveUnsupportedFallbackCount;
+    private long _adaptiveReoptimizationLimitFallbackCount;
 
     private readonly record struct CorrelationScope(DbValue[] Row, TableSchema Schema);
     private long _observedSchemaVersion;
@@ -381,6 +401,7 @@ public sealed class QueryPlanner
     private readonly Func<string, long, int, (long Start, long EndExclusive)>? _nextRowIdRangeReservationProvider;
     private readonly Action<string, long>? _nextRowIdObservationProvider;
     private readonly bool _useTransientNextRowIdHints;
+    private readonly AdaptiveQueryReoptimizationRuntimeDiagnostics _adaptiveRuntimeDiagnostics;
 
     private const int MaxCompiledExpressionCacheEntries = 4096;
     private const int MaxSelectPlanCacheEntries = 1024;
@@ -511,6 +532,8 @@ public sealed class QueryPlanner
     /// </summary>
     public bool PreferSyncPointLookups { get; set; } = true;
 
+    public AdaptiveQueryReoptimizationOptions AdaptiveQueryReoptimization { get; }
+
     public QueryPlanner(
         Pager pager,
         SchemaCatalog catalog,
@@ -520,7 +543,8 @@ public sealed class QueryPlanner
         Func<string, long, long>? nextRowIdReservationProvider = null,
         Action<string, long>? nextRowIdObservationProvider = null,
         bool useTransientNextRowIdHints = false,
-        DbFunctionRegistry? functions = null)
+        DbFunctionRegistry? functions = null,
+        AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null)
         : this(
             pager,
             catalog,
@@ -531,7 +555,8 @@ public sealed class QueryPlanner
             nextRowIdRangeReservationProvider: null,
             nextRowIdObservationProvider,
             useTransientNextRowIdHints,
-            functions)
+            functions,
+            adaptiveQueryReoptimization)
     {
     }
 
@@ -545,7 +570,8 @@ public sealed class QueryPlanner
         Func<string, long, int, (long Start, long EndExclusive)>? nextRowIdRangeReservationProvider,
         Action<string, long>? nextRowIdObservationProvider,
         bool useTransientNextRowIdHints,
-        DbFunctionRegistry? functions)
+        DbFunctionRegistry? functions,
+        AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -561,6 +587,13 @@ public sealed class QueryPlanner
         _nextRowIdObservationProvider = nextRowIdObservationProvider;
         _observedSchemaVersion = catalog.SchemaVersion;
         _useTransientNextRowIdHints = useTransientNextRowIdHints;
+        AdaptiveQueryReoptimization = NormalizeAdaptiveQueryReoptimizationOptions(adaptiveQueryReoptimization);
+        _adaptiveRuntimeDiagnostics = new AdaptiveQueryReoptimizationRuntimeDiagnostics(
+            RecordAdaptiveAttempt,
+            RecordAdaptiveSuccessfulSwitch,
+            RecordAdaptiveRejectedSwitch,
+            RecordAdaptiveDivergence,
+            RecordAdaptiveBufferedRows);
     }
 
     public IReadOnlyCollection<KeyValuePair<string, long>> GetCommittedNextRowIdHints()
@@ -637,27 +670,33 @@ public sealed class QueryPlanner
         return await action(ct);
     }
 
-    private ValueTask<QueryResult> ExecuteQueryAsync(QueryStatement stmt, CancellationToken ct)
+    private ValueTask<QueryResult> ExecuteQueryAsync(
+        QueryStatement stmt,
+        CancellationToken ct,
+        bool suppressAdaptiveReoptimization = false)
     {
         if (ContainsSubqueries(stmt))
-            return ExecuteQueryWithSubqueriesAsync(stmt, ct);
+            return ExecuteQueryWithSubqueriesAsync(stmt, ct, suppressAdaptiveReoptimization);
 
         return stmt switch
         {
-            SelectStatement select => ValueTask.FromResult(ExecuteSelect(select)),
+            SelectStatement select => ValueTask.FromResult(ExecuteSelect(select, suppressAdaptiveReoptimization)),
             CompoundSelectStatement compound => ExecuteCompoundSelectAsync(compound, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {stmt.GetType().Name}"),
         };
     }
 
-    private async ValueTask<QueryResult> ExecuteQueryWithSubqueriesAsync(QueryStatement stmt, CancellationToken ct)
+    private async ValueTask<QueryResult> ExecuteQueryWithSubqueriesAsync(
+        QueryStatement stmt,
+        CancellationToken ct,
+        bool suppressAdaptiveReoptimization = false)
     {
         var lowered = await RewriteSubqueriesInQueryAsync(stmt, ct);
         if (!ContainsSubqueries(lowered))
         {
             return lowered switch
             {
-                SelectStatement select => ExecuteSelect(select),
+                SelectStatement select => ExecuteSelect(select, suppressAdaptiveReoptimization),
                 CompoundSelectStatement compound => await ExecuteCompoundSelectAsync(compound, ct),
                 _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {lowered.GetType().Name}"),
             };
@@ -688,6 +727,81 @@ public sealed class QueryPlanner
         _selectPlanCacheMissCount = 0;
         _selectPlanCacheReclassificationCount = 0;
         _selectPlanCacheStoreCount = 0;
+    }
+
+    internal AdaptiveQueryReoptimizationDiagnosticsSnapshot GetAdaptiveQueryReoptimizationDiagnosticsSnapshot()
+        => new(
+            Interlocked.Read(ref _adaptiveEligibleQueryCount),
+            Interlocked.Read(ref _adaptiveAttemptCount),
+            Interlocked.Read(ref _adaptiveSuccessfulSwitchCount),
+            Interlocked.Read(ref _adaptiveRejectedSwitchCount),
+            Interlocked.Read(ref _adaptiveDivergenceEventCount),
+            Interlocked.Read(ref _adaptiveBufferedRowCount),
+            Interlocked.Read(ref _adaptiveMaxBufferedFallbackCount),
+            Interlocked.Read(ref _adaptiveUnsupportedFallbackCount),
+            Interlocked.Read(ref _adaptiveReoptimizationLimitFallbackCount));
+
+    internal void ResetAdaptiveQueryReoptimizationDiagnostics()
+    {
+        Interlocked.Exchange(ref _adaptiveEligibleQueryCount, 0);
+        Interlocked.Exchange(ref _adaptiveAttemptCount, 0);
+        Interlocked.Exchange(ref _adaptiveSuccessfulSwitchCount, 0);
+        Interlocked.Exchange(ref _adaptiveRejectedSwitchCount, 0);
+        Interlocked.Exchange(ref _adaptiveDivergenceEventCount, 0);
+        Interlocked.Exchange(ref _adaptiveBufferedRowCount, 0);
+        Interlocked.Exchange(ref _adaptiveMaxBufferedFallbackCount, 0);
+        Interlocked.Exchange(ref _adaptiveUnsupportedFallbackCount, 0);
+        Interlocked.Exchange(ref _adaptiveReoptimizationLimitFallbackCount, 0);
+    }
+
+    private static AdaptiveQueryReoptimizationOptions NormalizeAdaptiveQueryReoptimizationOptions(
+        AdaptiveQueryReoptimizationOptions? options)
+    {
+        options ??= new AdaptiveQueryReoptimizationOptions();
+
+        return new AdaptiveQueryReoptimizationOptions
+        {
+            Enabled = options.Enabled,
+            DivergenceFactor = Math.Max(2, options.DivergenceFactor),
+            MinimumObservedRows = Math.Max(1, options.MinimumObservedRows),
+            MaxBufferedRows = Math.Max(1, options.MaxBufferedRows),
+            MaxReoptimizationsPerQuery = Math.Max(0, options.MaxReoptimizationsPerQuery),
+        };
+    }
+
+    private void RecordAdaptiveEligibleQuery() =>
+        Interlocked.Increment(ref _adaptiveEligibleQueryCount);
+
+    private void RecordAdaptiveAttempt() =>
+        Interlocked.Increment(ref _adaptiveAttemptCount);
+
+    private void RecordAdaptiveSuccessfulSwitch() =>
+        Interlocked.Increment(ref _adaptiveSuccessfulSwitchCount);
+
+    private void RecordAdaptiveRejectedSwitch(AdaptiveQueryReoptimizationFallbackReason reason)
+    {
+        Interlocked.Increment(ref _adaptiveRejectedSwitchCount);
+        switch (reason)
+        {
+            case AdaptiveQueryReoptimizationFallbackReason.MaxBufferedRows:
+                Interlocked.Increment(ref _adaptiveMaxBufferedFallbackCount);
+                break;
+            case AdaptiveQueryReoptimizationFallbackReason.ReoptimizationLimit:
+                Interlocked.Increment(ref _adaptiveReoptimizationLimitFallbackCount);
+                break;
+            case AdaptiveQueryReoptimizationFallbackReason.Unsupported:
+                Interlocked.Increment(ref _adaptiveUnsupportedFallbackCount);
+                break;
+        }
+    }
+
+    private void RecordAdaptiveDivergence() =>
+        Interlocked.Increment(ref _adaptiveDivergenceEventCount);
+
+    private void RecordAdaptiveBufferedRows(long count)
+    {
+        if (count > 0)
+            Interlocked.Add(ref _adaptiveBufferedRowCount, count);
     }
 
     private void InvalidateSchemaSensitiveCachesIfNeeded()
@@ -3935,8 +4049,8 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCompoundSelectAsync(CompoundSelectStatement stmt, CancellationToken ct)
     {
-        await using var leftResult = await ExecuteQueryAsync(stmt.Left, ct);
-        await using var rightResult = await ExecuteQueryAsync(stmt.Right, ct);
+        await using var leftResult = await ExecuteQueryAsync(stmt.Left, ct, suppressAdaptiveReoptimization: true);
+        await using var rightResult = await ExecuteQueryAsync(stmt.Right, ct, suppressAdaptiveReoptimization: true);
 
         var outputSchema = MergeCompoundSchemas(leftResult.Schema, rightResult.Schema);
         var leftRows = await leftResult.ToListAsync(ct);
@@ -4616,25 +4730,28 @@ public sealed class QueryPlanner
         return scopes;
     }
 
-    private QueryResult ExecuteSelect(SelectStatement stmt)
+    private QueryResult ExecuteSelect(SelectStatement stmt, bool suppressAdaptiveReoptimization = false)
     {
         if (_cteData != null)
-            return ExecuteSelectGeneral(stmt);
+            return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
 
         if (_selectPlanCache.TryGetValue(stmt, out var cachedPlan))
         {
             _selectPlanCacheHitCount++;
-            return ExecuteSelectWithCachedPlan(stmt, cachedPlan);
+            return ExecuteSelectWithCachedPlan(stmt, cachedPlan, suppressAdaptiveReoptimization);
         }
 
         _selectPlanCacheMissCount++;
 
-        var result = ClassifyAndExecuteSelect(stmt, out var selectedPlan);
+        var result = ClassifyAndExecuteSelect(stmt, out var selectedPlan, suppressAdaptiveReoptimization);
         CacheSelectPlan(stmt, selectedPlan);
         return result;
     }
 
-    private QueryResult ExecuteSelectWithCachedPlan(SelectStatement stmt, SelectPlanKind cachedPlan)
+    private QueryResult ExecuteSelectWithCachedPlan(
+        SelectStatement stmt,
+        SelectPlanKind cachedPlan,
+        bool suppressAdaptiveReoptimization)
     {
         switch (cachedPlan)
         {
@@ -4676,7 +4793,7 @@ public sealed class QueryPlanner
                     return constantGroupAggResult;
                 break;
             case SelectPlanKind.General:
-                return ExecuteSelectGeneral(stmt);
+                return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
             default:
                 throw new InvalidOperationException($"Unknown select plan kind: {cachedPlan}");
         }
@@ -4684,12 +4801,15 @@ public sealed class QueryPlanner
         // Plan assumptions no longer hold (typically after cache invalidation edge cases).
         // Reclassify and refresh the cache entry.
         _selectPlanCacheReclassificationCount++;
-        var result = ClassifyAndExecuteSelect(stmt, out var updatedPlan);
+        var result = ClassifyAndExecuteSelect(stmt, out var updatedPlan, suppressAdaptiveReoptimization);
         CacheSelectPlan(stmt, updatedPlan);
         return result;
     }
 
-    private QueryResult ClassifyAndExecuteSelect(SelectStatement stmt, out SelectPlanKind selectedPlan)
+    private QueryResult ClassifyAndExecuteSelect(
+        SelectStatement stmt,
+        out SelectPlanKind selectedPlan,
+        bool suppressAdaptiveReoptimization)
     {
         if (!stmt.IsDistinct)
         {
@@ -4746,8 +4866,53 @@ public sealed class QueryPlanner
         }
 
         selectedPlan = SelectPlanKind.General;
-        return ExecuteSelectGeneral(stmt);
+        return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
     }
+
+    private AdaptiveQueryExecutionLease? TryCreateAdaptiveQueryExecutionLease(SelectStatement stmt)
+    {
+        var options = AdaptiveQueryReoptimization;
+        if (!options.Enabled || options.MaxReoptimizationsPerQuery <= 0)
+            return null;
+
+        if (_cteData != null ||
+            stmt.From is not JoinTableRef join ||
+            stmt.Columns.Any(static c => c.IsStar) ||
+            ContainsSubqueries(stmt) ||
+            !IsAdaptiveJoinCandidate(join))
+        {
+            return null;
+        }
+
+        RecordAdaptiveEligibleQuery();
+        return new AdaptiveQueryExecutionLease(options);
+    }
+
+    private static bool IsAdaptiveJoinCandidate(TableRef tableRef)
+    {
+        if (tableRef is not JoinTableRef join)
+            return true;
+
+        if (join.JoinType is not (JoinType.Inner or JoinType.LeftOuter) ||
+            join.Condition == null ||
+            !ContainsEqualityPredicate(join.Condition))
+        {
+            return false;
+        }
+
+        return IsAdaptiveJoinCandidate(join.Left) &&
+               IsAdaptiveJoinCandidate(join.Right);
+    }
+
+    private static bool ContainsEqualityPredicate(Expression expression)
+        => expression switch
+        {
+            BinaryExpression { Op: BinaryOp.Equals } => true,
+            BinaryExpression { Op: BinaryOp.And } binary =>
+                ContainsEqualityPredicate(binary.Left) ||
+                ContainsEqualityPredicate(binary.Right),
+            _ => false,
+        };
 
     private void CacheSelectPlan(SelectStatement stmt, SelectPlanKind kind)
     {
@@ -4809,8 +4974,11 @@ public sealed class QueryPlanner
         return cached.ReorderedFrom ?? stmt.From;
     }
 
-    private QueryResult ExecuteSelectGeneral(SelectStatement stmt)
+    private QueryResult ExecuteSelectGeneral(SelectStatement stmt, bool suppressAdaptiveReoptimization = false)
     {
+        AdaptiveQueryExecutionLease? adaptiveLease = suppressAdaptiveReoptimization
+            ? null
+            : TryCreateAdaptiveQueryExecutionLease(stmt);
         bool preserveJoinOrderForRowGoal = ShouldPreserveJoinOrderForRowGoal(stmt);
         TableRef fromRef = GetOrCreateCachedJoinReorder(stmt, preserveJoinOrderForRowGoal);
         HashSet<Expression>? consumedOuterPredicates = fromRef is JoinTableRef
@@ -4824,7 +4992,8 @@ public sealed class QueryPlanner
             pushDownOuterLocalPredicates: fromRef is JoinTableRef,
             allowJoinReorder: false,
             consumedOuterPredicates: consumedOuterPredicates,
-            preserveJoinOrderForRowGoal: preserveJoinOrderForRowGoal);
+            preserveJoinOrderForRowGoal: preserveJoinOrderForRowGoal,
+            adaptiveLease: adaptiveLease);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -7578,7 +7747,8 @@ public sealed class QueryPlanner
         bool pushDownOuterLocalPredicates = false,
         bool allowJoinReorder = true,
         HashSet<Expression>? consumedOuterPredicates = null,
-        bool preserveJoinOrderForRowGoal = false)
+        bool preserveJoinOrderForRowGoal = false,
+        AdaptiveQueryExecutionLease? adaptiveLease = null)
     {
         if (tableRef is SingleRowTableRef)
         {
@@ -7643,7 +7813,8 @@ public sealed class QueryPlanner
                         pushedOuterViewPredicate,
                         pushDownOuterLocalPredicates: pushedOuterViewPredicate != null,
                         allowJoinReorder: !viewStmt.Columns.Any(static c => c.IsStar),
-                        preserveJoinOrderForRowGoal: preserveViewJoinOrderForRowGoal);
+                        preserveJoinOrderForRowGoal: preserveViewJoinOrderForRowGoal,
+                        adaptiveLease: adaptiveLease);
 
                     bool hasAggregates = viewStmt.GroupBy != null ||
                                          viewStmt.Having != null ||
@@ -7812,7 +7983,8 @@ public sealed class QueryPlanner
                     pushDownOuterLocalPredicates,
                     allowJoinReorder: false,
                     consumedOuterPredicates,
-                    preserveJoinOrderForRowGoal);
+                    preserveJoinOrderForRowGoal,
+                    adaptiveLease);
             }
 
             var (leftOp, leftSchema) = BuildFromOperator(
@@ -7821,14 +7993,16 @@ public sealed class QueryPlanner
                 pushDownOuterLocalPredicates,
                 allowJoinReorder,
                 consumedOuterPredicates,
-                preserveJoinOrderForRowGoal);
+                preserveJoinOrderForRowGoal,
+                adaptiveLease);
             var (rightOp, rightSchema) = BuildFromOperator(
                 join.Right,
                 outerWhere,
                 pushDownOuterLocalPredicates,
                 allowJoinReorder,
                 consumedOuterPredicates,
-                preserveJoinOrderForRowGoal);
+                preserveJoinOrderForRowGoal,
+                adaptiveLease);
 
             // Build composite schema that inherits all qualified mappings
             var compositeSchema = TableSchema.CreateJoinSchema(leftSchema, rightSchema);
@@ -7854,6 +8028,7 @@ public sealed class QueryPlanner
                     rightSchema,
                     leftSchema,
                     swappedCompositeSchema,
+                    adaptiveLease: null,
                     out var swappedIndexNestedJoinOp))
                 {
                     swappedJoinOp = swappedIndexNestedJoinOp!;
@@ -7865,6 +8040,7 @@ public sealed class QueryPlanner
                     rightSchema,
                     leftSchema,
                     swappedCompositeSchema,
+                    adaptiveLease: null,
                     out var swappedHashJoinOp))
                 {
                     swappedJoinOp = swappedHashJoinOp!;
@@ -7907,6 +8083,7 @@ public sealed class QueryPlanner
                 leftSchema,
                 rightSchema,
                 compositeSchema,
+                adaptiveLease,
                 out var indexNestedJoinOp))
             {
                 return (indexNestedJoinOp!, compositeSchema);
@@ -7919,6 +8096,7 @@ public sealed class QueryPlanner
                 leftSchema,
                 rightSchema,
                 compositeSchema,
+                adaptiveLease,
                 out var hashJoinOp))
             {
                 return (hashJoinOp!, compositeSchema);
@@ -9278,6 +9456,7 @@ public sealed class QueryPlanner
         TableSchema leftSchema,
         TableSchema rightSchema,
         TableSchema compositeSchema,
+        AdaptiveQueryExecutionLease? adaptiveLease,
         out IOperator? indexNestedJoinOp)
     {
         indexNestedJoinOp = null;
@@ -9446,10 +9625,11 @@ public sealed class QueryPlanner
         if (orderedLeftKeyIndices == null || orderedRightKeyIndices == null)
             return false;
 
+        Func<IOperator, IOperator> createLookupJoin;
         if (usesDirectIntegerLookup)
         {
-            indexNestedJoinOp = new IndexNestedLoopJoinOperator(
-                leftOp,
+            createLookupJoin = outer => new IndexNestedLoopJoinOperator(
+                outer,
                 rightTableTree,
                 rightIndexStore,
                 join.JoinType,
@@ -9464,8 +9644,8 @@ public sealed class QueryPlanner
         }
         else
         {
-            indexNestedJoinOp = new HashedIndexNestedLoopJoinOperator(
-                leftOp,
+            createLookupJoin = outer => new HashedIndexNestedLoopJoinOperator(
+                outer,
                 rightTableTree,
                 rightIndexStore!,
                 join.JoinType,
@@ -9482,6 +9662,39 @@ public sealed class QueryPlanner
                 recordSerializer: GetReadSerializer(rightSchema),
                 estimatedOutputRowCount: estimatedOutputRowCount,
                 functions: _functions);
+        }
+
+        if (adaptiveLease != null && hasOuterEstimate && hasInnerEstimate)
+        {
+            Func<IOperator, IOperator> createHashJoin = outer => new HashJoinOperator(
+                outer,
+                rightOp,
+                join.JoinType,
+                residualCondition,
+                compositeSchema,
+                leftSchema.Columns.Count,
+                rightSchema.Columns.Count,
+                orderedLeftKeyIndices,
+                orderedRightKeyIndices,
+                buildRightSide: true,
+                buildRowCapacityHint: ToCapacityHint(innerRows),
+                estimatedOutputRowCount,
+                _functions);
+
+            indexNestedJoinOp = new AdaptiveIndexNestedLoopJoinOperator(
+                leftOp,
+                rightOp,
+                compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray(),
+                createLookupJoin,
+                createHashJoin,
+                adaptiveLease,
+                _adaptiveRuntimeDiagnostics,
+                outerRows,
+                estimatedOutputRowCount);
+        }
+        else
+        {
+            indexNestedJoinOp = createLookupJoin(leftOp);
         }
 
         return true;
@@ -9686,6 +9899,7 @@ public sealed class QueryPlanner
         TableSchema leftSchema,
         TableSchema rightSchema,
         TableSchema compositeSchema,
+        AdaptiveQueryExecutionLease? adaptiveLease,
         out IOperator? hashJoinOp)
     {
         hashJoinOp = null;
@@ -9736,20 +9950,46 @@ public sealed class QueryPlanner
             hasRightEstimate,
             rightRows);
 
-        hashJoinOp = new HashJoinOperator(
-            leftOp,
-            rightOp,
-            join.JoinType,
-            residualCondition,
-            compositeSchema,
-            leftSchema.Columns.Count,
-            rightSchema.Columns.Count,
-            leftKeyIndices,
-            rightKeyIndices,
-            buildRightSide,
-            buildRowCapacityHint,
-            estimatedOutputRowCount,
-            _functions);
+        if (adaptiveLease != null &&
+            join.JoinType == JoinType.Inner &&
+            hasLeftEstimate &&
+            hasRightEstimate)
+        {
+            hashJoinOp = new AdaptiveHashJoinOperator(
+                leftOp,
+                rightOp,
+                join.JoinType,
+                residualCondition,
+                compositeSchema,
+                leftSchema.Columns.Count,
+                rightSchema.Columns.Count,
+                leftKeyIndices,
+                rightKeyIndices,
+                buildRightSide,
+                leftRows,
+                rightRows,
+                estimatedOutputRowCount,
+                _functions,
+                adaptiveLease,
+                _adaptiveRuntimeDiagnostics);
+        }
+        else
+        {
+            hashJoinOp = new HashJoinOperator(
+                leftOp,
+                rightOp,
+                join.JoinType,
+                residualCondition,
+                compositeSchema,
+                leftSchema.Columns.Count,
+                rightSchema.Columns.Count,
+                leftKeyIndices,
+                rightKeyIndices,
+                buildRightSide,
+                buildRowCapacityHint,
+                estimatedOutputRowCount,
+                _functions);
+        }
 
         return true;
     }

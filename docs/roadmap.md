@@ -83,7 +83,7 @@ Advanced features and fundamental architecture enhancements.
 | **Page-level compression** | Deep engine/page compression remains planned; application-level payload compression is available as a sample/SDK pattern without changing the storage format | Planned |
 | **At-rest encryption** | Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths; implementation must meet the database-encryption plan entry criteria before shipping | Research |
 | **Advanced cost-based query optimizer** | Done for the current phase: `ANALYZE`-driven stats-guided costing now uses internal equi-depth histograms, heavy hitters, composite-index prefix distinct-count summaries, skew-aware lookup/filter estimates, correlation-aware composite equality filters/joins, non-unique lookup costing, hash build-side choice, and bounded DP reordering for small inner-join chains | Done |
-| **Adaptive query re-optimization** | Re-plan or adapt at runtime when observed cardinality diverges materially from persisted statistics, especially after stale stats or parameter-sensitive predicates | Planned |
+| **Adaptive query re-optimization** | Done for the current phase: opt-in adaptive join execution can switch eligible index nested-loop joins to hash joins and can flip inner hash build sides at safe pre-emission boundaries when observed rows diverge materially from estimates. Broader `EXPLAIN ANALYZE`, runtime actual-row reporting, adaptive stats persistence, and arbitrary mid-plan reordering remain future work | Done |
 | **Public planner histogram inspection** | Stable SQL-first diagnostics now expose `sys.planner_histograms`, `sys.planner_heavy_hitters`, `sys.planner_index_prefix_stats`, and `EXPLAIN ESTIMATE FOR <query>` while keeping raw histogram/prefix storage payloads internal | Done |
 | **Async I/O batching** | Done for the current phase: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, reusable B-tree copy utilities, and the close-out audit now cover the main storage and maintenance write paths; future work is limited to specialized diagnostics or maintenance-path tuning | Done |
 | **Low-latency durable writes** | Done in `v2.9.0`: advisory planner-stat persistence can stay deferred without weakening committed-row durability, and `sys.table_stats.row_count_is_exact` now makes exact versus estimated row-count semantics explicit to planner and `COUNT(*)` fast paths | Done |
@@ -120,7 +120,7 @@ These are known simplifications in the current implementation:
 | **Storage** | No at-rest encryption for database/WAL files; on-disk storage is plaintext only |
 | **Storage** | Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path |
 | **Storage** | By default, durable auto-commit single-row writes still pay a physical WAL flush per commit; opt-in `UseDurableCommitBatchWindow(...)` can trade some commit latency for higher throughput across contending in-process writers, but default behavior remains per-commit durable |
-| **Query** | Phase-2 cost-based planning is in place: `ANALYZE`, `sys.table_stats`, `sys.column_stats`, public planner-stat diagnostics, histogram/heavy-hitter/prefix estimates, and bounded small-chain join reordering now feed join/access-path costing; remaining work is adaptive re-optimization rather than missing core stats-guided costing |
+| **Query** | Phase-2 cost-based planning is in place: `ANALYZE`, `sys.table_stats`, `sys.column_stats`, public planner-stat diagnostics, histogram/heavy-hitter/prefix estimates, and bounded small-chain join reordering now feed join/access-path costing. Opt-in adaptive join re-optimization can react to stale-stat or parameter-sensitive join cardinality misses, while broader runtime actuals, `EXPLAIN ANALYZE`, and full mid-plan reordering remain future work |
 | **Query** | Internal row-batch transport is now the default scan-heavy execution foundation across batch-capable scans, joins, aggregates, and result boundaries; remaining work is broader kernel specialization and optional SIMD-style tuning rather than missing core batch coverage |
 
 ---
@@ -143,6 +143,7 @@ Major features already implemented:
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
 - `ANALYZE`, persisted `sys.table_stats` / `sys.column_stats`, and stale-aware column-stat refresh
 - Phase-2 cost-based query planning: statistics-guided access-path selection, join method choice, hash build-side choice, histogram/heavy-hitter/cardinality estimation, composite-prefix correlation modeling, and bounded small-chain inner-join reordering
+- Opt-in adaptive join re-optimization behind `DatabaseOptions.AdaptiveQueryReoptimization`
 - SQL statement and SELECT plan caching
 - First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
 - Persisted table `NextRowId` high-water mark with compatibility fallback for legacy metadata

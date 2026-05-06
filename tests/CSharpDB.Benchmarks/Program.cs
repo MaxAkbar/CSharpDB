@@ -135,6 +135,11 @@ public static class Program
                 await RunSuiteWithRepeatsAsync("optimizer-closeout", RunOptimizerCloseOutOnceAsync, repeatCount);
                 return;
 
+            case "--adaptive-reoptimization":
+                EnsureReproConfigured();
+                await RunSuiteWithRepeatsAsync("adaptive-reoptimization", RunAdaptiveReoptimizationOnceAsync, repeatCount);
+                return;
+
             case "--async-io-closeout":
                 EnsureReproConfigured();
                 await RunSuiteWithRepeatsAsync("async-io-closeout", RunAsyncIoCloseOutOnceAsync, repeatCount);
@@ -304,6 +309,9 @@ public static class Program
                 Console.WriteLine("=== Optimizer Close-Out Benchmark ===");
                 await RunSuiteWithRepeatsAsync("optimizer-closeout", RunOptimizerCloseOutOnceAsync, repeatCount);
                 Console.WriteLine();
+                Console.WriteLine("=== Adaptive Reoptimization Benchmark ===");
+                await RunSuiteWithRepeatsAsync("adaptive-reoptimization", RunAdaptiveReoptimizationOnceAsync, repeatCount);
+                Console.WriteLine();
                 Console.WriteLine("=== Async I/O Close-Out Benchmark ===");
                 await RunSuiteWithRepeatsAsync("async-io-closeout", RunAsyncIoCloseOutOnceAsync, repeatCount);
                 Console.WriteLine();
@@ -391,6 +399,14 @@ public static class Program
             EnsureReproConfigured();
             if (ranAny) Console.WriteLine();
             await RunSuiteWithRepeatsAsync("optimizer-closeout", RunOptimizerCloseOutOnceAsync, repeatCount);
+            ranAny = true;
+        }
+
+        if (requestedModes.Contains("--adaptive-reoptimization"))
+        {
+            EnsureReproConfigured();
+            if (ranAny) Console.WriteLine();
+            await RunSuiteWithRepeatsAsync("adaptive-reoptimization", RunAdaptiveReoptimizationOnceAsync, repeatCount);
             ranAny = true;
         }
 
@@ -739,6 +755,12 @@ public static class Program
         return await OptimizerCloseOutBenchmark.RunAsync();
     }
 
+    private static async Task<List<BenchmarkResult>> RunAdaptiveReoptimizationOnceAsync()
+    {
+        Console.WriteLine("--- Adaptive Reoptimization Benchmark ---");
+        return await AdaptiveReoptimizationBenchmark.RunAsync();
+    }
+
     private static async Task<List<BenchmarkResult>> RunAsyncIoCloseOutOnceAsync()
     {
         Console.WriteLine("--- Async I/O Close-Out Benchmark ---");
@@ -917,6 +939,7 @@ public static class Program
             "insert-fan-in-diagnostics" => RunSuiteWithRepeatsAsync("insert-fan-in-diagnostics", RunInsertFanInDiagnosticsOnceAsync, repeatCount),
             "checkpoint-retention-diagnostics" => RunSuiteWithRepeatsAsync("checkpoint-retention-diagnostics", RunCheckpointRetentionDiagnosticsOnceAsync, repeatCount),
             "optimizer-closeout" => RunSuiteWithRepeatsAsync("optimizer-closeout", RunOptimizerCloseOutOnceAsync, repeatCount),
+            "adaptive-reoptimization" => RunSuiteWithRepeatsAsync("adaptive-reoptimization", RunAdaptiveReoptimizationOnceAsync, repeatCount),
             "async-io-closeout" => RunSuiteWithRepeatsAsync("async-io-closeout", RunAsyncIoCloseOutOnceAsync, repeatCount),
             "concurrent-write-diagnostics" => RunSuiteWithRepeatsAsync("concurrent-write-diagnostics", RunConcurrentWriteDiagnosticsOnceAsync, repeatCount),
             "concurrent-sqlite-capi-compare" => RunSuiteWithRepeatsAsync("concurrent-sqlite-capi-compare", RunConcurrentSqliteCApiComparisonOnceAsync, repeatCount),
@@ -1218,6 +1241,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --checkpoint-retention-diagnostics  Run focused background-checkpoint retention diagnostics");
         Console.WriteLine("  dotnet run -- --checkpoint-retention-scenario W8_Blocker3s_Batch250us  Run one checkpoint-retention scenario");
         Console.WriteLine("  dotnet run -- --optimizer-closeout  Run focused advanced optimizer close-out diagnostics");
+        Console.WriteLine("  dotnet run -- --adaptive-reoptimization  Run focused opt-in adaptive join reoptimization diagnostics");
         Console.WriteLine("  dotnet run -- --async-io-closeout  Run focused async I/O batching close-out diagnostics");
         Console.WriteLine("  dotnet run -- --write-transaction-scenario UpdateDisjoint_W8_Rows1_Batch250us_Prealloc1MiB  Run one explicit WriteTransaction scenario");
         Console.WriteLine("  dotnet run -- --concurrent-write-diagnostics  Run focused multi-writer durable commit diagnostics");
@@ -1243,7 +1267,7 @@ public static class Program
         Console.WriteLine("  dotnet run -- --release-core --repeat 3 --repro  Run only the suites that feed published README tables");
         Console.WriteLine("  dotnet run -- --stress             Run stress & durability tests");
         Console.WriteLine("  dotnet run -- --scaling            Run scaling experiments");
-        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --optimizer-closeout --async-io-closeout --concurrent-write-diagnostics --concurrent-sqlite-capi-compare --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --efcore-compare --efcore-compare-hybrid-shared-connection --efcore-compare-auto-open-close --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
+        Console.WriteLine("  dotnet run -- --macro --stress --scaling --write-diagnostics --durable-sql-batching --write-transaction-diagnostics --commit-fan-in-diagnostics --insert-fan-in-diagnostics --checkpoint-retention-diagnostics --optimizer-closeout --adaptive-reoptimization --async-io-closeout --concurrent-write-diagnostics --concurrent-sqlite-capi-compare --direct-file-cache-transport --hybrid-storage-mode --master-table --sqlite-compare --strict-insert-compare --native-aot-insert-compare --efcore-compare --efcore-compare-hybrid-shared-connection --efcore-compare-auto-open-close --hybrid-cold-open --hybrid-hot-set-read --hybrid-post-checkpoint   Run non-micro suites in one invocation");
         Console.WriteLine("  dotnet run -- --macro --repeat 3   Repeat suite and emit median-of-N CSV");
         Console.WriteLine("  dotnet run -- --master-table --repeat 3 --repro   Run a stable median master comparison refresh");
         Console.WriteLine("  dotnet run -- --sqlite-compare --repeat 3 --repro   Run a stable local SQLite median comparison capture");
