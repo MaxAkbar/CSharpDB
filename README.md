@@ -32,11 +32,11 @@
 
 ## Performance at a Glance
 
-| 1.60M gets/sec | 9.97M COUNTs/sec | 618.81K rows/sec | 891 commits/sec |
+| 1.99M gets/sec | 9.68M COUNTs/sec | 799.29K rows/sec | 890 commits/sec |
 |:-:|:-:|:-:|:-:|
 | Collection point reads | Concurrent reader burst (8x reused) | Durable `InsertBatch` B10000 | Concurrent durable writes |
 
-<sub>Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7. Snapshot promoted from the April 26, 2026 release-core suite; latest release guardrail compare passed May 6, 2026 with PASS=187, WARN=0, SKIP=0, FAIL=0. Full results live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
+<sub>Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7. Snapshot promoted from the May 6, 2026 release-core suite; latest release guardrail compare passed May 6, 2026 with PASS=187, WARN=0, SKIP=0, FAIL=0. Full results live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite</a>.</sub>
 
 ---
 
@@ -46,14 +46,14 @@ Default CSharpDB file-backed benchmarks are fully durable: WAL fsync-on-commit u
 
 | Surface | Single write | Batch x100 | Point read | Concurrent read |
 |---|---:|---:|---:|---:|
-| SQL file-backed | 450.4 ops/sec | 41.88K rows/sec | 1.27M ops/sec | 9.97M COUNTs/sec |
-| SQL hybrid incremental-durable | 449.3 ops/sec | 41.77K rows/sec | 1.29M ops/sec | 10.27M COUNTs/sec |
-| SQL in-memory | 194.98K ops/sec | 708.75K rows/sec | 1.24M ops/sec | 10.09M COUNTs/sec |
-| Collection file-backed | 447.3 ops/sec | 42.28K docs/sec | 1.60M ops/sec | - |
-| Collection hybrid incremental-durable | 450.8 ops/sec | 42.34K docs/sec | 1.66M ops/sec | - |
-| Collection in-memory | 205.25K ops/sec | 872.89K docs/sec | 1.59M ops/sec | - |
+| SQL file-backed | 267.1 ops/sec | 25.56K rows/sec | 1.48M ops/sec | 9.68M COUNTs/sec |
+| SQL hybrid incremental-durable | 276.1 ops/sec | 26.55K rows/sec | 1.47M ops/sec | 10.04M COUNTs/sec |
+| SQL in-memory | 259.48K ops/sec | 934.22K rows/sec | 1.49M ops/sec | 10.26M COUNTs/sec |
+| Collection file-backed | 265.7 ops/sec | 24.53K docs/sec | 1.99M ops/sec | - |
+| Collection hybrid incremental-durable | 276.9 ops/sec | 25.75K docs/sec | 2.02M ops/sec | - |
+| Collection in-memory | 262.14K ops/sec | 969.55K docs/sec | 2.02M ops/sec | - |
 
-<sub>Source: `master-table-20260426-215529-median-of-3.csv` from the April 26, 2026 release-core snapshot. Full methodology and storage-mode detail live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
+<sub>Source: `master-table-20260506-024609-median-of-3.csv` from the May 6, 2026 release-core snapshot. Full methodology and storage-mode detail live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
 
 ---
 
@@ -63,12 +63,21 @@ The current release-core concurrent write rows measure the intended shared-inser
 
 | Workload | Writers | Commit window | Durable Commits/sec | Commits/flush | Notes |
 |----------|--------:|--------------:|--------------------:|--------------:|-------|
-| Shared auto-commit `INSERT` | 4 | `0` | 231.1 | 1.00 | One durable flush per commit |
-| Shared auto-commit `INSERT` | 4 | `250us` | 449.6 | 1.99 | Group commit roughly doubles throughput |
-| Shared auto-commit `INSERT` | 8 | `0` | 240.5 | 1.00 | Still flush-bound with no commit window |
-| Shared auto-commit `INSERT` | 8 | `250us` | 891.0 | 3.92 | Current release-core headline row |
+| Shared auto-commit `INSERT` | 4 | `0` | 247.0 | 1.00 | One durable flush per commit |
+| Shared auto-commit `INSERT` | 4 | `250us` | 463.4 | 1.99 | Group commit roughly doubles throughput |
+| Shared auto-commit `INSERT` | 8 | `0` | 239.2 | 1.00 | Still flush-bound with no commit window |
+| Shared auto-commit `INSERT` | 8 | `250us` | 890.1 | 3.94 | Current release-core headline row |
 
-<sub>Source: `concurrent-write-diagnostics-20260426-223659-median-of-3.csv` from the April 26, 2026 release-core run. A later focused insert fan-in validation reaches 1,456.6 commits/sec for hot auto-ID inserts and 1,464.6 commits/sec for hot explicit right-edge inserts with `W8 + 250us`; those rows remain diagnostic until the next release-core promotion. Full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
+Focused hot insert fan-in diagnostics cover the newer right-edge and auto-ID shapes that are not part of the release-core scorecard yet:
+
+| Insert shape | Writers/window | Durable Commits/sec | Commits/flush |
+|---|---:|---:|---:|
+| Serialized explicit hot right-edge | `W8 + 250us` | 278.4 | 1.00 |
+| Concurrent explicit hot right-edge | `W8 + 250us` | 910.3 | 3.33 |
+| Concurrent auto-ID hot right-edge | `W8 + 250us` | 913.1 | 3.34 |
+| Concurrent explicit disjoint ranges | `W8 + 250us` | 1,049.6 | 3.96 |
+
+<sub>Sources: release-core `concurrent-write-diagnostics-20260506-032735-median-of-3.csv`; focused insert fan-in diagnostic `insert-fan-in-diagnostics-20260505-233424.csv`. Focused rows remain diagnostic until the release-core suite includes those shapes directly. Full methodology and tuning notes live in the <a href="tests/CSharpDB.Benchmarks/README.md">benchmark suite README</a>.</sub>
 
 ---
 
@@ -78,10 +87,10 @@ Same-runner SQLite rows use Microsoft.Data.Sqlite 10.0.7 with WAL + `synchronous
 
 | Workload | CSharpDB | SQLite WAL+FULL |
 |---|---:|---:|
-| Durable prepared bulk insert B1000 | 233.06K rows/sec | 203.30K rows/sec |
-| SQL point lookup | 1.27M ops/sec | 70.21K ops/sec |
+| Durable prepared bulk insert B1000 | 211.99K rows/sec | 155.66K rows/sec |
+| SQL point lookup | 1.48M ops/sec | 93.91K ops/sec |
 
-<sub>Source: `sqlite-compare-20260426-230045-median-of-3.csv` from the April 26, 2026 release-core snapshot.</sub>
+<sub>Source: `sqlite-compare-20260506-035128-median-of-3.csv` from the May 6, 2026 release-core snapshot.</sub>
 
 ---
 
@@ -95,6 +104,7 @@ The source-generated collection path is opt-in through `GetGeneratedCollectionAs
 | Decode payload | 2,277.9 ns | 371.9 ns | 6.12x | 1,240 B to 480 B |
 | Indexed int field read | 187.23 ns | 29.74 ns | 6.30x | 0 B to 0 B |
 | Text field UTF-8 read | 185.82 ns | 27.26 ns | 6.82x | 56 B to 0 B |
+| Key match | 21.48 ns | 19.91 ns | 1.08x | 0 B to 0 B |
 
 <sub>Source: `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.GeneratedCollection*Benchmarks-report.csv`. These rows are diagnostic microbenchmarks, not release-core scorecard rows.</sub>
 
