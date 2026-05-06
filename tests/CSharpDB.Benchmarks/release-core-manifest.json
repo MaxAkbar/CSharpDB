@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "metadata": {
     "Published snapshot": "April 26, 2026 release-core snapshot",
-    "Run date": "Release-core artifacts captured April 26, 2026 PT; release guardrail compare captured April 27, 2026 UTC",
-    "Promotion status": "Promoted after release-core suite and release guardrail compare passed; focused micro retry replaced volatile guardrail samples",
-    "Latest release guardrail": "PASS=185, WARN=0, SKIP=0, FAIL=0",
+    "Run date": "Release-core artifacts captured April 26, 2026 PT; latest release guardrail compare captured May 6, 2026 UTC",
+    "Promotion status": "Published tables remain promoted from the April 26 release-core suite; latest release guardrail compare passed after focused close-out validation",
+    "Latest release guardrail": "PASS=187, WARN=0, SKIP=0, FAIL=0",
     "Runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7",
     "Repro mode": "priority=High, affinity=0xFF when captured with --repro",
     "Commit": "b7cb52ee2c30f31538e96480b6d055ff52439c26 plus uncommitted collection binary payload and benchmark updates"
@@ -58,8 +58,8 @@
           "cells": [
             { "value": "Release health" },
             { "value": "Latest guardrail compare" },
-            { "value": "PASS: PASS=185, FAIL=0" },
-            { "value": "`Compare-Baseline.ps1` after focused micro retry" }
+            { "value": "PASS: PASS=187, FAIL=0" },
+            { "value": "`Run-Perf-Guardrails.ps1 -Mode release` after close-out validation" }
           ]
         },
         {

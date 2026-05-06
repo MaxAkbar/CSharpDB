@@ -25,7 +25,7 @@ Current release health:
 | Item | Status |
 |---|---|
 | Latest release guardrail | `PASS` |
-| Latest compare | `PASS=185, WARN=0, SKIP=0, FAIL=0` |
+| Latest compare | `PASS=187, WARN=0, SKIP=0, FAIL=0` |
 | Promotion state | Current published tables are promoted from the April 26, 2026 release-core suite |
 | Durability default | CSharpDB values are durable unless a row explicitly says otherwise |
 
@@ -41,9 +41,9 @@ The generated block below contains the scorecard first, then the current core re
 | Field | Value |
 |---|---|
 | Published snapshot | April 26, 2026 release-core snapshot |
-| Run date | Release-core artifacts captured April 26, 2026 PT; release guardrail compare captured April 27, 2026 UTC |
-| Promotion status | Promoted after release-core suite and release guardrail compare passed; focused micro retry replaced volatile guardrail samples |
-| Latest release guardrail | PASS=185, WARN=0, SKIP=0, FAIL=0 |
+| Run date | Release-core artifacts captured April 26, 2026 PT; latest release guardrail compare captured May 6, 2026 UTC |
+| Promotion status | Published tables remain promoted from the April 26 release-core suite; latest release guardrail compare passed after focused close-out validation |
+| Latest release guardrail | PASS=187, WARN=0, SKIP=0, FAIL=0 |
 | Runner | Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7 |
 | Repro mode | priority=High, affinity=0xFF when captured with --repro |
 | Commit | b7cb52ee2c30f31538e96480b6d055ff52439c26 plus uncommitted collection binary payload and benchmark updates |
@@ -66,7 +66,7 @@ These are the headline rows readers should use first. Detailed tables below map 
 
 | Area | Metric | Result | Source |
 |---|---|---|---|
-| Release health | Latest guardrail compare | PASS: PASS=185, FAIL=0 | `Compare-Baseline.ps1` after focused micro retry |
+| Release health | Latest guardrail compare | PASS: PASS=187, FAIL=0 | `Run-Perf-Guardrails.ps1 -Mode release` after close-out validation |
 | SQL durable write | Single INSERT | 450.4 ops/sec | `master` |
 | SQL durable write | Batch x100 | 41.88K rows/sec | `master` |
 | SQL hot read | Point lookup | 1.27M ops/sec | `master` |
@@ -171,6 +171,47 @@ Source CSV:
 
 Operational guidance: keep `Serialized` as the default. Use `ConcurrentWriteTransactions` only for workloads that can benefit from shared-engine one-row commit fan-in; `InsertBatch` remains the preferred bulk-ingest path.
 
+## Focused Optimizer And Async I/O Close-Out Validation
+
+These May 5, 2026 rows are diagnostic close-out proof for the current advanced optimizer and async I/O batching phases. They are not promoted release-core scorecard rows; they document workload-shaped gains and audited coverage while future adaptive re-optimization, public histogram inspection, and specialized maintenance tuning remain separate roadmap items.
+
+Optimizer command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --optimizer-closeout --repro
+```
+
+Optimizer source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/optimizer-closeout-20260505-204536.csv`
+
+| Optimizer shape | No ANALYZE | ANALYZE | Ratio | What it validates |
+|---|---:|---:|---:|---|
+| Heavy-hitter equality | 11,671 queries/sec | 17,091 queries/sec | 1.46x | Skew-aware equality and non-unique lookup costing |
+| Histogram cold range | 21,895 queries/sec | 23,175 queries/sec | 1.06x | Equi-depth range estimates avoid worse plans |
+| Composite correlation | 522 queries/sec | 987 queries/sec | 1.89x | Composite-prefix stats preserve correlated equality selectivity |
+| Bounded join reorder | 9,628 queries/sec | 11,247 queries/sec | 1.17x | Small inner-join chains use bounded DP reordering |
+
+Async I/O command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --async-io-closeout --repro
+```
+
+Async I/O source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/async-io-closeout-20260505-204638.csv`
+
+| Async I/O shape | Throughput | Classification |
+|---|---:|---|
+| SaveToFile snapshot copy | 52,762 pages/sec | Already batched through `StorageDeviceCopyBatcher` |
+| Backup snapshot copy | 8,136 pages/sec | Already batched through backup/snapshot copy helpers |
+| Restore staging | 9,996 pages/sec | Already batched through load/save staging |
+| Vacuum logical rewrite | 3,365 pages/sec | Intentionally logical through `BTreeCopyUtility` |
+| FK migration rewrite | 42,749 rows/sec | Intentionally logical through `BTreeCopyUtility` |
+| Database inspector scan | 18,600 pages/sec | Specialized diagnostic path |
+| WAL inspector scan | 2,310 frames/sec | Specialized diagnostic path over a live 20-frame WAL |
+
 ## Core Benchmark Map
 
 | Performance question | Published surface | Benchmark source |
@@ -179,6 +220,8 @@ Operational guidance: keep `Serialized` as the default. Use `ConcurrentWriteTran
 | Single-writer durable ingest | `B1`, `B100`, `B1000`, optional `B10000` batch rows | `--durable-sql-batching --repeat 3 --repro` |
 | Concurrent durable writes | `W4` and `W8`, `0` vs `250us`, disjoint explicit-key auto-commit | `--concurrent-write-diagnostics --repeat 3 --repro` |
 | Concurrent insert fan-in | Serialized controls, disjoint explicit keys, hot explicit right-edge, hot auto-ID | `--insert-fan-in-diagnostics --repro` |
+| Advanced optimizer close-out | Heavy hitters, histogram ranges, composite-prefix correlation, bounded join reorder | `--optimizer-closeout --repro` |
+| Async I/O batching close-out | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |
 | Resident hot-set behavior | file-backed vs hybrid hot-set vs in-memory hot burst | `--hybrid-hot-set-read --repeat 3 --repro` |
 | Cold open / first read | startup cost and first lookup/get latency | `--hybrid-cold-open --repeat 3 --repro` |

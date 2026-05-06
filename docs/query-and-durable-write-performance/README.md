@@ -19,19 +19,33 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
 - Raw page-copy batching is shared for snapshot/export-style paths, and logical table-copy loops now share one reusable B-tree copy utility instead of each maintenance path carrying its own copy loop.
 - Opt-in durable group commit remains exposed through `UseDurableGroupCommit(...)`; this round keeps it expert-only and documentation-led rather than changing defaults.
 - Shared auto-commit non-insert SQL writes on one `Database` can now use the same isolated commit path as explicit `WriteTransaction` work, so low-conflict `UPDATE` / `DELETE` contention can build real pending WAL commit fan-in instead of stalling above the queue.
+- The current advanced-optimizer phase is closed: heavy-hitter equality, histogram range, composite-prefix correlation, non-unique lookup costing, hash build-side choice, and bounded small-chain join reordering are covered by implementation, tests, and diagnostic close-out benchmarks.
+- The current async I/O batching phase is closed: WAL, checkpoint, snapshot/export, backup/restore staging, logical rewrite, and inspector scan paths have been audited and covered by diagnostic close-out benchmarks.
 
 ## Public Surface
 
 - `sys.table_stats.row_count` keeps its existing numeric meaning.
 - `sys.table_stats.row_count_is_exact` is the new explicit exactness bit.
 - Histogram and prefix stats remain internal in this round; there are still no public histogram system tables.
+- Public histogram inspection and adaptive re-optimization are separate future roadmap items, not hidden requirements for the current optimizer phase.
 - `UseWriteOptimizedPreset()` remains the default recommendation for durable file-backed workloads.
 - `UseLowLatencyDurableWritePreset()` and `UseDurableGroupCommit(...)` remain opt-in measure-first knobs.
 - Shared-`Database` implicit auto-commit is now split by workload shape:
   - non-insert SQL writes can queue behind the WAL pending-commit path and benefit from `UseDurableGroupCommit(...)`
   - one-row insert loops can opt into `ImplicitInsertExecutionMode.ConcurrentWriteTransactions`; hot right-edge and auto-ID rows now use shared row-id reservation plus pending leaf-page rebases to build WAL fan-in
 
-## Remaining Work
+## Close-Out Validation
+
+The current advanced-optimizer and async I/O batching phases are backed by diagnostic benchmark suites rather than new public API:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --optimizer-closeout --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --async-io-closeout --repro
+```
+
+The May 5, 2026 optimizer close-out run showed `ANALYZE`-driven plans improving the targeted shapes by `1.06x-1.89x` on the local runner. The async I/O close-out run classified save/backup/restore as already batched, vacuum/FK migration as intentionally row-logical through `BTreeCopyUtility`, and inspector/WAL scans as specialized diagnostics.
+
+## Future Work
 
 - Adaptive runtime re-optimization is still future work.
 - Histogram inspection remains internal; there is no SQL surface for planner histogram dumps yet.
@@ -42,7 +56,7 @@ This note tracks the combined optimizer phase-2 and durable-write completion wor
 - The remaining phase-4 write-path question is now narrower than "shared auto-commit in general":
   - non-insert shared auto-commit fan-in is working
   - hot insert auto-commit now has an opt-in concurrent path, but bulk ingest guidance still starts with application-level batching
-- Async I/O batching still has room for more auditing outside the WAL hot path, but the main write-path batching pieces are already in place. See [Async I/O Batching Follow-Up](async-io-batching-follow-up.md).
+- Async I/O batching is done for the current phase; future work should be limited to specialized diagnostics or maintenance-path tuning when benchmark data justifies it. See [Async I/O Batching Follow-Up](async-io-batching-follow-up.md).
 
 ## Phase 4 Status
 
