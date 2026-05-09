@@ -89,6 +89,38 @@ public sealed class ClientSqlExecutionTests
     }
 
     [Fact]
+    public async Task ExecuteSqlAsync_ReturnsQueryColumnTypes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_client_test_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            Assert.Null((await client.ExecuteSqlAsync("CREATE TABLE client_types (id INTEGER, code TEXT, amount REAL);", ct)).Error);
+            Assert.Null((await client.ExecuteSqlAsync("INSERT INTO client_types VALUES (1, 'A', 12.5);", ct)).Error);
+
+            var result = await client.ExecuteSqlAsync("SELECT id, code, amount FROM client_types;", ct);
+
+            Assert.Null(result.Error);
+            Assert.True(result.IsQuery);
+            Assert.NotNull(result.ColumnNames);
+            Assert.NotNull(result.ColumnTypes);
+            Assert.Equal(["id", "code", "amount"], result.ColumnNames);
+            Assert.Equal(["INTEGER", "TEXT", "REAL"], result.ColumnTypes);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ExecuteSqlAsync_SelectDateWithoutFrom_ReturnsDateText()
     {
         var ct = TestContext.Current.CancellationToken;

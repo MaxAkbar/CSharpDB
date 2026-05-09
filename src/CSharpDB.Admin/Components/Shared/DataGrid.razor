@@ -981,7 +981,6 @@
             await LoadUnknownTotalSourcePageAsync(viewName, captureColumnNames: true);
 
             Columns ??= Array.Empty<string>();
-            ColumnTypes = null;
             PrimaryKeyColumn = null;
             return;
         }
@@ -1022,6 +1021,8 @@
 
             if (captureColumnNames && (Columns is null || Columns.Length == 0))
                 Columns = queryResult.ColumnNames ?? Array.Empty<string>();
+            if (captureColumnNames && (ColumnTypes is null || ColumnTypes.Length == 0))
+                ColumnTypes = queryResult.ColumnTypes;
 
             var rows = (queryResult.Rows ?? []).ToList();
             if (_page > 1 && rows.Count == 0)
@@ -1121,7 +1122,7 @@
                 if (Columns is null || Columns.Length == 0)
                     Columns = pageResult.ColumnNames ?? Array.Empty<string>();
 
-                ColumnTypes = null;
+                ColumnTypes = pageResult.ColumnTypes;
                 PrimaryKeyColumn = null;
 
                 var rows = (pageResult.Rows ?? []).ToList();

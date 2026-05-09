@@ -912,6 +912,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         {
             IsQuery = payload.IsQuery,
             ColumnNames = payload.ColumnNames,
+            ColumnTypes = payload.ColumnTypes,
             Rows = payload.ColumnNames is null ? null : MapRows(payload.ColumnNames, payload.Rows),
             RowsAffected = payload.RowsAffected,
             Error = payload.Error,
@@ -1018,7 +1019,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     private sealed record ApiIndexResponse(string IndexName, string TableName, IReadOnlyList<string> Columns, bool IsUnique, IReadOnlyList<string?> ColumnCollations);
     private sealed record ApiViewResponse(string ViewName, string Sql);
     private sealed record ApiTriggerResponse(string TriggerName, string TableName, string Timing, string Event, string BodySql);
-    private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs);
+    private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, string[]? ColumnTypes, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs);
     private sealed record ApiProcedureDetailResponse(string Name, string BodySql, IReadOnlyList<ApiProcedureParameterResponse> Parameters, string? Description, bool IsEnabled, DateTime CreatedUtc, DateTime UpdatedUtc);
     private sealed record ApiProcedureParameterResponse(string Name, string Type, bool Required, object? Default, string? Description);
     private sealed record ApiProcedureExecutionResponse(string ProcedureName, bool Succeeded, IReadOnlyList<ApiProcedureStatementResultResponse> Statements, string? Error, int? FailedStatementIndex, double ElapsedMs);

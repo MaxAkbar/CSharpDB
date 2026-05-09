@@ -5622,6 +5622,76 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Join_WithWhereOnRightPrimaryKeyLookupSide_AppliesPredicate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE lookup_orders (id INTEGER PRIMARY KEY, customer_id INTEGER, order_number TEXT)", ct);
+        await _db.ExecuteAsync("CREATE TABLE lookup_customers (id INTEGER PRIMARY KEY, customer_code TEXT)", ct);
+
+        await _db.ExecuteAsync("INSERT INTO lookup_customers VALUES (1, 'TARGET')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_customers VALUES (2, 'OTHER')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_orders VALUES (10, 2, 'SO-OTHER-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_orders VALUES (11, 1, 'SO-TARGET')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_orders VALUES (12, 2, 'SO-OTHER-2')", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            """
+            SELECT o.id, c.customer_code
+            FROM lookup_orders AS o
+            JOIN lookup_customers AS c ON c.id = o.customer_id
+            WHERE c.customer_code = 'TARGET'
+            ORDER BY o.id
+            """,
+            ct);
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(11L, row[0].AsInteger);
+        Assert.Equal("TARGET", row[1].AsText);
+    }
+
+    [Fact]
+    public async Task Join_WithUniqueTextFilterAndIndexedDependentSide_UsesLookupJoins()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE lookup_plan_orders (id INTEGER PRIMARY KEY, customer_id INTEGER, warehouse_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE TABLE lookup_plan_customers (id INTEGER PRIMARY KEY, customer_code TEXT)", ct);
+        await _db.ExecuteAsync("CREATE TABLE lookup_plan_warehouses (id INTEGER PRIMARY KEY, warehouse_code TEXT)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_lookup_plan_customers_code ON lookup_plan_customers(customer_code)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_lookup_plan_orders_customer ON lookup_plan_orders(customer_id)", ct);
+
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_customers VALUES (1, 'TARGET')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_customers VALUES (2, 'OTHER-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_customers VALUES (3, 'OTHER-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_warehouses VALUES (10, 'WH-A')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_warehouses VALUES (11, 'WH-B')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (100, 2, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (101, 1, 11)", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (102, 3, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (103, 2, 11)", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            """
+            SELECT o.id, c.customer_code, w.warehouse_code
+            FROM lookup_plan_orders AS o
+            JOIN lookup_plan_customers AS c ON c.id = o.customer_id
+            JOIN lookup_plan_warehouses AS w ON w.id = o.warehouse_id
+            WHERE c.customer_code = 'TARGET'
+            """,
+            ct);
+
+        var root = GetRootOperator(result);
+        Assert.NotNull(FindOperatorInTree<IndexScanOperator>(root));
+        Assert.NotNull(FindOperatorInTree<IndexNestedLoopJoinOperator>(root));
+        Assert.Null(FindOperatorInTree<HashJoinOperator>(root));
+
+        var row = Assert.Single(await result.ToListAsync(ct));
+        Assert.Equal(101L, row[0].AsInteger);
+        Assert.Equal("TARGET", row[1].AsText);
+        Assert.Equal("WH-B", row[2].AsText);
+    }
+
+    [Fact]
     public async Task Join_WithResidualOnPredicate()
     {
         await SetupJoinTables();

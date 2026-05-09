@@ -11922,7 +11922,8 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         int[]? expectedKeyColumnIndices = null,
         DbValue[]? expectedKeyComponents = null,
         string?[]? expectedKeyCollations = null,
-        bool usesOrderedTextPayload = false)
+        bool usesOrderedTextPayload = false,
+        int? estimatedRowCount = null)
     {
         _indexStore = indexStore;
         _tableTree = tableTree;
@@ -11933,6 +11934,7 @@ public sealed class IndexScanOperator : IOperator, IBatchOperator, IRowBufferReu
         _expectedKeyComponents = expectedKeyComponents;
         _expectedKeyCollations = expectedKeyCollations;
         _usesOrderedTextPayload = usesOrderedTextPayload;
+        _estimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
         if (expectedKeyColumnIndices is { Length: > 0 } && expectedKeyComponents is { Length: > 0 })
         {
             _expectedKeyAccessors = BoundColumnAccessHelper.CreateAccessors(_recordSerializer, expectedKeyColumnIndices);

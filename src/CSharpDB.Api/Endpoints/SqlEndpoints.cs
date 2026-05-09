@@ -32,6 +32,7 @@ public static class SqlEndpoints
         return new SqlResultResponse(
             result.IsQuery,
             result.ColumnNames,
+            result.ColumnTypes,
             namedRows,
             result.RowsAffected,
             result.Error,

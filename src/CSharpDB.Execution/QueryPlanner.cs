@@ -2843,6 +2843,19 @@ public sealed class QueryPlanner
             predicates,
             out long estimatedRows);
 
+        bool indexEstimated = TryEstimateIndexedLocalPredicateRows(
+            tableName,
+            schema,
+            predicates,
+            inputRows,
+            out long indexedRows);
+
+        if (indexEstimated && (!estimated || indexedRows < estimatedRows))
+        {
+            estimated = true;
+            estimatedRows = indexedRows;
+        }
+
         if (estimated)
             filteredRows = estimatedRows;
 
@@ -2854,7 +2867,11 @@ public sealed class QueryPlanner
             estimated ? "estimated" : "fallback",
             estimated ? estimatedRows : null,
             estimated ? estimatedRows : null,
-            estimated ? "sys.column_stats/sys.planner_*" : null,
+            estimated
+                ? indexEstimated && estimatedRows == indexedRows
+                    ? "index-metadata"
+                    : "sys.column_stats/sys.planner_*"
+                : null,
             estimated ? "estimated" : "missing",
             estimated
                 ? $"input_rows={inputRows}, estimated_selectivity={(double)estimatedRows / Math.Max(inputRows, 1):0.######}."
@@ -8028,6 +8045,7 @@ public sealed class QueryPlanner
                     rightSchema,
                     leftSchema,
                     swappedCompositeSchema,
+                    outerWhere,
                     adaptiveLease: null,
                     out var swappedIndexNestedJoinOp))
                 {
@@ -8083,6 +8101,7 @@ public sealed class QueryPlanner
                 leftSchema,
                 rightSchema,
                 compositeSchema,
+                outerWhere,
                 adaptiveLease,
                 out var indexNestedJoinOp))
             {
@@ -8655,6 +8674,20 @@ public sealed class QueryPlanner
         return CombineConjuncts(remainingConjuncts);
     }
 
+    private static Expression? AddResidualConjuncts(
+        Expression? residualCondition,
+        IReadOnlyList<Expression> conjuncts)
+    {
+        if (conjuncts.Count == 0)
+            return residualCondition;
+
+        var residualTerms = new List<Expression>(conjuncts.Count + (residualCondition == null ? 0 : 1));
+        if (residualCondition != null)
+            residualTerms.Add(residualCondition);
+        residualTerms.AddRange(conjuncts);
+        return CombineConjuncts(residualTerms);
+    }
+
     private Expression? RemoveRedundantInnerJoinLocalLeafPredicates(
         JoinTableRef join,
         Expression? outerWhere)
@@ -8719,18 +8752,77 @@ public sealed class QueryPlanner
             if (localPredicates.Count == 0)
                 continue;
 
-            if (!CardinalityEstimator.TryEstimateFilteredRowCount(
+            bool estimated = CardinalityEstimator.TryEstimateFilteredRowCount(
                     _catalog,
                     leaf.Schema,
                     leaf.RowCount,
                     localPredicates,
-                    out long estimatedRows))
+                    out long estimatedRows);
+
+            bool indexEstimated = TryEstimateIndexedLocalPredicateRows(
+                leaf.TableRef.TableName,
+                leaf.Schema,
+                localPredicates,
+                leaf.RowCount,
+                out long indexedRows);
+
+            if (indexEstimated && (!estimated || indexedRows < estimatedRows))
+            {
+                estimated = true;
+                estimatedRows = indexedRows;
+            }
+
+            if (!estimated)
             {
                 continue;
             }
 
             leaves[i] = leaf with { RowCount = estimatedRows };
         }
+    }
+
+    private bool TryEstimateIndexedLocalPredicateRows(
+        string tableName,
+        TableSchema schema,
+        IReadOnlyList<Expression> predicates,
+        long tableRowCount,
+        out long estimatedRows)
+    {
+        estimatedRows = 0;
+        if (tableRowCount <= 0 || predicates.Count == 0)
+            return false;
+
+        IReadOnlyList<IndexSchema> indexes = _catalog.GetSqlIndexesForTable(tableName);
+        bool hasIntegerPk = schema.PrimaryKeyColumnIndex >= 0 &&
+                            schema.PrimaryKeyColumnIndex < schema.Columns.Count &&
+                            schema.Columns[schema.PrimaryKeyColumnIndex].Type == DbType.Integer;
+
+        long? bestRows = null;
+        for (int i = 0; i < predicates.Count; i++)
+        {
+            if (!TryPickLookupCandidate(
+                    tableName,
+                    predicates[i],
+                    schema,
+                    indexes,
+                    hasIntegerPk,
+                    schema.PrimaryKeyColumnIndex,
+                    out var candidate) ||
+                !ShouldUseLookupCandidate(candidate) ||
+                !candidate.EstimatedRows.HasValue)
+            {
+                continue;
+            }
+
+            long candidateRows = Math.Clamp(candidate.EstimatedRows.Value, 1, tableRowCount);
+            bestRows = bestRows.HasValue ? Math.Min(bestRows.Value, candidateRows) : candidateRows;
+        }
+
+        if (!bestRows.HasValue)
+            return false;
+
+        estimatedRows = bestRows.Value;
+        return true;
     }
 
     private bool TryCollectReorderableInnerJoinChain(
@@ -9456,6 +9548,7 @@ public sealed class QueryPlanner
         TableSchema leftSchema,
         TableSchema rightSchema,
         TableSchema compositeSchema,
+        Expression? outerWhere,
         AdaptiveQueryExecutionLease? adaptiveLease,
         out IOperator? indexNestedJoinOp)
     {
@@ -9487,6 +9580,12 @@ public sealed class QueryPlanner
                 out var residualCondition))
         {
             return false;
+        }
+
+        if (join.JoinType == JoinType.Inner &&
+            TryCollectLocalJoinLeafPredicates(outerWhere, rightSimple, rightSchema, out var rightLocalConjuncts))
+        {
+            residualCondition = AddResidualConjuncts(residualCondition, rightLocalConjuncts);
         }
 
         if (leftKeyIndices.Length == 0 || leftKeyIndices.Length != rightKeyIndices.Length)
@@ -10414,7 +10513,8 @@ public sealed class QueryPlanner
                 Index: compositeIndex,
                 LookupValue: compositeLookupKey,
                 KeyColumnIndices: compositeColumnIndices,
-                KeyComponents: compositeKeyComponents);
+                KeyComponents: compositeKeyComponents,
+                EstimatedRows: compositeIndex!.IsUnique ? 1 : null);
             return true;
         }
 
@@ -10425,7 +10525,10 @@ public sealed class QueryPlanner
             selectedCandidate.Index,
             selectedCandidate.LookupValue,
             selectedCandidate.KeyColumnIndices,
-            selectedCandidate.KeyComponents);
+            selectedCandidate.KeyComponents,
+            selectedCandidate.EstimatedRows.HasValue
+                ? ToCapacityHint(selectedCandidate.EstimatedRows.Value)
+                : null);
 
         if (selectedCandidate.RequiresResidualPredicate)
         {
@@ -10468,7 +10571,8 @@ public sealed class QueryPlanner
         IndexSchema? Index,
         long LookupValue,
         int[]? KeyColumnIndices,
-        DbValue[]? KeyComponents);
+        DbValue[]? KeyComponents,
+        int? EstimatedRows);
 
     private bool TryPickLookupCandidate(
         string tableName,
@@ -10783,7 +10887,8 @@ public sealed class QueryPlanner
             lookupPlan.Index,
             lookupPlan.LookupValue,
             lookupPlan.KeyColumnIndices,
-            lookupPlan.KeyComponents);
+            lookupPlan.KeyComponents,
+            lookupPlan.EstimatedRows);
     }
 
     private IOperator BuildLookupOperator(
@@ -10793,7 +10898,8 @@ public sealed class QueryPlanner
         IndexSchema? index,
         long lookupValue,
         int[]? expectedKeyColumnIndices = null,
-        DbValue[]? expectedKeyComponents = null)
+        DbValue[]? expectedKeyComponents = null,
+        int? estimatedRows = null)
     {
         var tableTree = _catalog.GetTableTree(tableName, _pager);
         if (isPrimaryKey)
@@ -10815,7 +10921,8 @@ public sealed class QueryPlanner
                 expectedKeyColumnIndices,
                 expectedKeyComponents,
                 expectedKeyCollations,
-                usesOrderedTextPayload);
+                usesOrderedTextPayload,
+                estimatedRows);
     }
 
     private static bool UsesDirectIntegerIndexKey(IndexSchema index, TableSchema schema)

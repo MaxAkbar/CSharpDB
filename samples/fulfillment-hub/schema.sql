@@ -216,6 +216,7 @@ CREATE INDEX idx_inventory_positions_watch ON inventory_positions (warehouse_id,
 CREATE INDEX idx_purchase_orders_status_expected ON purchase_orders (status, expected_date);
 CREATE INDEX idx_purchase_order_lines_purchase_order ON purchase_order_lines (purchase_order_id, product_id);
 CREATE INDEX idx_orders_status_required ON orders (status, required_ship_date, priority_code);
+CREATE INDEX idx_orders_customer_lookup ON orders (customer_id);
 CREATE INDEX idx_orders_customer_date ON orders (customer_id, order_date);
 CREATE INDEX idx_order_lines_product ON order_lines (product_id, order_id);
 CREATE INDEX idx_shipments_order_status ON shipments (order_id, status, shipped_date);
