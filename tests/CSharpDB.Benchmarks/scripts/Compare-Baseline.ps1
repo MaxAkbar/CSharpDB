@@ -755,6 +755,7 @@ function Add-ComparisonResult
         [Parameter(Mandatory = $true)]$Results,
         [Parameter(Mandatory = $true)][string]$Csv,
         [Parameter(Mandatory = $true)][string]$Key,
+        [string]$Metric = "Mean",
         [string]$BaselineMean = "",
         [string]$CurrentMean = "",
         [string]$MeanDeltaPct = "",
@@ -770,6 +771,7 @@ function Add-ComparisonResult
     $Results.Add([pscustomobject]@{
             Csv = $Csv
             Key = $Key
+            Metric = $Metric
             BaselineMean = $BaselineMean
             CurrentMean = $CurrentMean
             MeanDeltaPct = $MeanDeltaPct
@@ -1192,12 +1194,51 @@ foreach ($check in $config.checks)
             Select-Object -First 1
 
         $rowKey = Build-RowKey -Row $baselineRow -KeyColumns $keyColumns
+
+        $maxMeanRegression = [double](Get-OptionalProperty -Object $check -Name "maxMeanRegressionPercent" -DefaultValue $defaultMeanRegression)
+        $maxAllocRegressionPct = [double](Get-OptionalProperty -Object $check -Name "maxAllocRegressionPercent" -DefaultValue $defaultAllocRegressionPct)
+        $maxAllocRegressionBytes = [double](Get-OptionalProperty -Object $check -Name "maxAllocRegressionBytes" -DefaultValue $defaultAllocRegressionBytes)
+        $skipMeanComparison = [bool](Get-OptionalProperty -Object $check -Name "skipMeanComparison" -DefaultValue $false)
+        $skipAllocationComparison = [bool](Get-OptionalProperty -Object $check -Name "skipAllocationComparison" -DefaultValue $false)
+        $metricColumn = [string](Get-OptionalProperty -Object $check -Name "metricColumn" -DefaultValue "Mean")
+        if ([string]::IsNullOrWhiteSpace($metricColumn))
+        {
+            throw "Check '$csvName' has an empty metricColumn value."
+        }
+
+        $extraInfoChecks = Get-OptionalProperty -Object $check -Name "extraInfoChecks" -DefaultValue @()
+
+        $overrides = Get-OptionalProperty -Object $check -Name "overrides" -DefaultValue @()
+        foreach ($override in $overrides)
+        {
+            if (Test-RowMatch -Row $baselineRow -Criteria (Get-OptionalProperty -Object $override -Name "match" -DefaultValue $null))
+            {
+                $maxMeanRegression = [double](Get-OptionalProperty -Object $override -Name "maxMeanRegressionPercent" -DefaultValue $maxMeanRegression)
+                $maxAllocRegressionPct = [double](Get-OptionalProperty -Object $override -Name "maxAllocRegressionPercent" -DefaultValue $maxAllocRegressionPct)
+                $maxAllocRegressionBytes = [double](Get-OptionalProperty -Object $override -Name "maxAllocRegressionBytes" -DefaultValue $maxAllocRegressionBytes)
+                $skipMeanComparison = [bool](Get-OptionalProperty -Object $override -Name "skipMeanComparison" -DefaultValue $skipMeanComparison)
+                $skipAllocationComparison = [bool](Get-OptionalProperty -Object $override -Name "skipAllocationComparison" -DefaultValue $skipAllocationComparison)
+                $metricColumn = [string](Get-OptionalProperty -Object $override -Name "metricColumn" -DefaultValue $metricColumn)
+                if ([string]::IsNullOrWhiteSpace($metricColumn))
+                {
+                    throw "Check '$csvName' override for '$rowKey' has an empty metricColumn value."
+                }
+
+                $overrideExtraInfoChecks = Get-OptionalProperty -Object $override -Name "extraInfoChecks" -DefaultValue $null
+                if ($null -ne $overrideExtraInfoChecks)
+                {
+                    $extraInfoChecks = $overrideExtraInfoChecks
+                }
+            }
+        }
+
         if ($null -eq $currentRow)
         {
             Add-ComparisonResult -Results $results `
                 -Csv $csvName `
                 -Key $rowKey `
-                -BaselineMean ([string](Get-OptionalProperty -Object $baselineRow -Name "Mean" -DefaultValue "")) `
+                -Metric $metricColumn `
+                -BaselineMean ([string](Get-OptionalProperty -Object $baselineRow -Name $metricColumn -DefaultValue "")) `
                 -BaselineAlloc ([string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")) `
                 -Enforcement $machineCompatibility.Summary `
                 -Status "FAIL" `
@@ -1206,20 +1247,21 @@ foreach ($check in $config.checks)
             continue
         }
 
-        $baselineMeanRaw = [string](Get-OptionalProperty -Object $baselineRow -Name "Mean" -DefaultValue "")
-        $currentMeanRaw = [string](Get-OptionalProperty -Object $currentRow -Name "Mean" -DefaultValue "")
+        $baselineMeanRaw = [string](Get-OptionalProperty -Object $baselineRow -Name $metricColumn -DefaultValue "")
+        $currentMeanRaw = [string](Get-OptionalProperty -Object $currentRow -Name $metricColumn -DefaultValue "")
         if ((Test-MetricUnavailable -Value $baselineMeanRaw) -or (Test-MetricUnavailable -Value $currentMeanRaw))
         {
             Add-ComparisonResult -Results $results `
                 -Csv $csvName `
                 -Key $rowKey `
+                -Metric $metricColumn `
                 -BaselineMean $baselineMeanRaw `
                 -CurrentMean $currentMeanRaw `
                 -BaselineAlloc ([string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")) `
                 -CurrentAlloc ([string](Get-OptionalProperty -Object $currentRow -Name "Allocated" -DefaultValue "")) `
                 -Enforcement $machineCompatibility.Summary `
                 -Status "FAIL" `
-                -Notes "Benchmark did not produce a numeric Mean value"
+                -Notes "Benchmark did not produce a numeric $metricColumn value"
             $failureCount++
             continue
         }
@@ -1227,8 +1269,6 @@ foreach ($check in $config.checks)
         $baselineMeanNs = Convert-TimeToNanoseconds -Value $baselineMeanRaw
         $currentMeanNs = Convert-TimeToNanoseconds -Value $currentMeanRaw
         $meanDeltaPct = (($currentMeanNs - $baselineMeanNs) / $baselineMeanNs) * 100.0
-
-        $skipAllocationComparison = [bool](Get-OptionalProperty -Object $check -Name "skipAllocationComparison" -DefaultValue $false)
 
         $baselineAlloc = [string](Get-OptionalProperty -Object $baselineRow -Name "Allocated" -DefaultValue "")
         $currentAlloc = [string](Get-OptionalProperty -Object $currentRow -Name "Allocated" -DefaultValue "")
@@ -1238,6 +1278,7 @@ foreach ($check in $config.checks)
             Add-ComparisonResult -Results $results `
                 -Csv $csvName `
                 -Key $rowKey `
+                -Metric $metricColumn `
                 -BaselineMean (Format-Nanoseconds -Nanoseconds $baselineMeanNs) `
                 -CurrentMean (Format-Nanoseconds -Nanoseconds $currentMeanNs) `
                 -MeanDeltaPct ("{0:N2}" -f $meanDeltaPct) `
@@ -1254,6 +1295,7 @@ foreach ($check in $config.checks)
             Add-ComparisonResult -Results $results `
                 -Csv $csvName `
                 -Key $rowKey `
+                -Metric $metricColumn `
                 -BaselineMean (Format-Nanoseconds -Nanoseconds $baselineMeanNs) `
                 -CurrentMean (Format-Nanoseconds -Nanoseconds $currentMeanNs) `
                 -MeanDeltaPct ("{0:N2}" -f $meanDeltaPct) `
@@ -1289,28 +1331,6 @@ foreach ($check in $config.checks)
             $allocDeltaPct = 0.0
         }
 
-        $maxMeanRegression = [double](Get-OptionalProperty -Object $check -Name "maxMeanRegressionPercent" -DefaultValue $defaultMeanRegression)
-        $maxAllocRegressionPct = [double](Get-OptionalProperty -Object $check -Name "maxAllocRegressionPercent" -DefaultValue $defaultAllocRegressionPct)
-        $maxAllocRegressionBytes = [double](Get-OptionalProperty -Object $check -Name "maxAllocRegressionBytes" -DefaultValue $defaultAllocRegressionBytes)
-        $extraInfoChecks = Get-OptionalProperty -Object $check -Name "extraInfoChecks" -DefaultValue @()
-
-        $overrides = Get-OptionalProperty -Object $check -Name "overrides" -DefaultValue @()
-        foreach ($override in $overrides)
-        {
-            if (Test-RowMatch -Row $baselineRow -Criteria (Get-OptionalProperty -Object $override -Name "match" -DefaultValue $null))
-            {
-                $maxMeanRegression = [double](Get-OptionalProperty -Object $override -Name "maxMeanRegressionPercent" -DefaultValue $maxMeanRegression)
-                $maxAllocRegressionPct = [double](Get-OptionalProperty -Object $override -Name "maxAllocRegressionPercent" -DefaultValue $maxAllocRegressionPct)
-                $maxAllocRegressionBytes = [double](Get-OptionalProperty -Object $override -Name "maxAllocRegressionBytes" -DefaultValue $maxAllocRegressionBytes)
-                $overrideExtraInfoChecks = Get-OptionalProperty -Object $override -Name "extraInfoChecks" -DefaultValue $null
-                if ($null -ne $overrideExtraInfoChecks)
-                {
-                    $extraInfoChecks = $overrideExtraInfoChecks
-                }
-            }
-        }
-
-        $skipMeanComparison = [bool](Get-OptionalProperty -Object $check -Name "skipMeanComparison" -DefaultValue $false)
         $extraInfoEvaluation = Test-ExtraInfoChecks -BaselineRow $baselineRow -CurrentRow $currentRow -Checks $extraInfoChecks
 
         $meanRegressed = (-not $skipMeanComparison) -and ($meanDeltaPct -gt $maxMeanRegression)
@@ -1336,14 +1356,15 @@ foreach ($check in $config.checks)
             $failureCount++
         }
 
+        $metricThresholdNote = if ($skipMeanComparison) { "$metricColumn skipped" } else { "$metricColumn<=${maxMeanRegression}%" }
         $thresholdNote =
         if ($allocComparisonEnabled)
         {
-            "$(if ($skipMeanComparison) { "Mean skipped" } else { "Mean<=${maxMeanRegression}%" }) ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
+            "$metricThresholdNote ; Alloc<=${maxAllocRegressionPct}% or +${maxAllocRegressionBytes}B"
         }
         else
         {
-            "$(if ($skipMeanComparison) { "Mean skipped" } else { "Mean<=${maxMeanRegression}%" }) ; Alloc skipped"
+            "$metricThresholdNote ; Alloc skipped"
         }
 
         if ($extraInfoEvaluation.Notes.Count -gt 0)
@@ -1362,6 +1383,7 @@ foreach ($check in $config.checks)
         Add-ComparisonResult -Results $results `
             -Csv $csvName `
             -Key $rowKey `
+            -Metric $metricColumn `
             -BaselineMean (Format-Nanoseconds -Nanoseconds $baselineMeanNs) `
             -CurrentMean (Format-Nanoseconds -Nanoseconds $currentMeanNs) `
             -MeanDeltaPct ("{0:N2}" -f $meanDeltaPct) `
@@ -1381,7 +1403,7 @@ $skipCount = @($results | Where-Object Status -eq "SKIP").Count
 $rowCount = $results.Count
 $summary = "Compared $rowCount rows against baseline. PASS=$passCount, WARN=$warnCount, SKIP=$skipCount, FAIL=$failureCount"
 Write-Host $summary
-$results | Sort-Object Csv, Key | Format-Table Csv, Key, MeanDeltaPct, AllocDeltaPct, AllocDeltaBytes, Enforcement, Status -AutoSize
+$results | Sort-Object Csv, Key | Format-Table Csv, Key, Metric, MeanDeltaPct, AllocDeltaPct, AllocDeltaBytes, Enforcement, Status -AutoSize
 
 if (-not [string]::IsNullOrWhiteSpace($ReportPath))
 {
@@ -1412,13 +1434,13 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath))
     $lines.Add("")
     $lines.Add($summary)
     $lines.Add("")
-    $lines.Add("| CSV | Key | Mean Delta% | Alloc Delta% | Alloc Delta B | Enforcement | Status | Notes |")
-    $lines.Add("|---|---|---:|---:|---:|---|---|---|")
+    $lines.Add("| CSV | Key | Metric | Metric Delta% | Alloc Delta% | Alloc Delta B | Enforcement | Status | Notes |")
+    $lines.Add("|---|---|---|---:|---:|---:|---|---|---|")
     foreach ($result in ($results | Sort-Object Csv, Key))
     {
         $notes = [string]$result.Notes
         $notes = $notes -replace "\|", "\\|"
-        $lines.Add("| $($result.Csv) | $($result.Key) | $($result.MeanDeltaPct) | $($result.AllocDeltaPct) | $($result.AllocDeltaBytes) | $($result.Enforcement) | $($result.Status) | $notes |")
+        $lines.Add("| $($result.Csv) | $($result.Key) | $($result.Metric) | $($result.MeanDeltaPct) | $($result.AllocDeltaPct) | $($result.AllocDeltaBytes) | $($result.Enforcement) | $($result.Status) | $notes |")
     }
 
     Set-Content -Path $ReportPath -Value $lines -Encoding UTF8
