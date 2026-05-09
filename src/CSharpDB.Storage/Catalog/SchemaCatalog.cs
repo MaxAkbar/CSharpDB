@@ -111,6 +111,12 @@ public sealed class SchemaCatalog
     public bool TryGetFreshIndexPrefixStatistics(string indexName, out IndexPrefixStatistics stats) =>
         _service.TryGetFreshIndexPrefixStatistics(indexName, out stats);
 
+    internal IReadOnlyCollection<ColumnDistributionStatistics> GetColumnDistributionStatistics() =>
+        _service.GetColumnDistributionStatistics();
+
+    internal IReadOnlyCollection<IndexPrefixStatistics> GetIndexPrefixStatistics() =>
+        _service.GetIndexPrefixStatistics();
+
     public bool TryGetTableRowCount(string tableName, out long rowCount) =>
         _service.TryGetEstimatedTableRowCount(tableName, out rowCount);
 

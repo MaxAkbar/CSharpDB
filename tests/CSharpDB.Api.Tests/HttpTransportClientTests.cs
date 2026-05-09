@@ -120,6 +120,32 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_ExecutesPublicPlannerDiagnostics()
+    {
+        Assert.Null((await _client.ExecuteSqlAsync(
+            "CREATE TABLE http_planner_diag (id INTEGER PRIMARY KEY, value INTEGER);",
+            Ct)).Error);
+        Assert.Null((await _client.ExecuteSqlAsync(
+            "INSERT INTO http_planner_diag VALUES (1, 4), (2, 4), (3, 9);",
+            Ct)).Error);
+        Assert.Null((await _client.ExecuteSqlAsync("ANALYZE http_planner_diag;", Ct)).Error);
+
+        SqlExecutionResult catalog = await _client.ExecuteSqlAsync(
+            "SELECT COUNT(*) FROM sys.planner_histograms WHERE table_name = 'http_planner_diag';",
+            Ct);
+        Assert.Null(catalog.Error);
+        Assert.NotNull(catalog.Rows);
+        Assert.True(Convert.ToInt64(Assert.Single(catalog.Rows)[0]) > 0);
+
+        SqlExecutionResult explain = await _client.ExecuteSqlAsync(
+            "EXPLAIN ESTIMATE FOR SELECT * FROM http_planner_diag WHERE value = 4;",
+            Ct);
+        Assert.Null(explain.Error);
+        Assert.NotNull(explain.Rows);
+        Assert.Contains(explain.Rows, row => string.Equals(Convert.ToString(row[4]), "heavy-hitter", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task RestApi_DefaultNoAuthModeStillWorks()
     {
         DatabaseInfo info = await _client.GetInfoAsync(Ct);

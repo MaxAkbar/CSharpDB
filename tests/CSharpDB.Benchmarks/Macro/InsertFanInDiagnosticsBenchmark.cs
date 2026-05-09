@@ -85,7 +85,7 @@ public static class InsertFanInDiagnosticsBenchmark
             s_primaryWriterCounts,
             s_batchWindows);
 
-        // Shared auto-commit concurrent path: primary success case is disjoint explicit IDs.
+        // Shared auto-commit concurrent path: disjoint IDs plus hot right-edge and auto-ID coverage.
         AddScenarioMatrix(
             scenarios,
             CommitMode.AutoCommit,
@@ -104,7 +104,7 @@ public static class InsertFanInDiagnosticsBenchmark
             s_primaryWriterCounts,
             s_batchWindows);
 
-        // Hot right-edge remains the failure-boundary case for concurrent insert writers.
+        // Hot right-edge concurrent writers should build pending-commit fan-in instead of serial retry pressure.
         AddScenarioMatrix(
             scenarios,
             CommitMode.AutoCommit,
@@ -121,7 +121,7 @@ public static class InsertFanInDiagnosticsBenchmark
             s_boundaryWriterCounts,
             s_batchWindows);
 
-        // Auto-generated ID rows validate correctness/retry behavior, not best-case throughput.
+        // Auto-generated ID rows cover the row-ID reservation coordinator under the same fan-in pressure.
         AddScenarioMatrix(
             scenarios,
             CommitMode.AutoCommit,
@@ -241,9 +241,11 @@ public static class InsertFanInDiagnosticsBenchmark
 
         bench.Db.ResetWalFlushDiagnostics();
         bench.Db.ResetCommitPathDiagnostics();
+        bench.Db.ResetRowIdReservationDiagnostics();
         RunStats stats = await RunPhaseAsync(bench.Db, scenario, TimeSpan.FromSeconds(5), recordLatencies: true);
         WalFlushDiagnosticsSnapshot walDiagnostics = bench.Db.GetWalFlushDiagnosticsSnapshot();
         CommitPathDiagnosticsSnapshot commitDiagnostics = bench.Db.GetCommitPathDiagnosticsSnapshot();
+        RowIdReservationDiagnosticsSnapshot rowIdDiagnostics = bench.Db.GetRowIdReservationDiagnosticsSnapshot();
 
         var histogram = new LatencyHistogram();
         foreach (double latencyMs in stats.CommitLatenciesMs)
@@ -276,7 +278,7 @@ public static class InsertFanInDiagnosticsBenchmark
             MeanMs = histogram.Mean,
             StdDevMs = histogram.StdDev,
             ExtraInfo =
-                $"mode={scenario.Mode}, implicitInsertMode={scenario.ReportedImplicitInsertMode}, idMode={scenario.IdMode}, keyPattern={scenario.KeyPattern}, writers={scenario.WriterCount}, rowsPerCommit=1, batchWindow={FormatBatchWindow(scenario.BatchWindow)}, retryBudget={s_retryOptions.MaxRetries}, rowsPerSec={rowsPerSecond:F1}, successfulCommits={stats.SuccessfulCommits}, attempts={stats.AttemptCount}, extraAttempts={extraAttempts}, exhaustedConflicts={stats.ExhaustedConflictCount}, duplicateKeyFailures={stats.DuplicateKeyCount}, terminalFailures={stats.TerminalFailureCount}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, {commitSummary}",
+                $"mode={scenario.Mode}, implicitInsertMode={scenario.ReportedImplicitInsertMode}, idMode={scenario.IdMode}, keyPattern={scenario.KeyPattern}, writers={scenario.WriterCount}, rowsPerCommit=1, batchWindow={FormatBatchWindow(scenario.BatchWindow)}, retryBudget={s_retryOptions.MaxRetries}, rowsPerSec={rowsPerSecond:F1}, successfulCommits={stats.SuccessfulCommits}, attempts={stats.AttemptCount}, extraAttempts={extraAttempts}, exhaustedConflicts={stats.ExhaustedConflictCount}, duplicateKeyFailures={stats.DuplicateKeyCount}, terminalFailures={stats.TerminalFailureCount}, flushes={walDiagnostics.FlushCount}, flushesPerSec={flushesPerSecond:F1}, commitsPerFlush={commitsPerFlush:F2}, KiBPerFlush={kibPerFlush:F1}, batchWindowWaits={walDiagnostics.BatchWindowWaitCount}, rowIdReservations={rowIdDiagnostics.ReservationCount}, reservedRowIds={rowIdDiagnostics.ReservedRowIdCount}, {commitSummary}",
         };
 
         Console.WriteLine(

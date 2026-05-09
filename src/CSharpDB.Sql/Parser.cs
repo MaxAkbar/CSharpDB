@@ -190,6 +190,7 @@ public sealed class Parser
             TokenType.Alter => ParseAlterTable(),
             TokenType.With => ParseWith(),
             TokenType.Analyze => ParseAnalyze(),
+            TokenType.Explain => ParseExplain(),
             _ => throw Error($"Unexpected token '{token.Value}', expected a statement."),
         };
 
@@ -2026,6 +2027,22 @@ public sealed class Parser
             tableName = ParseMultipartIdentifier();
 
         return new AnalyzeStatement { TableName = tableName };
+    }
+
+    private ExplainEstimateStatement ParseExplain()
+    {
+        Expect(TokenType.Explain);
+        Expect(TokenType.Estimate);
+        Expect(TokenType.For);
+
+        Statement target = Peek().Type switch
+        {
+            TokenType.Select => ParseQueryExpression(),
+            TokenType.With => ParseWith(),
+            _ => throw Error("EXPLAIN ESTIMATE FOR supports SELECT, WITH, and compound SELECT queries only."),
+        };
+
+        return new ExplainEstimateStatement { Target = target };
     }
 
     private UpdateStatement ParseUpdate()

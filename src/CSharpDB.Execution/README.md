@@ -16,13 +16,13 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 ### Query Planner
 - Translates AST statements into physical operator trees
 - Dispatches to type-specific handlers for all DDL and DML statements
-- System catalog virtual tables: `sys.tables`, `sys.columns`, `sys.indexes`, `sys.views`, `sys.triggers`, `sys.objects`, `sys.saved_queries`, `sys.table_stats`, `sys.column_stats`
+- System catalog virtual tables: `sys.tables`, `sys.columns`, `sys.indexes`, `sys.views`, `sys.triggers`, `sys.objects`, `sys.saved_queries`, `sys.table_stats`, `sys.column_stats`, `sys.planner_histograms`, `sys.planner_heavy_hitters`, `sys.planner_index_prefix_stats`
 - Compound query execution for `UNION`, `INTERSECT`, and `EXCEPT`
 - Subquery lowering for uncorrelated forms plus a correlated fallback path for supported contexts
 - Compiled expression cache (up to 4096 entries) for repeated queries
 - Trigger body caching with schema-sensitive invalidation
 - Sync point-lookup fast path for `SELECT ... WHERE pk = value`
-- Persisted row-count reuse for `COUNT(*)`, planner cardinality estimates, skew-aware equality/`IN` estimation from internal heavy hitters, histogram-backed numeric range estimates, composite-prefix correlation modeling for multi-column filters/joins, and bounded small-chain inner-join reordering
+- Persisted row-count reuse for `COUNT(*)`, planner cardinality estimates, skew-aware equality/`IN` estimation from heavy hitters, histogram-backed numeric range estimates, composite-prefix correlation modeling for multi-column filters/joins, public `EXPLAIN ESTIMATE FOR <query>` diagnostics, and bounded small-chain inner-join reordering
 
 ### Operator Tree (Iterator Model)
 - `IOperator` interface: `OpenAsync`, `MoveNextAsync`, `Current`, `OutputSchema`

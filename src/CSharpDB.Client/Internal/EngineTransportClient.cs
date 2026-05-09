@@ -850,6 +850,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         {
             IsQuery = result.IsQuery,
             ColumnNames = result.IsQuery ? result.Schema.Select(column => column.Name).ToArray() : null,
+            ColumnTypes = result.IsQuery ? result.Schema.Select(column => column.Type.ToString().ToUpperInvariant()).ToArray() : null,
             Rows = result.IsQuery ? rows.Select(ToObjects).ToList() : null,
             RowsAffected = result.IsQuery ? rows.Count : result.RowsAffected,
         };

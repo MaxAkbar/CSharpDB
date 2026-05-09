@@ -229,6 +229,23 @@ internal sealed class PreparedStatementTemplate
                 };
             }
 
+            case ExplainEstimateStatement explain:
+            {
+                Statement target = explain.Target switch
+                {
+                    QueryStatement query => BindQueryStatement(query, parameters, out bool queryChanged) is { } boundQuery && queryChanged
+                        ? boundQuery
+                        : query,
+                    WithStatement with => BindStatement(with, parameters),
+                    _ => explain.Target,
+                };
+
+                if (ReferenceEquals(target, explain.Target))
+                    return explain;
+
+                return new ExplainEstimateStatement { Target = target };
+            }
+
             case CreateTriggerStatement trigger:
             {
                 Expression? whenCondition = BindOptionalExpression(trigger.WhenCondition, parameters, out bool whenChanged);

@@ -150,7 +150,7 @@
                                 <h4>Source-Generated Collections</h4>
                                 <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>No-reflection, trim-safe typed collection API via <code>CSharpDB.Generators</code> with <code>GetGeneratedCollectionAsync&lt;T&gt;()</code>, <code>GeneratedCollection&lt;T&gt;</code>, generated field metadata, and NativeAOT-friendly model registration.</p>
+                            <p>No-reflection, trim-safe typed collection API via <code>CSharpDB.Generators</code> with <code>GetGeneratedCollectionAsync&lt;T&gt;()</code>, <code>GeneratedCollection&lt;T&gt;</code>, generated field metadata, binary direct payloads for supported shapes, and NativeAOT-friendly model registration.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -391,7 +391,21 @@
                                 <h4>Source-Generated Collections</h4>
                                 <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>No-reflection, trim-safe typed collection API via <code>CSharpDB.Generators</code> with generated field metadata and NativeAOT-friendly model registration.</p>
+                            <p>Current phase is complete: opt-in generated models provide <code>GetGeneratedCollectionAsync&lt;T&gt;</code>, generated descriptors/index bindings, binary direct payloads for supported shapes, JSON fallback for unsupported shapes, and trim/NativeAOT smoke coverage.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Generated Collection Package Ergonomics</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Streamline NuGet/analyzer packaging, templates, onboarding docs, and project setup for the opt-in generated collection path.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Broader Generated Model Coverage</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Expand generator support beyond the current scalar, scalar collection, nested scalar, and nested collection-scalar shapes.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -417,16 +431,30 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Cost-Based Query Optimizer</h4>
-                                <span class="roadmap-badge roadmap-badge-done">In Progress</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Phase-2 stats-guided costing is in place: internal histograms, heavy hitters, composite-index prefix summaries, skew-aware estimates, correlation-aware filters/joins, and bounded DP join reordering. Adaptive re-optimization and public histogram inspection remain future work.</p>
+                            <p>Current phase is complete: ANALYZE-driven stats-guided costing uses internal histograms, heavy hitters, composite-prefix summaries, skew-aware estimates, correlation-aware filters/joins, non-unique lookup costing, hash build-side choice, and bounded DP join reordering.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Adaptive Query Re-Optimization</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Re-plan or adapt when observed cardinality diverges materially from persisted statistics, especially after stale stats or parameter-sensitive predicates.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Public Planner Histogram Inspection</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Expose histogram, heavy-hitter, composite-prefix, and estimate diagnostics through a public surface while keeping current stats internals private.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Async I/O Batching</h4>
-                                <span class="roadmap-badge roadmap-badge-done">In Progress</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities now cover the main storage and maintenance write paths; remaining auditing is outside the WAL hot path.</p>
+                            <p>Current phase is complete: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, reusable B-tree copy utilities, and the close-out audit cover the main storage and maintenance write paths.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">

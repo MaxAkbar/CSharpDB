@@ -1,49 +1,49 @@
 {
   "schemaVersion": 1,
   "metadata": {
-    "Published snapshot": "April 26, 2026 release-core snapshot",
-    "Run date": "Release-core artifacts captured April 26, 2026 PT; release guardrail compare captured April 27, 2026 UTC",
-    "Promotion status": "Promoted after release-core suite and release guardrail compare passed; focused micro retry replaced volatile guardrail samples",
-    "Latest release guardrail": "PASS=185, WARN=0, SKIP=0, FAIL=0",
+    "Published snapshot": "May 6, 2026 release-core snapshot",
+    "Run date": "Release-core artifacts captured May 6, 2026 UTC; latest release guardrail compare captured May 6, 2026 UTC",
+    "Promotion status": "Published tables are promoted from the May 6 release-core suite; latest release guardrail compare passed after focused close-out validation",
+    "Latest release guardrail": "PASS=187, WARN=0, SKIP=0, FAIL=0",
     "Runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7",
     "Repro mode": "priority=High, affinity=0xFF when captured with --repro",
-    "Commit": "b7cb52ee2c30f31538e96480b6d055ff52439c26 plus uncommitted collection binary payload and benchmark updates"
+    "Commit": "47a700950a150669ce404294c594dd845550f460"
   },
   "artifacts": [
     {
       "id": "master",
       "command": "--master-table --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260426-215529-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260506-024609-median-of-3.csv"
     },
     {
       "id": "batching",
       "command": "--durable-sql-batching --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260426-221413-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260506-030458-median-of-3.csv"
     },
     {
       "id": "concurrent",
       "command": "--concurrent-write-diagnostics --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260426-223659-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260506-032735-median-of-3.csv"
     },
     {
       "id": "storage",
       "command": "--hybrid-storage-mode --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260426-224331-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260506-033407-median-of-3.csv"
     },
     {
       "id": "hotset",
       "command": "--hybrid-hot-set-read --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260426-225908-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260506-034948-median-of-3.csv"
     },
     {
       "id": "coldopen",
       "command": "--hybrid-cold-open --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260426-225949-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260506-035030-median-of-3.csv"
     },
     {
       "id": "sqlite",
       "command": "--sqlite-compare --repeat 3 --repro",
-      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260426-230045-median-of-3.csv"
+      "path": "tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260506-035128-median-of-3.csv"
     }
   ],
   "sections": [
@@ -58,8 +58,8 @@
           "cells": [
             { "value": "Release health" },
             { "value": "Latest guardrail compare" },
-            { "value": "PASS: PASS=185, FAIL=0" },
-            { "value": "`Compare-Baseline.ps1` after focused micro retry" }
+            { "value": "PASS: PASS=187, FAIL=0" },
+            { "value": "`Run-Perf-Guardrails.ps1 -Mode release` after close-out validation" }
           ]
         },
         {

@@ -85,6 +85,8 @@ public enum TokenType
     With,
     Recursive,
     Analyze,
+    Explain,
+    Estimate,
     Trigger,
     Before,
     After,

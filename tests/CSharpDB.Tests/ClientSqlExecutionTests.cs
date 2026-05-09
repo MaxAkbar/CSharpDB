@@ -6,6 +6,48 @@ namespace CSharpDB.Tests;
 public sealed class ClientSqlExecutionTests
 {
     [Fact]
+    public async Task ExecuteSqlAsync_PublicPlannerDiagnostics_WorkThroughDirectClient()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_client_test_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            Assert.Null((await client.ExecuteSqlAsync("CREATE TABLE planner_client (id INTEGER PRIMARY KEY, value INTEGER);", ct)).Error);
+            Assert.Null((await client.ExecuteSqlAsync("INSERT INTO planner_client VALUES (1, 7), (2, 7), (3, 8);", ct)).Error);
+            Assert.Null((await client.ExecuteSqlAsync("ANALYZE planner_client;", ct)).Error);
+
+            var catalog = await client.ExecuteSqlAsync(
+                "SELECT COUNT(*) FROM sys.planner_heavy_hitters WHERE table_name = 'planner_client' AND column_name = 'value';",
+                ct);
+            Assert.Null(catalog.Error);
+            Assert.True(catalog.IsQuery);
+            Assert.NotNull(catalog.Rows);
+            Assert.True(Convert.ToInt64(Assert.Single(catalog.Rows)[0], CultureInfo.InvariantCulture) > 0);
+
+            var explain = await client.ExecuteSqlAsync(
+                "EXPLAIN ESTIMATE FOR SELECT * FROM planner_client WHERE value = 7;",
+                ct);
+            Assert.Null(explain.Error);
+            Assert.True(explain.IsQuery);
+            Assert.NotNull(explain.ColumnNames);
+            Assert.Contains("decision", explain.ColumnNames);
+            Assert.NotNull(explain.Rows);
+            Assert.Contains(explain.Rows, row => string.Equals(Convert.ToString(row[4], CultureInfo.InvariantCulture), "heavy-hitter", StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ExecuteSqlAsync_HandlesTriggerBodyAndFinalStatementWithoutSemicolon()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -38,6 +80,38 @@ public sealed class ClientSqlExecutionTests
             Assert.NotNull(auditCount.Rows);
             var row = Assert.Single(auditCount.Rows);
             Assert.Equal(1L, Convert.ToInt64(row[0]));
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteSqlAsync_ReturnsQueryColumnTypes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_client_test_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            Assert.Null((await client.ExecuteSqlAsync("CREATE TABLE client_types (id INTEGER, code TEXT, amount REAL);", ct)).Error);
+            Assert.Null((await client.ExecuteSqlAsync("INSERT INTO client_types VALUES (1, 'A', 12.5);", ct)).Error);
+
+            var result = await client.ExecuteSqlAsync("SELECT id, code, amount FROM client_types;", ct);
+
+            Assert.Null(result.Error);
+            Assert.True(result.IsQuery);
+            Assert.NotNull(result.ColumnNames);
+            Assert.NotNull(result.ColumnTypes);
+            Assert.Equal(["id", "code", "amount"], result.ColumnNames);
+            Assert.Equal(["INTEGER", "TEXT", "REAL"], result.ColumnTypes);
         }
         finally
         {

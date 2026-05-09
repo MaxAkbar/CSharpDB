@@ -230,6 +230,11 @@ public sealed class AnalyzeStatement : Statement
     public string? TableName { get; init; }
 }
 
+public sealed class ExplainEstimateStatement : Statement
+{
+    public required Statement Target { get; init; }
+}
+
 // ============ Common Table Expressions (CTEs) ============
 
 public sealed class CteDefinition

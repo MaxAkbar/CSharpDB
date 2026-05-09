@@ -58,6 +58,9 @@ These harnesses stay available, but they do not feed the main README unless they
 | `--commit-fan-in-diagnostics` | `diagnostic` | Shared auto-commit vs explicit transaction fan-in detail. |
 | `--insert-fan-in-diagnostics` | `diagnostic` | Disjoint key, hot right-edge, and auto-id insert fan-in detail. |
 | `--checkpoint-retention-diagnostics` | `diagnostic` | Background checkpoint progress while writers hold transactions. |
+| `--optimizer-closeout` | `diagnostic` | Advanced optimizer close-out coverage for heavy hitters, histogram ranges, composite-prefix correlation, and bounded join reordering. |
+| `--adaptive-reoptimization` | `diagnostic` | Opt-in adaptive join re-optimization coverage for disabled baseline, no-switch overhead, stale-stat fan-out, parameter-sensitive skew, hash build-side diagnostics, and synthetic switch counters. |
+| `--async-io-closeout` | `diagnostic` | Async I/O batching close-out audit for save/backup/restore, logical rewrites, and inspector/WAL scan paths. |
 | `--concurrent-sqlite-capi-compare` | `diagnostic` | CSharpDB/SQLite C API concurrent insert comparisons. |
 | `--concurrent-adonet-compare` | `diagnostic` | CSharpDB/SQLite ADO.NET concurrent insert comparisons. |
 | `--direct-file-cache-transport` | `diagnostic` | Direct client and tuned file-cache comparison. |
@@ -85,6 +88,7 @@ Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurr
 | `CollectionLookupFallbackBenchmarks` | `diagnostic` |
 | `CollectionPayloadBenchmarks` | `diagnostic` |
 | `CollectionSchemaBreadthBenchmarks` | `diagnostic` |
+| `GeneratedCollectionCodecBenchmarks` | `diagnostic` |
 | `CompositeGroupedIndexBenchmarks` | `diagnostic` |
 | `CoveringIndexBenchmarks` | `diagnostic` |
 | `DistinctBenchmarks` | `diagnostic` |

@@ -217,6 +217,52 @@ public sealed class PlannerStatisticsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExplainEstimate_ReportsHistogramHeavyHitterAndCompositePrefixSources()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSkewedEqualityTableAsync(ct);
+        await SetupHistogramRangeTableAsync(ct);
+        await SetupCompositePrefixCorrelationTableAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_skew", ct);
+        await _db.ExecuteAsync("ANALYZE planner_hist", ct);
+        await _db.ExecuteAsync("ANALYZE planner_corr", ct);
+
+        await using var heavy = await _db.ExecuteAsync(
+            "EXPLAIN ESTIMATE FOR SELECT * FROM planner_skew WHERE hot_code = 1",
+            ct);
+        var heavyRows = await heavy.ToListAsync(ct);
+        Assert.Contains(heavyRows, row => row[4].AsText == "heavy-hitter" && row[7].AsText == "sys.planner_heavy_hitters");
+
+        await using var histogram = await _db.ExecuteAsync(
+            "EXPLAIN ESTIMATE FOR SELECT * FROM planner_hist WHERE value BETWEEN 1 AND 10",
+            ct);
+        var histogramRows = await histogram.ToListAsync(ct);
+        Assert.Contains(histogramRows, row => row[4].AsText == "histogram-range" && row[7].AsText == "sys.planner_histograms");
+
+        await using var composite = await _db.ExecuteAsync(
+            "EXPLAIN ESTIMATE FOR SELECT * FROM planner_corr WHERE region = 'East' AND city = 'EastCity'",
+            ct);
+        var compositeRows = await composite.ToListAsync(ct);
+        Assert.Contains(compositeRows, row => row[4].AsText == "composite-prefix-filter" && row[7].AsText == "sys.planner_index_prefix_stats");
+    }
+
+    [Fact]
+    public async Task ExplainEstimate_ReportsStaleStatsAsIgnored()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SetupSkewedEqualityTableAsync(ct);
+        await _db.ExecuteAsync("ANALYZE planner_skew", ct);
+        await _db.ExecuteAsync("INSERT INTO planner_skew VALUES (1001, 1)", ct);
+
+        await using var explain = await _db.ExecuteAsync(
+            "EXPLAIN ESTIMATE FOR SELECT * FROM planner_skew WHERE hot_code = 1",
+            ct);
+        var rows = await explain.ToListAsync(ct);
+
+        Assert.Contains(rows, row => row[4].AsText == "ignored-stale-stats" && row[8].AsText == "stale-ignored");
+    }
+
+    [Fact]
     public async Task FreshColumnStats_NonUniqueJoin_PrefersIndexLookupWhenExpectedMatchesAreLow()
     {
         var ct = TestContext.Current.CancellationToken;

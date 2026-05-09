@@ -33,6 +33,8 @@ public static class Program
             Console.WriteLine($"Batch size  : {options.BatchSize:N0}");
             Console.WriteLine($"Write files : {options.WriteFiles}");
             Console.WriteLine($"Direct load : {options.DirectLoad}");
+            if (options.DirectLoad && options.Dataset == DatasetKind.Documents)
+                Console.WriteLine($"Direct doc cap: {options.MaxDirectDocumentSizeBytes:N0} bytes");
 
             RunSummary summary = options.Dataset switch
             {
@@ -225,6 +227,7 @@ public static class Program
         HotKeyRate: options.HotKeyRate,
         RecentRate: options.RecentRate,
         AvgDocSizeBytes: options.AvgDocSizeBytes,
+        MaxDirectDocumentSizeBytes: options.MaxDirectDocumentSizeBytes,
         TenantCount: options.TenantCount,
         DeviceCount: options.DeviceCount,
         OrdersPerCustomer: options.OrdersPerCustomer,
@@ -254,6 +257,7 @@ public static class Program
         Console.WriteLine("  --null-rate <0..1>         Sparse/null field rate");
         Console.WriteLine("  --hot-key-rate <0..1>      Fraction of traffic hitting the hot key band");
         Console.WriteLine("  --recent-rate <0..1>       Fraction of rows skewed toward recent timestamps");
+        Console.WriteLine("  --max-direct-doc-size <n>  Max target JSON bytes for direct collection loads (default 2048)");
         Console.WriteLine();
         Console.WriteLine("Dataset-specific options:");
         Console.WriteLine("  relational: --orders-per-customer <n> --items-per-order <n> --tenant-count <n>");
@@ -293,6 +297,7 @@ public static class Program
         double HotKeyRate,
         double RecentRate,
         int AvgDocSizeBytes,
+        int MaxDirectDocumentSizeBytes,
         int TenantCount,
         int DeviceCount,
         int OrdersPerCustomer,

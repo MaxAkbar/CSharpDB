@@ -3181,6 +3181,159 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MultiLookupInnerJoinChainWithLimit_PreservesStreamingLookupOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await CreateLowStockJoinShapeAsync("limit_lookup", createView: false, ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            """
+            SELECT ip.id, w.name, p.sku, s.name
+            FROM limit_lookup_inventory_positions ip
+            INNER JOIN limit_lookup_warehouses w ON w.id = ip.warehouse_id
+            INNER JOIN limit_lookup_products p ON p.id = ip.product_id
+            INNER JOIN limit_lookup_suppliers s ON s.id = p.preferred_supplier_id
+            LIMIT 3
+            """) as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var lookupJoin = FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(
+            GetPrivateField<IOperator>(rootOperator, "_source"));
+        Assert.IsAssignableFrom<IBatchOperator>(lookupJoin);
+        Assert.Null(FindOperatorInTree<HashJoinOperator>(rootOperator));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal("wh_1", rows[0][1].AsText);
+        Assert.Equal("sku_1", rows[0][2].AsText);
+    }
+
+    [Fact]
+    public async Task SimpleViewJoinChainWithLimit_PreservesStreamingLookupOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await CreateLowStockJoinShapeAsync("limit_view", createView: true, ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM limit_view_low_stock_watch LIMIT 3") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var lookupJoin = FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(
+            GetPrivateField<IOperator>(rootOperator, "_source"));
+        Assert.IsAssignableFrom<IBatchOperator>(lookupJoin);
+        Assert.Null(FindOperatorInTree<HashJoinOperator>(rootOperator));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal("wh_1", rows[0][1].AsText);
+        Assert.Equal("sku_1", rows[0][2].AsText);
+    }
+
+    [Fact]
+    public async Task SimpleViewJoinChainWithSmallLimitOffset_PreservesStreamingLookupOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await CreateLowStockJoinShapeAsync("limit_offset_view", createView: true, ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM limit_offset_view_low_stock_watch LIMIT 3 OFFSET 6") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var offsetOperator = Assert.IsType<OffsetOperator>(GetPrivateField<IOperator>(rootOperator, "_source"));
+        var lookupJoin = FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(
+            GetPrivateField<IOperator>(offsetOperator, "_source"));
+        Assert.IsAssignableFrom<IBatchOperator>(lookupJoin);
+        Assert.Null(FindOperatorInTree<HashJoinOperator>(rootOperator));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(7L, rows[0][0].AsInteger);
+        Assert.Equal("wh_7", rows[0][1].AsText);
+        Assert.Equal("sku_7", rows[0][2].AsText);
+    }
+
+    [Fact]
+    public async Task PurchaseOrderLineJoinChainWithLimit_ChoosesStreamingLookupOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await CreatePurchaseOrderJoinShapeAsync("limit_po", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse(
+            """
+            SELECT po.id AS purchase_order_id, po.po_number, s.name AS supplier_name, w.warehouse_code,
+                   p.sku, p.name AS product_name, pol.ordered_qty, pol.received_qty
+            FROM limit_po_purchase_orders po
+            INNER JOIN limit_po_suppliers s ON s.id = po.supplier_id
+            INNER JOIN limit_po_warehouses w ON w.id = po.warehouse_id
+            INNER JOIN limit_po_purchase_order_lines pol ON pol.purchase_order_id = po.id
+            INNER JOIN limit_po_products p ON p.id = pol.product_id
+            LIMIT 3
+            """) as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var lookupJoin = FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(
+            GetPrivateField<IOperator>(rootOperator, "_source"));
+        Assert.IsAssignableFrom<IBatchOperator>(lookupJoin);
+        Assert.Null(FindOperatorInTree<HashJoinOperator>(rootOperator));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(1L, rows[0][0].AsInteger);
+        Assert.Equal("PO-1", rows[0][1].AsText);
+        Assert.Equal("supplier_1", rows[0][2].AsText);
+        Assert.Equal("WH-1", rows[0][3].AsText);
+        Assert.Equal("sku_1", rows[0][4].AsText);
+    }
+
+    [Fact]
+    public async Task SimpleViewLateUnindexedDetailJoinWithLimit_ChoosesStreamingLookupOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await CreateShipmentManifestJoinShapeAsync("limit_manifest", ct);
+
+        var planner = GetPlanner();
+        var statement = Parser.Parse("SELECT * FROM limit_manifest_shipment_manifest_report_source LIMIT 3 OFFSET 6") as SelectStatement
+            ?? throw new InvalidOperationException("Expected SELECT statement.");
+
+        await using var result = await planner.ExecuteAsync(statement, ct);
+        Assert.True(UsesDirectBatchStorage(result));
+
+        var rootOperator = Assert.IsType<LimitOperator>(GetRootOperator(result));
+        var offsetOperator = Assert.IsType<OffsetOperator>(GetPrivateField<IOperator>(rootOperator, "_source"));
+        var lookupJoin = FindOperatorInUnaryChain<IndexNestedLoopJoinOperator>(
+            GetPrivateField<IOperator>(offsetOperator, "_source"));
+        Assert.IsAssignableFrom<IBatchOperator>(lookupJoin);
+        Assert.Null(FindOperatorInTree<HashJoinOperator>(rootOperator));
+
+        var rows = await result.ToListAsync(ct);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(7L, rows[0][0].AsInteger);
+        Assert.Equal("SHIP-7", rows[0][1].AsText);
+        Assert.Equal("carrier_7", rows[0][5].AsText);
+        Assert.Equal("sku_7", rows[0][9].AsText);
+    }
+
+    [Fact]
     public async Task IndexNestedLoopJoinedColumnProjection_UsesBatchJoinOperatorAfterLeafPushdown()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -5466,6 +5619,76 @@ public class IntegrationTests : IAsyncLifetime
             "SELECT users.name, orders.product FROM users JOIN orders ON users.id = orders.user_id WHERE orders.product = 'Widget'", TestContext.Current.CancellationToken);
         var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
         Assert.Equal(2, rows.Count); // Alice+Widget, Bob+Widget
+    }
+
+    [Fact]
+    public async Task Join_WithWhereOnRightPrimaryKeyLookupSide_AppliesPredicate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE lookup_orders (id INTEGER PRIMARY KEY, customer_id INTEGER, order_number TEXT)", ct);
+        await _db.ExecuteAsync("CREATE TABLE lookup_customers (id INTEGER PRIMARY KEY, customer_code TEXT)", ct);
+
+        await _db.ExecuteAsync("INSERT INTO lookup_customers VALUES (1, 'TARGET')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_customers VALUES (2, 'OTHER')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_orders VALUES (10, 2, 'SO-OTHER-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_orders VALUES (11, 1, 'SO-TARGET')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_orders VALUES (12, 2, 'SO-OTHER-2')", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            """
+            SELECT o.id, c.customer_code
+            FROM lookup_orders AS o
+            JOIN lookup_customers AS c ON c.id = o.customer_id
+            WHERE c.customer_code = 'TARGET'
+            ORDER BY o.id
+            """,
+            ct);
+
+        var rows = await result.ToListAsync(ct);
+        var row = Assert.Single(rows);
+        Assert.Equal(11L, row[0].AsInteger);
+        Assert.Equal("TARGET", row[1].AsText);
+    }
+
+    [Fact]
+    public async Task Join_WithUniqueTextFilterAndIndexedDependentSide_UsesLookupJoins()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE lookup_plan_orders (id INTEGER PRIMARY KEY, customer_id INTEGER, warehouse_id INTEGER)", ct);
+        await _db.ExecuteAsync("CREATE TABLE lookup_plan_customers (id INTEGER PRIMARY KEY, customer_code TEXT)", ct);
+        await _db.ExecuteAsync("CREATE TABLE lookup_plan_warehouses (id INTEGER PRIMARY KEY, warehouse_code TEXT)", ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx_lookup_plan_customers_code ON lookup_plan_customers(customer_code)", ct);
+        await _db.ExecuteAsync("CREATE INDEX idx_lookup_plan_orders_customer ON lookup_plan_orders(customer_id)", ct);
+
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_customers VALUES (1, 'TARGET')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_customers VALUES (2, 'OTHER-1')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_customers VALUES (3, 'OTHER-2')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_warehouses VALUES (10, 'WH-A')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_warehouses VALUES (11, 'WH-B')", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (100, 2, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (101, 1, 11)", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (102, 3, 10)", ct);
+        await _db.ExecuteAsync("INSERT INTO lookup_plan_orders VALUES (103, 2, 11)", ct);
+
+        await using var result = await _db.ExecuteAsync(
+            """
+            SELECT o.id, c.customer_code, w.warehouse_code
+            FROM lookup_plan_orders AS o
+            JOIN lookup_plan_customers AS c ON c.id = o.customer_id
+            JOIN lookup_plan_warehouses AS w ON w.id = o.warehouse_id
+            WHERE c.customer_code = 'TARGET'
+            """,
+            ct);
+
+        var root = GetRootOperator(result);
+        Assert.NotNull(FindOperatorInTree<IndexScanOperator>(root));
+        Assert.NotNull(FindOperatorInTree<IndexNestedLoopJoinOperator>(root));
+        Assert.Null(FindOperatorInTree<HashJoinOperator>(root));
+
+        var row = Assert.Single(await result.ToListAsync(ct));
+        Assert.Equal(101L, row[0].AsInteger);
+        Assert.Equal("TARGET", row[1].AsText);
+        Assert.Equal("WH-B", row[2].AsText);
     }
 
     [Fact]
@@ -8056,6 +8279,148 @@ public class IntegrationTests : IAsyncLifetime
                 await _db.ExecuteAsync(insertSql, ct);
             }
         }
+    }
+
+    private async Task CreateLowStockJoinShapeAsync(string prefix, bool createView, CancellationToken ct)
+    {
+        string inventory = $"{prefix}_inventory_positions";
+        string warehouses = $"{prefix}_warehouses";
+        string products = $"{prefix}_products";
+        string suppliers = $"{prefix}_suppliers";
+
+        await _db.ExecuteAsync($"CREATE TABLE {warehouses} (id INTEGER PRIMARY KEY, name TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync($"CREATE TABLE {suppliers} (id INTEGER PRIMARY KEY, name TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {products} (id INTEGER PRIMARY KEY, sku TEXT NOT NULL, preferred_supplier_id INTEGER NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {inventory} (id INTEGER PRIMARY KEY, warehouse_id INTEGER NOT NULL, product_id INTEGER NOT NULL)",
+            ct);
+
+        for (int i = 1; i <= 32; i++)
+        {
+            await _db.ExecuteAsync($"INSERT INTO {warehouses} VALUES ({i}, 'wh_{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {suppliers} VALUES ({i}, 'supplier_{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {products} VALUES ({i}, 'sku_{i}', {i})", ct);
+            await _db.ExecuteAsync($"INSERT INTO {inventory} VALUES ({i}, {i}, {i})", ct);
+        }
+
+        await _db.ExecuteAsync($"ANALYZE {warehouses}", ct);
+        await _db.ExecuteAsync($"ANALYZE {suppliers}", ct);
+        await _db.ExecuteAsync($"ANALYZE {products}", ct);
+        await _db.ExecuteAsync($"ANALYZE {inventory}", ct);
+
+        if (createView)
+        {
+            await _db.ExecuteAsync(
+                $"""
+                CREATE VIEW {prefix}_low_stock_watch AS
+                SELECT ip.id AS inventory_position_id, w.name AS warehouse_name, p.sku, s.name AS supplier_name
+                FROM {inventory} ip
+                INNER JOIN {warehouses} w ON w.id = ip.warehouse_id
+                INNER JOIN {products} p ON p.id = ip.product_id
+                INNER JOIN {suppliers} s ON s.id = p.preferred_supplier_id
+                """,
+                ct);
+        }
+    }
+
+    private async Task CreatePurchaseOrderJoinShapeAsync(string prefix, CancellationToken ct)
+    {
+        string purchaseOrders = $"{prefix}_purchase_orders";
+        string purchaseOrderLines = $"{prefix}_purchase_order_lines";
+        string suppliers = $"{prefix}_suppliers";
+        string warehouses = $"{prefix}_warehouses";
+        string products = $"{prefix}_products";
+
+        await _db.ExecuteAsync($"CREATE TABLE {suppliers} (id INTEGER PRIMARY KEY, name TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync($"CREATE TABLE {warehouses} (id INTEGER PRIMARY KEY, warehouse_code TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync($"CREATE TABLE {products} (id INTEGER PRIMARY KEY, sku TEXT NOT NULL, name TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {purchaseOrders} (id INTEGER PRIMARY KEY, po_number TEXT NOT NULL, supplier_id INTEGER NOT NULL, warehouse_id INTEGER NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {purchaseOrderLines} (id INTEGER PRIMARY KEY, purchase_order_id INTEGER NOT NULL, product_id INTEGER NOT NULL, ordered_qty INTEGER NOT NULL, received_qty INTEGER NOT NULL, unit_cost REAL NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            $"CREATE INDEX idx_{prefix}_purchase_order_lines_order_product ON {purchaseOrderLines}(purchase_order_id, product_id)",
+            ct);
+
+        for (int i = 1; i <= 32; i++)
+        {
+            await _db.ExecuteAsync($"INSERT INTO {suppliers} VALUES ({i}, 'supplier_{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {warehouses} VALUES ({i}, 'WH-{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {products} VALUES ({i}, 'sku_{i}', 'product_{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {purchaseOrders} VALUES ({i}, 'PO-{i}', {i}, {i})", ct);
+            await _db.ExecuteAsync($"INSERT INTO {purchaseOrderLines} VALUES ({i}, {i}, {i}, {10 + i}, {i % 3}, {1.5 + i})", ct);
+        }
+
+        await _db.ExecuteAsync($"ANALYZE {suppliers}", ct);
+        await _db.ExecuteAsync($"ANALYZE {warehouses}", ct);
+        await _db.ExecuteAsync($"ANALYZE {products}", ct);
+        await _db.ExecuteAsync($"ANALYZE {purchaseOrders}", ct);
+        await _db.ExecuteAsync($"ANALYZE {purchaseOrderLines}", ct);
+    }
+
+    private async Task CreateShipmentManifestJoinShapeAsync(string prefix, CancellationToken ct)
+    {
+        string shipments = $"{prefix}_shipments";
+        string shipmentLines = $"{prefix}_shipment_lines";
+        string carriers = $"{prefix}_carriers";
+        string orders = $"{prefix}_orders";
+        string customers = $"{prefix}_customers";
+        string warehouses = $"{prefix}_warehouses";
+        string products = $"{prefix}_products";
+
+        await _db.ExecuteAsync($"CREATE TABLE {carriers} (id INTEGER PRIMARY KEY, name TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync($"CREATE TABLE {customers} (id INTEGER PRIMARY KEY, name TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync($"CREATE TABLE {warehouses} (id INTEGER PRIMARY KEY, warehouse_code TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync($"CREATE TABLE {products} (id INTEGER PRIMARY KEY, sku TEXT NOT NULL, name TEXT NOT NULL)", ct);
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {orders} (id INTEGER PRIMARY KEY, order_number TEXT NOT NULL, customer_id INTEGER NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {shipments} (id INTEGER PRIMARY KEY, shipment_number TEXT NOT NULL, status TEXT NOT NULL, shipped_date TEXT NOT NULL, tracking_number TEXT NOT NULL, carrier_id INTEGER NOT NULL, order_id INTEGER NOT NULL, warehouse_id INTEGER NOT NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            $"CREATE TABLE {shipmentLines} (id INTEGER PRIMARY KEY, shipment_id INTEGER NOT NULL, product_id INTEGER NOT NULL, quantity_shipped INTEGER NOT NULL, line_total REAL NOT NULL)",
+            ct);
+
+        for (int i = 1; i <= 32; i++)
+        {
+            await _db.ExecuteAsync($"INSERT INTO {carriers} VALUES ({i}, 'carrier_{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {customers} VALUES ({i}, 'customer_{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {warehouses} VALUES ({i}, 'WH-{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {products} VALUES ({i}, 'sku_{i}', 'product_{i}')", ct);
+            await _db.ExecuteAsync($"INSERT INTO {orders} VALUES ({i}, 'ORD-{i}', {i})", ct);
+            await _db.ExecuteAsync($"INSERT INTO {shipments} VALUES ({i}, 'SHIP-{i}', 'shipped', '2026-01-{(i % 28) + 1}', 'TRK-{i}', {i}, {i}, {i})", ct);
+            await _db.ExecuteAsync($"INSERT INTO {shipmentLines} VALUES ({i}, {i}, {i}, {i + 1}, {10.5 + i})", ct);
+        }
+
+        await _db.ExecuteAsync($"ANALYZE {carriers}", ct);
+        await _db.ExecuteAsync($"ANALYZE {customers}", ct);
+        await _db.ExecuteAsync($"ANALYZE {warehouses}", ct);
+        await _db.ExecuteAsync($"ANALYZE {products}", ct);
+        await _db.ExecuteAsync($"ANALYZE {orders}", ct);
+        await _db.ExecuteAsync($"ANALYZE {shipments}", ct);
+        await _db.ExecuteAsync($"ANALYZE {shipmentLines}", ct);
+
+        await _db.ExecuteAsync(
+            $"""
+            CREATE VIEW {prefix}_shipment_manifest_report_source AS
+            SELECT sh.id AS shipment_id, sh.shipment_number, sh.status AS shipment_status,
+                   sh.shipped_date, sh.tracking_number, c2.name AS carrier_name,
+                   o.order_number, cu.name AS customer_name, w.warehouse_code,
+                   p.sku, p.name AS product_name, sl.quantity_shipped, sl.line_total
+            FROM {shipments} sh
+            INNER JOIN {carriers} c2 ON c2.id = sh.carrier_id
+            INNER JOIN {orders} o ON o.id = sh.order_id
+            INNER JOIN {customers} cu ON cu.id = o.customer_id
+            INNER JOIN {warehouses} w ON w.id = sh.warehouse_id
+            INNER JOIN {shipmentLines} sl ON sl.shipment_id = sh.id
+            INNER JOIN {products} p ON p.id = sl.product_id
+            """,
+            ct);
     }
 
     private static string BuildInnerJoinChainQuery(int joinCount, string whereClause)

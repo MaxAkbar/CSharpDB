@@ -337,8 +337,18 @@
                 </tr>
                 <tr>
                 <td><strong>Source-generated collection fast path</strong></td>
-                <td>In progress: <code>GetGeneratedCollectionAsync&lt;T&gt;(...)</code>, generated field descriptors/index bindings, analyzer-packaged collection model/codecs, trim/NativeAOT smoke coverage, and a dedicated sample are now in place while broader package ergonomics and remaining generator coverage continue</td>
-                <td>In Progress</td>
+                <td>Done for the current phase: opt-in generated collection models now provide <code>GetGeneratedCollectionAsync&lt;T&gt;(...)</code>, generated field descriptors/index bindings, analyzer-packaged collection model/codecs, generated binary direct-payload encode/decode for supported document graphs, source-generated JSON fallback for unsupported shapes, trim/NativeAOT smoke coverage, and a dedicated sample</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Generated collection package ergonomics</strong></td>
+                <td>Streamline NuGet/analyzer packaging, templates, onboarding docs, and generated-collection setup so consumers can adopt the opt-in path with less project wiring</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Broader generated collection model coverage</strong></td>
+                <td>Expand generator support beyond the current scalar, scalar collection, nested scalar, and nested collection-scalar shapes; unsupported shapes currently warn and fall back to source-generated JSON instead of binary direct payloads</td>
+                <td>Planned</td>
                 </tr>
                 <tr>
                 <td><strong>Page-level compression</strong></td>
@@ -352,13 +362,23 @@
                 </tr>
                 <tr>
                 <td><strong>Advanced cost-based query optimizer</strong></td>
-                <td>In progress: phase-2 stats-guided costing is now in place through internal equi-depth histograms, heavy hitters, composite-index prefix distinct-count summaries, skew-aware lookup/filter estimates, correlation-aware composite equality filters/joins, and bounded DP reordering for small inner-join chains; adaptive re-optimization and public histogram inspection remain future work</td>
-                <td>In Progress</td>
+                <td>Done for the current phase: <code>ANALYZE</code>-driven stats-guided costing now uses internal equi-depth histograms, heavy hitters, composite-index prefix distinct-count summaries, skew-aware lookup/filter estimates, correlation-aware composite equality filters/joins, non-unique lookup costing, hash build-side choice, and bounded DP reordering for small inner-join chains</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Adaptive query re-optimization</strong></td>
+                <td>Re-plan or adapt at runtime when observed cardinality diverges materially from persisted statistics, especially after stale stats or parameter-sensitive predicates</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
+                <td><strong>Public planner histogram inspection</strong></td>
+                <td>Expose histogram, heavy-hitter, composite-prefix, and estimate explanation diagnostics through a public surface; current histogram/prefix stats remain internal implementation details</td>
+                <td>Planned</td>
                 </tr>
                 <tr>
                 <td><strong>Async I/O batching</strong></td>
-                <td>In progress: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, and reusable B-tree copy utilities now cover the main storage and maintenance write paths; remaining auditing is outside the WAL hot path</td>
-                <td>In Progress</td>
+                <td>Done for the current phase: WAL frame-chunk writes, chunked checkpoint page copies, shared snapshot/export batching, reusable B-tree copy utilities, and the close-out audit now cover the main storage and maintenance write paths; future work is limited to specialized diagnostics or maintenance-path tuning</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>Low-latency durable writes</strong></td>
@@ -438,7 +458,7 @@
                 </tr>
                 <tr>
                 <td><strong>Collections</strong></td>
-                <td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates</td>
+                <td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates. Generated collections require registered descriptors for existing collection indexes; unsupported generated model shapes warn and use the source-generated JSON fallback instead of binary direct payloads</td>
                 </tr>
                 <tr>
                 <td><strong>Networking</strong></td>
@@ -530,7 +550,7 @@
                 <li>Binary direct-payload collection storage with direct hydration and field/path extraction</li>
                 <li>Collection path indexes: nested scalar, array-element, nested array-object, Guid, temporal, ordered text</li>
                 <li>Collection path query APIs: <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code></li>
-                <li>Source-generated typed collection fast path foundations: generated collection models/codecs/field descriptors, trim-safe <code>GetGeneratedCollectionAsync&lt;T&gt;(...)</code>, generator diagnostics, NativeAOT trim-smoke validation, and a dedicated sample</li>
+                <li>Source-generated typed collection fast path: generated collection models/codecs/field descriptors, generated binary direct payloads for supported shapes, trim-safe <code>GetGeneratedCollectionAsync&lt;T&gt;(...)</code>, generator diagnostics, NativeAOT trim-smoke validation, and a dedicated sample</li>
                 <li>Full-text search with tokenization, stemming, and relevance ranking</li>
                 <li>Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache</li>
                 <li>Client-wide <code>BackupAsync</code> / <code>RestoreAsync</code> across direct, HTTP, gRPC, CLI, and Admin</li>

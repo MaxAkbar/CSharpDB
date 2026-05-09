@@ -317,6 +317,12 @@ public sealed class CSharpDbConnection : DbConnection
 
         if (!string.IsNullOrWhiteSpace(builder.Endpoint))
         {
+            if (builder.AdaptiveQueryReoptimization)
+            {
+                throw new InvalidOperationException(
+                    "Adaptive Query Reoptimization is only supported for direct embedded connections; enable it on the remote host instead.");
+            }
+
             if (hasEmbeddedTuning)
             {
                 throw new InvalidOperationException(
@@ -484,6 +490,7 @@ public sealed class CSharpDbConnection : DbConnection
             maxPoolSize,
             configuration.EffectiveOpenMode,
             configuration.EffectiveStoragePreset,
+            configuration.EffectiveAdaptiveQueryReoptimization,
             configuration.ExplicitDirectDatabaseOptions,
             configuration.ExplicitHybridDatabaseOptions);
     }

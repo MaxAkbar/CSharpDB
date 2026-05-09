@@ -25,7 +25,7 @@ Current release health:
 | Item | Status |
 |---|---|
 | Latest release guardrail | `PASS` |
-| Latest compare | `PASS=185, WARN=0, SKIP=0, FAIL=0` |
+| Latest compare | `PASS=187, WARN=0, SKIP=0, FAIL=0` |
 | Promotion state | Current published tables are promoted from the April 26, 2026 release-core suite |
 | Durability default | CSharpDB values are durable unless a row explicitly says otherwise |
 
@@ -40,25 +40,25 @@ The generated block below contains the scorecard first, then the current core re
 
 | Field | Value |
 |---|---|
-| Published snapshot | April 26, 2026 release-core snapshot |
-| Run date | Release-core artifacts captured April 26, 2026 PT; release guardrail compare captured April 27, 2026 UTC |
-| Promotion status | Promoted after release-core suite and release guardrail compare passed; focused micro retry replaced volatile guardrail samples |
-| Latest release guardrail | PASS=185, WARN=0, SKIP=0, FAIL=0 |
+| Published snapshot | May 6, 2026 release-core snapshot |
+| Run date | Release-core artifacts captured May 6, 2026 UTC; latest release guardrail compare captured May 6, 2026 UTC |
+| Promotion status | Published tables are promoted from the May 6 release-core suite; latest release guardrail compare passed after focused close-out validation |
+| Latest release guardrail | PASS=187, WARN=0, SKIP=0, FAIL=0 |
 | Runner | Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7 |
 | Repro mode | priority=High, affinity=0xFF when captured with --repro |
-| Commit | b7cb52ee2c30f31538e96480b6d055ff52439c26 plus uncommitted collection binary payload and benchmark updates |
+| Commit | 47a700950a150669ce404294c594dd845550f460 |
 
 ### Approved Source Artifacts
 
 | Artifact | Command | Source CSV |
 |---|---|---|
-| `master` | `--master-table --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260426-215529-median-of-3.csv` |
-| `batching` | `--durable-sql-batching --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260426-221413-median-of-3.csv` |
-| `concurrent` | `--concurrent-write-diagnostics --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260426-223659-median-of-3.csv` |
-| `storage` | `--hybrid-storage-mode --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260426-224331-median-of-3.csv` |
-| `hotset` | `--hybrid-hot-set-read --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260426-225908-median-of-3.csv` |
-| `coldopen` | `--hybrid-cold-open --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260426-225949-median-of-3.csv` |
-| `sqlite` | `--sqlite-compare --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260426-230045-median-of-3.csv` |
+| `master` | `--master-table --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260506-024609-median-of-3.csv` |
+| `batching` | `--durable-sql-batching --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260506-030458-median-of-3.csv` |
+| `concurrent` | `--concurrent-write-diagnostics --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260506-032735-median-of-3.csv` |
+| `storage` | `--hybrid-storage-mode --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260506-033407-median-of-3.csv` |
+| `hotset` | `--hybrid-hot-set-read --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260506-034948-median-of-3.csv` |
+| `coldopen` | `--hybrid-cold-open --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260506-035030-median-of-3.csv` |
+| `sqlite` | `--sqlite-compare --repeat 3 --repro` | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260506-035128-median-of-3.csv` |
 
 ### Scorecard
 
@@ -66,16 +66,16 @@ These are the headline rows readers should use first. Detailed tables below map 
 
 | Area | Metric | Result | Source |
 |---|---|---|---|
-| Release health | Latest guardrail compare | PASS: PASS=185, FAIL=0 | `Compare-Baseline.ps1` after focused micro retry |
-| SQL durable write | Single INSERT | 450.4 ops/sec | `master` |
-| SQL durable write | Batch x100 | 41.88K rows/sec | `master` |
-| SQL hot read | Point lookup | 1.27M ops/sec | `master` |
-| SQL concurrent read | 8 readers, reused snapshots x32 | 9.97M COUNT(*) ops/sec | `master` |
-| Collection hot read | Point Get | 1.60M ops/sec | `master` |
-| Single-writer ingest | InsertBatch B1000 | 233.06K rows/sec | `batching` |
-| Concurrent durable write | W8, 250us commit window | 891.0 commits/sec | `concurrent` |
-| Resident hot set | Hybrid hot-set SQL burst | 311.62K ops/sec | `hotset` |
-| Local SQLite reference | SQLite WAL+FULL B1000 | 203.30K rows/sec | `sqlite` |
+| Release health | Latest guardrail compare | PASS: PASS=187, FAIL=0 | `Run-Perf-Guardrails.ps1 -Mode release` after close-out validation |
+| SQL durable write | Single INSERT | 267.1 ops/sec | `master` |
+| SQL durable write | Batch x100 | 25.56K rows/sec | `master` |
+| SQL hot read | Point lookup | 1.48M ops/sec | `master` |
+| SQL concurrent read | 8 readers, reused snapshots x32 | 9.68M COUNT(*) ops/sec | `master` |
+| Collection hot read | Point Get | 1.99M ops/sec | `master` |
+| Single-writer ingest | InsertBatch B1000 | 211.99K rows/sec | `batching` |
+| Concurrent durable write | W8, 250us commit window | 890.1 commits/sec | `concurrent` |
+| Resident hot set | Hybrid hot-set SQL burst | 383.87K ops/sec | `hotset` |
+| Local SQLite reference | SQLite WAL+FULL B1000 | 155.66K rows/sec | `sqlite` |
 
 ## Current Core Results
 
@@ -85,21 +85,21 @@ These detailed tables are generated from the approved source artifacts listed ab
 
 | Surface | Single write | Batch x100 | Point read | Concurrent read |
 |---|---|---|---|---|
-| SQL file-backed | 450.4 ops/sec | 41.88K rows/sec | 1.27M ops/sec | 9.97M COUNT(*) ops/sec |
-| SQL hybrid incremental-durable | 449.3 ops/sec | 41.77K rows/sec | 1.29M ops/sec | 10.27M COUNT(*) ops/sec |
-| SQL in-memory | 194.98K ops/sec | 708.75K rows/sec | 1.24M ops/sec | 10.09M COUNT(*) ops/sec |
-| Collection file-backed | 447.3 ops/sec | 42.28K docs/sec | 1.60M ops/sec | - |
-| Collection hybrid incremental-durable | 450.8 ops/sec | 42.34K docs/sec | 1.66M ops/sec | - |
-| Collection in-memory | 205.25K ops/sec | 872.89K docs/sec | 1.59M ops/sec | - |
+| SQL file-backed | 267.1 ops/sec | 25.56K rows/sec | 1.48M ops/sec | 9.68M COUNT(*) ops/sec |
+| SQL hybrid incremental-durable | 276.1 ops/sec | 26.55K rows/sec | 1.47M ops/sec | 10.04M COUNT(*) ops/sec |
+| SQL in-memory | 259.48K ops/sec | 934.22K rows/sec | 1.49M ops/sec | 10.26M COUNT(*) ops/sec |
+| Collection file-backed | 265.7 ops/sec | 24.53K docs/sec | 1.99M ops/sec | - |
+| Collection hybrid incremental-durable | 276.9 ops/sec | 25.75K docs/sec | 2.02M ops/sec | - |
+| Collection in-memory | 262.14K ops/sec | 969.55K docs/sec | 2.02M ops/sec | - |
 
 ### Single-Writer Durable Ingest
 
 | Batch shape | Rows/sec | P50 | P99 |
 |---|---|---|---|
-| InsertBatch B1 | 358.4 rows/sec | 2.7074 ms | 4.1941 ms |
-| InsertBatch B100 | 33.92K rows/sec | 2.7875 ms | 4.2581 ms |
-| InsertBatch B1000 | 233.06K rows/sec | 3.5123 ms | 7.7143 ms |
-| InsertBatch B10000 | 618.81K rows/sec | 10.9217 ms | 162.9867 ms |
+| InsertBatch B1 | 271.1 rows/sec | 3.5697 ms | 6.0705 ms |
+| InsertBatch B100 | 26.04K rows/sec | 3.6636 ms | 7.7177 ms |
+| InsertBatch B1000 | 211.99K rows/sec | 4.0197 ms | 8.0891 ms |
+| InsertBatch B10000 | 799.29K rows/sec | 8.7654 ms | 118.3244 ms |
 
 ### Concurrent Durable Writes
 
@@ -107,46 +107,174 @@ Each row is total successful commits/sec across one shared engine. The intended 
 
 | Scenario | Commits/sec | Commits/flush | P50 | P99 |
 |---|---|---|---|---|
-| W4, window 0 | 231.1 commits/sec | 1.00 | 17.0038 ms | 23.3867 ms |
-| W4, window 250us | 449.6 commits/sec | 1.99 | 8.6405 ms | 15.8344 ms |
-| W8, window 0 | 240.5 commits/sec | 1.00 | 32.8008 ms | 41.7800 ms |
-| W8, window 250us | 891.0 commits/sec | 3.92 | 8.4358 ms | 16.9718 ms |
+| W4, window 0 | 247.0 commits/sec | 1.00 | 15.8147 ms | 23.2742 ms |
+| W4, window 250us | 463.4 commits/sec | 1.99 | 8.2404 ms | 16.5526 ms |
+| W8, window 0 | 239.2 commits/sec | 1.00 | 32.7490 ms | 49.7798 ms |
+| W8, window 250us | 890.1 commits/sec | 3.94 | 8.4327 ms | 17.7755 ms |
 
 ### Storage Mode Hot Steady State
 
 | Mode | SQL insert | SQL batch x100 | SQL point lookup | Collection put | Collection batch x100 | Collection get |
 |---|---|---|---|---|---|---|
-| File-backed | 383.4 ops/sec | 33.66K rows/sec | 777.29K ops/sec | 387.5 ops/sec | 34.87K docs/sec | 862.93K ops/sec |
-| Hybrid incremental-durable | 377.7 ops/sec | 33.97K rows/sec | 721.75K ops/sec | 379.1 ops/sec | 34.56K docs/sec | 864.55K ops/sec |
-| In-memory | 123.41K ops/sec | 449.84K rows/sec | 711.22K ops/sec | 124.92K ops/sec | 519.03K docs/sec | 872.07K ops/sec |
+| File-backed | 250.1 ops/sec | 22.99K rows/sec | 822.57K ops/sec | 250.8 ops/sec | 22.55K docs/sec | 1.16M ops/sec |
+| Hybrid incremental-durable | 240.9 ops/sec | 22.15K rows/sec | 836.17K ops/sec | 231.9 ops/sec | 22.20K docs/sec | 1.18M ops/sec |
+| In-memory | 147.33K ops/sec | 576.11K rows/sec | 870.15K ops/sec | 147.12K ops/sec | 606.84K docs/sec | 1.23M ops/sec |
 
 ### Resident Hot-Set Reads
 
 | Mode | SQL hot burst | SQL P50 | Collection hot burst | Collection P50 |
 |---|---|---|---|---|
-| File-backed | 27.88K ops/sec | 0.0346 ms | 28.98K ops/sec | 0.0329 ms |
-| Hybrid incremental-durable | 27.16K ops/sec | 0.0366 ms | 29.22K ops/sec | 0.0341 ms |
-| Hybrid hot-set incremental-durable | 311.62K ops/sec | 0.0031 ms | 295.45K ops/sec | 0.0029 ms |
-| In-memory | 84.82K ops/sec | 0.0049 ms | 122.39K ops/sec | 0.0044 ms |
+| File-backed | 27.01K ops/sec | 0.0354 ms | 28.71K ops/sec | 0.0331 ms |
+| Hybrid incremental-durable | 26.61K ops/sec | 0.0348 ms | 28.23K ops/sec | 0.0322 ms |
+| Hybrid hot-set incremental-durable | 383.87K ops/sec | 0.0022 ms | 272.32K ops/sec | 0.0021 ms |
+| In-memory | 104.73K ops/sec | 0.0033 ms | 112.58K ops/sec | 0.0033 ms |
 
 ### Cold Open And First Read
 
 | Mode | SQL open+first lookup P50 | Collection open+first get P50 |
 |---|---|---|
-| File-backed | 18.1275 ms | 20.0627 ms |
-| Hybrid incremental-durable | 19.9048 ms | 19.4950 ms |
-| Hybrid hot-set incremental-durable | 89.5360 ms | 134.5282 ms |
-| In-memory | 15.8719 ms | 21.7409 ms |
+| File-backed | 18.7545 ms | 19.6066 ms |
+| Hybrid incremental-durable | 19.7809 ms | 18.1360 ms |
+| Hybrid hot-set incremental-durable | 85.5186 ms | 125.1785 ms |
+| In-memory | 12.4251 ms | 18.6550 ms |
 
 ### Local SQLite Matched Rows
 
 | Engine / row | Throughput | P50 | P99 |
 |---|---|---|---|
-| CSharpDB InsertBatch B1000 | 233.06K rows/sec | 3.5123 ms | 7.7143 ms |
-| SQLite WAL+FULL prepared B1000 | 203.30K rows/sec | 4.6622 ms | 22.0984 ms |
-| CSharpDB SQL point lookup | 1.27M ops/sec | 0.0005 ms | 0.0026 ms |
-| SQLite WAL+FULL point lookup | 70.21K ops/sec | 0.0119 ms | 0.0369 ms |
+| CSharpDB InsertBatch B1000 | 211.99K rows/sec | 4.0197 ms | 8.0891 ms |
+| SQLite WAL+FULL prepared B1000 | 155.66K rows/sec | 5.9735 ms | 22.9219 ms |
+| CSharpDB SQL point lookup | 1.48M ops/sec | 0.0005 ms | 0.0018 ms |
+| SQLite WAL+FULL point lookup | 93.91K ops/sec | 0.0088 ms | 0.0282 ms |
 <!-- BENCHMARK_RESULTS_END -->
+
+## Focused Insert Fan-In Validation
+
+These rows are from the May 5, 2026 targeted validation run for the opt-in `ImplicitInsertExecutionMode.ConcurrentWriteTransactions` insert path. They are not promoted release-core scorecard rows yet; they document the current proof point for hot one-row concurrent inserts and are guarded by current-only release checks until the release-core suite includes these shapes directly.
+
+Command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --insert-fan-in-diagnostics --repro
+```
+
+Source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/insert-fan-in-diagnostics-20260505-233424.csv`
+
+| Insert shape | Writers/window | Commits/sec | Commits/flush | Notes |
+|---|---|---:|---:|---|
+| Serialized explicit hot right-edge | W8, 250us | 278.4 | 1.00 | Default serialized control |
+| Concurrent explicit hot right-edge | W8, 250us | 910.3 | 3.33 | Pending right-edge rebase path |
+| Concurrent auto-ID hot right-edge | W8, 250us | 913.1 | 3.34 | Row-ID reservation plus pending rebase |
+| Concurrent explicit disjoint ranges | W8, 250us | 1,049.6 | 3.96 | Existing best-case concurrent insert shape remains strong |
+
+Operational guidance: keep `Serialized` as the default. Use `ConcurrentWriteTransactions` only for workloads that can benefit from shared-engine one-row commit fan-in; `InsertBatch` remains the preferred bulk-ingest path.
+
+## Focused Optimizer And Async I/O Close-Out Validation
+
+These May 5, 2026 rows are diagnostic close-out proof for the current advanced optimizer and async I/O batching phases. They are not promoted release-core scorecard rows; they document workload-shaped gains and audited coverage while future adaptive re-optimization and specialized maintenance tuning remain separate roadmap items. Public planner-stat inspection is now covered by the `sys.planner_*` catalog and `EXPLAIN ESTIMATE` diagnostic benchmarks.
+
+Optimizer command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --optimizer-closeout --repro
+```
+
+Optimizer source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/optimizer-closeout-20260505-204536.csv`
+
+| Optimizer shape | No ANALYZE | ANALYZE | Ratio | What it validates |
+|---|---:|---:|---:|---|
+| Heavy-hitter equality | 11,671 queries/sec | 17,091 queries/sec | 1.46x | Skew-aware equality and non-unique lookup costing |
+| Histogram cold range | 21,895 queries/sec | 23,175 queries/sec | 1.06x | Equi-depth range estimates avoid worse plans |
+| Composite correlation | 522 queries/sec | 987 queries/sec | 1.89x | Composite-prefix stats preserve correlated equality selectivity |
+| Bounded join reorder | 9,628 queries/sec | 11,247 queries/sec | 1.17x | Small inner-join chains use bounded DP reordering |
+
+Public planner diagnostics smoke command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *SystemCatalogBenchmarks*Planner* --job Dry
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *ExplainEstimate* --job Dry
+```
+
+| Public planner diagnostic shape | TableCount | Mean | Allocation | What it validates |
+|---|---:|---:|---:|---|
+| `COUNT(*) FROM sys.planner_histograms` | 100 | 235.3 ns | 552 B | Virtual histogram catalog count fast path |
+| `COUNT(*) FROM sys.planner_heavy_hitters` | 100 | 227.2 ns | 552 B | Virtual heavy-hitter catalog count fast path |
+| `COUNT(*) FROM sys.planner_index_prefix_stats` | 100 | 203.2 ns | 528 B | Virtual composite-prefix catalog count fast path |
+| `EXPLAIN ESTIMATE` skewed lookup | 100 | 345.8 us | 334.83 KB | Bounded estimate diagnostics without executing user rows |
+
+## Focused Adaptive Re-Optimization Validation
+
+These May 6, 2026 rows are diagnostic proof for opt-in adaptive query re-optimization. The SQL rows measure default-disabled behavior, enabled wrapper overhead, and eligible join shapes on the benchmark seed data. The synthetic rows force the adaptive operator switch paths directly so the run records divergence and switch counters even when the normal planner already avoids a bad plan.
+
+Command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --adaptive-reoptimization
+```
+
+Source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/adaptive-reoptimization-20260506-073419.csv`
+
+| Adaptive shape | Throughput | P50 | P99 | Switches | What it validates |
+|---|---:|---:|---:|---:|---|
+| Disabled stable join | 251 queries/sec | 3.681 ms | 9.002 ms | 0 | Default path stays silent with no adaptive counters |
+| Enabled stable no-switch | 191 queries/sec | 4.666 ms | 9.588 ms | 0 | Opt-in wrapper overhead when thresholds avoid adaptation |
+| Stale-stat fan-out diagnostic | 48 queries/sec | 18.324 ms | 43.867 ms | 0 | Eligible stale/range workload shape on the current planner |
+| Parameter-sensitive small | 910 queries/sec | 0.747 ms | 4.448 ms | 0 | Small selective value with adaptive eligibility enabled |
+| Hash build-side diagnostic | 77 queries/sec | 12.687 ms | 22.376 ms | 0 | Eligible hash-build workload shape on the current planner |
+| Synthetic index switch | 8,651 ops/sec | 0.115 ms | 0.121 ms | 86 | Index-to-hash switch path, buffered replay, and divergence counters |
+| Synthetic hash build switch | 1,403 ops/sec | 0.594 ms | 2.246 ms | 86 | Hash build-side flip path and divergence counters |
+
+Interpretation: this feature is not a universal speedup. It should be enabled only for workloads where stale statistics or parameter-sensitive joins produce materially wrong join choices; stable, well-analyzed plans should expect no gain and some opt-in wrapper cost.
+
+Async I/O command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --async-io-closeout --repro
+```
+
+Async I/O source CSV:
+
+`tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/async-io-closeout-20260505-204638.csv`
+
+| Async I/O shape | Throughput | Classification |
+|---|---:|---|
+| SaveToFile snapshot copy | 52,762 pages/sec | Already batched through `StorageDeviceCopyBatcher` |
+| Backup snapshot copy | 8,136 pages/sec | Already batched through backup/snapshot copy helpers |
+| Restore staging | 9,996 pages/sec | Already batched through load/save staging |
+| Vacuum logical rewrite | 3,365 pages/sec | Intentionally logical through `BTreeCopyUtility` |
+| FK migration rewrite | 42,749 rows/sec | Intentionally logical through `BTreeCopyUtility` |
+| Database inspector scan | 18,600 pages/sec | Specialized diagnostic path |
+| WAL inspector scan | 2,310 frames/sec | Specialized diagnostic path over a live 20-frame WAL |
+
+## Focused Generated Collection Fast-Path Validation
+
+These April 26, 2026 rows are diagnostic proof for the opt-in source-generated collection fast path. They compare source-generated JSON payloads with generated binary direct payloads for supported document graphs. They are not promoted release-core scorecard rows; durable single-row collection writes can still be flush-bound, so these numbers mainly describe CPU and allocation wins in encode/decode and field/index-reader paths.
+
+Command:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *GeneratedCollection*
+```
+
+Source CSVs:
+
+`BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.GeneratedCollection*Benchmarks-report.csv`
+
+| Path | Source-gen JSON | Generated binary | Gain | Allocation |
+|---|---:|---:|---:|---|
+| Encode payload | 600.1 ns | 306.2 ns | 1.96x | 552 B to 136 B |
+| Decode payload | 2,277.9 ns | 371.9 ns | 6.12x | 1,240 B to 480 B |
+| Indexed int field read | 187.23 ns | 29.74 ns | 6.30x | 0 B to 0 B |
+| Text field UTF-8 read | 185.82 ns | 27.26 ns | 6.82x | 56 B to 0 B |
+| Key match | 21.48 ns | 19.91 ns | 1.08x | 0 B to 0 B |
+
+Interpretation: generated collections are worth using when collection payload CPU, direct field extraction, or index-reader cost is visible in the profile. They should not be sold as a durable commit-throughput feature, because WAL flush policy still dominates one-row durable writes.
 
 ## Core Benchmark Map
 
@@ -155,6 +283,12 @@ Each row is total successful commits/sec across one shared engine. The intended 
 | Durable SQL and collection top-line API speed | Single insert/put, batch x100, point lookup, concurrent reads | `--master-table --repeat 3 --repro` |
 | Single-writer durable ingest | `B1`, `B100`, `B1000`, optional `B10000` batch rows | `--durable-sql-batching --repeat 3 --repro` |
 | Concurrent durable writes | `W4` and `W8`, `0` vs `250us`, disjoint explicit-key auto-commit | `--concurrent-write-diagnostics --repeat 3 --repro` |
+| Concurrent insert fan-in | Serialized controls, disjoint explicit keys, hot explicit right-edge, hot auto-ID | `--insert-fan-in-diagnostics --repro` |
+| Advanced optimizer close-out | Heavy hitters, histogram ranges, composite-prefix correlation, bounded join reorder | `--optimizer-closeout --repro` |
+| Public planner diagnostics | Planner histogram/heavy-hitter/prefix catalogs and bounded estimate explanations | `--micro --filter *SystemCatalogBenchmarks*Planner*`; `--micro --filter *ExplainEstimate*` |
+| Adaptive query re-optimization | Default-disabled baseline, enabled wrapper overhead, eligible join shapes, synthetic switch counters | `--adaptive-reoptimization` |
+| Async I/O batching close-out | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
+| Generated collection fast path | Generated binary payload encode/decode, direct field reads, UTF-8 text field reads, key matching | `--micro --filter *GeneratedCollection*` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |
 | Resident hot-set behavior | file-backed vs hybrid hot-set vs in-memory hot burst | `--hybrid-hot-set-read --repeat 3 --repro` |
 | Cold open / first read | startup cost and first lookup/get latency | `--hybrid-cold-open --repeat 3 --repro` |

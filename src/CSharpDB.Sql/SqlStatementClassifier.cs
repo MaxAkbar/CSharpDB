@@ -22,6 +22,6 @@ public static class SqlStatementClassifier
     public static bool IsReadOnly(Statement statement)
     {
         ArgumentNullException.ThrowIfNull(statement);
-        return statement is QueryStatement or WithStatement;
+        return statement is QueryStatement or WithStatement or ExplainEstimateStatement;
     }
 }

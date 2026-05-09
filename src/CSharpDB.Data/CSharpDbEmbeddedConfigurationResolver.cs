@@ -14,7 +14,8 @@ internal static class CSharpDbEmbeddedConfigurationResolver
         return directDatabaseOptions is not null
             || hybridDatabaseOptions is not null
             || builder.StoragePreset is not null
-            || builder.EmbeddedOpenMode is not null;
+            || builder.EmbeddedOpenMode is not null
+            || builder.AdaptiveQueryReoptimization;
     }
 
     internal static ResolvedEmbeddedConfiguration Resolve(
@@ -30,7 +31,7 @@ internal static class CSharpDbEmbeddedConfigurationResolver
         CSharpDbEmbeddedOpenMode? requestedOpenMode = embeddedOpenModeOverride ?? builder.EmbeddedOpenMode;
 
         DatabaseOptions effectiveDirectDatabaseOptions = directDatabaseOptions
-            ?? CreateDirectDatabaseOptions(requestedStoragePreset);
+            ?? CreateDirectDatabaseOptions(requestedStoragePreset, builder.AdaptiveQueryReoptimization);
 
         HybridDatabaseOptions? effectiveHybridDatabaseOptions = hybridDatabaseOptions
             ?? CreateHybridDatabaseOptions(requestedOpenMode);
@@ -47,7 +48,9 @@ internal static class CSharpDbEmbeddedConfigurationResolver
             directDatabaseOptions is not null
                 || hybridDatabaseOptions is not null
                 || requestedStoragePreset is not null
-                || requestedOpenMode is not null);
+                || requestedOpenMode is not null
+                || builder.AdaptiveQueryReoptimization,
+            builder.AdaptiveQueryReoptimization && directDatabaseOptions is null);
     }
 
     internal static CSharpDbEmbeddedOpenMode GetEffectiveOpenMode(HybridDatabaseOptions hybridDatabaseOptions)
@@ -63,12 +66,18 @@ internal static class CSharpDbEmbeddedConfigurationResolver
         };
     }
 
-    private static DatabaseOptions CreateDirectDatabaseOptions(CSharpDbStoragePreset? storagePreset)
+    private static DatabaseOptions CreateDirectDatabaseOptions(
+        CSharpDbStoragePreset? storagePreset,
+        bool adaptiveQueryReoptimization)
     {
-        if (storagePreset is null)
-            return new DatabaseOptions();
+        DatabaseOptions options = adaptiveQueryReoptimization
+            ? new DatabaseOptions().EnableAdaptiveQueryReoptimization()
+            : new DatabaseOptions();
 
-        return new DatabaseOptions().ConfigureStorageEngine(builder =>
+        if (storagePreset is null)
+            return options;
+
+        return options.ConfigureStorageEngine(builder =>
         {
             switch (storagePreset.Value)
             {
@@ -118,4 +127,5 @@ internal readonly record struct ResolvedEmbeddedConfiguration(
     CSharpDbStoragePreset? EffectiveStoragePreset,
     DatabaseOptions? ExplicitDirectDatabaseOptions,
     HybridDatabaseOptions? ExplicitHybridDatabaseOptions,
-    bool HasRequestedTuning);
+    bool HasRequestedTuning,
+    bool EffectiveAdaptiveQueryReoptimization);

@@ -126,6 +126,12 @@ to estimate result sizes and guide operator selection.
 | Histogram buckets | Per column | 16 quantile-based buckets for range estimation |
 | Prefix distinct counts | Per index | Distinct values for each prefix of a composite index |
 
+These planner statistics are inspectable through stable SQL projections:
+`sys.planner_histograms`, `sys.planner_heavy_hitters`, and
+`sys.planner_index_prefix_stats`. `EXPLAIN ESTIMATE FOR <query>` reports
+which of those sources were used or ignored for a selected query shape without
+executing the query.
+
 **Estimation methods:**
 
 - **Lookup selectivity:** `tableRows / distinctCount` for uniform distribution, adjusted
@@ -136,6 +142,158 @@ to estimate result sizes and guide operator selection.
   adjusted by non-NULL fraction and outer join semantics.
 
 Without statistics, the planner uses heuristic fallback estimates.
+
+### Debugging Slow Queries With EXPLAIN ESTIMATE
+
+The Admin query tab's **Estimate** button runs `EXPLAIN ESTIMATE FOR <query>` and shows
+the returned diagnostic rows in the **Plan** tab. You can also run the statement directly:
+
+```sql
+EXPLAIN ESTIMATE FOR
+SELECT *
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'open'
+LIMIT 25;
+```
+
+This is a planner diagnostic, not a runtime profile. It does not execute the target query,
+scan user rows to measure actual cardinality, or report per-operator wall-clock time. It
+explains what information the planner used, what it ignored, and why it preferred or
+rejected common access paths.
+
+**Result columns:**
+
+| Column | Meaning |
+|--------|---------|
+| `node_id` | Diagnostic row identifier. |
+| `parent_node_id` | Parent diagnostic row, so related decisions can be grouped into a tree. |
+| `node_kind` | Planner area being described, such as `source`, `filter`, `join`, `lookup`, `join-reorder`, or `estimate-source`. |
+| `target` | Table, index, predicate, join, or query fragment for the row. |
+| `decision` | The planner choice or finding. Examples include `table`, `index-lookup`, `hash-join`, `bounded-dp`, `heavy-hitter-equality`, `histogram-range`, and `ignored-stale-stats`. |
+| `estimated_rows` | Estimated rows produced by this source, predicate, join, or decision. |
+| `estimated_cost` | Relative planner cost used for comparison. It is not elapsed time. |
+| `stats_source` | Statistics or metadata source behind the estimate, such as `sys.table_stats`, `sys.column_stats`, `sys.planner_heavy_hitters`, `sys.planner_histograms`, or `sys.planner_index_prefix_stats`. |
+| `stats_state` | Whether the source was `fresh`, `exact`, `estimated`, `missing`, `stale-ignored`, `unsupported`, or otherwise informational. |
+| `detail` | Stable text with the extra inputs behind the decision. |
+
+**What a healthy estimate usually looks like:**
+
+- Important base tables have `sys.table_stats` with `stats_state` of `exact` or
+  `estimated`.
+- Selective equality predicates use `sys.column_stats` or `sys.planner_heavy_hitters`.
+- Numeric range predicates use `sys.planner_histograms`.
+- Correlated multi-column filters or joins use `sys.planner_index_prefix_stats`.
+- Large joins use `hash-join`, `index-lookup`, `bounded-dp`, or another intentional
+  strategy rather than falling all the way to an unconstrained nested-loop fallback.
+- `estimated_rows` drops after selective filters and after joins that should narrow the
+  result.
+
+**Red flags:**
+
+| Symptom in Plan rows | Likely meaning | First action |
+|----------------------|----------------|--------------|
+| `stats_state = missing` on important tables or columns | The planner is guessing. | Run `ANALYZE` for the table or database. |
+| `stats_state = stale-ignored` or `decision = ignored-stale-stats` | Stats exist but were not trusted after table changes. | Run `ANALYZE table_name;`. |
+| Large table source followed by `table-scan` when the predicate should be selective | Missing index, unsupported predicate shape, or missing stats. | Check indexes and rewrite predicate into a simple equality/range shape if possible. |
+| Large join estimated with `nested-loop` fallback | No usable equi-join keys, no usable lookup index, or hash analysis could not extract keys. | Check join predicates and indexes on join keys. |
+| `estimated_rows` stays close to the base table size after a selective predicate | Stats do not capture the selectivity, the predicate is unsupported, or values are stale. | Run `ANALYZE`, inspect heavy hitters/histograms, and check predicate shape. |
+| `stats_source` is missing or heuristic on the expensive part of the query | Planner has little evidence for that choice. | Add stats with `ANALYZE`; consider an index if the predicate is selective. |
+| Join reorder rows show fallback/greedy when a small inner-join chain was expected | Query shape is outside bounded reorder support or estimates are missing. | Check for outer joins, views/CTEs, unsupported predicates, or missing stats. |
+
+**Debugging workflow:**
+
+1. Run the query normally and note elapsed time and row count.
+2. Click **Estimate** in Admin, or run `EXPLAIN ESTIMATE FOR <query>` manually.
+3. Check `stats_state` first. If important rows are `missing` or `stale-ignored`, run:
+
+   ```sql
+   ANALYZE;
+   ```
+
+   or target the affected table:
+
+   ```sql
+   ANALYZE orders;
+   ```
+
+4. Re-run **Estimate** and look for whether the planner now uses column stats,
+   heavy hitters, histograms, or composite-prefix stats.
+5. Inspect large sources and joins:
+   - Is a large table scanned even though the predicate is selective?
+   - Is a join using hash or indexed lookup?
+   - Does `estimated_rows` shrink where the query should become selective?
+6. Inspect the backing stats directly when an estimate looks wrong:
+
+   ```sql
+   SELECT * FROM sys.table_stats WHERE table_name = 'orders';
+   SELECT * FROM sys.column_stats WHERE table_name = 'orders';
+   SELECT * FROM sys.planner_heavy_hitters WHERE table_name = 'orders';
+   SELECT * FROM sys.planner_histograms WHERE table_name = 'orders';
+   SELECT * FROM sys.planner_index_prefix_stats WHERE table_name = 'orders';
+   ```
+
+7. If stats are fresh but the plan still looks wrong, check query shape and indexes:
+   simple equality/range predicates and equi-joins are easiest for the planner to cost.
+   Expressions around indexed columns, non-equality joins, and unsupported predicates can
+   force fallback estimates or operators.
+
+### Public Planner Observability Phases
+
+The current `EXPLAIN ESTIMATE` and `sys.planner_*` surfaces are phase 1 of public planner
+observability. They make the optimizer's existing statistics and costing choices visible,
+but they intentionally do not change normal query planning or execution behavior.
+
+| Phase | Scope | Runtime performance impact |
+|-------|-------|----------------------------|
+| Phase 1: SQL-first planner diagnostics | Stable `sys.planner_histograms`, `sys.planner_heavy_hitters`, `sys.planner_index_prefix_stats`, and `EXPLAIN ESTIMATE FOR <query>` rowsets. | No direct gain expected. The value is explaining slow or surprising plans without adding overhead to ordinary queries. |
+| Phase 2: Admin query debugger UX | Plan-tab warnings for missing/stale stats, clearer index chosen/rejected explanations, join-order visualization, copyable reports, and guided `ANALYZE` actions. | No direct engine gain expected. It shortens diagnosis time and reduces guesswork. |
+| Phase 3: Runtime actuals / `EXPLAIN ANALYZE` | Execute the query and report actual rows, elapsed time, and estimate-vs-actual gaps per plan node. | Small overhead while profiling. The main value is identifying where estimates diverge from reality. |
+| Phase 4: Adaptive join re-optimization | Opt-in adaptive wrappers for eligible joins. The current phase can switch lookup fan-out to hash join and flip inner hash build sides before rows are emitted. | Direct gains are possible for stale-stat, skewed, and parameter-sensitive joins. Default execution has no intended overhead because the feature is disabled unless the host opts in. |
+| Phase 5: Broader public stats management | Typed .NET APIs, richer stats health reports, explicit stats refresh helpers, and expanded multi-column statistics inspection. | Mostly operational value. Performance gains come indirectly from keeping stats healthy and making bad plans easier to prevent. |
+
+Phase 1 is complete for the current public surface. Phase 4 is implemented for the current
+join-focused opt-in scope. The next observability phase is still runtime actuals, because
+`EXPLAIN ANALYZE` would make estimate-vs-actual gaps visible instead of relying on internal
+adaptive counters.
+
+### Adaptive Join Re-Optimization
+
+Adaptive re-optimization is disabled by default. Direct embedded hosts can opt in:
+
+```csharp
+var options = new DatabaseOptions()
+    .EnableAdaptiveQueryReoptimization(builder => builder
+        .WithDivergenceFactor(8)
+        .WithMinimumObservedRows(4096)
+        .WithMaxBufferedRows(65536)
+        .WithMaxReoptimizationsPerQuery(1));
+```
+
+ADO.NET direct embedded connections can also use:
+
+```text
+Data Source=app.db;Adaptive Query Reoptimization=true
+```
+
+Remote `Endpoint` connections reject that connection-string key because remote hosts must
+enable adaptive behavior server-side.
+
+The current implementation adapts only at safe join boundaries before rows are emitted from
+the adaptive join. Eligible shapes are inner and left joins with extractable equi-join keys
+where both the original join and a semantic-preserving alternative are available. Unsupported
+or risky shapes fail closed and keep the original plan, including cross joins, right joins,
+compound queries, correlated subquery execution, and `SELECT *` cases where join reordering
+could change visible column order.
+
+Use it when `EXPLAIN ESTIMATE` shows a plausible join plan but the real workload is known to
+be stale-stat or parameter-sensitive. The expected wins are workload-shaped: stable plans and
+single-table lookups should not improve, while bad join fan-out or wrong hash build-side cases
+can improve materially. Benchmark diagnostics for this phase live behind:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --adaptive-reoptimization --repro
+```
 
 ### Index Selection
 

@@ -21,6 +21,12 @@
             <button class="toolbar-btn primary" @onclick="RunQuery" title="Run (Ctrl+Enter)">
                 <i class="bi bi-play-fill"></i> Run
             </button>
+            <button class="toolbar-btn"
+                    @onclick="RunPlanEstimateAsync"
+                    disabled="@(_loading || string.IsNullOrWhiteSpace(_sqlText))"
+                    title="Run EXPLAIN ESTIMATE for the current query">
+                <i class="bi bi-diagram-3"></i> Estimate
+            </button>
             <button class="toolbar-btn" @onclick="RunAnalyzeAsync" disabled="@_loading" title="Refresh persisted table and column statistics">
                 <i class="bi bi-bar-chart-line"></i> Analyze
             </button>
@@ -119,7 +125,8 @@
             <div class="query-main-stack">
                 <div class="query-editor-panel">
                     <SqlEditor @ref="_editor"
-                               @bind-Value="_sqlText"
+                               Value="@_sqlText"
+                               ValueChanged="OnSqlTextChanged"
                                OnExecute="RunQuery"
                                CompletionCatalog="_completionCatalog"
                                Height="var(--query-editor-height)"
@@ -143,12 +150,12 @@
                             <i class="bi bi-speedometer2"></i> Stats
                         </button>
                         <button class="@GetResultViewClass(QueryResultView.Plan)" @onclick="() => SetResultView(QueryResultView.Plan)">
-                            <i class="bi bi-diagram-3"></i> Plan
+                            <i class="bi bi-diagram-3"></i> Plan <span>@GetPlanBadge()</span>
                         </button>
                         <div class="query-result-meta">
-                            @if (_elapsed is not null)
+                            @if (GetVisibleElapsed() is { } visibleElapsed)
                             {
-                                <span>@_elapsed.Value.TotalMilliseconds.ToString("F1") ms</span>
+                                <span>@visibleElapsed.TotalMilliseconds.ToString("F1") ms</span>
                             }
                             @if (_loading)
                             {
@@ -255,9 +262,65 @@
                         }
                         else
                         {
-                            <div class="query-detail-pane">
-                                <h3>Plan</h3>
-                                <p>Planner output is not generated automatically from this panel. Use the stats shortcuts above for persisted table and column statistics before comparing plans.</p>
+                            <div class="grid-container">
+                                @if (_loading)
+                                {
+                                    <div class="loading-overlay">
+                                        <div class="spinner"></div>
+                                    </div>
+                                }
+                                else if (_planError is not null)
+                                {
+                                    <div class="query-error">
+                                        <i class="bi bi-exclamation-triangle"></i> @_planError
+                                    </div>
+                                }
+                                else if (_planColumns is not null && _planRows is not null)
+                                {
+                                    <table class="data-grid query-results">
+                                        <thead>
+                                            <tr>
+                                                <th class="row-num-header">#</th>
+                                                @foreach (var col in _planColumns)
+                                                {
+                                                    <th>@col</th>
+                                                }
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @for (int r = 0; r < _planRows.Count; r++)
+                                            {
+                                                <tr>
+                                                    <td class="row-num">@(r + 1)</td>
+                                                    @foreach (var val in _planRows[r])
+                                                    {
+                                                        <td>
+                                                            @if (val is null)
+                                                            {
+                                                                <span class="null-val">NULL</span>
+                                                            }
+                                                            else if (val is byte[] bytes)
+                                                            {
+                                                                <span class="blob-val">[@bytes.Length bytes]</span>
+                                                            }
+                                                            else
+                                                            {
+                                                                @Convert.ToString(val, CultureInfo.InvariantCulture)
+                                                            }
+                                                        </td>
+                                                    }
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                }
+                                else
+                                {
+                                    <div class="empty-state">
+                                        <i class="bi bi-diagram-3"></i>
+                                        <p>Run Estimate to inspect the current query plan inputs</p>
+                                    </div>
+                                }
                             </div>
                         }
                     </div>
@@ -311,8 +374,22 @@
     private void OnDesignerCopySql(string sql)
     {
         _sqlText = sql;
+        ResetPlanState();
         if (Tab is not null) Tab.SqlText = sql;
         SetMode(QueryMode.Sql);
+    }
+
+    private Task OnSqlTextChanged(string sql)
+    {
+        if (string.Equals(_sqlText, sql, StringComparison.Ordinal))
+            return Task.CompletedTask;
+
+        _sqlText = sql;
+        ResetPlanState();
+        if (Tab is not null)
+            Tab.SqlText = sql;
+
+        return Task.CompletedTask;
     }
 
     private static readonly Regex s_execRegex = new(
@@ -332,6 +409,9 @@
         "sys.indexes",
         "sys.table_stats",
         "sys.column_stats",
+        "sys.planner_histograms",
+        "sys.planner_heavy_hitters",
+        "sys.planner_index_prefix_stats",
         "sys.views",
         "sys.triggers",
         "sys.objects",
@@ -356,6 +436,10 @@
     private string? _activeQuerySql;
     private int _queryReloadVersion;
     private QueryResultsStatus _queryResultsStatus = new();
+    private string[]? _planColumns;
+    private List<object?[]>? _planRows;
+    private string? _planError;
+    private TimeSpan? _planElapsed;
     private int _editorHeightPx = DefaultEditorHeightPx;
     private bool _editorHeightInitialized;
     private ElementReference _queryTabRef;
@@ -484,12 +568,59 @@
     private void FormatSql()
     {
         _sqlText = SqlFormatter.Format(_sqlText);
+        ResetPlanState();
     }
 
     private async Task RunAnalyzeAsync()
     {
         LoadSql(AnalyzeSql);
         await RunQuery();
+    }
+
+    private async Task RunPlanEstimateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_sqlText))
+        {
+            Toast.Warning("Enter a SELECT query before estimating a plan.");
+            return;
+        }
+
+        _loading = true;
+        _resultView = QueryResultView.Plan;
+        ResetPlanState();
+        StateHasChanged();
+
+        try
+        {
+            string explainSql = BuildExplainEstimateSql(_sqlText);
+
+            var result = await DbClient.ExecuteSqlAsync(explainSql);
+            _planElapsed = result.Elapsed;
+
+            if (result.Error is not null)
+            {
+                _planError = result.Error;
+            }
+            else if (result.IsQuery)
+            {
+                _planColumns = result.ColumnNames;
+                _planRows = result.Rows;
+            }
+            else
+            {
+                _planError = "Planner estimate did not return a diagnostic rowset.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _planError = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+            if (Tab is not null) Tab.SqlText = _sqlText;
+            StateHasChanged();
+        }
     }
 
     private void LoadTableStatsQuery() => LoadSql(TableStatsSql);
@@ -721,6 +852,12 @@
         return _resultRows is { Count: > 0 } rows ? rows.Count.ToString(CultureInfo.InvariantCulture) : string.Empty;
     }
 
+    private string GetPlanBadge()
+        => _planRows is { Count: > 0 } rows ? rows.Count.ToString(CultureInfo.InvariantCulture) : string.Empty;
+
+    private TimeSpan? GetVisibleElapsed()
+        => _resultView == QueryResultView.Plan ? _planElapsed : _elapsed;
+
     private string GetMessageText()
     {
         if (_error is not null)
@@ -790,8 +927,17 @@
         _nonQueryMessage = null;
         _elapsed = null;
         _queryResultsStatus = new QueryResultsStatus();
+        ResetPlanState();
         if (resetActiveQuery)
             _activeQuerySql = null;
+    }
+
+    private void ResetPlanState()
+    {
+        _planColumns = null;
+        _planRows = null;
+        _planError = null;
+        _planElapsed = null;
     }
 
     private async Task StartEditorResizeAsync(MouseEventArgs e)
@@ -903,6 +1049,40 @@
         {
             return false;
         }
+    }
+
+    private static string BuildExplainEstimateSql(string sql)
+    {
+        string trimmedSql = TrimTrailingSemicolons(sql.Trim());
+        if (trimmedSql.Length == 0)
+            throw new InvalidOperationException("Plan/Estimate requires a SELECT, WITH, or compound SELECT query.");
+
+        Statement statement;
+        try
+        {
+            statement = Parser.Parse(trimmedSql);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Plan/Estimate requires a single SELECT, WITH, or compound SELECT query: {ex.Message}",
+                ex);
+        }
+
+        return statement switch
+        {
+            ExplainEstimateStatement => trimmedSql,
+            QueryStatement or WithStatement => $"EXPLAIN ESTIMATE FOR {trimmedSql}",
+            _ => throw new InvalidOperationException("Plan/Estimate supports SELECT, WITH, and compound SELECT queries only."),
+        };
+    }
+
+    private static string TrimTrailingSemicolons(string sql)
+    {
+        while (sql.EndsWith(';'))
+            sql = sql[..^1].TrimEnd();
+
+        return sql;
     }
 
     private static bool TryParseExecuteCommand(

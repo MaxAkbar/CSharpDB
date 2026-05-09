@@ -20,12 +20,25 @@ public class SystemCatalogBenchmarks
     {
         _bench = await BenchmarkDatabase.CreateWithSchemaAsync("CREATE TABLE seed (id INTEGER PRIMARY KEY, v INTEGER)");
         await _bench.Db.ExecuteAsync("CREATE TABLE audit (id INTEGER)");
+        await _bench.Db.ExecuteAsync("CREATE TABLE planner_diag (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, v INTEGER)");
+        await _bench.Db.ExecuteAsync("CREATE INDEX idx_planner_diag_ab ON planner_diag(a, b)");
 
         for (int i = 0; i < TableCount; i++)
         {
             await _bench.Db.ExecuteAsync($"CREATE TABLE t{i} (id INTEGER PRIMARY KEY, v INTEGER)");
             await _bench.Db.ExecuteAsync($"CREATE INDEX idx_t{i}_v ON t{i}(v)");
         }
+
+        await _bench.Db.BeginTransactionAsync();
+        for (int i = 1; i <= 200; i++)
+        {
+            int a = i % 5;
+            int b = i % 10;
+            int v = i <= 150 ? 1 : i;
+            await _bench.Db.ExecuteAsync($"INSERT INTO planner_diag VALUES ({i}, {a}, {b}, {v})");
+        }
+        await _bench.Db.CommitAsync();
+        await _bench.Db.ExecuteAsync("ANALYZE planner_diag");
 
         await _bench.Db.ExecuteAsync("CREATE VIEW v_seed AS SELECT id FROM seed");
         await _bench.Db.ExecuteAsync(
@@ -70,6 +83,35 @@ public class SystemCatalogBenchmarks
     public async Task Sql_SysTriggersCount()
     {
         await using var result = await _bench.Db.ExecuteAsync("SELECT COUNT(*) FROM sys_triggers");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "SQL: SELECT COUNT(*) FROM sys.planner_histograms")]
+    public async Task Sql_PlannerHistogramsCount()
+    {
+        await using var result = await _bench.Db.ExecuteAsync("SELECT COUNT(*) FROM sys.planner_histograms");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "SQL: SELECT COUNT(*) FROM sys.planner_heavy_hitters")]
+    public async Task Sql_PlannerHeavyHittersCount()
+    {
+        await using var result = await _bench.Db.ExecuteAsync("SELECT COUNT(*) FROM sys.planner_heavy_hitters");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "SQL: SELECT COUNT(*) FROM sys.planner_index_prefix_stats")]
+    public async Task Sql_PlannerIndexPrefixStatsCount()
+    {
+        await using var result = await _bench.Db.ExecuteAsync("SELECT COUNT(*) FROM sys.planner_index_prefix_stats");
+        await result.ToListAsync();
+    }
+
+    [Benchmark(Description = "SQL: EXPLAIN ESTIMATE skewed lookup")]
+    public async Task Sql_ExplainEstimateSkewedLookup()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            "EXPLAIN ESTIMATE FOR SELECT * FROM planner_diag WHERE v = 1");
         await result.ToListAsync();
     }
 

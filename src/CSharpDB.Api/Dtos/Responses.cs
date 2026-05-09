@@ -49,6 +49,7 @@ public sealed record TriggerResponse(string TriggerName, string TableName, strin
 public sealed record SqlResultResponse(
     bool IsQuery,
     string[]? ColumnNames,
+    string[]? ColumnTypes,
     IReadOnlyList<Dictionary<string, object?>>? Rows,
     int RowsAffected,
     string? Error,
