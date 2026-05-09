@@ -1,442 +1,149 @@
 # What's New
 
-## v3.6.0
+## version3.7.0
 
-v3.6.0 adds trusted, in-process C# scalar functions and commands across
-CSharpDB's user-facing expression and automation surfaces. Host applications
-can now register C# callbacks when opening or hosting a database, then call
-those callbacks from SQL, SQL-backed triggers and procedures, Admin Forms
-formulas/events/actions, Admin Reports calculated text and preview lifecycle
-events, and pipeline filter/derive/hook expressions.
+version3.7.0 focuses on query-planner observability, opt-in adaptive join
+reoptimization, faster paged view browsing, and the benchmark/documentation
+close-out work around the current optimizer and async I/O roadmap phases. It
+also carries smaller but important polish for SQL result metadata, fulfillment
+sample lookup indexes, DataGen direct-load throughput, and benchmark regression
+analysis.
 
-The release also adds tableless scalar `SELECT` support, common built-in scalar
-functions, Admin callback catalog metadata, SQL autocomplete for built-ins and
-tableless-safe host callbacks, and local Admin artifact cleanup to keep
-incremental builds fast.
+### Planner Observability
 
-### Trusted C# Scalar Functions
+- Added SQL-first planner diagnostics through `EXPLAIN ESTIMATE FOR SELECT`,
+  `EXPLAIN ESTIMATE FOR WITH`, and compound query estimate support.
+- Added public `sys.planner_*` virtual catalogs for planner histograms, heavy
+  hitters, and composite index prefix statistics.
+- Added bounded estimate diagnostics for stats freshness, lookup and filter
+  estimates, index choices, hash build-side selection, and join reordering.
+- Added an Admin Query tab Estimate action and Plan tab rendering for planner
+  diagnostic rowsets.
+- Documented how to read plan output, debug missing or stale stats, and spot
+  common query-planning red flags.
 
-- Added the shared `DbFunctionRegistry`, `DbFunctionRegistryBuilder`,
-  `DbScalarFunctionDelegate`, and `DbScalarFunctionOptions` public model in
-  `CSharpDB.Primitives`.
-- Added `DatabaseOptions.Functions` plus `ConfigureFunctions(...)` so embedded
-  hosts can register scalar functions when opening file-backed, in-memory, or
-  hybrid databases.
-- SQL expression evaluation now resolves registered scalar functions in
-  projections, filters, ordering expressions, `INSERT`/`UPDATE` expressions,
-  trigger bodies, and stored SQL procedure bodies.
-- Direct clients can pass trusted functions through `DirectDatabaseOptions`;
-  HTTP and gRPC clients still do not serialize delegates and can only call
-  functions registered inside the remote host process.
-- Admin Forms formulas and Admin Reports calculated expressions can use the
-  same registry while preserving existing arithmetic and aggregate behavior.
-- Pipeline filter and derived-column expressions can call registered functions;
-  package definitions store expressions plus generated automation metadata, but
-  never C# function bodies.
-- Scalar callback registration now carries `CanRunWithoutFrom` metadata so
-  hosts can identify functions that are safe to discover in tableless
-  `SELECT ...` contexts.
-- Added the usage guide at `docs/trusted-csharp-functions/README.md`.
+### Adaptive Join Reoptimization
 
-### Tableless SELECT And Built-In Scalar Functions
+- Added opt-in phase-one adaptive query reoptimization through
+  `DatabaseOptions.AdaptiveQueryReoptimization` and
+  `EnableAdaptiveQueryReoptimization(...)`.
+- Added ADO.NET direct embedded connection-string support for
+  `Adaptive Query Reoptimization=true`; remote endpoint connections reject the
+  key so hosts enable the feature server-side.
+- Added adaptive join wrappers that can switch eligible index nested-loop joins
+  to hash joins before rows are emitted when observed outer cardinality
+  diverges.
+- Added adaptive hash join build-side flipping for eligible inner joins when
+  the planned build side is materially larger than estimated.
+- Added internal diagnostics for eligible queries, attempts, successful
+  switches, rejected switches, divergence events, buffered rows, and fail-closed
+  fallback reasons.
+- Kept default query behavior unchanged and suppressed adaptation for risky
+  shapes such as compound query children, correlated subqueries, cross/right
+  joins, and `SELECT *` cases where visible column order could change.
 
-- SQL now supports scalar `SELECT` statements without a `FROM` clause through a
-  single-row planner source.
-- Tableless statements such as `SELECT Date();`, `SELECT abs(1123.34);`, and
-  `SELECT Slugify('Hello World');` can execute without inventing a dummy table
-  when the expression does not need row context.
-- Added a central built-in scalar dispatcher for common text, date/time,
-  numeric, conversion, and null helpers, including functions such as `ABS`,
-  `DATE`, `DATESERIAL`, `DATEADD`, `DATEDIFF`, `LEN`, `UCASE`, `LCASE`,
-  `ROUND`, `IFNULL`, and `NZ`.
-- Query planning now infers built-in scalar return types where possible.
-- Query paging and Admin result serialization now handle the internal
-  tableless single-row source.
-- BLOB procedure parameters can now round-trip through tableless
-  `SELECT @payload;` rather than failing on the old unsupported-path
-  assumption.
+### View And Lookup Planning
 
-### Admin Callback Catalog And Formula UX
+- Taught row-goal planning to reorder eligible simple view join chains before
+  building the view operator tree, so bounded `LIMIT`/`OFFSET` view queries can
+  use the same streaming lookup plans as equivalent inline SQL.
+- Updated the Admin DataGrid view path to page views with bounded
+  `LIMIT`/`OFFSET` instead of opening unbounded forward-only view cursors.
+- Fixed the Query tab grid layout so the row grid is the only scroll container
+  and the pagination bar stays fixed below the rows.
+- Improved lookup-join planning by using indexed local predicate estimates when
+  cardinality stats are unavailable or weaker.
+- Preserved right-side local predicates as residual join filters for lookup
+  joins and passed estimated row counts into index scans as capacity hints.
+- Added an `orders(customer_id)` lookup index to the fulfillment sample schema
+  for customer-filtered order views.
 
-- The Admin navigation now groups callbacks under `Callbacks / Internal` and
-  `Callbacks / External`.
-- Internal callbacks show built-in formula functions separately from registered
-  host callbacks, so the list remains navigable as the built-in surface grows.
-- External callbacks show host-registered/user-created callbacks such as sample
-  functions and automation commands.
-- Callback details now surface whether a scalar callback is marked for
-  tableless `SELECT`.
-- SQL editor completion now suggests built-in scalar functions and host
-  callbacks marked with `CanRunWithoutFrom`.
-- Admin Forms formulas now have an Access-style function catalog/helper and
-  domain-function support for common form expressions.
+### SQL Result Metadata
 
-### Trusted Commands And Form Events
+- Propagated query column types through engine transport, HTTP API/client DTOs,
+  and the Admin DataGrid.
+- View/query result metadata now preserves `ColumnTypes` across local and
+  remote SQL execution paths.
+- Updated client SQL execution coverage so column names and column types are
+  both asserted for query results.
+- Updated the API package reference for `Scalar.AspNetCore` from `2.14.10` to
+  `2.14.11`.
 
-- Added the shared `DbCommandRegistry`, `DbCommandRegistryBuilder`,
-  `DbCommandDelegate`, `DbCommandContext`, `DbCommandResult`, and
-  `DbCommandOptions` public model in `CSharpDB.Primitives`.
-- `DbCommandOptions` now includes `Timeout` and `IsLongRunning`, and
-  `DbCommandRegistryBuilder.AddAsyncCommand(...)` registers `Task`-based host
-  callbacks without manual `ValueTask` wrapping.
-- Command timeouts cancel the command invocation token and surface as command
-  failures through the existing Forms, Reports, and Pipelines dispatch paths;
-  external cancellation is still propagated as cancellation.
-- Admin Forms can now store form-level event bindings that reference trusted
-  command names instead of storing C# source.
-- The Forms data-entry runtime dispatches `OnOpen`, `OnLoad`, `BeforeInsert`,
-  `AfterInsert`, `BeforeUpdate`, `AfterUpdate`, `BeforeDelete`, and
-  `AfterDelete`.
-- `BeforeInsert`, `BeforeUpdate`, and `BeforeDelete` can cancel the requested
-  write by returning `DbCommandResult.Failure(...)`; after-events report errors
-  without attempting to roll back a completed write.
-- Command context arguments include current record fields converted to
-  `DbValue`; metadata includes the Forms surface, form id/name, table name, and
-  event name.
-- `AddCSharpDbAdminForms(...)` now has a command-registration overload for
-  trusted host applications.
-- The Admin Forms designer preserves and edits form-level event bindings
-  instead of dropping automation metadata during save.
-- Added a command button control that invokes a trusted host command on click,
-  passing current record fields, optional configured arguments, and form
-  metadata to the command callback.
-- Added control-level Admin Forms event bindings for `OnClick`, `OnChange`,
-  `OnGotFocus`, and `OnLostFocus`, so ordinary controls can invoke trusted
-  host commands without being command buttons.
-- The Forms property inspector now edits selected-control event bindings using
-  the same registered-command picker and JSON argument editor as form-level
-  events.
-- Added shared declarative action sequence metadata with `RunCommand`,
-  `SetFieldValue`, `ShowMessage`, and `Stop` steps for Admin Forms automation.
-  Form and control event bindings can now be command-only,
-  action-sequence-only, or a command followed by an action sequence.
-- Added built-in rendered-form actions for `NewRecord`, `SaveRecord`,
-  `DeleteRecord`, `RefreshRecords`, `PreviousRecord`, `NextRecord`, and
-  `GoToRecord`, so command buttons and control events can drive common form
-  workflows without host C# callbacks.
-- Action sequence steps can now include a simple condition such as
-  `Status = 'Ready'`, `Amount > 0`, or `IsActive`; false conditions skip that
-  step, while malformed conditions fail through the normal step failure path.
-- Forms can now store reusable named action sequences on `FormDefinition` and
-  invoke them from event/button sequences with `RunActionSequence`, including
-  optional per-call arguments and a nesting guard for recursive loops.
-- The form-event and selected-control event editors now include a visual
-  action-sequence editor for adding, ordering, removing, and configuring
-  command, reusable sequence, field, message, stop, built-in record actions,
-  and per-step conditions.
-- The Forms property inspector now includes a reusable action-sequence library
-  editor at the form level, and event action editors can pick those named
-  sequences while preserving missing names for portable metadata.
-- The action-sequence editor uses registered-command pickers when commands are
-  available, preserves missing command names for portable form metadata, and
-  keeps JSON editing limited to optional argument payloads.
-- Action sequences store names, arguments, field targets, and literal values
-  only. They do not store C# source, serialize delegates, or run untrusted code.
-- Added shared command argument conversion helpers so Forms, Reports, and
-  Pipelines pass host command arguments with the same `DbValue` conversion
-  rules.
-- Admin Reports can now bind `OnOpen`, `BeforeRender`, and `AfterRender`
-  preview lifecycle events to trusted commands. The preview service passes
-  report/source metadata plus row, truncation, page, and schema-drift metrics.
-- `AddCSharpDbAdminReports(...)` now has a command-registration overload for
-  trusted host applications.
-- Pipeline packages can now include trusted command hooks for `OnRunStarted`,
-  `OnBatchCompleted`, `OnRunSucceeded`, and `OnRunFailed`. Package JSON stores
-  hook names, arguments, and generated automation metadata only; command bodies
-  remain host-registered code.
-- Pipeline hook failures fail the run through `PipelineRunResult`; failure-hook
-  errors are appended to the failed run summary instead of recursively
-  dispatching more failure hooks.
-- Admin Forms command buttons now refresh their executing/disabled state before
-  and after async command work, so long-running trusted commands give visible
-  runtime feedback in the form surface.
+### DataGen And Collection Fast Path Close-Out
 
-### Stored Automation Metadata
+- Closed the current generated collection fast-path roadmap phase and split
+  package ergonomics and broader generator coverage into future roadmap items.
+- Refreshed benchmark-facing docs with the current release-core snapshot and
+  generated collection codec diagnostics.
+- Moved CSharpDB.DataGen direct loads onto the write-optimized storage preset.
+- Reused SQL row buffers before `InsertBatch` copies.
+- Documented the DataGen fast-path choices and capped direct collection
+  document target sizes to stay within the current inline collection payload
+  envelope.
 
-- Added shared `DbAutomationMetadata`, command references, and scalar-function
-  references so portable definitions can declare the trusted host callbacks
-  they expect without storing C# code.
-- Admin Forms, Admin Reports, and pipeline packages now regenerate automation
-  metadata during repository save/load or package serialization/deserialization.
-  Older JSON without automation metadata is backfilled on read.
-- Form metadata captures trusted form events, command buttons, selected-control
-  events, reusable action sequences, action-sequence `RunCommand` steps, and
-  computed-formula scalar functions.
-- Report metadata captures preview lifecycle command bindings and calculated
-  text scalar functions.
-- Pipeline package metadata captures command hooks and scalar functions used by
-  filter and derived-column expressions; package validation reports stale
-  automation manifests so packages can be re-exported.
+### Benchmarks And Roadmap Close-Out
 
-### Developer Experience
-
-- Added `samples/trusted-csharp-host`, a VS Code-ready C# host project for
-  writing and debugging trusted C# callbacks in ordinary application code.
-- The sample registers a trusted scalar function, calls it from SQL, registers
-  a trusted command, and runs an Admin Forms action sequence that sets a field
-  before invoking that command.
-- The sample includes local `.vscode` launch/tasks files so developers can open
-  the sample folder, press `F5`, and set breakpoints inside callback code.
-- The direct Admin launcher now cleans stale Admin artifact snapshots, builds
-  once, and runs with `--no-build` so old generated artifacts do not slow
-  startup.
-- Added repo-level MSBuild cleanup for `src/CSharpDB.Admin/artifacts` and
-  default excludes for generated artifact folders.
-- Added the async I/O batching follow-up note at
-  `docs/query-and-durable-write-performance/async-io-batching-follow-up.md`.
-
-### Behavior And Safety
-
-- Function names are case-insensitive SQL identifiers, and registration rejects
-  duplicate user names or collisions with reserved built-ins such as `TEXT`,
-  `COUNT`, `SUM`, `AVG`, `MIN`, and `MAX`.
-- Arity is validated before invocation, missing SQL functions fail with the
-  existing unknown scalar function path, and thrown delegate exceptions are
-  wrapped with the function name before normal statement/transaction rollback.
-- `NullPropagating = true` returns `NULL` without invoking the delegate when
-  any argument is `NULL`; otherwise `DbValue.Null` is passed explicitly.
-- V1 remains scalar-only, synchronous, trusted, and in-process. It does not
-  persist C# source, sandbox code, load database-owned plugin assemblies,
-  marshal delegates over HTTP/gRPC, or add aggregate/table-valued/procedure
-  UDFs.
-- Query planning keeps custom functions on the residual expression path in V1:
-  no index pushdown, generated columns, constant folding, or cost assumptions
-  are inferred from user functions.
+- Marked the current advanced cost-based query optimizer and async I/O batching
+  roadmap phases as completed current-phase work.
+- Kept adaptive reoptimization and public histogram inspection documented as
+  separate planned/follow-up items where appropriate.
+- Added optimizer close-out diagnostics for heavy-hitter equality, histogram
+  range estimates, composite-prefix correlation, and bounded join reordering.
+- Added async I/O close-out diagnostics for save/backup/restore, vacuum and FK
+  logical rewrites, database inspector scans, and live WAL inspector scans.
+- Refreshed roadmap, query/durable-write docs, async I/O audit notes, benchmark
+  catalog, README performance tables, and release-core manifest metadata with
+  the May 6 benchmark baseline.
+- Added a BenchmarkDotNet WAL point-read benchmark for primary-key reads across
+  WAL-backed and checkpointed states at 100, 1k, 5k, and 10k target frames.
+- Updated `Compare-Baseline.ps1` so performance checks can compare a
+  configurable time metric such as `P95` through `metricColumn` while keeping
+  `Mean` as the default.
 
 ### Tests And Benchmarks
 
-- Added registry and SQL coverage for case-insensitive lookup, duplicate and
-  built-in collision rejection, null propagation, deterministic metadata,
-  missing functions, thrown functions, rollback behavior, triggers, and stored
-  SQL procedures.
-- Added direct-client, Admin Forms, Admin Reports, pipeline validation, and
-  pipeline runtime tests for registered scalar functions.
-- Added command-registry, form-event dispatcher, event JSON round-trip, and
-  Forms data-entry tests for create/update/delete event dispatch and
-  before-event cancellation.
-- Added designer-state tests for action sequences, plus command-button and
-  control-event tests covering event binding preservation and registered
-  command invocation from rendered forms.
-- Added Forms action-sequence tests for event dispatch, mutable record updates,
-  command button action-only clicks, and JSON round-tripping.
-- Added report-event dispatcher and preview lifecycle tests, pipeline hook
-  serialization/validation/orchestrator tests, and shared command argument
-  conversion tests.
-- Added automation metadata tests covering manifest extraction, JSON
-  round-tripping, repository persistence/backfill, pipeline package
-  import/export, and stale package metadata validation.
-- Added async command and timeout coverage for the command registry, Admin
-  Forms dispatcher, Admin Reports dispatcher, and pipeline hook orchestration.
-- Added Forms built-in action tests covering rendered command-button dispatch,
-  next/previous/go-to navigation, and create/save/refresh/delete workflows.
-- Added conditional action tests for skip/run behavior, condition failure,
-  rendered built-in action skipping, metadata propagation, and JSON
-  round-tripping.
-- Added parser, planner, SQL execution, direct-client, procedure, query paging,
-  and Admin completion tests for tableless `SELECT`, built-in scalar functions,
-  BLOB parameter round-tripping, and tableless-safe callback autocomplete.
-- Added Admin callback catalog tests for tableless callback metadata.
-- Added Admin Forms formula evaluator tests for the built-in function catalog
-  and Access-style formula helpers.
-- Same-machine affected benchmark comparison against the pre-feature HEAD
-  baseline showed no material regression in the main write/query guardrails:
-
-| Suite | Worst current change | Best current change |
-|-------|---------------------:|--------------------:|
-| Insert | `+3.76%` | `-3.38%` |
-| Join | `+6.65%` | `-6.93%` |
-| PointLookup | `+5.15%` | `-9.25%` |
-| QueryPlanCache | `+1.62%` | `-4.45%` |
-| ScanProjection | `+0.20%` | `-18.12%` |
-| TriggerDispatch | `+0.77%` | `-4.52%` |
-| BatchEvaluation | `+10.53%` | `-10.36%` |
-
-The one notable row was the synthetic BatchEvaluation delegate
-filter/projection case at `+10.53%`; its paired specialized path improved by
-`-10.36%`, allocations were unchanged, and the affected guardrail suites were
-otherwise neutral to improved.
+- Added parser, catalog, planner, client, HTTP, and benchmark coverage for
+  planner diagnostics and `EXPLAIN ESTIMATE`.
+- Added adaptive reoptimization engine/operator tests, ADO.NET option tests,
+  and the `AdaptiveReoptimizationBenchmark` diagnostic suite.
+- Added regression coverage for bounded simple-view row-goal planning, late
+  unindexed detail joins, purchase-order style join chains, and Admin DataGrid
+  view paging SQL generation.
+- Added tests for right-side join predicates, unique text-filter lookup joins,
+  and SQL result column type metadata.
+- Added benchmark suites for optimizer close-out, async I/O close-out, planner
+  catalog diagnostics, and WAL point-read regression analysis.
 
 ### Validation
 
-- `git status --short --branch`
-- `dotnet restore CSharpDB.slnx`
-- `.\scripts\Test-NoLegacyCoreReferences.ps1`
-  - Passed through the script's PowerShell fallback after the local packaged
-    `rg.exe` could not be launched normally in this desktop environment.
-- `dotnet build CSharpDB.slnx -c Release --no-restore`
-  - Passed with `0` warnings and `0` errors.
-- `dotnet test CSharpDB.slnx -c Release --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
-  - Non-parallel unit test run passed with `1,663` tests.
-- Phase 5 local validation used `dotnet build CSharpDB.slnx --no-restore -m:1`
-  and `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
-  - Debug non-parallel unit test run passed with `1,703` tests after adding
-    automation metadata coverage.
-- Phase 6A async-command hardening validation used
-  `dotnet build CSharpDB.slnx --no-restore -m:1` and
-  `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
-  - Debug non-parallel unit test run passed with `1,709` tests.
-- Phase 6B built-in form action validation used
-  `dotnet build CSharpDB.slnx --no-restore -m:1` and
-  `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
-  - Debug non-parallel unit test run passed with `1,712` tests.
-- Phase 6C conditional form action validation used
-  `dotnet build CSharpDB.slnx --no-restore -m:1` and
-  `dotnet test CSharpDB.slnx --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
-  - Debug non-parallel unit test run passed with `1,715` tests.
-- `dotnet pack` smoke for the release workflow packages with
-  `-p:Version=3.6.0`
-  - Produced `11` local packages:
-    `CSharpDB`, `CSharpDB.Client`, `CSharpDB.Data`, `CSharpDB.Engine`,
-    `CSharpDB.EntityFrameworkCore`, `CSharpDB.Execution`,
-    `CSharpDB.Pipelines`, `CSharpDB.Primitives`, `CSharpDB.Sql`,
-    `CSharpDB.Storage`, and `CSharpDB.Storage.Diagnostics`.
-- `.\scripts\Publish-CSharpDbDaemonRelease.ps1 -Version 3.6.0 -Runtime win-x64 -OutputRoot artifacts\daemon-release-local`
-  - Produced `csharpdb-daemon-v3.6.0-win-x64.zip` and `SHA256SUMS.txt`.
-- Latest tableless/callback stabilization validation used
-  `dotnet test .\CSharpDB.slnx -m:1 --no-restore -v:minimal /nr:false /p:UseSharedCompilation=false /p:TestTfmsInParallel=false -- RunConfiguration.DisableParallelization=true`
-  - Debug non-parallel unit test run passed with `1,877` tests.
-
-### Review Notes
-
-- The highest-risk runtime changes are in expression evaluation and planner
-  plumbing: custom functions are intentionally kept off the index-pushdown and
-  batch-fast-path planning assumptions in V1.
-- Remote hosts must register functions in the daemon/API host process; direct
-  clients can register functions locally through `DirectDatabaseOptions`, but
-  callback delegates are never serialized over HTTP or gRPC.
-- Admin Forms and Reports use the shared registries, but their formula and
-  automation surfaces remain narrower than SQL or stored macro systems:
-  formulas stay expression-focused, command hooks invoke host-owned code by
-  name, and declarative action sequences store only limited action metadata
-  rather than executable scripts in database metadata.
-- `SELECT ...` without `FROM` is represented internally as a single-row source
-  and is intended for scalar expressions that do not need row context.
-- `CanRunWithoutFrom` is currently discovery metadata for the Admin catalog and
-  SQL editor autocomplete; it is not yet a hard runtime denial gate for manually
-  typed tableless callback calls.
-
-## v3.5.0
-
-v3.5.0 focuses on the collection binary payload fast path, generated
-collection codec performance, targeted UTF-8 span plumbing, and refreshed
-release benchmark publishing. It also includes the confirmed CSharpDB Studio
-admin UI access-parity notes and static mockups that are part of this branch.
-
-### Collection Binary Payload Fast Path
-
-- Added the opt-in source-generated collection fast path for fixed generated
-  field order, compact type/null metadata, and raw value payloads.
-- Existing non-generated collection paths continue to use their current JSON
-  and binary document behavior.
-- Generated collection models can now use direct binary record encode/decode
-  instead of routing through the slower document-shaped path.
-- `CollectionDocumentCodec<T>` now parses direct binary payload headers once
-  and decodes the key/document from that parsed header.
-- `CollectionBinaryDocumentCodec` now has single-segment
-  `ReadOnlySpan<byte>` lookup overloads for top-level binary document fields.
-- `CollectionPayloadCodec` fast header parsing now favors the common binary
-  payload marker path.
-- Collection field and index bindings now expose generated accessors to faster
-  direct field-reader paths where available.
-
-### UTF-8 Text Index And Compare Paths
-
-- Added targeted UTF-8 span plumbing for collection text index/read/compare
-  paths.
-- Reduced transient allocations in top-level string property reads by avoiding
-  per-call `byte[]` and `byte[][]` path materialization where the
-  single-segment path applies.
-- Updated ordered text index key comparison coverage.
-
-### Tests And Benchmarks
-
-- Added `GeneratedCollectionCodecBenchmarks`.
-- Expanded generated collection model tests around binary payload support.
-- Expanded binary document codec tests for direct field access.
-- Added ordered text index key codec coverage.
-- Refreshed `tests/CSharpDB.Benchmarks/README.md` and
-  `release-core-manifest.json` from the April 26, 2026 release-core artifacts.
-- Recorded the collection binary payload investigation, noisy initial guardrail
-  compare, focused retry, and final passing release guardrail in
-  `tests/CSharpDB.Benchmarks/HISTORY.md`.
-
-Focused collection investigation:
-
-| Metric | Result |
-|--------|-------:|
-| Matched rows vs same-machine HEAD baseline | `60` |
-| Faster matched rows | `50` |
-| Slower matched rows | `10` |
-| Median matched speedup | `+4.1%` |
-| Mean matched speedup | `+4.8%` |
-
-Focused recovery highlights:
-
-| Benchmark | Before | After | Change |
-|-----------|-------:|------:|-------:|
-| Collection field read, missing field | `223.22 ns` | `136.73 ns` | `+38.7%` |
-| Collection decode, direct payload | `333.80 ns` | `155.20 ns` | `+53.5%` |
-| Collection field read, early field | `108.60 ns` | `49.77 ns` | `+54.2%` |
-| Collection field compare, late text field | `159.55 ns` | `97.60 ns` | `+38.8%` |
-| Collection field compare, bound accessor | `128.03 ns` | `92.83 ns` | `+27.5%` |
-
-Path-index follow-up highlights:
-
-| Benchmark | Final vs same-machine HEAD baseline |
-|-----------|------------------------------------:|
-| Nested path equality via `FindByIndex` | `+53.6%` |
-| Nested path equality via `FindByPath` | `+55.9%` |
-| Array path equality via `FindByIndex` | `+52.1%` |
-| Text range path lookup | `+42.7%` |
-| Guid equality path lookup | `+59.4%` |
-
-Published scorecard examples from the refreshed benchmark README:
-
-| Area | Result |
-|------|-------:|
-| SQL file-backed single insert | `450.4 ops/sec` |
-| SQL file-backed batch x100 | `41.88K rows/sec` |
-| Collection file-backed put | `447.3 ops/sec` |
-| Collection file-backed batch x100 | `42.28K docs/sec` |
-| Collection hot point get | `1.60M ops/sec` |
-| CSharpDB InsertBatch B1000 | `233.06K rows/sec` |
-
-### CSharpDB Studio Admin UI Notes
-
-- Added admin forms access-parity notes.
-- Added admin reports access-parity notes.
-- Added static CSharpDB Studio admin UI mockups under `www/admin-ui-mockups`.
-- Included dashboard, data, query, heavy operations, reports designer, mobile
-  forms/reports, command palette, sidebar, and shared styling mockups.
-
-### Validation
-
-- `dotnet build CSharpDB.slnx -c Release --no-restore`
-- `dotnet test CSharpDB.slnx -c Release --no-build -m:1 -- RunConfiguration.DisableParallelization=true`
-- Non-parallel unit test run passed with `1,652` tests.
-- `dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro`
+- `dotnet test .\CSharpDB.slnx -c Release`
+- `dotnet build .\CSharpDB.slnx -c Release --no-restore`
+- `dotnet test .\CSharpDB.slnx -c Release --no-build`
+- `dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --optimizer-closeout --repro`
+- `dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --async-io-closeout --repro`
 - `pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Run-Perf-Guardrails.ps1 -Mode release`
-- `pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 -ThresholdsPath .\tests\CSharpDB.Benchmarks\perf-thresholds.json -CurrentMicroResultsDir .\tests\CSharpDB.Benchmarks\results\.tmp-current-micro-run -ReportPath .\tests\CSharpDB.Benchmarks\results\perf-guardrails-last.md`
-- `pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Update-BenchmarkReadme.ps1 -RunManifest .\tests\CSharpDB.Benchmarks\release-core-manifest.json`
-- `Get-Content -Raw .\tests\CSharpDB.Benchmarks\release-core-manifest.json | ConvertFrom-Json`
-- `pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Update-BenchmarkReadme.ps1 -RunManifest .\tests\CSharpDB.Benchmarks\release-core-manifest.json -DryRun`
-- `git diff --check -- tests\CSharpDB.Benchmarks\README.md tests\CSharpDB.Benchmarks\HISTORY.md tests\CSharpDB.Benchmarks\release-core-manifest.json`
-
-Release benchmark guardrail result:
-
-```text
-Compared 185 rows against baseline. PASS=185, WARN=0, SKIP=0, FAIL=0
-```
+  - Reported `PASS=187, WARN=0, SKIP=0, FAIL=0`.
+- `dotnet build .\src\CSharpDB.Admin\CSharpDB.Admin.csproj -c Release`
+- `dotnet test .\tests\CSharpDB.Admin.Forms.Tests\CSharpDB.Admin.Forms.Tests.csproj -c Release --filter FullyQualifiedName~DataGridTests`
+- `dotnet test .\tests\CSharpDB.Tests\CSharpDB.Tests.csproj -c Release --filter FullyQualifiedName~SimpleViewLateUnindexedDetailJoinWithLimit|FullyQualifiedName~JoinChainWithLimit|FullyQualifiedName~PurchaseOrderLineJoinChainWithLimit`
+- Targeted generated collection tests, trim smoke publish, DataGen Release
+  build, relational direct-load smoke, and document direct-load smoke passed.
+- `dotnet build tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-restore`
+- `dotnet run -c Release --project tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *WalPointReadBenchmarks* --job Dry`
+- Focused lookup-join and SQL column type tests passed for:
+  `Join_WithWhereOnRightPrimaryKeyLookupSide_AppliesPredicate`,
+  `Join_WithUniqueTextFilterAndIndexedDependentSide_UsesLookupJoins`, and
+  `ExecuteSqlAsync_ReturnsQueryColumnTypes`.
 
 ### Review Notes
 
-- The highest-risk runtime changes are in the generated collection model and
-  collection payload codec paths: `CollectionModelGenerator`,
-  `CollectionPayloadCodec`, `CollectionBinaryDocumentCodec`,
-  `CollectionDocumentCodec<T>`, `CollectionIndexedFieldReader`, and collection
-  index binding.
-- The generator diff is intentionally large because generated code now owns the
-  binary record encode/decode shape for opt-in generated models.
-- The benchmark README generated region should be edited through
-  `release-core-manifest.json` plus `scripts/Update-BenchmarkReadme.ps1`, not
-  manually.
+- Adaptive query reoptimization is opt-in and intentionally leaves default
+  planning behavior unchanged.
+- `EXPLAIN ESTIMATE` and `sys.planner_*` are diagnostic surfaces; normal select
+  planning should not depend on the diagnostic rowset materialization path.
+- Simple view row-goal reordering is scoped to eligible join chains and bounded
+  paging shapes.
+- The SQL result DTO column type addition is additive for API/client callers.
+- The new WAL point-read benchmark provides a stable current signal, but it
+  needs a captured historical baseline before it can be used as a release
+  regression gate.
