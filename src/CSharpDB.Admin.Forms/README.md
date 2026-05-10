@@ -18,6 +18,9 @@ This project is consumed by `CSharpDB.Admin`. It is not a standalone web host.
 - trusted command-backed form events and command buttons
 - trusted command-backed selected-control events
 - declarative action sequences for form and selected-control events
+- Access-style rendered-form action steps for record navigation, save/delete,
+  open/close form, filtering, SQL/procedure, and control property workflows
+- conditional action steps and conditional UI rules
 - generated automation metadata for import/export host callback requirements
 
 ## Main Components
@@ -112,21 +115,30 @@ properties, optional validation overrides, optional renderer hints, and optional
 `ControlEventBinding` entries for selected control events such as `OnClick`,
 `OnChange`, `OnGotFocus`, and `OnLostFocus`.
 
-Form and control event bindings can reference a trusted command name and can
-optionally include a `DbActionSequence`. Forms can also store reusable named
-action sequences in `ActionSequences`, and event/button sequences can invoke
-them with `RunActionSequence`. Action sequences store declarative steps such as
+Form and control event bindings can reference a trusted command name, a
+`CodeModuleHandler`, and optionally include a `DbActionSequence`. Dispatch order
+is trusted command, C# code-module handler, then declarative action sequence.
+Forms can also store reusable named action sequences in `ActionSequences`, and
+event/button sequences can invoke them with `RunActionSequence`. Action
+sequences store declarative steps such as
 `RunCommand`, `RunActionSequence`, `SetFieldValue`, `ShowMessage`, `Stop`,
 `NewRecord`, `SaveRecord`, `DeleteRecord`, `RefreshRecords`, `PreviousRecord`,
-`NextRecord`, and `GoToRecord`; they do not store C# source or serialized
-delegates. The property inspector exposes a visual action-sequence editor on
-form-level and selected-control event bindings plus a reusable action library
-when editing form properties. JSON editing is limited to optional command or
-nested-sequence argument payloads.
+`NextRecord`, `GoToRecord`, `OpenForm`, `CloseForm`, `ApplyFilter`,
+`ClearFilter`, `RunSql`, `RunProcedure`, `SetControlProperty`,
+`SetControlVisibility`, `SetControlEnabled`, and `SetControlReadOnly`; they do
+not store serialized delegates. Database-owned C# source is stored separately
+through `CSharpDB.CodeModules` and requires host opt-in, successful build, and
+explicit local trust before execution. The property inspector exposes a
+visual action-sequence editor on form-level and selected-control event bindings
+plus a reusable action library when editing form properties. JSON editing is
+limited to optional command or nested-sequence argument payloads.
 
-The built-in record actions run only in the rendered Forms data-entry runtime.
-Headless form event dispatch can still run command, field, message, and stop
-steps, but navigation and save/delete actions require a rendered form instance.
+The built-in record, form navigation, filter, SQL/procedure, and control
+property actions run only in the rendered Forms data-entry runtime. Headless
+form event dispatch can still run command, field, message, stop, and other
+runtime-independent steps, but actions that need a loaded rendered form instance
+report a failure outside that surface. SQL and procedure actions also require
+the rendered host to enable those capabilities explicitly.
 
 Every action step can also store a simple condition such as `Status = 'Ready'`,
 `Amount > 0`, or `IsActive`. False conditions skip that step; malformed

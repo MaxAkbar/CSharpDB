@@ -51,6 +51,10 @@
                                 <CallbacksTab @key="tab.Id"
                                               Tab="tab" />
                                 break;
+                            case TabKind.CodeModules:
+                                <CodeModulesTab @key="tab.Id"
+                                                Tab="tab" />
+                                break;
                             case TabKind.Procedure:
                                 <ProcedureTab @key="tab.Id"
                                               Tab="tab" />

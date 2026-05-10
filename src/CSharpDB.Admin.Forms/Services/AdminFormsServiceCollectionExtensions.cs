@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Forms.Contracts;
+using CSharpDB.CodeModules;
 using CSharpDB.Primitives;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -13,6 +14,8 @@ public static class AdminFormsServiceCollectionExtensions
         services.TryAddSingleton(DbValidationRuleRegistry.Empty);
         services.TryAddSingleton(DbExtensionPolicies.DefaultHostCallbackPolicy);
         services.TryAddSingleton<IFormActionRuntime>(NullFormActionRuntime.Instance);
+        services.TryAddSingleton<ICodeModuleFormEventDispatcher>(NullCodeModuleFormEventDispatcher.Instance);
+        services.TryAddSingleton<IFormCodeModuleDesignerService>(NullFormCodeModuleDesignerService.Instance);
         services.TryAddFormControlRegistry();
         services.AddScoped<IFormRepository, DbFormRepository>();
         services.AddScoped<ISchemaProvider, DbSchemaProvider>();
@@ -31,6 +34,12 @@ public static class AdminFormsServiceCollectionExtensions
 
         services.AddSingleton(DbCommandRegistry.Create(configureCommands));
         return services.AddCSharpDbAdminForms();
+    }
+
+    public static IServiceCollection AddCSharpDbAdminFormCodeModules(this IServiceCollection services)
+    {
+        services.AddScoped<IFormCodeModuleDesignerService, CSharpDbFormCodeModuleDesignerService>();
+        return services;
     }
 
     public static IServiceCollection AddCSharpDbAdminFormValidationRules(

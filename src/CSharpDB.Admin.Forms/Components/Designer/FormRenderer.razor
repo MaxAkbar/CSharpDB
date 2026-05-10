@@ -4,9 +4,11 @@
 @using CSharpDB.Admin.Forms.Models
 @using CSharpDB.Admin.Forms.Pages
 @using CSharpDB.Admin.Forms.Services
+@using CSharpDB.CodeModules
 @using CSharpDB.Primitives
 @inject DbCommandRegistry Commands
 @inject DbExtensionPolicy? CallbackPolicy
+@inject ICodeModuleFormEventDispatcher CodeModules
 
 <div class="@GetRendererClass()" style="@GetRendererStyle()">
     @foreach (var control in GetControlsToRender())
@@ -1380,14 +1382,58 @@
                         return;
                     }
 
-                    if (binding.ActionSequence is null)
+                    if (binding.CodeHandler is null && binding.ActionSequence is null)
                         continue;
                 }
             }
-            else if (binding.ActionSequence is null)
+            else if (binding.CodeHandler is null && binding.ActionSequence is null)
             {
-                await ReportCommandErrorAsync($"Control event '{eventKind}' has no command or action sequence.");
+                await ReportCommandErrorAsync($"Control event '{eventKind}' has no command, code handler, or action sequence.");
                 return;
+            }
+
+            if (binding.CodeHandler is not null)
+            {
+                var commandApi = new AdminFormCodeModuleCommandApi(
+                    Form,
+                    Commands,
+                    EffectiveCallbackPolicy,
+                    Record,
+                    binding.Arguments,
+                    runtimeArguments,
+                    metadata,
+                    Form.ActionSequences,
+                    ActionRuntime ?? NullFormActionRuntime.Instance,
+                    SetActionFieldValueAsync,
+                    ReportCommandErrorAsync,
+                    OnBuiltInAction);
+                CodeModuleFormDispatchResult codeResult = await CodeModules.DispatchAsync(
+                    binding.CodeHandler,
+                    new CodeModuleFormEventDispatchContext(
+                        Form.FormId,
+                        Form.Name,
+                        Form.TableName,
+                        eventKind.ToString(),
+                        Record,
+                        binding.Arguments,
+                        runtimeArguments,
+                        metadata,
+                        commandApi,
+                        IsCancelable: false,
+                        control.ControlId,
+                        control.ControlType));
+
+                if (!codeResult.Succeeded)
+                {
+                    if (binding.StopOnFailure)
+                    {
+                        await ReportCommandErrorAsync(codeResult.Message ?? $"Control event '{eventKind}' code handler failed.");
+                        return;
+                    }
+
+                    if (binding.ActionSequence is null)
+                        continue;
+                }
             }
 
             if (binding.ActionSequence is not null)

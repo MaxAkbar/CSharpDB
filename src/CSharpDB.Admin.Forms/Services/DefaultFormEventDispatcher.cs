@@ -1,5 +1,6 @@
 using CSharpDB.Admin.Forms.Contracts;
 using CSharpDB.Admin.Forms.Models;
+using CSharpDB.CodeModules;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Services;
@@ -9,14 +10,15 @@ public sealed class DefaultFormEventDispatcher : IFormEventDispatcher
     private readonly DbCommandRegistry _commands;
     private readonly DbExtensionPolicy _callbackPolicy;
     private readonly IFormActionRuntime _actionRuntime;
+    private readonly ICodeModuleFormEventDispatcher _codeModules;
 
     public DefaultFormEventDispatcher(DbCommandRegistry commands)
-        : this(commands, DbExtensionPolicies.DefaultHostCallbackPolicy, NullFormActionRuntime.Instance)
+        : this(commands, DbExtensionPolicies.DefaultHostCallbackPolicy, NullFormActionRuntime.Instance, NullCodeModuleFormEventDispatcher.Instance)
     {
     }
 
     public DefaultFormEventDispatcher(DbCommandRegistry commands, IFormActionRuntime actionRuntime)
-        : this(commands, DbExtensionPolicies.DefaultHostCallbackPolicy, actionRuntime)
+        : this(commands, DbExtensionPolicies.DefaultHostCallbackPolicy, actionRuntime, NullCodeModuleFormEventDispatcher.Instance)
     {
     }
 
@@ -24,14 +26,25 @@ public sealed class DefaultFormEventDispatcher : IFormEventDispatcher
         DbCommandRegistry commands,
         DbExtensionPolicy callbackPolicy,
         IFormActionRuntime actionRuntime)
+        : this(commands, callbackPolicy, actionRuntime, NullCodeModuleFormEventDispatcher.Instance)
+    {
+    }
+
+    public DefaultFormEventDispatcher(
+        DbCommandRegistry commands,
+        DbExtensionPolicy callbackPolicy,
+        IFormActionRuntime actionRuntime,
+        ICodeModuleFormEventDispatcher codeModules)
     {
         ArgumentNullException.ThrowIfNull(commands);
         ArgumentNullException.ThrowIfNull(callbackPolicy);
         ArgumentNullException.ThrowIfNull(actionRuntime);
+        ArgumentNullException.ThrowIfNull(codeModules);
 
         _commands = commands;
         _callbackPolicy = callbackPolicy;
         _actionRuntime = actionRuntime;
+        _codeModules = codeModules;
     }
 
     public async Task<FormEventDispatchResult> DispatchAsync(
@@ -100,13 +113,50 @@ public sealed class DefaultFormEventDispatcher : IFormEventDispatcher
                     if (binding.StopOnFailure)
                         return FormEventDispatchResult.Failure(commandFailureMessage!);
 
-                    if (binding.ActionSequence is null)
+                    if (binding.CodeHandler is null && binding.ActionSequence is null)
                         continue;
                 }
             }
-            else if (binding.ActionSequence is null)
+            else if (binding.CodeHandler is null && binding.ActionSequence is null)
             {
-                return FormEventDispatchResult.Failure($"Form event '{eventKind}' has no command or action sequence.");
+                return FormEventDispatchResult.Failure($"Form event '{eventKind}' has no command, code handler, or action sequence.");
+            }
+
+            if (binding.CodeHandler is not null)
+            {
+                var commandApi = new AdminFormCodeModuleCommandApi(
+                    form,
+                    _commands,
+                    _callbackPolicy,
+                    record,
+                    binding.Arguments,
+                    runtimeArguments: null,
+                    metadata,
+                    form.ActionSequences,
+                    actionRuntime);
+                CodeModuleFormDispatchResult codeResult = await _codeModules.DispatchAsync(
+                    binding.CodeHandler,
+                    new CodeModuleFormEventDispatchContext(
+                        form.FormId,
+                        form.Name,
+                        form.TableName,
+                        eventKind.ToString(),
+                        record,
+                        binding.Arguments,
+                        RuntimeArguments: null,
+                        metadata,
+                        commandApi,
+                        IsCancelableEvent(eventKind)),
+                    ct);
+
+                if (!codeResult.Succeeded)
+                {
+                    if (binding.StopOnFailure)
+                        return FormEventDispatchResult.Failure(codeResult.Message ?? $"Form event '{eventKind}' code handler failed.");
+
+                    if (binding.ActionSequence is null)
+                        continue;
+                }
             }
 
             if (binding.ActionSequence is not null)
@@ -130,4 +180,7 @@ public sealed class DefaultFormEventDispatcher : IFormEventDispatcher
 
         return FormEventDispatchResult.Success();
     }
+
+    private static bool IsCancelableEvent(FormEventKind eventKind)
+        => eventKind is FormEventKind.BeforeInsert or FormEventKind.BeforeUpdate or FormEventKind.BeforeDelete;
 }

@@ -117,6 +117,21 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenCodeModulesTab()
+    {
+        const string tabId = "code-modules";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(tabId, "Code Modules", "bi-filetype-cs", TabKind.CodeModules);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenQueryTab(string? initialSql = null)
     {
         int num = Interlocked.Increment(ref _queryCounter);

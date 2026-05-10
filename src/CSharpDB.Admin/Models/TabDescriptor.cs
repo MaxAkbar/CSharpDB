@@ -8,6 +8,7 @@ public enum TabKind
     ViewData,
     CollectionData,
     HostCallbacks,
+    CodeModules,
     Procedure,
     Pipeline,
     Storage,

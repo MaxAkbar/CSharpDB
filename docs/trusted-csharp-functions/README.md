@@ -2,7 +2,7 @@
 
 CSharpDB can call host-registered C# scalar functions from SQL and the embedded expression surfaces that sit on top of the engine. This is the CSharpDB equivalent of an Access-style application function integration: the application owns the C# code, registers it while opening or hosting the database, and users call the function by name in database expressions.
 
-This feature is intentionally trusted and in-process. It does not store C# source code in the database, sandbox user code, load plugin assemblies from database files, or serialize delegates over HTTP or gRPC.
+This callback feature is intentionally trusted and in-process. Host-registered callbacks do not store C# source code in the database, sandbox user code, load plugin assemblies from database files, or serialize delegates over HTTP or gRPC. For the newer database-owned Admin Forms C# module workflow, see [User-Defined Functions And Commands](../user-defined-functions/README.md).
 
 For an end-to-end app-builder walkthrough that combines Admin Forms, collections,
 macro actions, reports, trusted callbacks, and callback readiness, see the
@@ -631,7 +631,7 @@ var shipButton = existingButton with
 };
 ```
 
-The action set is intentionally small and form-focused:
+The action set is intentionally form-focused:
 
 | Action | Behavior |
 | --- | --- |
@@ -647,6 +647,16 @@ The action set is intentionally small and form-focused:
 | `PreviousRecord` | Moves the rendered form to the previous record. |
 | `NextRecord` | Moves the rendered form to the next record. |
 | `GoToRecord` | Navigates to a primary-key value from `Value`, `Arguments["value"]`, `Arguments["recordId"]`, `Arguments["primaryKey"]`, or the field named by `Target`. |
+| `OpenForm` | Opens another saved form through the rendered form host. |
+| `CloseForm` | Closes the current or named rendered form surface. |
+| `ApplyFilter` | Applies a form or data-grid filter. |
+| `ClearFilter` | Clears a form or data-grid filter. |
+| `RunSql` | Executes SQL through the rendered host when SQL actions are enabled by policy. |
+| `RunProcedure` | Executes a saved procedure through the rendered host when procedure actions are enabled by policy. |
+| `SetControlProperty` | Overrides a rendered control property such as `visible`, `enabled`, `readOnly`, `text`, `placeholder`, or bound `value`. |
+| `SetControlVisibility` | Short form for setting a rendered control's `visible` property. |
+| `SetControlEnabled` | Short form for setting a rendered control's `enabled` property. |
+| `SetControlReadOnly` | Short form for setting a rendered control's `readOnly` property. |
 
 Reusable action sequences are stored once on the form and invoked by name from
 form events, control events, or command buttons:
@@ -709,9 +719,10 @@ var form = existingForm with
 
 The Admin Forms property inspector exposes action sequences with a visual
 editor on form-level and selected-control event bindings. Designers can add a
-sequence, name it, add command, reusable-sequence, field, message, stop, and
-built-in record steps, reorder or remove steps, choose registered commands or
-reusable sequences when available, and set per-step conditions and
+sequence, name it, add command, reusable-sequence, field, message, stop,
+rendered record, form, filter, SQL/procedure, and control-property steps,
+reorder or remove steps, choose registered commands or reusable sequences when
+available, and set per-step conditions and
 `StopOnFailure`. The form-level property inspector also includes a reusable
 action-sequence library editor. JSON editing remains only for optional binding,
 `RunCommand`, or `RunActionSequence` argument payloads.
@@ -753,16 +764,18 @@ backfilled when it is loaded.
 `BeforeInsert` and `BeforeUpdate`, and it can update the current rendered record
 from control events or command-button clicks.
 
-Built-in record actions require a rendered Admin Forms data-entry runtime.
-They are intended for command buttons and selected-control events. Headless
-form lifecycle dispatch can still run `SetFieldValue`, `ShowMessage`, `Stop`,
-and `RunCommand`, but it reports a failure if a sequence asks for rendered-form
-navigation or save/delete actions.
+Built-in record, form navigation, filter, SQL/procedure, and control-property
+actions require a rendered Admin Forms data-entry runtime. They are intended for
+command buttons and selected-control events. Headless form lifecycle dispatch
+can still run `SetFieldValue`, `ShowMessage`, `Stop`, and `RunCommand`, but it
+reports a failure if a sequence asks for actions that need the rendered form
+instance.
 
-Action sequences do not include loops, stored C# source, database-owned
-plugins, or remote delegate serialization. Rendered Admin form runtimes support
-direct SQL and procedure actions only when the host explicitly enables those
-capabilities.
+Action sequences do not include loops, a `RunCode` macro action,
+database-owned plugins, or remote delegate serialization. Database-owned C#
+form modules are handled as trusted event handlers through the separate code
+module runtime. Rendered Admin form runtimes support direct SQL and procedure
+actions only when the host explicitly enables those capabilities.
 
 ---
 
@@ -1026,11 +1039,12 @@ V1 does not support:
 
 - Aggregate UDFs.
 - Table-valued UDFs.
-- Stored C# source code or database-owned compiled modules.
+- Database-owned C# modules beyond the local Admin Forms event-handler MVP,
+  such as report modules, procedure modules, or remote/daemon execution.
 - Sandboxed execution.
 - Async scalar delegates.
 - Passing a database handle into the function context.
 - Sending delegates over HTTP, gRPC, or pipeline package files.
 - Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.
 - Additional Access-style control events such as double-click, key, mouse, timer, and dirty/current events.
-- Richer macro/action scripts with loops, reusable UI rule presets, additional event surfaces, or database-owned executable code.
+- Richer macro/action scripts with loops, reusable UI rule presets, additional event surfaces, or `RunCode` action invocation.

@@ -11,10 +11,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CSharpDB.Admin.Forms\CSharpDB.Admin.Forms.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.CodeModules\CSharpDB.CodeModules.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Client\CSharpDB.Client.csproj" />
-    <ProjectReference Include="..\..\src\CSharpDB.Admin\CSharpDB.Admin.csproj" />
   </ItemGroup>
 
   <ItemGroup>
