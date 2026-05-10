@@ -61,6 +61,8 @@ public sealed class SchemaCatalog
 
     public long SchemaVersion => _service.SchemaVersion;
 
+    internal void MarkLogicalSchemaChanged() => _service.MarkLogicalSchemaChanged();
+
     public TableSchema? GetTable(string tableName) => _service.GetTable(tableName);
 
     public IReadOnlyList<ForeignKeyDefinition> GetForeignKeysForTable(string tableName) =>

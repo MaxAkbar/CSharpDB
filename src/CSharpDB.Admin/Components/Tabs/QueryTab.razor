@@ -18,9 +18,15 @@
     <div class="toolbar">
         @if (_mode == QueryMode.Sql)
         {
-            <button class="toolbar-btn primary" @onclick="RunQuery" title="Run (Ctrl+Enter)">
+            <button class="toolbar-btn primary" @onclick="RunQuery" disabled="@_loading" title="Run (Ctrl+Enter)">
                 <i class="bi bi-play-fill"></i> Run
             </button>
+            @if (_loading)
+            {
+                <button class="toolbar-btn danger" @onclick="CancelRunningQuery" title="Cancel running query">
+                    <i class="bi bi-x-circle"></i> Cancel
+                </button>
+            }
             <button class="toolbar-btn"
                     @onclick="RunPlanEstimateAsync"
                     disabled="@(_loading || string.IsNullOrWhiteSpace(_sqlText))"
@@ -416,6 +422,7 @@
         "sys.triggers",
         "sys.objects",
         "sys.saved_queries",
+        "sys.external_tables",
     ];
 
     [Parameter] public TabDescriptor? Tab { get; set; }
@@ -445,6 +452,7 @@
     private ElementReference _queryTabRef;
     private DotNetObjectReference<QueryTab>? _dotNetRef;
     private readonly List<QueryHistoryItem> _queryHistory = [];
+    private CancellationTokenSource? _queryCts;
 
     private sealed record QueryHistoryItem(string Title, string Summary, string ElapsedText, string Sql);
 
@@ -505,12 +513,15 @@
     public async Task RunQuery()
     {
         if (string.IsNullOrWhiteSpace(_sqlText)) return;
+        if (_loading) return;
 
+        var operationCts = StartQueryOperation();
         _loading = true;
         _resultView = QueryResultView.Results;
         string? executedSql = null;
         ResetResultState(resetActiveQuery: true);
         StateHasChanged();
+        await Task.Yield();
 
         try
         {
@@ -524,7 +535,7 @@
                 }
                 else
                 {
-                    await RunExecuteCommandAsync(procedureName!, args!);
+                    await RunExecuteCommandAsync(procedureName!, args!, operationCts.Token);
                 }
             }
             else
@@ -538,11 +549,15 @@
                 }
                 else
                 {
-                    await RunSqlWithoutPagingAsync(trimmedSql);
+                    await RunSqlWithoutPagingAsync(trimmedSql, operationCts.Token);
                 }
 
                 Changes.NotifyFromSql(trimmedSql);
             }
+        }
+        catch (OperationCanceledException) when (operationCts.IsCancellationRequested)
+        {
+            _error = "Query canceled.";
         }
         catch (Exception ex)
         {
@@ -550,6 +565,7 @@
         }
         finally
         {
+            FinishQueryOperation(operationCts);
             _loading = false;
             // Save SQL text back to tab state for preservation
             if (Tab is not null) Tab.SqlText = _sqlText;
@@ -584,17 +600,20 @@
             Toast.Warning("Enter a SELECT query before estimating a plan.");
             return;
         }
+        if (_loading) return;
 
+        var operationCts = StartQueryOperation();
         _loading = true;
         _resultView = QueryResultView.Plan;
         ResetPlanState();
         StateHasChanged();
+        await Task.Yield();
 
         try
         {
             string explainSql = BuildExplainEstimateSql(_sqlText);
 
-            var result = await DbClient.ExecuteSqlAsync(explainSql);
+            var result = await ExecuteSqlAsync(explainSql, operationCts.Token);
             _planElapsed = result.Elapsed;
 
             if (result.Error is not null)
@@ -611,12 +630,17 @@
                 _planError = "Planner estimate did not return a diagnostic rowset.";
             }
         }
+        catch (OperationCanceledException) when (operationCts.IsCancellationRequested)
+        {
+            _planError = "Query canceled.";
+        }
         catch (Exception ex)
         {
             _planError = ex.Message;
         }
         finally
         {
+            FinishQueryOperation(operationCts);
             _loading = false;
             if (Tab is not null) Tab.SqlText = _sqlText;
             StateHasChanged();
@@ -796,9 +820,12 @@
         }
     }
 
-    private async Task RunExecuteCommandAsync(string procedureName, IReadOnlyDictionary<string, object?> args)
+    private async Task RunExecuteCommandAsync(
+        string procedureName,
+        IReadOnlyDictionary<string, object?> args,
+        CancellationToken ct)
     {
-        var result = await DbClient.ExecuteProcedureAsync(procedureName, args);
+        var result = await ExecuteProcedureAsync(procedureName, args, ct);
         _elapsed = result.Elapsed;
 
         if (!result.Succeeded)
@@ -898,9 +925,9 @@
 
     private void ClearHistory() => _queryHistory.Clear();
 
-    private async Task RunSqlWithoutPagingAsync(string sql)
+    private async Task RunSqlWithoutPagingAsync(string sql, CancellationToken ct)
     {
-        var result = await DbClient.ExecuteSqlAsync(sql);
+        var result = await ExecuteSqlAsync(sql, ct);
         _elapsed = result.Elapsed;
 
         if (result.Error is not null)
@@ -939,6 +966,38 @@
         _planError = null;
         _planElapsed = null;
     }
+
+    private CancellationTokenSource StartQueryOperation()
+    {
+        _queryCts?.Cancel();
+        _queryCts?.Dispose();
+        _queryCts = new CancellationTokenSource();
+        return _queryCts;
+    }
+
+    private void FinishQueryOperation(CancellationTokenSource operationCts)
+    {
+        if (ReferenceEquals(_queryCts, operationCts))
+            _queryCts = null;
+
+        operationCts.Dispose();
+    }
+
+    private void CancelRunningQuery()
+    {
+        _queryCts?.Cancel();
+        _error ??= "Canceling query...";
+        StateHasChanged();
+    }
+
+    private Task<SqlExecutionResult> ExecuteSqlAsync(string sql, CancellationToken ct)
+        => Task.Run(() => DbClient.ExecuteSqlAsync(sql, ct), ct);
+
+    private Task<ProcedureExecutionResult> ExecuteProcedureAsync(
+        string procedureName,
+        IReadOnlyDictionary<string, object?> args,
+        CancellationToken ct)
+        => Task.Run(() => DbClient.ExecuteProcedureAsync(procedureName, args, ct), ct);
 
     private async Task StartEditorResizeAsync(MouseEventArgs e)
     {
@@ -1365,6 +1424,8 @@
     public void Dispose()
     {
         Changes.Changed -= OnDatabaseObjectsChanged;
+        _queryCts?.Cancel();
+        _queryCts?.Dispose();
         _dotNetRef?.Dispose();
     }
 }

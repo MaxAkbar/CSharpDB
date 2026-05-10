@@ -1,0 +1,461 @@
+@namespace CSharpDB.Admin.ImportExport.Pages
+@inject ICSharpDbClient DbClient
+@inject ITableImportExportService ImportExportService
+
+<div class="import-export-tab">
+    <div class="import-export-header">
+        <div>
+            <div class="data-crumb">
+                <span><i class="bi bi-table"></i>tables</span>
+                <span>/</span>
+                <strong><i class="bi bi-arrow-left-right"></i>Import / Export</strong>
+            </div>
+            <h2>Import / Export</h2>
+        </div>
+        <button type="button" class="data-toolbar-btn" @onclick="RefreshAsync" disabled="@_busy">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+    </div>
+
+    <div class="import-export-modebar" role="tablist">
+        <button type="button" class="@GetModeButtonClass(ImportExportMode.ExportTable)" @onclick="() => SetMode(ImportExportMode.ExportTable)" disabled="@_busy">
+            <i class="bi bi-box-arrow-down"></i> Export Table
+        </button>
+        <button type="button" class="@GetModeButtonClass(ImportExportMode.RegisterExternalTable)" @onclick="() => SetMode(ImportExportMode.RegisterExternalTable)" disabled="@_busy">
+            <i class="bi bi-link-45deg"></i> Register External Table
+        </button>
+        <button type="button" class="@GetModeButtonClass(ImportExportMode.RestoreTable)" @onclick="() => SetMode(ImportExportMode.RestoreTable)" disabled="@_busy">
+            <i class="bi bi-box-arrow-in-up"></i> Restore Table
+        </button>
+    </div>
+
+    <ImportExportStatus Message="@_message" Error="@_error" DownloadUrl="@_downloadUrl" />
+    <ImportExportProgress Progress="@_progress" StartedAt="@_operationStartedAt" CanCancel="@_busy" OnCancel="@CancelOperation" />
+
+    <div class="import-export-panel">
+        @switch (_mode)
+        {
+            case ImportExportMode.ExportTable:
+                <div class="import-export-grid">
+                    <label>
+                        <span>Table</span>
+                        <select @bind="_selectedTable" @bind:after="OnSelectedTableChangedAsync" disabled="@_busy">
+                            @foreach (string table in _tables)
+                            {
+                                <option value="@table">@table</option>
+                            }
+                        </select>
+                    </label>
+
+                    <div class="import-export-field">
+                        <span>Destination</span>
+                        <div class="import-export-segmented">
+                            <button type="button" class="@GetDestinationButtonClass(TableExportDestination.Download)" @onclick="() => SetDestination(TableExportDestination.Download)" disabled="@_busy">
+                                <i class="bi bi-download"></i> Download
+                            </button>
+                            <button type="button" class="@GetDestinationButtonClass(TableExportDestination.ServerPath)" @onclick="() => SetDestination(TableExportDestination.ServerPath)" disabled="@_busy">
+                                <i class="bi bi-folder2-open"></i> Server path
+                            </button>
+                        </div>
+                    </div>
+
+                    @if (_destination == TableExportDestination.ServerPath)
+                    {
+                        <label class="wide">
+                            <span>Path</span>
+                            <input value="@_serverPath" @oninput="e => _serverPath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                        </label>
+                    }
+
+                    <div class="import-export-actions wide">
+                        <button type="button" class="data-toolbar-btn primary" @onclick="ExportAsync" disabled="@(!CanExport)">
+                            @if (_busy && _mode == ImportExportMode.ExportTable)
+                            {
+                                <span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-box-arrow-down"></i>
+                            }
+                            Export
+                        </button>
+                    </div>
+                </div>
+                break;
+
+            case ImportExportMode.RegisterExternalTable:
+                <div class="import-export-grid">
+                    <label>
+                        <span>External table</span>
+                        <input value="@_externalTableName" @oninput="e => _externalTableName = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                    </label>
+                    <label class="wide">
+                        <span>Archive path</span>
+                        <input value="@_externalArchivePath" @oninput="e => _externalArchivePath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                    </label>
+                    <div class="import-export-actions wide">
+                        <button type="button" class="data-toolbar-btn primary" @onclick="RegisterExternalTableAsync" disabled="@(!CanRegisterExternal)">
+                            <i class="bi bi-link-45deg"></i> Register
+                        </button>
+                    </div>
+
+                    @if (_externalTables.Count > 0)
+                    {
+                        <div class="import-export-registrations wide">
+                            <div class="import-export-registrations-head">
+                                <strong>Registered external tables</strong>
+                                <span>@_externalTables.Count</span>
+                            </div>
+                            @foreach (ExternalTableRegistrationInfo registration in _externalTables)
+                            {
+                                <div class="import-export-registration-row">
+                                    <button type="button"
+                                            class="import-export-registration-main"
+                                            title="@registration.Path"
+                                            @onclick="() => UseExternalTableRegistration(registration)"
+                                            disabled="@_busy">
+                                        <span>@registration.TableName</span>
+                                        <small>@FormatExternalTableDetails(registration)</small>
+                                        <code>@registration.Path</code>
+                                    </button>
+                                    <button type="button"
+                                            class="data-toolbar-btn danger"
+                                            title="Drop external table registration"
+                                            @onclick="() => DropRegisteredExternalTableAsync(registration.TableName)"
+                                            disabled="@_busy">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                break;
+
+            case ImportExportMode.RestoreTable:
+                <div class="import-export-grid">
+                    <label class="wide">
+                        <span>Archive path</span>
+                        <input value="@_restoreArchivePath" @oninput="e => _restoreArchivePath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                    </label>
+                    <label>
+                        <span>Target table</span>
+                        <input value="@_restoreTableName" @oninput="e => _restoreTableName = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                    </label>
+                    <div class="import-export-actions wide">
+                        <button type="button" class="data-toolbar-btn primary" @onclick="RestoreAsync" disabled="@(!CanRestore)">
+                            <i class="bi bi-box-arrow-in-up"></i> Restore
+                        </button>
+                    </div>
+                </div>
+                break;
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? InitialTableName { get; set; }
+
+    private ImportExportMode _mode = ImportExportMode.ExportTable;
+    private TableExportDestination _destination = TableExportDestination.Download;
+    private IReadOnlyList<string> _tables = Array.Empty<string>();
+    private IReadOnlyList<ExternalTableRegistrationInfo> _externalTables = Array.Empty<ExternalTableRegistrationInfo>();
+    private string _selectedTable = string.Empty;
+    private string _serverPath = string.Empty;
+    private string _externalTableName = string.Empty;
+    private string _externalArchivePath = string.Empty;
+    private string _restoreArchivePath = string.Empty;
+    private string _restoreTableName = string.Empty;
+    private string? _message;
+    private string? _error;
+    private string? _downloadUrl;
+    private TableExportProgress? _progress;
+    private DateTimeOffset? _operationStartedAt;
+    private CancellationTokenSource? _operationCts;
+    private bool _busy;
+
+    private bool CanExport => !_busy && !string.IsNullOrWhiteSpace(_selectedTable) &&
+        (_destination == TableExportDestination.Download || !string.IsNullOrWhiteSpace(_serverPath));
+    private bool CanRegisterExternal => !_busy && !string.IsNullOrWhiteSpace(_externalTableName) && !string.IsNullOrWhiteSpace(_externalArchivePath);
+    private bool CanRestore => !_busy && !string.IsNullOrWhiteSpace(_restoreArchivePath);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(InitialTableName) &&
+            !string.Equals(_selectedTable, InitialTableName, StringComparison.OrdinalIgnoreCase))
+        {
+            _selectedTable = InitialTableName;
+            _externalTableName = $"archived_{InitialTableName}";
+            await RefreshDefaultServerPathAsync();
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        await RunAsync(async ct =>
+        {
+            _tables = (await DbClient.GetTableNamesAsync(ct))
+                .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
+                .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            _externalTables = await ImportExportService.GetExternalTablesAsync(ct);
+            if (string.IsNullOrWhiteSpace(_selectedTable) || !_tables.Contains(_selectedTable, StringComparer.OrdinalIgnoreCase))
+                _selectedTable = _tables.FirstOrDefault() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(_externalTableName) && !string.IsNullOrWhiteSpace(_selectedTable))
+                _externalTableName = $"archived_{_selectedTable}";
+
+            await RefreshDefaultServerPathAsync(ct);
+        }, clearMessage: false);
+    }
+
+    private async Task OnSelectedTableChangedAsync()
+    {
+        _externalTableName = string.IsNullOrWhiteSpace(_selectedTable) ? string.Empty : $"archived_{_selectedTable}";
+        await RefreshDefaultServerPathAsync();
+    }
+
+    private async Task RefreshDefaultServerPathAsync(CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_selectedTable))
+            return;
+
+        _serverPath = await ImportExportService.GetDefaultServerExportPathAsync(_selectedTable, ct);
+    }
+
+    private async Task ExportAsync()
+    {
+        await RunAsync(async ct =>
+        {
+            SetProgress(new TableExportProgress
+            {
+                Operation = "Export table",
+                Stage = "Preparing",
+                Message = _destination == TableExportDestination.Download
+                    ? "Preparing download export"
+                    : "Preparing server-path export",
+                TableName = _selectedTable,
+                Path = _destination == TableExportDestination.ServerPath ? _serverPath : null,
+            });
+            await InvokeAsync(StateHasChanged);
+            await Task.Yield();
+
+            var progress = CreateProgressReporter(ct);
+            var request = new TableExportRequest
+            {
+                TableName = _selectedTable,
+                Destination = _destination,
+                ServerPath = _destination == TableExportDestination.ServerPath ? _serverPath : null,
+            };
+            var result = await Task.Run(
+                () => ImportExportService.ExportTableAsync(request, progress, ct),
+                ct);
+
+            _downloadUrl = result.DownloadUrl;
+            _externalArchivePath = result.Path;
+            _restoreArchivePath = result.Path;
+            _message = result.IsDownload
+                ? $"Exported {result.RowCount} row(s) to {result.FileName}."
+                : $"Exported {result.RowCount} row(s) to {result.Path}.";
+        });
+    }
+
+    private async Task RegisterExternalTableAsync()
+    {
+        await RunAsync(async ct =>
+        {
+            SetProgress(new TableExportProgress
+            {
+                Operation = "Register external table",
+                Stage = "Queued",
+                Message = "Waiting to register external table",
+                TableName = _externalTableName,
+                Path = _externalArchivePath,
+            });
+            await InvokeAsync(StateHasChanged);
+            await Task.Yield();
+
+            var progress = CreateProgressReporter(ct);
+            var request = new ExternalTableRegistrationRequest
+            {
+                TableName = _externalTableName,
+                ArchivePath = _externalArchivePath,
+            };
+            await Task.Run(
+                () => ImportExportService.RegisterExternalTableAsync(request, progress, ct),
+                ct);
+            _externalTables = await ImportExportService.GetExternalTablesAsync(ct);
+            _message = $"Registered external table {_externalTableName}.";
+        });
+    }
+
+    private async Task DropRegisteredExternalTableAsync(string tableName)
+    {
+        await RunAsync(async ct =>
+        {
+            SetProgress(new TableExportProgress
+            {
+                Operation = "Drop external table",
+                Stage = "Dropping",
+                Message = "Removing external table registration",
+                TableName = tableName,
+            });
+
+            await Task.Run(
+                () => ImportExportService.DropExternalTableAsync(tableName, ct),
+                ct);
+            _externalTables = await ImportExportService.GetExternalTablesAsync(ct);
+            _message = $"Dropped external table {tableName}.";
+        });
+    }
+
+    private async Task RestoreAsync()
+    {
+        await RunAsync(async ct =>
+        {
+            SetProgress(new TableExportProgress
+            {
+                Operation = "Restore table",
+                Stage = "Restoring",
+                Message = "Creating target table and inserting archived rows",
+                TableName = string.IsNullOrWhiteSpace(_restoreTableName) ? null : _restoreTableName,
+                Path = _restoreArchivePath,
+            });
+            var request = new RestoreTableRequest
+            {
+                ArchivePath = _restoreArchivePath,
+                TargetTableName = _restoreTableName,
+            };
+            var result = await Task.Run(
+                () => ImportExportService.RestoreTableAsync(request, ct),
+                ct);
+            _message = $"Restored {result.RowsInserted} row(s) into {result.TableName}.";
+            _tables = await DbClient.GetTableNamesAsync(ct);
+        });
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> action, bool clearMessage = true)
+    {
+        if (_busy)
+            return;
+
+        _operationCts?.Dispose();
+        _operationCts = new CancellationTokenSource();
+        CancellationToken token = _operationCts.Token;
+        _busy = true;
+        _operationStartedAt = DateTimeOffset.UtcNow;
+        _progress = null;
+        _error = null;
+        if (clearMessage)
+        {
+            _message = null;
+            _downloadUrl = null;
+        }
+
+        await InvokeAsync(StateHasChanged);
+        await Task.Yield();
+
+        try
+        {
+            await action(token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            _message = "Operation canceled.";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+            _progress = null;
+            _operationStartedAt = null;
+            _operationCts?.Dispose();
+            _operationCts = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private IProgress<TableExportProgress> CreateProgressReporter(CancellationToken token) =>
+        new Progress<TableExportProgress>(progress =>
+        {
+            _ = InvokeAsync(() =>
+            {
+                if (!_busy || token.IsCancellationRequested)
+                    return;
+
+                _progress = progress;
+                StateHasChanged();
+            });
+        });
+
+    private void SetProgress(TableExportProgress progress)
+    {
+        if (!_busy)
+            return;
+
+        _progress = progress;
+        StateHasChanged();
+    }
+
+    private void CancelOperation()
+    {
+        _operationCts?.Cancel();
+        if (_progress is not null)
+        {
+            _progress = new TableExportProgress
+            {
+                Operation = _progress.Operation,
+                Stage = "Canceling",
+                Message = "Cancel requested",
+                TableName = _progress.TableName,
+                Path = _progress.Path,
+                RowsProcessed = _progress.RowsProcessed,
+                TotalRows = _progress.TotalRows,
+            };
+        }
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void UseExternalTableRegistration(ExternalTableRegistrationInfo registration)
+    {
+        _externalTableName = registration.TableName;
+        _externalArchivePath = registration.Path;
+    }
+
+    private void SetMode(ImportExportMode mode)
+    {
+        _mode = mode;
+        _error = null;
+        _message = null;
+        _downloadUrl = null;
+    }
+
+    private void SetDestination(TableExportDestination destination) => _destination = destination;
+
+    private string GetModeButtonClass(ImportExportMode mode) => _mode == mode ? "active" : string.Empty;
+    private string GetDestinationButtonClass(TableExportDestination destination) => _destination == destination ? "active" : string.Empty;
+
+    private static string FormatExternalTableDetails(ExternalTableRegistrationInfo registration)
+    {
+        string source = string.IsNullOrWhiteSpace(registration.SourceTableName)
+            ? "external"
+            : registration.SourceTableName;
+        return $"{source} · {registration.RowCount:N0} rows";
+    }
+
+    private enum ImportExportMode
+    {
+        ExportTable,
+        RegisterExternalTable,
+        RestoreTable,
+    }
+}

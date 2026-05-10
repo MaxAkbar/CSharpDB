@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
+using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
@@ -15811,4 +15812,300 @@ public sealed class MaterializedOperator : IOperator, IEstimatedRowCountProvider
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+/// <summary>
+/// Streams rows from a native CSharpDB table archive registered as an external table.
+/// </summary>
+public sealed class ExternalTableScanOperator : IOperator, IEstimatedRowCountProvider
+{
+    private readonly string _path;
+    private IAsyncEnumerator<DbValue[]>? _rows;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount { get; }
+
+    public ExternalTableScanOperator(
+        string path,
+        ColumnDefinition[] outputSchema,
+        int? estimatedRowCount = null)
+    {
+        _path = path;
+        OutputSchema = outputSchema;
+        EstimatedRowCount = estimatedRowCount > 0 ? estimatedRowCount : null;
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _rows = TableArchiveReader.ReadRowsAsync(_path, ct).GetAsyncEnumerator(ct);
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_rows is null)
+            return false;
+
+        if (!await _rows.MoveNextAsync())
+            return false;
+
+        Current = _rows.Current;
+        return true;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_rows is not null)
+            await _rows.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// Uses the embedded archive primary-key index when present, with a scan fallback for replaced legacy files.
+/// </summary>
+public sealed class ExternalTablePrimaryKeyLookupOperator : IOperator, IEstimatedRowCountProvider
+{
+    private readonly string _path;
+    private readonly int _primaryKeyColumnIndex;
+    private readonly long _seekKey;
+    private bool _consumed;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => 1;
+
+    public ExternalTablePrimaryKeyLookupOperator(
+        string path,
+        ColumnDefinition[] outputSchema,
+        int primaryKeyColumnIndex,
+        long seekKey)
+    {
+        _path = path;
+        OutputSchema = outputSchema;
+        _primaryKeyColumnIndex = primaryKeyColumnIndex;
+        _seekKey = seekKey;
+    }
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        _consumed = false;
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_consumed)
+            return false;
+
+        _consumed = true;
+        var lookup = await TableArchiveReader.LookupIntegerPrimaryKeyAsync(_path, _seekKey, ct);
+        DbValue[]? row = lookup.IsIndexed
+            ? lookup.Row
+            : await ScanForPrimaryKeyAsync(ct);
+
+        if (row is null)
+            return false;
+
+        Current = row;
+        return true;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _consumed = true;
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    private async ValueTask<DbValue[]?> ScanForPrimaryKeyAsync(CancellationToken ct)
+    {
+        await foreach (DbValue[] row in TableArchiveReader.ReadRowsAsync(_path, ct))
+        {
+            if (_primaryKeyColumnIndex >= 0 &&
+                _primaryKeyColumnIndex < row.Length &&
+                row[_primaryKeyColumnIndex].Type == DbType.Integer &&
+                row[_primaryKeyColumnIndex].AsInteger == _seekKey)
+            {
+                return row;
+            }
+        }
+
+        return null;
+    }
+}
+
+/// <summary>
+/// Probes an indexed external archive on the right side of an equality join.
+/// </summary>
+public sealed class ExternalIndexNestedLoopJoinOperator : IOperator, IEstimatedRowCountProvider
+{
+    private readonly IOperator _outer;
+    private readonly string _path;
+    private readonly JoinType _joinType;
+    private readonly int _outerKeyIndex;
+    private readonly int _rightColCount;
+    private readonly JoinSpanExpressionEvaluator? _residualPredicate;
+    private readonly int? _estimatedRowCount;
+    private TableArchivePrimaryKeyLookupReader? _lookupReader;
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => false;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+    public int? EstimatedRowCount => _estimatedRowCount;
+
+    public ExternalIndexNestedLoopJoinOperator(
+        IOperator outer,
+        string path,
+        JoinType joinType,
+        int outerKeyIndex,
+        int leftColCount,
+        int rightColCount,
+        Expression? residualCondition,
+        TableSchema compositeSchema,
+        int? estimatedOutputRowCount = null,
+        DbFunctionRegistry? functions = null)
+    {
+        _outer = outer;
+        _path = path;
+        _joinType = joinType;
+        _outerKeyIndex = outerKeyIndex;
+        _rightColCount = rightColCount;
+        _residualPredicate = residualCondition != null
+            ? ExpressionCompiler.CompileJoinSpan(residualCondition, compositeSchema, leftColCount, functions)
+            : null;
+        _estimatedRowCount = estimatedOutputRowCount > 0 ? estimatedOutputRowCount : null;
+        OutputSchema = compositeSchema.Columns as ColumnDefinition[] ?? compositeSchema.Columns.ToArray();
+    }
+
+    public async ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        if (_outer is IRowBufferReuseController outerController)
+            outerController.SetReuseCurrentRowBuffer(true);
+
+        _lookupReader = await TableArchivePrimaryKeyLookupReader.TryOpenAsync(_path, ct)
+            ?? throw new CSharpDbException(
+                ErrorCode.IoError,
+                $"External table archive '{_path}' no longer contains a usable primary-key index.");
+
+        await _outer.OpenAsync(ct);
+        Current = Array.Empty<DbValue>();
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        if (_lookupReader is null)
+            return false;
+
+        while (await _outer.MoveNextAsync(ct))
+        {
+            DbValue[] outerRow = _outer.Current;
+            DbValue keyValue = _outerKeyIndex < outerRow.Length ? outerRow[_outerKeyIndex] : DbValue.Null;
+            if (!TryConvertLookupKey(keyValue, out long lookupKey))
+            {
+                if (_joinType == JoinType.LeftOuter)
+                {
+                    Current = CreateLeftOuterRow(outerRow);
+                    return true;
+                }
+
+                continue;
+            }
+
+            DbValue[]? rightRow = await _lookupReader.LookupAsync(lookupKey, ct);
+            if (rightRow is not null && PassesResidual(outerRow, rightRow))
+            {
+                Current = CombineRows(outerRow, rightRow);
+                return true;
+            }
+
+            if (_joinType == JoinType.LeftOuter)
+            {
+                Current = CreateLeftOuterRow(outerRow);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await _outer.DisposeAsync();
+        }
+        finally
+        {
+            if (_lookupReader is not null)
+            {
+                await _lookupReader.DisposeAsync();
+                _lookupReader = null;
+            }
+        }
+
+        Current = Array.Empty<DbValue>();
+    }
+
+    private bool PassesResidual(DbValue[] leftRow, DbValue[] rightRow)
+    {
+        if (_residualPredicate == null)
+            return true;
+
+        return _residualPredicate(leftRow, rightRow).IsTruthy;
+    }
+
+    private DbValue[] CreateLeftOuterRow(DbValue[] leftRow)
+        => CombineWithNulls(leftRow, _rightColCount);
+
+    private static bool TryConvertLookupKey(DbValue value, out long key)
+    {
+        key = 0;
+
+        if (value.IsNull)
+            return false;
+
+        if (value.Type == DbType.Integer)
+        {
+            key = value.AsInteger;
+            return true;
+        }
+
+        if (value.Type == DbType.Real)
+        {
+            double real = value.AsReal;
+            if (real < long.MinValue || real > long.MaxValue)
+                return false;
+
+            double truncated = Math.Truncate(real);
+            if (truncated != real)
+                return false;
+
+            key = (long)real;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static DbValue[] CombineRows(DbValue[] left, DbValue[] right)
+    {
+        var combined = new DbValue[left.Length + right.Length];
+        left.CopyTo(combined, 0);
+        right.CopyTo(combined, left.Length);
+        return combined;
+    }
+
+    private static DbValue[] CombineWithNulls(DbValue[] row, int nullCount)
+    {
+        var combined = new DbValue[row.Length + nullCount];
+        row.CopyTo(combined, 0);
+        for (int i = row.Length; i < combined.Length; i++)
+            combined[i] = DbValue.Null;
+        return combined;
+    }
 }

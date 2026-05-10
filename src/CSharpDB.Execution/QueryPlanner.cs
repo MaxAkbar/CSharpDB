@@ -3,6 +3,8 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
+using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Primitives;
 using CSharpDB.Sql;
 using CSharpDB.Storage.Indexing;
@@ -16,6 +18,7 @@ namespace CSharpDB.Execution;
 public sealed class QueryPlanner
 {
     private const string InternalSavedQueriesTableName = "__saved_queries";
+    private const string InternalExternalTablesTableName = "__external_tables";
     private const int AnalyzeHistogramBucketCount = 16;
     private const int AnalyzeFrequentValueCount = 8;
     private const int MaxJoinReorderDpLeafCount = 6;
@@ -44,6 +47,13 @@ public sealed class QueryPlanner
         string? StatsSource,
         string StatsState,
         string? Detail);
+
+    private sealed record ExternalTableRegistration(
+        string TableName,
+        string Path,
+        string SourceTableName,
+        long RowCount,
+        DateTimeOffset CreatedUtc);
 
     private readonly record struct ExplainEstimateResult(TableSchema? Schema, bool HasRows, long Rows);
 
@@ -322,6 +332,24 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "updated_utc", Type = DbType.Text, Nullable = false },
     ];
 
+    private static readonly ColumnDefinition[] InternalExternalTablesColumns =
+    [
+        new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false, IsPrimaryKey = true },
+        new ColumnDefinition { Name = "path", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "source_table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "row_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] SystemExternalTablesColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "path", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "source_table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "row_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
+    ];
+
     private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
     [
         new ColumnDefinition
@@ -338,6 +366,7 @@ public sealed class QueryPlanner
     private readonly IRecordSerializer? _collectionReadSerializer;
     private readonly DbFunctionRegistry _functions;
     private readonly Func<string, long?>? _tableRowCountProvider;
+    private readonly string _externalTableBasePath;
 
     /// <summary>
     /// CTE materialized results, scoped to the current WITH query execution.
@@ -372,6 +401,8 @@ public sealed class QueryPlanner
     private List<DbValue[]>? _systemViewsRowsCache;
     private List<DbValue[]>? _systemTriggersRowsCache;
     private List<DbValue[]>? _systemObjectsRowsCache;
+    private List<DbValue[]>? _systemExternalTablesRowsCache;
+    private IReadOnlyList<ExternalTableRegistration>? _externalTableRegistrationsCache;
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
     private long? _systemForeignKeysCountCache;
@@ -408,6 +439,7 @@ public sealed class QueryPlanner
 
     private enum SelectPlanKind
     {
+        FastExternalPrimaryKeyLookup,
         FastPrimaryKeyLookup,
         FastIndexedLookup,
         FastSimpleTableScan,
@@ -544,7 +576,8 @@ public sealed class QueryPlanner
         Action<string, long>? nextRowIdObservationProvider = null,
         bool useTransientNextRowIdHints = false,
         DbFunctionRegistry? functions = null,
-        AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null)
+        AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
+        string? externalTableBasePath = null)
         : this(
             pager,
             catalog,
@@ -556,7 +589,8 @@ public sealed class QueryPlanner
             nextRowIdObservationProvider,
             useTransientNextRowIdHints,
             functions,
-            adaptiveQueryReoptimization)
+            adaptiveQueryReoptimization,
+            externalTableBasePath)
     {
     }
 
@@ -571,7 +605,8 @@ public sealed class QueryPlanner
         Action<string, long>? nextRowIdObservationProvider,
         bool useTransientNextRowIdHints,
         DbFunctionRegistry? functions,
-        AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null)
+        AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
+        string? externalTableBasePath = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -581,6 +616,9 @@ public sealed class QueryPlanner
             : null;
         _functions = functions ?? DbFunctionRegistry.Empty;
         _tableRowCountProvider = tableRowCountProvider;
+        _externalTableBasePath = string.IsNullOrWhiteSpace(externalTableBasePath)
+            ? Directory.GetCurrentDirectory()
+            : externalTableBasePath;
         _nextRowIdHintProvider = nextRowIdHintProvider;
         _nextRowIdReservationProvider = nextRowIdReservationProvider;
         _nextRowIdRangeReservationProvider = nextRowIdRangeReservationProvider;
@@ -625,8 +663,14 @@ public sealed class QueryPlanner
             CreateTableStatement create => await ExecuteSchemaMutationAsync(
                 token => ExecuteCreateTableAsync(create, token),
                 ct),
+            CreateExternalTableStatement createExternal => await ExecuteSchemaMutationAsync(
+                token => ExecuteCreateExternalTableAsync(createExternal, token),
+                ct),
             DropTableStatement drop => await ExecuteSchemaMutationAsync(
                 token => ExecuteDropTableAsync(drop, token),
+                ct),
+            DropExternalTableStatement dropExternal => await ExecuteSchemaMutationAsync(
+                token => ExecuteDropExternalTableAsync(dropExternal, token),
                 ct),
             InsertStatement insert => await ExecuteInsertAsync(insert, persistRootChanges: true, ct),
             QueryStatement query => await ExecuteQueryAsync(query, ct),
@@ -828,6 +872,8 @@ public sealed class QueryPlanner
         _systemViewsRowsCache = null;
         _systemTriggersRowsCache = null;
         _systemObjectsRowsCache = null;
+        _systemExternalTablesRowsCache = null;
+        _externalTableRegistrationsCache = null;
         _systemColumnsCountCache = null;
         _systemIndexesCountCache = null;
         _systemForeignKeysCountCache = null;
@@ -873,8 +919,13 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateTableAsync(CreateTableStatement stmt, CancellationToken ct)
     {
-        if (stmt.IfNotExists && _catalog.GetTable(stmt.TableName) != null)
-            return new QueryResult(0);
+        if (ObjectNameExists(stmt.TableName))
+        {
+            if (stmt.IfNotExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table '{stmt.TableName}' already exists.");
+        }
 
         var columns = stmt.Columns.Select(c => new ColumnDefinition
         {
@@ -909,8 +960,71 @@ public sealed class QueryPlanner
         return new QueryResult(0);
     }
 
+    private async ValueTask<QueryResult> ExecuteCreateExternalTableAsync(
+        CreateExternalTableStatement stmt,
+        CancellationToken ct)
+    {
+        if (ObjectNameExists(stmt.TableName))
+        {
+            if (stmt.IfNotExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table '{stmt.TableName}' already exists.");
+        }
+
+        string resolvedPath = ResolveExternalTablePath(stmt.Path);
+        try
+        {
+            var metadata = await TableArchiveReader.ReadMetadataAsync(resolvedPath, ct);
+            var manifest = metadata.Manifest;
+            await EnsureExternalTablesCatalogAsync(ct);
+
+            var insert = new InsertStatement
+            {
+                TableName = InternalExternalTablesTableName,
+                ColumnNames =
+                [
+                    "name",
+                    "path",
+                    "source_table_name",
+                    "row_count",
+                    "created_utc",
+                ],
+                ValueRows =
+                [
+                    [
+                        CreateLiteralExpression(DbValue.FromText(stmt.TableName)),
+                        CreateLiteralExpression(DbValue.FromText(stmt.Path)),
+                        CreateLiteralExpression(DbValue.FromText(manifest.SourceTableName)),
+                        CreateLiteralExpression(DbValue.FromInteger(manifest.RowCount)),
+                        CreateLiteralExpression(DbValue.FromText(manifest.CreatedUtc.ToString("O", CultureInfo.InvariantCulture))),
+                    ],
+                ],
+            };
+
+            await ExecuteInsertAsync(insert, persistRootChanges: true, ct);
+            _catalog.MarkLogicalSchemaChanged();
+            InvalidateExternalTableCaches();
+            return new QueryResult(0);
+        }
+        catch (Exception ex) when (IsExternalArchiveReadException(ex))
+        {
+            throw new CSharpDbException(
+                ErrorCode.IoError,
+                $"Could not read external table archive '{stmt.Path}'.",
+                ex);
+        }
+    }
+
     private async ValueTask<QueryResult> ExecuteDropTableAsync(DropTableStatement stmt, CancellationToken ct)
     {
+        if (TryGetExternalTableRegistration(stmt.TableName, out _))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"External table '{stmt.TableName}' is read-only. Use DROP EXTERNAL TABLE to remove its registration.");
+        }
+
         if (stmt.IfExists && _catalog.GetTable(stmt.TableName) == null)
             return new QueryResult(0);
 
@@ -932,8 +1046,28 @@ public sealed class QueryPlanner
         return new QueryResult(0);
     }
 
+    private async ValueTask<QueryResult> ExecuteDropExternalTableAsync(
+        DropExternalTableStatement stmt,
+        CancellationToken ct)
+    {
+        if (!TryGetExternalTableRegistration(stmt.TableName, out var registration))
+        {
+            if (stmt.IfExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"External table '{stmt.TableName}' not found.");
+        }
+
+        int deleted = await DeleteExternalTableRegistrationRowsAsync(registration.TableName, ct);
+        if (deleted > 0)
+            _catalog.MarkLogicalSchemaChanged();
+        InvalidateExternalTableCaches();
+        return new QueryResult(0);
+    }
+
     private async ValueTask<QueryResult> ExecuteAlterTableAsync(AlterTableStatement stmt, CancellationToken ct)
     {
+        ThrowIfExternalTableTarget(stmt.TableName, "altered");
         var schema = GetSchema(stmt.TableName);
 
         switch (stmt.Action)
@@ -1117,6 +1251,7 @@ public sealed class QueryPlanner
         if (stmt.IfNotExists && _catalog.GetIndex(stmt.IndexName) != null)
             return new QueryResult(0);
 
+        ThrowIfExternalTableTarget(stmt.TableName, "indexed");
         var tableSchema = GetSchema(stmt.TableName);
 
         if (stmt.Columns.Count == 0)
@@ -1240,8 +1375,13 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateViewAsync(CreateViewStatement stmt, CancellationToken ct)
     {
-        if (stmt.IfNotExists && _catalog.GetViewSql(stmt.ViewName) != null)
-            return new QueryResult(0);
+        if (ObjectNameExists(stmt.ViewName))
+        {
+            if (stmt.IfNotExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table or view '{stmt.ViewName}' already exists.");
+        }
 
         string viewSql = QueryToSql(stmt.Query);
 
@@ -2292,6 +2432,8 @@ public sealed class QueryPlanner
     {
         if (stmt.IfNotExists && _catalog.GetTrigger(stmt.TriggerName) != null)
             return new QueryResult(0);
+
+        ThrowIfExternalTableTarget(stmt.TableName, "used as a trigger target");
 
         // Validate the target table exists
         GetSchema(stmt.TableName);
@@ -4000,6 +4142,7 @@ public sealed class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct = default)
     {
+        ThrowIfExternalTableTarget(stmt.TableName, "modified with INSERT");
         if (ContainsSubqueries(stmt))
             stmt = await RewriteSubqueriesInInsertAsync(stmt, ct);
         if (ContainsSubqueries(stmt))
@@ -4772,6 +4915,10 @@ public sealed class QueryPlanner
     {
         switch (cachedPlan)
         {
+            case SelectPlanKind.FastExternalPrimaryKeyLookup:
+                if (TryFastExternalPkLookup(stmt, out var fastExternalPkResult))
+                    return fastExternalPkResult;
+                break;
             case SelectPlanKind.FastPrimaryKeyLookup:
                 if (TryFastPkLookup(stmt, out var fastPkResult))
                     return fastPkResult;
@@ -4830,6 +4977,11 @@ public sealed class QueryPlanner
     {
         if (!stmt.IsDistinct)
         {
+            if (TryFastExternalPkLookup(stmt, out var fastExternalPkResult))
+            {
+                selectedPlan = SelectPlanKind.FastExternalPrimaryKeyLookup;
+                return fastExternalPkResult;
+            }
             // Fast-path for simple PK equality lookups — bypasses aggregate checks, BuildFromOperator, and TryBuildIndexScan
             if (TryFastPkLookup(stmt, out var fastResult))
             {
@@ -5025,7 +5177,8 @@ public sealed class QueryPlanner
             remainingWhere = RemoveRedundantInnerJoinLocalLeafPredicates(joinRef, remainingWhere);
         if (stmt.From is SimpleTableRef simpleRef &&
             !_catalog.IsView(simpleRef.TableName) &&
-            !IsSystemCatalogTable(simpleRef.TableName))
+            !IsSystemCatalogTable(simpleRef.TableName) &&
+            !IsExternalTable(simpleRef.TableName))
         {
             if (stmt.Where != null)
             {
@@ -5483,6 +5636,8 @@ public sealed class QueryPlanner
             return null;
         if (IsSystemCatalogTable(lookup.TableName))
             return null;
+        if (IsExternalTable(lookup.TableName))
+            return null;
         if (_cteData != null && _cteData.ContainsKey(lookup.TableName))
             return null;
 
@@ -5584,6 +5739,8 @@ public sealed class QueryPlanner
         if (_catalog.IsView(lookup.TableName))
             return false;
         if (IsSystemCatalogTable(lookup.TableName))
+            return false;
+        if (IsExternalTable(lookup.TableName))
             return false;
         if (_cteData != null && _cteData.ContainsKey(lookup.TableName))
             return false;
@@ -5833,6 +5990,7 @@ public sealed class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct = default)
     {
+        ThrowIfExternalTableTarget(insert.TableName, "modified with INSERT");
         var schema = GetSchema(insert.TableName);
         int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
             ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
@@ -6052,6 +6210,81 @@ public sealed class QueryPlanner
     /// Fast path for simple PK lookups: SELECT * / columns FROM table WHERE pk = literal [AND ...].
     /// Bypasses BuildFromOperator, TryBuildIndexScan, and aggregate checks entirely.
     /// </summary>
+    private bool TryFastExternalPkLookup(SelectStatement stmt, out QueryResult result)
+    {
+        result = null!;
+
+        if (stmt.From is not SimpleTableRef simpleRef)
+            return false;
+        if (!TryGetExternalTableRegistration(simpleRef.TableName, out var registration))
+            return false;
+        if (stmt.Where == null)
+            return false;
+        if (stmt.GroupBy != null || stmt.Having != null)
+            return false;
+        if (stmt.OrderBy is { Count: > 0 })
+            return false;
+        if (stmt.Limit.HasValue || stmt.Offset.HasValue)
+            return false;
+
+        string resolvedPath = ResolveExternalTablePath(registration.Path);
+        TableSchema archiveSchema = ReadExternalArchiveSchema(registration, resolvedPath);
+        TableSchema querySchema = BuildExternalQuerySchema(simpleRef, registration, archiveSchema);
+        int pkIdx = querySchema.PrimaryKeyColumnIndex;
+        if (pkIdx < 0 || pkIdx >= querySchema.Columns.Count || querySchema.Columns[pkIdx].Type != DbType.Integer)
+            return false;
+
+        if (!TryExtractPrimaryKeyLookupWithResidual(stmt.Where, querySchema, pkIdx, out long lookupValue, out var residualWhere))
+            return false;
+
+        bool hasIndex;
+        try
+        {
+            hasIndex = TableArchiveReader
+                .HasIntegerPrimaryKeyIndexAsync(resolvedPath)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex) when (IsExternalArchiveReadException(ex))
+        {
+            throw new CSharpDbException(
+                ErrorCode.IoError,
+                $"Could not read external table archive '{registration.Path}'.",
+                ex);
+        }
+
+        if (!hasIndex)
+            return false;
+
+        IOperator op = new ExternalTablePrimaryKeyLookupOperator(
+            resolvedPath,
+            archiveSchema.Columns.ToArray(),
+            pkIdx,
+            lookupValue);
+
+        if (residualWhere != null)
+        {
+            op = new FilterOperator(
+                op,
+                GetOrCompileSpanExpression(residualWhere, querySchema),
+                batchPlan: null);
+        }
+
+        if (stmt.Columns.Count == 1 && stmt.Columns[0].IsStar)
+        {
+            result = CreateQueryResult(op);
+            return true;
+        }
+
+        if (!TryBuildColumnProjection(stmt.Columns, querySchema, out var columnIndices, out var outputCols))
+            return false;
+
+        op = new ProjectionOperator(op, columnIndices, outputCols, querySchema);
+        result = CreateQueryResult(op);
+        return true;
+    }
+
     private bool TryFastPkLookup(SelectStatement stmt, out QueryResult result)
     {
         result = null!;
@@ -6062,6 +6295,8 @@ public sealed class QueryPlanner
         if (_catalog.IsView(simpleRef.TableName))
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (IsExternalTable(simpleRef.TableName))
             return false;
 
         // Must have a WHERE clause
@@ -6304,8 +6539,6 @@ public sealed class QueryPlanner
         if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
             return false;
 
-        // Validate table exists and build the direct count operator.
-        GetSchema(simpleRef.TableName);
         string outputName = stmt.Columns[0].Alias ?? "COUNT(*)";
         var outputSchema = new[]
         {
@@ -6317,6 +6550,14 @@ public sealed class QueryPlanner
             },
         };
 
+        if (TryGetExternalTableRegistration(simpleRef.TableName, out var externalRegistration))
+        {
+            result = QueryResult.FromSyncScalar(DbValue.FromInteger(externalRegistration.RowCount), outputSchema);
+            return true;
+        }
+
+        // Validate table exists and build the direct count operator.
+        GetSchema(simpleRef.TableName);
         return TryBuildTableRowCountQuery(simpleRef.TableName, outputSchema, out result);
     }
 
@@ -6356,13 +6597,14 @@ public sealed class QueryPlanner
 
         long count = normalized switch
         {
-            "sys.tables" => _catalog.GetTableNames().Count,
+            "sys.tables" => CountVisibleUserTables(),
             "sys.columns" => CountSystemColumns(),
             "sys.indexes" => CountSystemIndexes(),
             "sys.foreign_keys" => CountSystemForeignKeys(),
             "sys.views" => _catalog.GetViewNames().Count,
             "sys.triggers" => _catalog.GetTriggers().Count,
             "sys.objects" => CountSystemObjects(),
+            "sys.external_tables" => GetExternalTableRegistrations().Count,
             "sys.table_stats" => _catalog.GetTableStatistics().Count,
             "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             "sys.planner_histograms" => CountPlannerHistogramRows(),
@@ -6404,6 +6646,9 @@ public sealed class QueryPlanner
         return count;
     }
 
+    private long CountVisibleUserTables() =>
+        _catalog.GetTableNames().LongCount(tableName => !IsHiddenInternalCatalogTable(tableName));
+
     private long CountSystemIndexes()
     {
         if (_systemIndexesCountCache.HasValue)
@@ -6440,11 +6685,12 @@ public sealed class QueryPlanner
     }
 
     private long CountSystemObjects() =>
-        _catalog.GetTableNames().Count
+        CountVisibleUserTables()
         + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal)
         + CountSystemForeignKeys()
         + _catalog.GetViewNames().Count
-        + _catalog.GetTriggers().Count;
+        + _catalog.GetTriggers().Count
+        + GetExternalTableRegistrations().Count;
 
     private bool TryBuildSimpleScalarAggregateColumnQuery(SelectStatement stmt, out QueryResult result)
     {
@@ -6453,6 +6699,8 @@ public sealed class QueryPlanner
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (IsExternalTable(simpleRef.TableName))
             return false;
 
         if (stmt.Where != null || stmt.GroupBy != null || stmt.Having != null)
@@ -6533,6 +6781,8 @@ public sealed class QueryPlanner
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (IsExternalTable(simpleRef.TableName))
             return false;
 
         if (stmt.Where == null || stmt.GroupBy != null || stmt.Having != null)
@@ -7021,6 +7271,8 @@ public sealed class QueryPlanner
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
             return false;
+        if (IsExternalTable(simpleRef.TableName))
+            return false;
 
         if (stmt.Where != null || stmt.Having != null)
             return false;
@@ -7087,6 +7339,8 @@ public sealed class QueryPlanner
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (IsExternalTable(simpleRef.TableName))
             return false;
 
         if (stmt.GroupBy is not { Count: 1 })
@@ -7168,6 +7422,8 @@ public sealed class QueryPlanner
         if (stmt.From is not SimpleTableRef simpleRef)
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (IsExternalTable(simpleRef.TableName))
             return false;
         if (stmt.Where != null || stmt.Having != null || stmt.OrderBy is { Count: > 0 } || stmt.Limit.HasValue || stmt.Offset.HasValue)
             return false;
@@ -7527,6 +7783,7 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteDeleteAsync(DeleteStatement stmt, CancellationToken ct)
     {
+        ThrowIfExternalTableTarget(stmt.TableName, "modified with DELETE");
         if (ContainsSubqueries(stmt))
             stmt = await RewriteSubqueriesInDeleteAsync(stmt, ct);
         bool hasRemainingSubqueries = ContainsSubqueries(stmt);
@@ -7612,6 +7869,7 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteUpdateAsync(UpdateStatement stmt, CancellationToken ct)
     {
+        ThrowIfExternalTableTarget(stmt.TableName, "modified with UPDATE");
         if (ContainsSubqueries(stmt))
             stmt = await RewriteSubqueriesInUpdateAsync(stmt, ct);
         bool hasRemainingSubqueries = ContainsSubqueries(stmt);
@@ -7800,6 +8058,9 @@ public sealed class QueryPlanner
 
             if (TryBuildSystemCatalogSource(simple, out var systemSource))
                 return systemSource;
+
+            if (TryBuildExternalTableSource(simple, out var externalSource))
+                return externalSource;
 
             // Check if this is a view
             var viewSql = _catalog.GetViewSql(simple.TableName);
@@ -8038,7 +8299,19 @@ public sealed class QueryPlanner
                 };
 
                 IOperator swappedJoinOp;
-                if (TryBuildIndexNestedLoopJoinOperator(
+                if (TryBuildExternalIndexNestedLoopJoinOperator(
+                    rewrittenJoin,
+                    rightOp,
+                    leftOp,
+                    rightSchema,
+                    leftSchema,
+                    swappedCompositeSchema,
+                    outerWhere,
+                    out var swappedExternalIndexNestedJoinOp))
+                {
+                    swappedJoinOp = swappedExternalIndexNestedJoinOp!;
+                }
+                else if (TryBuildIndexNestedLoopJoinOperator(
                     rewrittenJoin,
                     rightOp,
                     leftOp,
@@ -8092,6 +8365,19 @@ public sealed class QueryPlanner
                     compositeSchema);
 
                 return (projected, compositeSchema);
+            }
+
+            if (TryBuildExternalIndexNestedLoopJoinOperator(
+                join,
+                leftOp,
+                rightOp,
+                leftSchema,
+                rightSchema,
+                compositeSchema,
+                outerWhere,
+                out var externalIndexNestedJoinOp))
+            {
+                return (externalIndexNestedJoinOp!, compositeSchema);
             }
 
             if (TryBuildIndexNestedLoopJoinOperator(
@@ -8884,6 +9170,8 @@ public sealed class QueryPlanner
 
         if (IsSystemCatalogTable(simple.TableName) || _catalog.GetViewSql(simple.TableName) != null)
             return false;
+        if (IsExternalTable(simple.TableName))
+            return false;
 
         var schema = GetSchema(simple.TableName);
         if (!TryEstimateTableRefRowCount(simple, out long rowCount) || rowCount <= 0)
@@ -9541,6 +9829,104 @@ public sealed class QueryPlanner
         return projectionMap;
     }
 
+    private bool TryBuildExternalIndexNestedLoopJoinOperator(
+        JoinTableRef join,
+        IOperator leftOp,
+        IOperator rightOp,
+        TableSchema leftSchema,
+        TableSchema rightSchema,
+        TableSchema compositeSchema,
+        Expression? outerWhere,
+        out IOperator? indexNestedJoinOp)
+    {
+        indexNestedJoinOp = null;
+
+        if (join.JoinType is not (JoinType.Inner or JoinType.LeftOuter))
+            return false;
+
+        if (join.Right is not SimpleTableRef rightSimple)
+            return false;
+
+        if (!TryGetExternalTableRegistration(rightSimple.TableName, out var registration))
+            return false;
+
+        if (join.Condition == null)
+            return false;
+
+        if (!TryAnalyzeHashJoinCondition(
+                join.Condition,
+                compositeSchema,
+                leftSchema.Columns.Count,
+                out var leftKeyIndices,
+                out var rightKeyIndices,
+                out var residualCondition))
+        {
+            return false;
+        }
+
+        if (join.JoinType == JoinType.Inner &&
+            TryCollectLocalJoinLeafPredicates(outerWhere, rightSimple, rightSchema, out var rightLocalConjuncts))
+        {
+            residualCondition = AddResidualConjuncts(residualCondition, rightLocalConjuncts);
+        }
+
+        int rightPkIndex = rightSchema.PrimaryKeyColumnIndex;
+        if (leftKeyIndices.Length != 1 ||
+            rightKeyIndices.Length != 1 ||
+            rightPkIndex < 0 ||
+            rightPkIndex != rightKeyIndices[0] ||
+            rightSchema.Columns[rightPkIndex].Type != DbType.Integer)
+        {
+            return false;
+        }
+
+        string resolvedPath = ResolveExternalTablePath(registration.Path);
+        bool hasIndex;
+        try
+        {
+            hasIndex = TableArchiveReader
+                .HasIntegerPrimaryKeyIndexAsync(resolvedPath)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex) when (IsExternalArchiveReadException(ex))
+        {
+            throw new CSharpDbException(
+                ErrorCode.IoError,
+                $"Could not read external table archive '{registration.Path}'.",
+                ex);
+        }
+
+        if (!hasIndex)
+            return false;
+
+        bool hasOuterEstimate = TryEstimateJoinInputRowCount(leftOp, join.Left, out long outerRows);
+        bool hasInnerEstimate = TryEstimateJoinInputRowCount(rightOp, join.Right, out long innerRows);
+        if (hasOuterEstimate && hasInnerEstimate &&
+            !ShouldPreferIndexNestedLoop(outerRows, innerRows, lookupIsPrimaryKey: true, lookupIsUnique: true))
+        {
+            return false;
+        }
+
+        int? estimatedOutputRowCount = hasOuterEstimate
+            ? ToCapacityHint(outerRows)
+            : EstimateJoinOutputRowCount(join.JoinType, hasOuterEstimate, outerRows, hasInnerEstimate, innerRows);
+
+        indexNestedJoinOp = new ExternalIndexNestedLoopJoinOperator(
+            leftOp,
+            resolvedPath,
+            join.JoinType,
+            leftKeyIndices[0],
+            leftSchema.Columns.Count,
+            rightSchema.Columns.Count,
+            residualCondition,
+            compositeSchema,
+            estimatedOutputRowCount,
+            _functions);
+        return true;
+    }
+
     private bool TryBuildIndexNestedLoopJoinOperator(
         JoinTableRef join,
         IOperator leftOp,
@@ -9563,6 +9949,8 @@ public sealed class QueryPlanner
         if (_catalog.IsView(rightSimple.TableName))
             return false;
         if (IsSystemCatalogTable(rightSimple.TableName))
+            return false;
+        if (IsExternalTable(rightSimple.TableName))
             return false;
 
         if (_cteData != null && _cteData.ContainsKey(rightSimple.TableName))
@@ -11296,6 +11684,8 @@ public sealed class QueryPlanner
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
             return false;
+        if (IsExternalTable(simpleRef.TableName))
+            return false;
 
         if (stmt.Where == null)
             return false;
@@ -11901,6 +12291,8 @@ public sealed class QueryPlanner
         if (_catalog.IsView(simpleRef.TableName))
             return false;
         if (IsSystemCatalogTable(simpleRef.TableName))
+            return false;
+        if (IsExternalTable(simpleRef.TableName))
             return false;
         if (_cteData != null && _cteData.ContainsKey(simpleRef.TableName))
             return false;
@@ -14896,6 +15288,286 @@ public sealed class QueryPlanner
         };
     }
 
+    private async ValueTask<TableSchema> EnsureExternalTablesCatalogAsync(CancellationToken ct)
+    {
+        if (_catalog.GetTable(InternalExternalTablesTableName) is { } existing)
+        {
+            ValidateExternalTablesCatalogSchema(existing);
+            return existing;
+        }
+
+        var schema = new TableSchema
+        {
+            TableName = InternalExternalTablesTableName,
+            Columns = InternalExternalTablesColumns,
+            NextRowId = 1,
+        };
+
+        await _catalog.CreateTableAsync(schema, ct);
+        _externalTableRegistrationsCache = null;
+        return schema;
+    }
+
+    private static void ValidateExternalTablesCatalogSchema(TableSchema schema)
+    {
+        foreach (ColumnDefinition requiredColumn in InternalExternalTablesColumns)
+        {
+            int columnIndex = schema.GetColumnIndex(requiredColumn.Name);
+            if (columnIndex < 0 ||
+                schema.Columns[columnIndex].Type != requiredColumn.Type)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Internal external table metadata table '{InternalExternalTablesTableName}' has an unexpected schema.");
+            }
+        }
+    }
+
+    private bool ObjectNameExists(string name) =>
+        _catalog.GetTable(name) != null ||
+        _catalog.GetViewSql(name) != null ||
+        TryGetExternalTableRegistration(name, out _);
+
+    private bool IsExternalTable(string tableName) =>
+        TryGetExternalTableRegistration(tableName, out _);
+
+    private bool TryGetExternalTableRegistration(string tableName, out ExternalTableRegistration registration)
+    {
+        foreach (ExternalTableRegistration candidate in GetExternalTableRegistrations())
+        {
+            if (string.Equals(candidate.TableName, tableName, StringComparison.OrdinalIgnoreCase))
+            {
+                registration = candidate;
+                return true;
+            }
+        }
+
+        registration = null!;
+        return false;
+    }
+
+    private IReadOnlyList<ExternalTableRegistration> GetExternalTableRegistrations()
+    {
+        if (_externalTableRegistrationsCache is { } cached)
+            return cached;
+
+        if (_catalog.GetTable(InternalExternalTablesTableName) is not { } schema)
+            return Array.Empty<ExternalTableRegistration>();
+
+        ValidateExternalTablesCatalogSchema(schema);
+        var tableTree = _catalog.GetTableTree(InternalExternalTablesTableName, _pager);
+        var registrations = new List<ExternalTableRegistration>();
+        var scan = new TableScanOperator(
+            tableTree,
+            schema,
+            GetReadSerializer(schema),
+            TryGetCachedTreeRowCountCapacityHint(tableTree));
+
+        scan.OpenAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
+        try
+        {
+            while (scan.MoveNextAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult())
+            {
+                if (TryDecodeExternalTableRegistration(schema, scan.Current, out var registration))
+                    registrations.Add(registration);
+            }
+        }
+        finally
+        {
+            scan.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        _externalTableRegistrationsCache = registrations;
+        return registrations;
+    }
+
+    private async ValueTask<int> DeleteExternalTableRegistrationRowsAsync(string tableName, CancellationToken ct)
+    {
+        if (_catalog.GetTable(InternalExternalTablesTableName) is not { } schema)
+            return 0;
+
+        ValidateExternalTablesCatalogSchema(schema);
+        var tableTree = _catalog.GetTableTree(InternalExternalTablesTableName, _pager);
+        var rowIds = new List<long>();
+        var scan = new TableScanOperator(
+            tableTree,
+            schema,
+            GetReadSerializer(schema),
+            TryGetCachedTreeRowCountCapacityHint(tableTree));
+
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                if (TryDecodeExternalTableRegistration(schema, scan.Current, out var registration) &&
+                    string.Equals(registration.TableName, tableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    rowIds.Add(scan.CurrentRowId);
+                }
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        if (rowIds.Count == 0)
+            return 0;
+
+        await _catalog.AdjustTableRowCountAsync(InternalExternalTablesTableName, -rowIds.Count, ct);
+        foreach (long rowId in rowIds)
+            await tableTree.DeleteAsync(rowId, ct);
+
+        await _catalog.PersistRootPageChangesAsync(InternalExternalTablesTableName, ct);
+        return rowIds.Count;
+    }
+
+    private static bool TryDecodeExternalTableRegistration(
+        TableSchema schema,
+        DbValue[] row,
+        out ExternalTableRegistration registration)
+    {
+        registration = null!;
+
+        int nameIndex = schema.GetColumnIndex("name");
+        int pathIndex = schema.GetColumnIndex("path");
+        int sourceTableNameIndex = schema.GetColumnIndex("source_table_name");
+        int rowCountIndex = schema.GetColumnIndex("row_count");
+        int createdUtcIndex = schema.GetColumnIndex("created_utc");
+        if (nameIndex < 0 ||
+            pathIndex < 0 ||
+            sourceTableNameIndex < 0 ||
+            rowCountIndex < 0 ||
+            createdUtcIndex < 0 ||
+            nameIndex >= row.Length ||
+            pathIndex >= row.Length ||
+            sourceTableNameIndex >= row.Length ||
+            rowCountIndex >= row.Length ||
+            createdUtcIndex >= row.Length)
+        {
+            return false;
+        }
+
+        DbValue name = row[nameIndex];
+        DbValue path = row[pathIndex];
+        DbValue sourceTableName = row[sourceTableNameIndex];
+        DbValue rowCount = row[rowCountIndex];
+        DbValue createdUtc = row[createdUtcIndex];
+        if (name.Type != DbType.Text ||
+            path.Type != DbType.Text ||
+            sourceTableName.Type != DbType.Text ||
+            rowCount.Type != DbType.Integer ||
+            createdUtc.Type != DbType.Text)
+        {
+            return false;
+        }
+
+        if (!DateTimeOffset.TryParse(
+                createdUtc.AsText,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsedCreatedUtc))
+        {
+            parsedCreatedUtc = DateTimeOffset.MinValue;
+        }
+
+        registration = new ExternalTableRegistration(
+            name.AsText,
+            path.AsText,
+            sourceTableName.AsText,
+            rowCount.AsInteger,
+            parsedCreatedUtc);
+        return true;
+    }
+
+    private string ResolveExternalTablePath(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(_externalTableBasePath, path));
+    }
+
+    private static bool IsExternalArchiveReadException(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or FormatException or NotSupportedException;
+
+    private void InvalidateExternalTableCaches()
+    {
+        _externalTableRegistrationsCache = null;
+        _systemExternalTablesRowsCache = null;
+        _systemObjectsRowsCache = null;
+        _selectPlanCache.Clear();
+        _selectBatchPlanCache.Clear();
+        _selectJoinReorderCache.Clear();
+        _selectPlanInsertionOrder.Clear();
+    }
+
+    private void ThrowIfExternalTableTarget(string tableName, string operation)
+    {
+        if (!TryGetExternalTableRegistration(tableName, out var registration))
+            return;
+
+        throw new CSharpDbException(
+            ErrorCode.SyntaxError,
+            $"External table '{registration.TableName}' is read-only and cannot be {operation}.");
+    }
+
+    private bool TryBuildExternalTableSource(SimpleTableRef tableRef, out (IOperator op, TableSchema schema) source)
+    {
+        source = default;
+        if (!TryGetExternalTableRegistration(tableRef.TableName, out var registration))
+            return false;
+
+        string resolvedPath = ResolveExternalTablePath(registration.Path);
+        TableSchema archiveSchema = ReadExternalArchiveSchema(registration, resolvedPath);
+        TableSchema querySchema = BuildExternalQuerySchema(tableRef, registration, archiveSchema);
+
+        source = (
+            new ExternalTableScanOperator(
+                resolvedPath,
+                archiveSchema.Columns.ToArray(),
+                ToCapacityHint(registration.RowCount)),
+            querySchema);
+        return true;
+    }
+
+    private TableSchema ReadExternalArchiveSchema(ExternalTableRegistration registration, string resolvedPath)
+    {
+        try
+        {
+            return TableArchiveReader
+                .ReadTableSchemaAsync(resolvedPath, registration.TableName)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex) when (IsExternalArchiveReadException(ex))
+        {
+            throw new CSharpDbException(
+                ErrorCode.IoError,
+                $"Could not read external table archive '{registration.Path}'.",
+                ex);
+        }
+    }
+
+    private static TableSchema BuildExternalQuerySchema(
+        SimpleTableRef tableRef,
+        ExternalTableRegistration registration,
+        TableSchema archiveSchema)
+    {
+        string qualifier = tableRef.Alias ?? tableRef.TableName;
+        var qualifiedMappings = new Dictionary<string, int>(archiveSchema.Columns.Count, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < archiveSchema.Columns.Count; i++)
+            qualifiedMappings[$"{qualifier}.{archiveSchema.Columns[i].Name}"] = i;
+
+        return new TableSchema
+        {
+            TableName = registration.TableName,
+            Columns = archiveSchema.Columns,
+            ForeignKeys = archiveSchema.ForeignKeys,
+            QualifiedMappings = qualifiedMappings,
+        };
+    }
+
     private readonly record struct CompiledExpressionCacheKey(
         Expression Expression,
         IReadOnlyList<ColumnDefinition> Columns,
@@ -14917,6 +15589,9 @@ public sealed class QueryPlanner
 
     private static bool IsSystemCatalogTable(string tableName) =>
         TryNormalizeSystemCatalogTableName(tableName, out _);
+
+    private static bool IsHiddenInternalCatalogTable(string tableName) =>
+        string.Equals(tableName, InternalExternalTablesTableName, StringComparison.OrdinalIgnoreCase);
 
     private static bool TryNormalizeSystemCatalogTableName(string tableName, out string normalized)
     {
@@ -14973,6 +15648,13 @@ public sealed class QueryPlanner
             string.Equals(tableName, "sys_saved_queries", StringComparison.OrdinalIgnoreCase))
         {
             normalized = "sys.saved_queries";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.external_tables", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_external_tables", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.external_tables";
             return true;
         }
 
@@ -15083,6 +15765,11 @@ public sealed class QueryPlanner
                 rows = new List<DbValue[]>();
                 break;
 
+            case "sys.external_tables":
+                columns = SystemExternalTablesColumns;
+                rows = BuildSystemExternalTablesRows();
+                break;
+
             case "sys.table_stats":
                 columns = SystemTableStatsColumns;
                 rows = BuildSystemTableStatsRows();
@@ -15154,6 +15841,9 @@ public sealed class QueryPlanner
         var rows = new List<DbValue[]>(tableNames.Count);
         foreach (string tableName in tableNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
+            if (IsHiddenInternalCatalogTable(tableName))
+                continue;
+
             var schema = _catalog.GetTable(tableName);
             if (schema == null)
                 continue;
@@ -15183,6 +15873,9 @@ public sealed class QueryPlanner
         var rows = new List<DbValue[]>(tableNames.Count * 4);
         foreach (string tableName in tableNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
+            if (IsHiddenInternalCatalogTable(tableName))
+                continue;
+
             var schema = _catalog.GetTable(tableName);
             if (schema == null)
                 continue;
@@ -15260,6 +15953,9 @@ public sealed class QueryPlanner
         var rows = new List<DbValue[]>((int)Math.Min(CountSystemForeignKeys(), int.MaxValue));
         foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
+            if (IsHiddenInternalCatalogTable(tableName))
+                continue;
+
             TableSchema? schema = _catalog.GetTable(tableName);
             if (schema is null || schema.ForeignKeys.Count == 0)
                 continue;
@@ -15335,12 +16031,16 @@ public sealed class QueryPlanner
             + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal)
             + (int)Math.Min(CountSystemForeignKeys(), int.MaxValue)
             + _catalog.GetViewNames().Count
-            + _catalog.GetTriggers().Count;
+            + _catalog.GetTriggers().Count
+            + GetExternalTableRegistrations().Count;
 
         var rows = new List<DbValue[]>(capacity);
 
         foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
+            if (IsHiddenInternalCatalogTable(tableName))
+                continue;
+
             rows.Add(
             [
                 DbValue.FromText(tableName),
@@ -15366,6 +16066,9 @@ public sealed class QueryPlanner
 
         foreach (string tableName in _catalog.GetTableNames().OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
+            if (IsHiddenInternalCatalogTable(tableName))
+                continue;
+
             TableSchema? schema = _catalog.GetTable(tableName);
             if (schema is null || schema.ForeignKeys.Count == 0)
                 continue;
@@ -15401,7 +16104,41 @@ public sealed class QueryPlanner
             ]);
         }
 
+        foreach (ExternalTableRegistration registration in GetExternalTableRegistrations()
+                     .OrderBy(t => t.TableName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(registration.TableName),
+                DbValue.FromText("EXTERNAL TABLE"),
+                DbValue.Null,
+            ]);
+        }
+
         _systemObjectsRowsCache = rows;
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemExternalTablesRows()
+    {
+        if (_systemExternalTablesRowsCache != null)
+            return _systemExternalTablesRowsCache;
+
+        var registrations = GetExternalTableRegistrations();
+        var rows = new List<DbValue[]>(registrations.Count);
+        foreach (ExternalTableRegistration registration in registrations.OrderBy(t => t.TableName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(registration.TableName),
+                DbValue.FromText(registration.Path),
+                DbValue.FromText(registration.SourceTableName),
+                DbValue.FromInteger(registration.RowCount),
+                DbValue.FromText(registration.CreatedUtc.ToString("O", CultureInfo.InvariantCulture)),
+            ]);
+        }
+
+        _systemExternalTablesRowsCache = rows;
         return rows;
     }
 
@@ -15463,13 +16200,14 @@ public sealed class QueryPlanner
 
         return normalized switch
         {
-            "sys.tables" => _catalog.GetTableNames().Count,
+            "sys.tables" => CountVisibleUserTables(),
             "sys.columns" => CountSystemColumns(),
             "sys.indexes" => CountSystemIndexes(),
             "sys.foreign_keys" => CountSystemForeignKeys(),
             "sys.views" => _catalog.GetViewNames().Count,
             "sys.triggers" => _catalog.GetTriggers().Count,
             "sys.objects" => CountSystemObjects(),
+            "sys.external_tables" => GetExternalTableRegistrations().Count,
             "sys.table_stats" => _catalog.GetTableStatistics().Count,
             "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             "sys.planner_histograms" => CountPlannerHistogramRows(),

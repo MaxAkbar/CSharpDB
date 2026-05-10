@@ -93,6 +93,45 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_CreateExternalTable()
+    {
+        var stmt = Parser.Parse("CREATE EXTERNAL TABLE archived_customers FROM 'exports/customers.csdbtable'");
+        var create = Assert.IsType<CreateExternalTableStatement>(stmt);
+
+        Assert.Equal("archived_customers", create.TableName);
+        Assert.Equal("exports/customers.csdbtable", create.Path);
+        Assert.False(create.IfNotExists);
+    }
+
+    [Fact]
+    public void Parse_CreateExternalTable_IfNotExists()
+    {
+        var stmt = Parser.Parse("CREATE EXTERNAL TABLE IF NOT EXISTS archived_customers FROM 'exports/customers.csdbtable'");
+        var create = Assert.IsType<CreateExternalTableStatement>(stmt);
+
+        Assert.True(create.IfNotExists);
+    }
+
+    [Fact]
+    public void Parse_DropExternalTable()
+    {
+        var stmt = Parser.Parse("DROP EXTERNAL TABLE IF EXISTS archived_customers");
+        var drop = Assert.IsType<DropExternalTableStatement>(stmt);
+
+        Assert.Equal("archived_customers", drop.TableName);
+        Assert.True(drop.IfExists);
+    }
+
+    [Fact]
+    public void Parse_CreateExternalTable_RequiresStringPath()
+    {
+        var error = Assert.Throws<CSharpDbException>(
+            () => Parser.Parse("CREATE EXTERNAL TABLE archived_customers FROM exports/customers.csdbtable"));
+
+        Assert.Equal(ErrorCode.SyntaxError, error.Code);
+    }
+
+    [Fact]
     public void Parse_CreateTable_OnlyOnDeleteCascadeIsSupported()
     {
         var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(

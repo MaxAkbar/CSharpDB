@@ -83,6 +83,32 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenImportExportTab_CreatesSeededTabFromTable()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenImportExportTab("customers");
+
+        Assert.Equal("import-export:customers", tab.Id);
+        Assert.Equal(TabKind.ImportExport, tab.Kind);
+        Assert.Equal("customers", tab.InitialTableName);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenImportExportTab_DeduplicatesBySeededTable()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenImportExportTab("customers");
+        TabDescriptor second = manager.OpenImportExportTab("customers");
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
     public void OpenCallbacksTab_CreatesHostCallbacksTab()
     {
         var manager = new TabManagerService();

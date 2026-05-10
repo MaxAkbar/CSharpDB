@@ -196,6 +196,19 @@ public sealed class TabManagerService
         return tab;
     }
 
+    public TabDescriptor OpenImportExportTab(string? tableName = null)
+    {
+        string tabId = string.IsNullOrWhiteSpace(tableName)
+            ? "import-export"
+            : $"import-export:{tableName}";
+        var tab = new TabDescriptor(tabId, "Import / Export", "bi-arrow-left-right", TabKind.ImportExport)
+        {
+            InitialTableName = string.IsNullOrWhiteSpace(tableName) ? null : tableName,
+        };
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenFormDesignerTab(string? formId = null, string? initialTableName = null, string? title = null)
     {
         TabDescriptor tab;

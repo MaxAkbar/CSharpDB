@@ -93,6 +93,7 @@ Desktop.ini
 ## CSharpDB runtime files
 *.cdb
 *.db
+*.csdbtable
 *.db.journal
 *.wal
 

@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
+using CSharpDB.ImportExport.TableArchives;
 using CoreColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
 using CoreDbType = CSharpDB.Primitives.DbType;
 using CoreForeignKeyDefinition = CSharpDB.Primitives.ForeignKeyDefinition;
@@ -17,11 +19,12 @@ using CoreTriggerTiming = CSharpDB.Primitives.TriggerTiming;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBackedClient
+internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter
 {
     private const string CollectionPrefix = "_col_";
     private const string ProcedureTableName = "__procedures";
     private const string SavedQueryTableName = "__saved_queries";
+    private const string ExternalTablesTableName = "__external_tables";
     private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
 
     private readonly string _databasePath;
@@ -60,6 +63,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     }
 
     public string DataSource => _databasePath;
+    public bool SupportsTableArchiveExport => true;
     internal DatabaseOptions DirectDatabaseOptions => _directDatabaseOptions;
     internal HybridDatabaseOptions? HybridDatabaseOptions => _hybridDatabaseOptions;
 
@@ -98,8 +102,130 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public async Task<TableBrowseResult> BrowseTableAsync(string tableName, int page = 1, int pageSize = 50, CancellationToken ct = default)
     {
-        var full = await BrowseTableInternalAsync(await GetDatabaseAsync(ct), tableName, ct);
-        return PageTableResult(full, page, pageSize);
+        var db = await GetDatabaseAsync(ct);
+        return await BrowseTablePageAsync(db, tableName, page, pageSize, ct);
+    }
+
+    public async Task<TableArchiveExportResult> ExportTableArchiveAsync(
+        string tableName,
+        string path,
+        CancellationToken ct = default)
+        => await ExportTableArchiveAsync(tableName, path, progress: null, ct);
+
+    public async Task<TableArchiveExportResult> ExportTableArchiveAsync(
+        string tableName,
+        string path,
+        IProgress<TableArchiveExportProgress>? progress,
+        CancellationToken ct = default)
+    {
+        string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        var db = await GetDatabaseAsync(ct);
+        var schema = db.GetTableSchema(normalizedTableName);
+        if (schema is null || IsInternalTable(normalizedTableName))
+            throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
+
+        int totalRows = await CountRowsViaScalarAsync(db, normalizedTableName, ct);
+        ReportArchiveExportProgress(
+            progress,
+            normalizedTableName,
+            "Preparing",
+            "Preparing snapshot",
+            rowsExported: 0,
+            totalRows,
+            path);
+
+        using var reader = db.CreateReaderSession();
+        await using var result = await reader.ExecuteReadAsync($"SELECT * FROM {normalizedTableName}", ct);
+        ReportArchiveExportProgress(
+            progress,
+            normalizedTableName,
+            "Exporting",
+            "Writing table archive",
+            rowsExported: 0,
+            totalRows,
+            path);
+        var rows = ReportArchiveRowsAsync(result.GetRowsAsync(ct), normalizedTableName, totalRows, path, progress, ct);
+        var manifest = await TableArchiveWriter.WriteAsync(path, schema, rows, ct);
+        ReportArchiveExportProgress(
+            progress,
+            normalizedTableName,
+            "Finalizing",
+            "Finalizing archive",
+            manifest.RowCount,
+            totalRows,
+            path);
+
+        return new TableArchiveExportResult
+        {
+            TableName = normalizedTableName,
+            Path = path,
+            FileName = Path.GetFileName(path),
+            RowCount = manifest.RowCount,
+        };
+    }
+
+    private static async IAsyncEnumerable<CSharpDB.Primitives.DbValue[]> ReportArchiveRowsAsync(
+        IAsyncEnumerable<CSharpDB.Primitives.DbValue[]> rows,
+        string tableName,
+        long totalRows,
+        string path,
+        IProgress<TableArchiveExportProgress>? progress,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        long exported = 0;
+        var interval = Stopwatch.StartNew();
+        await foreach (var row in rows.WithCancellation(ct).ConfigureAwait(false))
+        {
+            ct.ThrowIfCancellationRequested();
+            yield return row;
+            exported++;
+
+            if (exported == totalRows || exported % 1_000 == 0 || interval.ElapsedMilliseconds >= 500)
+            {
+                ReportArchiveExportProgress(
+                    progress,
+                    tableName,
+                    "Exporting",
+                    "Writing table archive",
+                    exported,
+                    totalRows,
+                    path);
+                interval.Restart();
+                await Task.Yield();
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
+        ReportArchiveExportProgress(
+            progress,
+            tableName,
+            "Exporting",
+            "Writing table archive",
+            exported,
+            totalRows,
+            path);
+    }
+
+    private static void ReportArchiveExportProgress(
+        IProgress<TableArchiveExportProgress>? progress,
+        string tableName,
+        string stage,
+        string message,
+        long rowsExported,
+        long? totalRows,
+        string path)
+    {
+        progress?.Report(new TableArchiveExportProgress
+        {
+            TableName = tableName,
+            Stage = stage,
+            Message = message,
+            RowsExported = rowsExported,
+            TotalRows = totalRows,
+            Path = path,
+        });
     }
 
     public async Task<Dictionary<string, object?>?> GetRowByPkAsync(string tableName, string pkColumn, object pkValue, CancellationToken ct = default)
@@ -888,23 +1014,6 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         }
     }
 
-    private static TableBrowseResult PageTableResult(TableBrowseResult result, int page, int pageSize)
-    {
-        int normalizedPage = NormalizePage(page);
-        int normalizedPageSize = NormalizePageSize(pageSize);
-        int skip = (normalizedPage - 1) * normalizedPageSize;
-
-        return new TableBrowseResult
-        {
-            TableName = result.TableName,
-            Schema = result.Schema,
-            Rows = result.Rows.Skip(skip).Take(normalizedPageSize).ToList(),
-            TotalRows = result.Rows.Count,
-            Page = normalizedPage,
-            PageSize = normalizedPageSize,
-        };
-    }
-
     private static ViewBrowseResult PageViewResult(ViewBrowseResult result, int page, int pageSize)
     {
         int normalizedPage = NormalizePage(page);
@@ -922,22 +1031,27 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         };
     }
 
-    private static async Task<TableBrowseResult> BrowseTableInternalAsync(Database db, string tableName, CancellationToken ct)
+    private static async Task<TableBrowseResult> BrowseTablePageAsync(Database db, string tableName, int page, int pageSize, CancellationToken ct)
     {
         string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
         var schema = db.GetTableSchema(normalizedTableName);
         if (schema is null || IsInternalTable(normalizedTableName))
             throw new CSharpDbClientException($"Table '{normalizedTableName}' was not found.");
 
-        var query = await ExecuteQueryAsync(db, $"SELECT * FROM {normalizedTableName}", ct);
+        int normalizedPage = NormalizePage(page);
+        int normalizedPageSize = NormalizePageSize(pageSize);
+        long skip = (long)(normalizedPage - 1) * normalizedPageSize;
+        int totalRows = await CountRowsViaScalarAsync(db, normalizedTableName, ct);
+        var query = await ExecuteQueryAsync(db, $"SELECT * FROM {normalizedTableName} LIMIT {normalizedPageSize} OFFSET {skip}", ct);
+
         return new TableBrowseResult
         {
             TableName = normalizedTableName,
             Schema = MapTableSchema(schema),
             Rows = query.Rows ?? [],
-            TotalRows = query.Rows?.Count ?? 0,
-            Page = 1,
-            PageSize = Math.Max(query.Rows?.Count ?? 0, 1),
+            TotalRows = totalRows,
+            Page = normalizedPage,
+            PageSize = normalizedPageSize,
         };
     }
 
@@ -1036,7 +1150,8 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private static bool IsInternalTable(string tableName)
         => tableName.StartsWith(CollectionPrefix, StringComparison.Ordinal)
            || string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase)
-           || string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase);
+           || string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase)
+           || string.Equals(tableName, ExternalTablesTableName, StringComparison.OrdinalIgnoreCase);
 
     private static int NormalizePage(int page) => page < 1 ? 1 : page;
 

@@ -2,6 +2,7 @@ using CSharpDB.Admin.Configuration;
 using CSharpDB.Admin.Components;
 using CSharpDB.Admin.Components.Samples.FormControls;
 using CSharpDB.Admin.Forms.Services;
+using CSharpDB.Admin.ImportExport.Services;
 using CSharpDB.Admin.Reports.Services;
 using CSharpDB.Admin.Services;
 using CSharpDB.Client;
@@ -50,6 +51,7 @@ builder.Services.AddCSharpDbAdminForms();
 builder.Services.AddCSharpDbAdminFormCodeModules();
 if (builder.Configuration.GetValue<bool>("AdminForms:EnableSampleControls"))
     builder.Services.AddSampleFormControls();
+builder.Services.AddCSharpDbAdminImportExport();
 builder.Services.AddCSharpDbAdminReports();
 
 var app = builder.Build();
@@ -73,6 +75,7 @@ app.UseAntiforgery();
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
+app.MapCSharpDbAdminImportExport();
 
 app.Run();
 

@@ -2705,6 +2705,11 @@ internal sealed class CatalogService
         Interlocked.Increment(ref _schemaVersion);
     }
 
+    internal void MarkLogicalSchemaChanged()
+    {
+        IncrementSchemaVersion();
+    }
+
     private async ValueTask<bool> PersistAuxiliaryCatalogRootPageChangesAsync(CancellationToken ct)
     {
         bool changed = false;

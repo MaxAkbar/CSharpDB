@@ -34,6 +34,7 @@
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
     <Project Path="src/CSharpDB.Generators/CSharpDB.Generators.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
+    <Project Path="src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Sql/CSharpDB.Sql.csproj" />
     <Project Path="src/CSharpDB.Storage/CSharpDB.Storage.csproj" />
     <Project Path="src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj" />
@@ -42,6 +43,7 @@
     <Project Path="src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj" />
     <Project Path="src/CSharpDB.Admin/CSharpDB.Admin.csproj" />
     <Project Path="src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj" />
+    <Project Path="src/CSharpDB.Admin.ImportExport/CSharpDB.Admin.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj" />
     <Project Path="src/CSharpDB.Api/CSharpDB.Api.csproj" />
     <Project Path="src/CSharpDB.Daemon/CSharpDB.Daemon.csproj" />

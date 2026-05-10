@@ -1,0 +1,26 @@
+@namespace CSharpDB.Admin.ImportExport.Components
+
+@if (!string.IsNullOrWhiteSpace(Error))
+{
+    <div class="import-export-alert error">
+        <i class="bi bi-exclamation-triangle"></i>
+        <span>@Error</span>
+    </div>
+}
+@if (!string.IsNullOrWhiteSpace(Message))
+{
+    <div class="import-export-alert success">
+        <i class="bi bi-check2-circle"></i>
+        <span>@Message</span>
+        @if (!string.IsNullOrWhiteSpace(DownloadUrl))
+        {
+            <a href="@DownloadUrl" target="_blank" rel="noopener">Download</a>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public string? DownloadUrl { get; set; }
+}

@@ -13,8 +13,11 @@
     <div class="grid-container">
         @if (_loading)
         {
-            <div class="loading-overlay">
+            <div class="loading-overlay loading-overlay-actions">
                 <div class="spinner"></div>
+                <button type="button" class="toolbar-btn danger" @onclick="CancelLoad">
+                    <i class="bi bi-x-circle"></i> Cancel
+                </button>
             </div>
         }
         else if (_loadError is not null)
@@ -232,6 +235,7 @@
     private readonly List<object?[]> _viewCursorLookaheadRows = new();
     private int _viewCursorNextPage;
     private bool _bypassViewCursorForNextLoad;
+    private CancellationTokenSource? _loadCts;
 
     private int TotalPages => _hasExactTotal
         ? Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize))
@@ -282,46 +286,87 @@
 
     public async Task LoadDataAsync()
     {
+        _loadCts?.Cancel();
+        var loadCts = new CancellationTokenSource();
+        _loadCts = loadCts;
+        CancellationToken ct = loadCts.Token;
+
         _loading = true;
         _loadError = null;
         _editingCell = null;
         _selectedRows.Clear();
         await NotifySelectionChangedAsync();
         StateHasChanged();
+        await Task.Yield();
 
         try
         {
             if (ShouldLoadAllRows())
             {
                 await DisposeViewCursorAsync();
-                await LoadAllRowsAsync();
+                await LoadAllRowsAsync(ct);
             }
             else
-                await LoadCurrentPageAsync();
+                await LoadCurrentPageAsync(ct);
 
             ApplyFiltersAndSort();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await DisposeViewCursorAsync();
+            if (ReferenceEquals(_loadCts, loadCts))
+                _loadError = "Query canceled.";
         }
         catch (Exception ex)
         {
             await DisposeViewCursorAsync();
-            _allRows = new();
-            _rows = new();
-            _totalRows = 0;
-            _hasExactTotal = true;
-            _hasNextPage = false;
-            _loadError = ex.Message;
+            if (ReferenceEquals(_loadCts, loadCts))
+            {
+                _allRows = new();
+                _rows = new();
+                _totalRows = 0;
+                _hasExactTotal = true;
+                _hasNextPage = false;
+                _loadError = ex.Message;
 
-            if (QuerySql is null)
-                Toast.Error($"Failed to load data: {ex.Message}");
+                if (QuerySql is null)
+                    Toast.Error($"Failed to load data: {ex.Message}");
+            }
         }
         finally
         {
-            _loading = false;
-            await NotifyQueryStatusChangedAsync();
-            await NotifyFiltersChangedAsync();
-            StateHasChanged();
+            bool isCurrentLoad = ReferenceEquals(_loadCts, loadCts);
+            if (isCurrentLoad)
+            {
+                _loadCts = null;
+                _loading = false;
+            }
+
+            loadCts.Dispose();
+            if (isCurrentLoad)
+            {
+                await NotifyQueryStatusChangedAsync();
+                await NotifyFiltersChangedAsync();
+                StateHasChanged();
+            }
         }
     }
+
+    private void CancelLoad()
+    {
+        _loadCts?.Cancel();
+        _loadError ??= "Canceling query...";
+        StateHasChanged();
+    }
+
+    private Task<CSharpDB.Client.Models.SqlExecutionResult> ExecuteSqlAsync(string sql, CancellationToken ct)
+        => Task.Run(() => DbClient.ExecuteSqlAsync(sql, ct), ct);
+
+    private Task<TableSchema?> GetTableSchemaAsync(string tableName, CancellationToken ct)
+        => Task.Run(() => DbClient.GetTableSchemaAsync(tableName, ct), ct);
+
+    private Task<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct)
+        => Task.Run(async () => await DbHolder.TryOpenForwardOnlyQueryCursorAsync(sql, ct), ct);
 
     // ─── Sorting ────────────────────
     private async Task SortColumn(int colIdx)
@@ -950,7 +995,7 @@
 
     private bool ShouldLoadAllRows() => QuerySql is null && HasPendingChanges;
 
-    private async Task LoadCurrentPageAsync()
+    private async Task LoadCurrentPageAsync(CancellationToken ct)
     {
         _loadedAllRows = false;
         _lastQueryElapsed = null;
@@ -959,18 +1004,18 @@
 
         if (QuerySql is not null)
         {
-            await LoadQueryPageAsync(QuerySql);
+            await LoadQueryPageAsync(QuerySql, ct);
             return;
         }
 
         if (TableName is not null)
         {
             string tableName = RequireIdentifier(TableName);
-            var schema = await DbClient.GetTableSchemaAsync(tableName)
+            var schema = await GetTableSchemaAsync(tableName, ct)
                 ?? throw new InvalidOperationException($"Table '{tableName}' was not found.");
 
             ApplyTableSchema(schema);
-            await LoadServerPageAsync(tableName);
+            await LoadServerPageAsync(tableName, ct);
             return;
         }
 
@@ -978,7 +1023,7 @@
         {
             string viewName = RequireIdentifier(ViewName);
             await DisposeViewCursorAsync();
-            await LoadUnknownTotalSourcePageAsync(viewName, captureColumnNames: true);
+            await LoadUnknownTotalSourcePageAsync(viewName, captureColumnNames: true, ct: ct);
 
             Columns ??= Array.Empty<string>();
             PrimaryKeyColumn = null;
@@ -990,9 +1035,9 @@
         _totalRows = 0;
     }
 
-    private async Task LoadServerPageAsync(string sourceName)
+    private async Task LoadServerPageAsync(string sourceName, CancellationToken ct)
     {
-        var countResult = await DbClient.ExecuteSqlAsync(BuildCountSql(sourceName));
+        var countResult = await ExecuteSqlAsync(BuildCountSql(sourceName), ct);
         if (countResult.Error is not null)
             throw new InvalidOperationException(countResult.Error);
 
@@ -1000,7 +1045,7 @@
         _hasExactTotal = true;
         ClampPageToAvailableRows();
 
-        var queryResult = await DbClient.ExecuteSqlAsync(BuildSelectSql(sourceName));
+        var queryResult = await ExecuteSqlAsync(BuildSelectSql(sourceName), ct);
         if (queryResult.Error is not null)
             throw new InvalidOperationException(queryResult.Error);
 
@@ -1011,11 +1056,14 @@
             Columns = queryResult.ColumnNames ?? Array.Empty<string>();
     }
 
-    private async Task LoadUnknownTotalSourcePageAsync(string sourceName, bool captureColumnNames = false)
+    private async Task LoadUnknownTotalSourcePageAsync(
+        string sourceName,
+        bool captureColumnNames = false,
+        CancellationToken ct = default)
     {
         while (true)
         {
-            var queryResult = await DbClient.ExecuteSqlAsync(BuildSelectSql(sourceName, _pageSize + 1));
+            var queryResult = await ExecuteSqlAsync(BuildSelectSql(sourceName, _pageSize + 1), ct);
             if (queryResult.Error is not null)
                 throw new InvalidOperationException(queryResult.Error);
 
@@ -1037,7 +1085,7 @@
         }
     }
 
-    private async Task<bool> TryLoadViewCursorPageAsync(string viewName)
+    private async Task<bool> TryLoadViewCursorPageAsync(string viewName, CancellationToken ct)
     {
         if (_bypassViewCursorForNextLoad)
         {
@@ -1049,7 +1097,7 @@
         if (_page == 1)
         {
             await DisposeViewCursorAsync();
-            _viewCursor = await DbHolder.TryOpenForwardOnlyQueryCursorAsync(cursorSql);
+            _viewCursor = await TryOpenForwardOnlyQueryCursorAsync(cursorSql, ct);
             if (_viewCursor is null)
                 return false;
 
@@ -1068,11 +1116,11 @@
         if (Columns is null || Columns.Length == 0)
             Columns = _viewCursor.ColumnNames;
 
-        await LoadViewCursorPageAsync();
+        await LoadViewCursorPageAsync(ct);
         return true;
     }
 
-    private async Task LoadViewCursorPageAsync()
+    private async Task LoadViewCursorPageAsync(CancellationToken ct)
     {
         if (_viewCursor is null)
             throw new InvalidOperationException("View cursor is not available.");
@@ -1086,7 +1134,7 @@
 
         int remaining = (_pageSize + 1) - rows.Count;
         if (remaining > 0)
-            rows.AddRange(await _viewCursor.ReadNextAsync(remaining));
+            rows.AddRange(await _viewCursor.ReadNextAsync(remaining, ct));
 
         _hasNextPage = rows.Count > _pageSize;
         if (_hasNextPage)
@@ -1103,7 +1151,7 @@
         ApplyPageRows(rows, hasNextPage: _hasNextPage);
     }
 
-    private async Task LoadQueryPageAsync(string querySql)
+    private async Task LoadQueryPageAsync(string querySql, CancellationToken ct)
     {
         _queryPagingPlan ??= QueryPagingPlan.Parse(querySql);
 
@@ -1114,8 +1162,9 @@
             {
                 string[] displayColumns = Columns ?? Array.Empty<string>();
                 // Over-fetch one row so ad-hoc SQL paging can stay responsive without blocking on COUNT(*).
-                var pageResult = await DbClient.ExecuteSqlAsync(
-                    _queryPagingPlan.BuildPageSql(_filters, _filterModes, _sortCol, _sortAsc, _pageSize + 1, _page, displayColumns));
+                var pageResult = await ExecuteSqlAsync(
+                    _queryPagingPlan.BuildPageSql(_filters, _filterModes, _sortCol, _sortAsc, _pageSize + 1, _page, displayColumns),
+                    ct);
                 if (pageResult.Error is not null)
                     throw new InvalidOperationException(pageResult.Error);
 
@@ -1144,7 +1193,7 @@
         }
     }
 
-    private async Task LoadAllRowsAsync()
+    private async Task LoadAllRowsAsync(CancellationToken ct)
     {
         var pendingRows = _allRows
             .Where(row => row.State != RowState.Unmodified)
@@ -1154,11 +1203,11 @@
         if (TableName is not null)
         {
             string tableName = RequireIdentifier(TableName);
-            var schema = await DbClient.GetTableSchemaAsync(tableName)
+            var schema = await GetTableSchemaAsync(tableName, ct)
                 ?? throw new InvalidOperationException($"Table '{tableName}' was not found.");
             ApplyTableSchema(schema);
 
-            var result = await DbClient.ExecuteSqlAsync($"SELECT * FROM {tableName}");
+            var result = await ExecuteSqlAsync($"SELECT * FROM {tableName}", ct);
             if (result.Error is not null)
                 throw new InvalidOperationException(result.Error);
 
@@ -1167,7 +1216,7 @@
         else if (ViewName is not null)
         {
             string viewName = RequireIdentifier(ViewName);
-            var result = await DbClient.ExecuteSqlAsync($"SELECT * FROM {viewName}");
+            var result = await ExecuteSqlAsync($"SELECT * FROM {viewName}", ct);
             if (result.Error is not null)
                 throw new InvalidOperationException(result.Error);
 
@@ -1636,6 +1685,8 @@
 
     public async ValueTask DisposeAsync()
     {
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
         await DisposeViewCursorAsync();
     }
 }

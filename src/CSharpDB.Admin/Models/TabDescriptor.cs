@@ -16,7 +16,8 @@ public enum TabKind
     FormDesigner,
     FormEntry,
     ReportDesigner,
-    ReportPreview
+    ReportPreview,
+    ImportExport
 }
 
 public sealed class TabDescriptor

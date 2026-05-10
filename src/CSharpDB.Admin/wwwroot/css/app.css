@@ -1817,6 +1817,11 @@ body {
     color: var(--text-muted);
 }
 
+.loading-overlay-actions {
+    flex-direction: column;
+    gap: 12px;
+}
+
 .spinner {
     display: inline-block;
     width: 24px;
@@ -5643,6 +5648,291 @@ body {
     margin-top: 0;
 }
 
+.import-export-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 100%;
+    padding: 20px;
+}
+
+.import-export-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.import-export-header h2 {
+    margin: 8px 0 0;
+    font-size: 22px;
+    font-weight: 650;
+    letter-spacing: 0;
+}
+
+.import-export-modebar,
+.import-export-segmented {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.import-export-modebar button,
+.import-export-segmented button {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 7px 11px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.import-export-modebar button.active,
+.import-export-segmented button.active {
+    border-color: var(--border-color);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.import-export-modebar button:disabled,
+.import-export-segmented button:disabled {
+    cursor: not-allowed;
+    opacity: 0.62;
+}
+
+.import-export-alert {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.import-export-alert.error {
+    border-color: rgba(239, 68, 68, 0.45);
+    color: var(--accent-red);
+}
+
+.import-export-alert.success {
+    border-color: rgba(34, 197, 94, 0.4);
+    color: var(--accent-green);
+}
+
+.import-export-alert a {
+    margin-left: auto;
+    color: var(--accent-blue);
+    text-decoration: none;
+}
+
+.import-export-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 980px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 36%, var(--border-color));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent-blue) 8%, var(--bg-secondary));
+}
+
+.import-export-progress-head,
+.import-export-progress-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.import-export-progress-head > div {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.import-export-progress-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.import-export-progress-head span,
+.import-export-progress-meta {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.import-export-progress-track {
+    position: relative;
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+}
+
+.import-export-progress-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+    transition: width 180ms ease;
+}
+
+.import-export-progress-fill.indeterminate {
+    position: absolute;
+    width: 34%;
+    min-width: 120px;
+    animation: import-export-progress-slide 1.15s ease-in-out infinite;
+}
+
+.import-export-progress-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+@keyframes import-export-progress-slide {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(320%); }
+}
+
+.import-export-panel {
+    border-top: 1px solid var(--border-color);
+    padding-top: 18px;
+}
+
+.import-export-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 340px) minmax(260px, 1fr);
+    gap: 16px;
+    max-width: 980px;
+}
+
+.import-export-grid label,
+.import-export-field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.import-export-grid label span,
+.import-export-field > span {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.import-export-grid input,
+.import-export-grid select {
+    min-height: 36px;
+    width: 100%;
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 7px 10px;
+    font-size: 13px;
+}
+
+.import-export-grid .wide {
+    grid-column: 1 / -1;
+}
+
+.import-export-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.import-export-registrations {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 6px;
+}
+
+.import-export-registrations-head,
+.import-export-registration-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.import-export-registrations-head {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.import-export-registrations-head span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 22px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    color: var(--text-muted);
+}
+
+.import-export-registration-row {
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.import-export-registration-main {
+    display: grid;
+    grid-template-columns: minmax(140px, 220px) minmax(130px, 190px) minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+}
+
+.import-export-registration-main span,
+.import-export-registration-main small,
+.import-export-registration-main code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.import-export-registration-main small {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.import-export-registration-main code {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.import-export-registration-main:disabled {
+    opacity: 0.62;
+}
+
 @media (max-width: 1200px) {
     .titlebar-toolbar .titlebar-action-btn span,
     .titlebar-action-btn {
@@ -5722,5 +6012,28 @@ body {
     .callbacks-detail-panel {
         border-left: none;
         border-top: 1px solid var(--border-color);
+    }
+
+    .import-export-header {
+        flex-direction: column;
+    }
+
+    .import-export-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .import-export-progress-head,
+    .import-export-progress-meta {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .import-export-registration-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .import-export-registration-main {
+        grid-template-columns: minmax(0, 1fr);
     }
 }
