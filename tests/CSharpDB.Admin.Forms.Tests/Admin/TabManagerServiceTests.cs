@@ -109,6 +109,63 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenDataModelTab_CreatesGlobalTab()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenDataModelTab();
+
+        Assert.Equal("data-model", tab.Id);
+        Assert.Equal(TabKind.DataModel, tab.Kind);
+        Assert.Null(tab.InitialDataModelSourceName);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenDataModelTab_CreatesSeededTab()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenDataModelTab("customers");
+
+        Assert.Equal("data-model:customers", tab.Id);
+        Assert.Equal(TabKind.DataModel, tab.Kind);
+        Assert.Equal("customers", tab.InitialDataModelSourceName);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenDataModelTab_DeduplicatesBySeed()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenDataModelTab("customers");
+        TabDescriptor second = manager.OpenDataModelTab("customers");
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenQueryDesignerTab_SeedsDesignerMode()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenQueryDesignerTab(new QueryDesignerState
+        {
+            Tables =
+            [
+                new DesignerTableNode { TableName = "customers" },
+            ],
+        });
+
+        Assert.Equal(TabKind.Query, tab.Kind);
+        Assert.Equal("Designer", tab.State["QueryMode"]);
+        Assert.Contains("customers", tab.DesignerStateJson);
+    }
+
+    [Fact]
     public void OpenCallbacksTab_CreatesHostCallbacksTab()
     {
         var manager = new TabManagerService();

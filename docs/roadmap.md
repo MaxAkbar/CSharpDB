@@ -1,6 +1,6 @@
 # CSharpDB Roadmap
 
-This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `main` state of the repo.
+This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current `v3.8.0` state of the repo.
 
 ---
 
@@ -32,6 +32,7 @@ Recently completed improvements to query performance, storage/runtime behavior, 
 | **Collection path indexes** | Nested scalar, array-element, nested array-object, Guid, temporal, and ordered text path indexes with `FindByPathAsync` / `FindByPathRangeAsync` | Done |
 | **Hybrid storage mode** | Lazy-resident durable storage with gRPC tunable file-cache configuration; Admin direct local hosting keeps a warm in-process database instance and uses hybrid incremental-durable options by default | Done |
 | **Client backup/restore** | `BackupAsync` / `RestoreAsync` as first-class `ICSharpDbClient` operations across direct, HTTP, gRPC, CLI, and Admin | Done |
+| **Native table archives and external tables** | Native `.csdbtable` table snapshots with fast Admin Import / Export, download or server-path destinations, `CREATE EXTERNAL TABLE` / `DROP EXTERNAL TABLE`, `sys.external_tables`, read-only external table scans/joins, and embedded primary-key archive lookup indexes for eligible point reads | Done |
 | **Older DB foreign-key retrofit migration** | Validate/apply maintenance workflow that rewrites existing child tables with persisted FK metadata across direct, HTTP, gRPC, CLI, and Admin | Done |
 
 ---
@@ -42,7 +43,8 @@ SQL feature parity, provider/tooling compatibility, and ecosystem expansion.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **User-defined functions and commands** | Trusted in-process C# scalar functions are implemented for SQL, triggers/procedures, direct clients, Admin Forms/Reports, and pipelines; common SQL/Admin scalar built-ins cover text, date/time, numeric, conversion, null/conditional, and Admin Forms domain helper scenarios; trusted commands back Admin Forms lifecycle events, command-button clicks, selected-control events, Admin Reports render lifecycle events, and pipeline run hooks; Admin Forms action sequences cover command, field/message/stop, reusable sequence, rendered record navigation/save/delete/refresh/go-to, open/close form, filter, SQL/procedure, control-property, condition, and rule workflows. Database-owned C# code modules now cover the local Admin Forms MVP with metadata storage, VS Code file-sync export/import, Roslyn diagnostics, local trust, form/control event binding, and trusted in-process handler dispatch. Aggregate/table-valued UDFs, native plugin extensions, report modules, remote delegate serialization, additional Access-style events, macro loops/on-error/temp vars, broader report/query/import/export actions, and sandboxed UDFs remain future work | Partial |
+| **User-defined functions and commands** | Done for the trusted in-process model: host-registered C# scalar functions, common SQL/Admin built-ins, trusted commands, Admin Forms/Reports/pipeline hooks, declarative Admin Forms action sequences, and local Admin Forms C# code modules are implemented across the supported surfaces. Untrusted sandboxed UDF execution is intentionally out of scope | Done |
+| **Writable external tables** | Planned opt-in writable external table registrations over mutable `.csdbx` files, backed by CSharpDB B+tree storage and limited to DML (`INSERT`, `UPDATE`, `DELETE`) in v1 while `.csdbtable` archives remain read-only | Planned |
 | **Subqueries** | Scalar subqueries, `IN (SELECT ...)`, `EXISTS (SELECT ...)`, including correlated evaluation in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions | Done |
 | **`UNION` / `INTERSECT` / `EXCEPT`** | Set operations across SELECT results, including use in top-level queries, views, and CTE query bodies | Done |
 | **Window functions** | `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LEAD()`, `LAG()` | Planned |
@@ -77,6 +79,7 @@ Advanced features and fundamental architecture enhancements.
 | **JSON path querying** | Query into JSON document fields in the Collection API (e.g., `$.address.city`) via `FindByPathAsync` / `FindByPathRangeAsync` | Done |
 | **Advanced collection storage path** | Binary direct-payload format with direct binary hydration, path-based field extraction, and richer expression/path indexes | Done |
 | **SQL batched row transport** | Internal row-batch transport serves as the batch-first SQL execution foundation across batch-capable result boundaries, scans, joins, and generic aggregates | Done |
+| **External table index coverage** | Follow writable `.csdbx` storage with broader external-table indexes, planner costing, and multi-column lookup/range support beyond the current archive primary-key point-lookup path | Planned |
 | **Source-generated collection fast path** | Done for the current phase: opt-in generated collection models now provide `GetGeneratedCollectionAsync<T>(...)`, generated field descriptors/index bindings, analyzer-packaged collection model/codecs, generated binary direct-payload encode/decode for supported document graphs, source-generated JSON fallback for unsupported shapes, trim/NativeAOT smoke coverage, and a dedicated sample | Done |
 | **Generated collection package ergonomics** | Streamline NuGet/analyzer packaging, templates, onboarding docs, and generated-collection setup so consumers can adopt the opt-in path with less project wiring | Planned |
 | **Broader generated collection model coverage** | Expand generator support beyond the current scalar, scalar collection, nested scalar, and nested collection-scalar shapes; unsupported shapes currently warn and fall back to source-generated JSON instead of binary direct payloads | Planned |
@@ -91,8 +94,7 @@ Advanced features and fundamental architecture enhancements.
 | **Initial multi-writer support** | Explicit `WriteTransaction` conflict-detected retry flow, shared auto-commit non-insert isolation, and opt-in `ConcurrentWriteTransactions` for shared implicit inserts | Done |
 | **Broader multi-writer insert optimization** | Opt-in `ConcurrentWriteTransactions` now reserves shared row-id ranges and rebases hot right-edge insert pages against pending WAL images, improving concurrent one-row auto-ID and explicit-ID insert fan-in while keeping serialized inserts as the default | Done |
 | **API-level sharding** | Route API/daemon requests across multiple warm CSharpDB database files so independent tenants or shard keys can use separate WAL and commit paths, with v1 focused on single-shard writes and point reads | Research |
-| **Replication / change feed** | Stream committed changes for read replicas or event-driven architectures | Research |
-| **WebAssembly sandboxed UDFs** | Execute untrusted user-submitted functions in a WASM sandbox with resource limits (fuel, memory caps) via Wasmtime | Research |
+| **Replication / change feed** | Retained commit-log change feeds and reactive query subscriptions for read replicas, live Admin views, and event-driven applications | Research |
 
 ---
 
@@ -102,7 +104,7 @@ These are known simplifications in the current implementation:
 
 | Area | Limitation |
 |------|-----------|
-| **Functions and automation** | Trusted in-process C# scalar functions, common built-in scalar helpers, Admin Forms domain helpers, trusted host commands, pipeline/report/form command hooks, declarative Admin Forms action sequences, and local trusted Admin Forms C# code modules are implemented for the current supported surfaces. Remaining gaps are aggregate/table-valued UDFs, native plugin extensions, report modules, remote delegate serialization, additional Access-style events, macro loops/on-error/temp vars, broader report/query/import/export actions, and sandboxed UDFs |
+| **Functions and automation** | CSharpDB's UDF/command model is trusted and in-process by design. Current supported surfaces include host-registered scalar functions, common built-ins, trusted commands, form/report/pipeline hooks, declarative action sequences, and local Admin Forms C# modules; untrusted sandboxed execution is intentionally out of scope |
 | **Query** | Scalar/`IN`/`EXISTS` subqueries are supported, including correlated cases in `WHERE`, non-aggregate projection, and `UPDATE`/`DELETE` expressions; correlated subqueries are not yet supported in `JOIN ON`, `GROUP BY`, `HAVING`, `ORDER BY`, or aggregate projections |
 | **Query** | `UNION`, `INTERSECT`, and `EXCEPT` are supported; `UNION ALL` is not implemented yet |
 | **Query** | No window functions |
@@ -110,6 +112,7 @@ These are known simplifications in the current implementation:
 | **Indexes** | Equality lookups support current `INTEGER`/`TEXT` indexes, but ordered range-scan pushdown is still limited to single-column `INTEGER` index paths |
 | **RowId** | Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert |
 | **Collections** | `FindByIndexAsync` supports declared field-equality lookups; `FindByPathAsync` and `FindByPathRangeAsync` support path-based queries on indexed paths; `FindAsync` remains a full scan for unindexed predicates. Generated collections require registered descriptors for existing collection indexes; unsupported generated model shapes warn and use the source-generated JSON fallback instead of binary direct payloads |
+| **External Tables** | Native `.csdbtable` archives can be registered and queried as read-only external tables. Writable external tables are planned as an opt-in `.csdbx` format; current archives remain read-only, and broader external indexes, range seeks, and deeper planner costing remain planned |
 | **Networking** | `CSharpDB.Daemon` now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today |
 | **Security** | Remote REST and daemon gRPC support opt-in API-key authentication, defaulting to `None` for backward compatibility. JWT, RBAC, mTLS helpers, TLS-specific configuration, and at-rest encryption are not implemented |
 | **Admin Forms** | The Forms designer/runtime supports the core generated-form and data-entry path plus trusted command-backed automation, including lifecycle events, command buttons, selected-control events, conditional UI rules, domain formula helpers, and declarative action sequences for current record, form navigation, filtering, SQL/procedure, and control-property workflows. It still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, additional events, advanced filtering/sorting, report/query/import/export actions, macro loops/on-error/temp vars, and broader controls |
@@ -179,6 +182,7 @@ Major features already implemented:
 - Full-text search with tokenization, stemming, and relevance ranking
 - Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache
 - Client-wide `BackupAsync` / `RestoreAsync` across direct, HTTP, gRPC, CLI, and Admin
+- Native `.csdbtable` table archives with Admin Import / Export, read-only external table registration, `sys.external_tables`, external table scans/joins, and embedded archive primary-key lookup indexes
 - `ReplaceAsync` for index stores
 - Package-driven ETL pipelines with validation, dry-run, execute/resume, persisted run history, and Admin visual designer support
 
@@ -197,8 +201,14 @@ Major features already implemented:
 - [Storage Engine Guide](storage/README.md) — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog
 - [Compression SDK Sample](../samples/compression-sdk/README.md) — Application-level payload compression helpers, benchmarks, and storage-format boundaries
 - [Native FFI Tutorials](tutorials/native-ffi/README.md) — Python and Node.js examples using the NativeAOT shared library
-- [User-Defined Functions Plan](user-defined-functions/README.md) — C# library functions callable by the database, native plugin extensions, and WASM sandboxing
+- [User-Defined Functions Plan](user-defined-functions/README.md) — Trusted C# functions, commands, form/report/pipeline hooks, and code modules
+- [Data Hygiene Engine Plan](data-hygiene-engine/README.md) — SQL-first duplicate detection, deduplication, validation rules, and orphan detection
+- [Developer Experience Adoption Engine Plan](developer-experience-adoption-engine/README.md) — SQL-first seeding, query caching, computed columns, analytics helpers, and CLI/tooling polish
+- [Advanced Differentiators Plan](advanced-differentiators/README.md) — Archive-backed time travel, change feeds, reactive queries, and full-text SQL ergonomics
+- [Database DevOps Toolkit Plan](database-devops-toolkit/README.md) — Schema compare, data compare, drift reports, and generated deployment scripts
+- [Writable External Tables Plan](writable-external-tables/README.md) — Opt-in writable external tables backed by mutable B+tree external files
 - [Pub/Sub Change Events Plan](pub-sub-events/README.md) — Engine-level change events with channel-based delivery for real-time data subscriptions
 - [Admin Forms Access Parity Plan](admin-forms-access-parity/README.md) — Microsoft Access parity review findings and forms roadmap
 - [Admin Reports Access Parity Plan](admin-reports-access-parity/README.md) — Microsoft Access parity review findings and reports roadmap
 - [Benchmark Suite](../tests/CSharpDB.Benchmarks/README.md) — Performance data informing optimization priorities
+- [Native Table Archives Blog](https://csharpdb.com/blog/table-archives.html) — v3.8 table archive, external table, and Admin Import / Export overview

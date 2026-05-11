@@ -1,0 +1,567 @@
+@using CSharpDB.Admin.Models
+@inject IDataModelService DataModels
+@inject TabManagerService TabManager
+@inject ToastService Toast
+
+<div class="data-model-tab">
+    <div class="toolbar data-model-toolbar">
+        <button class="toolbar-btn primary"
+                @onclick="LoadAllAsync"
+                disabled="@_loading"
+                title="Render all user and external tables">
+            @if (_loading)
+            {
+                <span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>
+            }
+            <i class="bi bi-diagram-3"></i> Load All
+        </button>
+        <div class="designer-dropdown-wrap">
+            <button class="toolbar-btn"
+                    @onclick="ToggleAddSourcePanel"
+                    disabled="@_loading"
+                    title="Add table or external table">
+                <i class="bi bi-plus-square"></i> Add Source <i class="bi bi-chevron-down" style="font-size:10px"></i>
+            </button>
+            @if (_showAddSource)
+            {
+                <div class="designer-dropdown-panel data-model-source-menu">
+                    @foreach (DataModelSourceOption option in AvailableSourceOptions)
+                    {
+                        var source = option;
+                        <button class="designer-dropdown-item" @onclick="() => AddSourceAsync(source.Name)">
+                            <i class="bi @(source.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
+                            <span>@source.Name</span>
+                            @if (source.Kind == DataModelNodeKind.ExternalTable && !string.IsNullOrWhiteSpace(source.SourceTableName))
+                            {
+                                <small>@source.SourceTableName</small>
+                            }
+                        </button>
+                    }
+                    @if (!AvailableSourceOptions.Any())
+                    {
+                        <div class="designer-dropdown-empty">No remaining sources</div>
+                    }
+                </div>
+            }
+        </div>
+        <button class="toolbar-btn" @onclick="RefreshAsync" disabled="@_loading" title="Reload metadata">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <button class="toolbar-btn" @onclick="ClearCanvas" disabled="@_loading || _state.Nodes.Count == 0" title="Clear canvas">
+            <i class="bi bi-eraser"></i> Clear
+        </button>
+
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn icon-only"
+                @onclick="ZoomOut"
+                disabled="@(_loading || CurrentScale <= MinZoom)"
+                title="Zoom out">
+            <i class="bi bi-zoom-out"></i>
+        </button>
+        <span class="data-model-zoom-label">@ZoomLabel</span>
+        <button class="toolbar-btn"
+                @onclick="ResetZoom"
+                disabled="@(_loading || Math.Abs(CurrentScale - 1) < 0.001)"
+                title="Reset zoom">
+            <i class="bi bi-aspect-ratio"></i> Reset
+        </button>
+        <button class="toolbar-btn icon-only"
+                @onclick="ZoomIn"
+                disabled="@(_loading || CurrentScale >= MaxZoom)"
+                title="Zoom in">
+            <i class="bi bi-zoom-in"></i>
+        </button>
+
+        <div class="toolbar-separator"></div>
+        <input class="query-saved-input"
+               style="width:130px"
+               @bind="_saveLayoutName"
+               placeholder="Layout name..." />
+        <button class="toolbar-btn"
+                @onclick="SaveLayoutAsync"
+                disabled="@(_loading || string.IsNullOrWhiteSpace(_saveLayoutName))"
+                title="Save model layout">
+            <i class="bi bi-save"></i> Save
+        </button>
+        <div class="designer-dropdown-wrap">
+            <button class="toolbar-btn" @onclick="ToggleLoadPanel" disabled="@_loading" title="Load a saved model">
+                <i class="bi bi-folder2-open"></i> Load <i class="bi bi-chevron-down" style="font-size:10px"></i>
+            </button>
+            @if (_showLoadPanel)
+            {
+                <div class="designer-dropdown-panel">
+                    @if (!_savedLayouts.Any())
+                    {
+                        <div class="designer-dropdown-empty">No saved models</div>
+                    }
+                    else
+                    {
+                        @foreach (SavedQueryDefinition layout in _savedLayouts)
+                        {
+                            var saved = layout;
+                            <button class="designer-dropdown-item" @onclick="() => LoadLayoutAsync(saved.Name)">
+                                <i class="bi bi-diagram-3"></i> @saved.Name[DataModelService.LayoutPrefix.Length..]
+                            </button>
+                        }
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn"
+                @onclick="OpenInQueryDesigner"
+                disabled="@(_state.Nodes.Count == 0)"
+                title="Open current model as a visual query designer layout">
+            <i class="bi bi-box-arrow-up-right"></i> Open in Query Designer
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">
+            <span>@_state.Nodes.Count source@(_state.Nodes.Count == 1 ? "" : "s")</span>
+            <span>|</span>
+            <span>@_state.Relationships.Count relationship@(_state.Relationships.Count == 1 ? "" : "s")</span>
+        </div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+    }
+
+    <div class="data-model-workspace">
+        <section class="data-model-canvas-panel">
+            <SchemaCanvas State="_state"
+                          SelectedNodeName="_selectedNodeName"
+                          SelectedRelationshipId="_selectedRelationshipId"
+                          OnNodeSelected="SelectNode"
+                          OnNodeRemoved="RemoveNode"
+                          OnRelationshipSelected="SelectRelationship"
+                          OnNodeMoved="OnNodeMoved" />
+        </section>
+        <aside class="data-model-inspector">
+            <div class="data-model-inspector-section">
+                <h3>Selection</h3>
+                @if (SelectedNode is not null)
+                {
+                    <div class="data-model-selection-card">
+                        <strong>@SelectedNode.Name</strong>
+                        <span>@(SelectedNode.Kind == DataModelNodeKind.ExternalTable ? "External table" : "Table")</span>
+                        @if (!string.IsNullOrWhiteSpace(SelectedNode.SourceTableName))
+                        {
+                            <small>Source: @SelectedNode.SourceTableName</small>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(SelectedNode.ArchivePath))
+                        {
+                            <small class="mono-cell">@SelectedNode.ArchivePath</small>
+                        }
+                    </div>
+                }
+                else if (SelectedRelationship is not null)
+                {
+                    <div class="data-model-selection-card">
+                        <strong>@SelectedRelationship.LeftTable.@SelectedRelationship.LeftColumn</strong>
+                        <span>references @SelectedRelationship.RightTable.@SelectedRelationship.RightColumn</span>
+                        <small>@RelationshipKindLabel(SelectedRelationship.Kind)</small>
+                    </div>
+                }
+                else
+                {
+                    <p class="data-model-muted">Select a table or relationship.</p>
+                }
+            </div>
+
+            <div class="data-model-inspector-section">
+                <h3>Relationships</h3>
+                @if (_state.Relationships.Count == 0)
+                {
+                    <p class="data-model-muted">No relationships on the canvas.</p>
+                }
+                else
+                {
+                    @foreach (DataModelRelationship relationship in _state.Relationships)
+                    {
+                        var current = relationship;
+                        <button class="data-model-relationship-row @(string.Equals(_selectedRelationshipId, current.Id, StringComparison.Ordinal) ? "active" : "")"
+                                @onclick="() => SelectRelationship(current.Id)">
+                            <i class="bi @(current.Kind == DataModelRelationshipKind.ExternalArchiveForeignKey ? "bi-box-arrow-up-right" : "bi-link-45deg")"></i>
+                            <span>@current.LeftTable.@current.LeftColumn</span>
+                            <small>@current.RightTable.@current.RightColumn</small>
+                        </button>
+                    }
+                }
+            </div>
+
+            @if (AllWarnings.Count > 0)
+            {
+                <div class="data-model-inspector-section">
+                    <h3>Warnings</h3>
+                    @foreach (string warning in AllWarnings)
+                    {
+                        <div class="data-model-warning"><i class="bi bi-exclamation-triangle"></i> @warning</div>
+                    }
+                </div>
+            }
+
+            <div class="data-model-inspector-section preview">
+                <h3>Preview DDL</h3>
+                <pre>@PreviewSql</pre>
+            </div>
+        </aside>
+    </div>
+</div>
+
+@code {
+    private const double MinZoom = 0.5;
+    private const double MaxZoom = 2.0;
+    private const double ZoomStep = 0.1;
+
+    [Parameter] public TabDescriptor Tab { get; set; } = default!;
+
+    private DataModelState _state = new();
+    private IReadOnlyList<DataModelSourceOption> _sourceOptions = [];
+    private IReadOnlyList<SavedQueryDefinition> _savedLayouts = [];
+    private string? _selectedNodeName;
+    private string? _selectedRelationshipId;
+    private string _saveLayoutName = "";
+    private bool _showAddSource;
+    private bool _showLoadPanel;
+    private bool _loading;
+    private string? _error;
+
+    private IEnumerable<DataModelSourceOption> AvailableSourceOptions =>
+        _sourceOptions.Where(option => !_state.Nodes.Any(node => string.Equals(node.Name, option.Name, StringComparison.OrdinalIgnoreCase)));
+
+    private DataModelNode? SelectedNode =>
+        string.IsNullOrWhiteSpace(_selectedNodeName)
+            ? null
+            : _state.Nodes.FirstOrDefault(node => string.Equals(node.Name, _selectedNodeName, StringComparison.OrdinalIgnoreCase));
+
+    private DataModelRelationship? SelectedRelationship =>
+        string.IsNullOrWhiteSpace(_selectedRelationshipId)
+            ? null
+            : _state.Relationships.FirstOrDefault(relationship => string.Equals(relationship.Id, _selectedRelationshipId, StringComparison.Ordinal));
+
+    private IReadOnlyList<string> AllWarnings =>
+        _state.Warnings
+            .Concat(_state.Nodes.SelectMany(static node => node.Warnings.Select(warning => $"{node.Name}: {warning}")))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private string PreviewSql => DataModels.BuildPreviewSql(_state);
+
+    private double CurrentScale => NormalizeScale(_state.Scale);
+
+    private string ZoomLabel => $"{Math.Round(CurrentScale * 100):0}%";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadInitialAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Tab?.DataModelStateJson is not null && _state.Nodes.Count == 0)
+        {
+            try
+            {
+                DataModelState? saved = DataModelGraphBuilder.DeserializeState(Tab.DataModelStateJson);
+                if (saved is not null)
+                {
+                    _state = saved;
+                    NormalizeZoom();
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private async Task LoadInitialAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _sourceOptions = await DataModels.GetSourceOptionsAsync();
+            _savedLayouts = await DataModels.GetSavedLayoutsAsync();
+            if (Tab?.DataModelStateJson is not null)
+            {
+                DataModelState? saved = DataModelGraphBuilder.DeserializeState(Tab.DataModelStateJson);
+                if (saved is not null)
+                {
+                    _state = saved;
+                    NormalizeZoom();
+                }
+            }
+            else
+            {
+                _state = await DataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+                SaveState();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load data model: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _sourceOptions = await DataModels.GetSourceOptionsAsync();
+            DataModelState refreshed = await DataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+            PreservePositions(refreshed);
+            _state = refreshed;
+            SaveState();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to refresh data model: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadAllAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            double currentScale = CurrentScale;
+            _state = await DataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
+            _state.Scale = currentScale;
+            _selectedNodeName = null;
+            _selectedRelationshipId = null;
+            SaveState();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load full data model: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task AddSourceAsync(string sourceName)
+    {
+        _showAddSource = false;
+        _loading = true;
+        _error = null;
+        try
+        {
+            DataModelState addition = await DataModels.BuildModelAsync(sourceName);
+            Merge(addition);
+            _selectedNodeName = sourceName;
+            _selectedRelationshipId = null;
+            SaveState();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to add source '{sourceName}': {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Merge(DataModelState addition)
+    {
+        double offsetX = _state.Nodes.Count == 0 ? 0 : _state.Nodes.Max(static node => node.X) + 250;
+        foreach (DataModelNode node in addition.Nodes)
+        {
+            if (_state.Nodes.Any(existing => string.Equals(existing.Name, node.Name, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (offsetX > 0)
+                node.X += offsetX;
+            _state.Nodes.Add(node);
+        }
+
+        foreach (DataModelRelationship relationship in addition.Relationships)
+        {
+            if (!_state.Relationships.Any(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal)))
+                _state.Relationships.Add(relationship);
+        }
+
+        foreach (string warning in addition.Warnings)
+        {
+            if (!_state.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase))
+                _state.Warnings.Add(warning);
+        }
+    }
+
+    private void PreservePositions(DataModelState refreshed)
+    {
+        refreshed.ViewportX = _state.ViewportX;
+        refreshed.ViewportY = _state.ViewportY;
+        refreshed.Scale = CurrentScale;
+
+        foreach (DataModelNode node in refreshed.Nodes)
+        {
+            DataModelNode? existing = _state.Nodes.FirstOrDefault(current => string.Equals(current.Name, node.Name, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+                continue;
+
+            node.X = existing.X;
+            node.Y = existing.Y;
+            node.IsCollapsed = existing.IsCollapsed;
+        }
+    }
+
+    private void ClearCanvas()
+    {
+        _state = new DataModelState();
+        _selectedNodeName = null;
+        _selectedRelationshipId = null;
+        SaveState();
+    }
+
+    private void SelectNode(string name)
+    {
+        _selectedNodeName = name;
+        _selectedRelationshipId = null;
+    }
+
+    private void SelectRelationship(string id)
+    {
+        _selectedRelationshipId = id;
+        _selectedNodeName = null;
+    }
+
+    private void RemoveNode(string name)
+    {
+        _state.Nodes.RemoveAll(node => string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase));
+        _state.Relationships.RemoveAll(relationship =>
+            string.Equals(relationship.LeftTable, name, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(relationship.RightTable, name, StringComparison.OrdinalIgnoreCase));
+
+        if (string.Equals(_selectedNodeName, name, StringComparison.OrdinalIgnoreCase))
+            _selectedNodeName = null;
+        if (_selectedRelationshipId is not null && !_state.Relationships.Any(relationship => relationship.Id == _selectedRelationshipId))
+            _selectedRelationshipId = null;
+
+        SaveState();
+    }
+
+    private Task OnNodeMoved(DataModelNodeMove move)
+    {
+        SaveState();
+        return Task.CompletedTask;
+    }
+
+    private async Task SaveLayoutAsync()
+    {
+        try
+        {
+            await DataModels.SaveLayoutAsync(_saveLayoutName, _state);
+            await RefreshSavedLayoutsAsync();
+            Toast.Success($"Data model layout '{_saveLayoutName.Trim()}' saved.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to save data model layout: {ex.Message}");
+        }
+    }
+
+    private async Task LoadLayoutAsync(string fullName)
+    {
+        _showLoadPanel = false;
+        try
+        {
+            DataModelState? loaded = await DataModels.LoadLayoutAsync(fullName);
+            if (loaded is null)
+            {
+                Toast.Warning("Saved data model layout was not found.");
+                return;
+            }
+
+            _state = loaded;
+            NormalizeZoom();
+            _selectedNodeName = null;
+            _selectedRelationshipId = null;
+            SaveState();
+            Toast.Info($"Data model layout '{fullName[DataModelService.LayoutPrefix.Length..]}' loaded.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load data model layout: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshSavedLayoutsAsync()
+    {
+        try { _savedLayouts = await DataModels.GetSavedLayoutsAsync(); }
+        catch { _savedLayouts = []; }
+    }
+
+    private void OpenInQueryDesigner()
+    {
+        QueryDesignerState designerState = DataModels.ToQueryDesignerState(_state);
+        TabManager.OpenQueryDesignerTab(designerState);
+    }
+
+    private void ToggleAddSourcePanel()
+    {
+        _showAddSource = !_showAddSource;
+        _showLoadPanel = false;
+    }
+
+    private void ToggleLoadPanel()
+    {
+        _showLoadPanel = !_showLoadPanel;
+        _showAddSource = false;
+    }
+
+    private void ZoomIn() => SetZoom(CurrentScale + ZoomStep);
+
+    private void ZoomOut() => SetZoom(CurrentScale - ZoomStep);
+
+    private void ResetZoom() => SetZoom(1);
+
+    private void SetZoom(double scale)
+    {
+        _state.Scale = Math.Round(NormalizeScale(scale), 2);
+        SaveState();
+    }
+
+    private void NormalizeZoom()
+    {
+        _state.Scale = Math.Round(CurrentScale, 2);
+    }
+
+    private void SaveState()
+    {
+        NormalizeZoom();
+        if (Tab is not null)
+            Tab.DataModelStateJson = DataModelGraphBuilder.SerializeState(_state);
+    }
+
+    private static string RelationshipKindLabel(DataModelRelationshipKind kind) => kind switch
+    {
+        DataModelRelationshipKind.ExternalArchiveForeignKey => "Archive relationship",
+        DataModelRelationshipKind.Draft => "Draft relationship",
+        _ => "Foreign key",
+    };
+
+    private static double NormalizeScale(double scale)
+    {
+        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            return 1;
+
+        return Math.Clamp(scale, MinZoom, MaxZoom);
+    }
+}

@@ -64,7 +64,7 @@
             <div class="doc-content source-ref-body">
                 <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/roadmap.md</code>. For the shorter curated page, see <a href="roadmap.html">Roadmap</a>.</div>
                 <h1 id="csharpdb-roadmap">CSharpDB Roadmap</h1>
-                <p class="lead">This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current <code>v3.4.0</code> state of the repo.</p>
+                <p class="lead">This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current <code>v3.8.0</code> state of the repo.</p>
                 <hr/>
                 <h2 id="near-term">Near-Term</h2>
                 <p>Recently completed improvements to query performance, storage/runtime behavior, maintenance workflows, and developer ergonomics.</p>
@@ -188,6 +188,11 @@
                 <td>Done</td>
                 </tr>
                 <tr>
+                <td><strong>Native table archives and external tables</strong></td>
+                <td>Native <code>.csdbtable</code> table snapshots with fast Admin Import / Export, download or server-path destinations, <code>CREATE EXTERNAL TABLE</code> / <code>DROP EXTERNAL TABLE</code>, <code>sys.external_tables</code>, read-only external table scans/joins, and embedded primary-key archive lookup indexes for eligible point reads</td>
+                <td>Done</td>
+                </tr>
+                <tr>
                 <td><strong>Older DB foreign-key retrofit migration</strong></td>
                 <td>Validate/apply maintenance workflow that rewrites existing child tables with persisted FK metadata across direct, HTTP, gRPC, CLI, and Admin</td>
                 <td>Done</td>
@@ -207,8 +212,13 @@
                 </thead>
                 <tbody>
                 <tr>
-                <td><strong>User-defined functions</strong></td>
-                <td>Broader built-in scalar function registry (UPPER, ABS, COALESCE, etc.), user-registered C# functions, native plugin extensions</td>
+                <td><strong>User-defined functions and commands</strong></td>
+                <td>Done for the trusted in-process model: host-registered C# scalar functions, common SQL/Admin built-ins, trusted commands, Admin Forms/Reports/pipeline hooks, declarative Admin Forms action sequences, and local Admin Forms C# code modules are implemented across the supported surfaces. Untrusted sandboxed UDF execution is intentionally out of scope</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Writable external tables</strong></td>
+                <td>Planned opt-in writable external table registrations over mutable <code>.csdbx</code> files, backed by CSharpDB B+tree storage and limited to DML (<code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>) in v1 while <code>.csdbtable</code> archives remain read-only</td>
                 <td>Planned</td>
                 </tr>
                 <tr>
@@ -247,8 +257,13 @@
                 <td>Done</td>
                 </tr>
                 <tr>
-                <td><strong>Remote host security</strong></td>
-                <td>Add built-in authentication, authorization, and transport-security options for remote HTTP and gRPC access, including API keys, protected admin endpoints, and TLS/mTLS deployment support</td>
+                <td><strong>Remote API-key protection</strong></td>
+                <td>Opt-in API-key mode protects REST <code>/api/*</code> and daemon gRPC calls with constant-time key comparison while keeping default no-auth behavior for compatibility</td>
+                <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Remote host security hardening</strong></td>
+                <td>Add authorization, protected admin endpoint scopes, JWT/RBAC options, and TLS/mTLS deployment helpers for remote HTTP and gRPC access</td>
                 <td>Planned</td>
                 </tr>
                 <tr>
@@ -275,6 +290,16 @@
                 <td><strong>Admin dashboard improvements</strong></td>
                 <td>Richer SQL editor UX, query history, deeper diagnostics, and integrated Forms/Reports tooling beyond the core schema/procedure/storage surface</td>
                 <td>Done</td>
+                </tr>
+                <tr>
+                <td><strong>Admin Forms Access parity</strong></td>
+                <td>Close the highest-impact Access-style form gaps: runtime responsive layouts, full inferred validation enforcement, richer record-source/filter/sort models, Layout View, form modes, broader action/event coverage, and broader control coverage; trusted command-backed form lifecycle events, command buttons, and selected control events are now started</td>
+                <td>Partial</td>
+                </tr>
+                <tr>
+                <td><strong>Admin Reports Access parity</strong></td>
+                <td>Close the highest-impact Access-style report gaps: bounded saved-query previews, full report rendering/export, parameter/filter prompts, richer grouping/totals options, Layout View, conditional formatting, subreports, and broader report controls; trusted command-backed report preview lifecycle events are now started</td>
+                <td>Partial</td>
                 </tr>
                 <tr>
                 <td><strong>Visual query designer</strong></td>
@@ -336,6 +361,11 @@
                 <td>Done</td>
                 </tr>
                 <tr>
+                <td><strong>External table index coverage</strong></td>
+                <td>Follow writable <code>.csdbx</code> storage with broader external-table indexes, planner costing, and multi-column lookup/range support beyond the current archive primary-key point-lookup path</td>
+                <td>Planned</td>
+                </tr>
+                <tr>
                 <td><strong>Source-generated collection fast path</strong></td>
                 <td>Done for the current phase: opt-in generated collection models now provide <code>GetGeneratedCollectionAsync&lt;T&gt;(...)</code>, generated field descriptors/index bindings, analyzer-packaged collection model/codecs, generated binary direct-payload encode/decode for supported document graphs, source-generated JSON fallback for unsupported shapes, trim/NativeAOT smoke coverage, and a dedicated sample</td>
                 <td>Done</td>
@@ -367,13 +397,13 @@
                 </tr>
                 <tr>
                 <td><strong>Adaptive query re-optimization</strong></td>
-                <td>Re-plan or adapt at runtime when observed cardinality diverges materially from persisted statistics, especially after stale stats or parameter-sensitive predicates</td>
-                <td>Planned</td>
+                <td>Done for the current phase: opt-in adaptive join execution can switch eligible index nested-loop joins to hash joins and can flip inner hash build sides at safe pre-emission boundaries when observed rows diverge materially from estimates. Broader <code>EXPLAIN ANALYZE</code>, runtime actual-row reporting, adaptive stats persistence, and arbitrary mid-plan reordering remain future work</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>Public planner histogram inspection</strong></td>
-                <td>Expose histogram, heavy-hitter, composite-prefix, and estimate explanation diagnostics through a public surface; current histogram/prefix stats remain internal implementation details</td>
-                <td>Planned</td>
+                <td>Stable SQL-first diagnostics now expose <code>sys.planner_histograms</code>, <code>sys.planner_heavy_hitters</code>, <code>sys.planner_index_prefix_stats</code>, and <code>EXPLAIN ESTIMATE FOR &lt;query&gt;</code> while keeping raw histogram/prefix storage payloads internal</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>Async I/O batching</strong></td>
@@ -397,8 +427,8 @@
                 </tr>
                 <tr>
                 <td><strong>Broader multi-writer insert optimization</strong></td>
-                <td>Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path</td>
-                <td>Research</td>
+                <td>Opt-in <code>ConcurrentWriteTransactions</code> now reserves shared row-id ranges and rebases hot right-edge insert pages against pending WAL images, improving concurrent one-row auto-ID and explicit-ID insert fan-in while keeping serialized inserts as the default</td>
+                <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>API-level sharding</strong></td>
@@ -408,11 +438,6 @@
                 <tr>
                 <td><strong>Replication / change feed</strong></td>
                 <td>Stream committed changes for read replicas or event-driven architectures</td>
-                <td>Research</td>
-                </tr>
-                <tr>
-                <td><strong>WebAssembly sandboxed UDFs</strong></td>
-                <td>Execute untrusted user-submitted functions in a WASM sandbox with resource limits (fuel, memory caps) via Wasmtime</td>
                 <td>Research</td>
                 </tr>
                 </tbody>
@@ -429,8 +454,8 @@
                 </thead>
                 <tbody>
                 <tr>
-                <td><strong>Functions</strong></td>
-                <td>Very limited scalar function surface today: built-in <code>TEXT(expr)</code> plus aggregate functions; no broader built-in function library or user-defined functions yet</td>
+                <td><strong>Functions and automation</strong></td>
+                <td>CSharpDB's UDF/command model is trusted and in-process by design. Current supported surfaces include host-registered scalar functions, common built-ins, trusted commands, form/report/pipeline hooks, declarative action sequences, and local Admin Forms C# modules; untrusted sandboxed execution is intentionally out of scope</td>
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
@@ -461,12 +486,24 @@
                 <td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates. Generated collections require registered descriptors for existing collection indexes; unsupported generated model shapes warn and use the source-generated JSON fallback instead of binary direct payloads</td>
                 </tr>
                 <tr>
+                <td><strong>External Tables</strong></td>
+                <td>Native <code>.csdbtable</code> archives can be registered and queried as read-only external tables. Writable external tables are planned as an opt-in <code>.csdbx</code> format; current archives remain read-only, and broader external indexes, range seeks, and deeper planner costing remain planned</td>
+                </tr>
+                <tr>
                 <td><strong>Networking</strong></td>
                 <td><code>CSharpDB.Daemon</code> now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today</td>
                 </tr>
                 <tr>
                 <td><strong>Security</strong></td>
-                <td>Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned</td>
+                <td>Remote REST and daemon gRPC support opt-in API-key authentication, defaulting to <code>None</code> for backward compatibility. JWT, RBAC, mTLS helpers, TLS-specific configuration, and at-rest encryption are not implemented</td>
+                </tr>
+                <tr>
+                <td><strong>Admin Forms</strong></td>
+                <td>The Forms designer/runtime supports the core generated-form and data-entry path plus trusted command-backed automation, including lifecycle events, command buttons, selected-control events, conditional UI rules, domain formula helpers, and declarative action sequences for current record, form navigation, filtering, SQL/procedure, and control-property workflows. It still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, additional events, advanced filtering/sorting, report/query/import/export actions, macro loops/on-error/temp vars, and broader controls</td>
+                </tr>
+                <tr>
+                <td><strong>Admin Reports</strong></td>
+                <td>The Reports designer/runtime supports the core banded preview path plus trusted command-backed preview lifecycle events, but still needs Access-parity work for bounded saved-query previews, full report output/export, parameters, richer grouping and totals semantics, conditional formatting, subreports, and broader controls</td>
                 </tr>
                 <tr>
                 <td><strong>Text / Multilingual</strong></td>
@@ -478,7 +515,7 @@
                 </tr>
                 <tr>
                 <td><strong>Storage</strong></td>
-                <td>No page-level compression</td>
+                <td>No page-level compression; the compression SDK sample stores compressed payloads as ordinary application-managed <code>BLOB</code> values</td>
                 </tr>
                 <tr>
                 <td><strong>Storage</strong></td>
@@ -494,7 +531,7 @@
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td>Phase-2 cost-based planning is largely in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, internal histograms/heavy hitters/prefix stats, and bounded small-chain join reordering now feed join/access-path costing; remaining work is adaptive re-optimization and public histogram/diagnostic surfacing rather than missing core stats-guided costing</td>
+                <td>Phase-2 cost-based planning is in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, public planner-stat diagnostics, histogram/heavy-hitter/prefix estimates, and bounded small-chain join reordering now feed join/access-path costing. Opt-in adaptive join re-optimization can react to stale-stat or parameter-sensitive join cardinality misses, while broader runtime actuals, <code>EXPLAIN ANALYZE</code>, and full mid-plan reordering remain future work</td>
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
@@ -520,6 +557,8 @@
                 <li>Ordered integer index range scans (<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>BETWEEN</code>) in the fast lookup path</li>
                 <li><code>ANALYZE</code>, persisted <code>sys.table_stats</code> / <code>sys.column_stats</code>, and stale-aware column-stat refresh</li>
                 <li>Phase-2 cost-based query planning: statistics-guided access-path selection, join method choice, hash build-side choice, histogram/heavy-hitter/cardinality estimation, composite-prefix correlation modeling, and bounded small-chain inner-join reordering</li>
+                <li>Public planner diagnostics through <code>EXPLAIN ESTIMATE FOR SELECT</code>, <code>WITH</code>, compound queries, and <code>sys.planner_*</code> virtual catalogs</li>
+                <li>Opt-in adaptive join re-optimization behind <code>DatabaseOptions.AdaptiveQueryReoptimization</code></li>
                 <li>SQL statement and SELECT plan caching</li>
                 <li>First-class <code>IDENTITY</code> / <code>AUTOINCREMENT</code> support for <code>INTEGER PRIMARY KEY</code> columns</li>
                 <li>Persisted table <code>NextRowId</code> high-water mark with compatibility fallback for legacy metadata</li>
@@ -537,6 +576,7 @@
                 <li>Maintenance report, <code>REINDEX</code>, and <code>VACUUM</code> flows across client, CLI, API, and Admin UI</li>
                 <li>Dedicated <code>CSharpDB.Daemon</code> gRPC host for remote <code>CSharpDB.Client</code> access</li>
                 <li>Remote host consolidation in <code>CSharpDB.Daemon</code>, with REST <code>/api</code> and gRPC sharing the same warm hosted database client</li>
+                <li>Opt-in API-key protection for REST <code>/api/*</code> and daemon gRPC access</li>
                 <li>Storage tuning presets, bounded WAL read caching, memory-mapped main-file reads, and sliced background WAL auto-checkpointing</li>
                 <li>SQL executor/read-path fast paths for compact projections, broader join/index coverage, grouped aggregates, and correlated subquery filters</li>
                 <li>Batch-first SQL row-batch execution foundation with batch-aware scan/index/join roots, shared predicate/projection kernels, and batch-native generic aggregate paths</li>
@@ -544,6 +584,7 @@
                 <li>REST API with 34 endpoints and OpenAPI/Scalar documentation</li>
                 <li>Blazor Server admin dashboard</li>
                 <li>Integrated Admin Forms and Reports designers with runtime preview/entry, database-backed metadata persistence, and print-ready report output</li>
+                <li>Trusted C# callbacks, commands, Admin automation hooks, and local Admin Forms C# code modules</li>
                 <li>B+tree delete rebalancing with underflow handling (borrow/merge + interior collapse path)</li>
                 <li>Reusable snapshot reader sessions for higher concurrent-read throughput</li>
                 <li>Comprehensive benchmark suite (micro, macro, stress, scaling, in-memory, shared-memory)</li>
@@ -554,6 +595,7 @@
                 <li>Full-text search with tokenization, stemming, and relevance ranking</li>
                 <li>Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache</li>
                 <li>Client-wide <code>BackupAsync</code> / <code>RestoreAsync</code> across direct, HTTP, gRPC, CLI, and Admin</li>
+                <li>Native <code>.csdbtable</code> table archives with Admin Import / Export, read-only external table registration, <code>sys.external_tables</code>, external table scans/joins, and embedded archive primary-key lookup indexes</li>
                 <li><code>ReplaceAsync</code> for index stores</li>
                 <li>Package-driven ETL pipelines with validation, dry-run, execute/resume, persisted run history, and Admin visual designer support</li>
                 </ul>
@@ -570,9 +612,11 @@
                 <li>Database Encryption Plan — Encrypted storage format, key management, migration, and managed-surface rollout</li>
                 <li><a href="docs/storage-engine-reference.html">Storage Engine Guide</a> — CSharpDB.Storage API reference: device, pager, B+tree, WAL, indexing, serialization, and catalog</li>
                 <li>Native FFI Tutorials — Python and Node.js examples using the NativeAOT shared library</li>
-                <li>User-Defined Functions Plan — C# library functions callable by the database, native plugin extensions, and WASM sandboxing</li>
+                <li>User-Defined Functions Plan — Trusted C# functions, commands, form/report/pipeline hooks, and code modules</li>
+                <li>Writable External Tables Plan — Opt-in writable external tables backed by mutable B+tree external files</li>
                 <li>Pub/Sub Change Events Plan — Engine-level change events with channel-based delivery for real-time data subscriptions</li>
                 <li>Benchmark Suite — Performance data informing optimization priorities</li>
+                <li><a href="blog/table-archives.html">Native Table Archives Blog</a> — v3.8 table archive, external table, and Admin Import / Export overview</li>
                 </ul>
             </div>
         </div>

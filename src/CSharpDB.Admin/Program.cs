@@ -45,6 +45,7 @@ builder.Services.AddScoped<DatabaseChangeService>();
 builder.Services.AddScoped<HostCallbackCatalogService>();
 builder.Services.AddScoped<HostCallbackPolicyService>();
 builder.Services.AddScoped<HostCallbackReadinessService>();
+builder.Services.AddScoped<IDataModelService, DataModelService>();
 builder.Services.AddSingleton<HostCallbackDiagnosticsHistoryService>();
 builder.Services.AddCSharpDbCodeModules(options => options.EnableInProcessExecution = true);
 builder.Services.AddCSharpDbAdminForms();

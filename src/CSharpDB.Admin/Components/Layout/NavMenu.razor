@@ -52,9 +52,15 @@
                 <div class="tree-group-header compact">
                     <i class="bi bi-tools icon-system"></i>
                     <span>Tools</span>
-                    <span class="group-count">1</span>
+                    <span class="group-count">2</span>
                 </div>
                 <div class="tree-items">
+                    <button class="tree-item command-item @(IsActiveDataModel() ? "active" : "")"
+                            @onclick="() => TabManager.OpenDataModelTab()">
+                        <i class="bi bi-diagram-3 icon-view"></i>
+                        <span class="item-label">Data Model</span>
+                        <span class="item-hint">visual schema</span>
+                    </button>
                     <button class="tree-item command-item @(IsActiveImportExport() ? "active" : "")"
                             @onclick="() => TabManager.OpenImportExportTab()">
                         <i class="bi bi-arrow-left-right icon-system"></i>
@@ -1273,6 +1279,9 @@
     private bool IsActiveImportExport()
         => TabManager.ActiveTab?.Kind == TabKind.ImportExport;
 
+    private bool IsActiveDataModel()
+        => TabManager.ActiveTab?.Kind == TabKind.DataModel;
+
     private bool IsActiveSchema(string type, string name)
     {
         var activeTab = TabManager.ActiveTab;
@@ -1371,6 +1380,7 @@
         {
             new() { Label = "New Table...", Icon = "bi-plus-lg", OnClick = () => TabManager.OpenTableDesignerTab() },
             ContextMenuItem.Separator(),
+            new() { Label = "Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab() },
             new() { Label = "New Query", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab() },
             new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
         });
@@ -1381,6 +1391,7 @@
         ShowContextMenu(e, new List<ContextMenuItem>
         {
             new() { Label = "Register External Table...", Icon = "bi-box-arrow-up-right", OnClick = () => TabManager.OpenImportExportTab() },
+            new() { Label = "Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab() },
             new() { Label = "View Metadata", Icon = "bi-hdd-stack", OnClick = () => OpenSystemCatalogTab(s_systemCatalogItems.First(item => item.Name == "sys.external_tables")) },
             ContextMenuItem.Separator(),
             new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
@@ -1416,6 +1427,7 @@
         {
             new() { Label = "Open", Icon = "bi-table", OnClick = () => TabManager.OpenTableTab(tableName) },
             new() { Label = "Design", Icon = "bi-file-earmark-code", OnClick = () => TabManager.OpenTableSchemaTab(tableName) },
+            new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(tableName) },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
             new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.Table.ToString(), sourceName: tableName, title: $"{tableName} Report") },
             new() { Label = "Import / Export...", Icon = "bi-arrow-left-right", OnClick = () => TabManager.OpenImportExportTab(tableName) },
@@ -1433,6 +1445,7 @@
         {
             new() { Label = "Open", Icon = "bi-box-arrow-up-right", OnClick = () => OpenExternalTable(table.TableName) },
             new() { Label = "Open Metadata", Icon = "bi-hdd-stack", OnClick = () => OpenExternalTableMetadata(table.TableName) },
+            new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(table.TableName) },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {RequireSqlIdentifier(table.TableName)} LIMIT 50;") },
             new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {RequireSqlIdentifier(table.TableName)};") },

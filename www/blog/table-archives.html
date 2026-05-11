@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Inside CSharpDB v3.8.0: Native Table Archives and External Tables &mdash; Blog &mdash; CSharpDB</title>
+    <meta name="description" content="A walkthrough of CSharpDB v3.8.0: native .csdbtable archives, fast snapshot exports, Admin Import / Export tooling, read-only external tables, sys.external_tables metadata, and indexed archive lookups.">
+    <link rel="canonical" href="https://csharpdb.com/blog/table-archives.html">
+    <meta property="og:title" content="Inside CSharpDB v3.8.0: Native Table Archives and External Tables">
+    <meta property="og:description" content="A walkthrough of CSharpDB v3.8.0: native .csdbtable archives, fast snapshot exports, Admin Import / Export tooling, read-only external tables, sys.external_tables metadata, and indexed archive lookups.">
+    <meta property="og:url" content="https://csharpdb.com/blog/table-archives.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Inside CSharpDB v3.8.0: Native Table Archives and External Tables",
+        "description": "A walkthrough of CSharpDB v3.8.0: native .csdbtable archives, fast snapshot exports, Admin Import / Export tooling, read-only external tables, sys.external_tables metadata, and indexed archive lookups.",
+        "url": "https://csharpdb.com/blog/table-archives.html",
+        "datePublished": "2026-05-10",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 { margin-top: 48px; margin-bottom: 16px; }
+        .blog-post-content h3 { margin-top: 32px; margin-bottom: 12px; }
+        .blog-post-content p { margin-bottom: 16px; }
+        .blog-post-content ul,
+        .blog-post-content ol {
+            margin: 0 0 20px 1.25rem;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+        .blog-post-content li { margin-bottom: 8px; }
+        .blog-post-content .code-block { margin: 20px 0 24px; }
+        .blog-post-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0 24px;
+            font-size: 0.92rem;
+        }
+        .blog-post-content th {
+            text-align: left;
+            padding: 10px 14px;
+            border-bottom: 2px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+        .blog-post-content td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }
+        .blog-post-content tr:hover td { background: var(--bg-tertiary); }
+        .blog-post-content td code { font-size: 0.88rem; }
+        .feature-pill-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin: 24px 0 32px;
+        }
+        .feature-pill {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px 18px;
+        }
+        .feature-pill-title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 6px;
+        }
+        .feature-pill-text {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+        .callout {
+            margin: 24px 0;
+            padding: 20px 22px;
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-md);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+        }
+        .callout strong { color: var(--text-primary); }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Inside CSharpDB v3.8.0: Native Table Archives and External Tables',
+        description: 'A walkthrough of CSharpDB v3.8.0: native .csdbtable archives, fast snapshot exports, Admin Import / Export tooling, read-only external tables, sys.external_tables metadata, and indexed archive lookups.',
+        keywords: 'CSharpDB v3.8.0, table export, table archive, external tables, csdbtable, backup tables, read-only external tables, Admin Import Export',
+        canonicalPath: 'blog/table-archives.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 900px; margin: 0 auto;">
+                <h1>Inside CSharpDB v3.8.0: Native Table Archives and External Tables</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Release</span>
+                    <span>May 10, 2026</span>
+                    <span>&middot; 9 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>CSharpDB v3.8.0 turns table export into something more useful than a CSV button. The new work adds native table archives, Admin Import / Export tooling, SQL DDL for read-only external tables, and a query path that can join archived data with live tables.</p>
+                    <p>The goal is practical: move a large table out to a local archive file, keep its schema and rows intact, then query that file without restoring it into the main database.</p>
+
+                    <div class="feature-pill-grid">
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Native Archives</div>
+                            <div class="feature-pill-text"><code>.csdbtable</code> files store schema, manifest, encoded rows, and an optional primary-key index in one seekable native package.</div>
+                        </div>
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Admin Workflow</div>
+                            <div class="feature-pill-text">The Admin project now has a dedicated Import / Export tab, progress UI, cancellation, downloads, server-path exports, restore, and external registration.</div>
+                        </div>
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">External Tables</div>
+                            <div class="feature-pill-text"><code>CREATE EXTERNAL TABLE</code> registers an archive file as a read-only SQL table that works in normal <code>SELECT</code> queries and joins.</div>
+                        </div>
+                        <div class="feature-pill">
+                            <div class="feature-pill-title">Query Integration</div>
+                            <div class="feature-pill-text">The planner resolves external table metadata, exposes <code>sys.external_tables</code>, and uses archive scan and indexed lookup operators.</div>
+                        </div>
+                    </div>
+
+                    <h2>Why Native Table Archives?</h2>
+                    <p>CSV and JSON are useful interchange formats, but they are not great table backups. They do not preserve all CSharpDB table metadata, large binary values need special handling, and querying them efficiently means inventing a second import path anyway.</p>
+                    <p>The <code>.csdbtable</code> format is intentionally database-native. It stores the table schema, row count, source table name, created timestamp, column metadata, foreign key metadata, encoded row records, and index metadata. Integer primary-key tables also get an embedded page-based index so point lookups do not have to scan the whole archive.</p>
+
+                    <div class="callout">
+                        <strong>Implementation note:</strong> the current archive magic is <code>CSDBTBL3</code>. Rows are stored as length-prefixed records using the same record encoding CSharpDB already understands, with schema and manifest sections stored as JSON metadata. The archive is not a ZIP of JSON rows.
+                    </div>
+
+                    <h2>The Admin Experience</h2>
+                    <p>Admin now has a first-class Import / Export surface. You can open it from the Object Explorer <strong>Tools</strong> section, from the command palette, or from a table context menu. Opening it from a table still preselects that table; opening it from Tools starts unseeded.</p>
+                    <p>The tab has three modes:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Mode</th>
+                                <th>What it does</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>Export Table</code></td>
+                                <td>Writes a full table snapshot to a native <code>.csdbtable</code> archive. The destination can be a one-time browser download or a server/database-local path.</td>
+                            </tr>
+                            <tr>
+                                <td><code>Register External Table</code></td>
+                                <td>Registers an existing archive path under a SQL table name, with optional replacement of an existing registration.</td>
+                            </tr>
+                            <tr>
+                                <td><code>Restore Table</code></td>
+                                <td>Reads an archive and creates a normal physical table from it.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>Exports report progress as they move through preparing, exporting, finalizing, and download preparation. Large exports can be canceled, and the UI no longer depends on loading the whole archive into browser memory. Download exports are staged server-side and served through a one-time download endpoint.</p>
+
+                    <h2>Fast Snapshot Export</h2>
+                    <p>The engine transport path now exports archives directly from a read session. That matters for large tables because it avoids the Admin fallback path of paging through the table over the UI client. The export opens a reader snapshot, streams <code>SELECT *</code> rows to the archive writer, and reports row progress while it writes.</p>
+                    <p>For a table with millions of rows, this is the difference between a UI-driven export loop and a storage-adjacent streaming backup path. The snapshot is read-only, consistent for the export, and cancellable through the same cancellation token used by the Admin progress UI.</p>
+
+                    <h2>Registering an Archive as an External Table</h2>
+                    <p>Once an archive exists, registration is a metadata operation. CSharpDB reads the archive metadata, stores the registration in an internal metadata table, invalidates external table caches, and exposes the result through <code>sys.external_tables</code>. It does not import rows into the database.</p>
+                    <div class="code-block" data-title="SQL">
+                        <pre><code>CREATE EXTERNAL TABLE archived_customers
+FROM 'exports/customers.csdbtable';
+
+SELECT c.id, c.name, a.status
+FROM customers c
+JOIN archived_customers a ON a.id = c.id
+WHERE a.status = 'active';
+
+SELECT table_name, path, source_table_name, row_count
+FROM sys.external_tables
+ORDER BY table_name;
+
+DROP EXTERNAL TABLE archived_customers;</code></pre>
+                    </div>
+                    <p>Relative archive paths resolve from the database file directory. That keeps registrations portable when the database and its <code>exports</code> folder move together.</p>
+
+                    <h2>Read-Only by Design</h2>
+                    <p>External tables are queryable, but they are not mutable. v3.8.0 rejects writes and schema mutations against external table names:</p>
+                    <ul>
+                        <li><code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> are blocked.</li>
+                        <li><code>ALTER TABLE</code> is blocked.</li>
+                        <li><code>CREATE INDEX</code> and trigger-target usage are blocked.</li>
+                        <li><code>DROP TABLE</code> tells you to use <code>DROP EXTERNAL TABLE</code> instead.</li>
+                    </ul>
+                    <p>That keeps the archive contract simple. The file is a stable snapshot. If you want to edit data, restore it to a normal table or export a new archive.</p>
+
+                    <h2>Query Planner Integration</h2>
+                    <p>External tables sit in the normal name-resolution flow after common table expressions and system catalog checks. When the planner sees a registered external table, it reads the archive schema and builds an external scan source. Projection, filters, ordering, aggregates, and joins reuse the same operators as regular query pipelines where possible.</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Query shape</th>
+                                <th>Planner behavior</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>SELECT * FROM archived_customers</code></td>
+                                <td>Uses <code>ExternalTableScanOperator</code> over the archive row stream.</td>
+                            </tr>
+                            <tr>
+                                <td><code>SELECT COUNT(*) FROM archived_customers</code></td>
+                                <td>Uses registration row-count metadata instead of scanning the file.</td>
+                            </tr>
+                            <tr>
+                                <td><code>WHERE id = 123</code> on an integer primary key</td>
+                                <td>Uses the embedded archive primary-key index when present.</td>
+                            </tr>
+                            <tr>
+                                <td>Live table joined to external table</td>
+                                <td>Uses the existing join/projection/filter pipeline once the external source is resolved.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Object Explorer Changes</h2>
+                    <p>The Admin Object Explorer now has two external-table entry points. The <strong>External Tables</strong> group lists registered archives from <code>sys.external_tables</code>, showing source table and row count. Each item can open a top-50 query, open metadata, copy name/path, count rows, or drop the registration.</p>
+                    <p>The <strong>Tools</strong> group also includes <strong>Import / Export</strong>, so users do not have to first select a physical table to reach the tab. The table context menu remains useful for table-specific exports because it opens the same tab preselected for that table.</p>
+
+                    <h2>What Changed Under the Hood</h2>
+                    <p>The release adds two project areas:</p>
+                    <ul>
+                        <li><code>CSharpDB.ImportExport</code> owns the archive models, native serialization, archive reader/writer, and primary-key lookup reader.</li>
+                        <li><code>CSharpDB.Admin.ImportExport</code> owns the Admin contracts, page components, progress UI, download store, endpoint mapping, and orchestration service.</li>
+                    </ul>
+                    <p>Core SQL/runtime changes include parser support for <code>CREATE EXTERNAL TABLE</code> and <code>DROP EXTERNAL TABLE</code>, metadata storage in the internal <code>__external_tables</code> table, <code>sys.external_tables</code>, external table resolution in the planner, archive scan and lookup operators, and read-only guards across DML and DDL paths.</p>
+                    <p>The client layer adds archive-export interfaces so embedded transports can stream native exports directly. Admin falls back to paged export only when the transport does not support native archive export.</p>
+
+                    <h2>Tests and Safety Nets</h2>
+                    <p>The implementation includes coverage for archive roundtrips, empty tables, BLOBs, native primary-key indexes, parser DDL, external table joins, filtering, projection, metadata, read-only rejections, drop/re-register behavior, and transport-level archive export progress.</p>
+                    <p>The Admin side also gained tests around tab manager behavior, and the UI work fixed a real usability issue: long-running query/grid loads now move off the UI path and can be canceled.</p>
+
+                    <h2>Where This Leaves v3.8.0</h2>
+                    <p>This is the first release where a CSharpDB table can become a portable native archive and still remain queryable without restoration. It is not a replacement for full database backup. It is a table-level snapshot and external-table feature aimed at archival, staging, investigation, and large-table offloading workflows.</p>
+                    <p>The next natural steps are broader archive index support, richer external-table planner costing, and more restore/import ergonomics. The important foundation is now in place: table archives are native, external tables are visible in SQL, and Admin gives users a practical workflow for moving data in and out.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="access-style-csharp-code-modules.html">Next: Access-Style C# Form Modules &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

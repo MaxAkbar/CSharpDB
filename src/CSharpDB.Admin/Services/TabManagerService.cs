@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Models;
+using System.Text.Json;
 
 namespace CSharpDB.Admin.Services;
 
@@ -143,6 +144,14 @@ public sealed class TabManagerService
         return tab;
     }
 
+    public TabDescriptor OpenQueryDesignerTab(QueryDesignerState designerState)
+    {
+        TabDescriptor tab = OpenQueryTab();
+        tab.DesignerStateJson = JsonSerializer.Serialize(designerState);
+        tab.State["QueryMode"] = "Designer";
+        return tab;
+    }
+
     public TabDescriptor OpenSystemCatalogTab(string catalogName, string sql)
     {
         var tab = new TabDescriptor($"system:{catalogName}", $"System: {catalogName}", "bi-hdd-stack", TabKind.Query)
@@ -204,6 +213,19 @@ public sealed class TabManagerService
         var tab = new TabDescriptor(tabId, "Import / Export", "bi-arrow-left-right", TabKind.ImportExport)
         {
             InitialTableName = string.IsNullOrWhiteSpace(tableName) ? null : tableName,
+        };
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
+    public TabDescriptor OpenDataModelTab(string? sourceName = null)
+    {
+        string tabId = string.IsNullOrWhiteSpace(sourceName)
+            ? "data-model"
+            : $"data-model:{sourceName}";
+        var tab = new TabDescriptor(tabId, "Data Model", "bi-diagram-3", TabKind.DataModel)
+        {
+            InitialDataModelSourceName = string.IsNullOrWhiteSpace(sourceName) ? null : sourceName,
         };
         OpenTab(tab);
         return _tabs.First(t => t.Id == tab.Id);

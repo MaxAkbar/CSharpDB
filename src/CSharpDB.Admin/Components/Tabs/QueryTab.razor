@@ -724,7 +724,8 @@
         try
         {
             _savedQueries = (await DbClient.GetSavedQueriesAsync())
-                .Where(q => !q.Name.StartsWith("__designer_layout:"))
+                .Where(q => !q.Name.StartsWith("__designer_layout:")
+                            && !q.Name.StartsWith(DataModelService.LayoutPrefix, StringComparison.Ordinal))
                 .ToList();
             if (!string.IsNullOrWhiteSpace(keepSelection)
                 && _savedQueries.Any(q => string.Equals(q.Name, keepSelection, StringComparison.OrdinalIgnoreCase)))

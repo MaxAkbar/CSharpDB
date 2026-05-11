@@ -1,0 +1,261 @@
+@using CSharpDB.Admin.Models
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="schema-canvas-wrap">
+    <div id="@CanvasId"
+         class="designer-canvas schema-canvas"
+         data-canvas-scale="@ScaleText"
+         style="height:@HeightPx}px"
+         @ref="_canvasRef">
+        <div class="schema-canvas-viewport" style="width:@Px(ScaledSvgWidth)px;height:@Px(ScaledSvgHeight)px">
+            <div class="schema-canvas-stage" style="width:@Px(SvgWidth)px;height:@Px(SvgHeight)px;transform:scale(@ScaleText)">
+                <svg class="designer-canvas-svg"
+                     width="@SvgWidth"
+                     height="@SvgHeight"
+                     xmlns="http://www.w3.org/2000/svg">
+                    @foreach (DataModelRelationship relationship in State.Relationships.Where(ShouldRenderRelationship))
+                    {
+                        var current = relationship;
+                        var (x1, y1, x2, y2) = RelationshipPoints(current);
+                        double cx1 = x1 + 80, cy1 = y1, cx2 = x2 - 80, cy2 = y2;
+                        double mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+                        bool selected = string.Equals(SelectedRelationshipId, current.Id, StringComparison.Ordinal);
+                        <g class="designer-join-line schema-relationship @(selected ? "selected" : "") @RelationshipClass(current)">
+                            <path d="M @Px(x1),@Px(y1) C @Px(cx1),@Px(cy1) @Px(cx2),@Px(cy2) @Px(x2),@Px(y2)"
+                                  stroke="transparent"
+                                  stroke-width="12"
+                                  fill="none"
+                                  style="pointer-events:stroke;cursor:pointer"
+                                  @onclick:stopPropagation="true"
+                                  @onclick="() => OnRelationshipSelected.InvokeAsync(current.Id)" />
+                            <path d="M @Px(x1),@Px(y1) C @Px(cx1),@Px(cy1) @Px(cx2),@Px(cy2) @Px(x2),@Px(y2)"
+                                  stroke="@RelationshipStroke(current, selected)"
+                                  stroke-width="@(selected ? "2.4" : "1.6")"
+                                  stroke-dasharray="@RelationshipDash(current)"
+                                  fill="none"
+                                  style="pointer-events:none" />
+                            <rect x="@Px(mx - 29)" y="@Px(my - 9)" width="58" height="16"
+                                  rx="3"
+                                  fill="var(--bg-elevated)"
+                                  stroke="var(--border-color)"
+                                  stroke-width="1"
+                                  style="pointer-events:none" />
+                            <text x="@Px(mx)" y="@Px(my + 2)"
+                                  text-anchor="middle"
+                                  font-size="9"
+                                  fill="var(--text-muted)"
+                                  font-family="var(--font-ui)"
+                                  style="pointer-events:none">
+                                @RelationshipLabel(current)
+                            </text>
+                        </g>
+                    }
+                </svg>
+
+                @if (State.Nodes.Count == 0)
+                {
+                    <div class="schema-canvas-empty">
+                        <i class="bi bi-diagram-3"></i>
+                        <span>Add a table or load a layout to begin.</span>
+                    </div>
+                }
+
+                @foreach (DataModelNode node in State.Nodes)
+                {
+                    var current = node;
+                    bool selected = string.Equals(SelectedNodeName, current.Name, StringComparison.OrdinalIgnoreCase);
+                    <div class="designer-table-node schema-node @(selected ? "selected" : "") @(current.Kind == DataModelNodeKind.ExternalTable ? "external" : "physical") @(current.IsCollapsed ? "collapsed" : "")"
+                         id="@($"{CanvasId}-node-{current.Name}")"
+                         style="left:@Px(current.X)px;top:@Px(current.Y)px"
+                         data-table="@current.Name"
+                         @onclick:stopPropagation="true"
+                         @onclick="() => OnNodeSelected.InvokeAsync(current.Name)">
+                        <div class="designer-table-node-header">
+                            <i class="bi @(current.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
+                            <span>@current.Name</span>
+                            @if (current.Warnings.Count > 0)
+                            {
+                                <i class="bi bi-exclamation-triangle schema-node-warning" title="@string.Join("; ", current.Warnings)"></i>
+                            }
+                            <button class="designer-node-close"
+                                    title="Remove from canvas"
+                                    @onclick:stopPropagation="true"
+                                    @onclick="() => OnNodeRemoved.InvokeAsync(current.Name)">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                        @if (!current.IsCollapsed)
+                        {
+                            <div class="schema-node-meta">
+                                @if (current.Kind == DataModelNodeKind.ExternalTable)
+                                {
+                                    <span>external</span>
+                                }
+                                else
+                                {
+                                    <span>@current.IndexCount index@(current.IndexCount == 1 ? "" : "es")</span>
+                                    <span>@current.TriggerCount trigger@(current.TriggerCount == 1 ? "" : "s")</span>
+                                }
+                                @if (current.RowCount is not null)
+                                {
+                                    <span>@current.RowCount rows</span>
+                                }
+                            </div>
+                            @foreach (DataModelColumn column in current.Columns)
+                            {
+                                <div class="designer-table-node-col schema-node-col">
+                                    <span class="designer-col-type">@column.TypeLabel</span>
+                                    <span class="designer-col-name @(column.IsPrimaryKey ? "pk" : "")">@column.Name</span>
+                                    <span class="schema-column-icons">
+                                        @if (column.IsPrimaryKey)
+                                        {
+                                            <i class="bi bi-key-fill" title="Primary key"></i>
+                                        }
+                                        @if (column.IsForeignKey)
+                                        {
+                                            <i class="bi bi-link-45deg" title="Foreign key"></i>
+                                        }
+                                        @if (column.IsIndexed && !column.IsPrimaryKey)
+                                        {
+                                            <i class="bi bi-lightning" title="Indexed"></i>
+                                        }
+                                        @if (!column.Nullable && !column.IsPrimaryKey)
+                                        {
+                                            <i class="bi bi-asterisk" title="Not nullable"></i>
+                                        }
+                                    </span>
+                                </div>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private const int NodeWidth = 200;
+    private const int NodeHeaderHeight = 36;
+    private const int ColumnRowHeight = 28;
+    private const int NodeMetaHeight = 24;
+
+    [Parameter] public DataModelState State { get; set; } = new();
+    [Parameter] public string CanvasId { get; set; } = $"schema-canvas-{Guid.NewGuid():N}";
+    [Parameter] public int HeightPx { get; set; } = 560;
+    [Parameter] public string? SelectedNodeName { get; set; }
+    [Parameter] public string? SelectedRelationshipId { get; set; }
+    [Parameter] public EventCallback<string> OnNodeSelected { get; set; }
+    [Parameter] public EventCallback<string> OnNodeRemoved { get; set; }
+    [Parameter] public EventCallback<string> OnRelationshipSelected { get; set; }
+    [Parameter] public EventCallback<DataModelNodeMove> OnNodeMoved { get; set; }
+
+    private DotNetObjectReference<SchemaCanvas>? _dotNetRef;
+    private ElementReference _canvasRef;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        _dotNetRef = DotNetObjectReference.Create(this);
+        try { await JS.InvokeVoidAsync("designerInterop.initDrag", _dotNetRef); }
+        catch { }
+    }
+
+    [JSInvokable]
+    public async Task OnTableMoved(string tableName, double x, double y)
+    {
+        DataModelNode? node = State.Nodes.FirstOrDefault(n => string.Equals(n.Name, tableName, StringComparison.OrdinalIgnoreCase));
+        if (node is null)
+            return;
+
+        node.X = x;
+        node.Y = y;
+        await OnNodeMoved.InvokeAsync(new DataModelNodeMove(tableName, x, y));
+    }
+
+    private double SvgWidth => Math.Max(1200, State.Nodes.Select(static node => node.X + NodeWidth + 40).DefaultIfEmpty(1200).Max());
+
+    private double SvgHeight => Math.Max(600, State.Nodes.Select(node => node.Y + NodeHeight(node) + 40).DefaultIfEmpty(600).Max());
+
+    private double CanvasScale => NormalizeScale(State.Scale);
+
+    private double ScaledSvgWidth => SvgWidth * CanvasScale;
+
+    private double ScaledSvgHeight => SvgHeight * CanvasScale;
+
+    private string ScaleText =>
+        CanvasScale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static int NodeHeight(DataModelNode node) =>
+        node.IsCollapsed ? NodeHeaderHeight : NodeHeaderHeight + NodeMetaHeight + node.Columns.Count * ColumnRowHeight;
+
+    private bool ShouldRenderRelationship(DataModelRelationship relationship) =>
+        relationship.IsResolved
+        && State.Nodes.Any(node => string.Equals(node.Name, relationship.LeftTable, StringComparison.OrdinalIgnoreCase))
+        && State.Nodes.Any(node => string.Equals(node.Name, relationship.RightTable, StringComparison.OrdinalIgnoreCase));
+
+    private (double x1, double y1, double x2, double y2) RelationshipPoints(DataModelRelationship relationship)
+    {
+        DataModelNode? left = State.Nodes.FirstOrDefault(node => string.Equals(node.Name, relationship.LeftTable, StringComparison.OrdinalIgnoreCase));
+        DataModelNode? right = State.Nodes.FirstOrDefault(node => string.Equals(node.Name, relationship.RightTable, StringComparison.OrdinalIgnoreCase));
+        double x1 = (left?.X ?? 0) + NodeWidth;
+        double y1 = (left?.Y ?? 0) + NodeHeaderHeight / 2.0;
+        double x2 = right?.X ?? 200;
+        double y2 = (right?.Y ?? 0) + NodeHeaderHeight / 2.0;
+        return (x1, y1, x2, y2);
+    }
+
+    private static string RelationshipLabel(DataModelRelationship relationship) => relationship.Kind switch
+    {
+        DataModelRelationshipKind.ExternalArchiveForeignKey => "ARCHIVE",
+        DataModelRelationshipKind.Draft => "DRAFT",
+        _ => "FK",
+    };
+
+    private static string RelationshipClass(DataModelRelationship relationship) => relationship.Kind switch
+    {
+        DataModelRelationshipKind.ExternalArchiveForeignKey => "archive",
+        DataModelRelationshipKind.Draft => "draft",
+        _ => "physical",
+    };
+
+    private static string RelationshipDash(DataModelRelationship relationship) => relationship.Kind switch
+    {
+        DataModelRelationshipKind.ExternalArchiveForeignKey => "6 4",
+        DataModelRelationshipKind.Draft => "2 4",
+        _ => "",
+    };
+
+    private static string RelationshipStroke(DataModelRelationship relationship, bool selected)
+    {
+        if (selected)
+            return "var(--accent-blue)";
+
+        return relationship.Kind switch
+        {
+            DataModelRelationshipKind.ExternalArchiveForeignKey => "var(--accent-magenta)",
+            DataModelRelationshipKind.Draft => "var(--text-muted)",
+            _ => "var(--accent-green)",
+        };
+    }
+
+    private static string Px(double value) =>
+        value.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static double NormalizeScale(double scale)
+    {
+        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            return 1;
+
+        return Math.Clamp(scale, 0.5, 2.0);
+    }
+
+    public void Dispose()
+    {
+        try { _ = JS.InvokeVoidAsync("designerInterop.dispose"); } catch { }
+        _dotNetRef?.Dispose();
+    }
+}

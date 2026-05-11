@@ -17,7 +17,8 @@ public enum TabKind
     FormEntry,
     ReportDesigner,
     ReportPreview,
-    ImportExport
+    ImportExport,
+    DataModel
 }
 
 public sealed class TabDescriptor
@@ -59,6 +60,12 @@ public sealed class TabDescriptor
         set => State["DesignerStateJson"] = value;
     }
 
+    public string? DataModelStateJson
+    {
+        get => State.TryGetValue("DataModelStateJson", out var v) ? v as string : null;
+        set => State["DataModelStateJson"] = value;
+    }
+
     public string? PipelinePackageJson
     {
         get => State.TryGetValue("PipelinePackageJson", out var v) ? v as string : null;
@@ -75,6 +82,12 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("InitialTableName", out var v) ? v as string : null;
         set => State["InitialTableName"] = value;
+    }
+
+    public string? InitialDataModelSourceName
+    {
+        get => State.TryGetValue("InitialDataModelSourceName", out var v) ? v as string : null;
+        set => State["InitialDataModelSourceName"] = value;
     }
 
     public object? InitialRecordId
