@@ -49,6 +49,7 @@ coverage*/
 !tests/CSharpDB.Benchmarks/baselines/focused-validation/20260303-180221/micro-results/CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv
 tests/CSharpDB.Benchmarks/baselines/
 tests/CSharpDB.Benchmarks/results/
+tests/CSharpDB.Benchmarks/run-logs/
 !tests/CSharpDB.Benchmarks/baselines/
 !tests/CSharpDB.Benchmarks/baselines/focused-validation/
 !tests/CSharpDB.Benchmarks/baselines/focused-validation/20260326-123705/
