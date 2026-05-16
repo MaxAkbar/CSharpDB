@@ -65,7 +65,7 @@
                 {
                     var current = node;
                     bool selected = string.Equals(SelectedNodeName, current.Name, StringComparison.OrdinalIgnoreCase);
-                    <div class="designer-table-node schema-node @(selected ? "selected" : "") @(current.Kind == DataModelNodeKind.ExternalTable ? "external" : "physical") @(current.IsCollapsed ? "collapsed" : "")"
+                    <div class="designer-table-node schema-node @(selected ? "selected" : "") @(current.Kind == DataModelNodeKind.ExternalTable ? "external" : "physical") @(current.IsDraft ? "draft" : "") @(current.IsCollapsed ? "collapsed" : "")"
                          id="@($"{CanvasId}-node-{current.Name}")"
                          style="left:@Px(current.X)px;top:@Px(current.Y)px"
                          data-table="@current.Name"
@@ -88,12 +88,16 @@
                         @if (!current.IsCollapsed)
                         {
                             <div class="schema-node-meta">
-                                @if (current.Kind == DataModelNodeKind.ExternalTable)
-                                {
-                                    <span>external</span>
-                                }
-                                else
-                                {
+                        @if (current.Kind == DataModelNodeKind.ExternalTable)
+                        {
+                            <span>external</span>
+                        }
+                        else if (current.IsDraft)
+                        {
+                            <span>pending create</span>
+                        }
+                        else
+                        {
                                     <span>@current.IndexCount index@(current.IndexCount == 1 ? "" : "es")</span>
                                     <span>@current.TriggerCount trigger@(current.TriggerCount == 1 ? "" : "s")</span>
                                 }

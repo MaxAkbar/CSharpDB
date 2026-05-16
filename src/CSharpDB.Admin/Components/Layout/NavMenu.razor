@@ -716,6 +716,7 @@
         new SystemCatalogItem("sys.objects", "all objects", "SELECT * FROM sys.objects ORDER BY object_type, object_name;"),
         new SystemCatalogItem("sys.saved_queries", "saved queries", "SELECT * FROM sys.saved_queries ORDER BY name;"),
         new SystemCatalogItem("sys.external_tables", "external tables", "SELECT * FROM sys.external_tables ORDER BY table_name;"),
+        new SystemCatalogItem("sys.diagrams", "diagrams", "SELECT * FROM sys.diagrams ORDER BY name;"),
     };
 
     private IReadOnlyCollection<string>? _userTableNames;

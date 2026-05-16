@@ -117,6 +117,62 @@ public sealed class DataModelGraphBuilderTests
         Assert.Equal(1.4, roundTripped.Scale);
     }
 
+    [Fact]
+    public void BuildFromDiagramState_PreservesMembershipPlacementAndPendingOperations()
+    {
+        var saved = new DataModelState
+        {
+            DiagramName = "Fulfillment",
+            Scale = 1.25,
+            Nodes =
+            [
+                new DataModelNode { Name = "Customers", X = 42, Y = 84, IsCollapsed = true },
+            ],
+            PendingOperations =
+            [
+                new DataModelPendingOperation
+                {
+                    Kind = DataModelPendingOperationKind.DropTable,
+                    TableName = "Orders",
+                    Description = "Drop table Orders",
+                },
+            ],
+        };
+
+        DataModelState restored = DataModelGraphBuilder.BuildFromDiagramState(
+        [
+            Customers(),
+            Orders(),
+        ],
+            saved);
+
+        DataModelNode node = Assert.Single(restored.Nodes);
+        Assert.Equal("Customers", node.Name);
+        Assert.Equal(42, node.X);
+        Assert.Equal(84, node.Y);
+        Assert.True(node.IsCollapsed);
+        Assert.Equal(1.25, restored.Scale);
+        Assert.Single(restored.PendingOperations);
+        Assert.Empty(restored.Relationships);
+    }
+
+    [Fact]
+    public void BuildFromDiagramState_MissingSourceWarnsWithoutFailing()
+    {
+        var saved = new DataModelState
+        {
+            Nodes =
+            [
+                new DataModelNode { Name = "MissingCustomers" },
+            ],
+        };
+
+        DataModelState restored = DataModelGraphBuilder.BuildFromDiagramState([Customers()], saved);
+
+        Assert.Empty(restored.Nodes);
+        Assert.Contains("MissingCustomers", Assert.Single(restored.Warnings));
+    }
+
     private static DataModelSourceMetadata Customers() => new()
     {
         TableName = "Customers",

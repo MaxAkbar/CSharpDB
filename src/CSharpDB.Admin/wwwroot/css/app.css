@@ -3102,6 +3102,18 @@ body {
     color: var(--accent-magenta);
 }
 
+.schema-node.draft {
+    border-style: dashed;
+}
+
+.schema-node.draft .designer-table-node-header {
+    background: rgba(224, 175, 104, 0.13);
+}
+
+.schema-node.draft .designer-table-node-header .bi {
+    color: var(--accent-yellow);
+}
+
 .schema-node-warning {
     color: var(--accent-yellow);
     flex-shrink: 0;
@@ -3237,6 +3249,84 @@ body {
     font-size: 12px;
     margin-bottom: 6px;
     overflow-wrap: anywhere;
+}
+
+.data-model-schema-actions {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.data-model-inline-action {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.data-model-inline-action .schema-input {
+    flex: 1 1 120px;
+    min-width: 0;
+}
+
+.data-model-column-action-list,
+.data-model-relationship-editor {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.data-model-column-action-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(86px, 1fr) 32px 32px;
+    gap: 6px;
+    align-items: center;
+}
+
+.data-model-column-action-row span {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.data-model-column-action-row strong,
+.data-model-column-action-row small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.data-model-relationship-editor {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+.data-model-pending-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.data-model-pending-row span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.data-model-schema-dialog {
+    border-bottom: 1px solid var(--border-color);
 }
 
 .data-model-inspector-section.preview pre {

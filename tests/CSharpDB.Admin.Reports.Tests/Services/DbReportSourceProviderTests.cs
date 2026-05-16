@@ -68,7 +68,6 @@ public class DbReportSourceProviderTests
         await db.Client.UpsertSavedQueryAsync("cleanup_customers", "DELETE FROM Customers WHERE Total < 0;", TestContext.Current.CancellationToken);
         await db.Client.UpsertSavedQueryAsync("customer_by_id", "SELECT * FROM Customers WHERE Id = @id;", TestContext.Current.CancellationToken);
         await db.Client.UpsertSavedQueryAsync("__designer_layout:customers", "SELECT * FROM Customers;", TestContext.Current.CancellationToken);
-        await db.Client.UpsertSavedQueryAsync("__data_model_layout:customers", """{"nodes":[]}""", TestContext.Current.CancellationToken);
 
         var provider = new DbReportSourceProvider(db.Client);
         IReadOnlyList<ReportSourceReferenceItem> sources = await provider.ListSourceReferencesAsync();
@@ -80,7 +79,6 @@ public class DbReportSourceProviderTests
         Assert.DoesNotContain(sources, item => item.Name == "cleanup_customers");
         Assert.DoesNotContain(sources, item => item.Name == "customer_by_id");
         Assert.DoesNotContain(sources, item => item.Name == "__designer_layout:customers");
-        Assert.DoesNotContain(sources, item => item.Name == "__data_model_layout:customers");
 
         Assert.Null(await provider.GetSourceDefinitionAsync(new ReportSourceReference(ReportSourceKind.SavedQuery, "cleanup_customers")));
         Assert.Null(await provider.GetSourceDefinitionAsync(new ReportSourceReference(ReportSourceKind.SavedQuery, "customer_by_id")));

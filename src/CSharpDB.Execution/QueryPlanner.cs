@@ -19,6 +19,7 @@ public sealed class QueryPlanner
 {
     private const string InternalSavedQueriesTableName = "__saved_queries";
     private const string InternalExternalTablesTableName = "__external_tables";
+    private const string InternalDataModelDiagramsTableName = "__data_model_diagrams";
     private const int AnalyzeHistogramBucketCount = 16;
     private const int AnalyzeFrequentValueCount = 8;
     private const int MaxJoinReorderDpLeafCount = 6;
@@ -350,6 +351,16 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
     ];
 
+    private static readonly ColumnDefinition[] SystemDiagramsColumns =
+    [
+        new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "updated_utc", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "source_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "table_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "pending_operation_count", Type = DbType.Integer, Nullable = false },
+    ];
+
     private static readonly ColumnDefinition[] DefaultCountStarOutputSchema =
     [
         new ColumnDefinition
@@ -402,6 +413,7 @@ public sealed class QueryPlanner
     private List<DbValue[]>? _systemTriggersRowsCache;
     private List<DbValue[]>? _systemObjectsRowsCache;
     private List<DbValue[]>? _systemExternalTablesRowsCache;
+    private List<DbValue[]>? _systemDiagramsRowsCache;
     private IReadOnlyList<ExternalTableRegistration>? _externalTableRegistrationsCache;
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
@@ -6605,6 +6617,7 @@ public sealed class QueryPlanner
             "sys.triggers" => _catalog.GetTriggers().Count,
             "sys.objects" => CountSystemObjects(),
             "sys.external_tables" => GetExternalTableRegistrations().Count,
+            "sys.diagrams" => CountSystemDiagrams(),
             "sys.table_stats" => _catalog.GetTableStatistics().Count,
             "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             "sys.planner_histograms" => CountPlannerHistogramRows(),
@@ -6637,6 +6650,9 @@ public sealed class QueryPlanner
         long count = 0;
         foreach (string tableName in _catalog.GetTableNames())
         {
+            if (IsHiddenInternalCatalogTable(tableName))
+                continue;
+
             var schema = _catalog.GetTable(tableName);
             if (schema != null)
                 count += schema.Columns.Count;
@@ -6649,6 +6665,9 @@ public sealed class QueryPlanner
     private long CountVisibleUserTables() =>
         _catalog.GetTableNames().LongCount(tableName => !IsHiddenInternalCatalogTable(tableName));
 
+    private long CountSystemDiagrams() =>
+        TryGetTableRowCount(InternalDataModelDiagramsTableName, out long diagramRows) ? diagramRows : 0;
+
     private long CountSystemIndexes()
     {
         if (_systemIndexesCountCache.HasValue)
@@ -6657,7 +6676,7 @@ public sealed class QueryPlanner
         long count = 0;
         foreach (var index in _catalog.GetIndexes())
         {
-            if (index.Kind == IndexKind.ForeignKeyInternal)
+            if (index.Kind == IndexKind.ForeignKeyInternal || IsHiddenInternalCatalogTable(index.TableName))
                 continue;
 
             count += index.Columns.Count;
@@ -6675,6 +6694,9 @@ public sealed class QueryPlanner
         long count = 0;
         foreach (string tableName in _catalog.GetTableNames())
         {
+            if (IsHiddenInternalCatalogTable(tableName))
+                continue;
+
             TableSchema? schema = _catalog.GetTable(tableName);
             if (schema is not null)
                 count += schema.ForeignKeys.Count;
@@ -6686,11 +6708,12 @@ public sealed class QueryPlanner
 
     private long CountSystemObjects() =>
         CountVisibleUserTables()
-        + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal)
+        + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal && !IsHiddenInternalCatalogTable(index.TableName))
         + CountSystemForeignKeys()
         + _catalog.GetViewNames().Count
         + _catalog.GetTriggers().Count
-        + GetExternalTableRegistrations().Count;
+        + GetExternalTableRegistrations().Count
+        + CountSystemDiagrams();
 
     private bool TryBuildSimpleScalarAggregateColumnQuery(SelectStatement stmt, out QueryResult result)
     {
@@ -15591,7 +15614,8 @@ public sealed class QueryPlanner
         TryNormalizeSystemCatalogTableName(tableName, out _);
 
     private static bool IsHiddenInternalCatalogTable(string tableName) =>
-        string.Equals(tableName, InternalExternalTablesTableName, StringComparison.OrdinalIgnoreCase);
+        string.Equals(tableName, InternalExternalTablesTableName, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(tableName, InternalDataModelDiagramsTableName, StringComparison.OrdinalIgnoreCase);
 
     private static bool TryNormalizeSystemCatalogTableName(string tableName, out string normalized)
     {
@@ -15655,6 +15679,13 @@ public sealed class QueryPlanner
             string.Equals(tableName, "sys_external_tables", StringComparison.OrdinalIgnoreCase))
         {
             normalized = "sys.external_tables";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.diagrams", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_diagrams", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.diagrams";
             return true;
         }
 
@@ -15768,6 +15799,11 @@ public sealed class QueryPlanner
             case "sys.external_tables":
                 columns = SystemExternalTablesColumns;
                 rows = BuildSystemExternalTablesRows();
+                break;
+
+            case "sys.diagrams":
+                columns = SystemDiagramsColumns;
+                rows = BuildSystemDiagramsRows();
                 break;
 
             case "sys.table_stats":
@@ -15912,7 +15948,7 @@ public sealed class QueryPlanner
                      .OrderBy(i => i.TableName, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(i => i.IndexName, StringComparer.OrdinalIgnoreCase))
         {
-            if (index.Kind == IndexKind.ForeignKeyInternal)
+            if (index.Kind == IndexKind.ForeignKeyInternal || IsHiddenInternalCatalogTable(index.TableName))
                 continue;
 
             var tableSchema = _catalog.GetTable(index.TableName);
@@ -16028,11 +16064,12 @@ public sealed class QueryPlanner
             return _systemObjectsRowsCache;
 
         int capacity = _catalog.GetTableNames().Count
-            + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal)
+            + _catalog.GetIndexes().Count(index => index.Kind != IndexKind.ForeignKeyInternal && !IsHiddenInternalCatalogTable(index.TableName))
             + (int)Math.Min(CountSystemForeignKeys(), int.MaxValue)
             + _catalog.GetViewNames().Count
             + _catalog.GetTriggers().Count
-            + GetExternalTableRegistrations().Count;
+            + GetExternalTableRegistrations().Count
+            + (int)Math.Min(CountSystemDiagrams(), int.MaxValue);
 
         var rows = new List<DbValue[]>(capacity);
 
@@ -16115,6 +16152,16 @@ public sealed class QueryPlanner
             ]);
         }
 
+        foreach (DbValue[] diagram in BuildSystemDiagramsRows().OrderBy(row => row[0].AsText, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                diagram[0],
+                DbValue.FromText("DIAGRAM"),
+                DbValue.Null,
+            ]);
+        }
+
         _systemObjectsRowsCache = rows;
         return rows;
     }
@@ -16140,6 +16187,107 @@ public sealed class QueryPlanner
 
         _systemExternalTablesRowsCache = rows;
         return rows;
+    }
+
+    private List<DbValue[]> BuildSystemDiagramsRows()
+    {
+        if (_systemDiagramsRowsCache != null)
+            return _systemDiagramsRowsCache;
+
+        if (_catalog.GetTable(InternalDataModelDiagramsTableName) is not { } schema)
+        {
+            _systemDiagramsRowsCache = [];
+            return _systemDiagramsRowsCache;
+        }
+
+        int nameIndex = schema.GetColumnIndex("name");
+        int jsonIndex = schema.GetColumnIndex("diagram_json");
+        int createdIndex = schema.GetColumnIndex("created_utc");
+        int updatedIndex = schema.GetColumnIndex("updated_utc");
+        if (nameIndex < 0 || jsonIndex < 0 || createdIndex < 0 || updatedIndex < 0)
+        {
+            _systemDiagramsRowsCache = [];
+            return _systemDiagramsRowsCache;
+        }
+
+        var tableTree = _catalog.GetTableTree(InternalDataModelDiagramsTableName, _pager);
+        var scan = new TableScanOperator(
+            tableTree,
+            schema,
+            GetReadSerializer(schema),
+            TryGetCachedTreeRowCountCapacityHint(tableTree));
+        var rows = new List<DbValue[]>((int)Math.Min(CountSystemDiagrams(), int.MaxValue));
+
+        scan.OpenAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
+        try
+        {
+            while (scan.MoveNextAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult())
+            {
+                DbValue[] row = scan.Current;
+                if (nameIndex >= row.Length || jsonIndex >= row.Length || createdIndex >= row.Length || updatedIndex >= row.Length)
+                    continue;
+
+                DbValue name = row[nameIndex];
+                DbValue json = row[jsonIndex];
+                DbValue created = row[createdIndex];
+                DbValue updated = row[updatedIndex];
+                if (name.Type != DbType.Text || json.Type != DbType.Text || created.Type != DbType.Text || updated.Type != DbType.Text)
+                    continue;
+
+                var (sourceCount, tableCount, pendingOperationCount) = ReadDiagramCounts(json.AsText);
+                rows.Add(
+                [
+                    DbValue.FromText(name.AsText),
+                    DbValue.FromText(created.AsText),
+                    DbValue.FromText(updated.AsText),
+                    DbValue.FromInteger(sourceCount),
+                    DbValue.FromInteger(tableCount),
+                    DbValue.FromInteger(pendingOperationCount),
+                ]);
+            }
+        }
+        finally
+        {
+            scan.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        _systemDiagramsRowsCache = rows;
+        return rows;
+    }
+
+    private static (long SourceCount, long TableCount, long PendingOperationCount) ReadDiagramCounts(string diagramJson)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(diagramJson);
+            JsonElement root = doc.RootElement;
+            long sourceCount = root.TryGetProperty("Nodes", out JsonElement nodes) && nodes.ValueKind == JsonValueKind.Array
+                ? nodes.GetArrayLength()
+                : 0;
+            long tableCount = 0;
+            if (nodes.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement node in nodes.EnumerateArray())
+                {
+                    if (!node.TryGetProperty("Kind", out JsonElement kind) ||
+                        kind.ValueKind == JsonValueKind.String &&
+                        string.Equals(kind.GetString(), "Table", StringComparison.OrdinalIgnoreCase) ||
+                        kind.ValueKind == JsonValueKind.Number && kind.GetInt32() == 0)
+                    {
+                        tableCount++;
+                    }
+                }
+            }
+
+            long pendingOperationCount = root.TryGetProperty("PendingOperations", out JsonElement pending) && pending.ValueKind == JsonValueKind.Array
+                ? pending.GetArrayLength()
+                : 0;
+            return (sourceCount, tableCount, pendingOperationCount);
+        }
+        catch (JsonException)
+        {
+            return (0, 0, 0);
+        }
     }
 
     private List<DbValue[]> BuildSystemTableStatsRows()
@@ -16208,6 +16356,7 @@ public sealed class QueryPlanner
             "sys.triggers" => _catalog.GetTriggers().Count,
             "sys.objects" => CountSystemObjects(),
             "sys.external_tables" => GetExternalTableRegistrations().Count,
+            "sys.diagrams" => CountSystemDiagrams(),
             "sys.table_stats" => _catalog.GetTableStatistics().Count,
             "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             "sys.planner_histograms" => CountPlannerHistogramRows(),

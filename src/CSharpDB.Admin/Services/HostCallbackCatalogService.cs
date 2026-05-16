@@ -276,8 +276,7 @@ public sealed class HostCallbackCatalogService
             IReadOnlyList<SavedQueryDefinition> savedQueries = await dbClient.GetSavedQueriesAsync();
             foreach (SavedQueryDefinition query in savedQueries)
             {
-                if (query.Name.StartsWith("__designer_layout:", StringComparison.Ordinal)
-                    || query.Name.StartsWith(DataModelService.LayoutPrefix, StringComparison.Ordinal))
+                if (query.Name.StartsWith("__designer_layout:", StringComparison.Ordinal))
                 {
                     continue;
                 }

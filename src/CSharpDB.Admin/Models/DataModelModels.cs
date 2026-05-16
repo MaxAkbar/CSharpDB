@@ -2,10 +2,14 @@ namespace CSharpDB.Admin.Models;
 
 public sealed class DataModelState
 {
+    public int Version { get; set; } = 1;
+    public string? DiagramName { get; set; }
     public List<DataModelNode> Nodes { get; set; } = [];
     public List<DataModelRelationship> Relationships { get; set; } = [];
+    public List<DataModelPendingOperation> PendingOperations { get; set; } = [];
     public List<string> Warnings { get; set; } = [];
     public string? SavedLayoutName { get; set; }
+    public string? SchemaSnapshotUtc { get; set; }
     public double ViewportX { get; set; }
     public double ViewportY { get; set; }
     public double Scale { get; set; } = 1;
@@ -18,6 +22,7 @@ public sealed class DataModelNode
     public double X { get; set; } = 20;
     public double Y { get; set; } = 20;
     public bool IsCollapsed { get; set; }
+    public bool IsDraft { get; set; }
     public List<DataModelColumn> Columns { get; set; } = [];
     public string? SourceTableName { get; set; }
     public string? ArchivePath { get; set; }
@@ -65,6 +70,52 @@ public enum DataModelRelationshipKind
     PhysicalForeignKey,
     ExternalArchiveForeignKey,
     Draft,
+}
+
+public sealed class DataModelPendingOperation
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public DataModelPendingOperationKind Kind { get; set; }
+    public string TableName { get; set; } = "";
+    public string? NewTableName { get; set; }
+    public string? ColumnName { get; set; }
+    public string? NewColumnName { get; set; }
+    public string ColumnType { get; set; } = "TEXT";
+    public bool NotNull { get; set; }
+    public List<DataModelColumn> Columns { get; set; } = [];
+    public string? ReferencedTableName { get; set; }
+    public string? ReferencedColumnName { get; set; }
+    public string? ConstraintName { get; set; }
+    public string OnDelete { get; set; } = "RESTRICT";
+    public string Description { get; set; } = "";
+}
+
+public enum DataModelPendingOperationKind
+{
+    CreateTable,
+    DropTable,
+    RenameTable,
+    AddColumn,
+    DropColumn,
+    RenameColumn,
+    AddForeignKey,
+    DropForeignKey,
+}
+
+public sealed class DataModelDiagramSummary
+{
+    public long Id { get; init; }
+    public required string Name { get; init; }
+    public required string CreatedUtc { get; init; }
+    public required string UpdatedUtc { get; init; }
+    public int SourceCount { get; init; }
+    public int PendingOperationCount { get; init; }
+}
+
+public sealed class DataModelApplyResult
+{
+    public bool Succeeded { get; init; }
+    public IReadOnlyList<string> Messages { get; init; } = [];
 }
 
 public sealed class DataModelSourceOption

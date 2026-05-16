@@ -29,6 +29,74 @@ public static class DataModelGraphBuilder
         return state;
     }
 
+    public static DataModelState BuildFromDiagramState(
+        IReadOnlyList<DataModelSourceMetadata> sources,
+        DataModelState savedState)
+    {
+        var orderedSources = sources
+            .OrderBy(static source => source.Kind)
+            .ThenBy(static source => source.TableName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var state = new DataModelState
+        {
+            Version = savedState.Version <= 0 ? 1 : savedState.Version,
+            DiagramName = savedState.DiagramName ?? savedState.SavedLayoutName,
+            SavedLayoutName = savedState.SavedLayoutName,
+            SchemaSnapshotUtc = savedState.SchemaSnapshotUtc,
+            ViewportX = savedState.ViewportX,
+            ViewportY = savedState.ViewportY,
+            Scale = savedState.Scale <= 0 ? 1 : savedState.Scale,
+            PendingOperations = savedState.PendingOperations.Select(CloneOperation).ToList(),
+        };
+
+        var selectedNames = new HashSet<string>(
+            savedState.Nodes.Select(static node => node.Name),
+            StringComparer.OrdinalIgnoreCase);
+
+        int index = 0;
+        foreach (DataModelNode savedNode in savedState.Nodes)
+        {
+            DataModelSourceMetadata? source = FindSource(orderedSources, savedNode.Name);
+            if (source is null)
+            {
+                if (savedNode.IsDraft || state.PendingOperations.Any(operation =>
+                        operation.Kind == DataModelPendingOperationKind.CreateTable &&
+                        string.Equals(operation.TableName, savedNode.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    state.Nodes.Add(CloneNode(savedNode));
+                }
+                else
+                {
+                    state.Warnings.Add($"Diagram source '{savedNode.Name}' no longer exists in the database.");
+                }
+
+                continue;
+            }
+
+            DataModelNode node = CreateNode(source, index++);
+            node.X = savedNode.X;
+            node.Y = savedNode.Y;
+            node.IsCollapsed = savedNode.IsCollapsed;
+            state.Nodes.Add(node);
+        }
+
+        AddRelationships(orderedSources, state, selectedNames);
+        foreach (DataModelRelationship relationship in savedState.Relationships.Where(static relationship => relationship.Kind == DataModelRelationshipKind.Draft))
+        {
+            if (!state.Relationships.Any(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal)))
+                state.Relationships.Add(CloneRelationship(relationship));
+        }
+
+        foreach (string warning in savedState.Warnings)
+        {
+            if (!state.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase))
+                state.Warnings.Add(warning);
+        }
+
+        return state;
+    }
+
     public static QueryDesignerState ToQueryDesignerState(DataModelState state)
     {
         var selectedNames = new HashSet<string>(
@@ -226,4 +294,74 @@ public static class DataModelGraphBuilder
                || (!string.IsNullOrWhiteSpace(source.SourceTableName)
                    && string.Equals(source.SourceTableName, sourceName, StringComparison.OrdinalIgnoreCase));
     }
+
+    private static DataModelNode CloneNode(DataModelNode node) => new()
+    {
+        Name = node.Name,
+        Kind = node.Kind,
+        X = node.X,
+        Y = node.Y,
+        IsCollapsed = node.IsCollapsed,
+        IsDraft = node.IsDraft,
+        SourceTableName = node.SourceTableName,
+        ArchivePath = node.ArchivePath,
+        ArchiveCreatedUtc = node.ArchiveCreatedUtc,
+        RowCount = node.RowCount,
+        IndexCount = node.IndexCount,
+        TriggerCount = node.TriggerCount,
+        Warnings = node.Warnings.ToList(),
+        Columns = node.Columns.Select(static column => new DataModelColumn
+        {
+            Name = column.Name,
+            TypeLabel = column.TypeLabel,
+            IsPrimaryKey = column.IsPrimaryKey,
+            IsIdentity = column.IsIdentity,
+            Nullable = column.Nullable,
+            Collation = column.Collation,
+            IsForeignKey = column.IsForeignKey,
+            IsIndexed = column.IsIndexed,
+        }).ToList(),
+    };
+
+    private static DataModelRelationship CloneRelationship(DataModelRelationship relationship) => new()
+    {
+        Id = relationship.Id,
+        LeftTable = relationship.LeftTable,
+        LeftColumn = relationship.LeftColumn,
+        RightTable = relationship.RightTable,
+        RightColumn = relationship.RightColumn,
+        Kind = relationship.Kind,
+        IsResolved = relationship.IsResolved,
+        ConstraintName = relationship.ConstraintName,
+        OnDelete = relationship.OnDelete,
+        Warning = relationship.Warning,
+    };
+
+    private static DataModelPendingOperation CloneOperation(DataModelPendingOperation operation) => new()
+    {
+        Id = operation.Id,
+        Kind = operation.Kind,
+        TableName = operation.TableName,
+        NewTableName = operation.NewTableName,
+        ColumnName = operation.ColumnName,
+        NewColumnName = operation.NewColumnName,
+        ColumnType = operation.ColumnType,
+        NotNull = operation.NotNull,
+        Columns = operation.Columns.Select(static column => new DataModelColumn
+        {
+            Name = column.Name,
+            TypeLabel = column.TypeLabel,
+            IsPrimaryKey = column.IsPrimaryKey,
+            IsIdentity = column.IsIdentity,
+            Nullable = column.Nullable,
+            Collation = column.Collation,
+            IsForeignKey = column.IsForeignKey,
+            IsIndexed = column.IsIndexed,
+        }).ToList(),
+        ReferencedTableName = operation.ReferencedTableName,
+        ReferencedColumnName = operation.ReferencedColumnName,
+        ConstraintName = operation.ConstraintName,
+        OnDelete = operation.OnDelete,
+        Description = operation.Description,
+    };
 }

@@ -25,6 +25,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     private const string ProcedureTableName = "__procedures";
     private const string SavedQueryTableName = "__saved_queries";
     private const string ExternalTablesTableName = "__external_tables";
+    private const string DataModelDiagramsTableName = "__data_model_diagrams";
     private static readonly Regex s_identifierPattern = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
 
     private readonly string _databasePath;
@@ -1151,7 +1152,8 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
         => tableName.StartsWith(CollectionPrefix, StringComparison.Ordinal)
            || string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase)
            || string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase)
-           || string.Equals(tableName, ExternalTablesTableName, StringComparison.OrdinalIgnoreCase);
+           || string.Equals(tableName, ExternalTablesTableName, StringComparison.OrdinalIgnoreCase)
+           || string.Equals(tableName, DataModelDiagramsTableName, StringComparison.OrdinalIgnoreCase);
 
     private static int NormalizePage(int page) => page < 1 ? 1 : page;
 

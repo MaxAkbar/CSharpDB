@@ -423,6 +423,7 @@
         "sys.objects",
         "sys.saved_queries",
         "sys.external_tables",
+        "sys.diagrams",
     ];
 
     [Parameter] public TabDescriptor? Tab { get; set; }
@@ -724,8 +725,7 @@
         try
         {
             _savedQueries = (await DbClient.GetSavedQueriesAsync())
-                .Where(q => !q.Name.StartsWith("__designer_layout:")
-                            && !q.Name.StartsWith(DataModelService.LayoutPrefix, StringComparison.Ordinal))
+                .Where(q => !q.Name.StartsWith("__designer_layout:"))
                 .ToList();
             if (!string.IsNullOrWhiteSpace(keepSelection)
                 && _savedQueries.Any(q => string.Equals(q.Name, keepSelection, StringComparison.OrdinalIgnoreCase)))

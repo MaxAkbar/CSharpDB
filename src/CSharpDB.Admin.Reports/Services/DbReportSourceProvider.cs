@@ -9,7 +9,6 @@ namespace CSharpDB.Admin.Reports.Services;
 public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSourceProvider
 {
     private const string DesignerLayoutPrefix = "__designer_layout:";
-    private const string DataModelLayoutPrefix = "__data_model_layout:";
 
     public async Task<IReadOnlyList<ReportSourceReferenceItem>> ListSourceReferencesAsync()
     {
@@ -45,8 +44,6 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
     internal static bool IsSupportedSavedQuery(SavedQueryDefinition savedQuery)
     {
         if (savedQuery.Name.StartsWith(DesignerLayoutPrefix, StringComparison.Ordinal))
-            return false;
-        if (savedQuery.Name.StartsWith(DataModelLayoutPrefix, StringComparison.Ordinal))
             return false;
 
         string sql = ReportSql.NormalizeSqlText(savedQuery.SqlText);
