@@ -1,149 +1,119 @@
 # What's New
 
-## version3.7.0
+## version3.8.0
 
-version3.7.0 focuses on query-planner observability, opt-in adaptive join
-reoptimization, faster paged view browsing, and the benchmark/documentation
-close-out work around the current optimizer and async I/O roadmap phases. It
-also carries smaller but important polish for SQL result metadata, fulfillment
-sample lookup indexes, DataGen direct-load throughput, and benchmark regression
-analysis.
+version3.8.0 adds native table archives, read-only external tables, Admin
+Import / Export workflows, and a SQL Server-style Data Model diagram surface.
+It also captures the next planning tracks for writable external tables, data
+hygiene, developer experience, advanced differentiators, and database DevOps
+tooling.
 
-### Planner Observability
+### Native Table Archives And Import / Export
 
-- Added SQL-first planner diagnostics through `EXPLAIN ESTIMATE FOR SELECT`,
-  `EXPLAIN ESTIMATE FOR WITH`, and compound query estimate support.
-- Added public `sys.planner_*` virtual catalogs for planner histograms, heavy
-  hitters, and composite index prefix statistics.
-- Added bounded estimate diagnostics for stats freshness, lookup and filter
-  estimates, index choices, hash build-side selection, and join reordering.
-- Added an Admin Query tab Estimate action and Plan tab rendering for planner
-  diagnostic rowsets.
-- Documented how to read plan output, debug missing or stale stats, and spot
-  common query-planning red flags.
+- Added the shared `CSharpDB.ImportExport` runtime project and a dedicated
+  `CSharpDB.Admin.ImportExport` Admin module.
+- Added native `.csdbtable` archives using the `CSDBTBL3` seekable format with
+  JSON schema/manifest sections, length-prefixed encoded rows, row counts,
+  source table metadata, created timestamps, and optional integer primary-key
+  archive indexes.
+- Added direct table snapshot export through the engine transport path so large
+  exports stream from a read snapshot instead of paging through the UI client.
+- Added Admin Import / Export modes for table export, external table
+  registration, and table restore.
+- Added export destinations for browser download and server/database-local
+  paths, including one-time server-side download packages so large archives do
+  not need to be loaded into JavaScript memory.
+- Added progress reporting and cancellation for long-running export and
+  registration operations.
+- Added `.csdbtable` to the ignore list so local table archive outputs do not
+  get picked up by source control.
 
-### Adaptive Join Reoptimization
+### External Tables
 
-- Added opt-in phase-one adaptive query reoptimization through
-  `DatabaseOptions.AdaptiveQueryReoptimization` and
-  `EnableAdaptiveQueryReoptimization(...)`.
-- Added ADO.NET direct embedded connection-string support for
-  `Adaptive Query Reoptimization=true`; remote endpoint connections reject the
-  key so hosts enable the feature server-side.
-- Added adaptive join wrappers that can switch eligible index nested-loop joins
-  to hash joins before rows are emitted when observed outer cardinality
-  diverges.
-- Added adaptive hash join build-side flipping for eligible inner joins when
-  the planned build side is materially larger than estimated.
-- Added internal diagnostics for eligible queries, attempts, successful
-  switches, rejected switches, divergence events, buffered rows, and fail-closed
-  fallback reasons.
-- Kept default query behavior unchanged and suppressed adaptation for risky
-  shapes such as compound query children, correlated subqueries, cross/right
-  joins, and `SELECT *` cases where visible column order could change.
+- Added SQL support for:
+  ```sql
+  CREATE EXTERNAL TABLE archived_customers FROM 'exports/customers.csdbtable';
+  DROP EXTERNAL TABLE archived_customers;
+  ```
+- Stored external table registrations in the internal `__external_tables`
+  metadata table and exposed read-only metadata through `sys.external_tables`.
+- Resolved relative external archive paths from the database file directory.
+- Made external `.csdbtable` tables usable in normal `SELECT` queries,
+  projections, filters, ordering, and joins.
+- Added external table scan, external index nested-loop join, and fast integer
+  primary-key lookup paths over indexed archives.
+- Kept external tables read-only in this release; writes, index creation, ALTER
+  operations, and trigger targets are rejected against external registrations.
+- Added external tables to Admin Object Explorer and Query tab system-catalog
+  discovery.
 
-### View And Lookup Planning
+### Data Model Diagrams
 
-- Taught row-goal planning to reorder eligible simple view join chains before
-  building the view operator tree, so bounded `LIMIT`/`OFFSET` view queries can
-  use the same streaming lookup plans as equivalent inline SQL.
-- Updated the Admin DataGrid view path to page views with bounded
-  `LIMIT`/`OFFSET` instead of opening unbounded forward-only view cursors.
-- Fixed the Query tab grid layout so the row grid is the only scroll container
-  and the pagination bar stays fixed below the rows.
-- Improved lookup-join planning by using indexed local predicate estimates when
-  cardinality stats are unavailable or weaker.
-- Preserved right-side local predicates as residual join filters for lookup
-  joins and passed estimated row counts into index scans as capacity hints.
-- Added an `orders(customer_id)` lookup index to the fulfillment sample schema
-  for customer-filtered order views.
+- Added a new Admin Data Model tab that visualizes user tables and external
+  tables on an ERD-style canvas.
+- Reused the Query Designer canvas behavior for draggable schema nodes,
+  relationships, and zoom while keeping query-specific execution, filters, and
+  grid state separate.
+- Added Object Explorer, command palette, table context-menu, and external
+  table context-menu entry points for the Data Model tab.
+- Added saved diagram persistence through the internal
+  `__data_model_diagrams` table instead of saved-query layout records.
+- Exposed diagram metadata through `sys.diagrams`, including source/table and
+  pending-operation counts, while hiding the internal table from normal table
+  lists.
+- Added a default global diagram so table placement, zoom, and source
+  membership are remembered even before the user manually names a diagram.
+- Added named diagram save/load/delete, table add/remove membership, node
+  placement persistence, collapsed state, zoom, and stale/missing source
+  warnings.
+- Added preview-first staged schema operations for new table, drop table,
+  rename table, add/drop/rename column, and add/drop relationship workflows.
+  External tables remain display-only.
 
-### SQL Result Metadata
+### Planning Docs And Website
 
-- Propagated query column types through engine transport, HTTP API/client DTOs,
-  and the Admin DataGrid.
-- View/query result metadata now preserves `ColumnTypes` across local and
-  remote SQL execution paths.
-- Updated client SQL execution coverage so column names and column types are
-  both asserted for query results.
-- Updated the API package reference for `Scalar.AspNetCore` from `2.14.10` to
-  `2.14.11`.
+- Added planning documents for writable external tables, the Data Hygiene
+  Engine, the Developer Experience adoption track, Advanced Differentiators,
+  and the Database DevOps Toolkit.
+- Refreshed the roadmap to point at the new planning documents and to mark the
+  user-defined functions/commands work as completed with sandbox opt-out
+  coverage.
+- Added the native table archives blog post and refreshed the website changelog,
+  roadmap pages, blog index, and sitemap.
 
-### DataGen And Collection Fast Path Close-Out
+### Tests And Validation
 
-- Closed the current generated collection fast-path roadmap phase and split
-  package ergonomics and broader generator coverage into future roadmap items.
-- Refreshed benchmark-facing docs with the current release-core snapshot and
-  generated collection codec diagnostics.
-- Moved CSharpDB.DataGen direct loads onto the write-optimized storage preset.
-- Reused SQL row buffers before `InsertBatch` copies.
-- Documented the DataGen fast-path choices and capped direct collection
-  document target sizes to stay within the current inline collection payload
-  envelope.
-
-### Benchmarks And Roadmap Close-Out
-
-- Marked the current advanced cost-based query optimizer and async I/O batching
-  roadmap phases as completed current-phase work.
-- Kept adaptive reoptimization and public histogram inspection documented as
-  separate planned/follow-up items where appropriate.
-- Added optimizer close-out diagnostics for heavy-hitter equality, histogram
-  range estimates, composite-prefix correlation, and bounded join reordering.
-- Added async I/O close-out diagnostics for save/backup/restore, vacuum and FK
-  logical rewrites, database inspector scans, and live WAL inspector scans.
-- Refreshed roadmap, query/durable-write docs, async I/O audit notes, benchmark
-  catalog, README performance tables, and release-core manifest metadata with
-  the May 6 benchmark baseline.
-- Added a BenchmarkDotNet WAL point-read benchmark for primary-key reads across
-  WAL-backed and checkpointed states at 100, 1k, 5k, and 10k target frames.
-- Updated `Compare-Baseline.ps1` so performance checks can compare a
-  configurable time metric such as `P95` through `metricColumn` while keeping
-  `Mean` as the default.
-
-### Tests And Benchmarks
-
-- Added parser, catalog, planner, client, HTTP, and benchmark coverage for
-  planner diagnostics and `EXPLAIN ESTIMATE`.
-- Added adaptive reoptimization engine/operator tests, ADO.NET option tests,
-  and the `AdaptiveReoptimizationBenchmark` diagnostic suite.
-- Added regression coverage for bounded simple-view row-goal planning, late
-  unindexed detail joins, purchase-order style join chains, and Admin DataGrid
-  view paging SQL generation.
-- Added tests for right-side join predicates, unique text-filter lookup joins,
-  and SQL result column type metadata.
-- Added benchmark suites for optimizer close-out, async I/O close-out, planner
-  catalog diagnostics, and WAL point-read regression analysis.
-
-### Validation
-
-- `dotnet test .\CSharpDB.slnx -c Release`
-- `dotnet build .\CSharpDB.slnx -c Release --no-restore`
-- `dotnet test .\CSharpDB.slnx -c Release --no-build`
-- `dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --optimizer-closeout --repro`
-- `dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --async-io-closeout --repro`
-- `pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Run-Perf-Guardrails.ps1 -Mode release`
-  - Reported `PASS=187, WARN=0, SKIP=0, FAIL=0`.
-- `dotnet build .\src\CSharpDB.Admin\CSharpDB.Admin.csproj -c Release`
-- `dotnet test .\tests\CSharpDB.Admin.Forms.Tests\CSharpDB.Admin.Forms.Tests.csproj -c Release --filter FullyQualifiedName~DataGridTests`
-- `dotnet test .\tests\CSharpDB.Tests\CSharpDB.Tests.csproj -c Release --filter FullyQualifiedName~SimpleViewLateUnindexedDetailJoinWithLimit|FullyQualifiedName~JoinChainWithLimit|FullyQualifiedName~PurchaseOrderLineJoinChainWithLimit`
-- Targeted generated collection tests, trim smoke publish, DataGen Release
-  build, relational direct-load smoke, and document direct-load smoke passed.
-- `dotnet build tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-restore`
-- `dotnet run -c Release --project tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *WalPointReadBenchmarks* --job Dry`
-- Focused lookup-join and SQL column type tests passed for:
-  `Join_WithWhereOnRightPrimaryKeyLookupSide_AppliesPredicate`,
-  `Join_WithUniqueTextFilterAndIndexedDependentSide_UsesLookupJoins`, and
-  `ExecuteSqlAsync_ReturnsQueryColumnTypes`.
+- Added archive round-trip tests for schema, values, blobs, empty tables, and
+  large table archive behavior.
+- Added parser, engine, transport, and system-catalog coverage for external
+  table registration, querying, joining, filtering, ordering, read-only
+  enforcement, and metadata.
+- Added Data Model graph and diagram service tests for placement persistence,
+  saved membership, pending operations, hidden internal tables, and
+  `sys.diagrams`.
+- Added Admin tab manager and report-source tests for the new Data Model tab and
+  removal of the old data-model saved-query layout path.
+- Focused validation run for this release note:
+  - `dotnet test tests\CSharpDB.Tests\CSharpDB.Tests.csproj --no-restore --filter "TableArchiveTests|ExternalTableTests|ParserTests|EngineTransportClientTests|DataModelGraphBuilderTests|DataModelDiagramServiceTests|SystemCatalogTests"`
+    - Passed: 170 tests.
+  - `dotnet test tests\CSharpDB.Admin.Reports.Tests\CSharpDB.Admin.Reports.Tests.csproj --no-restore --filter DbReportSourceProviderTests`
+    - Passed: 4 tests.
+  - `dotnet test tests\CSharpDB.Admin.Forms.Tests\CSharpDB.Admin.Forms.Tests.csproj --no-restore --filter TabManagerServiceTests`
+    - Passed: 17 tests.
+  - `dotnet build src\CSharpDB.Admin\CSharpDB.Admin.csproj`
+  - `git diff --check`
+  - Browser smoke test for opening Data Model and the New Table staging panel.
 
 ### Review Notes
 
-- Adaptive query reoptimization is opt-in and intentionally leaves default
-  planning behavior unchanged.
-- `EXPLAIN ESTIMATE` and `sys.planner_*` are diagnostic surfaces; normal select
-  planning should not depend on the diagnostic rowset materialization path.
-- Simple view row-goal reordering is scoped to eligible join chains and bounded
-  paging shapes.
-- The SQL result DTO column type addition is additive for API/client callers.
-- The new WAL point-read benchmark provides a stable current signal, but it
-  needs a captured historical baseline before it can be used as a release
-  regression gate.
+- `.csdbtable` external tables are intentionally read-only in this release.
+  Writable external tables are planned separately around an opt-in mutable
+  `.csdbx` file.
+- The table archive format is native and seekable, not a ZIP of JSON rows.
+- The Data Model tab stages schema edits and previews SQL before applying
+  changes; diagram membership and placement save independently.
+- Drop-table actions still use the existing engine schema rules, so tables with
+  foreign-key-owned support indexes may need relationship cleanup first.
+- An initial parallel validation attempt hit a transient compiler output lock;
+  the affected tests were rerun sequentially after shutting down the build
+  server and passed.
