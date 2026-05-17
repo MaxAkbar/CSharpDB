@@ -243,4 +243,3 @@ Phase 4: drift reports.
   and validation failures.
 - Admin service tests for target loading, diff preview, script preview, and
   destructive execution confirmation.
-

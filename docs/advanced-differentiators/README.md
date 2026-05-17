@@ -245,4 +245,3 @@ Phase 4: full-text SQL ergonomics.
 - Client and Admin streaming API tests for reactive query delivery.
 - CLI and Admin docs examples for archive registration, change feed inspection,
   and subscription demos.
-

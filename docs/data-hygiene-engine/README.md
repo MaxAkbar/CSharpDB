@@ -198,4 +198,3 @@ Phase 4: product surfaces.
   `VALIDATE TABLE` violations.
 - Orphan detection from foreign-key metadata and explicit references.
 - Transaction rollback for failed dedup and merge operations.
-

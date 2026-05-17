@@ -219,4 +219,3 @@ Phase 4: analytics helpers and adoption polish.
   and JSON output.
 - Surface tests for Admin, EF Core, MCP, and VS Code snippets as those phases
   are implemented.
-
