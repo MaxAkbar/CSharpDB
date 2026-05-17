@@ -563,6 +563,106 @@ code {
     font-size: inherit;
 }
 
+/* ─── Mermaid Diagrams ─── */
+.mermaid-card {
+    margin: 24px 0 32px;
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.mermaid-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 16px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border);
+}
+
+.mermaid-title {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.mermaid-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.mermaid-tab,
+.mermaid-copy-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    padding: 5px 10px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.mermaid-tab:hover,
+.mermaid-copy-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-light);
+}
+
+.mermaid-tab.active {
+    color: var(--accent);
+    background: var(--accent-glow);
+    border-color: var(--accent);
+}
+
+.mermaid-panel {
+    display: none;
+}
+
+.mermaid-panel.active {
+    display: block;
+}
+
+.mermaid-diagram {
+    min-height: 160px;
+    padding: 24px;
+    overflow-x: auto;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.mermaid-diagram svg {
+    max-width: 100%;
+    height: auto;
+}
+
+.mermaid-panel-source pre {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.mermaid-error .mermaid-diagram {
+    color: var(--warning);
+}
+
+@media (max-width: 768px) {
+    .mermaid-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .mermaid-actions {
+        flex-wrap: wrap;
+    }
+}
+
 /* Syntax Highlighting */
 .kw { color: var(--code-keyword); }
 .str { color: var(--code-string); }

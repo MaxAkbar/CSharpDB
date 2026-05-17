@@ -37,6 +37,74 @@ that is reused by the client, API, CLI, and Admin surfaces.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
+## Embedded-to-gRPC Runtime Boundary
+
+CSharpDB has one database engine and one public client contract across local
+and remote shapes. Embedded mode keeps the engine in the application process.
+gRPC mode moves file ownership into `CSharpDB.Daemon` and lets applications
+call the same `ICSharpDbClient` contract through `Transport = Grpc`.
+
+```mermaid
+flowchart TB
+    App["Application Code"]
+
+    subgraph Embedded["Embedded Mode"]
+        DirectClient["CSharpDbClient<br/>Transport = Direct"]
+        Engine["CSharpDB.Engine<br/>Database"]
+        Storage["Storage Stack<br/>SchemaCatalog, B+Tree, Pager, WAL"]
+        File[".db + .wal files"]
+    end
+
+    subgraph Remote["gRPC Mode"]
+        GrpcClient["CSharpDbClient<br/>Transport = Grpc"]
+        Daemon["CSharpDB.Daemon<br/>ASP.NET Core + gRPC"]
+        RpcService["CSharpDbRpcService"]
+        HostClient["ICSharpDbClient<br/>Direct inside daemon"]
+    end
+
+    App --> DirectClient --> Engine --> Storage --> File
+    App --> GrpcClient --> Daemon --> RpcService --> HostClient --> Engine
+```
+
+The important rule is that gRPC is transport and process isolation, not a
+second database engine. The daemon opens one configured database file through a
+direct `ICSharpDbClient`, keeps that runtime warm, and exposes generated RPC
+methods over the same client-facing operation set.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Client as GrpcTransportClient
+    participant RPC as CSharpDbRpcService
+    participant Host as Daemon ICSharpDbClient
+    participant DB as Database Engine
+    participant WAL as Pager/WAL/File
+
+    App->>Client: ExecuteSqlAsync(sql)
+    Client->>RPC: ExecuteSql(SqlRequest)
+    RPC->>Host: ExecuteSqlAsync(sql)
+    Host->>DB: Parse/plan/execute
+    DB->>WAL: Read/write pages, commit via WAL
+    WAL-->>DB: Durable result
+    DB-->>Host: SqlExecutionResult
+    Host-->>RPC: Model result
+    RPC-->>Client: SqlExecutionResultMessage
+    Client-->>App: SqlExecutionResult
+```
+
+| Scenario | Use | Recommended entry point |
+|----------|-----|-------------------------|
+| Single embedded app | One process safely owns the database file | `Database.OpenAsync(...)` or direct `CSharpDbClient` |
+| Embedded with client abstraction | App code should stay transport-neutral | `CSharpDbClientOptions { DataSource = "app.db" }` |
+| Local daemon / sidecar | Multiple local processes or tools need one warm owner | `Transport = CSharpDbTransport.Grpc`, localhost daemon endpoint |
+| Internal service host | Trusted backend services share one database owner | gRPC daemon with API key, TLS termination, and long-lived clients |
+| Admin and tooling access | UI, CLI, VS Code, REST, and gRPC clients share the same runtime | Point tools at the daemon instead of opening the file directly |
+| Not a fit | Public internet, multi-tenant, multi-database, or distributed write coordination | Build an outer service layer before exposing it broadly |
+
+Remote clients should reuse `ICSharpDbClient` instances and gRPC channels for
+bursts of work. Direct mode remains the fastest path when the caller can safely
+own the database file in-process.
+
 **Dependency graph:**
 
 ```

@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="css/style.css">
-    <link rel="preload" href="js/csharpdb.bundle.js" as="script">
+    <link rel="stylesheet" href="css/style.css?v=20260517-2">
+    <link rel="preload" href="js/csharpdb.bundle.js?v=20260517-2" as="script">
     <title>Architecture Source Reference — CSharpDB</title>
     <meta name="description" content="Full migrated source reference for the original CSharpDB architecture markdown guide.">
     <link rel="canonical" href="https://csharpdb.com/architecture-reference.html">
@@ -52,6 +52,7 @@
                     <h4>On This Page</h4>
                     <ul>
                         <li><a href="#layer-overview">Layer Overview</a></li>
+                        <li><a href="#embedded-to-grpc-runtime-boundary">Embedded-to-gRPC Runtime Boundary</a></li>
                         <li><a href="#layer-1-primitives-csharpdb-primitives">Layer 1: Primitives ( CSharpDB.Primitives )</a></li>
                         <li class="toc-child"><a href="#dbvalue">DbValue</a></li>
                         <li><a href="#layer-2-storage-csharpdb-storage">Layer 2: Storage ( CSharpDB.Storage )</a></li>
@@ -122,6 +123,68 @@
                 │ DbValue, DbType, Schema, ErrorCodes                                │
                 └────────────────────────────────────────────────────────────────────┘
                 </code></pre></div>
+                <h2 id="embedded-to-grpc-runtime-boundary">Embedded-to-gRPC Runtime Boundary</h2>
+                <p>CSharpDB has one database engine and one public client contract across local
+                and remote shapes. Embedded mode keeps the engine in the application process.
+                gRPC mode moves file ownership into <code>CSharpDB.Daemon</code> and lets applications
+                call the same <code>ICSharpDbClient</code> contract through <code>Transport = Grpc</code>.</p>
+                <div class="code-block" data-title="Mermaid"><pre><code>flowchart TB
+    App["Application Code"]
+
+    subgraph Embedded["Embedded Mode"]
+        DirectClient["CSharpDbClient&lt;br/&gt;Transport = Direct"]
+        Engine["CSharpDB.Engine&lt;br/&gt;Database"]
+        Storage["Storage Stack&lt;br/&gt;SchemaCatalog, B+Tree, Pager, WAL"]
+        File[".db + .wal files"]
+    end
+
+    subgraph Remote["gRPC Mode"]
+        GrpcClient["CSharpDbClient&lt;br/&gt;Transport = Grpc"]
+        Daemon["CSharpDB.Daemon&lt;br/&gt;ASP.NET Core + gRPC"]
+        RpcService["CSharpDbRpcService"]
+        HostClient["ICSharpDbClient&lt;br/&gt;Direct inside daemon"]
+    end
+
+    App --&gt; DirectClient --&gt; Engine --&gt; Storage --&gt; File
+    App --&gt; GrpcClient --&gt; Daemon --&gt; RpcService --&gt; HostClient --&gt; Engine
+                </code></pre></div>
+                <p>The important rule is that gRPC is transport and process isolation, not a
+                second database engine. The daemon opens one configured database file through a
+                direct <code>ICSharpDbClient</code>, keeps that runtime warm, and exposes generated RPC
+                methods over the same client-facing operation set.</p>
+                <div class="code-block" data-title="Mermaid"><pre><code>sequenceDiagram
+    participant App
+    participant Client as GrpcTransportClient
+    participant RPC as CSharpDbRpcService
+    participant Host as Daemon ICSharpDbClient
+    participant DB as Database Engine
+    participant WAL as Pager/WAL/File
+
+    App-&gt;&gt;Client: ExecuteSqlAsync(sql)
+    Client-&gt;&gt;RPC: ExecuteSql(SqlRequest)
+    RPC-&gt;&gt;Host: ExecuteSqlAsync(sql)
+    Host-&gt;&gt;DB: Parse/plan/execute
+    DB-&gt;&gt;WAL: Read/write pages, commit via WAL
+    WAL--&gt;&gt;DB: Durable result
+    DB--&gt;&gt;Host: SqlExecutionResult
+    Host--&gt;&gt;RPC: Model result
+    RPC--&gt;&gt;Client: SqlExecutionResultMessage
+    Client--&gt;&gt;App: SqlExecutionResult
+                </code></pre></div>
+                <table class="doc-table">
+                <thead><tr><th>Scenario</th><th>Use</th><th>Recommended entry point</th></tr></thead>
+                <tbody>
+                <tr><td>Single embedded app</td><td>One process safely owns the database file</td><td><code>Database.OpenAsync(...)</code> or direct <code>CSharpDbClient</code></td></tr>
+                <tr><td>Embedded with client abstraction</td><td>App code should stay transport-neutral</td><td><code>CSharpDbClientOptions { DataSource = "app.db" }</code></td></tr>
+                <tr><td>Local daemon / sidecar</td><td>Multiple local processes or tools need one warm owner</td><td><code>Transport = CSharpDbTransport.Grpc</code>, localhost daemon endpoint</td></tr>
+                <tr><td>Internal service host</td><td>Trusted backend services share one database owner</td><td>gRPC daemon with API key, TLS termination, and long-lived clients</td></tr>
+                <tr><td>Admin and tooling access</td><td>UI, CLI, VS Code, REST, and gRPC clients share the same runtime</td><td>Point tools at the daemon instead of opening the file directly</td></tr>
+                <tr><td>Not a fit</td><td>Public internet, multi-tenant, multi-database, or distributed write coordination</td><td>Build an outer service layer before exposing it broadly</td></tr>
+                </tbody>
+                </table>
+                <p>Remote clients should reuse <code>ICSharpDbClient</code> instances and gRPC channels for
+                bursts of work. Direct mode remains the fastest path when the caller can safely
+                own the database file in-process.</p>
                 <p><strong>Dependency graph:</strong></p>
                 <div class="code-block" data-title="Code"><pre><code>Api     → Client
                 Daemon  → Client
@@ -1142,6 +1205,6 @@
     </main>
 
     <div id="site-footer"></div>
-    <script src="js/csharpdb.bundle.js" defer></script>
+    <script src="js/csharpdb.bundle.js?v=20260517-2" defer></script>
 </body>
 </html>

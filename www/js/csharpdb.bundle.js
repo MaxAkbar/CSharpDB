@@ -100,6 +100,7 @@
                 const next = cur === 'dark' ? 'light' : 'dark';
                 document.documentElement.setAttribute('data-theme', next);
                 localStorage.setItem('csharpdb-theme', next);
+                renderMermaidDiagrams();
             }
         });
     }
@@ -248,6 +249,133 @@
         });
     }
 
+    function isMermaidCode(code) {
+        const title = code.closest('.code-block')?.dataset.title?.trim().toLowerCase() || '';
+        const className = code.className.toLowerCase();
+        return title === 'mermaid' || className.includes('language-mermaid');
+    }
+
+    function loadMermaid() {
+        if (window.mermaid) return Promise.resolve(window.mermaid);
+        if (window.CSharpDBMermaidLoading) return window.CSharpDBMermaidLoading;
+
+        window.CSharpDBMermaidLoading = new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = `${prefix}js/vendor/mermaid.min.js`;
+            script.defer = true;
+            script.onload = () => resolve(window.mermaid);
+            script.onerror = () => reject(new Error('Unable to load Mermaid renderer.'));
+            document.head.appendChild(script);
+        });
+
+        return window.CSharpDBMermaidLoading;
+    }
+
+    function activeMermaidTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'light' ? 'default' : 'dark';
+    }
+
+    function initMermaidBlocks() {
+        const mermaidBlocks = Array.from(document.querySelectorAll('.doc-content pre code, .blog-post pre code'))
+            .filter(isMermaidCode);
+
+        mermaidBlocks.forEach((code, index) => {
+            if (code.closest('.mermaid-card')) return;
+
+            const source = code.textContent?.trim() || '';
+            if (!source) return;
+
+            const originalBlock = code.closest('.code-block') || code.closest('pre');
+            const card = document.createElement('div');
+            card.className = 'mermaid-card';
+            card.innerHTML = `
+                <div class="mermaid-header">
+                    <span class="mermaid-title">Mermaid Diagram</span>
+                    <div class="mermaid-actions">
+                        <button type="button" class="mermaid-tab active" data-mermaid-panel="diagram">Diagram</button>
+                        <button type="button" class="mermaid-tab" data-mermaid-panel="source">Source</button>
+                        <button type="button" class="mermaid-copy-btn" title="Copy source">Copy</button>
+                    </div>
+                </div>
+                <div class="mermaid-panel mermaid-panel-diagram active">
+                    <div class="mermaid-diagram" data-mermaid-index="${index}">Loading diagram...</div>
+                </div>
+                <div class="mermaid-panel mermaid-panel-source">
+                    <pre><code class="language-mermaid"></code></pre>
+                </div>`;
+
+            card.querySelector('.mermaid-panel-source code').textContent = source;
+            originalBlock.replaceWith(card);
+        });
+    }
+
+    async function renderMermaidDiagrams() {
+        const cards = Array.from(document.querySelectorAll('.mermaid-card'));
+        if (!cards.length) return;
+
+        try {
+            const mermaid = await loadMermaid();
+            mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'strict',
+                theme: activeMermaidTheme()
+            });
+
+            await Promise.all(cards.map(async (card, index) => {
+                const source = card.querySelector('.mermaid-panel-source code')?.textContent?.trim() || '';
+                const diagram = card.querySelector('.mermaid-diagram');
+                if (!source || !diagram) return;
+
+                try {
+                    diagram.textContent = 'Rendering diagram...';
+                    const renderId = `csharpdb-mermaid-${Date.now()}-${index}`;
+                    const result = await mermaid.render(renderId, source);
+                    diagram.innerHTML = result.svg;
+                    card.classList.remove('mermaid-error');
+                } catch (error) {
+                    diagram.textContent = 'Mermaid could not render this diagram. Use Source to inspect the definition.';
+                    card.classList.add('mermaid-error');
+                    console.warn(error);
+                }
+            }));
+        } catch (error) {
+            cards.forEach(card => {
+                card.classList.add('mermaid-error');
+                const diagram = card.querySelector('.mermaid-diagram');
+                if (diagram) diagram.textContent = 'Mermaid renderer failed to load. Use Source to inspect the definition.';
+            });
+            console.warn(error);
+        }
+    }
+
+    function initMermaidInteractions() {
+        document.addEventListener('click', (e) => {
+            const tab = e.target.closest('.mermaid-tab');
+            if (tab) {
+                const card = tab.closest('.mermaid-card');
+                const panel = tab.dataset.mermaidPanel;
+                card.querySelectorAll('.mermaid-tab').forEach(button => {
+                    button.classList.toggle('active', button === tab);
+                });
+                card.querySelectorAll('.mermaid-panel').forEach(item => {
+                    item.classList.toggle('active', item.classList.contains(`mermaid-panel-${panel}`));
+                });
+                return;
+            }
+
+            const copy = e.target.closest('.mermaid-copy-btn');
+            if (copy) {
+                const source = copy.closest('.mermaid-card')?.querySelector('.mermaid-panel-source code')?.textContent;
+                if (source) {
+                    navigator.clipboard.writeText(source).then(() => {
+                        copy.textContent = 'Copied';
+                        setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
+                    });
+                }
+            }
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         renderNav();
         renderFooter();
@@ -255,7 +383,10 @@
         initMobile();
         initNavScroll();
         initCopyButtons();
+        initMermaidBlocks();
+        initMermaidInteractions();
         initCodeHighlighting();
+        renderMermaidDiagrams();
     });
 })();
 
