@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Build Access-Style C# Form Modules &mdash; Blog &mdash; CSharpDB</title>
+    <meta name="description" content="Build an Access-style C# code module for a real order-escalation workflow in CSharpDB Admin Forms: generate handlers, export to files, edit in your normal C# tools, import, build, trust, and run.">
+    <link rel="canonical" href="https://csharpdb.com/blog/access-style-csharp-code-modules.html">
+    <meta property="og:title" content="Build Access-Style C# Form Modules">
+    <meta property="og:description" content="Build an Access-style C# code module for a real order-escalation workflow in CSharpDB Admin Forms: generate handlers, export to files, edit in your normal C# tools, import, build, trust, and run.">
+    <meta property="og:url" content="https://csharpdb.com/blog/access-style-csharp-code-modules.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Build Access-Style C# Form Modules",
+        "description": "Build an Access-style C# code module for a real order-escalation workflow in CSharpDB Admin Forms: generate handlers, export to files, edit in your normal C# tools, import, build, trust, and run.",
+        "url": "https://csharpdb.com/blog/access-style-csharp-code-modules.html",
+        "datePublished": "2026-05-10",
+        "author": { "@type": "Organization", "name": "CSharpDB" },
+        "isPartOf": { "@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com" }
+    }
+    </script>
+    <style>
+        .blog-post-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+            font-size: 0.88rem;
+            color: var(--text-muted);
+        }
+        .blog-post-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 100px;
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+        .blog-post-content h2 {
+            margin-top: 48px;
+            margin-bottom: 16px;
+        }
+        .blog-post-content h3 {
+            margin-top: 32px;
+            margin-bottom: 12px;
+        }
+        .blog-post-content p {
+            margin-bottom: 16px;
+        }
+        .blog-post-content ul,
+        .blog-post-content ol {
+            margin: 0 0 18px 1.25rem;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+        .blog-post-content li {
+            margin-bottom: 8px;
+        }
+        .blog-post-content .code-block {
+            margin: 20px 0 24px;
+        }
+        .scenario-card {
+            margin: 24px 0;
+            padding: 20px 22px;
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-md);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+        }
+        .scenario-card strong {
+            color: var(--text-primary);
+        }
+        .workflow-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin: 24px 0 28px;
+        }
+        .workflow-step {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 16px 18px;
+        }
+        .workflow-step-number {
+            color: var(--accent);
+            font-weight: 700;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 6px;
+        }
+        .workflow-step-title {
+            color: var(--text-primary);
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .workflow-step-text {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            line-height: 1.55;
+        }
+        .blog-post-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0 24px;
+            font-size: 0.92rem;
+        }
+        .blog-post-content th {
+            text-align: left;
+            padding: 10px 14px;
+            border-bottom: 2px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+        .blog-post-content td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }
+        .blog-post-content td code {
+            font-size: 0.88rem;
+        }
+        .blog-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+        }
+        .blog-nav a {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        .blog-nav a:hover { color: var(--accent-hover); }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'blog'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Build Access-Style C# Form Modules',
+        description: 'Build an Access-style C# code module for a real order-escalation workflow in CSharpDB Admin Forms: generate handlers, export to files, edit in your normal C# tools, import, build, trust, and run.',
+        keywords: 'CSharpDB code modules, Access-style form modules, Admin Forms, C# form events, trusted C# modules, database-owned code, workflow automation',
+        canonicalPath: 'blog/access-style-csharp-code-modules.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width" style="max-width: 900px; margin: 0 auto;">
+                <h1>Build Access-Style C# Form Modules</h1>
+                <div class="blog-post-meta">
+                    <span class="blog-post-tag">Guide</span>
+                    <span>May 10, 2026</span>
+                    <span>&middot; 10 min read</span>
+                </div>
+
+                <div class="blog-post-content">
+                    <p>Access form modules are useful because the code lives next to the form. A button click, a before-save rule, and a small helper method can travel with the database instead of being buried in a separate application host.</p>
+                    <p>CSharpDB code modules bring that idea to Admin Forms with normal C# tooling. The database stores the source. Admin can generate event-handler stubs, export the modules to files, import changes, build them with Roslyn, show diagnostics, and require explicit local trust before anything runs.</p>
+
+                    <div class="scenario-card">
+                        <strong>Scenario:</strong> a warehouse team uses an <code>Order Workbench</code> Admin Form to manage outbound orders. Operators can edit an order, but the business has cross-field rules that are too specific for a generic required-field validator. A high-value expedited order needs manager approval. A hold needs a hold reason. A ship-ready order needs a carrier service and a valid required ship date. A supervisor also wants an <strong>Escalate</strong> button that marks the order for review and notifies the operations lead through a trusted host command.
+                    </div>
+
+                    <p>This post walks that scenario from setup to execution. The exact field names can be adapted to your own form, but the pattern is the important part: declarative form metadata handles layout, a host command owns external notification, and the form module owns local business rules that should travel with the database.</p>
+
+                    <h2>What Code Modules Add</h2>
+                    <p>Before code modules, Admin Forms already had trusted host commands and declarative action sequences. Those are still the right tools for many workflows. Code modules fill the gap where the logic is small, form-specific, and easier to express as C# than as a chain of declarative conditions.</p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Use</th>
+                                <th>Best Tool</th>
+                                <th>Why</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Set a field, show a message, open another form, apply a filter</td>
+                                <td>Action sequence</td>
+                                <td>No code, serializes cleanly with the form definition.</td>
+                            </tr>
+                            <tr>
+                                <td>Send email, call an API, write to an application service</td>
+                                <td>Trusted host command</td>
+                                <td>Privileged integrations stay in the application host.</td>
+                            </tr>
+                            <tr>
+                                <td>Cross-field validation, button-specific business logic, helper methods</td>
+                                <td>C# code module</td>
+                                <td>The logic travels with the database and builds like normal C#.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h2>The Workflow</h2>
+                    <div class="workflow-grid">
+                        <div class="workflow-step">
+                            <div class="workflow-step-number">Step 1</div>
+                            <div class="workflow-step-title">Create handlers</div>
+                            <div class="workflow-step-text">Use the form designer to create a C# handler for <code>BeforeUpdate</code> and one for the escalation button's <code>OnClick</code>.</div>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-step-number">Step 2</div>
+                            <div class="workflow-step-title">Export files</div>
+                            <div class="workflow-step-text">Open the Code Modules tab and export the module workspace to a normal folder.</div>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-step-number">Step 3</div>
+                            <div class="workflow-step-title">Edit C#</div>
+                            <div class="workflow-step-text">Open the exported <code>.cs</code> file in your editor and add the form-specific rules.</div>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-step-number">Step 4</div>
+                            <div class="workflow-step-title">Import, build, trust</div>
+                            <div class="workflow-step-text">Import the files, build the module set, review diagnostics, then trust the current hash locally.</div>
+                        </div>
+                    </div>
+
+                    <h2>Host Setup</h2>
+                    <p>The packaged CSharpDB Admin host already wires the code-module services. If you host Admin Forms yourself, register both the code-module runtime and the form designer integration:</p>
+
+                    <div class="code-block" data-title="Program.cs">
+                        <pre><code>using CSharpDB.Admin.Forms.Services;
+using CSharpDB.CodeModules;
+
+builder.Services.AddCSharpDbCodeModules(options =&gt;
+{
+    options.EnableInProcessExecution = true;
+});
+
+builder.Services.AddCSharpDbAdminForms();
+builder.Services.AddCSharpDbAdminFormCodeModules();</code></pre>
+                    </div>
+
+                    <p>The explicit <code>EnableInProcessExecution</code> flag matters. A database can store code modules without being allowed to execute them. Runtime execution requires host opt-in, a successful build, and a local trust grant for the exact module-set hash.</p>
+
+                    <h2>Register the Host Command</h2>
+                    <p>The form module should not know how to send Slack messages, email, Teams notifications, or tickets. That belongs in a trusted host command. The form module can ask for <code>NotifyOpsLead</code>; the host decides what that means. In a self-hosted app, use the command overload below in place of the plain <code>AddCSharpDbAdminForms()</code> call from the setup snippet.</p>
+
+                    <div class="code-block" data-title="Program.cs &mdash; trusted command">
+                        <pre><code>using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminForms(commands =&gt;
+{
+    commands.AddAsyncCommand(
+        "NotifyOpsLead",
+        new DbCommandOptions(
+            Description: "Notifies the operations lead that an order needs review.",
+            Timeout: TimeSpan.FromSeconds(5)),
+        async (context, ct) =&gt;
+        {
+            string orderNumber = context.Arguments["orderNumber"].AsText;
+            string reason = context.Arguments["reason"].AsText;
+
+            await opsNotifier.NotifyAsync(orderNumber, reason, ct);
+
+            return DbCommandResult.Success("Ops lead notified.");
+        });
+});</code></pre>
+                    </div>
+
+                    <p>In a real application, <code>opsNotifier</code> is your service. It can call an internal API, enqueue a message, or write to an audit table. The database-owned module only sees the safe command surface.</p>
+
+                    <h2>Create the Form Handlers</h2>
+                    <p>In Admin, open the <code>Order Workbench</code> form in the designer. Save the form first so it has a stable form id. Then add two event bindings:</p>
+                    <ol>
+                        <li>At the form level, add <code>BeforeUpdate</code> and click <strong>Create</strong> in the C# handler row.</li>
+                        <li>Select the escalation button, add <code>OnClick</code>, and click <strong>Create</strong> in the C# handler row.</li>
+                    </ol>
+                    <p>The designer creates or updates one form module and attaches <code>CodeModuleHandler</code> references to the event bindings. For a form named <code>Order Workbench</code>, the generated source looks like this:</p>
+
+                    <div class="code-block" data-title="Generated module stub">
+                        <pre><code>using CSharpDB.CodeModules.Runtime;
+
+namespace CSharpDB.UserCode.Forms;
+
+public sealed class OrderWorkbenchModule : FormCodeModule
+{
+    public void OnBeforeUpdate(FormBeforeEventContext context)
+    {
+    }
+
+    public void EscalateOrderButton_OnClick(FormControlEventContext context)
+    {
+    }
+}</code></pre>
+                    </div>
+
+                    <h2>Export to Files</h2>
+                    <p>Open the <strong>Code Modules</strong> tab from the title bar or command palette. Choose a workspace folder and click <strong>Export</strong>. Admin creates a file workspace under <code>.csharpdb-code</code>:</p>
+
+                    <div class="code-block" data-title="Workspace layout">
+                        <pre><code>.csharpdb-code/
+  csharpdb.codeproj.json
+  forms/
+    Order_Workbench.cs
+  modules/
+  classes/</code></pre>
+                    </div>
+
+                    <p>The manifest records each module id, kind, owner, type name, file path, and source hash. On import, CSharpDB compares the manifest hash, current database hash, and file hash. If both the database and the exported file changed since export, import reports a conflict instead of overwriting one side.</p>
+
+                    <h2>Add the Business Rules</h2>
+                    <p>Open the exported form module in your normal C# editor and replace the generated methods with the order workflow. This example assumes the form record includes fields such as <code>status</code>, <code>priority_code</code>, <code>carrier_service</code>, <code>required_ship_date</code>, <code>hold_reason</code>, <code>manager_approval_code</code>, <code>total_amount</code>, <code>notes</code>, <code>order_number</code>, and <code>last_reviewed_utc</code>.</p>
+
+                    <div class="code-block" data-title="Order_Workbench.cs">
+                        <pre><code>using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Threading.Tasks;
+using CSharpDB.CodeModules.Runtime;
+
+namespace CSharpDB.UserCode.Forms;
+
+public sealed class OrderWorkbenchModule : FormCodeModule
+{
+    private static readonly HashSet&lt;string&gt; ShipReadyStatuses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ReadyToShip",
+        "PartiallyAllocated",
+    };
+
+    public void OnBeforeUpdate(FormBeforeEventContext context)
+    {
+        string status = Text("status");
+        string priority = Text("priority_code");
+        decimal amount = Money("total_amount");
+
+        if (ShipReadyStatuses.Contains(status) &amp;&amp; string.IsNullOrWhiteSpace(Text("carrier_service")))
+        {
+            context.Cancel("Choose a carrier service before marking this order ready to ship.");
+            return;
+        }
+
+        DateTime? requiredShipDate = Date("required_ship_date");
+        if (status == "ReadyToShip" &amp;&amp; requiredShipDate is not null &amp;&amp; requiredShipDate.Value.Date &lt; DateTime.Today)
+        {
+            context.Cancel("Required ship date is in the past. Update the date or put the order on hold.");
+            return;
+        }
+
+        if (status == "Hold" &amp;&amp; string.IsNullOrWhiteSpace(Text("hold_reason")))
+        {
+            context.Cancel("Hold reason is required when an order is placed on hold.");
+            return;
+        }
+
+        if (priority == "EXPEDITE" &amp;&amp; amount &gt;= 10000m &amp;&amp; string.IsNullOrWhiteSpace(Text("manager_approval_code")))
+        {
+            context.Cancel("High-value expedited orders require a manager approval code.");
+            return;
+        }
+
+        Me.last_reviewed_utc = DateTime.UtcNow;
+    }
+
+    public async Task EscalateOrderButton_OnClick(FormControlEventContext context)
+    {
+        string reason = context.Arguments.TryGetValue("reason", out object? value)
+            ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? "Manual escalation"
+            : "Manual escalation";
+
+        Me.priority_code = "EXPEDITE";
+        Me.status = "NeedsReview";
+        Me.notes = AppendNote(Me.notes, $"Escalated at {DateTime.UtcNow:O}: {reason}");
+
+        var result = await DoCmd.RunHostCommandAsync(
+            "NotifyOpsLead",
+            new Dictionary&lt;string, object?&gt;
+            {
+                ["orderId"] = Me["id"],
+                ["orderNumber"] = Me["order_number"],
+                ["reason"] = reason,
+            });
+
+        await DoCmd.ShowMessageAsync(
+            result.Succeeded
+                ? "Order escalated and the operations lead was notified."
+                : result.Message ?? "Order was escalated, but the notification failed.");
+    }
+
+    private string Text(string fieldName)
+    {
+        object? value = Me[fieldName];
+        return Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+    }
+
+    private decimal Money(string fieldName)
+    {
+        object? value = Me[fieldName];
+        return value is null ? 0m : Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+    }
+
+    private DateTime? Date(string fieldName)
+    {
+        string text = Text(fieldName);
+        return DateTime.TryParse(
+            text,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AllowWhiteSpaces,
+            out DateTime parsed)
+                ? parsed.Date
+                : null;
+    }
+
+    private static string AppendNote(object? existing, string note)
+    {
+        string current = Convert.ToString(existing, CultureInfo.InvariantCulture) ?? string.Empty;
+        return string.IsNullOrWhiteSpace(current)
+            ? note
+            : $"{current}{Environment.NewLine}{note}";
+    }
+}</code></pre>
+                    </div>
+
+                    <p>The important detail is <code>Me</code>. It exposes the current form record as dynamic field access. <code>Me.status = "NeedsReview"</code> writes to the current record. <code>Me["order_number"]</code> reads a known field by name. Unknown fields throw so mistakes fail loudly instead of silently writing stray state.</p>
+
+                    <h2>Import, Build, and Trust</h2>
+                    <p>Return to Admin and open the Code Modules tab:</p>
+                    <ol>
+                        <li>Click <strong>Import</strong> to read the changed files back into the database.</li>
+                        <li>Click <strong>Build</strong> to compile all modules for the database into an in-memory assembly.</li>
+                        <li>Review diagnostics in the tab. Diagnostics include module/path, line, column, severity, code, and message.</li>
+                        <li>Click <strong>Trust</strong> after the build succeeds.</li>
+                    </ol>
+                    <p>Trust is local. It is keyed by normalized database path plus module-set hash and stored outside the database. Any source change produces a new module-set hash, which means you build and trust again before execution resumes.</p>
+
+                    <h2>Try the Workflow</h2>
+                    <p>Open the rendered <code>Order Workbench</code> form and test the rules with realistic records:</p>
+                    <ul>
+                        <li>Set <code>status</code> to <code>ReadyToShip</code> without a carrier service. Save should be canceled with a clear message.</li>
+                        <li>Set <code>status</code> to <code>Hold</code> without a hold reason. Save should be canceled.</li>
+                        <li>Set <code>priority_code</code> to <code>EXPEDITE</code> on a high-value order without approval. Save should be canceled.</li>
+                        <li>Click the escalation button. The module should update the priority, status, and notes, then call the trusted host command.</li>
+                    </ul>
+                    <p>This is the shape that makes code modules useful: the form definition still controls the UI, action sequences still handle simple declarative behavior, the host keeps ownership of external capabilities, and the database carries the small C# module that expresses form-specific business rules.</p>
+
+                    <h2>Where This Is Deliberately Narrow</h2>
+                    <p>This first slice is intentionally local and trusted. It does not add an in-browser IDE, a VS Code extension, file watching, debugger integration, report modules, remote execution through daemon transports, or sandboxing. That restraint is part of the safety model: execution is opt-in, build-gated, trust-gated, and limited to the runtime contracts Admin exposes.</p>
+                    <p>For teams coming from Access, the mental model is familiar: form module code sits with the form, event handlers are created from the designer, and helper methods live nearby. The difference is that the edit loop uses normal C# files and the run loop refuses to execute changed code until the current module set is built and trusted locally.</p>
+
+                    <div class="blog-nav">
+                        <a href="index.html">&larr; All posts</a>
+                        <a href="csharpdb-aspnet-core-identity.html">Next: ASP.NET Core Identity &rarr;</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

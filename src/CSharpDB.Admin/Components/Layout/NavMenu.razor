@@ -38,6 +38,7 @@
     <div class="sidebar-filter-chips">
         <button class="@GetFilterChipClass("all")" @onclick='() => SetObjectFilter("all")'>All</button>
         <button class="@GetFilterChipClass("tables")" @onclick='() => SetObjectFilter("tables")'>Tables</button>
+        <button class="@GetFilterChipClass("externalTables")" @onclick='() => SetObjectFilter("externalTables")'>External</button>
         <button class="@GetFilterChipClass("collections")" @onclick='() => SetObjectFilter("collections")'>Collections</button>
         <button class="@GetFilterChipClass("callbacks")" @onclick='() => SetObjectFilter("callbacks")'>Callbacks</button>
         <button class="@GetFilterChipClass("forms")" @onclick='() => SetObjectFilter("forms")'>Forms</button>
@@ -47,6 +48,28 @@
     <div class="tree-container">
         @if (ShouldShowUtilityGroups)
         {
+            <div class="tree-group utility-group">
+                <div class="tree-group-header compact">
+                    <i class="bi bi-tools icon-system"></i>
+                    <span>Tools</span>
+                    <span class="group-count">2</span>
+                </div>
+                <div class="tree-items">
+                    <button class="tree-item command-item @(IsActiveDataModel() ? "active" : "")"
+                            @onclick="() => TabManager.OpenDataModelTab()">
+                        <i class="bi bi-diagram-3 icon-view"></i>
+                        <span class="item-label">Data Model</span>
+                        <span class="item-hint">visual schema</span>
+                    </button>
+                    <button class="tree-item command-item @(IsActiveImportExport() ? "active" : "")"
+                            @onclick="() => TabManager.OpenImportExportTab()">
+                        <i class="bi bi-arrow-left-right icon-system"></i>
+                        <span class="item-label">Import / Export</span>
+                        <span class="item-hint">table archives</span>
+                    </button>
+                </div>
+            </div>
+
             <div class="tree-group utility-group">
                 <div class="tree-group-header compact">
                     <i class="bi bi-pin-angle-fill icon-pin"></i>
@@ -200,6 +223,39 @@
                                 }
                             </div>
                         }
+                    }
+                </div>
+            }
+        </div>
+        }
+
+        @* External Tables *@
+        @if (ShouldShowGroup("externalTables"))
+        {
+        <div class="tree-group">
+            <div class="tree-group-header"
+                 @onclick='() => ToggleGroup("externalTables")'
+                 @oncontextmenu="e => ShowExternalTablesGroupMenu(e)"
+                 @oncontextmenu:preventDefault>
+                <i class="bi @(_expandedGroups.Contains("externalTables") ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                <i class="bi bi-box-arrow-up-right icon-view"></i>
+                <span>External Tables</span>
+                <span class="group-count">@(_externalTables?.Count ?? 0)</span>
+            </div>
+            @if (_expandedGroups.Contains("externalTables") && _externalTables is not null)
+            {
+                <div class="tree-items">
+                    @foreach (var item in FilterExternalTables())
+                    {
+                        var externalTable = item;
+                        <div class="tree-item @(IsActiveExternalTable(externalTable.TableName) ? "active" : "")"
+                             @onclick="() => OpenExternalTable(externalTable.TableName)"
+                             @oncontextmenu="e => ShowExternalTableItemMenu(e, externalTable)"
+                             @oncontextmenu:preventDefault>
+                            <i class="bi bi-box-arrow-up-right icon-view"></i>
+                            <span class="item-label">@externalTable.TableName</span>
+                            <span class="item-hint">@FormatExternalTableHint(externalTable)</span>
+                        </div>
                     }
                 </div>
             }
@@ -639,6 +695,12 @@
 
     private sealed record SystemCatalogItem(string Name, string Description, string Sql);
 
+    private sealed record ExternalTableExplorerItem(
+        string TableName,
+        string Path,
+        string SourceTableName,
+        long RowCount);
+
     private static readonly IReadOnlyList<SystemCatalogItem> s_systemCatalogItems = new[]
     {
         new SystemCatalogItem("sys.tables", "tables", "SELECT * FROM sys.tables ORDER BY table_name;"),
@@ -653,10 +715,13 @@
         new SystemCatalogItem("sys.triggers", "triggers", "SELECT * FROM sys.triggers ORDER BY trigger_name;"),
         new SystemCatalogItem("sys.objects", "all objects", "SELECT * FROM sys.objects ORDER BY object_type, object_name;"),
         new SystemCatalogItem("sys.saved_queries", "saved queries", "SELECT * FROM sys.saved_queries ORDER BY name;"),
+        new SystemCatalogItem("sys.external_tables", "external tables", "SELECT * FROM sys.external_tables ORDER BY table_name;"),
+        new SystemCatalogItem("sys.diagrams", "diagrams", "SELECT * FROM sys.diagrams ORDER BY name;"),
     };
 
     private IReadOnlyCollection<string>? _userTableNames;
     private IReadOnlyCollection<string>? _systemTableNames;
+    private IReadOnlyList<ExternalTableExplorerItem>? _externalTables;
     private IReadOnlyCollection<string>? _viewNames;
     private IReadOnlyCollection<string>? _collectionNames;
     private IReadOnlyList<IndexSchema>? _indexes;
@@ -667,7 +732,7 @@
     private IReadOnlyList<ReportDefinition>? _reports;
     private string _searchQuery = string.Empty;
     private string _objectFilter = "all";
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "collections", "forms", "reports", "system", "views", "procedures", "callbacks" };
+    private readonly HashSet<string> _expandedGroups = new() { "tables", "externalTables", "collections", "forms", "reports", "system", "views", "procedures", "callbacks" };
     private readonly HashSet<string> _expandedTableNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _tableSchemaLoadFailures = new(StringComparer.OrdinalIgnoreCase);
@@ -749,6 +814,7 @@
             var allTables = (await DbClient.GetTableNamesAsync()).OrderBy(n => n).ToList();
             _userTableNames = allTables.Where(static n => !IsSystemTableName(n)).ToList();
             _systemTableNames = allTables.Where(IsSystemTableName).ToList();
+            _externalTables = await LoadExternalTablesAsync();
             _viewNames = (await DbClient.GetViewNamesAsync()).OrderBy(n => n).ToList();
             _collectionNames = (await DbClient.GetCollectionNamesAsync()).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
             _indexes = (await DbClient.GetIndexesAsync()).OrderBy(i => i.IndexName).ToList();
@@ -767,6 +833,7 @@
         {
             _userTableNames = null;
             _systemTableNames = null;
+            _externalTables = null;
             _viewNames = null;
             _collectionNames = null;
             _indexes = null;
@@ -777,6 +844,39 @@
             _tableSchemas.Clear();
             _tableSchemaLoadFailures.Clear();
         }
+    }
+
+    private async Task<IReadOnlyList<ExternalTableExplorerItem>> LoadExternalTablesAsync()
+    {
+        var result = await DbClient.ExecuteSqlAsync("""
+            SELECT table_name, path, source_table_name, row_count
+            FROM sys.external_tables
+            ORDER BY table_name;
+            """);
+
+        if (result.Error is not null)
+            return Array.Empty<ExternalTableExplorerItem>();
+
+        var items = new List<ExternalTableExplorerItem>();
+        foreach (object?[] row in result.Rows ?? [])
+        {
+            if (row.Length < 4 || row[0] is null)
+                continue;
+
+            string tableName = Convert.ToString(row[0], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(tableName))
+                continue;
+
+            string path = Convert.ToString(row[1], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+            string sourceTableName = Convert.ToString(row[2], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+            long rowCount = row[3] is null
+                ? 0
+                : Convert.ToInt64(row[3], System.Globalization.CultureInfo.InvariantCulture);
+
+            items.Add(new ExternalTableExplorerItem(tableName, path, sourceTableName, rowCount));
+        }
+
+        return items;
     }
 
     private void ToggleGroup(string group)
@@ -813,7 +913,8 @@
         => _objectFilter switch
         {
             "all" => true,
-            "tables" => group is "tables" or "views",
+            "tables" => group is "tables" or "externalTables" or "views",
+            "externalTables" => group == "externalTables",
             "collections" => group == "collections",
             "callbacks" => group == "callbacks",
             "forms" => group == "forms",
@@ -834,6 +935,28 @@
             return Enumerable.Empty<string>();
 
         return FilterItems(_collectionNames);
+    }
+
+    private IEnumerable<ExternalTableExplorerItem> FilterExternalTables()
+    {
+        if (_externalTables is null)
+            return Enumerable.Empty<ExternalTableExplorerItem>();
+
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+            return _externalTables;
+
+        return _externalTables.Where(item =>
+            item.TableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ||
+            item.SourceTableName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ||
+            item.Path.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FormatExternalTableHint(ExternalTableExplorerItem table)
+    {
+        string source = string.IsNullOrWhiteSpace(table.SourceTableName)
+            ? "archive"
+            : table.SourceTableName;
+        return $"{source} · {table.RowCount:N0} rows";
     }
 
     private IEnumerable<string> FilterTableNames(IReadOnlyCollection<string> tableNames)
@@ -1087,6 +1210,12 @@
     private void OpenSystemCatalogTab(SystemCatalogItem item)
         => TabManager.OpenSystemCatalogTab(item.Name, item.Sql);
 
+    private void OpenExternalTable(string tableName)
+        => TabManager.OpenQueryTab($"SELECT * FROM {RequireSqlIdentifier(tableName)} LIMIT 50;");
+
+    private void OpenExternalTableMetadata(string tableName)
+        => TabManager.OpenQueryTab($"SELECT * FROM sys.external_tables WHERE table_name = {FormatSqlStringLiteral(tableName)};");
+
     private void OpenInternalFunction(FormulaFunctionDescriptor function)
     {
         TabDescriptor tab = TabManager.OpenCallbacksTab();
@@ -1139,6 +1268,20 @@
         if (activeTab is null) return false;
         return activeTab.Id == $"{type}:{name}";
     }
+
+    private bool IsActiveExternalTable(string tableName)
+    {
+        var activeTab = TabManager.ActiveTab;
+        return activeTab?.Kind == TabKind.Query
+               && activeTab.SqlText is { } sqlText
+               && sqlText.Contains(tableName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsActiveImportExport()
+        => TabManager.ActiveTab?.Kind == TabKind.ImportExport;
+
+    private bool IsActiveDataModel()
+        => TabManager.ActiveTab?.Kind == TabKind.DataModel;
 
     private bool IsActiveSchema(string type, string name)
     {
@@ -1238,7 +1381,20 @@
         {
             new() { Label = "New Table...", Icon = "bi-plus-lg", OnClick = () => TabManager.OpenTableDesignerTab() },
             ContextMenuItem.Separator(),
+            new() { Label = "Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab() },
             new() { Label = "New Query", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab() },
+            new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
+        });
+    }
+
+    private void ShowExternalTablesGroupMenu(MouseEventArgs e)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Register External Table...", Icon = "bi-box-arrow-up-right", OnClick = () => TabManager.OpenImportExportTab() },
+            new() { Label = "Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab() },
+            new() { Label = "View Metadata", Icon = "bi-hdd-stack", OnClick = () => OpenSystemCatalogTab(s_systemCatalogItems.First(item => item.Name == "sys.external_tables")) },
+            ContextMenuItem.Separator(),
             new() { Label = "Refresh", Icon = "bi-arrow-clockwise", OnClick = async () => { await LoadObjects(); await InvokeAsync(StateHasChanged); } },
         });
     }
@@ -1272,13 +1428,33 @@
         {
             new() { Label = "Open", Icon = "bi-table", OnClick = () => TabManager.OpenTableTab(tableName) },
             new() { Label = "Design", Icon = "bi-file-earmark-code", OnClick = () => TabManager.OpenTableSchemaTab(tableName) },
+            new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(tableName) },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
             new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.Table.ToString(), sourceName: tableName, title: $"{tableName} Report") },
+            new() { Label = "Import / Export...", Icon = "bi-arrow-left-right", OnClick = () => TabManager.OpenImportExportTab(tableName) },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {tableName} LIMIT 50;") },
             new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {tableName};") },
             ContextMenuItem.Separator(),
             new() { Label = "Drop Table", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropTableAsync(tableName) },
+        });
+    }
+
+    private void ShowExternalTableItemMenu(MouseEventArgs e, ExternalTableExplorerItem table)
+    {
+        ShowContextMenu(e, new List<ContextMenuItem>
+        {
+            new() { Label = "Open", Icon = "bi-box-arrow-up-right", OnClick = () => OpenExternalTable(table.TableName) },
+            new() { Label = "Open Metadata", Icon = "bi-hdd-stack", OnClick = () => OpenExternalTableMetadata(table.TableName) },
+            new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(table.TableName) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {RequireSqlIdentifier(table.TableName)} LIMIT 50;") },
+            new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {RequireSqlIdentifier(table.TableName)};") },
+            ContextMenuItem.Separator(),
+            new() { Label = "Copy Name", Icon = "bi-clipboard", OnClick = async () => await CopyExternalTableTextAsync(table.TableName) },
+            new() { Label = "Copy Path", Icon = "bi-clipboard-plus", OnClick = async () => await CopyExternalTableTextAsync(table.Path) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Drop External Table", Icon = "bi-trash3", IsDanger = true, OnClick = async () => await ConfirmDropExternalTableAsync(table.TableName) },
         });
     }
 
@@ -1484,6 +1660,19 @@
         }
     }
 
+    private async Task CopyExternalTableTextAsync(string text)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("clipboardInterop.writeText", text);
+            Toast.Success("Copied external table value.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
+    }
+
     private async Task ConfirmDropTableAsync(string tableName)
     {
         var confirmed = await Modal.ConfirmAsync("Drop Table", $"Are you sure you want to drop table '{tableName}'? This action cannot be undone.", "Drop", isDanger: true);
@@ -1496,6 +1685,32 @@
             Changes.NotifyChanged();
         }
         catch (Exception ex) { Toast.Error(ex.Message); }
+    }
+
+    private async Task ConfirmDropExternalTableAsync(string tableName)
+    {
+        var confirmed = await Modal.ConfirmAsync(
+            "Drop External Table",
+            $"Are you sure you want to drop external table '{tableName}'? This removes the registration only; the archive file is not deleted.",
+            "Drop",
+            isDanger: true);
+        if (!confirmed) return;
+
+        try
+        {
+            var result = await DbClient.ExecuteSqlAsync($"DROP EXTERNAL TABLE IF EXISTS {RequireSqlIdentifier(tableName)};");
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                throw new InvalidOperationException(result.Error);
+
+            Toast.Success($"Dropped external table '{tableName}'.");
+            Changes.NotifyChanged();
+            await LoadObjects();
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error(ex.Message);
+        }
     }
 
     private async Task ConfirmDropCollectionAsync(string collectionName)
@@ -1608,6 +1823,36 @@
         DbHolder.DatabaseChanged -= OnDatabaseChanged;
         TabManager.StateChanged -= OnTabChanged;
     }
+
+    private static string RequireSqlIdentifier(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Identifier is required.");
+
+        string trimmed = value.Trim();
+        if (!IsSqlIdentifier(trimmed))
+            throw new InvalidOperationException($"'{trimmed}' is not a valid CSharpDB identifier.");
+
+        return trimmed;
+    }
+
+    private static bool IsSqlIdentifier(string value)
+    {
+        if (value.Length == 0 || !(char.IsLetter(value[0]) || value[0] == '_'))
+            return false;
+
+        for (int i = 1; i < value.Length; i++)
+        {
+            char c = value[i];
+            if (!char.IsLetterOrDigit(c) && c != '_')
+                return false;
+        }
+
+        return true;
+    }
+
+    private static string FormatSqlStringLiteral(string value)
+        => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
     private static bool IsSystemTableName(string name) =>
         name.StartsWith("_", StringComparison.Ordinal);

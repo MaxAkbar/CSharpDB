@@ -1,3 +1,4 @@
+using CSharpDB.CodeModules;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Admin.Forms.Models;
@@ -19,4 +20,5 @@ public sealed record FormEventBinding(
     string CommandName,
     IReadOnlyDictionary<string, object?>? Arguments = null,
     bool StopOnFailure = true,
-    DbActionSequence? ActionSequence = null);
+    DbActionSequence? ActionSequence = null,
+    CodeModuleHandler? CodeHandler = null);

@@ -13,6 +13,13 @@ public sealed class CreateTableStatement : Statement
     public bool IfNotExists { get; init; }
 }
 
+public sealed class CreateExternalTableStatement : Statement
+{
+    public required string TableName { get; init; }
+    public required string Path { get; init; }
+    public bool IfNotExists { get; init; }
+}
+
 public sealed class ForeignKeyClause
 {
     public required string ReferencedTableName { get; init; }
@@ -33,6 +40,12 @@ public sealed class ColumnDef
 }
 
 public sealed class DropTableStatement : Statement
+{
+    public required string TableName { get; init; }
+    public bool IfExists { get; init; }
+}
+
+public sealed class DropExternalTableStatement : Statement
 {
     public required string TableName { get; init; }
     public bool IfExists { get; init; }

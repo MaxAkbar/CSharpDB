@@ -92,6 +92,7 @@
             <div class="pi-section-label">Events</div>
             <ControlEventBindingsEditor EventBindings="@(_selected.EventBindings ?? [])"
                                         ActionSequences="State.ActionSequences"
+                                        Control="_selected"
                                         EventBindingsChanged="OnControlEventBindingsChanged" />
         </div>
 

@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
+    <ProjectReference Include="..\CSharpDB.ImportExport\CSharpDB.ImportExport.csproj" />
     <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\CSharpDB.Storage\CSharpDB.Storage.csproj" />
   </ItemGroup>

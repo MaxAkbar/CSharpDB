@@ -1,7 +1,9 @@
 @using System.Text.Json
 @using CSharpDB.Admin.Forms.Serialization
+@using CSharpDB.CodeModules
 @using CSharpDB.Primitives
 @inject DbCommandRegistry CommandRegistry
+@inject IFormCodeModuleDesignerService CodeModuleDesigner
 
 <div class="feb-container">
     @if (EventBindings.Count == 0)
@@ -69,6 +71,28 @@
             </div>
 
             <div class="feb-field">
+                <label>C# Handler</label>
+                <div class="feb-row">
+                    <input type="text"
+                           value="@GetCodeModuleId(binding)"
+                           placeholder="Module id"
+                           @onchange="@(e => UpdateCodeHandler(idx, binding, moduleId: e.Value?.ToString()))" />
+                    <button type="button"
+                            class="feb-btn"
+                            @onclick="@(() => CreateCodeHandlerAsync(idx, binding))"
+                            title="Create C# handler">Create</button>
+                </div>
+                <input type="text"
+                       value="@GetCodeTypeName(binding)"
+                       placeholder="Type name"
+                       @onchange="@(e => UpdateCodeHandler(idx, binding, typeName: e.Value?.ToString()))" />
+                <input type="text"
+                       value="@GetCodeMethodName(binding)"
+                       placeholder="Method name"
+                       @onchange="@(e => UpdateCodeHandler(idx, binding, methodName: e.Value?.ToString()))" />
+            </div>
+
+            <div class="feb-field">
                 <label>Action Sequence</label>
                 <ActionSequenceEditor ActionSequence="binding.ActionSequence"
                                       AvailableActionSequences="ActionSequences"
@@ -81,6 +105,10 @@
     {
         <div class="feb-error">@_argumentError</div>
     }
+    @if (!string.IsNullOrWhiteSpace(_codeHandlerError))
+    {
+        <div class="feb-error">@_codeHandlerError</div>
+    }
 
     <button class="feb-btn feb-btn-add" @onclick="AddBinding">+ Add Event</button>
 </div>
@@ -92,8 +120,10 @@
 
     private readonly Dictionary<int, string> _argumentText = [];
     private string? _argumentError;
+    private string? _codeHandlerError;
 
     private static readonly FormEventKind[] EventKinds = Enum.GetValues<FormEventKind>();
+    [CascadingParameter] public DesignerState? State { get; set; }
 
     private IReadOnlyList<DbCommandDefinition> RegisteredCommands => CommandRegistry.Commands.ToList();
 
@@ -167,6 +197,49 @@
     private Task UpdateActionSequence(int index, FormEventBinding binding, DbActionSequence? actionSequence)
         => ReplaceBinding(index, binding with { ActionSequence = actionSequence });
 
+    private Task UpdateCodeHandler(
+        int index,
+        FormEventBinding binding,
+        string? moduleId = null,
+        string? typeName = null,
+        string? methodName = null)
+    {
+        string resolvedModuleId = moduleId ?? binding.CodeHandler?.ModuleId ?? string.Empty;
+        string resolvedTypeName = typeName ?? binding.CodeHandler?.TypeName ?? string.Empty;
+        string resolvedMethodName = methodName ?? binding.CodeHandler?.MethodName ?? string.Empty;
+        CodeModuleHandler? handler = string.IsNullOrWhiteSpace(resolvedModuleId) &&
+            string.IsNullOrWhiteSpace(resolvedTypeName) &&
+            string.IsNullOrWhiteSpace(resolvedMethodName)
+                ? null
+                : new CodeModuleHandler(resolvedModuleId.Trim(), resolvedTypeName.Trim(), resolvedMethodName.Trim());
+        return ReplaceBinding(index, binding with { CodeHandler = handler });
+    }
+
+    private async Task CreateCodeHandlerAsync(int index, FormEventBinding binding)
+    {
+        _codeHandlerError = null;
+        if (State is null)
+        {
+            _codeHandlerError = "Form designer state is unavailable.";
+            return;
+        }
+
+        try
+        {
+            CodeModuleHandler handler = await CodeModuleDesigner.CreateHandlerAsync(new FormCodeModuleHandlerRequest(
+                State.FormId,
+                State.FormName,
+                State.TableName,
+                binding.Event.ToString(),
+                IsCancelable(binding.Event)));
+            await ReplaceBinding(index, binding with { CodeHandler = handler, CommandName = string.Empty });
+        }
+        catch (Exception ex)
+        {
+            _codeHandlerError = ex.Message;
+        }
+    }
+
     private async Task ReplaceBinding(int index, FormEventBinding binding)
     {
         var updated = EventBindings.ToList();
@@ -197,6 +270,15 @@
     private bool ShouldRenderMissingCommand(string commandName)
         => !string.IsNullOrWhiteSpace(commandName)
             && RegisteredCommands.All(command => !string.Equals(command.Name, commandName, StringComparison.OrdinalIgnoreCase));
+
+    private static string GetCodeModuleId(FormEventBinding binding) => binding.CodeHandler?.ModuleId ?? string.Empty;
+
+    private static string GetCodeTypeName(FormEventBinding binding) => binding.CodeHandler?.TypeName ?? string.Empty;
+
+    private static string GetCodeMethodName(FormEventBinding binding) => binding.CodeHandler?.MethodName ?? string.Empty;
+
+    private static bool IsCancelable(FormEventKind eventKind)
+        => eventKind is FormEventKind.BeforeInsert or FormEventKind.BeforeUpdate or FormEventKind.BeforeDelete;
 
     private static string FormatArguments(IReadOnlyDictionary<string, object?>? arguments)
         => arguments is null || arguments.Count == 0

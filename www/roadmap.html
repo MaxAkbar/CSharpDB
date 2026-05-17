@@ -131,7 +131,7 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>Roadmap</h1>
-                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v3.4.0 state.</p>
+                <p class="lead">Planned direction for CSharpDB — organized by timeframe and priority. Reflects the current v3.8.0 state.</p>
                 <div class="callout callout-info">
                     <strong>Need the full source guide?</strong> The original long-form markdown version is preserved as <a href="roadmap-reference.html">Roadmap Source Reference</a>.
                 </div>
@@ -259,6 +259,13 @@
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
+                                <h4>Native Table Archives &amp; External Tables</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Native <code>.csdbtable</code> snapshots with fast Admin Import / Export, download or server-path destinations, <code>CREATE EXTERNAL TABLE</code>, <code>sys.external_tables</code>, read-only scans/joins, and embedded primary-key lookup indexes.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
                                 <h4>Older DB Foreign-Key Retrofit Migration</h4>
                                 <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
@@ -286,9 +293,16 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>User-Defined Functions and Commands</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Partial</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Trusted in-process C# scalar functions are implemented for SQL, triggers/procedures, direct clients, Admin Forms/Reports, and pipelines; trusted commands now back supported Admin automation surfaces. Aggregate/table-valued UDFs, richer macro flow, native plugins, database-owned code modules, and sandboxed UDFs remain future work.</p>
+                            <p>Done for the trusted in-process model: host-registered C# scalar functions, common SQL/Admin built-ins, trusted commands, Admin Forms/Reports/pipeline hooks, declarative form action sequences, and local Admin Forms C# code modules. Untrusted sandboxed UDF execution is intentionally out of scope.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Writable External Tables</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Opt-in writable external table registrations over mutable <code>.csdbx</code> files, backed by CSharpDB B+tree storage and limited to INSERT, UPDATE, and DELETE in v1 while <code>.csdbtable</code> archives remain read-only.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -320,10 +334,17 @@
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
-                                <h4>Remote Host Security</h4>
+                                <h4>Remote API-Key Protection</h4>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
+                            </div>
+                            <p>Opt-in API-key mode protects REST <code>/api/*</code> and daemon gRPC calls with constant-time key comparison while keeping default no-auth behavior for compatibility.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
+                                <h4>Remote Host Security Hardening</h4>
                                 <span class="roadmap-badge roadmap-badge-planned">Planned</span>
                             </div>
-                            <p>Built-in authentication, authorization, API keys, protected admin endpoints, and TLS/mTLS deployment support.</p>
+                            <p>Authorization, protected admin endpoint scopes, JWT/RBAC options, and TLS/mTLS deployment helpers for remote HTTP and gRPC access.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -416,6 +437,13 @@
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
+                                <h4>External Table Index Coverage</h4>
+                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                            </div>
+                            <p>Follow writable <code>.csdbx</code> storage with broader external-table indexes, planner costing, and multi-column lookup/range support beyond the current archive primary-key point-lookup path.</p>
+                        </div>
+                        <div class="roadmap-item">
+                            <div class="roadmap-item-header">
                                 <h4>Page-Level Compression</h4>
                                 <span class="roadmap-badge roadmap-badge-planned">Planned</span>
                             </div>
@@ -438,16 +466,16 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Adaptive Query Re-Optimization</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Re-plan or adapt when observed cardinality diverges materially from persisted statistics, especially after stale stats or parameter-sensitive predicates.</p>
+                            <p>Current phase is complete: opt-in adaptive join execution can switch eligible index nested-loop joins to hash joins and flip inner hash build sides at safe pre-emission boundaries.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Public Planner Histogram Inspection</h4>
-                                <span class="roadmap-badge roadmap-badge-planned">Planned</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Expose histogram, heavy-hitter, composite-prefix, and estimate diagnostics through a public surface while keeping current stats internals private.</p>
+                            <p>Stable SQL-first diagnostics expose <code>sys.planner_histograms</code>, <code>sys.planner_heavy_hitters</code>, <code>sys.planner_index_prefix_stats</code>, and <code>EXPLAIN ESTIMATE FOR &lt;query&gt;</code>.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -480,9 +508,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>Broader Multi-Writer Optimization</h4>
-                                <span class="roadmap-badge roadmap-badge-research">Research</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Improve hot insert fan-in, row-id reservation, and other high-contention patterns beyond the current initial multi-writer path.</p>
+                            <p>Opt-in concurrent write transactions now reserve shared row-id ranges and rebase hot right-edge insert pages against pending WAL images for improved insert fan-in.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -498,13 +526,6 @@
                             </div>
                             <p>Stream committed changes for read replicas or event-driven architectures.</p>
                         </div>
-                        <div class="roadmap-item">
-                            <div class="roadmap-item-header">
-                                <h4>WebAssembly Sandboxed UDFs</h4>
-                                <span class="roadmap-badge roadmap-badge-research">Research</span>
-                            </div>
-                            <p>Execute untrusted user-submitted functions in a WASM sandbox with resource limits via Wasmtime.</p>
-                        </div>
                     </div>
                 </div>
 
@@ -515,25 +536,26 @@
                     <table class="doc-table">
                         <thead><tr><th>Area</th><th>Limitation</th></tr></thead>
                         <tbody>
-                            <tr><td>Functions and automation</td><td>Trusted in-process C# scalar functions are supported when registered by the host; Admin Forms, Admin Reports, and pipelines can invoke trusted host commands from supported event/hook surfaces; Admin Forms support declarative action sequences for run-command, set-field, show-message, and stop steps. Broader built-in scalar functions, aggregate/table-valued UDFs, stored C# modules, remote delegate serialization, additional Access-style control events, richer macro flow, and sandboxed UDFs are not implemented</td></tr>
+                            <tr><td>Functions and automation</td><td>CSharpDB's UDF/command model is trusted and in-process by design. Current supported surfaces include host-registered scalar functions, common built-ins, trusted commands, form/report/pipeline hooks, declarative action sequences, and local Admin Forms C# modules; untrusted sandboxed execution is intentionally out of scope</td></tr>
                             <tr><td>Query</td><td>Scalar/IN/EXISTS subqueries are supported, including correlated cases in WHERE, non-aggregate projection, and UPDATE/DELETE expressions; correlated subqueries are not yet supported in JOIN ON, GROUP BY, HAVING, ORDER BY, or aggregate projections</td></tr>
                             <tr><td>Query</td><td>UNION, INTERSECT, and EXCEPT are supported; UNION ALL is not implemented yet</td></tr>
                             <tr><td>Query</td><td>No window functions</td></tr>
                             <tr><td>Schema</td><td>No SQL DEFAULT column values or CHECK constraints yet. Foreign keys are currently v1 only: single-column, column-level REFERENCES with optional ON DELETE CASCADE; table-level/composite/deferred foreign keys and ON UPDATE actions are not implemented</td></tr>
                             <tr><td>Indexes</td><td>Equality lookups support current INTEGER/TEXT indexes, but ordered range-scan pushdown is still limited to single-column INTEGER index paths</td></tr>
                             <tr><td>RowId</td><td>Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert</td></tr>
-                            <tr><td>Collections</td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates</td></tr>
+                            <tr><td>Collections</td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates. Generated collections require registered descriptors for existing collection indexes; unsupported generated model shapes warn and use the source-generated JSON fallback instead of binary direct payloads</td></tr>
+                            <tr><td>External Tables</td><td>Native <code>.csdbtable</code> archives can be registered and queried as read-only external tables. Writable external tables are planned as an opt-in <code>.csdbx</code> format; current archives remain read-only, and broader external indexes, range seeks, and deeper planner costing remain planned</td></tr>
                             <tr><td>Networking</td><td><code>CSharpDB.Daemon</code> now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today</td></tr>
-                            <tr><td>Security</td><td>Remote HTTP and gRPC deployment still rely on external network controls or front-end TLS termination; built-in authentication, authorization, and TLS/mTLS support are still planned</td></tr>
-                            <tr><td>Admin Forms</td><td>The Forms designer/runtime supports the core generated-form and data-entry path plus initial trusted command-backed automation, including lifecycle events, command buttons, selected control events, and declarative action sequences, but still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, broader built-in actions, additional events, advanced filtering/sorting, and broader controls</td></tr>
+                            <tr><td>Security</td><td>Remote REST and daemon gRPC support opt-in API-key authentication, defaulting to <code>None</code> for compatibility. JWT, RBAC, mTLS helpers, TLS-specific configuration, and at-rest encryption are not implemented</td></tr>
+                            <tr><td>Admin Forms</td><td>The Forms designer/runtime supports the core generated-form and data-entry path plus trusted command-backed automation, including lifecycle events, command buttons, selected-control events, conditional UI rules, domain formula helpers, declarative action sequences, and local C# code modules. It still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, additional events, advanced filtering/sorting, report/query/import/export actions, macro loops/on-error/temp vars, and broader controls</td></tr>
                             <tr><td>Admin Reports</td><td>The Reports designer/runtime supports the core banded preview path plus trusted command-backed preview lifecycle events, but still needs Access-parity work for bounded saved-query previews, full report output/export, parameters, richer grouping and totals semantics, conditional formatting, subreports, and broader controls</td></tr>
                             <tr><td>Text / Multilingual</td><td>Text is stored as UTF-8 and supports all Unicode languages; default semantics remain ordinal, but opt-in <code>BINARY</code>, <code>NOCASE</code>, <code>NOCASE_AI</code>, and <code>ICU:&lt;locale&gt;</code> collation are implemented for SQL and collection indexes. Dedicated ordered SQL text index optimization remains planned</td></tr>
                             <tr><td>Concurrency</td><td>Physical WAL commit path is still serialized at the storage boundary. Initial multi-writer support is shipped, but observed gains depend on conflict shape and whether shared auto-commit INSERT is left on the default serialized path</td></tr>
-                            <tr><td>Storage</td><td>No page-level compression</td></tr>
+                            <tr><td>Storage</td><td>No page-level compression; the compression SDK sample stores compressed payloads as ordinary application-managed <code>BLOB</code> values</td></tr>
                             <tr><td>Storage</td><td>No at-rest encryption for database/WAL files; on-disk storage is plaintext only</td></tr>
                             <tr><td>Storage</td><td>Memory-mapped reads are opt-in and currently apply only to clean main-file pages; WAL-backed reads still rely on the WAL/cache path</td></tr>
                             <tr><td>Storage</td><td>By default, durable auto-commit single-row writes still pay a physical WAL flush per commit; opt-in <code>UseDurableCommitBatchWindow(...)</code> can trade some commit latency for higher throughput</td></tr>
-                            <tr><td>Query</td><td>Phase-2 cost-based planning is largely in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, internal histograms/heavy hitters/prefix stats, and bounded small-chain join reordering now feed join/access-path costing; remaining work is adaptive re-optimization and public histogram/diagnostic surfacing rather than missing core stats-guided costing</td></tr>
+                            <tr><td>Query</td><td>Phase-2 cost-based planning is in place: <code>ANALYZE</code>, <code>sys.table_stats</code>, <code>sys.column_stats</code>, public planner-stat diagnostics, histogram/heavy-hitter/prefix estimates, and bounded small-chain join reordering now feed join/access-path costing. Opt-in adaptive join re-optimization can react to stale-stat or parameter-sensitive join cardinality misses, while broader runtime actuals, <code>EXPLAIN ANALYZE</code>, and full mid-plan reordering remain future work</td></tr>
                             <tr><td>Query</td><td>Internal row-batch transport is now the default scan-heavy execution foundation across batch-capable scans, joins, aggregates, and result boundaries; remaining work is broader kernel specialization and optional SIMD-style tuning rather than missing core batch coverage</td></tr>
                         </tbody>
                     </table>
@@ -557,6 +579,8 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Ordered integer index range scans in the fast lookup path</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ANALYZE with persisted table/column stats and stale-aware refresh</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Phase-2 cost-based query planning: statistics-guided access paths, join method/reordering, histogram/cardinality estimation</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Public planner diagnostics with EXPLAIN ESTIMATE and sys.planner_* catalogs</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Opt-in adaptive join re-optimization for eligible stale-stat and parameter-sensitive joins</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> SELECT DISTINCT and DISTINCT aggregates</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> SQL statement and SELECT plan caching</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> First-class IDENTITY / AUTOINCREMENT support for INTEGER PRIMARY KEY columns</div>
@@ -577,15 +601,18 @@
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Full-text search with tokenization, stemming, and relevance ranking</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Hybrid storage mode with lazy-resident durable storage and gRPC tunable file-cache</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Client-wide BackupAsync / RestoreAsync across direct, HTTP, gRPC, CLI, and Admin</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Native .csdbtable table archives with Admin Import / Export and read-only external table registration</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> ReplaceAsync for index stores</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Maintenance report, REINDEX, and VACUUM flows across client, CLI, API, and Admin UI</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Dedicated gRPC daemon host</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Remote host consolidation in CSharpDB.Daemon, with REST /api and gRPC sharing one warm hosted database client</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Opt-in API-key protection for REST /api/* and daemon gRPC calls</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Daemon service packaging with self-contained archives and service install assets</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Storage tuning presets, bounded WAL read caching, memory-mapped reads, and sliced background checkpointing</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> SQL executor/read-path fast paths for compact projections, broader join/index coverage, and correlated subquery filters</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> REST API with 34+ endpoints and OpenAPI/Scalar documentation</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Blazor Server admin dashboard with Forms and Reports designers</div>
+                        <div class="milestone-item"><span class="milestone-check">&#10003;</span> Trusted C# callbacks, commands, Admin automation hooks, and local Admin Forms C# code modules</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Interactive CLI with meta-commands and file execution</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> Package-driven ETL pipelines with validation, dry-run, execute/resume, and Admin visual designer</div>
                         <div class="milestone-item"><span class="milestone-check">&#10003;</span> VS Code extension with schema explorer</div>

@@ -1,0 +1,78 @@
+@namespace CSharpDB.Admin.ImportExport.Components
+
+@if (Progress is not null)
+{
+    <section class="import-export-progress" aria-live="polite">
+        <div class="import-export-progress-head">
+            <div>
+                <div class="import-export-progress-title">
+                    <span class="spinner"></span>
+                    <strong>@Progress.Operation</strong>
+                </div>
+                <span>@Progress.Stage</span>
+            </div>
+            @if (CanCancel)
+            {
+                <button type="button" class="data-toolbar-btn" @onclick="OnCancel">
+                    <i class="bi bi-x-lg"></i> Cancel
+                </button>
+            }
+        </div>
+
+        <div class="import-export-progress-track" role="progressbar"
+             aria-valuemin="0"
+             aria-valuemax="100"
+             aria-valuenow="@Progress.PercentComplete">
+            <div class="@GetFillClass()" style="@GetFillStyle()"></div>
+        </div>
+
+        <div class="import-export-progress-meta">
+            <span>@(Progress.Message ?? Progress.Stage)</span>
+            <span>@FormatRows()</span>
+            @if (StartedAt is not null)
+            {
+                <span>@FormatElapsed()</span>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Progress.Path))
+        {
+            <div class="import-export-progress-path" title="@Progress.Path">@Progress.Path</div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public TableExportProgress? Progress { get; set; }
+    [Parameter] public DateTimeOffset? StartedAt { get; set; }
+    [Parameter] public bool CanCancel { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private string GetFillClass() =>
+        Progress?.PercentComplete is int ? "import-export-progress-fill" : "import-export-progress-fill indeterminate";
+
+    private string GetFillStyle() =>
+        Progress?.PercentComplete is int percent ? $"width: {percent}%;" : string.Empty;
+
+    private string FormatRows()
+    {
+        if (Progress is null)
+            return string.Empty;
+
+        string processed = Progress.RowsProcessed.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+        return Progress.TotalRows is long total
+            ? $"{processed} / {total.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} rows"
+            : $"{processed} rows";
+    }
+
+    private string FormatElapsed()
+    {
+        if (StartedAt is null)
+            return string.Empty;
+
+        TimeSpan elapsed = DateTimeOffset.UtcNow - StartedAt.Value;
+        return elapsed.TotalMinutes >= 1
+            ? $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds}s"
+            : $"{Math.Max(0, (int)elapsed.TotalSeconds)}s";
+    }
+}

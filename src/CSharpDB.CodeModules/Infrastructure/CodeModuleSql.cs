@@ -1,0 +1,73 @@
+using System.Globalization;
+using System.Text.Json;
+using CSharpDB.Client.Models;
+
+namespace CSharpDB.CodeModules.Infrastructure;
+
+internal static class CodeModuleSql
+{
+    public static string FormatLiteral(object? value)
+    {
+        object? normalized = NormalizeValue(value);
+        return normalized switch
+        {
+            null => "NULL",
+            long integer => integer.ToString(CultureInfo.InvariantCulture),
+            double real => real.ToString(CultureInfo.InvariantCulture),
+            string text => $"'{text.Replace("'", "''", StringComparison.Ordinal)}'",
+            byte[] blob => $"X'{Convert.ToHexString(blob)}'",
+            _ => $"'{Convert.ToString(normalized, CultureInfo.InvariantCulture)?.Replace("'", "''", StringComparison.Ordinal) ?? string.Empty}'",
+        };
+    }
+
+    public static IReadOnlyList<Dictionary<string, object?>> ReadRows(SqlExecutionResult result)
+    {
+        ThrowIfError(result);
+        if (result.ColumnNames is null || result.Rows is null)
+            return [];
+
+        var rows = new List<Dictionary<string, object?>>(result.Rows.Count);
+        foreach (object?[] row in result.Rows)
+        {
+            var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < result.ColumnNames.Length && i < row.Length; i++)
+                dict[result.ColumnNames[i]] = row[i];
+
+            rows.Add(dict);
+        }
+
+        return rows;
+    }
+
+    public static void ThrowIfError(SqlExecutionResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+    }
+
+    public static object? NormalizeValue(object? value) => value switch
+    {
+        null => null,
+        JsonElement json => NormalizeJsonElement(json),
+        bool boolean => boolean ? 1L : 0L,
+        byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+        float or double or decimal => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        DateTime dateTime => dateTime.ToString("O", CultureInfo.InvariantCulture),
+        DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("O", CultureInfo.InvariantCulture),
+        Guid guid => guid.ToString("D"),
+        string text => text,
+        byte[] blob => blob,
+        _ => Convert.ToString(value, CultureInfo.InvariantCulture),
+    };
+
+    private static object? NormalizeJsonElement(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.Null => null,
+        JsonValueKind.String => value.GetString(),
+        JsonValueKind.False => 0L,
+        JsonValueKind.True => 1L,
+        JsonValueKind.Number when value.TryGetInt64(out long integer) => integer,
+        JsonValueKind.Number => value.GetDouble(),
+        _ => value.GetRawText(),
+    };
+}

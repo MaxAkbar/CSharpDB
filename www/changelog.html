@@ -136,6 +136,74 @@
                     <div class="news-entry">
                         <div class="news-entry-header">
                             <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">May 2026</span>
+                        </div>
+                        <h3>v3.8.0 — Native Table Archives &amp; External Tables</h3>
+                        <p>Adds a real table-archive and external-table workflow: native <code>.csdbtable</code> files, fast snapshot exports, Admin Import / Export tooling, and read-only SQL access to archived tables:</p>
+                        <ul>
+                            <li><strong>Native table archives</strong> — New <code>CSharpDB.ImportExport</code> project with native <code>.csdbtable</code> schema, manifest, row stream, BLOB/null/type metadata, and optional integer primary-key index sections.</li>
+                            <li><strong>Fast snapshot exports</strong> — Embedded client transport can export directly from a reader snapshot instead of paging through the UI, with progress callbacks and cancellation support for large tables.</li>
+                            <li><strong>Admin Import / Export</strong> — New Admin project area with export, register external table, restore table, one-time download endpoint, server-path exports, progress UI, cancellation, and Object Explorer access from both Tools and table context menus.</li>
+                            <li><strong>External table SQL</strong> — Added <code>CREATE EXTERNAL TABLE ... FROM 'path.csdbtable'</code> and <code>DROP EXTERNAL TABLE</code>, plus <code>sys.external_tables</code> metadata and relative-path resolution from the database folder.</li>
+                            <li><strong>Query planner integration</strong> — Registered archives are resolved as read-only table sources through <code>ExternalTableScanOperator</code>, can participate in normal <code>SELECT</code> queries and joins, use metadata fast paths for <code>COUNT(*)</code>, and use embedded primary-key indexes for eligible point lookups.</li>
+                            <li><strong>Read-only safety</strong> — Writes, schema mutation, index creation, and trigger target usage against external tables are rejected with clear errors.</li>
+                            <li><strong>Changelog and blog docs</strong> — Added a <a href="blog/table-archives.html">table archives blog post</a> and ignored generated <code>*.csdbtable</code> files so local exports do not become source artifacts.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">May 2026</span>
+                        </div>
+                        <h3>v3.7.0 — Planner Observability, Adaptive Reoptimization &amp; View Paging</h3>
+                        <p>Completes the optimizer and async I/O close-out work, exposes planner diagnostics publicly, and fixes the view/query paths found during the customer-filtered fulfillment investigation:</p>
+                        <ul>
+                            <li><strong>Planner diagnostics</strong> — Added <code>EXPLAIN ESTIMATE FOR SELECT</code> coverage for select, WITH, and compound queries, plus <code>sys.planner_*</code> virtual catalogs for histograms, heavy hitters, and composite index prefix statistics.</li>
+                            <li><strong>Admin plan visibility</strong> — Query tabs can run estimates and show planner output in the Plan tab so users can inspect row estimates and plan choices without leaving Admin.</li>
+                            <li><strong>Opt-in adaptive reoptimization</strong> — New <code>DatabaseOptions</code>, embedded ADO.NET connection-string support, diagnostics, and fail-closed handling let eligible join plans correct bad cardinality assumptions before rows are emitted.</li>
+                            <li><strong>View/query fixes</strong> — Paged view browsing now issues bounded <code>LIMIT</code>/<code>OFFSET</code> SQL, simple view row-goal planning can reorder eligible join chains, and Query tab grids preserve scroll/pager layout.</li>
+                            <li><strong>Lookup join and result metadata polish</strong> — Improved indexed local predicate planning, residual right-side filters, index scan capacity hints, and SQL <code>ColumnTypes</code> propagation through engine, API, client, and Admin surfaces.</li>
+                            <li><strong>Benchmarks and DataGen</strong> — Closed the current generated collection fast-path and DataGen direct-load phase, refreshed release benchmark scorecards, added optimizer/async I/O close-out suites, and added a WAL point-read benchmark with latency-column guardrail support.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">May 2026</span>
+                        </div>
+                        <h3>v3.6.0 — Trusted C# Callbacks, Built-In Functions &amp; Admin Automation</h3>
+                        <p>Adds trusted in-process C# callbacks across SQL, formulas, procedures, forms, reports, and pipeline surfaces, then rounds the feature out with tableless scalar SQL, built-ins, and Admin discovery:</p>
+                        <ul>
+                            <li><strong>Trusted scalar functions and commands</strong> — Host applications can register scalar functions through <code>DbFunctionRegistry</code> and commands through <code>DbCommandRegistry</code>, including async command support, timeouts, and shared argument conversion.</li>
+                            <li><strong>Automation surfaces</strong> — Admin Forms now support lifecycle events, selected-control events, command buttons, reusable action sequences, built-in record actions, conditional action steps, and generated automation metadata. Reports and pipelines gained trusted command hooks.</li>
+                            <li><strong>Tableless scalar SQL</strong> — Added <code>SELECT</code> without <code>FROM</code> using a single-row planner source for scalar expressions and callbacks that do not need row context.</li>
+                            <li><strong>Built-in scalar functions</strong> — Added common Access-style text, date/time, numeric, conversion, and null helpers for SQL and Admin formula use.</li>
+                            <li><strong>Callback catalog polish</strong> — Added callback metadata including <code>CanRunWithoutFrom</code>, SQL editor autocomplete for built-ins and tableless-safe callbacks, and an Internal/External split in the Admin callback catalog.</li>
+                            <li><strong>Release validation</strong> — Final tableless/callback stabilization passed with <code>1,877</code> tests, plus build, pack, daemon publish, and callback benchmark validation.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
+                            <span class="news-date">April 2026</span>
+                        </div>
+                        <h3>v3.5.0 — Generated Collection Payload Fast Path &amp; Studio Mockups</h3>
+                        <p>Completes the opt-in generated collection binary payload fast path, refreshes release benchmark artifacts, and adds confirmed CSharpDB Studio Admin mockup documentation:</p>
+                        <ul>
+                            <li><strong>Generated collection binary payloads</strong> — Source-generated collection models now encode/decode fixed field order, compact type/null metadata, and raw values while non-generated collection paths keep their existing JSON and binary behavior.</li>
+                            <li><strong>Direct payload decode improvements</strong> — Avoids duplicated direct payload header parsing, adds single-segment <code>ReadOnlySpan&lt;byte&gt;</code> top-level field lookups, and improves targeted UTF-8 span plumbing for text index/read/compare paths.</li>
+                            <li><strong>Collection benchmark coverage</strong> — Added generated collection codec benchmarks and expanded binary codec/generator tests. Focused investigation showed material gains in direct payload decode, field reads, field compares, and path-index lookups.</li>
+                            <li><strong>Release-core refresh</strong> — Refreshed benchmark README/history from the April 26 release-core artifacts; final guardrail compare passed with <code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>.</li>
+                            <li><strong>Admin UI planning</strong> — Added CSharpDB Studio access-parity notes and static Admin UI mockups under <code>www/admin-ui-mockups</code>.</li>
+                        </ul>
+                    </div>
+
+                    <div class="news-entry">
+                        <div class="news-entry-header">
+                            <span class="news-badge news-badge-release">Release</span>
                             <span class="news-date">April 2026</span>
                         </div>
                         <h3>v3.4.0 — Admin Runtime, Fulfillment Hub Sample &amp; Docs Polish</h3>

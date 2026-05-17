@@ -79,6 +79,7 @@ public sealed class Tokenizer
         ["INDEX"] = TokenType.Index,
         ["UNIQUE"] = TokenType.Unique,
         ["VIEW"] = TokenType.View,
+        ["EXTERNAL"] = TokenType.External,
         ["WITH"] = TokenType.With,
         ["RECURSIVE"] = TokenType.Recursive,
         ["ANALYZE"] = TokenType.Analyze,

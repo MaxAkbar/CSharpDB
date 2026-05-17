@@ -29,7 +29,11 @@ The current forms surface already includes:
 - declarative form action sequences for run-command, reusable sequence,
   set-field, show-message, stop, built-in navigation, save, delete, refresh,
   and go-to-record steps
+- open/close form, apply/clear filter, run SQL/procedure, and control-property
+  action steps with rendered-host policy gates where needed
 - conditional action steps and reusable named form action sequences
+- conditional UI rules for visible, enabled, read-only, text, placeholder, and
+  value effects
 - visual designer editing for form and selected-control action sequences
 - generated automation metadata for export/import host callback requirements
 
@@ -106,10 +110,10 @@ Expected fix:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands, action-only click sequences, reusable action sequences, and built-in rendered-form navigation/save/delete actions; richer button styling and command presets remain future work. |
-| Action model | Partial | Declarative action sequences support run-command, reusable sequence, set-field, show-message, stop, built-in navigation/save/delete/refresh/go-to, simple per-step conditions, visual designer editing, and generated automation metadata for form and selected-control events; open form, apply filter, clear filter, run SQL/procedure, loops, and conditional UI rules remain future work. |
-| Event hooks | Partial | Form lifecycle events, command-button clicks, and selected control events can call trusted commands; additional Access-style events remain future work. |
-| Conditional UI rules | Planned | Add visible/enabled/read-only expressions for controls. |
+| Command button control | Partial | Trusted command buttons can invoke host-registered C# commands, action-only click sequences, reusable action sequences, and built-in rendered-form navigation/save/delete/filter/control actions; richer button styling and command presets remain future work. |
+| Action model | Partial | Declarative action sequences support run-command, reusable sequence, set-field, show-message, stop, rendered record navigation/save/delete/refresh/go-to, open/close form, apply/clear filter, run SQL/procedure, control property changes, simple per-step conditions, visual designer editing, diagnostics, and generated automation metadata; database-owned C# form modules can now run trusted local handlers with explicit trust. Loops, on-error handling, temp/session variables, broader report/query/import/export actions, report modules, and sandboxed code remain future work. |
+| Event hooks | Partial | Form lifecycle events, command-button clicks, and selected control events can call trusted commands, C# code-module handlers, or action sequences; additional Access-style events such as double-click, key, mouse, timer, dirty, and current events remain future work. |
+| Conditional UI rules | Partial | Form-level rules can set rendered control properties such as visible, enabled, read-only, text, placeholder, and value; reusable rule presets and broader expression/event surfaces remain future work. |
 
 ### Phase 5: Broader Control and Property Coverage
 

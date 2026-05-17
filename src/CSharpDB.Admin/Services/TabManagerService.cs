@@ -1,4 +1,5 @@
 using CSharpDB.Admin.Models;
+using System.Text.Json;
 
 namespace CSharpDB.Admin.Services;
 
@@ -117,6 +118,21 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenCodeModulesTab()
+    {
+        const string tabId = "code-modules";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(tabId, "Code Modules", "bi-filetype-cs", TabKind.CodeModules);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenQueryTab(string? initialSql = null)
     {
         int num = Interlocked.Increment(ref _queryCounter);
@@ -125,6 +141,14 @@ public sealed class TabManagerService
             SqlText = initialSql ?? string.Empty
         };
         OpenTab(tab);
+        return tab;
+    }
+
+    public TabDescriptor OpenQueryDesignerTab(QueryDesignerState designerState)
+    {
+        TabDescriptor tab = OpenQueryTab();
+        tab.DesignerStateJson = JsonSerializer.Serialize(designerState);
+        tab.State["QueryMode"] = "Designer";
         return tab;
     }
 
@@ -179,6 +203,32 @@ public sealed class TabManagerService
         var tab = new TabDescriptor($"designer:{num}", "New Table", "bi-table", TabKind.TableDesigner);
         OpenTab(tab);
         return tab;
+    }
+
+    public TabDescriptor OpenImportExportTab(string? tableName = null)
+    {
+        string tabId = string.IsNullOrWhiteSpace(tableName)
+            ? "import-export"
+            : $"import-export:{tableName}";
+        var tab = new TabDescriptor(tabId, "Import / Export", "bi-arrow-left-right", TabKind.ImportExport)
+        {
+            InitialTableName = string.IsNullOrWhiteSpace(tableName) ? null : tableName,
+        };
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
+    public TabDescriptor OpenDataModelTab(string? sourceName = null)
+    {
+        string tabId = string.IsNullOrWhiteSpace(sourceName)
+            ? "data-model"
+            : $"data-model:{sourceName}";
+        var tab = new TabDescriptor(tabId, "Data Model", "bi-diagram-3", TabKind.DataModel)
+        {
+            InitialDataModelSourceName = string.IsNullOrWhiteSpace(sourceName) ? null : sourceName,
+        };
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
     }
 
     public TabDescriptor OpenFormDesignerTab(string? formId = null, string? initialTableName = null, string? title = null)

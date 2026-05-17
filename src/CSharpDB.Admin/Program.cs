@@ -2,9 +2,11 @@ using CSharpDB.Admin.Configuration;
 using CSharpDB.Admin.Components;
 using CSharpDB.Admin.Components.Samples.FormControls;
 using CSharpDB.Admin.Forms.Services;
+using CSharpDB.Admin.ImportExport.Services;
 using CSharpDB.Admin.Reports.Services;
 using CSharpDB.Admin.Services;
 using CSharpDB.Client;
+using CSharpDB.CodeModules;
 using CSharpDB.Primitives;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -43,10 +45,16 @@ builder.Services.AddScoped<DatabaseChangeService>();
 builder.Services.AddScoped<HostCallbackCatalogService>();
 builder.Services.AddScoped<HostCallbackPolicyService>();
 builder.Services.AddScoped<HostCallbackReadinessService>();
+builder.Services.AddScoped<DataModelService>();
+builder.Services.AddScoped<IDataModelService>(sp => sp.GetRequiredService<DataModelService>());
+builder.Services.AddScoped<IDataModelDiagramService>(sp => sp.GetRequiredService<DataModelService>());
 builder.Services.AddSingleton<HostCallbackDiagnosticsHistoryService>();
+builder.Services.AddCSharpDbCodeModules(options => options.EnableInProcessExecution = true);
 builder.Services.AddCSharpDbAdminForms();
+builder.Services.AddCSharpDbAdminFormCodeModules();
 if (builder.Configuration.GetValue<bool>("AdminForms:EnableSampleControls"))
     builder.Services.AddSampleFormControls();
+builder.Services.AddCSharpDbAdminImportExport();
 builder.Services.AddCSharpDbAdminReports();
 
 var app = builder.Build();
@@ -70,6 +78,7 @@ app.UseAntiforgery();
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
+app.MapCSharpDbAdminImportExport();
 
 app.Run();
 

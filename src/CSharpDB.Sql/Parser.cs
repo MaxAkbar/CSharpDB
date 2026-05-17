@@ -1304,6 +1304,12 @@ public sealed class Parser
             Advance(); // consume VIEW
             return ParseCreateViewBody();
         }
+        if (t == TokenType.External)
+        {
+            Advance(); // consume EXTERNAL
+            Expect(TokenType.Table);
+            return ParseCreateExternalTableBody();
+        }
         if (t == TokenType.Trigger)
         {
             Advance(); // consume TRIGGER
@@ -1405,6 +1411,29 @@ public sealed class Parser
         {
             ViewName = viewName,
             Query = query,
+            IfNotExists = ifNotExists,
+        };
+    }
+
+    private CreateExternalTableStatement ParseCreateExternalTableBody()
+    {
+        bool ifNotExists = false;
+        if (Peek().Type == TokenType.If)
+        {
+            Advance();
+            Expect(TokenType.Not);
+            Expect(TokenType.Exists);
+            ifNotExists = true;
+        }
+
+        string tableName = ExpectIdentifier();
+        Expect(TokenType.From);
+        var path = Expect(TokenType.StringLiteral).Value;
+
+        return new CreateExternalTableStatement
+        {
+            TableName = tableName,
+            Path = path,
             IfNotExists = ifNotExists,
         };
     }
@@ -1544,6 +1573,12 @@ public sealed class Parser
             Advance(); // consume VIEW
             return ParseDropViewBody();
         }
+        if (t == TokenType.External)
+        {
+            Advance(); // consume EXTERNAL
+            Expect(TokenType.Table);
+            return ParseDropExternalTableBody();
+        }
         if (t == TokenType.Trigger)
         {
             Advance(); // consume TRIGGER
@@ -1596,6 +1631,20 @@ public sealed class Parser
 
         string viewName = ExpectIdentifier();
         return new DropViewStatement { ViewName = viewName, IfExists = ifExists };
+    }
+
+    private DropExternalTableStatement ParseDropExternalTableBody()
+    {
+        bool ifExists = false;
+        if (Peek().Type == TokenType.If)
+        {
+            Advance();
+            Expect(TokenType.Exists);
+            ifExists = true;
+        }
+
+        string tableName = ExpectIdentifier();
+        return new DropExternalTableStatement { TableName = tableName, IfExists = ifExists };
     }
 
     private CreateTriggerStatement ParseCreateTriggerBody()

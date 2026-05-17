@@ -16,6 +16,7 @@ public static class DatabaseMaintenanceCoordinator
     private const string CollectionIndexPrefix = "_cidx_";
     private const string ProcedureTableName = "__procedures";
     private const string SavedQueryTableName = "__saved_queries";
+    private const string DataModelDiagramsTableName = "__data_model_diagrams";
 
     public static async ValueTask<DatabaseMaintenanceReport> GetMaintenanceReportAsync(
         string databasePath,
@@ -770,7 +771,7 @@ public static class DatabaseMaintenanceCoordinator
     private static IEnumerable<string> GetTablesToCopy(SchemaCatalog catalog)
     {
         return catalog.GetTableNames()
-            .Concat([ProcedureTableName, SavedQueryTableName])
+            .Concat([ProcedureTableName, SavedQueryTableName, DataModelDiagramsTableName])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
     }
@@ -807,7 +808,8 @@ public static class DatabaseMaintenanceCoordinator
     private static bool IsClientMetadataTable(string tableName)
     {
         return string.Equals(tableName, ProcedureTableName, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase);
+               string.Equals(tableName, SavedQueryTableName, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(tableName, DataModelDiagramsTableName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void TryDeleteFile(string path)

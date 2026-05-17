@@ -470,8 +470,10 @@ window.designerInterop = {
 
         document.addEventListener('mousemove', (e) => {
             if (!dragging || !node) return;
-            node.style.left = Math.max(0, origLeft + e.clientX - startX) + 'px';
-            node.style.top  = Math.max(0, origTop  + e.clientY - startY) + 'px';
+            const canvas = node.closest('.designer-canvas');
+            const scale = parseFloat(canvas?.dataset?.canvasScale || '1') || 1;
+            node.style.left = Math.max(0, origLeft + ((e.clientX - startX) / scale)) + 'px';
+            node.style.top  = Math.max(0, origTop  + ((e.clientY - startY) / scale)) + 'px';
         });
 
         document.addEventListener('mouseup', () => {

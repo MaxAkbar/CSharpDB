@@ -1,0 +1,253 @@
+@using CSharpDB.CodeModules
+@inject CSharpDbCodeModuleClient CodeModules
+@inject ToastService Toast
+
+<div class="data-tab code-modules-tab">
+    <div class="data-toolbar">
+        <div class="data-crumb">
+            <button type="button">
+                <i class="bi bi-hdd-stack"></i>
+                system
+            </button>
+            <span>/</span>
+            <strong><i class="bi bi-filetype-cs icon-system"></i>code modules</strong>
+        </div>
+
+        <div class="data-toolbar-group">
+            <button type="button" class="data-toolbar-btn" @onclick="RefreshAsync">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <button type="button" class="data-toolbar-btn" @onclick="BuildAsync">
+                <i class="bi bi-hammer"></i> Build
+            </button>
+            <button type="button" class="data-toolbar-btn" @onclick="TrustAsync" disabled="@(!CanTrust)">
+                <i class="bi bi-shield-check"></i> Trust
+            </button>
+            <button type="button" class="data-toolbar-btn" @onclick="ExportAsync">
+                <i class="bi bi-box-arrow-up"></i> Export
+            </button>
+            <button type="button" class="data-toolbar-btn" @onclick="ImportAsync">
+                <i class="bi bi-box-arrow-in-down"></i> Import
+            </button>
+        </div>
+
+        <div class="data-toolbar-group">
+            <input class="query-name-input"
+                   value="@_workspacePath"
+                   @onchange="e => _workspacePath = e.Value?.ToString() ?? string.Empty"
+                   placeholder="Workspace folder" />
+        </div>
+
+        <div class="data-toolbar-group">
+            <span class="@GetBuildBadgeClass()">@GetBuildText()</span>
+            <span class="@GetTrustBadgeClass()">@GetTrustText()</span>
+        </div>
+    </div>
+
+    <div class="callbacks-layout">
+        <section class="callbacks-list-panel">
+            @if (_modules.Count == 0)
+            {
+                <div class="callbacks-empty">No C# code modules are stored in this database.</div>
+            }
+            else
+            {
+                <table class="schema-table callbacks-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Kind</th>
+                            <th>Owner</th>
+                            <th>Hash</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (CodeModuleSummary module in _modules)
+                        {
+                            <tr class="callbacks-row @(module.ModuleId == _selectedModuleId ? "selected" : "")"
+                                @onclick="@(() => SelectModuleAsync(module.ModuleId))">
+                                <td class="mono-cell">@module.Name</td>
+                                <td>@module.Kind</td>
+                                <td>@FormatOwner(module)</td>
+                                <td class="mono-cell">@ShortHash(module.SourceHash)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <section class="callbacks-detail-panel">
+            @if (_selected is null)
+            {
+                <div class="callbacks-empty">Select a module to preview source.</div>
+            }
+            else
+            {
+                <div class="callbacks-detail-head">
+                    <div>
+                        <div class="callbacks-eyebrow">@_selected.Kind</div>
+                        <h3>@_selected.Name</h3>
+                    </div>
+                    <span class="callbacks-policy-badge">@ShortHash(_selected.SourceHash ?? string.Empty)</span>
+                </div>
+
+                <table class="schema-table callbacks-detail-table">
+                    <tbody>
+                        <tr><th>Module Id</th><td class="mono-cell">@_selected.ModuleId</td></tr>
+                        <tr><th>Type</th><td class="mono-cell">@(_selected.TypeName ?? "-")</td></tr>
+                        <tr><th>Owner</th><td>@((_selected.OwnerKind ?? "-") + "/" + (_selected.OwnerId ?? "-"))</td></tr>
+                        <tr><th>Updated</th><td>@_selected.UpdatedUtc?.LocalDateTime.ToString("g")</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="callbacks-section">
+                    <h4>Source Preview</h4>
+                    <pre class="query-textarea readonly code-module-source">@_selected.Source</pre>
+                </div>
+            }
+
+            <div class="callbacks-section">
+                <h4>Diagnostics</h4>
+                @if (_lastBuild is null)
+                {
+                    <div class="callbacks-empty small">Build has not run in this tab.</div>
+                }
+                else if (_lastBuild.Diagnostics.Count == 0)
+                {
+                    <div class="callbacks-empty small">No diagnostics.</div>
+                }
+                else
+                {
+                    <table class="schema-table callbacks-detail-table">
+                        <thead>
+                            <tr>
+                                <th>Severity</th>
+                                <th>Module</th>
+                                <th>Line</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (CodeModuleDiagnostic diagnostic in _lastBuild.Diagnostics)
+                            {
+                                <tr>
+                                    <td>@diagnostic.Severity</td>
+                                    <td class="mono-cell">@(diagnostic.ModuleId ?? diagnostic.Path ?? "-")</td>
+                                    <td>@diagnostic.Line:@diagnostic.Column</td>
+                                    <td>@diagnostic.Code @diagnostic.Message</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+
+            @if (_lastImport is not null)
+            {
+                <div class="callbacks-section">
+                    <h4>Last Import</h4>
+                    <table class="schema-table callbacks-detail-table">
+                        <tbody>
+                            @foreach (CodeModuleImportChange change in _lastImport.Changes)
+                            {
+                                <tr><th>@change.Kind</th><td>@change.ModuleId - @(change.Message ?? change.Path)</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;
+
+    private List<CodeModuleSummary> _modules = [];
+    private CodeModuleDefinition? _selected;
+    private string? _selectedModuleId;
+    private CodeModuleBuildResult? _lastBuild;
+    private CodeModuleTrustState? _trustState;
+    private CodeModuleImportResult? _lastImport;
+    private string _workspacePath = string.Empty;
+
+    private bool CanTrust => _lastBuild?.Succeeded == true && _trustState?.IsTrusted != true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _workspacePath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _modules = (await CodeModules.ListAsync()).ToList();
+        _trustState = await CodeModules.GetTrustStateAsync();
+        if (_selectedModuleId is not null)
+            _selected = await CodeModules.GetAsync(_selectedModuleId);
+        if (_selected is null && _modules.Count > 0)
+            await SelectModuleAsync(_modules[0].ModuleId);
+    }
+
+    private async Task SelectModuleAsync(string moduleId)
+    {
+        _selectedModuleId = moduleId;
+        _selected = await CodeModules.GetAsync(moduleId);
+    }
+
+    private async Task BuildAsync()
+    {
+        _lastBuild = await CodeModules.BuildAsync();
+        _trustState = await CodeModules.GetTrustStateAsync(_lastBuild.ModuleSetHash);
+        Toast.Show(_lastBuild.Succeeded ? "Code modules built successfully." : "Code module build failed.");
+    }
+
+    private async Task TrustAsync()
+    {
+        await CodeModules.TrustAsync();
+        _lastBuild = await CodeModules.BuildAsync();
+        _trustState = await CodeModules.GetTrustStateAsync(_lastBuild.ModuleSetHash);
+        Toast.Show("Current C# code module build is trusted locally.");
+    }
+
+    private async Task ExportAsync()
+    {
+        CodeModuleExportResult result = await CodeModules.ExportAsync(GetWorkspacePath());
+        Toast.Show($"Exported {result.ModuleCount} code module(s).");
+    }
+
+    private async Task ImportAsync()
+    {
+        _lastImport = await CodeModules.ImportAsync(GetWorkspacePath());
+        await RefreshAsync();
+        Toast.Show(_lastImport.HasConflicts ? "Code module import completed with conflicts." : "Code module import completed.");
+    }
+
+    private string GetWorkspacePath()
+        => string.IsNullOrWhiteSpace(_workspacePath)
+            ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+            : _workspacePath;
+
+    private string GetBuildText()
+        => _lastBuild is null ? "Not built" : _lastBuild.Succeeded ? "Build passed" : "Build failed";
+
+    private string GetBuildBadgeClass()
+        => _lastBuild is null
+            ? "callbacks-policy-badge"
+            : _lastBuild.Succeeded ? "callbacks-policy-badge allowed" : "callbacks-policy-badge denied";
+
+    private string GetTrustText()
+        => _trustState?.IsTrusted == true ? "Trusted" : "Untrusted";
+
+    private string GetTrustBadgeClass()
+        => _trustState?.IsTrusted == true ? "callbacks-policy-badge allowed" : "callbacks-policy-badge denied";
+
+    private static string ShortHash(string hash)
+        => string.IsNullOrWhiteSpace(hash) ? "-" : hash[..Math.Min(12, hash.Length)];
+
+    private static string FormatOwner(CodeModuleSummary module)
+        => string.IsNullOrWhiteSpace(module.OwnerKind) && string.IsNullOrWhiteSpace(module.OwnerId)
+            ? "-"
+            : $"{module.OwnerKind ?? "-"}:{module.OwnerId ?? "-"}";
+}

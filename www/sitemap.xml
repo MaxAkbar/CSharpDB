@@ -26,19 +26,19 @@
   </url>
   <url>
     <loc>https://csharpdb.com/roadmap.html</loc>
-    <lastmod>2026-04-20</lastmod>
+    <lastmod>2026-05-10</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/roadmap-reference.html</loc>
-    <lastmod>2026-04-24</lastmod>
+    <lastmod>2026-05-10</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/changelog.html</loc>
-    <lastmod>2026-04-21</lastmod>
+    <lastmod>2026-05-10</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
@@ -296,9 +296,21 @@
   </url>
   <url>
     <loc>https://csharpdb.com/blog/</loc>
-    <lastmod>2026-04-25</lastmod>
+    <lastmod>2026-05-10</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/blog/table-archives.html</loc>
+    <lastmod>2026-05-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/blog/access-style-csharp-code-modules.html</loc>
+    <lastmod>2026-05-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/blog/fulfillment-hub-sample-walkthrough.html</loc>

@@ -1,6 +1,10 @@
+using System.Text;
 using System.Threading;
+using CSharpDB.Client;
 using CSharpDB.Client.Internal;
+using CSharpDB.Client.Models;
 using CSharpDB.Engine;
+using CSharpDB.ImportExport.TableArchives;
 
 namespace CSharpDB.Tests;
 
@@ -200,5 +204,137 @@ public sealed class EngineTransportClientTests
             if (File.Exists(dbPath + ".wal"))
                 File.Delete(dbPath + ".wal");
         }
+    }
+
+    [Fact]
+    public async Task ExportTableArchiveAsync_WritesNativeArchiveFromDirectSnapshot()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_table_export_{Guid.NewGuid():N}");
+        string dbPath = Path.Combine(directory, "export.db");
+        string archivePath = Path.Combine(directory, "exports", "customers.csdbtable");
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            await using var client = new EngineTransportClient(dbPath);
+            await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE Customers (
+                    Id INTEGER PRIMARY KEY,
+                    Name TEXT NOT NULL,
+                    Balance REAL,
+                    Payload BLOB
+                );
+                INSERT INTO Customers VALUES (1, 'Ada', 10.5, X'0102FF');
+                INSERT INTO Customers VALUES (2, 'Grace', NULL, NULL);
+                """,
+                TestContext.Current.CancellationToken);
+
+            var exporter = Assert.IsAssignableFrom<ICSharpDbTableArchiveExporter>(client);
+            Assert.True(exporter.SupportsTableArchiveExport);
+
+            var export = await exporter.ExportTableArchiveAsync(
+                "Customers",
+                archivePath,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal("Customers", export.TableName);
+            Assert.Equal("customers.csdbtable", export.FileName);
+            Assert.Equal(2, export.RowCount);
+            Assert.True(File.Exists(archivePath));
+
+            var schema = await TableArchiveReader.ReadTableSchemaAsync(
+                archivePath,
+                ct: TestContext.Current.CancellationToken);
+            Assert.Equal("Customers", schema.TableName);
+            Assert.Equal(4, schema.Columns.Count);
+            Assert.True(schema.Columns[0].IsPrimaryKey);
+
+            var rows = new List<CSharpDB.Primitives.DbValue[]>();
+            await foreach (var row in TableArchiveReader.ReadRowsAsync(
+                               archivePath,
+                               TestContext.Current.CancellationToken))
+            {
+                rows.Add(row);
+            }
+
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(1, rows[0][0].AsInteger);
+            Assert.Equal("Ada", rows[0][1].AsText);
+            Assert.Equal(10.5, rows[0][2].AsReal);
+            Assert.Equal(new byte[] { 0x01, 0x02, 0xff }, rows[0][3].AsBlob);
+            Assert.Equal(2, rows[1][0].AsInteger);
+            Assert.Equal("Grace", rows[1][1].AsText);
+            Assert.True(rows[1][2].IsNull);
+            Assert.True(rows[1][3].IsNull);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExportTableArchiveAsync_ReportsProgressAndHonorsCancellation()
+    {
+        var testToken = TestContext.Current.CancellationToken;
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_table_export_cancel_{Guid.NewGuid():N}");
+        string dbPath = Path.Combine(directory, "export.db");
+        string archivePath = Path.Combine(directory, "exports", "customers.csdbtable");
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            await using var client = new EngineTransportClient(dbPath);
+            await client.ExecuteSqlAsync(
+                "CREATE TABLE Customers (Id INTEGER PRIMARY KEY, Name TEXT NOT NULL);",
+                testToken);
+
+            for (int start = 1; start <= 5_000; start += 500)
+            {
+                var sql = new StringBuilder("INSERT INTO Customers (Id, Name) VALUES ");
+                for (int i = 0; i < 500; i++)
+                {
+                    if (i > 0)
+                        sql.Append(", ");
+
+                    int id = start + i;
+                    sql.Append('(')
+                        .Append(id)
+                        .Append(", 'Customer ")
+                        .Append(id)
+                        .Append("')");
+                }
+
+                sql.Append(';');
+                await client.ExecuteSqlAsync(sql.ToString(), testToken);
+            }
+
+            var exporter = Assert.IsAssignableFrom<ICSharpDbTableArchiveProgressExporter>(client);
+            using var exportCts = CancellationTokenSource.CreateLinkedTokenSource(testToken);
+            long highestRowsExported = 0;
+            var progress = new InlineProgress<TableArchiveExportProgress>(p =>
+            {
+                highestRowsExported = Math.Max(highestRowsExported, p.RowsExported);
+                if (p.RowsExported >= 1_000)
+                    exportCts.Cancel();
+            });
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                await exporter.ExportTableArchiveAsync("Customers", archivePath, progress, exportCts.Token));
+
+            Assert.True(highestRowsExported >= 1_000);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 }

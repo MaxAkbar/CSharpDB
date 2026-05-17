@@ -222,6 +222,9 @@
         _items.Add(new PaletteItem("Command", "New Report", "Open report designer", "bi-file-earmark-richtext", "icon-report", () => { TabManager.OpenReportDesignerTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Procedure", "Open procedure editor", "bi-gear-wide-connected", "icon-trigger", () => { TabManager.OpenNewProcedureTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "New Pipeline", "Open pipeline builder", "bi-diagram-3", "icon-view", () => { TabManager.OpenPipelineTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Data Model", "Open visual data modeling canvas", "bi-diagram-3", "icon-view", () => { TabManager.OpenDataModelTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Code Modules", "Open C# code modules", "bi-filetype-cs", "icon-system", () => { TabManager.OpenCodeModulesTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Import / Export", "Open table archive tools", "bi-arrow-left-right", "icon-system", () => { TabManager.OpenImportExportTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Storage Inspector", "Open storage diagnostics", "bi-hdd-stack", "icon-system", () => { TabManager.OpenStorageTab(); return Task.CompletedTask; }));
     }
 

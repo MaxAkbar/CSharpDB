@@ -276,6 +276,11 @@ public sealed class HostCallbackCatalogService
             IReadOnlyList<SavedQueryDefinition> savedQueries = await dbClient.GetSavedQueriesAsync();
             foreach (SavedQueryDefinition query in savedQueries)
             {
+                if (query.Name.StartsWith("__designer_layout:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 AddSqlScalarFunctionReferences(
                     references,
                     query.SqlText,

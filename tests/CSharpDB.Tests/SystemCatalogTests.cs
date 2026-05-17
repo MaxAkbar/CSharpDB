@@ -287,6 +287,47 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_DiagramsVirtualTable_ProjectsBackingRowsAndHidesInternalTable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        await _db.ExecuteAsync(
+            """
+            CREATE TABLE __data_model_diagrams (
+                id INTEGER PRIMARY KEY IDENTITY,
+                name TEXT NOT NULL,
+                diagram_json TEXT NOT NULL,
+                created_utc TEXT NOT NULL,
+                updated_utc TEXT NOT NULL
+            )
+            """,
+            ct);
+        await _db.ExecuteAsync("CREATE UNIQUE INDEX idx___data_model_diagrams_name ON __data_model_diagrams(name)", ct);
+        await _db.ExecuteAsync(
+            """
+            INSERT INTO __data_model_diagrams (name, diagram_json, created_utc, updated_utc)
+            VALUES ('Fulfillment', '{"Version":1,"Nodes":[{"Name":"customers","Kind":0},{"Name":"archived_customers","Kind":1}],"PendingOperations":[{"Kind":1}]}', '2026-05-12T00:00:00Z', '2026-05-12T01:00:00Z')
+            """,
+            ct);
+
+        await using var diagrams = await _db.ExecuteAsync(
+            "SELECT name, created_utc, updated_utc, source_count, table_count, pending_operation_count FROM sys.diagrams",
+            ct);
+        var row = Assert.Single(await diagrams.ToListAsync(ct));
+        Assert.Equal("Fulfillment", row[0].AsText);
+        Assert.Equal("2026-05-12T00:00:00Z", row[1].AsText);
+        Assert.Equal("2026-05-12T01:00:00Z", row[2].AsText);
+        Assert.Equal(2L, row[3].AsInteger);
+        Assert.Equal(1L, row[4].AsInteger);
+        Assert.Equal(1L, row[5].AsInteger);
+
+        await using var hidden = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM sys.tables WHERE table_name = '__data_model_diagrams'",
+            ct);
+        Assert.Equal(0L, Assert.Single(await hidden.ToListAsync(ct))[0].AsInteger);
+    }
+
+    [Fact]
     public async Task SystemCatalog_SchemaVersion_AdvancesOnDdlOnly()
     {
         var ct = TestContext.Current.CancellationToken;

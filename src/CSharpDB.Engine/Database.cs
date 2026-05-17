@@ -52,6 +52,7 @@ public sealed class Database : IAsyncDisposable
     private readonly ICatalogStore _catalogStore;
     private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly DbFunctionRegistry _functions;
+    private readonly string? _databasePath;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
@@ -139,7 +140,8 @@ public sealed class Database : IAsyncDisposable
         ImplicitInsertExecutionMode implicitInsertExecutionMode = ImplicitInsertExecutionMode.Serialized,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
         DbFunctionRegistry? functions = null,
-        HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null)
+        HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null,
+        string? databasePath = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -149,6 +151,7 @@ public sealed class Database : IAsyncDisposable
         _catalogStore = catalogStore;
         _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
         _functions = functions ?? DbFunctionRegistry.Empty;
+        _databasePath = string.IsNullOrWhiteSpace(databasePath) ? null : Path.GetFullPath(databasePath);
         _implicitInsertExecutionMode = implicitInsertExecutionMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
         _planner = new QueryPlanner(
@@ -162,7 +165,8 @@ public sealed class Database : IAsyncDisposable
             nextRowIdObservationProvider: ObserveSharedNextRowId,
             useTransientNextRowIdHints: false,
             functions: _functions,
-            adaptiveQueryReoptimization: adaptiveQueryReoptimization);
+            adaptiveQueryReoptimization: adaptiveQueryReoptimization,
+            externalTableBasePath: GetExternalTableBasePath(_databasePath));
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -198,7 +202,8 @@ public sealed class Database : IAsyncDisposable
                 nextRowIdObservationProvider: ObserveSharedNextRowId,
                 useTransientNextRowIdHints: true,
                 functions: _functions,
-                adaptiveQueryReoptimization: _planner.AdaptiveQueryReoptimization)
+                adaptiveQueryReoptimization: _planner.AdaptiveQueryReoptimization,
+                externalTableBasePath: GetExternalTableBasePath(_databasePath))
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
@@ -255,6 +260,17 @@ public sealed class Database : IAsyncDisposable
                     (_, existing) => Math.Max(existing, nextRowId));
             }
         }
+    }
+
+    private static string GetExternalTableBasePath(string? databasePath)
+    {
+        if (string.IsNullOrWhiteSpace(databasePath))
+            return Directory.GetCurrentDirectory();
+
+        string? directory = Path.GetDirectoryName(databasePath);
+        return string.IsNullOrWhiteSpace(directory)
+            ? Directory.GetCurrentDirectory()
+            : directory;
     }
 
     private void ApplyCommittedNextRowIdHints(IReadOnlyCollection<KeyValuePair<string, long>> committedNextRowIds)
@@ -600,7 +616,8 @@ public sealed class Database : IAsyncDisposable
                 options.ImplicitInsertExecutionMode,
                 options.AdaptiveQueryReoptimization,
                 options.Functions,
-                new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers));
+                new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers),
+                fullPath);
             return snapshotDatabase;
         }
 
@@ -615,7 +632,8 @@ public sealed class Database : IAsyncDisposable
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
-            options.Functions);
+            options.Functions,
+            databasePath: fullPath);
         try
         {
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
@@ -675,7 +693,8 @@ public sealed class Database : IAsyncDisposable
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
-            options.Functions);
+            options.Functions,
+            databasePath: fullPath);
     }
 
     /// <summary>
@@ -688,7 +707,8 @@ public sealed class Database : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var context = await options.StorageEngineFactory.OpenAsync(filePath, options.StorageEngineOptions, ct);
+        string fullPath = Path.GetFullPath(filePath);
+        var context = await options.StorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
         return new Database(
             context.Pager,
             context.Catalog,
@@ -699,7 +719,8 @@ public sealed class Database : IAsyncDisposable
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
-            options.Functions);
+            options.Functions,
+            databasePath: fullPath);
     }
 
     /// <summary>

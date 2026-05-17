@@ -82,6 +82,7 @@ public enum TokenType
     Index,
     Unique,
     View,
+    External,
     With,
     Recursive,
     Analyze,

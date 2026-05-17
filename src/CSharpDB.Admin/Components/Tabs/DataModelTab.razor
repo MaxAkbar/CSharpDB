@@ -1,0 +1,1270 @@
+@using CSharpDB.Admin.Models
+@inject IDataModelService DataModels
+@inject IDataModelDiagramService Diagrams
+@inject TabManagerService TabManager
+@inject ToastService Toast
+
+<div class="data-model-tab">
+    <div class="toolbar data-model-toolbar">
+        <button class="toolbar-btn primary"
+                @onclick="LoadAllAsync"
+                disabled="@_loading"
+                title="Render all user and external tables">
+            @if (_loading)
+            {
+                <span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>
+            }
+            <i class="bi bi-diagram-3"></i> Load All
+        </button>
+        <div class="designer-dropdown-wrap">
+            <button class="toolbar-btn"
+                    @onclick="ToggleAddSourcePanel"
+                    disabled="@_loading"
+                    title="Add table or external table">
+                <i class="bi bi-plus-square"></i> Add Source <i class="bi bi-chevron-down" style="font-size:10px"></i>
+            </button>
+            @if (_showAddSource)
+            {
+                <div class="designer-dropdown-panel data-model-source-menu">
+                    @foreach (DataModelSourceOption option in AvailableSourceOptions)
+                    {
+                        var source = option;
+                        <button class="designer-dropdown-item" @onclick="() => AddSourceAsync(source.Name)">
+                            <i class="bi @(source.Kind == DataModelNodeKind.ExternalTable ? "bi-box-arrow-up-right" : "bi-table")"></i>
+                            <span>@source.Name</span>
+                            @if (source.Kind == DataModelNodeKind.ExternalTable && !string.IsNullOrWhiteSpace(source.SourceTableName))
+                            {
+                                <small>@source.SourceTableName</small>
+                            }
+                        </button>
+                    }
+                    @if (!AvailableSourceOptions.Any())
+                    {
+                        <div class="designer-dropdown-empty">No remaining sources</div>
+                    }
+                </div>
+            }
+        </div>
+        <button class="toolbar-btn"
+                @onclick="ToggleNewTablePanel"
+                disabled="@_loading"
+                title="Stage a new database table">
+            <i class="bi bi-table"></i> New Table
+        </button>
+        <button class="toolbar-btn" @onclick="RefreshAsync" disabled="@_loading" title="Reload metadata">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <button class="toolbar-btn" @onclick="ClearCanvas" disabled="@_loading || _state.Nodes.Count == 0" title="Clear canvas">
+            <i class="bi bi-eraser"></i> Clear
+        </button>
+
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn icon-only"
+                @onclick="ZoomOut"
+                disabled="@(_loading || CurrentScale <= MinZoom)"
+                title="Zoom out">
+            <i class="bi bi-zoom-out"></i>
+        </button>
+        <span class="data-model-zoom-label">@ZoomLabel</span>
+        <button class="toolbar-btn"
+                @onclick="ResetZoom"
+                disabled="@(_loading || Math.Abs(CurrentScale - 1) < 0.001)"
+                title="Reset zoom">
+            <i class="bi bi-aspect-ratio"></i> Reset
+        </button>
+        <button class="toolbar-btn icon-only"
+                @onclick="ZoomIn"
+                disabled="@(_loading || CurrentScale >= MaxZoom)"
+                title="Zoom in">
+            <i class="bi bi-zoom-in"></i>
+        </button>
+
+        <div class="toolbar-separator"></div>
+        <input class="query-saved-input"
+               style="width:130px"
+               @bind="_diagramName"
+               placeholder="Diagram name..." />
+        <button class="toolbar-btn"
+                @onclick="SaveDiagramAsync"
+                disabled="@(_loading || string.IsNullOrWhiteSpace(_diagramName))"
+                title="Save diagram">
+            <i class="bi bi-save"></i> Save
+        </button>
+        <div class="designer-dropdown-wrap">
+            <button class="toolbar-btn" @onclick="ToggleLoadPanel" disabled="@_loading" title="Open a saved diagram">
+                <i class="bi bi-folder2-open"></i> Load <i class="bi bi-chevron-down" style="font-size:10px"></i>
+            </button>
+            @if (_showLoadPanel)
+            {
+                <div class="designer-dropdown-panel">
+                    @if (!_savedDiagrams.Any())
+                    {
+                        <div class="designer-dropdown-empty">No saved diagrams</div>
+                    }
+                    else
+                    {
+                        @foreach (DataModelDiagramSummary diagram in _savedDiagrams)
+                        {
+                            var saved = diagram;
+                            <button class="designer-dropdown-item" @onclick="() => LoadDiagramAsync(saved.Name)">
+                                <i class="bi bi-diagram-3"></i>
+                                <span>@saved.Name</span>
+                                <small>@saved.SourceCount source@(saved.SourceCount == 1 ? "" : "s")</small>
+                            </button>
+                        }
+                    }
+                </div>
+            }
+        </div>
+        <button class="toolbar-btn danger"
+                @onclick="DeleteActiveDiagramAsync"
+                disabled="@(_loading || string.IsNullOrWhiteSpace(_state.DiagramName))"
+                title="Delete the saved diagram record">
+            <i class="bi bi-trash"></i> Delete
+        </button>
+
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn primary"
+                @onclick="ApplyPendingChangesAsync"
+                disabled="@(_loading || _state.PendingOperations.Count == 0)"
+                title="Apply staged schema changes">
+            <i class="bi bi-check2-circle"></i> Apply Changes
+        </button>
+        <button class="toolbar-btn"
+                @onclick="OpenInQueryDesigner"
+                disabled="@(_state.Nodes.Count == 0)"
+                title="Open current model as a visual query designer layout">
+            <i class="bi bi-box-arrow-up-right"></i> Open in Query Designer
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">
+            <span>@_state.Nodes.Count source@(_state.Nodes.Count == 1 ? "" : "s")</span>
+            <span>|</span>
+            <span>@_state.Relationships.Count relationship@(_state.Relationships.Count == 1 ? "" : "s")</span>
+        </div>
+    </div>
+
+    @if (_showNewTablePanel)
+    {
+        <div class="designer-join-dialog data-model-schema-dialog">
+            <span class="designer-join-dialog-title">New Table</span>
+            <input class="schema-input"
+                   style="width:160px"
+                   @bind="_newTableName"
+                   placeholder="Table name" />
+            <input class="schema-input"
+                   style="width:120px"
+                   @bind="_newTablePrimaryKeyName"
+                   placeholder="PK column" />
+            <select class="schema-input" style="width:110px" @bind="_newTablePrimaryKeyType">
+                <option>INTEGER</option>
+                <option>TEXT</option>
+                <option>REAL</option>
+                <option>BLOB</option>
+            </select>
+            <button class="toolbar-btn primary"
+                    disabled="@(!CanStageNewTable)"
+                    @onclick="StageNewTableAsync">
+                <i class="bi bi-plus"></i> Stage
+            </button>
+            <button class="toolbar-btn" @onclick="ToggleNewTablePanel">Cancel</button>
+        </div>
+    }
+
+    @if (_error is not null)
+    {
+        <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+    }
+
+    <div class="data-model-workspace">
+        <section class="data-model-canvas-panel">
+            <SchemaCanvas State="_state"
+                          SelectedNodeName="_selectedNodeName"
+                          SelectedRelationshipId="_selectedRelationshipId"
+                          OnNodeSelected="SelectNode"
+                          OnNodeRemoved="RemoveNode"
+                          OnRelationshipSelected="SelectRelationship"
+                          OnNodeMoved="OnNodeMoved" />
+        </section>
+        <aside class="data-model-inspector">
+            <div class="data-model-inspector-section">
+                <h3>Selection</h3>
+                @if (SelectedNode is not null)
+                {
+                    <div class="data-model-selection-card">
+                        <strong>@SelectedNode.Name</strong>
+                        <span>@(SelectedNode.Kind == DataModelNodeKind.ExternalTable ? "External table" : "Table")</span>
+                        @if (!string.IsNullOrWhiteSpace(SelectedNode.SourceTableName))
+                        {
+                            <small>Source: @SelectedNode.SourceTableName</small>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(SelectedNode.ArchivePath))
+                        {
+                            <small class="mono-cell">@SelectedNode.ArchivePath</small>
+                        }
+                        @if (SelectedNode.IsDraft)
+                        {
+                            <small>Pending create table</small>
+                        }
+                    </div>
+
+                    @if (SelectedNode.Kind == DataModelNodeKind.Table && !SelectedNode.IsDraft)
+                    {
+                        <div class="data-model-schema-actions">
+                            <div class="data-model-inline-action">
+                                <input class="schema-input"
+                                       value="@_renameTableName"
+                                       @oninput="eventArgs => _renameTableName = eventArgs.Value?.ToString() ?? string.Empty"
+                                       placeholder="New table name" />
+                                <button class="toolbar-btn"
+                                        disabled="@(!CanStageRenameSelectedTable)"
+                                        @onclick="StageRenameSelectedTableAsync"
+                                        title="Stage a table rename">
+                                    <i class="bi bi-pencil"></i> Rename Table
+                                </button>
+                            </div>
+                            <div class="data-model-inline-action">
+                                <input class="schema-input"
+                                       value="@_newColumnName"
+                                       @oninput="eventArgs => _newColumnName = eventArgs.Value?.ToString() ?? string.Empty"
+                                       placeholder="Column name" />
+                                <select class="schema-input" @bind="_newColumnType">
+                                    <option>TEXT</option>
+                                    <option>INTEGER</option>
+                                    <option>REAL</option>
+                                    <option>BLOB</option>
+                                </select>
+                                <label class="schema-check">
+                                    <input type="checkbox" @bind="_newColumnNotNull" />
+                                    <span>Not null</span>
+                                </label>
+                                <button class="toolbar-btn"
+                                        disabled="@(!CanStageAddColumn)"
+                                        @onclick="StageAddColumnAsync"
+                                        title="Stage an ADD COLUMN operation">
+                                    <i class="bi bi-plus"></i> Add Column
+                                </button>
+                            </div>
+                            <div class="data-model-column-action-list">
+                                @foreach (DataModelColumn column in SelectedNode.Columns)
+                                {
+                                    var currentColumn = column;
+                                    <div class="data-model-column-action-row">
+                                        <span>
+                                            <strong>@currentColumn.Name</strong>
+                                            <small>@currentColumn.TypeLabel</small>
+                                        </span>
+                                        <input class="schema-input"
+                                               value="@GetColumnRenameValue(SelectedNode.Name, currentColumn.Name)"
+                                               @oninput="eventArgs => SetColumnRenameValue(SelectedNode.Name, currentColumn.Name, eventArgs.Value?.ToString())"
+                                               placeholder="Rename to" />
+                                        <button class="toolbar-btn"
+                                                disabled="@(!CanStageRenameColumn(SelectedNode, currentColumn))"
+                                                @onclick="() => StageRenameColumnAsync(SelectedNode.Name, currentColumn.Name)">
+                                            <i class="bi bi-pencil"></i>
+                                        </button>
+                                        <button class="toolbar-btn danger"
+                                                disabled="@(currentColumn.IsPrimaryKey || HasPendingTableRename(SelectedNode.Name) || HasPendingColumnDrop(SelectedNode.Name, currentColumn.Name))"
+                                                @onclick="() => StageDropColumnAsync(SelectedNode.Name, currentColumn.Name)">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                }
+                            </div>
+                            <button class="toolbar-btn danger"
+                                    disabled="@HasPendingDropForSelectedNode"
+                                    @onclick="StageDropSelectedTableAsync"
+                                    title="Stage a DROP TABLE operation">
+                                <i class="bi bi-trash"></i> Drop Table...
+                            </button>
+                        </div>
+                    }
+                }
+                else if (SelectedRelationship is not null)
+                {
+                    <div class="data-model-selection-card">
+                        <strong>@SelectedRelationship.LeftTable.@SelectedRelationship.LeftColumn</strong>
+                        <span>references @SelectedRelationship.RightTable.@SelectedRelationship.RightColumn</span>
+                        <small>@RelationshipKindLabel(SelectedRelationship.Kind)</small>
+                    </div>
+                    @if (SelectedRelationship.Kind != DataModelRelationshipKind.ExternalArchiveForeignKey)
+                    {
+                        <div class="data-model-schema-actions">
+                            <button class="toolbar-btn danger"
+                                    disabled="@HasPendingDropForSelectedRelationship"
+                                    @onclick="StageDropSelectedRelationshipAsync"
+                                    title="Stage relationship removal">
+                                <i class="bi bi-trash"></i> Drop Relationship...
+                            </button>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <p class="data-model-muted">Select a table or relationship.</p>
+                }
+            </div>
+
+            <div class="data-model-inspector-section">
+                <h3>Relationships</h3>
+                @if (_state.Relationships.Count == 0)
+                {
+                    <p class="data-model-muted">No relationships on the canvas.</p>
+                }
+                else
+                {
+                    @foreach (DataModelRelationship relationship in _state.Relationships)
+                    {
+                        var current = relationship;
+                        <button class="data-model-relationship-row @(string.Equals(_selectedRelationshipId, current.Id, StringComparison.Ordinal) ? "active" : "")"
+                                @onclick="() => SelectRelationship(current.Id)">
+                            <i class="bi @(current.Kind == DataModelRelationshipKind.ExternalArchiveForeignKey ? "bi-box-arrow-up-right" : "bi-link-45deg")"></i>
+                            <span>@current.LeftTable.@current.LeftColumn</span>
+                            <small>@current.RightTable.@current.RightColumn</small>
+                        </button>
+                    }
+                }
+                @if (MutableTableNodes.Count >= 2)
+                {
+                    <div class="data-model-relationship-editor">
+                        <select class="schema-input" @bind="_relationshipLeftTable">
+                            <option value="">Child table</option>
+                            @foreach (DataModelNode node in MutableTableNodes)
+                            {
+                                <option value="@node.Name">@node.Name</option>
+                            }
+                        </select>
+                        <select class="schema-input" @bind="_relationshipLeftColumn">
+                            <option value="">Child column</option>
+                            @foreach (DataModelColumn column in RelationshipLeftColumns)
+                            {
+                                <option value="@column.Name">@column.Name</option>
+                            }
+                        </select>
+                        <select class="schema-input" @bind="_relationshipRightTable">
+                            <option value="">Parent table</option>
+                            @foreach (DataModelNode node in MutableTableNodes)
+                            {
+                                <option value="@node.Name">@node.Name</option>
+                            }
+                        </select>
+                        <select class="schema-input" @bind="_relationshipRightColumn">
+                            <option value="">Parent column</option>
+                            @foreach (DataModelColumn column in RelationshipRightColumns)
+                            {
+                                <option value="@column.Name">@column.Name</option>
+                            }
+                        </select>
+                        <select class="schema-input" @bind="_relationshipOnDelete">
+                            <option>RESTRICT</option>
+                            <option>CASCADE</option>
+                        </select>
+                        <button class="toolbar-btn"
+                                disabled="@(!CanStageRelationship)"
+                                @onclick="StageRelationshipAsync">
+                            <i class="bi bi-link-45deg"></i> Add Relationship
+                        </button>
+                    </div>
+                }
+            </div>
+
+            @if (AllWarnings.Count > 0)
+            {
+                <div class="data-model-inspector-section">
+                    <h3>Warnings</h3>
+                    @foreach (string warning in AllWarnings)
+                    {
+                        <div class="data-model-warning"><i class="bi bi-exclamation-triangle"></i> @warning</div>
+                    }
+                </div>
+            }
+
+            <div class="data-model-inspector-section">
+                <h3>Pending Changes</h3>
+                @if (_state.PendingOperations.Count == 0)
+                {
+                    <p class="data-model-muted">No staged schema changes.</p>
+                }
+                else
+                {
+                    @foreach (DataModelPendingOperation operation in _state.PendingOperations)
+                    {
+                        var current = operation;
+                        <div class="data-model-pending-row">
+                            <span>@current.Description</span>
+                            <button class="designer-node-close"
+                                    title="Remove pending change"
+                                    @onclick="() => RemovePendingOperationAsync(current.Id)">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                    }
+                }
+            </div>
+
+            <div class="data-model-inspector-section preview">
+                <h3>Pending SQL</h3>
+                <pre>@PendingPreviewSql</pre>
+            </div>
+        </aside>
+    </div>
+</div>
+
+@code {
+    private const string DefaultDiagramName = "Default Diagram";
+    private const double MinZoom = 0.5;
+    private const double MaxZoom = 2.0;
+    private const double ZoomStep = 0.1;
+
+    [Parameter] public TabDescriptor Tab { get; set; } = default!;
+
+    private DataModelState _state = new();
+    private IReadOnlyList<DataModelSourceOption> _sourceOptions = [];
+    private IReadOnlyList<DataModelDiagramSummary> _savedDiagrams = [];
+    private string? _selectedNodeName;
+    private string? _selectedRelationshipId;
+    private string _diagramName = "";
+    private string _newTableName = "";
+    private string _newTablePrimaryKeyName = "Id";
+    private string _newTablePrimaryKeyType = "INTEGER";
+    private string _renameTableName = "";
+    private string _newColumnName = "";
+    private string _newColumnType = "TEXT";
+    private bool _newColumnNotNull;
+    private readonly Dictionary<string, string> _columnRenameNames = new(StringComparer.OrdinalIgnoreCase);
+    private string _relationshipLeftTable = "";
+    private string _relationshipLeftColumn = "";
+    private string _relationshipRightTable = "";
+    private string _relationshipRightColumn = "";
+    private string _relationshipOnDelete = "RESTRICT";
+    private bool _showAddSource;
+    private bool _showLoadPanel;
+    private bool _showNewTablePanel;
+    private bool _loading;
+    private string? _error;
+
+    private IEnumerable<DataModelSourceOption> AvailableSourceOptions =>
+        _sourceOptions.Where(option => !_state.Nodes.Any(node => string.Equals(node.Name, option.Name, StringComparison.OrdinalIgnoreCase)));
+
+    private DataModelNode? SelectedNode =>
+        string.IsNullOrWhiteSpace(_selectedNodeName)
+            ? null
+            : _state.Nodes.FirstOrDefault(node => string.Equals(node.Name, _selectedNodeName, StringComparison.OrdinalIgnoreCase));
+
+    private DataModelRelationship? SelectedRelationship =>
+        string.IsNullOrWhiteSpace(_selectedRelationshipId)
+            ? null
+            : _state.Relationships.FirstOrDefault(relationship => string.Equals(relationship.Id, _selectedRelationshipId, StringComparison.Ordinal));
+
+    private IReadOnlyList<DataModelNode> MutableTableNodes =>
+        _state.Nodes
+            .Where(static node => node.Kind == DataModelNodeKind.Table)
+            .OrderBy(static node => node.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private IReadOnlyList<DataModelColumn> RelationshipLeftColumns =>
+        FindNode(_relationshipLeftTable)?.Columns.OrderBy(static column => column.Name, StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+
+    private IReadOnlyList<DataModelColumn> RelationshipRightColumns =>
+        FindNode(_relationshipRightTable)?.Columns.OrderBy(static column => column.Name, StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+
+    private IReadOnlyList<string> AllWarnings =>
+        _state.Warnings
+            .Concat(_state.Nodes.SelectMany(static node => node.Warnings.Select(warning => $"{node.Name}: {warning}")))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private string PendingPreviewSql => DataModels.BuildPendingOperationsPreview(_state);
+
+    private double CurrentScale => NormalizeScale(_state.Scale);
+
+    private string ZoomLabel => $"{Math.Round(CurrentScale * 100):0}%";
+
+    private bool CanStageNewTable =>
+        !string.IsNullOrWhiteSpace(_newTableName)
+        && !string.IsNullOrWhiteSpace(_newTablePrimaryKeyName)
+        && !_state.Nodes.Any(node => string.Equals(node.Name, _newTableName.Trim(), StringComparison.OrdinalIgnoreCase))
+        && !_sourceOptions.Any(option => string.Equals(option.Name, _newTableName.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private bool HasPendingDropForSelectedNode =>
+        SelectedNode is not null &&
+        _state.PendingOperations.Any(operation =>
+            operation.Kind == DataModelPendingOperationKind.DropTable &&
+            string.Equals(operation.TableName, SelectedNode.Name, StringComparison.OrdinalIgnoreCase));
+
+    private bool CanStageRenameSelectedTable =>
+        SelectedNode is { Kind: DataModelNodeKind.Table, IsDraft: false }
+        && !HasPendingDropForSelectedNode
+        && !HasPendingTableRename(SelectedNode.Name)
+        && !string.IsNullOrWhiteSpace(_renameTableName)
+        && !string.Equals(_renameTableName.Trim(), SelectedNode.Name, StringComparison.OrdinalIgnoreCase)
+        && !_sourceOptions.Any(option => string.Equals(option.Name, _renameTableName.Trim(), StringComparison.OrdinalIgnoreCase))
+        && !_state.Nodes.Any(node => string.Equals(node.Name, _renameTableName.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private bool CanStageAddColumn =>
+        SelectedNode is { Kind: DataModelNodeKind.Table, IsDraft: false }
+        && !HasPendingDropForSelectedNode
+        && !HasPendingTableRename(SelectedNode.Name)
+        && !string.IsNullOrWhiteSpace(_newColumnName)
+        && !SelectedNode.Columns.Any(column => string.Equals(column.Name, _newColumnName.Trim(), StringComparison.OrdinalIgnoreCase))
+        && !_state.PendingOperations.Any(operation =>
+            operation.Kind == DataModelPendingOperationKind.AddColumn &&
+            string.Equals(operation.TableName, SelectedNode.Name, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(operation.ColumnName, _newColumnName.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private bool CanStageRelationship =>
+        !string.IsNullOrWhiteSpace(_relationshipLeftTable)
+        && !string.IsNullOrWhiteSpace(_relationshipLeftColumn)
+        && !string.IsNullOrWhiteSpace(_relationshipRightTable)
+        && !string.IsNullOrWhiteSpace(_relationshipRightColumn)
+        && !string.Equals(_relationshipLeftTable, _relationshipRightTable, StringComparison.OrdinalIgnoreCase)
+        && FindNode(_relationshipLeftTable) is { Kind: DataModelNodeKind.Table }
+        && FindNode(_relationshipRightTable) is { Kind: DataModelNodeKind.Table }
+        && RelationshipLeftColumns.Any(column => string.Equals(column.Name, _relationshipLeftColumn, StringComparison.OrdinalIgnoreCase))
+        && RelationshipRightColumns.Any(column => string.Equals(column.Name, _relationshipRightColumn, StringComparison.OrdinalIgnoreCase))
+        && !_state.Relationships.Any(relationship =>
+            string.Equals(relationship.LeftTable, _relationshipLeftTable, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(relationship.LeftColumn, _relationshipLeftColumn, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(relationship.RightTable, _relationshipRightTable, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(relationship.RightColumn, _relationshipRightColumn, StringComparison.OrdinalIgnoreCase));
+
+    private bool HasPendingDropForSelectedRelationship =>
+        SelectedRelationship is not null &&
+        _state.PendingOperations.Any(operation =>
+            operation.Kind == DataModelPendingOperationKind.DropForeignKey &&
+            (string.Equals(operation.ConstraintName, SelectedRelationship.ConstraintName, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(operation.ConstraintName, SelectedRelationship.Id, StringComparison.OrdinalIgnoreCase)));
+
+    private bool UsesDefaultDiagram =>
+        string.IsNullOrWhiteSpace(Tab?.InitialDataModelSourceName);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadInitialAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Tab?.DataModelStateJson is not null && _state.Nodes.Count == 0)
+        {
+            try
+            {
+                DataModelState? saved = DataModelGraphBuilder.DeserializeState(Tab.DataModelStateJson);
+                if (saved is not null)
+                {
+                    _state = saved;
+                    NormalizeZoom();
+                    EnsureDefaultDiagramName();
+                    _diagramName = _state.DiagramName ?? _state.SavedLayoutName ?? "";
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private async Task LoadInitialAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _sourceOptions = await DataModels.GetSourceOptionsAsync();
+            _savedDiagrams = await Diagrams.GetDiagramsAsync();
+            if (Tab?.DataModelStateJson is not null)
+            {
+                DataModelState? saved = DataModelGraphBuilder.DeserializeState(Tab.DataModelStateJson);
+                if (saved is not null)
+                {
+                    _state = saved;
+                    NormalizeZoom();
+                    EnsureDefaultDiagramName();
+                    _diagramName = _state.DiagramName ?? _state.SavedLayoutName ?? "";
+                    SaveState();
+                    await PersistActiveDiagramAsync();
+                }
+            }
+            else
+            {
+                DataModelState? defaultDiagram = UsesDefaultDiagram
+                    ? await Diagrams.LoadDiagramAsync(DefaultDiagramName)
+                    : null;
+                _state = defaultDiagram ?? await DataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+                NormalizeZoom();
+                EnsureDefaultDiagramName();
+                _diagramName = _state.DiagramName ?? "";
+                SaveState();
+                await PersistActiveDiagramAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load data model: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _sourceOptions = await DataModels.GetSourceOptionsAsync();
+            if (!string.IsNullOrWhiteSpace(_state.DiagramName))
+            {
+                DataModelState? saved = await Diagrams.LoadDiagramAsync(_state.DiagramName);
+                if (saved is not null)
+                {
+                    _state = saved;
+                    _diagramName = saved.DiagramName ?? _diagramName;
+                    _selectedNodeName = null;
+                    _selectedRelationshipId = null;
+                    SaveState();
+                    return;
+                }
+            }
+
+            DataModelState refreshed = await DataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+            PreservePositions(refreshed);
+            refreshed.DiagramName = _state.DiagramName;
+            refreshed.SavedLayoutName = _state.SavedLayoutName;
+            refreshed.PendingOperations = _state.PendingOperations;
+            _state = refreshed;
+            EnsureDefaultDiagramName();
+            SaveState();
+            await PersistActiveDiagramAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to refresh data model: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadAllAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            double currentScale = CurrentScale;
+            _state = await DataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
+            _state.Scale = currentScale;
+            _state.DiagramName = UsesDefaultDiagram && string.IsNullOrWhiteSpace(_diagramName)
+                ? DefaultDiagramName
+                : string.IsNullOrWhiteSpace(_diagramName) ? null : _diagramName.Trim();
+            _state.SavedLayoutName = _state.DiagramName;
+            _selectedNodeName = null;
+            _selectedRelationshipId = null;
+            SaveState();
+            await PersistActiveDiagramAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load full data model: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task AddSourceAsync(string sourceName)
+    {
+        _showAddSource = false;
+        _loading = true;
+        _error = null;
+        try
+        {
+            DataModelState addition = await DataModels.BuildModelAsync(sourceName);
+            Merge(addition);
+            _selectedNodeName = sourceName;
+            _selectedRelationshipId = null;
+            SaveState();
+            await PersistActiveDiagramAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to add source '{sourceName}': {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Merge(DataModelState addition)
+    {
+        double offsetX = _state.Nodes.Count == 0 ? 0 : _state.Nodes.Max(static node => node.X) + 250;
+        foreach (DataModelNode node in addition.Nodes)
+        {
+            if (_state.Nodes.Any(existing => string.Equals(existing.Name, node.Name, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (offsetX > 0)
+                node.X += offsetX;
+            _state.Nodes.Add(node);
+        }
+
+        foreach (DataModelRelationship relationship in addition.Relationships)
+        {
+            if (!_state.Relationships.Any(existing => string.Equals(existing.Id, relationship.Id, StringComparison.Ordinal)))
+                _state.Relationships.Add(relationship);
+        }
+
+        foreach (string warning in addition.Warnings)
+        {
+            if (!_state.Warnings.Contains(warning, StringComparer.OrdinalIgnoreCase))
+                _state.Warnings.Add(warning);
+        }
+    }
+
+    private void PreservePositions(DataModelState refreshed)
+    {
+        refreshed.ViewportX = _state.ViewportX;
+        refreshed.ViewportY = _state.ViewportY;
+        refreshed.Scale = CurrentScale;
+
+        foreach (DataModelNode node in refreshed.Nodes)
+        {
+            DataModelNode? existing = _state.Nodes.FirstOrDefault(current => string.Equals(current.Name, node.Name, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+                continue;
+
+            node.X = existing.X;
+            node.Y = existing.Y;
+            node.IsCollapsed = existing.IsCollapsed;
+        }
+    }
+
+    private async Task ClearCanvas()
+    {
+        string? diagramName = _state.DiagramName;
+        _state = new DataModelState
+        {
+            DiagramName = diagramName,
+            SavedLayoutName = diagramName,
+        };
+        _selectedNodeName = null;
+        _selectedRelationshipId = null;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private void SelectNode(string name)
+    {
+        _selectedNodeName = name;
+        _selectedRelationshipId = null;
+        _renameTableName = "";
+        _newColumnName = "";
+    }
+
+    private void SelectRelationship(string id)
+    {
+        _selectedRelationshipId = id;
+        _selectedNodeName = null;
+    }
+
+    private DataModelNode? FindNode(string? name) =>
+        string.IsNullOrWhiteSpace(name)
+            ? null
+            : _state.Nodes.FirstOrDefault(node => string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private string ColumnRenameKey(string tableName, string columnName) => $"{tableName}.{columnName}";
+
+    private string GetColumnRenameValue(string tableName, string columnName) =>
+        _columnRenameNames.TryGetValue(ColumnRenameKey(tableName, columnName), out string? value) ? value : "";
+
+    private void SetColumnRenameValue(string tableName, string columnName, string? value)
+    {
+        string key = ColumnRenameKey(tableName, columnName);
+        if (string.IsNullOrWhiteSpace(value))
+            _columnRenameNames.Remove(key);
+        else
+            _columnRenameNames[key] = value;
+    }
+
+    private bool CanStageRenameColumn(DataModelNode node, DataModelColumn column)
+    {
+        string value = GetColumnRenameValue(node.Name, column.Name).Trim();
+        return !string.IsNullOrWhiteSpace(value)
+               && !HasPendingTableRename(node.Name)
+               && !string.Equals(value, column.Name, StringComparison.OrdinalIgnoreCase)
+               && !node.Columns.Any(existing => string.Equals(existing.Name, value, StringComparison.OrdinalIgnoreCase))
+               && !_state.PendingOperations.Any(operation =>
+                   operation.Kind == DataModelPendingOperationKind.RenameColumn &&
+                   string.Equals(operation.TableName, node.Name, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(operation.ColumnName, column.Name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool HasPendingColumnDrop(string tableName, string columnName) =>
+        _state.PendingOperations.Any(operation =>
+            operation.Kind == DataModelPendingOperationKind.DropColumn &&
+            string.Equals(operation.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(operation.ColumnName, columnName, StringComparison.OrdinalIgnoreCase));
+
+    private bool HasPendingTableRename(string tableName) =>
+        _state.PendingOperations.Any(operation =>
+            operation.Kind == DataModelPendingOperationKind.RenameTable &&
+            string.Equals(operation.TableName, tableName, StringComparison.OrdinalIgnoreCase));
+
+    private async Task RemoveNode(string name)
+    {
+        _state.Nodes.RemoveAll(node => string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase));
+        _state.Relationships.RemoveAll(relationship =>
+            string.Equals(relationship.LeftTable, name, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(relationship.RightTable, name, StringComparison.OrdinalIgnoreCase));
+
+        if (string.Equals(_selectedNodeName, name, StringComparison.OrdinalIgnoreCase))
+            _selectedNodeName = null;
+        if (_selectedRelationshipId is not null && !_state.Relationships.Any(relationship => relationship.Id == _selectedRelationshipId))
+            _selectedRelationshipId = null;
+
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task OnNodeMoved(DataModelNodeMove move)
+    {
+        DataModelNode? node = FindNode(move.NodeName);
+        if (node is not null)
+        {
+            node.X = move.X;
+            node.Y = move.Y;
+        }
+
+        EnsureDefaultDiagramName();
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task SaveDiagramAsync()
+    {
+        try
+        {
+            await Diagrams.SaveDiagramAsync(_diagramName, _state);
+            _diagramName = _state.DiagramName ?? _diagramName.Trim();
+            await RefreshSavedDiagramsAsync();
+            SaveState();
+            Toast.Success($"Data model diagram '{_diagramName}' saved.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to save data model diagram: {ex.Message}");
+        }
+    }
+
+    private async Task LoadDiagramAsync(string name)
+    {
+        _showLoadPanel = false;
+        try
+        {
+            DataModelState? loaded = await Diagrams.LoadDiagramAsync(name);
+            if (loaded is null)
+            {
+                Toast.Warning("Saved data model diagram was not found.");
+                return;
+            }
+
+            _state = loaded;
+            NormalizeZoom();
+            _diagramName = loaded.DiagramName ?? name;
+            _selectedNodeName = null;
+            _selectedRelationshipId = null;
+            SaveState();
+            Toast.Info($"Data model diagram '{_diagramName}' loaded.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load data model diagram: {ex.Message}");
+        }
+    }
+
+    private async Task DeleteActiveDiagramAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_state.DiagramName))
+            return;
+
+        string name = _state.DiagramName;
+        try
+        {
+            await Diagrams.DeleteDiagramAsync(name);
+            await RefreshSavedDiagramsAsync();
+            _state.DiagramName = null;
+            _state.SavedLayoutName = null;
+            _diagramName = "";
+            SaveState();
+            Toast.Info($"Data model diagram '{name}' deleted.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to delete data model diagram: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshSavedDiagramsAsync()
+    {
+        try { _savedDiagrams = await Diagrams.GetDiagramsAsync(); }
+        catch { _savedDiagrams = []; }
+    }
+
+    private void OpenInQueryDesigner()
+    {
+        QueryDesignerState designerState = DataModels.ToQueryDesignerState(_state);
+        TabManager.OpenQueryDesignerTab(designerState);
+    }
+
+    private void ToggleAddSourcePanel()
+    {
+        _showAddSource = !_showAddSource;
+        _showLoadPanel = false;
+        _showNewTablePanel = false;
+    }
+
+    private void ToggleLoadPanel()
+    {
+        _showLoadPanel = !_showLoadPanel;
+        _showAddSource = false;
+        _showNewTablePanel = false;
+    }
+
+    private void ToggleNewTablePanel()
+    {
+        _showNewTablePanel = !_showNewTablePanel;
+        _showAddSource = false;
+        _showLoadPanel = false;
+    }
+
+    private async Task StageNewTableAsync()
+    {
+        string tableName = _newTableName.Trim();
+        string pkName = _newTablePrimaryKeyName.Trim();
+        var columns = new List<DataModelColumn>
+        {
+            new()
+            {
+                Name = pkName,
+                TypeLabel = _newTablePrimaryKeyType,
+                IsPrimaryKey = true,
+                IsIdentity = string.Equals(_newTablePrimaryKeyType, "INTEGER", StringComparison.OrdinalIgnoreCase),
+                Nullable = false,
+            },
+        };
+
+        var node = new DataModelNode
+        {
+            Name = tableName,
+            Kind = DataModelNodeKind.Table,
+            IsDraft = true,
+            X = _state.Nodes.Count == 0 ? 20 : _state.Nodes.Max(static node => node.X) + 250,
+            Y = _state.Nodes.Count == 0 ? 20 : _state.Nodes.Min(static node => node.Y),
+            Columns = columns,
+            Warnings = ["Pending create table"],
+        };
+
+        _state.Nodes.Add(node);
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.CreateTable,
+            TableName = tableName,
+            Columns = columns,
+            Description = $"Create table {tableName}",
+        });
+
+        _selectedNodeName = tableName;
+        _selectedRelationshipId = null;
+        _newTableName = "";
+        _newTablePrimaryKeyName = "Id";
+        _newTablePrimaryKeyType = "INTEGER";
+        _showNewTablePanel = false;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task StageDropSelectedTableAsync()
+    {
+        if (SelectedNode is null || SelectedNode.Kind != DataModelNodeKind.Table || SelectedNode.IsDraft)
+            return;
+
+        if (HasPendingDropForSelectedNode || HasPendingTableRename(SelectedNode.Name))
+            return;
+
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.DropTable,
+            TableName = SelectedNode.Name,
+            Description = $"Drop table {SelectedNode.Name}",
+        });
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task StageRenameSelectedTableAsync()
+    {
+        if (!CanStageRenameSelectedTable || SelectedNode is null)
+            return;
+
+        string newName = _renameTableName.Trim();
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.RenameTable,
+            TableName = SelectedNode.Name,
+            NewTableName = newName,
+            Description = $"Rename table {SelectedNode.Name} to {newName}",
+        });
+        _renameTableName = "";
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task StageAddColumnAsync()
+    {
+        if (!CanStageAddColumn || SelectedNode is null)
+            return;
+
+        string columnName = _newColumnName.Trim();
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.AddColumn,
+            TableName = SelectedNode.Name,
+            ColumnName = columnName,
+            ColumnType = _newColumnType,
+            NotNull = _newColumnNotNull,
+            Description = $"Add column {SelectedNode.Name}.{columnName}",
+        });
+        _newColumnName = "";
+        _newColumnType = "TEXT";
+        _newColumnNotNull = false;
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task StageDropColumnAsync(string tableName, string columnName)
+    {
+        if (HasPendingTableRename(tableName) || HasPendingColumnDrop(tableName, columnName))
+            return;
+
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.DropColumn,
+            TableName = tableName,
+            ColumnName = columnName,
+            Description = $"Drop column {tableName}.{columnName}",
+        });
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task StageRenameColumnAsync(string tableName, string columnName)
+    {
+        DataModelNode? node = FindNode(tableName);
+        DataModelColumn? column = node?.Columns.FirstOrDefault(candidate => string.Equals(candidate.Name, columnName, StringComparison.OrdinalIgnoreCase));
+        if (node is null || column is null || !CanStageRenameColumn(node, column))
+            return;
+
+        string newName = GetColumnRenameValue(tableName, columnName).Trim();
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.RenameColumn,
+            TableName = tableName,
+            ColumnName = columnName,
+            NewColumnName = newName,
+            Description = $"Rename column {tableName}.{columnName} to {newName}",
+        });
+        _columnRenameNames.Remove(ColumnRenameKey(tableName, columnName));
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task StageRelationshipAsync()
+    {
+        if (!CanStageRelationship)
+            return;
+
+        string relationshipId = Guid.NewGuid().ToString("N");
+        var relationship = new DataModelRelationship
+        {
+            Id = relationshipId,
+            LeftTable = _relationshipLeftTable,
+            LeftColumn = _relationshipLeftColumn,
+            RightTable = _relationshipRightTable,
+            RightColumn = _relationshipRightColumn,
+            Kind = DataModelRelationshipKind.Draft,
+            OnDelete = _relationshipOnDelete,
+        };
+
+        _state.Relationships.Add(relationship);
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Id = relationshipId,
+            Kind = DataModelPendingOperationKind.AddForeignKey,
+            TableName = _relationshipLeftTable,
+            ColumnName = _relationshipLeftColumn,
+            ReferencedTableName = _relationshipRightTable,
+            ReferencedColumnName = _relationshipRightColumn,
+            OnDelete = _relationshipOnDelete,
+            Description = $"Add relationship {_relationshipLeftTable}.{_relationshipLeftColumn} -> {_relationshipRightTable}.{_relationshipRightColumn}",
+        });
+
+        _selectedRelationshipId = relationshipId;
+        _selectedNodeName = null;
+        _relationshipLeftTable = "";
+        _relationshipLeftColumn = "";
+        _relationshipRightTable = "";
+        _relationshipRightColumn = "";
+        _relationshipOnDelete = "RESTRICT";
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task StageDropSelectedRelationshipAsync()
+    {
+        if (SelectedRelationship is null || SelectedRelationship.Kind == DataModelRelationshipKind.ExternalArchiveForeignKey)
+            return;
+
+        DataModelRelationship relationship = SelectedRelationship;
+        if (relationship.Kind == DataModelRelationshipKind.Draft)
+        {
+            _state.Relationships.Remove(relationship);
+            _state.PendingOperations.RemoveAll(operation => string.Equals(operation.Id, relationship.Id, StringComparison.Ordinal));
+            _selectedRelationshipId = null;
+            SaveState();
+            await PersistActiveDiagramAsync();
+            return;
+        }
+
+        string constraintName = relationship.ConstraintName ?? relationship.Id;
+        if (HasPendingDropForSelectedRelationship)
+            return;
+
+        _state.PendingOperations.Add(new DataModelPendingOperation
+        {
+            Kind = DataModelPendingOperationKind.DropForeignKey,
+            TableName = relationship.LeftTable,
+            ConstraintName = constraintName,
+            Description = $"Drop relationship {constraintName}",
+        });
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task RemovePendingOperationAsync(string operationId)
+    {
+        DataModelPendingOperation? operation = _state.PendingOperations.FirstOrDefault(item => string.Equals(item.Id, operationId, StringComparison.Ordinal));
+        if (operation is null)
+            return;
+
+        _state.PendingOperations.Remove(operation);
+        if (operation.Kind == DataModelPendingOperationKind.CreateTable)
+        {
+            _state.Nodes.RemoveAll(node => node.IsDraft && string.Equals(node.Name, operation.TableName, StringComparison.OrdinalIgnoreCase));
+            if (string.Equals(_selectedNodeName, operation.TableName, StringComparison.OrdinalIgnoreCase))
+                _selectedNodeName = null;
+        }
+        else if (operation.Kind == DataModelPendingOperationKind.AddForeignKey)
+        {
+            _state.Relationships.RemoveAll(relationship => string.Equals(relationship.Id, operation.Id, StringComparison.Ordinal));
+            if (string.Equals(_selectedRelationshipId, operation.Id, StringComparison.Ordinal))
+                _selectedRelationshipId = null;
+        }
+
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private async Task ApplyPendingChangesAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            DataModelApplyResult result = await Diagrams.ApplyPendingOperationsAsync(_state);
+            Toast.Success($"Applied {result.Messages.Count} diagram change{(result.Messages.Count == 1 ? "" : "s")}.");
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to apply diagram changes: {ex.Message}";
+            Toast.Error(_error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private Task ZoomIn() => SetZoom(CurrentScale + ZoomStep);
+
+    private Task ZoomOut() => SetZoom(CurrentScale - ZoomStep);
+
+    private Task ResetZoom() => SetZoom(1);
+
+    private async Task SetZoom(double scale)
+    {
+        _state.Scale = Math.Round(NormalizeScale(scale), 2);
+        SaveState();
+        await PersistActiveDiagramAsync();
+    }
+
+    private void NormalizeZoom()
+    {
+        _state.Scale = Math.Round(CurrentScale, 2);
+    }
+
+    private void SaveState()
+    {
+        NormalizeZoom();
+        if (Tab is not null)
+            Tab.DataModelStateJson = DataModelGraphBuilder.SerializeState(_state);
+    }
+
+    private async Task PersistActiveDiagramAsync()
+    {
+        EnsureDefaultDiagramName();
+        if (string.IsNullOrWhiteSpace(_state.DiagramName))
+            return;
+
+        try
+        {
+            await Diagrams.SaveDiagramAsync(_state.DiagramName, _state);
+            await RefreshSavedDiagramsAsync();
+        }
+        catch (Exception ex)
+        {
+            Toast.Warning($"Diagram changes were not saved: {ex.Message}");
+        }
+    }
+
+    private void EnsureDefaultDiagramName()
+    {
+        if (!UsesDefaultDiagram || !string.IsNullOrWhiteSpace(_state.DiagramName))
+            return;
+
+        _state.DiagramName = DefaultDiagramName;
+        _state.SavedLayoutName = DefaultDiagramName;
+        _diagramName = DefaultDiagramName;
+    }
+
+    private static string RelationshipKindLabel(DataModelRelationshipKind kind) => kind switch
+    {
+        DataModelRelationshipKind.ExternalArchiveForeignKey => "Archive relationship",
+        DataModelRelationshipKind.Draft => "Draft relationship",
+        _ => "Foreign key",
+    };
+
+    private static double NormalizeScale(double scale)
+    {
+        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            return 1;
+
+        return Math.Clamp(scale, MinZoom, MaxZoom);
+    }
+}

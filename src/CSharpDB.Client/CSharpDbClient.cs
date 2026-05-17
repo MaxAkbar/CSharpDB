@@ -5,7 +5,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client;
 
-public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
+public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter
 {
     private readonly ICSharpDbClient _inner;
 
@@ -21,6 +21,9 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
     }
 
     public string DataSource => _inner.DataSource;
+    public bool SupportsTableArchiveExport
+        => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
+
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
     public Task<IReadOnlyList<string>> GetTableNamesAsync(CancellationToken ct = default) => _inner.GetTableNamesAsync(ct);
     public Task<TableSchema?> GetTableSchemaAsync(string tableName, CancellationToken ct = default) => _inner.GetTableSchemaAsync(tableName, ct);
@@ -87,6 +90,20 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient
     public Task<WalInspectReport> CheckWalAsync(string? databasePath = null, CancellationToken ct = default) => _inner.CheckWalAsync(databasePath, ct);
     public Task<PageInspectReport> InspectPageAsync(uint pageId, bool includeHex = false, string? databasePath = null, CancellationToken ct = default) => _inner.InspectPageAsync(pageId, includeHex, databasePath, ct);
     public Task<IndexInspectReport> CheckIndexesAsync(string? databasePath = null, string? indexName = null, int? sampleSize = null, CancellationToken ct = default) => _inner.CheckIndexesAsync(databasePath, indexName, sampleSize, ct);
+    public Task<TableArchiveExportResult> ExportTableArchiveAsync(string tableName, string path, CancellationToken ct = default)
+        => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport
+            ? exporter.ExportTableArchiveAsync(tableName, path, ct)
+            : throw new CSharpDbClientException("Native table archive export is only available for direct CSharpDB transports.");
+
+    public Task<TableArchiveExportResult> ExportTableArchiveAsync(
+        string tableName,
+        string path,
+        IProgress<TableArchiveExportProgress>? progress,
+        CancellationToken ct = default)
+        => _inner is ICSharpDbTableArchiveProgressExporter progressExporter && progressExporter.SupportsTableArchiveExport
+            ? progressExporter.ExportTableArchiveAsync(tableName, path, progress, ct)
+            : ExportTableArchiveAsync(tableName, path, ct);
+
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
     public async ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct = default)
     {
