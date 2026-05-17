@@ -198,8 +198,7 @@ public sealed class CSharpDbCodeModuleClient(
         var changes = new List<CodeModuleImportChange>();
         foreach (CodeModuleWorkspaceManifestEntry entry in manifest.Modules)
         {
-            string relativePath = NormalizeRelativePath(entry.Path);
-            string absolutePath = Path.Combine(root, relativePath);
+            string absolutePath = ResolveWorkspaceSourcePath(root, entry.Path);
             if (!File.Exists(absolutePath))
             {
                 changes.Add(new CodeModuleImportChange(entry.ModuleId, entry.Path, CodeModuleImportChangeKind.Skipped, "Source file is missing."));
@@ -581,13 +580,26 @@ public sealed class CSharpDbCodeModuleClient(
             _ => $"modules/{ToSafeFileName(module.Name)}.cs",
         };
 
-    private static string NormalizeRelativePath(string path)
+    private static string ResolveWorkspaceSourcePath(string root, string path)
     {
         string normalized = path.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
         if (Path.IsPathRooted(normalized))
             throw new InvalidOperationException("Code module workspace paths must be relative.");
 
-        return normalized;
+        if (normalized.Split(Path.DirectorySeparatorChar).Any(segment => segment == ".."))
+            throw new InvalidOperationException("Code module workspace paths must stay under the workspace root.");
+
+        string absolutePath = Path.GetFullPath(Path.Combine(root, normalized));
+        string relativeToRoot = Path.GetRelativePath(root, absolutePath);
+        if (Path.IsPathRooted(relativeToRoot) ||
+            relativeToRoot == ".." ||
+            relativeToRoot.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
+            relativeToRoot.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Code module workspace paths must stay under the workspace root.");
+        }
+
+        return absolutePath;
     }
 
     private static string ToSafeFileName(string value)

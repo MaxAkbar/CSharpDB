@@ -72,6 +72,48 @@ public sealed class CSharpDbCodeModuleClientTests
     }
 
     [Fact]
+    public async Task Import_RejectsManifestPathEscapingWorkspaceRoot()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await using TestDatabaseScope sourceDb = await TestDatabaseScope.CreateAsync("code_modules_export_escape");
+        var source = new CSharpDbCodeModuleClient(sourceDb.Client, new InMemoryCodeModuleTrustStore());
+        await source.UpsertAsync(new CodeModuleDefinition(
+            "module:helpers",
+            "Helpers",
+            CodeModuleKind.Standard,
+            "public static class Helpers { public static int A() => 1; }\n"), ct);
+
+        string workspace = Path.Combine(Path.GetTempPath(), $"csharpdb_code_ws_{Guid.NewGuid():N}");
+        try
+        {
+            CodeModuleExportResult export = await source.ExportAsync(workspace, ct);
+            string exportedSourcePath = Directory.EnumerateFiles(export.WorkspaceDirectory, "*.cs", SearchOption.AllDirectories).Single();
+            string exportedRelativePath = Path.GetRelativePath(export.WorkspaceDirectory, exportedSourcePath).Replace('\\', '/');
+            string outsidePath = Path.Combine(workspace, "outside.cs");
+            await File.WriteAllTextAsync(outsidePath, "public static class Outside { }\n", ct);
+
+            string manifestJson = await File.ReadAllTextAsync(export.ManifestPath, ct);
+            manifestJson = manifestJson.Replace(
+                $"\"path\": \"{exportedRelativePath}\"",
+                "\"path\": \"../outside.cs\"",
+                StringComparison.Ordinal);
+            await File.WriteAllTextAsync(export.ManifestPath, manifestJson, ct);
+
+            await using TestDatabaseScope targetDb = await TestDatabaseScope.CreateAsync("code_modules_import_escape");
+            var target = new CSharpDbCodeModuleClient(targetDb.Client, new InMemoryCodeModuleTrustStore());
+
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() => target.ImportAsync(workspace, ct));
+            Assert.Contains("workspace root", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Null(await target.GetAsync("module:helpers", ct));
+        }
+        finally
+        {
+            if (Directory.Exists(workspace))
+                Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Build_ReturnsAssemblyBytesAndStructuredDiagnostics()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
