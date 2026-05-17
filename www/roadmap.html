@@ -447,14 +447,14 @@
                                 <h4>Page-Level Compression</h4>
                                 <span class="roadmap-badge roadmap-badge-planned">Planned</span>
                             </div>
-                            <p>Compress cell content within pages to reduce I/O and storage footprint.</p>
+                            <p>Deep engine/page compression remains planned; application-level payload compression is available as a sample/SDK pattern without changing the storage format.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>At-Rest Encryption</h4>
                                 <span class="roadmap-badge roadmap-badge-research">Research</span>
                             </div>
-                            <p>Encrypt database and WAL files with passphrase-based key management and explicit migration paths.</p>
+                            <p>Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths; implementation must meet the database-encryption plan entry criteria before shipping.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -524,7 +524,7 @@
                                 <h4>Replication &amp; Change Feed</h4>
                                 <span class="roadmap-badge roadmap-badge-research">Research</span>
                             </div>
-                            <p>Stream committed changes for read replicas or event-driven architectures.</p>
+                            <p>Retained commit-log change feeds and reactive query subscriptions for read replicas, live Admin views, and event-driven applications.</p>
                         </div>
                     </div>
                 </div>

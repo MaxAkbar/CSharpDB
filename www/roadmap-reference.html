@@ -382,12 +382,12 @@
                 </tr>
                 <tr>
                 <td><strong>Page-level compression</strong></td>
-                <td>Compress cell content within pages to reduce I/O and storage</td>
+                <td>Deep engine/page compression remains planned; application-level payload compression is available as a sample/SDK pattern without changing the storage format</td>
                 <td>Planned</td>
                 </tr>
                 <tr>
                 <td><strong>At-rest encryption</strong></td>
-                <td>Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths</td>
+                <td>Encrypt database and WAL files with passphrase-based key management and explicit plaintext/encrypted migration/export paths; implementation must meet the database-encryption plan entry criteria before shipping</td>
                 <td>Research</td>
                 </tr>
                 <tr>
@@ -437,7 +437,7 @@
                 </tr>
                 <tr>
                 <td><strong>Replication / change feed</strong></td>
-                <td>Stream committed changes for read replicas or event-driven architectures</td>
+                <td>Retained commit-log change feeds and reactive query subscriptions for read replicas, live Admin views, and event-driven applications</td>
                 <td>Research</td>
                 </tr>
                 </tbody>

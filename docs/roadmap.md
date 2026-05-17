@@ -146,6 +146,7 @@ Major features already implemented:
 - Ordered integer index range scans (`<`, `<=`, `>`, `>=`, `BETWEEN`) in the fast lookup path
 - `ANALYZE`, persisted `sys.table_stats` / `sys.column_stats`, and stale-aware column-stat refresh
 - Phase-2 cost-based query planning: statistics-guided access-path selection, join method choice, hash build-side choice, histogram/heavy-hitter/cardinality estimation, composite-prefix correlation modeling, and bounded small-chain inner-join reordering
+- Public planner diagnostics through `EXPLAIN ESTIMATE FOR SELECT`, `WITH`, compound queries, and `sys.planner_*` virtual catalogs
 - Opt-in adaptive join re-optimization behind `DatabaseOptions.AdaptiveQueryReoptimization`
 - SQL statement and SELECT plan caching
 - First-class `IDENTITY` / `AUTOINCREMENT` support for `INTEGER PRIMARY KEY` columns
@@ -172,6 +173,7 @@ Major features already implemented:
 - REST API with 34 endpoints and OpenAPI/Scalar documentation
 - Blazor Server admin dashboard
 - Integrated Admin Forms and Reports designers with runtime preview/entry, database-backed metadata persistence, and print-ready report output
+- Trusted C# callbacks, commands, Admin automation hooks, and local Admin Forms C# code modules
 - B+tree delete rebalancing with underflow handling (borrow/merge + interior collapse path)
 - Reusable snapshot reader sessions for higher concurrent-read throughput
 - Comprehensive benchmark suite (micro, macro, stress, scaling, in-memory, shared-memory)
