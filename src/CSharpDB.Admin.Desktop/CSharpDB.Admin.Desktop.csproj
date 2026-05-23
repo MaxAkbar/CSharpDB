@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>CSharpDB.Admin.Desktop</RootNamespace>
+    <AssemblyName>CSharpDB.Admin.Desktop</AssemblyName>
+    <ApplicationIcon>..\..\docs\images\CSharpDB.ico</ApplicationIcon>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3967.48" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\docs\images\CSharpDB.ico" Link="Assets\CSharpDB.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\CSharpDB.Admin\wwwroot\icon2.png" Link="Assets\icon2.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

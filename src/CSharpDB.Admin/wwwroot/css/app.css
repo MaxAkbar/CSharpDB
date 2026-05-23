@@ -267,6 +267,7 @@ body {
     align-items: center;
     justify-content: center;
     font-size: 14px;
+    text-decoration: none;
     transition: all var(--transition-fast);
 }
 

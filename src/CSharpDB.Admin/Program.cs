@@ -79,6 +79,7 @@ app.UseAntiforgery();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 app.MapCSharpDbAdminImportExport();
+app.MapCSharpDbDesktopShellEndpoints();
 
 app.Run();
 
@@ -99,3 +100,5 @@ static CSharpDbTransport? ParseTransport(string? value)
         _ => throw new InvalidOperationException($"Unsupported transport '{value}'."),
     };
 }
+
+public partial class Program;

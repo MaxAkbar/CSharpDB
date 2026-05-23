@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Shortcuts - CSharpDB Studio Help</title>
+    <link rel="icon" type="image/png" href="../icon2.png">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand"><img src="../icon2.png" alt=""><div><strong>CSharpDB Studio</strong><span>Offline help</span></div></div>
+            <nav class="nav" aria-label="Help topics">
+                <div class="nav-label">Start</div>
+                <a href="index.html">Overview</a>
+                <a href="workspace.html">Workspace</a>
+                <a href="data-and-schema.html">Data and schema</a>
+                <a href="forms-and-reports.html">Forms and reports</a>
+                <a href="operations.html">Operations</a>
+                <a class="active" href="shortcuts.html">Shortcuts</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="content-inner">
+                <div class="eyebrow">Reference</div>
+                <h1>Keyboard Shortcuts and Daily Workflow</h1>
+                <p class="lead">Use shortcuts for navigation, query execution, layout changes, and tab management.</p>
+
+                <h2>Keyboard Shortcuts</h2>
+                <table>
+                    <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+                    <tbody>
+                        <tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Open the command palette.</td></tr>
+                        <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>Open a new query tab.</td></tr>
+                        <tr><td><kbd>Ctrl</kbd>+<kbd>B</kbd></td><td>Toggle Object Explorer.</td></tr>
+                        <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>Run the current query from the SQL editor.</td></tr>
+                        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd></td><td>Toggle dark or light theme.</td></tr>
+                        <tr><td><kbd>Ctrl</kbd>+<kbd>W</kbd></td><td>Close the active closable tab.</td></tr>
+                        <tr><td>Double-click cell</td><td>Edit a cell in editable data grids.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Common Workflows</h2>
+                <div class="grid">
+                    <section class="card">
+                        <h3>Find an object quickly</h3>
+                        <ol>
+                            <li>Press <kbd>Ctrl</kbd>+<kbd>K</kbd>.</li>
+                            <li>Type part of the object name.</li>
+                            <li>Choose the table, view, form, report, procedure, or callback entry.</li>
+                        </ol>
+                    </section>
+                    <section class="card">
+                        <h3>Inspect a table</h3>
+                        <ol>
+                            <li>Open the table from Object Explorer.</li>
+                            <li>Use filters or sort headers to narrow records.</li>
+                            <li>Open the schema view for columns, indexes, and triggers.</li>
+                        </ol>
+                    </section>
+                    <section class="card">
+                        <h3>Create a data entry screen</h3>
+                        <ol>
+                            <li>Select a table and choose Design Form.</li>
+                            <li>Place controls on the canvas.</li>
+                            <li>Bind fields and configure validation.</li>
+                            <li>Open Data Entry to test the runtime form.</li>
+                        </ol>
+                    </section>
+                    <section class="card">
+                        <h3>Build a report</h3>
+                        <ol>
+                            <li>Create a report from the Reports group or a table context menu.</li>
+                            <li>Select a source and generate or place controls.</li>
+                            <li>Add groups, sorts, and calculated text where needed.</li>
+                            <li>Preview and print.</li>
+                        </ol>
+                    </section>
+                </div>
+
+                <h2>Troubleshooting</h2>
+                <table>
+                    <thead><tr><th>Symptom</th><th>Check</th></tr></thead>
+                    <tbody>
+                        <tr><td>Object list looks stale</td><td>Refresh Object Explorer or reopen the database if another process changed metadata.</td></tr>
+                        <tr><td>Save is disabled</td><td>Check validation errors, read-only source state, pending edit state, and required fields.</td></tr>
+                        <tr><td>Callback is missing</td><td>Open callback readiness or diagnostics and confirm the host registered the expected function, command, or validation rule.</td></tr>
+                        <tr><td>Report preview is truncated</td><td>Reduce the source result set or add filters/grouping before previewing very large reports.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="next">
+                    <a class="button" href="operations.html">Back: Operations</a>
+                    <a class="button primary" href="index.html">Back to overview</a>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

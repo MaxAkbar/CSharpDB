@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/scripts/">
     <File Path="scripts/Publish-CSharpDbDaemonRelease.ps1" />
+    <File Path="scripts/Publish-CSharpDbAdminStorePackage.ps1" />
     <File Path="scripts/Start-CSharpDbAdminAndDaemon.ps1" />
   </Folder>
   <Folder Name="/deploy/daemon/windows/">
@@ -42,6 +43,7 @@
     <Project Path="src/CSharpDB.Data/CSharpDB.Data.csproj" />
     <Project Path="src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj" />
     <Project Path="src/CSharpDB.Admin/CSharpDB.Admin.csproj" />
+    <Project Path="src/CSharpDB.Admin.Desktop/CSharpDB.Admin.Desktop.csproj" />
     <Project Path="src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj" />
     <Project Path="src/CSharpDB.Admin.ImportExport/CSharpDB.Admin.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj" />
