@@ -113,12 +113,68 @@ Recommended metadata:
 | `column_name` | Optional target column; null for row-level rules. |
 | `expression_sql` | SQL expression that must evaluate truthy for a valid row. |
 | `message` | User-facing validation failure message. |
-| `created_at` | Creation timestamp. |
+| `created_utc` | Creation timestamp in round-trip UTC text format. |
 | `is_enabled` | Whether `VALIDATE TABLE` should evaluate the rule. |
 
 Expose rules through `sys.validation_rules`. Hygiene commands should return
 normal query results, so Admin, CLI, HTTP, gRPC, and ADO.NET surfaces can consume
 the same output shape without a feature-specific transport.
+
+## Result Schemas
+
+`FIND DUPLICATES` returns:
+
+| Column | Meaning |
+| --- | --- |
+| `key_values` | Display text for the evaluated duplicate key values. |
+| `group_size` | Total rows in the duplicate group. |
+| `winner_rowid` | Deterministic survivor rowid using `KEEP FIRST` semantics. |
+| `winner_primary_key` | Survivor primary-key value, or null when no primary key exists. |
+| `duplicate_rowids` | Comma-separated rowids that are not the survivor. |
+| `duplicate_primary_keys` | Comma-separated duplicate primary-key values, or null when no primary key exists. |
+
+`DEDUP` returns one summary row:
+
+| Column | Meaning |
+| --- | --- |
+| `table_name` | Target table. |
+| `duplicate_group_count` | Duplicate groups found. |
+| `rows_deleted` | Non-winner rows deleted. |
+| `rows_kept` | Duplicate winners kept. |
+
+`MERGE DUPLICATES` returns one summary row:
+
+| Column | Meaning |
+| --- | --- |
+| `table_name` | Target table. |
+| `duplicate_group_count` | Duplicate groups found. |
+| `rows_updated` | Winner rows updated with unambiguous fill-null values. |
+| `rows_deleted` | Non-winner rows deleted. |
+| `merge_conflict_count` | Null winner fields left unchanged because duplicate values conflicted. |
+| `merge_conflicts` | Conflict details, or null when no conflicts exist. |
+
+`VALIDATE TABLE` returns one row per violation:
+
+| Column | Meaning |
+| --- | --- |
+| `rule_name` | Validation rule that failed. |
+| `table_name` | Target table. |
+| `column_name` | Optional target column. |
+| `rowid` | Violating rowid. |
+| `primary_key` | Violating primary-key value, or null when no primary key exists. |
+| `message` | Rule message. |
+
+`FIND ORPHANS` returns one row per child value without a parent:
+
+| Column | Meaning |
+| --- | --- |
+| `constraint_name` | Declared FK constraint name, or null for explicit references. |
+| `child_table` | Child table. |
+| `child_column` | Child column. |
+| `child_rowid` | Child rowid. |
+| `child_value` | Missing parent lookup value. |
+| `parent_table` | Parent table. |
+| `parent_column` | Parent column. |
 
 ## Execution Model
 

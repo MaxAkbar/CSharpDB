@@ -80,6 +80,39 @@ public sealed class InMemoryConnectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NamedSharedMemory_TemporaryTablesAreIsolatedPerConnection()
+    {
+        string connectionString = $"Data Source=:memory:{Guid.NewGuid():N}";
+
+        await using var first = new CSharpDbConnection(connectionString);
+        await using var second = new CSharpDbConnection(connectionString);
+        await first.OpenAsync(Ct);
+        await second.OpenAsync(Ct);
+
+        using (var firstCommand = first.CreateCommand())
+        {
+            firstCommand.CommandText = "CREATE TEMP TABLE scratch (id INTEGER PRIMARY KEY);";
+            await firstCommand.ExecuteNonQueryAsync(Ct);
+            firstCommand.CommandText = "INSERT INTO scratch VALUES (1);";
+            await firstCommand.ExecuteNonQueryAsync(Ct);
+            firstCommand.CommandText = "SELECT COUNT(*) FROM scratch;";
+            Assert.Equal(1L, await firstCommand.ExecuteScalarAsync(Ct));
+        }
+
+        using (var secondCommand = second.CreateCommand())
+        {
+            secondCommand.CommandText = "SELECT COUNT(*) FROM sys.temp_tables;";
+            Assert.Equal(0L, await secondCommand.ExecuteScalarAsync(Ct));
+            secondCommand.CommandText = "SELECT COUNT(*) FROM scratch;";
+            await Assert.ThrowsAsync<CSharpDbDataException>(() => secondCommand.ExecuteScalarAsync(Ct));
+        }
+
+        using var verifyFirst = first.CreateCommand();
+        verifyFirst.CommandText = "SELECT COUNT(*) FROM sys.temp_tables;";
+        Assert.Equal(1L, await verifyFirst.ExecuteScalarAsync(Ct));
+    }
+
+    [Fact]
     public async Task NamedSharedMemory_AllowsSnapshotReadsButSingleWriterTransactions()
     {
         string connectionString = $"Data Source=:memory:{Guid.NewGuid():N}";

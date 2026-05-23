@@ -3042,6 +3042,78 @@ body {
     flex-shrink: 0;
 }
 
+/* Data hygiene workspace */
+.data-hygiene-tab {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-primary);
+}
+
+.data-hygiene-toolbar {
+    flex-shrink: 0;
+}
+
+.data-hygiene-panel {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+}
+
+.data-hygiene-form-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.data-hygiene-form-grid .wide {
+    grid-column: span 2;
+}
+
+.data-hygiene-column-strip,
+.data-hygiene-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 14px;
+}
+
+.data-hygiene-stale {
+    color: var(--accent-yellow);
+    font-size: 12px;
+}
+
+.data-hygiene-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 14px 0 8px;
+    color: var(--text-secondary);
+}
+
+.data-hygiene-result-header strong {
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.data-hygiene-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+}
+
+.data-hygiene-tab .schema-table {
+    width: 100%;
+}
+
+.danger-row td {
+    color: var(--accent-red);
+}
+
 .data-model-workspace {
     flex: 1;
     min-height: 0;
@@ -3364,6 +3436,9 @@ body {
 @media (max-width: 768px) {
     .sidebar { display: none; }
     .titlebar-center { display: none; }
+    .data-hygiene-form-grid,
+    .data-hygiene-split { grid-template-columns: 1fr; }
+    .data-hygiene-form-grid .wide { grid-column: span 1; }
     .schema-edit-grid { grid-template-columns: 1fr; }
     .schema-edit-grid.cols-2 { grid-template-columns: 1fr; }
     .schema-edit-grid.cols-3 { grid-template-columns: 1fr; }

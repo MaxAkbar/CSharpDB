@@ -22,6 +22,8 @@ public static partial class SqlHighlighter
         "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "CONSTRAINT", "ADD", "RENAME", "TO",
         "BEFORE", "AFTER", "FOR", "EACH", "ROW", "INSTEAD", "OF",
         "IDENTITY", "AUTOINCREMENT",
+        "FIND", "DUPLICATES", "DEDUP", "KEEP", "FIRST", "LAST", "MERGE",
+        "VALIDATION", "RULE", "MESSAGE", "VALIDATE", "ORPHANS",
         "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "INT", "VARCHAR", "CHAR",
         "TRUE", "FALSE"
     };

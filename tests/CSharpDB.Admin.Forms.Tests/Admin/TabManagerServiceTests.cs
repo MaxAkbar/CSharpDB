@@ -148,6 +148,44 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenDataHygieneTab_CreatesGlobalTabWithSeed()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Validation, TableName: "customers"));
+
+        Assert.Equal("data-hygiene", tab.Id);
+        Assert.Equal(TabKind.DataHygiene, tab.Kind);
+        Assert.Equal(DataHygieneMode.Validation, tab.InitialDataHygieneSeed!.Mode);
+        Assert.Equal("customers", tab.InitialDataHygieneSeed.TableName);
+        Assert.Equal(1, tab.DataHygieneSeedVersion);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenDataHygieneTab_DeduplicatesAndUpdatesSeed()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Duplicates, TableName: "customers"));
+        TabDescriptor second = manager.OpenDataHygieneTab(new DataHygieneSeed(
+            DataHygieneMode.Orphans,
+            TableName: "orders",
+            ChildTableName: "orders",
+            ChildColumnName: "customer_id",
+            ParentTableName: "customers",
+            ParentColumnName: "id"));
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(DataHygieneMode.Orphans, second.InitialDataHygieneSeed!.Mode);
+        Assert.Equal("orders", second.InitialDataHygieneSeed.TableName);
+        Assert.Equal("customer_id", second.InitialDataHygieneSeed.ChildColumnName);
+        Assert.Equal(2, second.DataHygieneSeedVersion);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
     public void OpenQueryDesignerTab_SeedsDesignerMode()
     {
         var manager = new TabManagerService();

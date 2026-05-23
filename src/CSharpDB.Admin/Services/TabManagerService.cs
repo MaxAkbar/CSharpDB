@@ -231,6 +231,23 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenDataHygieneTab(DataHygieneSeed? seed = null)
+    {
+        const string tabId = "data-hygiene";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ApplyDataHygieneSeed(existing, seed);
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(tabId, "Data Hygiene", "bi-shield-check", TabKind.DataHygiene);
+        ApplyDataHygieneSeed(tab, seed);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenFormDesignerTab(string? formId = null, string? initialTableName = null, string? title = null)
     {
         TabDescriptor tab;
@@ -309,6 +326,15 @@ public sealed class TabManagerService
         tab.State["SelectedCallbackName"] = selectedCallbackName.Trim();
         tab.State["SelectedCallbackKind"] = string.IsNullOrWhiteSpace(selectedCallbackKind) ? null : selectedCallbackKind.Trim();
         tab.State["SelectedCallbackArity"] = selectedCallbackArity;
+    }
+
+    private static void ApplyDataHygieneSeed(TabDescriptor tab, DataHygieneSeed? seed)
+    {
+        if (seed is null)
+            return;
+
+        tab.InitialDataHygieneSeed = seed;
+        tab.DataHygieneSeedVersion++;
     }
 
     /// <summary>Open a table tab and switch it to Schema view.</summary>

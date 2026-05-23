@@ -71,12 +71,22 @@
                     <li><code>sys.foreign_keys</code></li>
                     <li><code>sys.views</code></li>
                     <li><code>sys.triggers</code></li>
+                    <li><code>sys.validation_rules</code></li>
+                    <li><code>sys.temp_tables</code></li>
+                    <li><code>sys.temp_columns</code></li>
                     <li><code>sys.objects</code></li>
                 </ul>
                 <p>Underscored aliases are also supported (<code>sys_tables</code>, <code>sys_columns</code>, etc.).</p>
 
                 <h3>Do <code>sys.*</code> objects appear as normal tables in the Admin sidebar?</h3>
                 <p>No. They are virtual system catalog sources, so use the Query tab to query them.</p>
+
+                <h3>How do I preview duplicates, validation failures, or orphaned rows?</h3>
+                <p>Use the SQL-first data hygiene commands:</p>
+                <div class="code-block" data-title="SQL"><pre><code>FIND DUPLICATES IN Customers ON Email COLLATE NOCASE;
+VALIDATE TABLE Customers;
+FIND ORPHANS IN Bookings;</code></pre></div>
+                <p><code>FIND</code> and <code>VALIDATE</code> commands return normal query rows and do not change data. Use <code>DEDUP ... KEEP FIRST|LAST</code> or <code>MERGE DUPLICATES ...</code> only when you want to apply transactional cleanup.</p>
 
                 <h3>Why does index creation fail on some column types?</h3>
                 <p>Current SQL secondary indexes support <code>INTEGER</code> and <code>TEXT</code> columns. <code>COLLATE</code> is only valid on <code>TEXT</code> index columns.</p>

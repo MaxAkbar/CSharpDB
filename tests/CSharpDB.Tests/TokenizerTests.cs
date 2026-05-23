@@ -98,11 +98,17 @@ public class TokenizerTests
     [InlineData("VIEW", TokenType.View)]
     [InlineData("IDENTITY", TokenType.Identity)]
     [InlineData("AUTOINCREMENT", TokenType.Autoincrement)]
+    [InlineData("TEMP", TokenType.Temp)]
+    [InlineData("TEMPORARY", TokenType.Temporary)]
+    [InlineData("PERSIST", TokenType.Persist)]
     [InlineData("index", TokenType.Index)]
     [InlineData("unique", TokenType.Unique)]
     [InlineData("view", TokenType.View)]
     [InlineData("identity", TokenType.Identity)]
     [InlineData("autoincrement", TokenType.Autoincrement)]
+    [InlineData("temp", TokenType.Temp)]
+    [InlineData("temporary", TokenType.Temporary)]
+    [InlineData("persist", TokenType.Persist)]
     public void Tokenize_NewKeywords(string keyword, TokenType expected)
     {
         var tokens = new Tokenizer(keyword).Tokenize();
@@ -143,6 +149,25 @@ public class TokenizerTests
     [InlineData("NEW", TokenType.New)]
     [InlineData("OLD", TokenType.Old)]
     public void Tokenize_TriggerKeywords(string keyword, TokenType expected)
+    {
+        var tokens = new Tokenizer(keyword).Tokenize();
+        Assert.Equal(expected, tokens[0].Type);
+    }
+
+    [Theory]
+    [InlineData("FIND", TokenType.Find)]
+    [InlineData("DUPLICATES", TokenType.Duplicates)]
+    [InlineData("DEDUP", TokenType.Dedup)]
+    [InlineData("KEEP", TokenType.Keep)]
+    [InlineData("FIRST", TokenType.First)]
+    [InlineData("LAST", TokenType.Last)]
+    [InlineData("MERGE", TokenType.Merge)]
+    [InlineData("VALIDATION", TokenType.Validation)]
+    [InlineData("RULE", TokenType.Rule)]
+    [InlineData("MESSAGE", TokenType.Message)]
+    [InlineData("VALIDATE", TokenType.Validate)]
+    [InlineData("ORPHANS", TokenType.Orphans)]
+    public void Tokenize_DataHygieneKeywords(string keyword, TokenType expected)
     {
         var tokens = new Tokenizer(keyword).Tokenize();
         Assert.Equal(expected, tokens[0].Type);

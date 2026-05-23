@@ -11,6 +11,7 @@ public sealed class CreateTableStatement : Statement
     public required string TableName { get; init; }
     public required List<ColumnDef> Columns { get; init; }
     public bool IfNotExists { get; init; }
+    public bool IsTemporary { get; init; }
 }
 
 public sealed class CreateExternalTableStatement : Statement
@@ -43,6 +44,13 @@ public sealed class DropTableStatement : Statement
 {
     public required string TableName { get; init; }
     public bool IfExists { get; init; }
+    public bool IsTemporary { get; init; }
+}
+
+public sealed class PersistTempTableStatement : Statement
+{
+    public required string TempTableName { get; init; }
+    public required string TargetTableName { get; init; }
 }
 
 public sealed class DropExternalTableStatement : Statement
@@ -246,6 +254,55 @@ public sealed class AnalyzeStatement : Statement
 public sealed class ExplainEstimateStatement : Statement
 {
     public required Statement Target { get; init; }
+}
+
+// ============ Data Hygiene ============
+
+public enum DuplicateKeepMode
+{
+    First,
+    Last,
+}
+
+public sealed class FindDuplicatesStatement : QueryStatement
+{
+    public required string TableName { get; init; }
+    public required List<Expression> KeyExpressions { get; init; }
+}
+
+public sealed class DedupStatement : Statement
+{
+    public required string TableName { get; init; }
+    public required List<Expression> KeyExpressions { get; init; }
+    public required DuplicateKeepMode KeepMode { get; init; }
+}
+
+public sealed class MergeDuplicatesStatement : Statement
+{
+    public required string TableName { get; init; }
+    public required List<Expression> KeyExpressions { get; init; }
+}
+
+public sealed class CreateValidationRuleStatement : Statement
+{
+    public required string RuleName { get; init; }
+    public required string TableName { get; init; }
+    public string? ColumnName { get; init; }
+    public required Expression Expression { get; init; }
+    public required string Message { get; init; }
+}
+
+public sealed class ValidateTableStatement : QueryStatement
+{
+    public required string TableName { get; init; }
+}
+
+public sealed class FindOrphansStatement : QueryStatement
+{
+    public required string ChildTableName { get; init; }
+    public string? ChildColumnName { get; init; }
+    public string? ParentTableName { get; init; }
+    public string? ParentColumnName { get; init; }
 }
 
 // ============ Common Table Expressions (CTEs) ============

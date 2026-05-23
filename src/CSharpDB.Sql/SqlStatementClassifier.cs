@@ -24,4 +24,17 @@ public static class SqlStatementClassifier
         ArgumentNullException.ThrowIfNull(statement);
         return statement is QueryStatement or WithStatement or ExplainEstimateStatement;
     }
+
+    public static bool IsTemporaryTableStatement(Statement statement)
+    {
+        ArgumentNullException.ThrowIfNull(statement);
+
+        return statement switch
+        {
+            CreateTableStatement { IsTemporary: true } => true,
+            DropTableStatement { IsTemporary: true } => true,
+            PersistTempTableStatement => true,
+            _ => false,
+        };
+    }
 }

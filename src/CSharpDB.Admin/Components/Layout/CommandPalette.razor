@@ -120,6 +120,27 @@
                     "bi-file-earmark-code",
                     "icon-system",
                     () => { TabManager.OpenTableSchemaTab(captured); return Task.CompletedTask; }));
+                _items.Add(new PaletteItem(
+                    "Data hygiene",
+                    $"Find duplicates in {captured}",
+                    "Open duplicate cleanup",
+                    "bi-intersect",
+                    "icon-system",
+                    () => { TabManager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Duplicates, TableName: captured)); return Task.CompletedTask; }));
+                _items.Add(new PaletteItem(
+                    "Data hygiene",
+                    $"Validate {captured}",
+                    "Open table validation",
+                    "bi-shield-check",
+                    "icon-system",
+                    () => { TabManager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Validation, TableName: captured)); return Task.CompletedTask; }));
+                _items.Add(new PaletteItem(
+                    "Data hygiene",
+                    $"Find orphans in {captured}",
+                    "Open relationship audit",
+                    "bi-link-45deg",
+                    "icon-system",
+                    () => { TabManager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Orphans, TableName: captured)); return Task.CompletedTask; }));
             }
 
             IReadOnlyCollection<string> views = await DbClient.GetViewNamesAsync();
@@ -225,6 +246,7 @@
         _items.Add(new PaletteItem("Command", "Data Model", "Open visual data modeling canvas", "bi-diagram-3", "icon-view", () => { TabManager.OpenDataModelTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Code Modules", "Open C# code modules", "bi-filetype-cs", "icon-system", () => { TabManager.OpenCodeModulesTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Import / Export", "Open table archive tools", "bi-arrow-left-right", "icon-system", () => { TabManager.OpenImportExportTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Data Hygiene", "Open data quality workspace", "bi-shield-check", "icon-system", () => { TabManager.OpenDataHygieneTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Storage Inspector", "Open storage diagnostics", "bi-hdd-stack", "icon-system", () => { TabManager.OpenStorageTab(); return Task.CompletedTask; }));
     }
 

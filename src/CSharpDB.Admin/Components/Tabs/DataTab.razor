@@ -202,6 +202,21 @@
                             <small>@TriggerEventsLabel</small>
                         </button>
                     </div>
+
+                    <div class="schema-section">
+                        <h3>Data Hygiene</h3>
+                        <div class="data-hygiene-actions">
+                            <button type="button" class="data-toolbar-btn" @onclick="() => OpenDataHygiene(DataHygieneMode.Duplicates)">
+                                <i class="bi bi-intersect"></i> Find Duplicates
+                            </button>
+                            <button type="button" class="data-toolbar-btn" @onclick="() => OpenDataHygiene(DataHygieneMode.Validation)">
+                                <i class="bi bi-shield-check"></i> Validate Table
+                            </button>
+                            <button type="button" class="data-toolbar-btn" @onclick="() => OpenDataHygiene(DataHygieneMode.Orphans)">
+                                <i class="bi bi-link-45deg"></i> Find Orphans
+                            </button>
+                        </div>
+                    </div>
                 }
 
                 @* ─── Columns ─── *@
@@ -891,6 +906,9 @@
         _showData = false;
         _schemaPanel = panel;
     }
+
+    private void OpenDataHygiene(DataHygieneMode mode)
+        => TabManager.OpenDataHygieneTab(new DataHygieneSeed(mode, TableName: ObjectName));
 
     private string GetDataViewClass() => _showData ? "active" : string.Empty;
 

@@ -205,6 +205,9 @@ Catalog sources:
 - `sys.foreign_keys`
 - `sys.views`
 - `sys.triggers`
+- `sys.validation_rules`
+- `sys.temp_tables`
+- `sys.temp_columns`
 - `sys.objects`
 - `sys.saved_queries`
 

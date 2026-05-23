@@ -51,6 +51,9 @@ Yes. Query virtual catalog sources:
 - `sys.foreign_keys`
 - `sys.views`
 - `sys.triggers`
+- `sys.validation_rules`
+- `sys.temp_tables`
+- `sys.temp_columns`
 - `sys.objects`
 
 Underscored aliases are also supported (`sys_tables`, `sys_columns`, etc.).
@@ -58,6 +61,20 @@ Underscored aliases are also supported (`sys_tables`, `sys_columns`, etc.).
 ### Do `sys.*` objects appear as normal tables in the Admin sidebar?
 
 No. They are virtual system catalog sources, so use the Query tab to query them.
+
+### How do I preview duplicates, validation failures, or orphaned rows?
+
+Use the SQL-first data hygiene commands:
+
+```sql
+FIND DUPLICATES IN Customers ON Email COLLATE NOCASE;
+VALIDATE TABLE Customers;
+FIND ORPHANS IN Bookings;
+```
+
+`FIND` and `VALIDATE` commands return normal query rows and do not change data.
+Use `DEDUP ... KEEP FIRST|LAST` or `MERGE DUPLICATES ...` only when you want to
+apply transactional cleanup.
 
 ### Why does index creation fail on some column types?
 

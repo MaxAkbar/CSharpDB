@@ -120,7 +120,9 @@ internal sealed class SharedMemoryDatabaseHost
                 return await DetachQueryResultAsync(query, cancellationToken);
             }
 
-            await using var liveQuery = await GetDatabase().ExecuteAsync(sql, cancellationToken);
+            Database database = GetDatabase();
+            using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
+            await using var liveQuery = await database.ExecuteAsync(sql, cancellationToken);
             return await DetachQueryResultAsync(liveQuery, cancellationToken);
         }
         finally
@@ -148,7 +150,9 @@ internal sealed class SharedMemoryDatabaseHost
                 return await DetachQueryResultAsync(query, cancellationToken);
             }
 
-            await using var liveQuery = await GetDatabase().ExecuteAsync(statement, cancellationToken);
+            Database database = GetDatabase();
+            using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
+            await using var liveQuery = await database.ExecuteAsync(statement, cancellationToken);
             return await DetachQueryResultAsync(liveQuery, cancellationToken);
         }
         finally
@@ -168,7 +172,9 @@ internal sealed class SharedMemoryDatabaseHost
             if (OwnedByOtherSession(sessionId))
                 throw new InvalidOperationException(BusyMessage);
 
-            await using var query = await GetDatabase().ExecuteAsync(insert, cancellationToken);
+            Database database = GetDatabase();
+            using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
+            await using var query = await database.ExecuteAsync(insert, cancellationToken);
             return new QueryResult(query.RowsAffected);
         }
         finally
@@ -191,6 +197,7 @@ internal sealed class SharedMemoryDatabaseHost
                 throw new InvalidOperationException(BusyMessage);
 
             var database = GetDatabase();
+            using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
             snapshotPath = Path.Combine(Path.GetTempPath(), $"csharpdb_shared_snapshot_{Guid.NewGuid():N}.db");
             await database.SaveToFileAsync(snapshotPath, cancellationToken);
             snapshotDatabase = await Database.LoadIntoMemoryAsync(snapshotPath, cancellationToken);
@@ -224,7 +231,9 @@ internal sealed class SharedMemoryDatabaseHost
                 throw new InvalidOperationException("No active transaction.");
             }
 
-            await GetDatabase().CommitAsync(cancellationToken);
+            Database database = GetDatabase();
+            using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
+            await database.CommitAsync(cancellationToken);
             _transactionOwnerSessionId = null;
             snapshotDatabase = _transactionSnapshotDatabase;
             snapshotPath = _transactionSnapshotPath;
@@ -254,7 +263,9 @@ internal sealed class SharedMemoryDatabaseHost
                 throw new InvalidOperationException("No active transaction.");
             }
 
-            await GetDatabase().RollbackAsync(cancellationToken);
+            Database database = GetDatabase();
+            using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
+            await database.RollbackAsync(cancellationToken);
             _transactionOwnerSessionId = null;
             snapshotDatabase = _transactionSnapshotDatabase;
             snapshotPath = _transactionSnapshotPath;
@@ -388,7 +399,9 @@ internal sealed class SharedMemoryDatabaseHost
             {
                 try
                 {
-                    await GetDatabase().RollbackAsync();
+                    Database database = GetDatabase();
+                    using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
+                    await database.RollbackAsync();
                 }
                 catch
                 {
@@ -404,6 +417,12 @@ internal sealed class SharedMemoryDatabaseHost
 
             if (_activeSessionCount > 0)
                 _activeSessionCount--;
+
+            if (_database is not null)
+            {
+                using var temporaryScope = _database.EnterTemporaryTableSessionScope(sessionId);
+                await _database.ClearTemporaryTablesAsync();
+            }
 
             if (_disabled && _activeSessionCount == 0)
             {
