@@ -43,6 +43,7 @@ builder.Services.AddScoped<ToastService>();
 builder.Services.AddScoped<ModalService>();
 builder.Services.AddScoped<DatabaseChangeService>();
 builder.Services.AddScoped<DataHygieneAdminService>();
+builder.Services.AddScoped<CompareDeployAdminService>();
 builder.Services.AddScoped<HostCallbackCatalogService>();
 builder.Services.AddScoped<HostCallbackPolicyService>();
 builder.Services.AddScoped<HostCallbackReadinessService>();

@@ -37,6 +37,33 @@ CSharpDB already has the primitives needed for a compare/deploy toolkit:
 The toolkit should build on those surfaces instead of creating separate
 database access paths.
 
+## Implementation Status
+
+The first implementation checkpoint is in place:
+
+- `CSharpDB.DevOps` contains shared schema compare models, live database target
+  reads through `ICSharpDbClient`, `.csdbtable` archive target reads, schema diff
+  services, JSON-safe result contracts, and deployment preview script rendering.
+- `csharpdb compare schema <source> <target> [--json] [--script-out <file>]`
+  compares two existing database files or `.csdbtable` archives and can emit a
+  preview script.
+- `csharpdb compare data <source> <target> --table <name> [--key <columns>]
+  [--json] [--script-out <file>]` performs keyed row comparison and can emit a
+  preview data sync script with `INSERT`, `UPDATE`, and `DELETE` statements.
+- `csharpdb drift <dbfile> --baseline <archive-or-dbfile> [--table <name>]
+  [--key <columns>] [--json]` reports schema drift and optional table-level
+  data drift. It returns a warning exit code when drift is found.
+- Script generation is preview-oriented: missing tables, added columns, indexes,
+  views, triggers, and data row changes can be emitted as SQL, while destructive
+  or unsupported schema changes are commented with warnings for review.
+- Admin includes a Compare / Deploy workspace under Tools and table context
+  menus. It supports independent source and target selection, schema compare,
+  data compare, drift summaries, object-level schema script-out with optional
+  related indexes/triggers/views/procedures, direct script-out from a selected
+  table, script previews, stale-preview tracking, and confirmation-gated apply
+  through the existing
+  `ICSharpDbClient.ExecuteSqlAsync` path.
+
 ## V1 Toolkit Scope
 
 V1 is focused on compare/deploy:
@@ -162,15 +189,24 @@ csharpdb drift <dbfile> --baseline <archive-or-manifest> [--json]
 
 Admin workflow:
 
-- Add a `Compare / Deploy` entry under Tools or Object Explorer.
-- Let users pick source and target from live database, backup, or archive
-  targets.
-- Show a schema diff view grouped by object type.
-- Show a data diff view for selected tables with insert, update, and delete
-  counts plus row previews.
-- Show a warnings panel for destructive or risky changes.
-- Show generated deployment script previews.
-- Require explicit confirmation before executing generated scripts.
+- Use the `Compare / Deploy` entry under Tools, command palette, or a table
+  context menu.
+- Choose source and target independently from current Admin database, database
+  file, or `.csdbtable` table archive endpoints.
+- Apply generated scripts only to writable targets: the current Admin database
+  or a database file. Table archive targets are read-only compare inputs.
+- Show schema diffs grouped by object type.
+- Show data diffs for selected tables with insert, update, and delete counts
+  plus row previews.
+- Surface destructive or risky changes as warnings in the diff and generated
+  script.
+- Show generated schema or data deployment script previews.
+- Script a selected table, view, index, trigger, or procedure from either
+  selected endpoint. Table scripting can include or exclude indexes, triggers,
+  related views, and related procedures.
+- Open a selected table's script directly from Object Explorer, the table tab,
+  or command palette with the table preselected and scripted.
+- Require an explicit confirmation before executing generated scripts.
 
 ## Future Toolkit Phases
 
@@ -215,6 +251,7 @@ Phase 2: schema deploy scripts.
 - Add destructive-change warnings.
 - Add CLI schema compare command with JSON and script output.
 - Add Admin schema diff preview.
+- Status: implemented.
 
 Phase 3: data compare and sync scripts.
 
@@ -222,6 +259,7 @@ Phase 3: data compare and sync scripts.
 - Generate data sync script previews.
 - Add CLI data compare command.
 - Add Admin data diff preview.
+- Status: implemented.
 
 Phase 4: drift reports.
 
@@ -229,6 +267,7 @@ Phase 4: drift reports.
 - Add CLI drift command.
 - Add Admin drift summary.
 - Add CI-oriented JSON output and failure codes.
+- Status: implemented.
 
 ## Future Test Plan
 

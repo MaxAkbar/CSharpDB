@@ -248,6 +248,26 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenCompareDeployTab(CompareDeploySeed? seed = null)
+    {
+        const string tabId = "compare-deploy";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ApplyCompareDeploySeed(existing, seed);
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(tabId, "Compare / Deploy", "bi-file-earmark-diff", TabKind.CompareDeploy);
+        ApplyCompareDeploySeed(tab, seed);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
+    public TabDescriptor OpenTableScriptTab(string tableName)
+        => OpenCompareDeployTab(CompareDeploySeed.ForTableScript(tableName));
+
     public TabDescriptor OpenFormDesignerTab(string? formId = null, string? initialTableName = null, string? title = null)
     {
         TabDescriptor tab;
@@ -335,6 +355,15 @@ public sealed class TabManagerService
 
         tab.InitialDataHygieneSeed = seed;
         tab.DataHygieneSeedVersion++;
+    }
+
+    private static void ApplyCompareDeploySeed(TabDescriptor tab, CompareDeploySeed? seed)
+    {
+        if (seed is null)
+            return;
+
+        tab.InitialCompareDeploySeed = seed;
+        tab.CompareDeploySeedVersion++;
     }
 
     /// <summary>Open a table tab and switch it to Schema view.</summary>

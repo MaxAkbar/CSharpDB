@@ -83,6 +83,21 @@ csharpdb reindex <dbfile> [--all|--table <name>|--index <name>] [--force-corrupt
 csharpdb vacuum <dbfile> [--json]
 ```
 
+Database DevOps:
+
+```powershell
+csharpdb compare schema <source> <target> [--json] [--script-out <file>]
+csharpdb compare data <source> <target> --table <name> [--key <columns>] [--json] [--script-out <file>] [--max-preview <n>]
+csharpdb drift <dbfile> --baseline <archive-or-dbfile> [--table <name>] [--key <columns>] [--json]
+```
+
+The compare commands accept existing database files and `.csdbtable` archives.
+Schema compare reports source-to-target structural differences. Data compare
+uses a primary key by default or an explicit `--key` list for tables without a
+stable primary key. Script output is preview-only and should be reviewed before
+execution. The drift command returns a warning exit code when differences are
+found so CI can fail on drift.
+
 ETL pipelines:
 
 ```powershell
@@ -100,6 +115,7 @@ csharpdb etl <pipelines|revisions|import|export|export-revision|delete|run-store
 - `MetaCommands.cs` - dot-command implementation
 - `InspectorCommandRunner.cs` - storage inspection commands
 - `MaintenanceCommandRunner.cs` - maintenance commands
+- `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
@@ -113,6 +129,7 @@ dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
 ## Dependencies
 
 - `CSharpDB.Client`
+- `CSharpDB.DevOps`
 - `CSharpDB.Engine`
 - `CSharpDB.Sql`
 - `CSharpDB.Storage.Diagnostics`

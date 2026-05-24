@@ -52,9 +52,15 @@
                 <div class="tree-group-header compact">
                     <i class="bi bi-tools icon-system"></i>
                     <span>Tools</span>
-                    <span class="group-count">3</span>
+                    <span class="group-count">4</span>
                 </div>
                 <div class="tree-items">
+                    <button class="tree-item command-item @(IsActiveCompareDeploy() ? "active" : "")"
+                            @onclick="() => TabManager.OpenCompareDeployTab()">
+                        <i class="bi bi-file-earmark-diff icon-system"></i>
+                        <span class="item-label">Compare / Deploy</span>
+                        <span class="item-hint">diff and scripts</span>
+                    </button>
                     <button class="tree-item command-item @(IsActiveDataHygiene() ? "active" : "")"
                             @onclick="() => TabManager.OpenDataHygieneTab()">
                         <i class="bi bi-shield-check icon-system"></i>
@@ -1220,6 +1226,12 @@
     private void OpenDataHygiene(string tableName, DataHygieneMode mode)
         => TabManager.OpenDataHygieneTab(new DataHygieneSeed(mode, TableName: tableName));
 
+    private void OpenCompareDeploy(string tableName, CompareDeployMode mode)
+        => TabManager.OpenCompareDeployTab(new CompareDeploySeed(mode, TableName: tableName));
+
+    private void OpenTableScript(string tableName)
+        => TabManager.OpenTableScriptTab(tableName);
+
     private void OpenExternalTable(string tableName)
         => TabManager.OpenQueryTab($"SELECT * FROM {RequireSqlIdentifier(tableName)} LIMIT 50;");
 
@@ -1295,6 +1307,9 @@
 
     private bool IsActiveDataHygiene()
         => TabManager.ActiveTab?.Kind == TabKind.DataHygiene;
+
+    private bool IsActiveCompareDeploy()
+        => TabManager.ActiveTab?.Kind == TabKind.CompareDeploy;
 
     private bool IsActiveSchema(string type, string name)
     {
@@ -1441,10 +1456,12 @@
         {
             new() { Label = "Open", Icon = "bi-table", OnClick = () => TabManager.OpenTableTab(tableName) },
             new() { Label = "Design", Icon = "bi-file-earmark-code", OnClick = () => TabManager.OpenTableSchemaTab(tableName) },
+            new() { Label = "Script Table...", Icon = "bi-file-earmark-code", OnClick = () => OpenTableScript(tableName) },
             new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(tableName) },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
             new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.Table.ToString(), sourceName: tableName, title: $"{tableName} Report") },
             new() { Label = "Import / Export...", Icon = "bi-arrow-left-right", OnClick = () => TabManager.OpenImportExportTab(tableName) },
+            new() { Label = "Compare / Deploy...", Icon = "bi-file-earmark-diff", OnClick = () => OpenCompareDeploy(tableName, CompareDeployMode.Data) },
             new() { Label = "Data Hygiene...", Icon = "bi-shield-check", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Duplicates) },
             ContextMenuItem.Separator(),
             new() { Label = "Find Duplicates", Icon = "bi-intersect", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Duplicates) },

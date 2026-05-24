@@ -68,6 +68,12 @@
             <button type="button" class="data-toolbar-btn" @onclick="OpenImportPipeline">
                 <i class="bi bi-upload"></i> Import
             </button>
+            @if (!IsView)
+            {
+                <button type="button" class="data-toolbar-btn" @onclick="OpenTableScript">
+                    <i class="bi bi-file-earmark-code"></i> Script Table
+                </button>
+            }
             @if (_showData && !IsReadOnly)
             {
                 <button type="button" class="data-toolbar-btn primary" @onclick="SaveChanges" disabled="@(!CanSave)">
@@ -200,6 +206,11 @@
                             <span>Triggers</span>
                             <strong>@TriggerCount</strong>
                             <small>@TriggerEventsLabel</small>
+                        </button>
+                        <button class="schema-summary-card" @onclick="OpenTableScript">
+                            <span>Script</span>
+                            <strong><i class="bi bi-file-earmark-code"></i></strong>
+                            <small>table definition</small>
                         </button>
                     </div>
 
@@ -909,6 +920,9 @@
 
     private void OpenDataHygiene(DataHygieneMode mode)
         => TabManager.OpenDataHygieneTab(new DataHygieneSeed(mode, TableName: ObjectName));
+
+    private void OpenTableScript()
+        => TabManager.OpenTableScriptTab(ObjectName);
 
     private string GetDataViewClass() => _showData ? "active" : string.Empty;
 

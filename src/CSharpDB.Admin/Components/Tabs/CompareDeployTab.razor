@@ -1,0 +1,1120 @@
+@using System.Globalization
+@using CSharpDB.DevOps
+@inject CompareDeployAdminService CompareDeploy
+@inject DatabaseChangeService Changes
+@inject ToastService Toast
+@inject ModalService Modal
+
+<div class="compare-deploy-tab">
+    <div class="toolbar compare-deploy-toolbar">
+        <button class="@GetModeClass(CompareDeployMode.Schema)" @onclick="() => SetMode(CompareDeployMode.Schema)">
+            <i class="bi bi-diagram-2"></i> Schema
+        </button>
+        <button class="@GetModeClass(CompareDeployMode.Data)" @onclick="() => SetMode(CompareDeployMode.Data)">
+            <i class="bi bi-table"></i> Data
+        </button>
+        <button class="@GetModeClass(CompareDeployMode.Drift)" @onclick="() => SetMode(CompareDeployMode.Drift)">
+            <i class="bi bi-activity"></i> Drift
+        </button>
+        <button class="@GetModeClass(CompareDeployMode.History)" @onclick="() => SetMode(CompareDeployMode.History)">
+            <i class="bi bi-clock-history"></i> History
+        </button>
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn" @onclick="RefreshMetadataAsync" disabled="@_loading">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">
+            @if (_loading)
+            {
+                <span>Running</span>
+            }
+            else if (!string.IsNullOrWhiteSpace(_status))
+            {
+                <span>@_status</span>
+            }
+        </div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+    }
+
+    @if (_mode == CompareDeployMode.History)
+    {
+        <section class="compare-deploy-panel">
+            <div class="data-hygiene-result-header">
+                <strong>History</strong>
+                <button class="toolbar-btn" @onclick="ClearHistory" disabled="@(_history.Count == 0)">
+                    <i class="bi bi-x-lg"></i> Clear
+                </button>
+            </div>
+            <table class="schema-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Operation</th>
+                        <th>Target</th>
+                        <th>Summary</th>
+                        <th>Elapsed</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_history.Count == 0)
+                    {
+                        <tr><td colspan="5" class="empty-cell">No compare or deploy actions run</td></tr>
+                    }
+                    else
+                    {
+                        @foreach (CompareDeployHistoryEntry entry in _history)
+                        {
+                            <tr class="@(entry.IsError ? "danger-row" : "")">
+                                <td>@entry.Timestamp.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+                                <td>@entry.Operation</td>
+                                <td class="mono-cell">@entry.Target</td>
+                                <td>@entry.Summary</td>
+                                <td>@(entry.Elapsed is null ? "" : FormatElapsed(entry.Elapsed.Value))</td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+    else
+    {
+        <section class="compare-deploy-panel compare-deploy-workspace">
+            <div class="compare-deploy-content">
+                <div class="compare-deploy-endpoint-grid">
+                <div class="schema-field">
+                    <label>@(_mode == CompareDeployMode.Drift ? "Baseline type" : "Source type")</label>
+                    <select class="schema-input" value="@_sourceKind" @onchange="OnSourceKindChanged">
+                        <option value="@CompareDeployEndpointKind.CurrentDatabase">Current database</option>
+                        <option value="@CompareDeployEndpointKind.DatabaseFile">Database file</option>
+                        <option value="@CompareDeployEndpointKind.TableArchive">Table archive</option>
+                    </select>
+                </div>
+                <div class="schema-field wide">
+                    <label>@(_mode == CompareDeployMode.Drift ? "Baseline path" : "Source path")</label>
+                    <input class="schema-input mono"
+                           value="@_sourcePath"
+                           @oninput="OnSourcePathChanged"
+                           disabled="@(_sourceKind == CompareDeployEndpointKind.CurrentDatabase)"
+                           placeholder="@GetPathPlaceholder(_sourceKind)" />
+                </div>
+                <div class="schema-field">
+                    <label>@(_mode == CompareDeployMode.Drift ? "Current type" : "Target type")</label>
+                    <select class="schema-input" value="@_targetKind" @onchange="OnTargetKindChanged">
+                        <option value="@CompareDeployEndpointKind.CurrentDatabase">Current database</option>
+                        <option value="@CompareDeployEndpointKind.DatabaseFile">Database file</option>
+                        <option value="@CompareDeployEndpointKind.TableArchive">Table archive</option>
+                    </select>
+                </div>
+                <div class="schema-field wide">
+                    <label>@(_mode == CompareDeployMode.Drift ? "Current path" : "Target path")</label>
+                    <input class="schema-input mono"
+                           value="@_targetPath"
+                           @oninput="OnTargetPathChanged"
+                           disabled="@(_targetKind == CompareDeployEndpointKind.CurrentDatabase)"
+                           placeholder="@GetPathPlaceholder(_targetKind)" />
+                </div>
+            </div>
+            <div class="compare-deploy-form-grid">
+                <div class="schema-field">
+                    <label>@(_mode == CompareDeployMode.Schema ? "Table filter" : "Table")</label>
+                    <select class="schema-input mono" value="@_tableName" @onchange="OnTableChanged">
+                        <option value="">@(_mode == CompareDeployMode.Schema ? "Whole database" : "Select table...")</option>
+                        @foreach (string table in _tables)
+                        {
+                            <option value="@table">@table</option>
+                        }
+                    </select>
+                </div>
+                @if (_mode == CompareDeployMode.Schema)
+                {
+                    <div class="schema-field">
+                        <label>Script from</label>
+                        <select class="schema-input" value="@_schemaScriptEndpoint" @onchange="OnSchemaScriptEndpointChanged">
+                            <option value="@CompareDeployScriptEndpoint.Source">Source</option>
+                            <option value="@CompareDeployScriptEndpoint.Target">Target</option>
+                        </select>
+                    </div>
+                    <div class="schema-field">
+                        <label>Object type</label>
+                        <select class="schema-input" value="@_scriptObjectKind" @onchange="OnScriptObjectKindChanged">
+                            <option value="">Whole database</option>
+                            <option value="@SchemaObjectKind.Table">Table</option>
+                            <option value="@SchemaObjectKind.View">View</option>
+                            <option value="@SchemaObjectKind.Index">Index</option>
+                            <option value="@SchemaObjectKind.Trigger">Trigger</option>
+                            <option value="@SchemaObjectKind.Procedure">Procedure</option>
+                        </select>
+                    </div>
+                    <div class="schema-field">
+                        <label>Object</label>
+                        <select class="schema-input mono" value="@_scriptObjectName" @onchange="OnScriptObjectNameChanged" disabled="@IsWholeDatabaseScript">
+                            <option value="">Select object...</option>
+                            @foreach (CompareDeploySchemaObjectOption option in ScriptObjectOptions)
+                            {
+                                <option value="@option.Name">@FormatScriptObjectOption(option)</option>
+                            }
+                        </select>
+                    </div>
+                }
+                @if (_mode is CompareDeployMode.Data or CompareDeployMode.Drift)
+                {
+                    <div class="schema-field">
+                        <label>Key columns</label>
+                        <input class="schema-input mono"
+                               value="@_keyColumns"
+                               @oninput="OnKeyColumnsChanged"
+                               placeholder="primary key default" />
+                    </div>
+                    <div class="schema-field">
+                        <label>Preview rows</label>
+                        <input class="schema-input"
+                               type="number"
+                               min="0"
+                               max="10000"
+                               value="@_maxPreviewRows"
+                               @onchange="OnMaxPreviewRowsChanged" />
+                    </div>
+                }
+            </div>
+            @if (_mode == CompareDeployMode.Schema && SelectedScriptObjectKind == SchemaObjectKind.Table)
+            {
+                <div class="compare-deploy-related-options">
+                    <label>
+                        <input type="checkbox" checked="@_scriptIncludeIndexes" @onchange="OnScriptIncludeIndexesChanged" />
+                        Indexes
+                    </label>
+                    <label>
+                        <input type="checkbox" checked="@_scriptIncludeTriggers" @onchange="OnScriptIncludeTriggersChanged" />
+                        Triggers
+                    </label>
+                    <label>
+                        <input type="checkbox" checked="@_scriptIncludeRelatedViews" @onchange="OnScriptIncludeRelatedViewsChanged" />
+                        Related views
+                    </label>
+                    <label>
+                        <input type="checkbox" checked="@_scriptIncludeRelatedProcedures" @onchange="OnScriptIncludeRelatedProceduresChanged" />
+                        Related procedures
+                    </label>
+                </div>
+            }
+
+            @if (_mode == CompareDeployMode.Schema)
+            {
+                <div class="data-hygiene-actions">
+                    <button class="toolbar-btn primary" @onclick="RunSchemaCompareAsync" disabled="@(!CanRunSchema)">
+                        <i class="bi bi-search"></i> Compare Schema
+                    </button>
+                    <button class="toolbar-btn" @onclick="GenerateSchemaScriptAsync" disabled="@(!CanGenerateSchemaScript)">
+                        <i class="bi bi-file-earmark-code"></i> Preview Script
+                    </button>
+                    <button class="toolbar-btn" @onclick="ScriptSchemaSnapshotAsync" disabled="@(!CanScriptSchemaSnapshot)">
+                        <i class="bi bi-file-earmark-code"></i> Script Out
+                    </button>
+                    @if (IsSchemaStale)
+                    {
+                        <span class="data-hygiene-stale">Schema preview is stale</span>
+                    }
+                </div>
+
+                @if (_schemaReport is not null)
+                {
+                    <div class="compare-deploy-summary">
+                        <span><strong>@_schemaReport.Summary.TotalChanges</strong> change@Plural(_schemaReport.Summary.TotalChanges)</span>
+                        <span><strong>@_schemaReport.Summary.DestructiveChanges</strong> destructive</span>
+                        <span>@FormatElapsed(_schemaElapsed)</span>
+                    </div>
+                    @RenderSchemaChanges(_schemaReport)
+                }
+            }
+            else if (_mode == CompareDeployMode.Data)
+            {
+                <div class="data-hygiene-actions">
+                    <button class="toolbar-btn primary" @onclick="RunDataCompareAsync" disabled="@(!CanRunData)">
+                        <i class="bi bi-search"></i> Compare Data
+                    </button>
+                    <button class="toolbar-btn" @onclick="GenerateDataScriptAsync" disabled="@(!CanGenerateDataScript)">
+                        <i class="bi bi-file-earmark-code"></i> Preview Sync Script
+                    </button>
+                    @if (IsDataStale)
+                    {
+                        <span class="data-hygiene-stale">Data preview is stale</span>
+                    }
+                </div>
+
+                @if (_dataReport is not null)
+                {
+                    @RenderDataSummary(_dataReport, _dataElapsed)
+                    @RenderDataRows(_dataReport)
+                }
+            }
+            else if (_mode == CompareDeployMode.Drift)
+            {
+                <div class="data-hygiene-actions">
+                    <button class="toolbar-btn primary" @onclick="RunDriftReportAsync" disabled="@(!CanRunDrift)">
+                        <i class="bi bi-search"></i> Run Drift Report
+                    </button>
+                    <button class="toolbar-btn" @onclick="GenerateDriftSchemaScriptAsync" disabled="@(!CanGenerateDriftSchemaScript)">
+                        <i class="bi bi-file-earmark-code"></i> Preview Schema Script
+                    </button>
+                    <button class="toolbar-btn" @onclick="GenerateDriftDataScriptAsync" disabled="@(!CanGenerateDriftDataScript)">
+                        <i class="bi bi-file-earmark-code"></i> Preview Data Script
+                    </button>
+                    @if (IsDriftStale)
+                    {
+                        <span class="data-hygiene-stale">Drift preview is stale</span>
+                    }
+                </div>
+
+                @if (_driftReport is not null)
+                {
+                    <div class="compare-deploy-summary">
+                        <span><strong>@(_driftReport.Summary.HasDrift ? "Yes" : "No")</strong> drift</span>
+                        <span><strong>@_driftReport.Summary.SchemaChanges</strong> schema change@Plural(_driftReport.Summary.SchemaChanges)</span>
+                        <span><strong>@_driftReport.Summary.DataRowsDifferent</strong> data row@Plural(_driftReport.Summary.DataRowsDifferent)</span>
+                        <span>@FormatElapsed(_driftElapsed)</span>
+                    </div>
+                    @RenderSchemaChanges(_driftReport.Schema)
+                    @if (_driftReport.Data.Count > 0)
+                    {
+                        @RenderDataSummary(_driftReport.Data[0], _driftElapsed)
+                        @RenderDataRows(_driftReport.Data[0])
+                    }
+                }
+            }
+            </div>
+
+            <div class="compare-deploy-script-panel">
+                <div class="data-hygiene-result-header">
+                    <strong>Script preview</strong>
+                    <div class="compare-deploy-script-actions">
+                        @if (!string.IsNullOrWhiteSpace(_script) && !_scriptCurrent)
+                        {
+                            <span class="data-hygiene-stale">Script is stale</span>
+                        }
+                        <button class="toolbar-btn danger" @onclick="ApplyScriptAsync" disabled="@(!CanApplyScript)">
+                            <i class="bi bi-play-fill"></i> Apply Script
+                        </button>
+                    </div>
+                </div>
+                <textarea class="schema-input mono compare-deploy-script" readonly>@_script</textarea>
+            </div>
+        </section>
+    }
+</div>
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+
+    private CompareDeployMode _mode = CompareDeployMode.Schema;
+    private IReadOnlyList<string> _tables = [];
+    private bool _loading;
+    private string? _error;
+    private string? _status;
+    private int _appliedSeedVersion = -1;
+
+    private CompareDeployEndpointKind _sourceKind = CompareDeployEndpointKind.DatabaseFile;
+    private string _sourcePath = string.Empty;
+    private CompareDeployEndpointKind _targetKind = CompareDeployEndpointKind.CurrentDatabase;
+    private string _targetPath = string.Empty;
+    private string _tableName = string.Empty;
+    private CompareDeployScriptEndpoint _schemaScriptEndpoint = CompareDeployScriptEndpoint.Source;
+    private IReadOnlyList<CompareDeploySchemaObjectOption> _schemaObjects = [];
+    private string _scriptObjectKind = string.Empty;
+    private string _scriptObjectName = string.Empty;
+    private bool _scriptIncludeIndexes = true;
+    private bool _scriptIncludeTriggers = true;
+    private bool _scriptIncludeRelatedViews;
+    private bool _scriptIncludeRelatedProcedures;
+    private bool _scriptOnOpenRequested;
+    private string _keyColumns = string.Empty;
+    private int _maxPreviewRows = 100;
+
+    private SchemaDiffReport? _schemaReport;
+    private TimeSpan _schemaElapsed;
+    private string _schemaSignature = string.Empty;
+
+    private DataDiffReport? _dataReport;
+    private TimeSpan _dataElapsed;
+    private string _dataSignature = string.Empty;
+
+    private DriftReport? _driftReport;
+    private TimeSpan _driftElapsed;
+    private string _driftSignature = string.Empty;
+
+    private string _script = string.Empty;
+    private CompareDeployScriptKind _scriptKind = CompareDeployScriptKind.None;
+    private bool _scriptIsSnapshot;
+    private bool _scriptCurrent;
+    private string _scriptSignature = string.Empty;
+
+    private readonly List<CompareDeployHistoryEntry> _history = [];
+
+    private bool IsWholeDatabaseScript => string.IsNullOrWhiteSpace(_scriptObjectKind);
+
+    private SchemaObjectKind? SelectedScriptObjectKind =>
+        Enum.TryParse(_scriptObjectKind, out SchemaObjectKind kind) ? kind : null;
+
+    private IReadOnlyList<CompareDeploySchemaObjectOption> ScriptObjectOptions =>
+        SelectedScriptObjectKind is { } kind
+            ? _schemaObjects.Where(option => option.Kind == kind).ToArray()
+            : [];
+
+    private bool CanRunSchema =>
+        !_loading
+        && IsEndpointConfigured(_sourceKind, _sourcePath)
+        && IsEndpointConfigured(_targetKind, _targetPath);
+
+    private bool CanRunData =>
+        !_loading
+        && IsEndpointConfigured(_sourceKind, _sourcePath)
+        && IsEndpointConfigured(_targetKind, _targetPath)
+        && !string.IsNullOrWhiteSpace(_tableName);
+
+    private bool CanRunDrift =>
+        !_loading
+        && IsEndpointConfigured(_sourceKind, _sourcePath)
+        && IsEndpointConfigured(_targetKind, _targetPath);
+
+    private bool IsSchemaStale =>
+        _schemaReport is not null
+        && !string.Equals(_schemaSignature, BuildSchemaSignature(), StringComparison.Ordinal);
+
+    private bool IsDataStale =>
+        _dataReport is not null
+        && !string.Equals(_dataSignature, BuildDataSignature(), StringComparison.Ordinal);
+
+    private bool IsDriftStale =>
+        _driftReport is not null
+        && !string.Equals(_driftSignature, BuildDriftSignature(), StringComparison.Ordinal);
+
+    private bool CanGenerateSchemaScript =>
+        !_loading
+        && _schemaReport is not null
+        && !IsSchemaStale;
+
+    private bool CanScriptSchemaSnapshot =>
+        !_loading
+        && IsEndpointConfigured(
+            _schemaScriptEndpoint == CompareDeployScriptEndpoint.Source ? _sourceKind : _targetKind,
+            _schemaScriptEndpoint == CompareDeployScriptEndpoint.Source ? _sourcePath : _targetPath)
+        && (IsWholeDatabaseScript || !string.IsNullOrWhiteSpace(_scriptObjectName));
+
+    private bool CanGenerateDataScript =>
+        !_loading
+        && _dataReport is not null
+        && !IsDataStale;
+
+    private bool CanGenerateDriftSchemaScript =>
+        !_loading
+        && _driftReport is not null
+        && !IsDriftStale;
+
+    private bool CanGenerateDriftDataScript =>
+        !_loading
+        && _driftReport is { Data.Count: > 0 }
+        && !IsDriftStale;
+
+    private bool CanApplyScript =>
+        !_loading
+        && _scriptCurrent
+        && !string.IsNullOrWhiteSpace(_script)
+        && IsEndpointConfigured(_targetKind, _targetPath)
+        && CompareDeployAdminService.IsWritableEndpoint(BuildTargetEndpoint());
+
+    protected override async Task OnInitializedAsync()
+    {
+        ApplyCurrentSeed();
+        await RefreshMetadataAsync();
+        await SelectDefaultKeyAsync();
+        await RunScriptOnOpenAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!ApplyCurrentSeed())
+            return;
+
+        await RefreshMetadataAsync();
+        await SelectDefaultKeyAsync();
+        await RunScriptOnOpenAsync();
+    }
+
+    private bool ApplyCurrentSeed()
+    {
+        if (Tab is null || Tab.CompareDeploySeedVersion == _appliedSeedVersion)
+            return false;
+
+        _appliedSeedVersion = Tab.CompareDeploySeedVersion;
+        ApplySeed(Tab.InitialCompareDeploySeed);
+        return true;
+    }
+
+    private async Task RefreshMetadataAsync()
+    {
+        await RunAsync("Refresh metadata", CompareDeployAdminService.FormatEndpoint(BuildTargetEndpoint()), async () =>
+        {
+            _tables = IsEndpointConfigured(_targetKind, _targetPath)
+                ? await CompareDeploy.GetTableNamesAsync(BuildTargetEndpoint())
+                : [];
+            _schemaObjects = IsEndpointConfigured(
+                    _schemaScriptEndpoint == CompareDeployScriptEndpoint.Source ? _sourceKind : _targetKind,
+                    _schemaScriptEndpoint == CompareDeployScriptEndpoint.Source ? _sourcePath : _targetPath)
+                ? await CompareDeploy.GetSchemaObjectsAsync(BuildScriptEndpoint())
+                : [];
+            EnsureSelectedScriptObjectStillExists();
+            await SelectDefaultKeyAsync();
+            _status = $"{_tables.Count} table{(_tables.Count == 1 ? "" : "s")} loaded";
+        }, addSuccessHistory: false);
+    }
+
+    private void ApplySeed(CompareDeploySeed? seed)
+    {
+        if (seed is null)
+            return;
+
+        _mode = seed.Mode;
+        _sourceKind = seed.SourceKind;
+        _targetKind = seed.TargetKind;
+        if (!string.IsNullOrWhiteSpace(seed.TableName))
+            _tableName = seed.TableName.Trim();
+        if (!string.IsNullOrWhiteSpace(seed.SourcePath))
+            _sourcePath = seed.SourcePath.Trim();
+        if (!string.IsNullOrWhiteSpace(seed.TargetPath))
+            _targetPath = seed.TargetPath.Trim();
+        if (seed.ScriptEndpoint is { } scriptEndpoint)
+            _schemaScriptEndpoint = scriptEndpoint;
+        if (seed.ScriptObjectKind is { } scriptObjectKind)
+            _scriptObjectKind = scriptObjectKind.ToString();
+        if (!string.IsNullOrWhiteSpace(seed.ScriptObjectName))
+            _scriptObjectName = seed.ScriptObjectName.Trim();
+        else if (seed.ScriptObjectKind == SchemaObjectKind.Table && !string.IsNullOrWhiteSpace(seed.TableName))
+            _scriptObjectName = seed.TableName.Trim();
+        if (seed.ScriptIncludeIndexes is { } includeIndexes)
+            _scriptIncludeIndexes = includeIndexes;
+        if (seed.ScriptIncludeTriggers is { } includeTriggers)
+            _scriptIncludeTriggers = includeTriggers;
+        if (seed.ScriptIncludeRelatedViews is { } includeRelatedViews)
+            _scriptIncludeRelatedViews = includeRelatedViews;
+        if (seed.ScriptIncludeRelatedProcedures is { } includeRelatedProcedures)
+            _scriptIncludeRelatedProcedures = includeRelatedProcedures;
+        if (seed.ScriptOnOpen)
+            _scriptOnOpenRequested = true;
+
+        InvalidateScript();
+    }
+
+    private async Task RunScriptOnOpenAsync()
+    {
+        if (!_scriptOnOpenRequested)
+            return;
+
+        _scriptOnOpenRequested = false;
+        if (CanScriptSchemaSnapshot)
+            await ScriptSchemaSnapshotAsync();
+    }
+
+    private void SetMode(CompareDeployMode mode)
+    {
+        _mode = mode;
+        _error = null;
+    }
+
+    private string GetModeClass(CompareDeployMode mode)
+        => _mode == mode ? "toolbar-btn primary" : "toolbar-btn";
+
+    private void OnSourceKindChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse(e.Value?.ToString(), out CompareDeployEndpointKind kind))
+            _sourceKind = kind;
+
+        if (_sourceKind == CompareDeployEndpointKind.CurrentDatabase)
+            _sourcePath = string.Empty;
+
+        if (_schemaScriptEndpoint == CompareDeployScriptEndpoint.Source)
+            ClearScriptObjects();
+
+        InvalidateScript();
+    }
+
+    private void OnSourcePathChanged(ChangeEventArgs e)
+    {
+        _sourcePath = e.Value?.ToString() ?? string.Empty;
+        if (_schemaScriptEndpoint == CompareDeployScriptEndpoint.Source)
+            ClearScriptObjects();
+        InvalidateScript();
+    }
+
+    private async Task OnTargetKindChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse(e.Value?.ToString(), out CompareDeployEndpointKind kind))
+            _targetKind = kind;
+
+        if (_targetKind == CompareDeployEndpointKind.CurrentDatabase)
+            _targetPath = string.Empty;
+
+        _tables = [];
+        _tableName = string.Empty;
+        _keyColumns = string.Empty;
+        if (_schemaScriptEndpoint == CompareDeployScriptEndpoint.Target)
+            ClearScriptObjects();
+        InvalidateScript();
+
+        if (_targetKind == CompareDeployEndpointKind.CurrentDatabase)
+            await RefreshMetadataAsync();
+    }
+
+    private void OnTargetPathChanged(ChangeEventArgs e)
+    {
+        _targetPath = e.Value?.ToString() ?? string.Empty;
+        _tables = [];
+        _tableName = string.Empty;
+        _keyColumns = string.Empty;
+        if (_schemaScriptEndpoint == CompareDeployScriptEndpoint.Target)
+            ClearScriptObjects();
+        InvalidateScript();
+    }
+
+    private async Task OnTableChanged(ChangeEventArgs e)
+    {
+        _tableName = e.Value?.ToString() ?? string.Empty;
+        _keyColumns = string.Empty;
+        await SelectDefaultKeyAsync();
+        InvalidateScript();
+    }
+
+    private void OnKeyColumnsChanged(ChangeEventArgs e)
+    {
+        _keyColumns = e.Value?.ToString() ?? string.Empty;
+        InvalidateScript();
+    }
+
+    private async Task OnSchemaScriptEndpointChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse(e.Value?.ToString(), out CompareDeployScriptEndpoint endpoint))
+            _schemaScriptEndpoint = endpoint;
+
+        _schemaObjects = [];
+        _scriptObjectName = string.Empty;
+        InvalidateScript();
+
+        if (IsEndpointConfigured(
+                _schemaScriptEndpoint == CompareDeployScriptEndpoint.Source ? _sourceKind : _targetKind,
+                _schemaScriptEndpoint == CompareDeployScriptEndpoint.Source ? _sourcePath : _targetPath))
+        {
+            await RefreshMetadataAsync();
+        }
+    }
+
+    private void OnScriptObjectKindChanged(ChangeEventArgs e)
+    {
+        _scriptObjectKind = e.Value?.ToString() ?? string.Empty;
+        _scriptObjectName = string.Empty;
+        InvalidateScript();
+    }
+
+    private void OnScriptObjectNameChanged(ChangeEventArgs e)
+    {
+        _scriptObjectName = e.Value?.ToString() ?? string.Empty;
+        InvalidateScript();
+    }
+
+    private void OnScriptIncludeIndexesChanged(ChangeEventArgs e)
+    {
+        _scriptIncludeIndexes = IsChecked(e);
+        InvalidateScript();
+    }
+
+    private void OnScriptIncludeTriggersChanged(ChangeEventArgs e)
+    {
+        _scriptIncludeTriggers = IsChecked(e);
+        InvalidateScript();
+    }
+
+    private void OnScriptIncludeRelatedViewsChanged(ChangeEventArgs e)
+    {
+        _scriptIncludeRelatedViews = IsChecked(e);
+        InvalidateScript();
+    }
+
+    private void OnScriptIncludeRelatedProceduresChanged(ChangeEventArgs e)
+    {
+        _scriptIncludeRelatedProcedures = IsChecked(e);
+        InvalidateScript();
+    }
+
+    private void OnMaxPreviewRowsChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+            _maxPreviewRows = Math.Clamp(parsed, 0, 10000);
+
+        InvalidateScript();
+    }
+
+    private async Task SelectDefaultKeyAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_tableName) || !string.IsNullOrWhiteSpace(_keyColumns))
+            return;
+
+        try
+        {
+            var schema = await CompareDeploy.GetTableSchemaAsync(BuildTargetEndpoint(), _tableName);
+            string? primaryKey = schema?.Columns.FirstOrDefault(static column => column.IsPrimaryKey)?.Name;
+            if (!string.IsNullOrWhiteSpace(primaryKey))
+                _keyColumns = primaryKey;
+        }
+        catch
+        {
+            // Metadata refresh errors surface through explicit compare runs.
+        }
+    }
+
+    private async Task RunSchemaCompareAsync()
+    {
+        await RunAsync("Schema compare", BuildCompareLabel(), async () =>
+        {
+            CompareDeployRunResult<SchemaDiffReport> result = await CompareDeploy.CompareSchemaAsync(
+                BuildSourceEndpoint(),
+                BuildTargetEndpoint(),
+                string.IsNullOrWhiteSpace(_tableName) ? null : _tableName);
+            _schemaReport = result.Report;
+            _schemaElapsed = result.Elapsed;
+            _schemaSignature = BuildSchemaSignature();
+            _status = $"{_schemaReport.Summary.TotalChanges} schema change{Plural(_schemaReport.Summary.TotalChanges)}";
+            AddHistory("Schema compare", _sourcePath, _status, result.Elapsed);
+            InvalidateScript();
+        }, addSuccessHistory: false);
+    }
+
+    private async Task RunDataCompareAsync()
+    {
+        await RunAsync("Data compare", BuildCompareLabel(), async () =>
+        {
+            CompareDeployRunResult<DataDiffReport> result = await CompareDeploy.CompareDataAsync(
+                BuildSourceEndpoint(),
+                BuildTargetEndpoint(),
+                _tableName,
+                _keyColumns,
+                _maxPreviewRows);
+            _dataReport = result.Report;
+            _dataElapsed = result.Elapsed;
+            _dataSignature = BuildDataSignature();
+            _status = $"{DataDifferenceCount(_dataReport)} data difference{Plural(DataDifferenceCount(_dataReport))}";
+            AddHistory("Data compare", _tableName, _status, result.Elapsed);
+            InvalidateScript();
+        }, addSuccessHistory: false);
+    }
+
+    private async Task RunDriftReportAsync()
+    {
+        await RunAsync("Drift report", BuildCompareLabel(), async () =>
+        {
+            CompareDeployRunResult<DriftReport> result = await CompareDeploy.CreateDriftReportAsync(
+                BuildSourceEndpoint(),
+                BuildTargetEndpoint(),
+                string.IsNullOrWhiteSpace(_tableName) ? null : _tableName,
+                _keyColumns,
+                _maxPreviewRows);
+            _driftReport = result.Report;
+            _driftElapsed = result.Elapsed;
+            _driftSignature = BuildDriftSignature();
+            _status = _driftReport.Summary.HasDrift ? "Drift detected" : "No drift detected";
+            AddHistory("Drift report", _sourcePath, _status, result.Elapsed);
+            InvalidateScript();
+        }, addSuccessHistory: false);
+    }
+
+    private Task GenerateSchemaScriptAsync()
+    {
+        if (_schemaReport is null)
+            return Task.CompletedTask;
+
+        SetScript(CompareDeploy.RenderSchemaScript(_schemaReport), CompareDeployScriptKind.Schema, BuildSchemaSignature());
+        AddHistory("Preview schema script", _schemaReport.Source.DisplayName, $"{_schemaReport.Summary.TotalChanges} change{Plural(_schemaReport.Summary.TotalChanges)}", null);
+        return Task.CompletedTask;
+    }
+
+    private async Task ScriptSchemaSnapshotAsync()
+    {
+        CompareDeployEndpointSpec endpoint = BuildScriptEndpoint();
+        SchemaObjectKind? objectKind = SelectedScriptObjectKind;
+        string objectName = IsWholeDatabaseScript ? string.Empty : _scriptObjectName.Trim();
+        await RunAsync("Script schema", CompareDeployAdminService.FormatEndpoint(endpoint), async () =>
+        {
+            CompareDeployRunResult<string> result = await CompareDeploy.ScriptSchemaAsync(
+                endpoint,
+                new SchemaScriptOptions
+                {
+                    Scope = IsWholeDatabaseScript ? SchemaScriptScope.WholeDatabase : SchemaScriptScope.UserObjects,
+                    ObjectKind = objectKind,
+                    ObjectName = string.IsNullOrWhiteSpace(objectName) ? null : objectName,
+                    IncludeIndexes = _scriptIncludeIndexes,
+                    IncludeTriggers = _scriptIncludeTriggers,
+                    IncludeRelatedViews = _scriptIncludeRelatedViews,
+                    IncludeRelatedProcedures = _scriptIncludeRelatedProcedures,
+                });
+
+            SetScript(result.Report, CompareDeployScriptKind.Schema, BuildSchemaSnapshotSignature(endpoint, objectName), isSnapshot: true);
+            string scope = string.IsNullOrWhiteSpace(objectName) ? "whole database" : $"{objectKind} {objectName}";
+            _status = $"Scripted {scope}";
+            AddHistory("Script schema", CompareDeployAdminService.FormatEndpoint(endpoint), _status, result.Elapsed);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task GenerateDataScriptAsync()
+    {
+        await RunAsync("Preview data script", _tableName, async () =>
+        {
+            CompareDeployRunResult<DataDiffReport> result = await CompareDeploy.CompareDataAsync(
+                BuildSourceEndpoint(),
+                BuildTargetEndpoint(),
+                _tableName,
+                _keyColumns,
+                int.MaxValue);
+            _dataReport = result.Report;
+            _dataElapsed = result.Elapsed;
+            _dataSignature = BuildDataSignature();
+            SetScript(CompareDeploy.RenderDataScript(_dataReport), CompareDeployScriptKind.Data, BuildDataSignature());
+            AddHistory("Preview data script", _tableName, $"{DataDifferenceCount(_dataReport)} data difference{Plural(DataDifferenceCount(_dataReport))}", result.Elapsed);
+        }, addSuccessHistory: false);
+    }
+
+    private Task GenerateDriftSchemaScriptAsync()
+    {
+        if (_driftReport is null)
+            return Task.CompletedTask;
+
+        SetScript(CompareDeploy.RenderSchemaScript(_driftReport.Schema), CompareDeployScriptKind.Schema, BuildDriftSignature());
+        AddHistory("Preview drift schema script", _driftReport.Baseline.DisplayName, $"{_driftReport.Summary.SchemaChanges} schema change{Plural(_driftReport.Summary.SchemaChanges)}", null);
+        return Task.CompletedTask;
+    }
+
+    private async Task GenerateDriftDataScriptAsync()
+    {
+        if (_driftReport is null)
+            return;
+
+        await RunAsync("Preview drift data script", _tableName, async () =>
+        {
+            CompareDeployRunResult<DriftReport> result = await CompareDeploy.CreateDriftReportAsync(
+                BuildSourceEndpoint(),
+                BuildTargetEndpoint(),
+                string.IsNullOrWhiteSpace(_tableName) ? null : _tableName,
+                _keyColumns,
+                int.MaxValue);
+            _driftReport = result.Report;
+            _driftElapsed = result.Elapsed;
+            _driftSignature = BuildDriftSignature();
+            if (_driftReport.Data.Count == 0)
+                return;
+
+            DataDiffReport report = _driftReport.Data[0];
+            SetScript(CompareDeploy.RenderDataScript(report), CompareDeployScriptKind.Data, BuildDriftSignature());
+            AddHistory("Preview drift data script", report.TableName, $"{DataDifferenceCount(report)} data difference{Plural(DataDifferenceCount(report))}", result.Elapsed);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task ApplyScriptAsync()
+    {
+        if (!CanApplyScript)
+            return;
+
+        string message = BuildApplyConfirmation();
+        if (!await Modal.ConfirmAsync("Apply Preview Script", message, "Apply", isDanger: true))
+            return;
+
+        await RunAsync("Apply script", _scriptKind.ToString(), async () =>
+        {
+            CompareDeployEndpointSpec target = BuildTargetEndpoint();
+            CompareDeployApplyResult result = await CompareDeploy.ApplyScriptAsync(_script, target);
+            _scriptCurrent = false;
+            _status = $"Applied script, {result.RowsAffected} row{Plural(result.RowsAffected)} affected";
+            AddHistory("Apply script", CompareDeployAdminService.FormatEndpoint(target), _status, result.Elapsed);
+            if (target.Kind == CompareDeployEndpointKind.CurrentDatabase)
+                Changes.NotifyChanged();
+            Toast.Success(_status);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task RunAsync(string operation, string target, Func<Task> action, bool addSuccessHistory = true)
+    {
+        if (_loading)
+            return;
+
+        _loading = true;
+        _error = null;
+        try
+        {
+            await action();
+            if (addSuccessHistory)
+                AddHistory(operation, target, "Completed", null);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _status = operation + " failed";
+            AddHistory(operation, target, ex.Message, null, isError: true);
+            Toast.Error(ex.Message);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void SetScript(string script, CompareDeployScriptKind kind, string signature, bool isSnapshot = false)
+    {
+        _script = script;
+        _scriptKind = kind;
+        _scriptIsSnapshot = isSnapshot;
+        _scriptSignature = signature;
+        _scriptCurrent = true;
+    }
+
+    private void InvalidateScript()
+    {
+        if (string.IsNullOrWhiteSpace(_script))
+            return;
+
+        string currentSignature = _scriptKind switch
+        {
+            CompareDeployScriptKind.Schema when _scriptIsSnapshot => BuildCurrentSchemaSnapshotSignature(),
+            CompareDeployScriptKind.Schema when _mode == CompareDeployMode.Drift => BuildDriftSignature(),
+            CompareDeployScriptKind.Schema => BuildSchemaSignature(),
+            CompareDeployScriptKind.Data when _mode == CompareDeployMode.Drift => BuildDriftSignature(),
+            CompareDeployScriptKind.Data => BuildDataSignature(),
+            _ => string.Empty,
+        };
+
+        if (!string.Equals(_scriptSignature, currentSignature, StringComparison.Ordinal))
+            _scriptCurrent = false;
+    }
+
+    private string BuildSchemaSignature()
+        => $"{BuildEndpointSignature(BuildSourceEndpoint())}|{BuildEndpointSignature(BuildTargetEndpoint())}|{_tableName.Trim()}";
+
+    private string BuildDataSignature()
+        => $"{BuildEndpointSignature(BuildSourceEndpoint())}|{BuildEndpointSignature(BuildTargetEndpoint())}|{_tableName.Trim()}|{_keyColumns.Trim()}|{_maxPreviewRows}";
+
+    private string BuildDriftSignature()
+        => $"{BuildEndpointSignature(BuildSourceEndpoint())}|{BuildEndpointSignature(BuildTargetEndpoint())}|{_tableName.Trim()}|{_keyColumns.Trim()}|{_maxPreviewRows}";
+
+    private string BuildCurrentSchemaSnapshotSignature()
+    {
+        CompareDeployEndpointSpec endpoint = BuildScriptEndpoint();
+        string objectName = IsWholeDatabaseScript ? string.Empty : _scriptObjectName.Trim();
+        return BuildSchemaSnapshotSignature(endpoint, objectName);
+    }
+
+    private string BuildSchemaSnapshotSignature(CompareDeployEndpointSpec endpoint, string objectName)
+        => $"snapshot|{_schemaScriptEndpoint}|{SelectedScriptObjectKind?.ToString() ?? "Database"}|{BuildEndpointSignature(endpoint)}|{objectName.Trim()}|{_scriptIncludeIndexes}|{_scriptIncludeTriggers}|{_scriptIncludeRelatedViews}|{_scriptIncludeRelatedProcedures}";
+
+    private string BuildApplyConfirmation()
+    {
+        string summary = _scriptKind switch
+        {
+            CompareDeployScriptKind.Schema when _mode == CompareDeployMode.Drift && _driftReport is not null =>
+                $"{_driftReport.Summary.SchemaChanges} schema change{Plural(_driftReport.Summary.SchemaChanges)}, {_driftReport.Summary.DestructiveSchemaChanges} destructive",
+            CompareDeployScriptKind.Schema when _schemaReport is not null =>
+                $"{_schemaReport.Summary.TotalChanges} schema change{Plural(_schemaReport.Summary.TotalChanges)}, {_schemaReport.Summary.DestructiveChanges} destructive",
+            CompareDeployScriptKind.Data when _mode == CompareDeployMode.Drift && _driftReport is { Data.Count: > 0 } =>
+                FormatDataApplySummary(_driftReport.Data[0]),
+            CompareDeployScriptKind.Data when _dataReport is not null =>
+                FormatDataApplySummary(_dataReport),
+            _ => "Preview script",
+        };
+
+        return $"Operation: {_scriptKind}\nSource: {CompareDeployAdminService.FormatEndpoint(BuildSourceEndpoint())}\nTarget: {CompareDeployAdminService.FormatEndpoint(BuildTargetEndpoint())}\nTable: {Display(_tableName)}\nSummary: {summary}";
+    }
+
+    private void AddHistory(string operation, string target, string summary, TimeSpan? elapsed, bool isError = false)
+    {
+        _history.Insert(0, new CompareDeployHistoryEntry(DateTime.UtcNow, operation, target, summary, elapsed, isError));
+        if (_history.Count > 50)
+            _history.RemoveRange(50, _history.Count - 50);
+    }
+
+    private void ClearHistory() => _history.Clear();
+
+    private RenderFragment RenderSchemaChanges(SchemaDiffReport report) => @<table class="schema-table">
+        <thead>
+            <tr>
+                <th>Action</th>
+                <th>Object</th>
+                <th>Name</th>
+                <th>Warning</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (report.Changes.Count == 0)
+            {
+                <tr><td colspan="4" class="empty-cell">No schema differences found</td></tr>
+            }
+            else
+            {
+                @foreach (SchemaDiffChange change in report.Changes)
+                {
+                    <tr class="@(change.IsDestructive ? "danger-row" : "")">
+                        <td>@change.ChangeKind</td>
+                        <td>@change.ObjectKind</td>
+                        <td class="mono-cell">@change.Name</td>
+                        <td>@Display(change.Warning)</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>;
+
+    private RenderFragment RenderDataSummary(DataDiffReport report, TimeSpan elapsed) => @<div class="compare-deploy-summary">
+        <span><strong>@report.Summary.SourceRowCount</strong> source rows</span>
+        <span><strong>@report.Summary.TargetRowCount</strong> target rows</span>
+        <span><strong>@report.Summary.SourceOnlyRows</strong> inserts</span>
+        <span><strong>@report.Summary.ChangedRows</strong> updates</span>
+        <span><strong>@report.Summary.TargetOnlyRows</strong> deletes</span>
+        <span>@FormatElapsed(elapsed)</span>
+    </div>;
+
+    private RenderFragment RenderDataRows(DataDiffReport report) => @<table class="schema-table">
+        <thead>
+            <tr>
+                <th>Action</th>
+                <th>Key</th>
+                <th>Changed columns</th>
+                <th>Source values</th>
+                <th>Target values</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (report.Rows.Count == 0)
+            {
+                <tr><td colspan="5" class="empty-cell">No row differences in preview</td></tr>
+            }
+            else
+            {
+                @foreach (DataDiffRow row in report.Rows)
+                {
+                    <tr class="@(row.ChangeKind == DataChangeKind.TargetOnly ? "danger-row" : "")">
+                        <td>@row.ChangeKind</td>
+                        <td class="mono-cell">@FormatDictionary(row.Key)</td>
+                        <td class="mono-cell">@Display(string.Join(", ", row.ChangedColumns))</td>
+                        <td class="mono-cell">@FormatDictionary(row.SourceValues)</td>
+                        <td class="mono-cell">@FormatDictionary(row.TargetValues)</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>;
+
+    private static int DataDifferenceCount(DataDiffReport report)
+        => report.Summary.SourceOnlyRows + report.Summary.TargetOnlyRows + report.Summary.ChangedRows + report.Summary.UnmatchedRows;
+
+    private static string FormatDataApplySummary(DataDiffReport report)
+        => $"{report.Summary.SourceOnlyRows} insert{Plural(report.Summary.SourceOnlyRows)}, {report.Summary.ChangedRows} update{Plural(report.Summary.ChangedRows)}, {report.Summary.TargetOnlyRows} delete{Plural(report.Summary.TargetOnlyRows)}";
+
+    private static string FormatDictionary(IReadOnlyDictionary<string, object?>? values)
+    {
+        if (values is null || values.Count == 0)
+            return string.Empty;
+
+        return TrimForGrid(string.Join(", ", values.Select(kvp => $"{kvp.Key}={FormatValue(kvp.Value)}")));
+    }
+
+    private static string FormatValue(object? value) => value switch
+    {
+        null => "NULL",
+        byte[] bytes => "0x" + Convert.ToHexString(bytes),
+        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
+        _ => value.ToString() ?? string.Empty,
+    };
+
+    private static string TrimForGrid(string value)
+        => value.Length <= 220 ? value : value[..217] + "...";
+
+    private static string Display(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "None" : value;
+
+    private static string FormatElapsed(TimeSpan elapsed)
+        => elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture) + " ms";
+
+    private static string Plural(int count)
+        => count == 1 ? string.Empty : "s";
+
+    private CompareDeployEndpointSpec BuildSourceEndpoint()
+        => new(_sourceKind, _sourceKind == CompareDeployEndpointKind.CurrentDatabase ? null : _sourcePath);
+
+    private CompareDeployEndpointSpec BuildTargetEndpoint()
+        => new(_targetKind, _targetKind == CompareDeployEndpointKind.CurrentDatabase ? null : _targetPath);
+
+    private CompareDeployEndpointSpec BuildScriptEndpoint()
+        => _schemaScriptEndpoint == CompareDeployScriptEndpoint.Source
+            ? BuildSourceEndpoint()
+            : BuildTargetEndpoint();
+
+    private string BuildCompareLabel()
+        => $"{CompareDeployAdminService.FormatEndpoint(BuildSourceEndpoint())} -> {CompareDeployAdminService.FormatEndpoint(BuildTargetEndpoint())}";
+
+    private void ClearScriptObjects()
+    {
+        _schemaObjects = [];
+        _scriptObjectName = string.Empty;
+    }
+
+    private void EnsureSelectedScriptObjectStillExists()
+    {
+        if (IsWholeDatabaseScript || string.IsNullOrWhiteSpace(_scriptObjectName))
+            return;
+
+        if (!ScriptObjectOptions.Any(option => option.Name.Equals(_scriptObjectName, StringComparison.OrdinalIgnoreCase)))
+            _scriptObjectName = string.Empty;
+    }
+
+    private static string FormatScriptObjectOption(CompareDeploySchemaObjectOption option)
+        => string.IsNullOrWhiteSpace(option.ParentName)
+            ? option.Name
+            : $"{option.Name} ({option.ParentName})";
+
+    private static bool IsChecked(ChangeEventArgs e)
+        => e.Value switch
+        {
+            bool value => value,
+            string text => string.Equals(text, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "on", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
+
+    private static bool IsEndpointConfigured(CompareDeployEndpointKind kind, string path)
+        => kind == CompareDeployEndpointKind.CurrentDatabase || !string.IsNullOrWhiteSpace(path);
+
+    private static string GetPathPlaceholder(CompareDeployEndpointKind kind)
+        => kind switch
+        {
+            CompareDeployEndpointKind.DatabaseFile => @"C:\path\database.db",
+            CompareDeployEndpointKind.TableArchive => @"C:\path\table.csdbtable",
+            _ => "Current Admin database",
+        };
+
+    private static string BuildEndpointSignature(CompareDeployEndpointSpec endpoint)
+        => endpoint.Kind == CompareDeployEndpointKind.CurrentDatabase
+            ? endpoint.Kind.ToString()
+            : $"{endpoint.Kind}:{NormalizePathForSignature(endpoint.Path ?? string.Empty)}";
+
+    private static string NormalizePathForSignature(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        try
+        {
+            return System.IO.Path.GetFullPath(value.Trim());
+        }
+        catch
+        {
+            return value.Trim();
+        }
+    }
+}

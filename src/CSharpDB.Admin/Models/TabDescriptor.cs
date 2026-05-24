@@ -19,7 +19,8 @@ public enum TabKind
     ReportPreview,
     ImportExport,
     DataModel,
-    DataHygiene
+    DataHygiene,
+    CompareDeploy
 }
 
 public sealed class TabDescriptor
@@ -101,6 +102,18 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("DataHygieneSeedVersion", out var v) && v is int version ? version : 0;
         set => State["DataHygieneSeedVersion"] = value;
+    }
+
+    public CompareDeploySeed? InitialCompareDeploySeed
+    {
+        get => State.TryGetValue("InitialCompareDeploySeed", out var v) ? v as CompareDeploySeed : null;
+        set => State["InitialCompareDeploySeed"] = value;
+    }
+
+    public int CompareDeploySeedVersion
+    {
+        get => State.TryGetValue("CompareDeploySeedVersion", out var v) && v is int version ? version : 0;
+        set => State["CompareDeploySeedVersion"] = value;
     }
 
     public object? InitialRecordId

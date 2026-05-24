@@ -17,6 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.DevOps" />
     <InternalsVisibleTo Include="CSharpDB.Tests" />
   </ItemGroup>
 
