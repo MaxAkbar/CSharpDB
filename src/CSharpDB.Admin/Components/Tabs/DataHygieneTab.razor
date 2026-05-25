@@ -105,38 +105,48 @@
                     <strong>@_duplicatePreview.Rows.Count duplicate group@(_duplicatePreview.Rows.Count == 1 ? "" : "s")</strong>
                     <span>@FormatElapsed(_duplicatePreview.Elapsed)</span>
                 </div>
-                <table class="schema-table">
-                    <thead>
-                        <tr>
-                            <th>Key</th>
-                            <th>Group</th>
-                            <th>Winner rowid</th>
-                            <th>Winner PK</th>
-                            <th>Duplicate rowids</th>
-                            <th>Duplicate PKs</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @if (_duplicatePreview.Rows.Count == 0)
-                        {
-                            <tr><td colspan="6" class="empty-cell">No duplicate groups found</td></tr>
-                        }
-                        else
-                        {
-                            @foreach (DataHygieneDuplicateGroup row in _duplicatePreview.Rows)
+                <div class="data-hygiene-table-wrap">
+                    <table class="schema-table data-hygiene-results-table duplicate-results-table">
+                        <colgroup>
+                            <col class="duplicate-key-col" />
+                            <col class="duplicate-count-col" />
+                            <col class="duplicate-winner-col" />
+                            <col class="duplicate-winner-col" />
+                            <col class="duplicate-list-col" />
+                            <col class="duplicate-list-col" />
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th>Key</th>
+                                <th>Group</th>
+                                <th>Winner rowid</th>
+                                <th>Winner PK</th>
+                                <th>Duplicate rowids</th>
+                                <th>Duplicate PKs</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (_duplicatePreview.Rows.Count == 0)
                             {
-                                <tr>
-                                    <td class="mono-cell">@Display(row.KeyValues)</td>
-                                    <td>@row.GroupSize.ToString(CultureInfo.InvariantCulture)</td>
-                                    <td class="mono-cell">@Display(row.WinnerRowId)</td>
-                                    <td class="mono-cell">@Display(row.WinnerPrimaryKey)</td>
-                                    <td class="mono-cell">@Display(row.DuplicateRowIds)</td>
-                                    <td class="mono-cell">@Display(row.DuplicatePrimaryKeys)</td>
-                                </tr>
+                                <tr><td colspan="6" class="empty-cell">No duplicate groups found</td></tr>
                             }
-                        }
-                    </tbody>
-                </table>
+                            else
+                            {
+                                @foreach (DataHygieneDuplicateGroup row in _duplicatePreview.Rows)
+                                {
+                                    <tr>
+                                        <td class="mono-cell"><span class="data-hygiene-cell-preview">@DisplayPreview(row.KeyValues)</span></td>
+                                        <td>@row.GroupSize.ToString(CultureInfo.InvariantCulture)</td>
+                                        <td class="mono-cell">@Display(row.WinnerRowId)</td>
+                                        <td class="mono-cell">@Display(row.WinnerPrimaryKey)</td>
+                                        <td class="mono-cell"><span class="data-hygiene-cell-preview">@DisplayDuplicateMembers(row.DuplicateRowIds, row.GroupSize)</span></td>
+                                        <td class="mono-cell"><span class="data-hygiene-cell-preview">@DisplayDuplicateMembers(row.DuplicatePrimaryKeys, row.GroupSize)</span></td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
             }
         </section>
     }
@@ -890,6 +900,22 @@
 
     private static string Display(string? value)
         => string.IsNullOrEmpty(value) ? "NULL" : value;
+
+    private static string DisplayPreview(string? value, int maxLength = 140)
+    {
+        string text = Display(value);
+        return text.Length <= maxLength ? text : text[..maxLength] + "...";
+    }
+
+    private static string DisplayDuplicateMembers(string? value, long groupSize)
+    {
+        string text = Display(value);
+        if (text.Length <= 160)
+            return text;
+
+        long duplicateCount = Math.Max(0, groupSize - 1);
+        return text[..160] + $"... ({duplicateCount.ToString("N0", CultureInfo.InvariantCulture)} total)";
+    }
 
     private static string FormatElapsed(TimeSpan elapsed)
         => elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture) + " ms";
