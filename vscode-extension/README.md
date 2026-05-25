@@ -1,6 +1,6 @@
 # CSharpDB VS Code Extension
 
-This folder contains the first working implementation of the CSharpDB VS Code extension described in [`docs/vscode-extension/README.md`](../docs/vscode-extension/README.md).
+This folder contains the first working implementation of the CSharpDB VS Code extension. The public extension overview is part of the [Tools & Ecosystem documentation](https://csharpdb.com/docs/ecosystem.html).
 
 ## Features
 

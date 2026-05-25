@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Admin Collections UI — CSharpDB</title>
+    <meta name="description" content="CSharpDB Admin Collections UI guide for browsing, editing, creating, and deleting JSON collection documents.">
+    <link rel="canonical" href="https://csharpdb.com/docs/admin-collections.html">
+    <meta property="og:title" content="Admin Collections UI — CSharpDB">
+    <meta property="og:description" content="CSharpDB Admin Collections UI guide for browsing, editing, creating, and deleting JSON collection documents.">
+    <meta property="og:url" content="https://csharpdb.com/docs/admin-collections.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Admin Collections UI",
+        "description": "CSharpDB Admin Collections UI guide for browsing, editing, creating, and deleting JSON collection documents.",
+        "url": "https://csharpdb.com/docs/admin-collections.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Admin Collections UI',
+        description: 'CSharpDB Admin Collections UI guide for browsing, editing, creating, and deleting JSON collection documents.',
+        keywords: 'CSharpDB Admin Collections, document collections, JSON editor, collection UI',
+        canonicalPath: 'docs/admin-collections.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#summary">Summary</a></li>
+                        <li><a href="#user-experience">User Experience</a></li>
+                        <li><a href="#collection-tab-behavior">Collection Tab Behavior</a></li>
+                        <li><a href="#defaults">Defaults</a></li>
+                        <li><a href="#verification">Verification</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/admin-collections-ui/README.md because it documents shipped Admin behavior.</div>
+<h1 id="admin-collections-ui">Admin Collections UI</h1>
+<h2 id="summary">Summary</h2>
+<p>The Admin app now treats document collections as first-class objects alongside
+tables, views, forms, and reports. The first implementation is a browser and
+JSON editor built on the existing collection client APIs:</p>
+<ul>
+<li>list collection names</li>
+<li>browse documents by page</li>
+<li>fetch one document by exact key</li>
+<li>create or update a document</li>
+<li>delete a document</li>
+</ul>
+<p>This deliberately avoids new engine, HTTP, gRPC, or client contracts. Collection
+path-index management, document-content search, collection rename, and
+collection drop remain future work.</p>
+<h2 id="user-experience">User Experience</h2>
+<ul>
+<li>Object Explorer has a <code>Collections</code> filter chip and group.</li>
+<li>The collection group menu supports <code>New Collection...</code> and <code>Refresh</code>.</li>
+<li>Collection item menus support <code>Open</code>, <code>New Document...</code>, and <code>Copy Name</code>.</li>
+<li>The command palette includes <code>New Collection</code> plus one entry for each existing
+collection.</li>
+<li>Each collection opens in a dedicated <code>collection:{name}</code> tab using the same
+toolbar, pager, grid, and detail-panel language as table data tabs.</li>
+</ul>
+<h2 id="collection-tab-behavior">Collection Tab Behavior</h2>
+<ul>
+<li>The grid shows row number, document key, JSON kind, and a compact preview.</li>
+<li>The detail panel shows indented JSON for the selected document.</li>
+<li>Existing document keys are read-only.</li>
+<li>New documents require a nonblank key and valid JSON before save is enabled.</li>
+<li>Save writes through <code>PutDocumentAsync(collectionName, key, document)</code>.</li>
+<li>Delete writes through <code>DeleteDocumentAsync(collectionName, key)</code> after
+confirmation.</li>
+<li>Successful writes notify Admin change listeners and refresh the current page.</li>
+<li>Exact-key lookup uses <code>GetDocumentAsync(collectionName, key)</code>.</li>
+</ul>
+<h2 id="defaults">Defaults</h2>
+<ul>
+<li>Default page size is <code>25</code>.</li>
+<li>Supported page sizes are <code>10</code>, <code>25</code>, <code>50</code>, and <code>100</code>.</li>
+<li>Collection names use the same simple identifier shape as the direct client:
+<code>^[A-Za-z_][A-Za-z0-9_]*$</code>.</li>
+<li>Deleting all documents leaves the collection itself in place because there is
+no drop-collection API today.</li>
+<li>Generated collection model metadata is not surfaced; documents are edited as
+raw JSON.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<p>Run the focused Admin checks after collection UI changes:</p>
+<pre><code class="language-powershell">dotnet build src/CSharpDB.Admin/CSharpDB.Admin.csproj
+dotnet test tests/CSharpDB.Admin.Forms.Tests/CSharpDB.Admin.Forms.Tests.csproj
+</code></pre>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

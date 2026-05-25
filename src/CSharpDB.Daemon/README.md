@@ -583,8 +583,8 @@ Not implemented yet in this host:
 - TLS-specific configuration helpers
 - admin endpoints beyond the existing database REST API
 
-For broader future direction, see
-[`docs/roadmap.md`](../../docs/roadmap.md).
+For broader future direction, see the
+[CSharpDB roadmap](https://csharpdb.com/roadmap.html).
 
 ## Troubleshooting
 
@@ -633,4 +633,4 @@ Important files:
 This README documents the current daemon implementation, v3.4.0 service
 packaging, v3.4.0 REST/gRPC host consolidation, and opt-in API-key security.
 Authorization, TLS/mTLS helpers, and marketplace distribution remain tracked in
-[`docs/roadmap.md`](../../docs/roadmap.md).
+the [CSharpDB roadmap](https://csharpdb.com/roadmap.html).

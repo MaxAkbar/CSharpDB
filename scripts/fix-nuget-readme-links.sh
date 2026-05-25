@@ -36,7 +36,7 @@ for readme in "$@"; do
       $github     = "'"$github_url"'";
       $site       = "'"$site_url"'";
 
-      # Mapping from docs/ markdown paths to www HTML paths
+      # Mapping from legacy docs/ markdown paths to www HTML paths
       %docs_map = (
         "docs/cli.md"                                    => "docs/cli.html",
         "docs/faq.md"                                    => "docs/faq.html",
@@ -44,16 +44,30 @@ for readme in "$@"; do
         "docs/rest-api.md"                               => "docs/rest-api.html",
         "docs/mcp-server.md"                             => "docs/mcp-server.html",
         "docs/storage-inspector.md"                      => "docs/storage-inspector.html",
-        "docs/architecture.md"                           => "docs/architecture.html",
-        "docs/getting-started.md"                        => "getting-started.html",
+        "docs/architecture.md"                           => "architecture.html",
+        "docs/getting-started.md"                        => "docs/getting-started.html",
         "docs/roadmap.md"                                => "roadmap.html",
+        "docs/ado-ef-storage-tuning/README.md"           => "docs/ado-ef-storage-tuning.html",
+        "docs/admin-collections-ui/README.md"             => "docs/admin-collections.html",
+        "docs/admin-forms-access-parity/form-control-extensibility.md" => "docs/form-control-extensibility.html",
+        "docs/configuration.md"                          => "docs/configuration.html",
+        "docs/database-devops-toolkit/README.md"          => "docs/database-devops.html",
         "docs/database-encryption/README.md"              => "docs/database-encryption.html",
         "docs/deployment/README.md"                       => "docs/deployment.html",
         "docs/low-latency-durable-writes/README.md"       => "docs/low-latency-writes.html",
         "docs/pub-sub-events/README.md"                   => "docs/pub-sub-events.html",
         "docs/storage/README.md"                          => "docs/storage-engine.html",
-        "docs/user-defined-functions/README.md"            => "docs/user-defined-functions.html",
+        "docs/user-defined-functions/README.md"            => "docs/trusted-csharp-functions.html",
+        "docs/trusted-csharp-functions/README.md"          => "docs/trusted-csharp-functions.html",
+        "docs/trusted-csharp-functions/access-style-macro-actions.md" => "docs/access-style-macro-actions.html",
+        "docs/trusted-csharp-functions/validation-rules.md" => "docs/trusted-validation-rules.html",
+        "docs/query-and-durable-write-performance/csharpdb-vs-sqlite-performance-guide.md" => "docs/csharpdb-vs-sqlite-performance-guide.html",
+        "docs/query-and-durable-write-performance/csharpdb-vs-sqlite-benchmarking-blog.md" => "blog/csharpdb-vs-sqlite-benchmarking-reference.html",
+        "docs/performance.md"                             => "docs/performance-reference.html",
+        "docs/query-execution-pipeline.md"                 => "docs/query-execution-pipeline.html",
+        "docs/sql-reference.md"                            => "docs/sql-reference.html",
         "docs/tutorials/README.md"                         => "docs/tutorials/index.html",
+        "docs/tutorials/fulfillment-ops-admin-automation.md" => "docs/tutorials/fulfillment-ops-admin-automation.html",
         "docs/tutorials/native-ffi/README.md"              => "docs/tutorials/native-ffi.html",
         "docs/tutorials/native-ffi/javascript/README.md"   => "docs/tutorials/native-ffi-javascript.html",
         "docs/tutorials/native-ffi/python/README.md"       => "docs/tutorials/native-ffi-python.html",

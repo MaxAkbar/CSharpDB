@@ -18,10 +18,9 @@ The release and local workflow notes are grouped by audience:
 - Store release maintainers use
   `scripts/Publish-CSharpDbAdminStorePackage.ps1` on Windows to produce the
   CSharpDB Studio MSIX and `.msixupload` artifacts for Partner Center.
-- Mac/Linux Studio direct-download packaging is planned in
-  [`docs/admin-mac-linux-studio/README.md`](../docs/admin-mac-linux-studio/README.md).
-  It uses a native launcher plus the user's default browser instead of an
-  embedded WebView shell.
+- Mac/Linux Studio direct-download packaging remains planned future work. It
+  uses a native launcher plus the user's default browser instead of an embedded
+  WebView shell.
 - Operators use the service scripts after a release is published. These scripts
   are included inside each daemon archive under `service/`.
 - Developers use `Start-CSharpDbAdminAndDaemon.ps1` and

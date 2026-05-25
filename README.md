@@ -206,18 +206,18 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 
 ## How CSharpDB Compares
 
-| Feature | CSharpDB | SQLite | LiteDB | RocksDB |
-|---------|:--------:|:------:|:------:|:-------:|
-| Pure .NET / no native binaries | ✅ | ❌ | ✅ | ❌ |
-| Full SQL (JOINs, CTEs, subqueries) | ✅ | ✅ | ❌ | ❌ |
-| NoSQL Collection API | ✅ | ❌ | ✅ | ❌ |
-| ACID transactions | ✅ | ✅ | ✅ | ✅ |
-| REST API / gRPC | ✅ | ❌ | ❌ | ❌ |
-| Admin UI | ✅ | ❌ | ❌ | ❌ |
-| MCP server (AI agents) | ✅ | ❌ | ❌ | ❌ |
-| VS Code extension | ✅ | ❌ | ❌ | ❌ |
-| Multi-language SDKs | ✅ | ✅ | ❌ | ✅ |
-| Mature ecosystem / battle-tested | ❌ | ✅ | ✅ | ✅ |
+| Feature | CSharpDB | SQLite | LiteDB | RocksDB | Microsoft Access |
+|---------|:--------:|:------:|:------:|:-------:|:----------------:|
+| Pure .NET / no native binaries | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Full SQL (JOINs, CTEs, subqueries) | ✅ | ✅ | ❌ | ❌ | Partial |
+| NoSQL Collection API | ✅ | ❌ | ✅ | ❌ | ❌ |
+| ACID transactions | ✅ | ✅ | ✅ | ✅ | ✅ |
+| REST API / gRPC | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Admin UI | ✅ | ❌ | ❌ | ❌ | ✅ |
+| MCP server (AI agents) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| VS Code extension | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Multi-language SDKs | ✅ | ✅ | ❌ | ✅ | Partial |
+| Mature ecosystem / battle-tested | ❌ | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
@@ -253,7 +253,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [Architecture Guide](https://csharpdb.com/architecture.html) | Engine design deep dive |
 | [Tools & Ecosystem](https://csharpdb.com/docs/ecosystem.html) | APIs, hosts, designers, and integrations |
 | [EF Core Provider](https://csharpdb.com/docs/entity-framework-core.html) | Embedded EF Core 10 provider guide |
-| [Trusted C# Callbacks](docs/trusted-csharp-functions/README.md) | Register in-process C# functions, commands, and validation rules for SQL, forms, reports, and pipelines |
+| [Trusted C# Callbacks](https://csharpdb.com/docs/trusted-csharp-functions.html) | Register in-process C# functions, commands, and validation rules for SQL, forms, reports, and pipelines |
 | [Trusted C# Host Sample](samples/trusted-csharp-host/README.md) | VS Code-ready C# host project for trusted functions, commands, validation rules, and form actions |
 | [Admin UI Guide](https://csharpdb.com/docs/admin-ui.html) | Querying, schema, pipelines, forms, reports, and storage |
 | [CSharpDB.Client](src/CSharpDB.Client/README.md) | Unified client API and transports |
@@ -265,7 +265,6 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [CLI Reference](https://csharpdb.com/docs/cli.html) | REPL commands |
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
-| [CSharpDB and SharpCoreDB](docs/comparisons/sharpcoredb.md) | Evidence-based comparison and fit guidance |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
 | [Internals & Contributing](https://csharpdb.com/docs/internals.html) | Project structure and concurrency model |
 | [FAQ](https://csharpdb.com/docs/faq.html) | Common questions |

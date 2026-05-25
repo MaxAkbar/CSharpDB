@@ -156,7 +156,7 @@ This is useful when you want to:
 - change output filenames for a particular benchmark run
 - experiment with different generation rules without touching the defaults
 
-The spec format is documented in the [data generation plan](../../docs/CSharpDB-Data-Generation.md).
+The spec format is documented in this README and by the built-in examples under `Specs/`.
 
 ## Output details
 

@@ -1587,5 +1587,5 @@ Hot-cache point-lookup reference for CSharpDB:
 ## See Also
 
 - [Project README](../../README.md)
-- [Architecture Guide](../../docs/architecture.md)
-- [Roadmap](../../docs/roadmap.md)
+- [Architecture Guide](https://csharpdb.com/architecture.html)
+- [Roadmap](https://csharpdb.com/roadmap.html)

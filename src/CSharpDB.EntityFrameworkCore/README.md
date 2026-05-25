@@ -233,7 +233,7 @@ The provider depends on:
 
 - [EF Core provider guide](https://csharpdb.com/docs/entity-framework-core.html)
 - [EF Core provider sample](../../samples/efcore-provider/README.md)
-- [ADO.NET and EF storage tuning notes](../../docs/ado-ef-storage-tuning/README.md)
+- [ADO.NET and EF storage tuning notes](https://csharpdb.com/docs/ado-ef-storage-tuning.html)
 
 ## License
 

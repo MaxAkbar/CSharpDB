@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Access-Style Macro Actions — CSharpDB</title>
+    <meta name="description" content="Admin Forms action sequence verbs for Access-style UI, data, SQL, procedure, and navigation automation.">
+    <link rel="canonical" href="https://csharpdb.com/docs/access-style-macro-actions.html">
+    <meta property="og:title" content="Access-Style Macro Actions — CSharpDB">
+    <meta property="og:description" content="Admin Forms action sequence verbs for Access-style UI, data, SQL, procedure, and navigation automation.">
+    <meta property="og:url" content="https://csharpdb.com/docs/access-style-macro-actions.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Access-Style Macro Actions",
+        "description": "Admin Forms action sequence verbs for Access-style UI, data, SQL, procedure, and navigation automation.",
+        "url": "https://csharpdb.com/docs/access-style-macro-actions.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Access-Style Macro Actions',
+        description: 'Admin Forms action sequence verbs for Access-style UI, data, SQL, procedure, and navigation automation.',
+        keywords: 'CSharpDB Access style macro actions, Admin Forms actions, runProcedure, runSql, openForm',
+        canonicalPath: 'docs/access-style-macro-actions.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#supported-actions">Supported Actions</a></li>
+                        <li><a href="#filter-expressions">Filter Expressions</a></li>
+                        <li><a href="#open-form-arguments">Open Form Arguments</a></li>
+                        <li><a href="#sql-and-procedure-actions">SQL And Procedure Actions</a></li>
+                        <li><a href="#conditional-ui-rules">Conditional UI Rules</a></li>
+                        <li><a href="#diagnostics">Diagnostics</a></li>
+                        <li><a href="#sample">Sample</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/trusted-csharp-functions/access-style-macro-actions.md because it documents shipped Admin Forms action behavior.</div>
+<h1 id="access-style-macro-actions">Access-Style Macro Actions</h1>
+<p>Phase 8 extends Admin Forms action sequences with Access-style UI and data actions. The action metadata still stays declarative: host applications own executable C# callbacks, SQL/procedure opt-in policy, database connections, and navigation behavior.</p>
+<h2 id="supported-actions">Supported Actions</h2>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Action</th>
+  <th>Runtime behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>openForm</code></td>
+  <td>Resolves a form by id or name and asks the host to open it. Arguments can include <code>mode</code>, <code>recordId</code>, <code>primaryKey</code>, <code>id</code>, <code>filter</code>, or <code>where</code>.</td>
+</tr>
+<tr>
+  <td><code>closeForm</code></td>
+  <td>Asks the host to close the active form entry tab or surface.</td>
+</tr>
+<tr>
+  <td><code>applyFilter</code></td>
+  <td>Filters the current form record list when <code>target</code> is <code>form</code>; filters a rendered <code>datagrid</code> control when <code>target</code> is that control id.</td>
+</tr>
+<tr>
+  <td><code>clearFilter</code></td>
+  <td>Clears the form or data-grid filter selected by <code>target</code>.</td>
+</tr>
+<tr>
+  <td><code>runSql</code></td>
+  <td>Executes SQL only when the host enables SQL actions. <code>@name</code> parameters are resolved from action arguments.</td>
+</tr>
+<tr>
+  <td><code>runProcedure</code></td>
+  <td>Executes a named database procedure only when the host enables procedure actions. <code>target</code> is the procedure name; action arguments become procedure arguments.</td>
+</tr>
+<tr>
+  <td><code>setControlProperty</code></td>
+  <td>Overrides rendered control properties such as <code>visible</code>, <code>enabled</code>, <code>readOnly</code>, <code>text</code>, <code>placeholder</code>, and bound <code>value</code>.</td>
+</tr>
+<tr>
+  <td><code>setControlVisibility</code>, <code>setControlEnabled</code>, <code>setControlReadOnly</code></td>
+  <td>Short forms for the corresponding <code>setControlProperty</code> calls.</td>
+</tr>
+</tbody>
+</table>
+<p>Existing actions such as <code>setFieldValue</code>, <code>runCommand</code>, <code>runActionSequence</code>, <code>newRecord</code>, <code>saveRecord</code>, <code>deleteRecord</code>, <code>refreshRecords</code>, <code>previousRecord</code>, <code>nextRecord</code>, and <code>goToRecord</code> continue to work in the same action sequence model.</p>
+<h2 id="filter-expressions">Filter Expressions</h2>
+<p>Filters use the same bracketed field expression style as conditions:</p>
+<pre><code class="language-json">{
+  &quot;kind&quot;: &quot;applyFilter&quot;,
+  &quot;target&quot;: &quot;ordersGrid&quot;,
+  &quot;value&quot;: &quot;[Status] = @status AND [Total] &gt; @minimum&quot;,
+  &quot;arguments&quot;: {
+    &quot;status&quot;: &quot;Open&quot;,
+    &quot;minimum&quot;: 100
+  }
+}
+</code></pre>
+<p>Use <code>target: &quot;form&quot;</code> for the parent form list. Use a DataGrid control id for child-row filtering.</p>
+<h2 id="open-form-arguments">Open Form Arguments</h2>
+<p><code>openForm</code> carries navigation arguments to the host:</p>
+<pre><code class="language-json">{
+  &quot;kind&quot;: &quot;openForm&quot;,
+  &quot;target&quot;: &quot;Orders Entry&quot;,
+  &quot;arguments&quot;: {
+    &quot;recordId&quot;: &quot;$record.Id&quot;,
+    &quot;mode&quot;: &quot;view&quot;,
+    &quot;filter&quot;: &quot;[Status] = 'Open'&quot;
+  }
+}
+</code></pre>
+<p>The built-in admin tab host forwards those values to <code>DataEntry</code> as initial state. <code>mode: &quot;new&quot;</code> starts a writable form on a new record. <code>recordId</code> navigates to the requested primary key after load. <code>filter</code> or <code>where</code> applies an initial form filter.</p>
+<h2 id="sql-and-procedure-actions">SQL And Procedure Actions</h2>
+<p>Use <code>runProcedure</code> when the workflow should invoke reusable database-owned SQL,
+for example allocating an order, receiving a purchase order, processing a
+return, or returning a packaged operational snapshot. A procedure body can run
+multiple SQL statements in one execution and can return follow-up result sets.</p>
+<pre><code class="language-json">{
+  &quot;kind&quot;: &quot;runProcedure&quot;,
+  &quot;target&quot;: &quot;AllocateOrder&quot;,
+  &quot;arguments&quot;: {
+    &quot;orderId&quot;: 7005,
+    &quot;allocatedBy&quot;: &quot;Wave Planner&quot;,
+    &quot;note&quot;: &quot;Allocated from form action sequence.&quot;
+  },
+  &quot;stopOnFailure&quot;: true
+}
+</code></pre>
+<p>Use <code>runCommand</code> instead when the workflow needs host-owned C# behavior such as
+email, queues, external APIs, filesystem access, or other services. A common
+sequence is <code>runProcedure</code> for database updates followed by <code>runCommand</code> for a
+host notification.</p>
+<p>Rendered Admin form runtimes can leave <code>runSql</code> and <code>runProcedure</code> disabled by
+policy. That keeps database-mutating actions explicit at the host boundary even
+though procedure definitions themselves are database metadata.</p>
+<h2 id="conditional-ui-rules">Conditional UI Rules</h2>
+<p>Form-level <code>rules</code> apply control property effects whenever their condition is true:</p>
+<pre><code class="language-json">{
+  &quot;ruleId&quot;: &quot;archived-state&quot;,
+  &quot;condition&quot;: &quot;[Status] = 'Archived'&quot;,
+  &quot;effects&quot;: [
+    { &quot;controlId&quot;: &quot;statusBox&quot;, &quot;property&quot;: &quot;readOnly&quot;, &quot;value&quot;: true },
+    { &quot;controlId&quot;: &quot;archiveButton&quot;, &quot;property&quot;: &quot;enabled&quot;, &quot;value&quot;: false }
+  ]
+}
+</code></pre>
+<p>The designer property inspector includes a rules editor and a validation panel for action/rule readiness.</p>
+<h2 id="diagnostics">Diagnostics</h2>
+<p>Subscribe to <code>FormActionDiagnostics.Listener</code> to observe action execution:</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Forms.Contracts;
+
+using IDisposable subscription = FormActionDiagnostics.Listener.Subscribe(observer);
+</code></pre>
+<p>Events use <code>FormActionDiagnostics.InvocationEventName</code> and carry <code>FormActionInvocationDiagnostic</code>, including action kind, target, form id, event name, action sequence name, step index, elapsed time, success state, cancellation state, result message, exception message, and metadata.</p>
+<h2 id="sample">Sample</h2>
+<p>See <code>samples/trusted-csharp-host/access-style-macro-form.json</code> for a form manifest that combines open form, data-grid filtering, SQL execution, control property changes, and conditional UI rules.</p>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

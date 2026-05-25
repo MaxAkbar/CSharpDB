@@ -28,5 +28,5 @@ Start with the study examples if you are new to the storage surface. Jump to the
 
 ## Related material
 
-- [Storage reference walkthrough](../../storage/README.md)
-- [Storage package README](../../../src/CSharpDB.Storage/README.md)
+- [Storage reference walkthrough](https://csharpdb.com/docs/storage-engine-reference.html)
+- [Storage package README](../../src/CSharpDB.Storage/README.md)

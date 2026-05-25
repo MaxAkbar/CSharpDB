@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Configuration Reference — CSharpDB</title>
+    <meta name="description" content="CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.">
+    <link rel="canonical" href="https://csharpdb.com/docs/configuration.html">
+    <meta property="og:title" content="Configuration Reference — CSharpDB">
+    <meta property="og:description" content="CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.">
+    <meta property="og:url" content="https://csharpdb.com/docs/configuration.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Configuration Reference",
+        "description": "CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.",
+        "url": "https://csharpdb.com/docs/configuration.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Configuration Reference',
+        description: 'CSharpDB configuration reference for connection strings, storage modes, daemon hosting, Admin, CLI, and environment variables.',
+        keywords: 'CSharpDB configuration, connection strings, daemon config, admin config, storage modes',
+        canonicalPath: 'docs/configuration.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#opening-a-database">Opening a Database</a></li>
+                        <li><a href="#options-hierarchy">Options Hierarchy</a></li>
+                        <li><a href="#databaseoptions">DatabaseOptions</a></li>
+                        <li><a href="#storageengineoptions">StorageEngineOptions</a></li>
+                        <li class="toc-child"><a href="#durabilitymode">DurabilityMode</a></li>
+                        <li class="toc-child"><a href="#durablegroupcommit">DurableGroupCommit</a></li>
+                        <li class="toc-child"><a href="#advisorystatisticspersistencemode">AdvisoryStatisticsPersistenceMode</a></li>
+                        <li><a href="#pageroptions">PagerOptions</a></li>
+                        <li class="toc-child"><a href="#cache">Cache</a></li>
+                        <li class="toc-child"><a href="#read-path">Read Path</a></li>
+                        <li class="toc-child"><a href="#writer-lock">Writer Lock</a></li>
+                        <li class="toc-child"><a href="#checkpoint-policy">Checkpoint Policy</a></li>
+                        <li class="toc-child"><a href="#built-in-checkpoint-policies">Built-in Checkpoint Policies</a></li>
+                        <li class="toc-child"><a href="#autocheckpointexecutionmode">AutoCheckpointExecutionMode</a></li>
+                        <li><a href="#hybriddatabaseoptions">HybridDatabaseOptions</a></li>
+                        <li class="toc-child"><a href="#hybridpersistencemode">HybridPersistenceMode</a></li>
+                        <li class="toc-child"><a href="#hybridpersistencetriggers-flags">HybridPersistenceTriggers (Flags)</a></li>
+                        <li><a href="#fulltextindexoptions">FullTextIndexOptions</a></li>
+                        <li><a href="#runtime-settings">Runtime Settings</a></li>
+                        <li><a href="#daemon-host-configuration">Daemon Host Configuration</a></li>
+                        <li><a href="#key-defaults-summary">Key Defaults Summary</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/configuration.md and consolidated into the website documentation set.</div>
+<h1 id="configuration-reference">Configuration Reference</h1>
+<p>CSharpDB is configured through a hierarchy of options objects passed to <code>Database.OpenAsync</code>.
+All options use sensible defaults — you only need to override what you want to change.</p>
+<hr />
+<h2 id="opening-a-database">Opening a Database</h2>
+<pre><code class="language-csharp">// Defaults — zero configuration
+await using var db = await Database.OpenAsync(&quot;mydata.db&quot;);
+
+// With options
+await using var db = await Database.OpenAsync(&quot;mydata.db&quot;, new DatabaseOptions
+{
+    StorageEngineOptions = new StorageEngineOptions
+    {
+        DurabilityMode = DurabilityMode.Buffered,
+        PagerOptions = new PagerOptions
+        {
+            MaxCachedPages = 5000,
+            CheckpointPolicy = new FrameCountCheckpointPolicy(2000),
+        }
+    }
+});
+
+// In-memory
+await using var db = await Database.OpenInMemoryAsync();
+
+// Hybrid (lazy-resident with on-disk persistence)
+await using var db = await Database.OpenHybridAsync(&quot;mydata.db&quot;,
+    new DatabaseOptions(),
+    new HybridDatabaseOptions
+    {
+        PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+        HotTableNames = [&quot;users&quot;, &quot;sessions&quot;],
+    });
+</code></pre>
+<hr />
+<h2 id="options-hierarchy">Options Hierarchy</h2>
+<pre><code>DatabaseOptions
+├── ImplicitInsertExecutionMode
+├── Functions
+├── StorageEngineOptions
+│   ├── DurabilityMode
+│   ├── DurableGroupCommit
+│   ├── DurableCommitBatchWindow (compatibility alias)
+│   ├── AdvisoryStatisticsPersistenceMode
+│   ├── WalPreallocationChunkBytes
+│   └── PagerOptions
+│       ├── WriterLockTimeout
+│       ├── CheckpointPolicy
+│       ├── AutoCheckpointExecutionMode
+│       ├── AutoCheckpointMaxPagesPerStep
+│       ├── MaxCachedPages
+│       ├── MaxCachedWalReadPages
+│       ├── PageCacheFactory
+│       ├── MaxWalBytesWhenReadersActive
+│       ├── UseMemoryMappedReads
+│       ├── EnableSequentialLeafReadAhead
+│       └── PreserveOwnedPagesOnCheckpoint
+└── StorageEngineFactory
+
+HybridDatabaseOptions (separate, for OpenHybridAsync)
+├── PersistenceMode
+├── PersistenceTriggers
+├── HotTableNames
+└── HotCollectionNames
+
+FullTextIndexOptions (per-index, for EnsureFullTextIndexAsync)
+├── Normalization
+├── LowercaseInvariant
+└── StorePositions
+</code></pre>
+<hr />
+<h2 id="databaseoptions">DatabaseOptions</h2>
+<p>Top-level database composition and execution-shape configuration.</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>ImplicitInsertExecutionMode</code></td>
+  <td><code>ImplicitInsertExecutionMode</code></td>
+  <td><code>Serialized</code></td>
+  <td>Controls whether shared auto-commit <code>INSERT</code> statements stay behind the legacy database write gate or run as isolated <code>WriteTransaction</code> commits. This does not disable the explicit multi-writer <code>WriteTransaction</code> APIs.</td>
+</tr>
+<tr>
+  <td><code>Functions</code></td>
+  <td><code>DbFunctionRegistry</code></td>
+  <td><code>DbFunctionRegistry.Empty</code></td>
+  <td>Trusted in-process scalar functions available to SQL and embedded expression surfaces. See <a href="trusted-csharp-functions.html">Trusted C# Scalar Functions</a>.</td>
+</tr>
+<tr>
+  <td><code>StorageEngineOptions</code></td>
+  <td><code>StorageEngineOptions</code></td>
+  <td>default instance</td>
+  <td>Storage engine durability, pager, WAL, and checkpoint settings</td>
+</tr>
+<tr>
+  <td><code>StorageEngineFactory</code></td>
+  <td><code>IStorageEngineFactory</code></td>
+  <td><code>DefaultStorageEngineFactory</code></td>
+  <td>Factory used to compose the backing storage engine</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="storageengineoptions">StorageEngineOptions</h2>
+<p>Top-level storage engine configuration.</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>DurabilityMode</code></td>
+  <td><code>DurabilityMode</code></td>
+  <td><code>Durable</code></td>
+  <td>WAL commit flushing strategy</td>
+</tr>
+<tr>
+  <td><code>DurableGroupCommit</code></td>
+  <td><code>DurableGroupCommitOptions</code></td>
+  <td><code>Disabled</code></td>
+  <td>Opt-in durable group-commit settings</td>
+</tr>
+<tr>
+  <td><code>DurableCommitBatchWindow</code></td>
+  <td><code>TimeSpan</code></td>
+  <td><code>TimeSpan.Zero</code></td>
+  <td>Compatibility alias for <code>DurableGroupCommit.BatchWindow</code></td>
+</tr>
+<tr>
+  <td><code>AdvisoryStatisticsPersistenceMode</code></td>
+  <td><code>AdvisoryStatisticsPersistenceMode</code></td>
+  <td><code>Immediate</code></td>
+  <td>When to persist query planner statistics</td>
+</tr>
+<tr>
+  <td><code>WalPreallocationChunkBytes</code></td>
+  <td><code>long</code></td>
+  <td><code>0</code> (disabled)</td>
+  <td>Pre-reserve WAL file space in chunks of this size</td>
+</tr>
+<tr>
+  <td><code>PagerOptions</code></td>
+  <td><code>PagerOptions</code></td>
+  <td><code>new()</code></td>
+  <td>Page cache, locking, and checkpoint settings</td>
+</tr>
+</tbody>
+</table>
+<h3 id="durabilitymode">DurabilityMode</h3>
+<p>Controls how WAL commits are flushed to disk.</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Value</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>Durable</code></td>
+  <td>Forces an OS-level flush on every commit. Maximum safety, analogous to SQLite <code>synchronous=FULL</code>. This is the default.</td>
+</tr>
+<tr>
+  <td><code>Buffered</code></td>
+  <td>Flushes managed buffers to the OS but does not force an OS flush per commit. Higher throughput at the cost of potential data loss of recent commits on power failure. Analogous to SQLite <code>synchronous=NORMAL</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="durablegroupcommit">DurableGroupCommit</h3>
+<p>When using <code>Durable</code> mode, setting <code>DurableGroupCommit.BatchWindow</code> to a non-zero <code>TimeSpan</code> (for example, <code>TimeSpan.FromMilliseconds(0.25)</code>) allows the engine to batch concurrent commits into a single OS flush. This amortizes the cost of <code>fsync</code> across multiple writers without reducing durability guarantees for any individual commit.</p>
+<p><code>DurableCommitBatchWindow</code> remains available as a compatibility alias for the same <code>BatchWindow</code> value.</p>
+<h3 id="advisorystatisticspersistencemode">AdvisoryStatisticsPersistenceMode</h3>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Value</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>Immediate</code></td>
+  <td>Statistics updated during ordinary commit flows. Default — keeps stats fresh with minimal lag.</td>
+</tr>
+<tr>
+  <td><code>Deferred</code></td>
+  <td>Statistics kept current in memory but only persisted on <code>ANALYZE</code>, clean close, or export. Reduces write amplification for write-heavy workloads.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="pageroptions">PagerOptions</h2>
+<p>Controls the page cache, writer locking, and automatic checkpointing.</p>
+<h3 id="cache">Cache</h3>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>MaxCachedPages</code></td>
+  <td><code>int?</code></td>
+  <td><code>null</code> (unbounded)</td>
+  <td>Maximum pages in the shared cache. When set, uses an LRU eviction policy. When <code>null</code>, all pages are retained.</td>
+</tr>
+<tr>
+  <td><code>MaxCachedWalReadPages</code></td>
+  <td><code>int</code></td>
+  <td><code>0</code></td>
+  <td>Dedicated cache for immutable WAL frame reads. <code>0</code> disables caching (always reads from WAL).</td>
+</tr>
+<tr>
+  <td><code>PageCacheFactory</code></td>
+  <td><code>Func&lt;IPageCache&gt;?</code></td>
+  <td><code>null</code></td>
+  <td>Custom cache implementation. Overrides <code>MaxCachedPages</code> when set.</td>
+</tr>
+<tr>
+  <td><code>OnCachePageEvicted</code></td>
+  <td><code>Action&lt;uint, byte[]&gt;?</code></td>
+  <td><code>null</code></td>
+  <td>Diagnostic callback invoked when a page is evicted from cache.</td>
+</tr>
+<tr>
+  <td><code>PreserveOwnedPagesOnCheckpoint</code></td>
+  <td><code>bool</code></td>
+  <td><code>true</code></td>
+  <td>Keep materialized main-file pages in cache after checkpoint. Only transient WAL and memory-mapped views are invalidated.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="read-path">Read Path</h3>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>UseMemoryMappedReads</code></td>
+  <td><code>bool</code></td>
+  <td><code>false</code></td>
+  <td>Enable memory-mapped I/O for clean main-file page reads.</td>
+</tr>
+<tr>
+  <td><code>EnableSequentialLeafReadAhead</code></td>
+  <td><code>bool</code></td>
+  <td><code>true</code></td>
+  <td>Speculative read-ahead of next B-tree leaf during sequential scans.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="writer-lock">Writer Lock</h3>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>WriterLockTimeout</code></td>
+  <td><code>TimeSpan</code></td>
+  <td><code>5 seconds</code></td>
+  <td>Maximum wait time to acquire the single-writer lock.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="checkpoint-policy">Checkpoint Policy</h3>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>CheckpointPolicy</code></td>
+  <td><code>ICheckpointPolicy</code></td>
+  <td><code>FrameCountCheckpointPolicy(1000)</code></td>
+  <td>When to trigger automatic checkpoints.</td>
+</tr>
+<tr>
+  <td><code>AutoCheckpointExecutionMode</code></td>
+  <td><code>AutoCheckpointExecutionMode</code></td>
+  <td><code>Foreground</code></td>
+  <td>Run checkpoints inline or in the background.</td>
+</tr>
+<tr>
+  <td><code>AutoCheckpointMaxPagesPerStep</code></td>
+  <td><code>int</code></td>
+  <td><code>64</code></td>
+  <td>Max pages per background checkpoint step (ignored for foreground).</td>
+</tr>
+<tr>
+  <td><code>MaxWalBytesWhenReadersActive</code></td>
+  <td><code>long?</code></td>
+  <td><code>null</code></td>
+  <td>Optional WAL growth cap while snapshot readers are active. Commits fail with <code>ErrorCode.Busy</code> if exceeded.</td>
+</tr>
+</tbody>
+</table>
+<p>Snapshot readers now block checkpoint finalization only when they still reference
+retained WAL frames. Readers whose snapshot was taken after the WAL had already
+been drained can coexist with auto-checkpoint finalization without forcing WAL
+growth.</p>
+<h4 id="built-in-checkpoint-policies">Built-in Checkpoint Policies</h4>
+<p><strong>FrameCountCheckpointPolicy(int threshold)</strong></p>
+<p>Triggers when committed frame count reaches the threshold and no active snapshot
+currently requires retained WAL frames. Default threshold is 1000 frames.</p>
+<pre><code class="language-csharp">new FrameCountCheckpointPolicy(2000)
+</code></pre>
+<p><strong>TimeIntervalCheckpointPolicy(TimeSpan interval)</strong></p>
+<p>Triggers at fixed wall-clock intervals when no readers are active.</p>
+<pre><code class="language-csharp">new TimeIntervalCheckpointPolicy(TimeSpan.FromMinutes(5))
+</code></pre>
+<p><strong>WalSizeCheckpointPolicy(long thresholdBytes)</strong></p>
+<p>Triggers when estimated WAL size in bytes reaches the threshold and no readers are active.</p>
+<pre><code class="language-csharp">new WalSizeCheckpointPolicy(50 * 1024 * 1024) // 50 MB
+</code></pre>
+<p><strong>AnyCheckpointPolicy(params ICheckpointPolicy[] policies)</strong></p>
+<p>Composite policy — triggers when any of the inner policies fires.</p>
+<pre><code class="language-csharp">new AnyCheckpointPolicy(
+    new FrameCountCheckpointPolicy(1000),
+    new WalSizeCheckpointPolicy(100 * 1024 * 1024)
+)
+</code></pre>
+<h4 id="autocheckpointexecutionmode">AutoCheckpointExecutionMode</h4>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Value</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>Foreground</code></td>
+  <td>Checkpoint runs inline with the triggering commit. The commit does not return until the checkpoint completes. Simplest model.</td>
+</tr>
+<tr>
+  <td><code>Background</code></td>
+  <td>Checkpoint is scheduled asynchronously after commit returns. Copies at most <code>AutoCheckpointMaxPagesPerStep</code> pages per step to avoid blocking subsequent writes.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="hybriddatabaseoptions">HybridDatabaseOptions</h2>
+<p>Configuration for hybrid databases opened with <code>Database.OpenHybridAsync</code>. Hybrid databases
+keep frequently accessed pages resident in memory while persisting committed state to a
+backing file.</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>PersistenceMode</code></td>
+  <td><code>HybridPersistenceMode</code></td>
+  <td><code>IncrementalDurable</code></td>
+  <td>Persistence strategy.</td>
+</tr>
+<tr>
+  <td><code>PersistenceTriggers</code></td>
+  <td><code>HybridPersistenceTriggers</code></td>
+  <td><code>Commit \| Dispose</code></td>
+  <td>Lifecycle points that trigger persistence (snapshot mode only).</td>
+</tr>
+<tr>
+  <td><code>HotTableNames</code></td>
+  <td><code>IReadOnlyList&lt;string&gt;</code></td>
+  <td><code>[]</code></td>
+  <td>SQL tables to preload into cache at open time.</td>
+</tr>
+<tr>
+  <td><code>HotCollectionNames</code></td>
+  <td><code>IReadOnlyList&lt;string&gt;</code></td>
+  <td><code>[]</code></td>
+  <td>Collections to preload into cache at open time.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="hybridpersistencemode">HybridPersistenceMode</h3>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Value</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>IncrementalDurable</code></td>
+  <td>Uses on-disk WAL and page-level checkpoints. Touched pages remain resident by cache policy. Default and recommended.</td>
+</tr>
+<tr>
+  <td><code>Snapshot</code></td>
+  <td>Full-image export to backing file. Simpler but higher write amplification.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="hybridpersistencetriggers-flags">HybridPersistenceTriggers (Flags)</h3>
+<p>Only applies when <code>PersistenceMode</code> is <code>Snapshot</code>.</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Flag</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>None</code></td>
+  <td>Manual persistence only</td>
+</tr>
+<tr>
+  <td><code>Commit</code></td>
+  <td>Persist after each commit</td>
+</tr>
+<tr>
+  <td><code>Checkpoint</code></td>
+  <td>Persist on checkpoint</td>
+</tr>
+<tr>
+  <td><code>Dispose</code></td>
+  <td>Persist on database close</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="fulltextindexoptions">FullTextIndexOptions</h2>
+<p>Per-index configuration passed to <code>Database.EnsureFullTextIndexAsync</code>.</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>Normalization</code></td>
+  <td><code>NormalizationForm</code></td>
+  <td><code>FormKC</code></td>
+  <td>Unicode normalization form applied during indexing.</td>
+</tr>
+<tr>
+  <td><code>LowercaseInvariant</code></td>
+  <td><code>bool</code></td>
+  <td><code>true</code></td>
+  <td>Apply case-insensitive indexing.</td>
+</tr>
+<tr>
+  <td><code>StorePositions</code></td>
+  <td><code>bool</code></td>
+  <td><code>true</code></td>
+  <td>Store token positions for proximity/phrase searches.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="runtime-settings">Runtime Settings</h2>
+<p>These properties can be changed on an open <code>Database</code> instance:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Property</th>
+  <th>Type</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>ImplicitInsertExecutionMode</code></td>
+  <td><code>ImplicitInsertExecutionMode</code></td>
+  <td><code>Serialized</code></td>
+  <td>Shared auto-commit <code>INSERT</code> statements use the legacy serialized path by default; set <code>ConcurrentWriteTransactions</code> to route them through isolated write transactions for better low-conflict insert fan-in. This setting only changes the shared implicit <code>INSERT</code> path.</td>
+</tr>
+<tr>
+  <td><code>PreferSyncPointLookups</code></td>
+  <td><code>bool</code></td>
+  <td><code>true</code></td>
+  <td>Simple primary-key equality lookups use a synchronous cache-only fast path instead of the async pipeline.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="daemon-host-configuration">Daemon Host Configuration</h2>
+<p><code>CSharpDB.Daemon</code> has a daemon-only host database section layered on top of the
+normal <code>ConnectionStrings:CSharpDB</code> input. The daemon still uses the same
+database locator, but it now builds its direct host client explicitly and
+applies daemon defaults for a long-lived shared process.</p>
+<p>Relevant keys:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Key</th>
+  <th>Default</th>
+  <th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>ConnectionStrings:CSharpDB</code></td>
+  <td><code>Data Source=csharpdb.db</code></td>
+  <td>Backing database connection string used by the daemon host</td>
+</tr>
+<tr>
+  <td><code>CSharpDB:HostDatabase:OpenMode</code></td>
+  <td><code>HybridIncrementalDurable</code></td>
+  <td><code>HybridIncrementalDurable</code> keeps the daemon in lazy-resident hybrid mode; <code>Direct</code> opens the file directly without the hybrid resident cache</td>
+</tr>
+<tr>
+  <td><code>CSharpDB:HostDatabase:ImplicitInsertExecutionMode</code></td>
+  <td><code>ConcurrentWriteTransactions</code></td>
+  <td>Enables concurrent host-side implicit insert execution by default</td>
+</tr>
+<tr>
+  <td><code>CSharpDB:HostDatabase:UseWriteOptimizedPreset</code></td>
+  <td><code>true</code></td>
+  <td>Applies <code>UseWriteOptimizedPreset()</code> to the daemon's direct host database options</td>
+</tr>
+<tr>
+  <td><code>CSharpDB:HostDatabase:HotTableNames</code></td>
+  <td><code>[]</code></td>
+  <td>Optional hybrid hot-table preload hints</td>
+</tr>
+<tr>
+  <td><code>CSharpDB:HostDatabase:HotCollectionNames</code></td>
+  <td><code>[]</code></td>
+  <td>Optional hybrid hot-collection preload hints</td>
+</tr>
+</tbody>
+</table>
+<p>Default daemon <code>appsettings.json</code> shape:</p>
+<pre><code class="language-json">{
+  &quot;ConnectionStrings&quot;: {
+    &quot;CSharpDB&quot;: &quot;Data Source=csharpdb.db&quot;
+  },
+  &quot;CSharpDB&quot;: {
+    &quot;HostDatabase&quot;: {
+      &quot;OpenMode&quot;: &quot;HybridIncrementalDurable&quot;,
+      &quot;ImplicitInsertExecutionMode&quot;: &quot;ConcurrentWriteTransactions&quot;,
+      &quot;UseWriteOptimizedPreset&quot;: true,
+      &quot;HotTableNames&quot;: [],
+      &quot;HotCollectionNames&quot;: []
+    }
+  }
+}
+</code></pre>
+<p>Environment variable example:</p>
+<pre><code class="language-powershell">$env:ConnectionStrings__CSharpDB = &quot;Data Source=C:\\data\\app.db&quot;
+$env:CSharpDB__HostDatabase__OpenMode = &quot;Direct&quot;
+$env:CSharpDB__HostDatabase__ImplicitInsertExecutionMode = &quot;Serialized&quot;
+$env:CSharpDB__HostDatabase__HotTableNames__0 = &quot;users&quot;
+</code></pre>
+<p>Use the daemon defaults when you want a warm long-lived gRPC host. Override
+them only when your deployment has a measured reason to prefer direct open mode
+or the legacy serialized implicit-insert path.</p>
+<hr />
+<h2 id="key-defaults-summary">Key Defaults Summary</h2>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Setting</th>
+  <th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Page size</td>
+  <td>4096 bytes (fixed)</td>
+</tr>
+<tr>
+  <td>Durability</td>
+  <td><code>Durable</code> (fsync on every commit)</td>
+</tr>
+<tr>
+  <td>Page cache</td>
+  <td>Unbounded (all pages retained)</td>
+</tr>
+<tr>
+  <td>Checkpoint threshold</td>
+  <td>1000 committed WAL frames</td>
+</tr>
+<tr>
+  <td>Checkpoint execution</td>
+  <td>Foreground (inline)</td>
+</tr>
+<tr>
+  <td>Writer lock timeout</td>
+  <td>5 seconds</td>
+</tr>
+<tr>
+  <td>Sequential read-ahead</td>
+  <td>Enabled</td>
+</tr>
+<tr>
+  <td>Statistics persistence</td>
+  <td>Immediate</td>
+</tr>
+</tbody>
+</table>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>
