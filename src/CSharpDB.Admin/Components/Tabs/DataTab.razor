@@ -244,18 +244,40 @@
                                     <th>Primary Key</th>
                                     <th>Identity</th>
                                     <th>Nullable</th>
+                                    <th style="width:96px;">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 @foreach (var col in _schema.Columns)
                                 {
                                     <tr>
-                                        <td class="@(col.IsPrimaryKey ? "pk-val" : "")">@col.Name</td>
+                                        <td class="@(col.IsPrimaryKey ? "pk-val" : "")">
+                                            <span>@col.Name</span>
+                                            @if (GetColumnDependencyBadges(col.Name) is { Count: > 0 } badges)
+                                            {
+                                                <div class="schema-column-badges">
+                                                    @foreach (var badge in badges)
+                                                    {
+                                                        <span class="schema-column-badge @badge.CssClass" title="@badge.Title">@badge.Label</span>
+                                                    }
+                                                </div>
+                                            }
+                                        </td>
                                         <td><span class="col-type-badge @GetTypeBadgeClass(col.Type.ToString())">@col.Type.ToString().ToUpperInvariant()</span></td>
                                         <td class="mono-cell">@GetColumnCollationLabel(col)</td>
                                         <td>@(col.IsPrimaryKey ? "Yes" : "")</td>
                                         <td>@(col.IsIdentity ? "Yes" : "No")</td>
                                         <td>@(col.Nullable ? "Yes" : "No")</td>
+                                        <td>
+                                            <div class="schema-column-actions">
+                                                <button type="button" class="schema-icon-btn" title="Rename column" @onclick="() => StartRenameColumn(col)">
+                                                    <i class="bi bi-pencil"></i>
+                                                </button>
+                                                <button type="button" class="schema-icon-btn danger" title="@GetDropColumnTitle(col)" @onclick="() => StartDropColumn(col)" disabled="@IsDropColumnBlocked(col.Name)">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            </div>
+                                        </td>
                                     </tr>
                                 }
                             </tbody>
@@ -319,7 +341,7 @@
                                             <select class="schema-input mono" @bind="_dropColName">
                                                 @foreach (var col in _schema.Columns)
                                                 {
-                                                    <option value="@col.Name">@col.Name</option>
+                                                    <option value="@col.Name" disabled="@IsDropColumnBlocked(col.Name)">@GetDropColumnOptionLabel(col)</option>
                                                 }
                                             </select>
                                         </div>
@@ -348,8 +370,22 @@
                                         </div>
                                     }
                                 </div>
+                                @if (_tableOperation == TableOp.DropColumn && GetDropColumnBlockMessage(_dropColName) is { Length: > 0 } dropMessage)
+                                {
+                                    <div class="schema-dependency-note danger">
+                                        <i class="bi bi-shield-exclamation"></i>
+                                        <span>@dropMessage</span>
+                                    </div>
+                                }
+                                else if (_tableOperation == TableOp.RenameColumn && GetRenameColumnDependencyWarning(_renameOldCol) is { Length: > 0 } renameWarning)
+                                {
+                                    <div class="schema-dependency-note warning">
+                                        <i class="bi bi-exclamation-triangle"></i>
+                                        <span>@renameWarning</span>
+                                    </div>
+                                }
                                 <div class="schema-edit-actions">
-                                    <button class="toolbar-btn primary" @onclick="ApplyAlterTableAsync" disabled="@_submitting">
+                                    <button class="toolbar-btn primary" @onclick="ApplyAlterTableAsync" disabled="@(_submitting || !CanApplyAlterTable)">
                                         @if (_submitting) { <span class="spinner" style="width:12px;height:12px;border-width:2px;"></span> }
                                         <i class="bi bi-hammer"></i> Apply
                                     </button>
@@ -800,6 +836,8 @@
     private string? _viewSql;
     private IReadOnlyCollection<IndexSchema>? _indexes;
     private IReadOnlyCollection<TriggerSchema>? _triggers;
+    private IReadOnlyList<ColumnForeignKeyReference> _referencingForeignKeys = Array.Empty<ColumnForeignKeyReference>();
+    private readonly Dictionary<string, ColumnDependencyInfo> _columnDependencies = new(StringComparer.OrdinalIgnoreCase);
 
     // ─── Alter table state ──────────────
     private bool _showAlterTable;
@@ -813,6 +851,18 @@
     private string _renameOldCol = string.Empty;
     private string _renameNewCol = string.Empty;
     private string _newTableName = string.Empty;
+
+    private bool CanApplyAlterTable => _tableOperation switch
+    {
+        TableOp.AddColumn => !string.IsNullOrWhiteSpace(_addColName),
+        TableOp.DropColumn => !string.IsNullOrWhiteSpace(_dropColName) && !IsDropColumnBlocked(_dropColName),
+        TableOp.RenameColumn => !string.IsNullOrWhiteSpace(_renameOldCol)
+            && !string.IsNullOrWhiteSpace(_renameNewCol)
+            && !string.Equals(_renameOldCol, _renameNewCol, StringComparison.OrdinalIgnoreCase),
+        TableOp.RenameTable => !string.IsNullOrWhiteSpace(_newTableName)
+            && !string.Equals(ObjectName, _newTableName, StringComparison.OrdinalIgnoreCase),
+        _ => false,
+    };
 
     // ─── Index editing state ────────────
     private string? _editingIdxName;
@@ -884,22 +934,30 @@
                 _indexes = allIndexes.Where(i => i.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
                 var allTriggers = await DbClient.GetTriggersAsync();
                 _triggers = allTriggers.Where(t => t.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
+                _referencingForeignKeys = await LoadReferencingForeignKeysAsync(ObjectName);
+                RebuildColumnDependencies();
 
                 // Sync dropdown defaults
                 if (_schema is not null && _schema.Columns.Count > 0)
                 {
-                    if (string.IsNullOrEmpty(_dropColName))
+                    if (string.IsNullOrEmpty(_dropColName) || !ColumnExists(_dropColName))
                         _dropColName = _schema.Columns[0].Name;
-                    if (string.IsNullOrEmpty(_renameOldCol))
+                    if (string.IsNullOrEmpty(_renameOldCol) || !ColumnExists(_renameOldCol))
                         _renameOldCol = _schema.Columns[0].Name;
                     if (string.IsNullOrEmpty(_idxColumn))
                         _idxColumn = _schema.Columns[0].Name;
 
+                    NormalizeDropColumnSelection();
                     NormalizeIndexCollationSelection();
                 }
             }
             else
             {
+                _schema = null;
+                _indexes = null;
+                _triggers = null;
+                _referencingForeignKeys = Array.Empty<ColumnForeignKeyReference>();
+                _columnDependencies.Clear();
                 _viewSql = await DbClient.GetViewSqlAsync(ObjectName);
             }
         }
@@ -907,6 +965,198 @@
         {
             Toast.Error($"Failed to load schema: {ex.Message}");
         }
+    }
+
+    private async Task<IReadOnlyList<ColumnForeignKeyReference>> LoadReferencingForeignKeysAsync(string tableName)
+    {
+        try
+        {
+            var result = await DbClient.ExecuteSqlAsync($"""
+                SELECT table_name, column_name, referenced_column_name, constraint_name
+                FROM sys.foreign_keys
+                WHERE referenced_table_name = {FormatSqlValue(tableName)}
+                ORDER BY table_name, column_name, constraint_name;
+                """);
+
+            if (!string.IsNullOrWhiteSpace(result.Error) || result.Rows is null)
+                return Array.Empty<ColumnForeignKeyReference>();
+
+            var references = new List<ColumnForeignKeyReference>();
+            foreach (object?[] row in result.Rows)
+            {
+                if (row.Length < 4)
+                    continue;
+
+                string childTable = Convert.ToString(row[0], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                string childColumn = Convert.ToString(row[1], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                string referencedColumn = Convert.ToString(row[2], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                string constraintName = Convert.ToString(row[3], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(childTable)
+                    || string.IsNullOrWhiteSpace(childColumn)
+                    || string.IsNullOrWhiteSpace(referencedColumn)
+                    || string.IsNullOrWhiteSpace(constraintName))
+                {
+                    continue;
+                }
+
+                references.Add(new ColumnForeignKeyReference(childTable, childColumn, referencedColumn, constraintName));
+            }
+
+            return references;
+        }
+        catch
+        {
+            return Array.Empty<ColumnForeignKeyReference>();
+        }
+    }
+
+    private void RebuildColumnDependencies()
+    {
+        _columnDependencies.Clear();
+        if (_schema is null)
+            return;
+
+        foreach (ColumnDefinition column in _schema.Columns)
+        {
+            string[] indexNames = (_indexes ?? Array.Empty<IndexSchema>())
+                .Where(index => index.Columns.Any(indexColumn =>
+                    string.Equals(indexColumn, column.Name, StringComparison.OrdinalIgnoreCase)))
+                .Select(static index => index.IndexName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            string[] childForeignKeys = _schema.ForeignKeys
+                .Where(foreignKey => string.Equals(foreignKey.ColumnName, column.Name, StringComparison.OrdinalIgnoreCase))
+                .Select(static foreignKey => $"{foreignKey.ConstraintName} -> {foreignKey.ReferencedTableName}.{foreignKey.ReferencedColumnName}")
+                .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            string[] referencingForeignKeys = _referencingForeignKeys
+                .Where(reference => string.Equals(reference.ReferencedColumnName, column.Name, StringComparison.OrdinalIgnoreCase))
+                .Select(static reference => $"{reference.TableName}.{reference.ColumnName} ({reference.ConstraintName})")
+                .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            _columnDependencies[column.Name] = new ColumnDependencyInfo(
+                column.Name,
+                indexNames,
+                childForeignKeys,
+                referencingForeignKeys);
+        }
+    }
+
+    private bool ColumnExists(string columnName)
+        => _schema?.Columns.Any(column => string.Equals(column.Name, columnName, StringComparison.OrdinalIgnoreCase)) == true;
+
+    private ColumnDefinition? FindColumn(string? columnName)
+        => string.IsNullOrWhiteSpace(columnName)
+            ? null
+            : _schema?.Columns.FirstOrDefault(column => string.Equals(column.Name, columnName, StringComparison.OrdinalIgnoreCase));
+
+    private ColumnDependencyInfo? GetColumnDependencies(string? columnName)
+        => !string.IsNullOrWhiteSpace(columnName) && _columnDependencies.TryGetValue(columnName, out ColumnDependencyInfo? info)
+            ? info
+            : null;
+
+    private IReadOnlyList<ColumnDependencyBadge> GetColumnDependencyBadges(string columnName)
+    {
+        ColumnDependencyInfo? info = GetColumnDependencies(columnName);
+        if (info is null || !info.HasDependencies)
+            return Array.Empty<ColumnDependencyBadge>();
+
+        var badges = new List<ColumnDependencyBadge>(3);
+        if (info.IndexNames.Count > 0)
+            badges.Add(new ColumnDependencyBadge("indexed", "indexed", $"Indexes: {FormatDependencyList(info.IndexNames)}"));
+        if (info.ChildForeignKeys.Count > 0)
+            badges.Add(new ColumnDependencyBadge("FK", "foreign-key", $"Foreign keys: {FormatDependencyList(info.ChildForeignKeys)}"));
+        if (info.ReferencingForeignKeys.Count > 0)
+            badges.Add(new ColumnDependencyBadge("referenced", "referenced", $"Referenced by: {FormatDependencyList(info.ReferencingForeignKeys)}"));
+
+        return badges;
+    }
+
+    private bool IsDropColumnBlocked(string? columnName)
+        => GetDropColumnBlockMessage(columnName) is not null;
+
+    private string? GetDropColumnBlockMessage(string? columnName)
+    {
+        ColumnDefinition? column = FindColumn(columnName);
+        if (column is null)
+            return string.IsNullOrWhiteSpace(columnName) ? null : $"Column '{columnName}' was not found.";
+
+        if (column.IsPrimaryKey)
+            return $"Drop disabled because '{column.Name}' is the primary key column.";
+
+        ColumnDependencyInfo? info = GetColumnDependencies(column.Name);
+        if (info?.ChildForeignKeys.Count > 0)
+            return $"Drop disabled because '{column.Name}' has foreign key constraints: {FormatDependencyList(info.ChildForeignKeys)}. Drop the relationship first.";
+
+        if (info?.ReferencingForeignKeys.Count > 0)
+            return $"Drop disabled because other tables reference '{column.Name}': {FormatDependencyList(info.ReferencingForeignKeys)}. Drop the relationship first.";
+
+        if (info?.IndexNames.Count > 0)
+            return $"Drop disabled because indexes depend on '{column.Name}': {FormatDependencyList(info.IndexNames)}. Drop or change the index first.";
+
+        if (_schema?.Columns.Count <= 1)
+            return "Drop disabled because a table must keep at least one column.";
+
+        return null;
+    }
+
+    private string GetDropColumnTitle(ColumnDefinition column)
+        => GetDropColumnBlockMessage(column.Name) ?? "Drop column";
+
+    private string GetDropColumnOptionLabel(ColumnDefinition column)
+        => IsDropColumnBlocked(column.Name) ? $"{column.Name} (blocked)" : column.Name;
+
+    private string? GetRenameColumnDependencyWarning(string? columnName)
+    {
+        ColumnDefinition? column = FindColumn(columnName);
+        if (column is null)
+            return null;
+
+        ColumnDependencyInfo? info = GetColumnDependencies(column.Name);
+        string[] triggerNames = (_triggers ?? Array.Empty<TriggerSchema>())
+            .Where(trigger => trigger.BodySql.Contains(column.Name, StringComparison.OrdinalIgnoreCase))
+            .Select(static trigger => trigger.TriggerName)
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (info is null || (!info.HasDependencies && triggerNames.Length == 0))
+            return null;
+
+        var details = new List<string>();
+        if (info.IndexNames.Count > 0)
+            details.Add($"indexes: {FormatDependencyList(info.IndexNames)}");
+        if (info.ChildForeignKeys.Count > 0)
+            details.Add($"foreign keys: {FormatDependencyList(info.ChildForeignKeys)}");
+        if (info.ReferencingForeignKeys.Count > 0)
+            details.Add($"referenced by: {FormatDependencyList(info.ReferencingForeignKeys)}");
+        if (triggerNames.Length > 0)
+            details.Add($"trigger SQL: {FormatDependencyList(triggerNames)}");
+
+        return $"Rename will update table, index, and foreign-key metadata for '{column.Name}', but dependent SQL text should be reviewed: {string.Join("; ", details)}.";
+    }
+
+    private void NormalizeDropColumnSelection()
+    {
+        if (_schema is null || _schema.Columns.Count == 0)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(_dropColName) && ColumnExists(_dropColName) && !IsDropColumnBlocked(_dropColName))
+            return;
+
+        _dropColName = _schema.Columns.FirstOrDefault(column => !IsDropColumnBlocked(column.Name))?.Name
+            ?? _schema.Columns[0].Name;
+    }
+
+    private static string FormatDependencyList(IReadOnlyList<string> values, int maxItems = 3)
+    {
+        if (values.Count <= maxItems)
+            return string.Join(", ", values);
+
+        return $"{string.Join(", ", values.Take(maxItems))}, +{values.Count - maxItems} more";
     }
 
     // ─── View switching ─────────────────
@@ -1374,7 +1624,11 @@
     private void OnTableOperationChanged(ChangeEventArgs e)
     {
         if (Enum.TryParse<TableOp>(e.Value?.ToString(), out var op))
+        {
             _tableOperation = op;
+            if (_tableOperation == TableOp.DropColumn)
+                NormalizeDropColumnSelection();
+        }
     }
 
     private void OnAddColumnTypeChanged(ChangeEventArgs e)
@@ -1393,8 +1647,26 @@
         NormalizeIndexCollationSelection();
     }
 
+    private void StartRenameColumn(ColumnDefinition column)
+    {
+        _tableOperation = TableOp.RenameColumn;
+        _renameOldCol = column.Name;
+        _renameNewCol = column.Name;
+        _showAlterTable = true;
+    }
+
+    private void StartDropColumn(ColumnDefinition column)
+    {
+        _tableOperation = TableOp.DropColumn;
+        _dropColName = column.Name;
+        _showAlterTable = true;
+    }
+
     private async Task ApplyAlterTableAsync()
     {
+        if (!CanApplyAlterTable)
+            return;
+
         _submitting = true;
         try
         {
@@ -1668,6 +1940,23 @@
 
     private static string? NormalizeCollation(string? collation)
         => string.IsNullOrWhiteSpace(collation) ? null : collation.Trim().ToUpperInvariant();
+
+    private sealed record ColumnForeignKeyReference(
+        string TableName,
+        string ColumnName,
+        string ReferencedColumnName,
+        string ConstraintName);
+
+    private sealed record ColumnDependencyInfo(
+        string ColumnName,
+        IReadOnlyList<string> IndexNames,
+        IReadOnlyList<string> ChildForeignKeys,
+        IReadOnlyList<string> ReferencingForeignKeys)
+    {
+        public bool HasDependencies => IndexNames.Count > 0 || ChildForeignKeys.Count > 0 || ReferencingForeignKeys.Count > 0;
+    }
+
+    private sealed record ColumnDependencyBadge(string Label, string CssClass, string Title);
 
     private enum TableOp { AddColumn, DropColumn, RenameColumn, RenameTable }
 }

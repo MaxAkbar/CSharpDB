@@ -1,9 +1,10 @@
 @implements IDisposable
+@inject IJSRuntime JS
 
 @if (_visible)
 {
     <div class="context-menu-backdrop" @onclick="Hide" @oncontextmenu="Hide" @oncontextmenu:preventDefault></div>
-    <div class="context-menu" style="left: @(_x)px; top: @(_y)px;">
+    <div class="context-menu" @ref="_menuElement" style="left: @(_x)px; top: @(_y)px;">
         @foreach (var item in Items)
         {
             if (item.IsSeparator)
@@ -27,8 +28,10 @@
 
 @code {
     private bool _visible;
+    private bool _pendingPosition;
     private double _x;
     private double _y;
+    private ElementReference _menuElement;
 
     [Parameter] public List<ContextMenuItem> Items { get; set; } = new();
 
@@ -37,13 +40,32 @@
         _x = x;
         _y = y;
         _visible = true;
+        _pendingPosition = true;
         StateHasChanged();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_visible || !_pendingPosition)
+            return;
+
+        _pendingPosition = false;
+
+        try
+        {
+            await JS.InvokeVoidAsync("contextMenuInterop.position", _menuElement, _x, _y);
+        }
+        catch
+        {
+            // Best-effort viewport positioning; the menu still works at the raw click point.
+        }
     }
 
     public void Hide()
     {
         if (!_visible) return;
         _visible = false;
+        _pendingPosition = false;
         StateHasChanged();
     }
 

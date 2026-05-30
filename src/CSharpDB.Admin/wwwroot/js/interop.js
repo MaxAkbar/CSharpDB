@@ -25,6 +25,39 @@ window.clipboardInterop = {
     writeText: (text) => navigator.clipboard.writeText(text || '')
 };
 
+window.contextMenuInterop = {
+    position: (menu, requestedX, requestedY) => {
+        if (!menu) return;
+
+        const margin = 8;
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+
+        menu.style.maxHeight = '';
+        menu.style.left = `${Math.max(margin, requestedX)}px`;
+        menu.style.top = `${Math.max(margin, requestedY)}px`;
+
+        const rect = menu.getBoundingClientRect();
+        const maxHeight = Math.max(120, viewportHeight - (margin * 2));
+        let nextX = requestedX;
+        let nextY = requestedY;
+
+        if (nextX + rect.width + margin > viewportWidth) {
+            nextX = viewportWidth - rect.width - margin;
+        }
+
+        if (rect.height > maxHeight) {
+            nextY = margin;
+            menu.style.maxHeight = `${maxHeight}px`;
+        } else if (nextY + rect.height + margin > viewportHeight) {
+            nextY = viewportHeight - rect.height - margin;
+        }
+
+        menu.style.left = `${Math.max(margin, Math.round(nextX))}px`;
+        menu.style.top = `${Math.max(margin, Math.round(nextY))}px`;
+    }
+};
+
 // Keyboard shortcut listener - invokes .NET methods
 window.keyboardInterop = {
     _dotNetRef: null,

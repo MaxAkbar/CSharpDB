@@ -745,7 +745,7 @@
     private IReadOnlyList<ReportDefinition>? _reports;
     private string _searchQuery = string.Empty;
     private string _objectFilter = "all";
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "externalTables", "collections", "forms", "reports", "system", "views", "procedures", "callbacks" };
+    private readonly HashSet<string> _expandedGroups = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _expandedTableNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _tableSchemaLoadFailures = new(StringComparer.OrdinalIgnoreCase);

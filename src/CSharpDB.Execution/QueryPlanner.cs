@@ -1425,6 +1425,16 @@ public sealed class QueryPlanner
                         $"Cannot drop column '{drop.ColumnName}' because it is referenced by a foreign key.");
                 }
 
+                IndexSchema? dependentIndex = _catalog.GetIndexesForTable(stmt.TableName)
+                    .FirstOrDefault(index => index.Columns.Any(column =>
+                        string.Equals(column, drop.ColumnName, StringComparison.OrdinalIgnoreCase)));
+                if (dependentIndex is not null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot drop column '{drop.ColumnName}' because index '{dependentIndex.IndexName}' depends on it.");
+                }
+
                 var newCols = schema.Columns.Where((_, i) => i != colIdx).ToArray();
                 if (newCols.Length == 0)
                     throw new CSharpDbException(ErrorCode.SyntaxError, "Cannot drop the last column of a table.");
