@@ -101,6 +101,9 @@ public sealed class SqlScriptSplitterTests
     [InlineData("UPDATE t SET n = 1;", false)]
     [InlineData("DELETE FROM t WHERE id = 1;", false)]
     [InlineData("CREATE TABLE t (id INTEGER PRIMARY KEY);", false)]
+    [InlineData("CREATE TEMP TABLE t (id INTEGER PRIMARY KEY);", false)]
+    [InlineData("DROP TEMP TABLE t;", false)]
+    [InlineData("PERSIST TEMP TABLE t AS durable_t;", false)]
     [InlineData("CREATE TRIGGER trg AFTER INSERT ON t BEGIN INSERT INTO log VALUES (1); END;", false)]
     public void Classify_ReturnsExpectedReadOnlyState(string sql, bool expectedReadOnly)
     {
@@ -109,5 +112,17 @@ public sealed class SqlScriptSplitterTests
         Assert.Equal(expectedReadOnly, classification.IsReadOnly);
         Assert.Equal(!expectedReadOnly, classification.IsMutating);
         Assert.Equal(expectedReadOnly, classification.IsQuery);
+    }
+
+    [Theory]
+    [InlineData("CREATE TEMP TABLE t (id INTEGER PRIMARY KEY);")]
+    [InlineData("CREATE TEMPORARY TABLE t (id INTEGER PRIMARY KEY);")]
+    [InlineData("DROP TEMP TABLE t;")]
+    [InlineData("PERSIST TEMP TABLE t AS durable_t;")]
+    public void Classify_DetectsTemporaryTableStatements(string sql)
+    {
+        var classification = SqlStatementClassifier.Classify(sql);
+
+        Assert.True(SqlStatementClassifier.IsTemporaryTableStatement(classification.Statement));
     }
 }

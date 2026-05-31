@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>SQL Source Reference — CSharpDB</title>
-    <meta name="description" content="Full migrated source reference for the original CSharpDB SQL markdown guide.">
+    <meta name="description" content="Full CSharpDB SQL source reference, including DDL, temporary tables, DML, expressions, data hygiene commands, validation rules, and system metadata.">
     <link rel="canonical" href="https://csharpdb.com/docs/sql-reference.html">
     <meta property="og:title" content="SQL Source Reference — CSharpDB">
-    <meta property="og:description" content="Full migrated source reference for the original CSharpDB SQL markdown guide.">
+    <meta property="og:description" content="Full CSharpDB SQL source reference, including DDL, temporary tables, DML, expressions, data hygiene commands, validation rules, and system metadata.">
     <meta property="og:url" content="https://csharpdb.com/docs/sql-reference.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "SQL Source Reference",
-        "description": "Full migrated source reference for the original CSharpDB SQL markdown guide.",
+        "description": "Full CSharpDB SQL source reference, including DDL, temporary tables, DML, expressions, data hygiene commands, validation rules, and system metadata.",
         "url": "https://csharpdb.com/docs/sql-reference.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -37,8 +37,8 @@
     window.currentPage = 'docs'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'SQL Source Reference',
-        description: 'Full migrated source reference for the original CSharpDB SQL markdown guide.',
-        keywords: 'CSharpDB source reference, migrated markdown, archival reference',
+        description: 'Full CSharpDB SQL source reference, including DDL, temporary tables, DML, expressions, data hygiene commands, validation rules, and system metadata.',
+        keywords: 'CSharpDB SQL source reference, temporary tables, data hygiene, duplicates, validation rules, orphan detection, SQL syntax',
         canonicalPath: 'docs/sql-reference.html',
         ogType: 'article',
     };
@@ -54,6 +54,7 @@
                         <li><a href="#data-types">Data Types</a></li>
                         <li><a href="#statements">Statements</a></li>
                         <li class="toc-child"><a href="#create-table">CREATE TABLE</a></li>
+                        <li class="toc-child"><a href="#temporary-tables">Temporary Tables</a></li>
                         <li class="toc-child"><a href="#alter-table">ALTER TABLE</a></li>
                         <li class="toc-child"><a href="#drop-table">DROP TABLE</a></li>
                         <li class="toc-child"><a href="#create-index">CREATE INDEX</a></li>
@@ -68,6 +69,13 @@
                         <li class="toc-child"><a href="#update">UPDATE</a></li>
                         <li class="toc-child"><a href="#delete">DELETE</a></li>
                         <li class="toc-child"><a href="#select">SELECT</a></li>
+                        <li><a href="#data-hygiene">Data Hygiene</a></li>
+                        <li class="toc-child"><a href="#find-duplicates">FIND DUPLICATES</a></li>
+                        <li class="toc-child"><a href="#dedup">DEDUP</a></li>
+                        <li class="toc-child"><a href="#merge-duplicates">MERGE DUPLICATES</a></li>
+                        <li class="toc-child"><a href="#create-validation-rule">CREATE VALIDATION RULE</a></li>
+                        <li class="toc-child"><a href="#validate-table">VALIDATE TABLE</a></li>
+                        <li class="toc-child"><a href="#find-orphans">FIND ORPHANS</a></li>
                         <li><a href="#common-table-expressions-ctes">Common Table Expressions (CTEs)</a></li>
                         <li><a href="#set-operations">Set Operations</a></li>
                         <li><a href="#expressions-and-operators">Expressions and Operators</a></li>
@@ -186,6 +194,22 @@
                 </tr>
                 </tbody>
                 </table>
+                <h3 id="temporary-tables">Temporary Tables</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TEMP TABLE [IF NOT EXISTS] temp_name (
+                    column_name type [PRIMARY KEY] [IDENTITY | AUTOINCREMENT] [NOT NULL]
+                                     [COLLATE collation_name],
+                    ...
+                );
+
+                CREATE TEMPORARY TABLE [IF NOT EXISTS] temp_name (...);
+                DROP TEMP TABLE [IF EXISTS] temp_name;
+                PERSIST TEMP TABLE temp_name AS durable_name;
+                </code></pre></div>
+                <p>Temporary tables are session-scoped and backed by in-memory storage. Unqualified table names resolve to temporary tables first, then durable tables/views/external tables, so a temporary table can shadow a durable table for the current session. <code>DROP TABLE name</code> drops the temporary table first when such a shadow exists.</p>
+                <p><code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, and joins work against temporary tables through the normal SQL execution path. V1 supports columns, nullability, collation, integer primary key/identity behavior, and rowid fallback. V1 rejects temporary foreign keys, triggers, secondary indexes, external tables, validation rules, full-text indexes, <code>ALTER TABLE</code>, <code>ANALYZE</code>, and data hygiene operations.</p>
+                <p>Temporary tables do not appear in <code>sys.tables</code>, <code>sys.objects</code>, backups, checkpoints, or <code>SaveToFileAsync</code>. Current-session metadata is exposed through <code>sys.temp_tables</code> / <code>sys_temp_tables</code> and <code>sys.temp_columns</code> / <code>sys_temp_columns</code>.</p>
+                <p><code>PERSIST TEMP TABLE temp_name AS durable_name</code> explicitly creates a new durable table using the temporary table schema and copies current rows through the normal durable mutation path. The durable target must not already exist. The command returns <code>temp_table</code>, <code>target_table</code>, and <code>rows_persisted</code>.</p>
+                <p>For embedded and ADO.NET connections, temporary tables live for the connection or database handle lifetime and are cleared when the session is disposed. Stateless HTTP/gRPC <code>ExecuteSqlAsync</code> rejects temporary table commands; use <code>BeginTransaction</code> plus <code>ExecuteInTransaction</code> for remote temporary workflows.</p>
                 <h3 id="alter-table">ALTER TABLE</h3>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">ALTER TABLE table_name ADD COLUMN column_name type [constraints];
                 ALTER TABLE table_name DROP COLUMN column_name;
@@ -293,6 +317,104 @@
                 -- EXISTS subquery
                 WHERE EXISTS (SELECT 1 FROM other_table WHERE condition)
                 </code></pre></div>
+                <hr/>
+                <h2 id="data-hygiene">Data Hygiene</h2>
+                <p>CSharpDB includes SQL-first data hygiene commands for duplicate cleanup,
+                audit-only validation rules, and relationship auditing. These commands return
+                normal query-shaped results through <code>ExecuteSqlAsync</code>, ADO.NET, Admin query tabs,
+                HTTP, gRPC, and the CLI.</p>
+                <h3 id="find-duplicates">FIND DUPLICATES</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND DUPLICATES IN table_name ON expression [, expression ...];
+                </code></pre></div>
+                <p>Scans the target table, evaluates the <code>ON</code> expressions for each row, and returns
+                one row per duplicate group. Text keys use existing column or expression
+                collation behavior, so <code>COLLATE NOCASE</code> can be used directly in the key list.</p>
+                <p><strong>Result columns:</strong></p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Column</th>
+                <th>Description</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr><td><code>key_values</code></td><td>Display text for the evaluated duplicate key values</td></tr>
+                <tr><td><code>group_size</code></td><td>Number of rows in the duplicate group</td></tr>
+                <tr><td><code>winner_rowid</code></td><td>Deterministic survivor rowid using <code>KEEP FIRST</code> semantics</td></tr>
+                <tr><td><code>winner_primary_key</code></td><td>Survivor primary-key value, or <code>NULL</code> when no primary key exists</td></tr>
+                <tr><td><code>duplicate_rowids</code></td><td>Comma-separated rowids that are not the survivor</td></tr>
+                <tr><td><code>duplicate_primary_keys</code></td><td>Comma-separated duplicate primary-key values, or <code>NULL</code> when no primary key exists</td></tr>
+                </tbody>
+                </table>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND DUPLICATES IN Customers ON Email COLLATE NOCASE;
+                FIND DUPLICATES IN Contacts ON FirstName, LastName, Phone;
+                </code></pre></div>
+                <h3 id="dedup">DEDUP</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DEDUP table_name ON expression [, expression ...] KEEP FIRST | LAST;
+                </code></pre></div>
+                <p>Deletes non-winner rows for each duplicate group. <code>KEEP FIRST</code> keeps the lowest
+                primary-key value when the table has a primary key, otherwise the lowest rowid.
+                <code>KEEP LAST</code> keeps the highest primary-key value, otherwise the highest rowid.
+                Deletes run through the normal table mutation path, including indexes, foreign
+                keys, triggers, WAL, and transaction rollback.</p>
+                <p>Result columns: <code>table_name</code>, <code>duplicate_group_count</code>, <code>rows_deleted</code>,
+                <code>rows_kept</code>.</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">DEDUP Customers ON Email COLLATE NOCASE KEEP FIRST;
+                </code></pre></div>
+                <h3 id="merge-duplicates">MERGE DUPLICATES</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">MERGE DUPLICATES table_name ON expression [, expression ...];
+                </code></pre></div>
+                <p>Selects the same deterministic winner as <code>KEEP FIRST</code>, fills only <code>NULL</code> winner
+                columns when exactly one non-null duplicate value is available, reports merge
+                conflicts when multiple different values are found, and then deletes the
+                duplicate rows through the normal mutation path.</p>
+                <p>Result columns: <code>table_name</code>, <code>duplicate_group_count</code>, <code>rows_updated</code>,
+                <code>rows_deleted</code>, <code>merge_conflict_count</code>, <code>merge_conflicts</code>.</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">MERGE DUPLICATES Customers ON Email COLLATE NOCASE;
+                </code></pre></div>
+                <h3 id="create-validation-rule">CREATE VALIDATION RULE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE VALIDATION RULE rule_name
+                ON table_name[.column_name]
+                AS expression
+                MESSAGE 'message text';
+                </code></pre></div>
+                <p>Validation rules are stored as database metadata and evaluated only when
+                <code>VALIDATE TABLE</code> is executed. V1 rules are audit-only; they do not block
+                <code>INSERT</code> or <code>UPDATE</code>.</p>
+                <p>Rules are stored in the hidden internal table <code>__validation_rules</code>. That table
+                is hidden from normal table/object listings and exposed through
+                <code>sys.validation_rules</code> and <code>sys_validation_rules</code>.</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE VALIDATION RULE ValidEmail
+                ON Customers.Email
+                AS Email LIKE '%@%'
+                MESSAGE 'Email must contain @';
+
+                SELECT rule_name, table_name, column_name, expression_sql, message
+                FROM sys.validation_rules;
+                </code></pre></div>
+                <h3 id="validate-table">VALIDATE TABLE</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">VALIDATE TABLE table_name;
+                </code></pre></div>
+                <p>Evaluates enabled validation rules for the table and returns one row per
+                violation. A rule fails when the expression returns false or <code>NULL</code>.</p>
+                <p>Result columns: <code>rule_name</code>, <code>table_name</code>, <code>column_name</code>, <code>rowid</code>,
+                <code>primary_key</code>, <code>message</code>.</p>
+                <h3 id="find-orphans">FIND ORPHANS</h3>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND ORPHANS IN child_table;
+                FIND ORPHANS IN child_table.child_column REFERENCES parent_table.parent_column;
+                </code></pre></div>
+                <p>Without an explicit <code>REFERENCES</code> clause, CSharpDB uses declared foreign-key
+                metadata for the child table. With explicit references, both tables and columns
+                are validated before running the check. <code>NULL</code> child values are ignored.</p>
+                <p>Result columns: <code>constraint_name</code>, <code>child_table</code>, <code>child_column</code>, <code>child_rowid</code>,
+                <code>child_value</code>, <code>parent_table</code>, <code>parent_column</code>.</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">FIND ORPHANS IN Bookings;
+                FIND ORPHANS IN Bookings.BookId REFERENCES Books.Id;
+                </code></pre></div>
+                <p>Performance is proportional to the requested hygiene work: duplicate detection
+                scans the target table and groups keys in memory; validation is table rows times
+                enabled rules; orphan detection uses parent index lookups when available or a
+                parent value set built from one scan.</p>
                 <hr/>
                 <h2 id="common-table-expressions-ctes">Common Table Expressions (CTEs)</h2>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">WITH cte_name [(column1, column2, ...)] AS (

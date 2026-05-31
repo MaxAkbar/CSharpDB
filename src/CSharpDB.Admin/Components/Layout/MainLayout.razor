@@ -94,6 +94,14 @@
                                 <DataModelTab @key="tab.Id"
                                               Tab="tab" />
                                 break;
+                            case TabKind.DataHygiene:
+                                <DataHygieneTab @key="tab.Id"
+                                                Tab="tab" />
+                                break;
+                            case TabKind.CompareDeploy:
+                                <CompareDeployTab @key="tab.Id"
+                                                  Tab="tab" />
+                                break;
                         }
                     </div>
                 }

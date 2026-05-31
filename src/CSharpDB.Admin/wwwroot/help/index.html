@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSharpDB Studio Help</title>
+    <link rel="icon" type="image/png" href="../icon2.png">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <img src="../icon2.png" alt="">
+                <div>
+                    <strong>CSharpDB Studio</strong>
+                    <span>Offline help</span>
+                </div>
+            </div>
+            <nav class="nav" aria-label="Help topics">
+                <div class="nav-label">Start</div>
+                <a class="active" href="index.html">Overview</a>
+                <a href="workspace.html">Workspace</a>
+                <a href="data-and-schema.html">Data and schema</a>
+                <a href="forms-and-reports.html">Forms and reports</a>
+                <a href="operations.html">Operations</a>
+                <a href="shortcuts.html">Shortcuts</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="content-inner">
+                <div class="eyebrow">Bundled admin documentation</div>
+                <h1>CSharpDB Studio Help</h1>
+                <p class="lead">CSharpDB Studio is the desktop administration workspace for browsing databases, running SQL, editing rows, designing schemas, building forms and reports, inspecting storage, and managing operational workflows.</p>
+
+                <div class="hero-actions">
+                    <a class="button primary" href="workspace.html">Get started</a>
+                    <a class="button" href="forms-and-reports.html">Forms and reports</a>
+                    <a class="button" href="shortcuts.html">Keyboard shortcuts</a>
+                </div>
+
+                <div class="screen">
+                    <img src="images/welcome.png" alt="CSharpDB Studio welcome screen">
+                    <p class="caption">The welcome screen shows Object Explorer, open tabs, connection state, and the main command surface.</p>
+                </div>
+
+                <h2>What You Can Do</h2>
+                <div class="grid">
+                    <section class="card">
+                        <h3>Browse and edit data</h3>
+                        <p>Open tables, views, and collections from Object Explorer. Filter, sort, page through rows, edit values, and save changes from a dedicated tab.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Run SQL</h3>
+                        <p>Use the query editor for SQL, formatting, saved queries, execution plans, results grids, and quick diagnostics.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Design schemas</h3>
+                        <p>Create and inspect tables, columns, indexes, triggers, views, procedures, and relationships without leaving the admin workspace.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Build forms and reports</h3>
+                        <p>Create Access-style data entry forms and printable banded reports with visual designers, previews, validation, and event hooks.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Move data</h3>
+                        <p>Import and export table archives, register external tables, and use the pipeline designer for repeatable ETL flows.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Inspect storage</h3>
+                        <p>Review database header details, WAL state, page histograms, free space, index health, and maintenance actions from Storage Inspector.</p>
+                    </section>
+                </div>
+
+                <h2>Help Bundle Scope</h2>
+                <p>This help site is intentionally separate from the public CSharpDB web site. It contains admin-only guidance and local screenshots so it can be packaged with the CSharpDB Studio MSIX and opened without internet access.</p>
+
+                <div class="callout">
+                    <strong>MSIX packaging:</strong> these files live under <code>src/CSharpDB.Admin/wwwroot/help</code>. The admin web host publishes them as static assets, and the desktop Store package includes that publish output.
+                </div>
+
+                <div class="next">
+                    <a class="button primary" href="workspace.html">Next: Workspace</a>
+                    <a class="button" href="data-and-schema.html">Data and schema</a>
+                    <a class="button" href="operations.html">Operations</a>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

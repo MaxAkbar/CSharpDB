@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Api\CSharpDB.Api.csproj" PrivateAssets="all" ExcludeAssets="contentFiles" />
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
   </ItemGroup>
 
   <Target Name="ExcludeApiHostSettingsFromDaemonPublish" BeforeTargets="_HandleFileConflictsForPublish">

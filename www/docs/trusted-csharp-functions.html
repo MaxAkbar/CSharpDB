@@ -1,0 +1,1209 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Trusted C# Functions and Commands — CSharpDB</title>
+    <meta name="description" content="Register trusted in-process C# scalar functions, commands, and callbacks for SQL, Admin Forms, reports, and pipelines.">
+    <link rel="canonical" href="https://csharpdb.com/docs/trusted-csharp-functions.html">
+    <meta property="og:title" content="Trusted C# Functions and Commands — CSharpDB">
+    <meta property="og:description" content="Register trusted in-process C# scalar functions, commands, and callbacks for SQL, Admin Forms, reports, and pipelines.">
+    <meta property="og:url" content="https://csharpdb.com/docs/trusted-csharp-functions.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Trusted C# Functions and Commands",
+        "description": "Register trusted in-process C# scalar functions, commands, and callbacks for SQL, Admin Forms, reports, and pipelines.",
+        "url": "https://csharpdb.com/docs/trusted-csharp-functions.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Trusted C# Functions and Commands',
+        description: 'Register trusted in-process C# scalar functions, commands, and callbacks for SQL, Admin Forms, reports, and pipelines.',
+        keywords: 'CSharpDB trusted C# functions, callbacks, commands, Admin Forms automation',
+        canonicalPath: 'docs/trusted-csharp-functions.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#trusted-commands">Trusted Commands</a></li>
+                        <li><a href="#trusted-validation-rules">Trusted Validation Rules</a></li>
+                        <li><a href="#what-you-can-register">What You Can Register</a></li>
+                        <li><a href="#complete-example">Complete Example</a></li>
+                        <li class="toc-child"><a href="#vs-code-host-project-workflow">VS Code Host Project Workflow</a></li>
+                        <li class="toc-child"><a href="#end-to-end-developer-handoff">End-To-End Developer Handoff</a></li>
+                        <li class="toc-child"><a href="#stored-procedures-in-the-mix">Stored Procedures In The Mix</a></li>
+                        <li><a href="#registration-rules">Registration Rules</a></li>
+                        <li><a href="#function-options">Function Options</a></li>
+                        <li><a href="#sql-usage">SQL Usage</a></li>
+                        <li><a href="#direct-client-usage">Direct Client Usage</a></li>
+                        <li><a href="#remote-host-usage">Remote Host Usage</a></li>
+                        <li><a href="#admin-forms">Admin Forms</a></li>
+                        <li><a href="#declarative-admin-forms-action-sequences">Declarative Admin Forms Action Sequences</a></li>
+                        <li><a href="#admin-reports">Admin Reports</a></li>
+                        <li><a href="#pipelines">Pipelines</a></li>
+                        <li><a href="#error-handling">Error Handling</a></li>
+                        <li><a href="#performance-guidance">Performance Guidance</a></li>
+                        <li><a href="#current-limitations">Current Limitations</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/trusted-csharp-functions/README.md because it is public host integration guidance.</div>
+<h1 id="trusted-c-functions-and-commands">Trusted C# Functions And Commands</h1>
+<p>CSharpDB can call host-registered C# scalar functions from SQL and the embedded expression surfaces that sit on top of the engine. This is the CSharpDB equivalent of an Access-style application function integration: the application owns the C# code, registers it while opening or hosting the database, and users call the function by name in database expressions.</p>
+<p>This callback feature is intentionally trusted and in-process. Host-registered callbacks do not store C# source code in the database, sandbox user code, load plugin assemblies from database files, or serialize delegates over HTTP or gRPC. For the newer database-owned Admin Forms C# module workflow, see <a href="../blog/access-style-csharp-code-modules.html">database-owned Admin Forms C# module workflow</a>.</p>
+<p>For an end-to-end app-builder walkthrough that combines Admin Forms, collections,
+macro actions, reports, trusted callbacks, and callback readiness, see the
+<a href="tutorials/fulfillment-ops-admin-automation.html">Fulfillment Ops Admin Automation tutorial</a>.</p>
+<p>For Admin Forms save-time business validation, see
+<a href="trusted-validation-rules.html">Trusted Validation Rules</a>.</p>
+<hr />
+<h2 id="trusted-commands">Trusted Commands</h2>
+<p>CSharpDB also supports trusted host-registered commands for application automation surfaces. Commands are different from scalar functions:</p>
+<ul>
+<li>Scalar functions return a <code>DbValue</code> and can be used inside SQL or formulas.</li>
+<li>Commands return a <code>DbCommandResult</code> and are invoked by host-driven events such as Admin Forms lifecycle events, Admin Reports render events, and pipeline run hooks.</li>
+</ul>
+<p>Commands are intended for Access-style application automation such as auditing, calling application services, sending notifications, refreshing derived state, coordinating UI workflows, or publishing operational run events. They are trusted in-process callbacks registered by the host application.</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Forms.Services;
+using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminForms(commands =&gt;
+{
+    commands.AddAsyncCommand(
+        &quot;AuditCustomerChange&quot;,
+        new DbCommandOptions(
+            Description: &quot;Writes an application audit entry.&quot;,
+            Timeout: TimeSpan.FromSeconds(10),
+            IsLongRunning: true),
+        static async (context, ct) =&gt;
+        {
+            long customerId = context.Arguments[&quot;Id&quot;].AsInteger;
+            string eventName = context.Metadata[&quot;event&quot;];
+
+            await WriteAuditAsync(customerId, eventName, ct);
+            return DbCommandResult.Success();
+        });
+});
+</code></pre>
+<p>Command names are case-insensitive identifiers. Duplicate command names are rejected during registration.</p>
+<p>Use <code>AddCommand(...)</code> for synchronous or <code>ValueTask</code>-returning callbacks and
+<code>AddAsyncCommand(...)</code> for <code>Task&lt;DbCommandResult&gt;</code> callbacks. Every command
+receives a <code>CancellationToken</code>; host code should pass it to I/O calls and stop
+work when cancellation is requested.</p>
+<p><code>DbCommandOptions.Timeout</code> is optional. When set, CSharpDB cancels the command
+token if the callback does not finish in time and reports a timeout through the
+same surface-specific failure path as other command errors. <code>IsLongRunning</code> is
+metadata for hosts and UI surfaces; it does not move the command out of process
+or run it on a separate scheduler.</p>
+<p>Every registered command exposes a <code>DbHostCallbackDescriptor</code> through
+<code>DbCommandDefinition.Descriptor</code> and <code>DbCommandRegistry.Callbacks</code>. The
+descriptor is read-only metadata for policy checks, diagnostics, and Admin
+visibility. It does not sandbox the command.</p>
+<hr />
+<h2 id="trusted-validation-rules">Trusted Validation Rules</h2>
+<p>Admin Forms can also call host-registered validation rules before save. Rules
+are registered in the host app with <code>AddCSharpDbAdminFormValidationRules(...)</code>
+and referenced from form or control metadata by name. Missing, denied, timed
+out, throwing, or failed validation rules block save and appear in the callback
+diagnostics path.</p>
+<p>See <a href="trusted-validation-rules.html">Trusted Validation Rules</a> for registration examples,
+field-level and form-level metadata, policy grants, diagnostics behavior, and
+the runnable sample.</p>
+<hr />
+<h2 id="what-you-can-register">What You Can Register</h2>
+<p>V1 supports synchronous scalar functions:</p>
+<pre><code class="language-csharp">public delegate DbValue DbScalarFunctionDelegate(
+    DbScalarFunctionContext context,
+    ReadOnlySpan&lt;DbValue&gt; arguments);
+</code></pre>
+<p>A scalar function receives database values and returns one database value. Supported value types are:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>CSharpDB type</th>
+  <th>Read with</th>
+  <th>Return with</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>DbType.Integer</code></td>
+  <td><code>value.AsInteger</code></td>
+  <td><code>DbValue.FromInteger(...)</code></td>
+</tr>
+<tr>
+  <td><code>DbType.Real</code></td>
+  <td><code>value.AsReal</code></td>
+  <td><code>DbValue.FromReal(...)</code></td>
+</tr>
+<tr>
+  <td><code>DbType.Text</code></td>
+  <td><code>value.AsText</code></td>
+  <td><code>DbValue.FromText(...)</code></td>
+</tr>
+<tr>
+  <td><code>DbType.Blob</code></td>
+  <td><code>value.AsBlob</code></td>
+  <td><code>DbValue.FromBlob(...)</code></td>
+</tr>
+<tr>
+  <td><code>DbType.Null</code></td>
+  <td><code>value.IsNull</code></td>
+  <td><code>DbValue.Null</code></td>
+</tr>
+</tbody>
+</table>
+<p>Functions are registered with:</p>
+<pre><code class="language-csharp">using CSharpDB.Engine;
+using CSharpDB.Primitives;
+
+var options = new DatabaseOptions()
+    .ConfigureFunctions(functions =&gt;
+    {
+        functions.AddScalar(
+            &quot;Slugify&quot;,
+            arity: 1,
+            options: new DbScalarFunctionOptions(
+                ReturnType: DbType.Text,
+                IsDeterministic: true,
+                NullPropagating: true),
+            invoke: static (_, args) =&gt;
+                DbValue.FromText(args[0].AsText.ToLowerInvariant().Replace(' ', '-')));
+    });
+</code></pre>
+<p>Open the database with those options:</p>
+<pre><code class="language-csharp">await using var db = await Database.OpenAsync(&quot;app.db&quot;, options);
+</code></pre>
+<p>For tests or transient data:</p>
+<pre><code class="language-csharp">await using var db = await Database.OpenInMemoryAsync(options);
+</code></pre>
+<hr />
+<h2 id="complete-example">Complete Example</h2>
+<pre><code class="language-csharp">using CSharpDB.Engine;
+using CSharpDB.Primitives;
+
+static string Slugify(string text)
+{
+    return text.Trim().ToLowerInvariant().Replace(' ', '-');
+}
+
+var options = new DatabaseOptions()
+    .ConfigureFunctions(functions =&gt;
+    {
+        functions.AddScalar(
+            &quot;Slugify&quot;,
+            arity: 1,
+            options: new DbScalarFunctionOptions(
+                ReturnType: DbType.Text,
+                IsDeterministic: true,
+                NullPropagating: true),
+            invoke: static (_, args) =&gt; DbValue.FromText(Slugify(args[0].AsText)));
+
+        functions.AddScalar(
+            &quot;IsEven&quot;,
+            arity: 1,
+            options: new DbScalarFunctionOptions(
+                ReturnType: DbType.Integer,
+                IsDeterministic: true,
+                NullPropagating: true),
+            invoke: static (_, args) =&gt;
+                DbValue.FromInteger(args[0].AsInteger % 2 == 0 ? 1 : 0));
+    });
+
+await using var db = await Database.OpenAsync(&quot;app.db&quot;, options);
+
+await db.ExecuteAsync(&quot;&quot;&quot;
+    CREATE TABLE articles (
+        id INTEGER PRIMARY KEY,
+        title TEXT NOT NULL,
+        slug TEXT
+    );
+    &quot;&quot;&quot;);
+
+await db.ExecuteAsync(&quot;INSERT INTO articles VALUES (1, 'Hello World', Slugify('Hello World'))&quot;);
+await db.ExecuteAsync(&quot;INSERT INTO articles VALUES (2, 'Second Post', Slugify('Second Post'))&quot;);
+
+await using var result = await db.ExecuteAsync(&quot;&quot;&quot;
+    SELECT id, Slugify(title)
+    FROM articles
+    WHERE IsEven(id) = 1
+    ORDER BY Slugify(title);
+    &quot;&quot;&quot;);
+</code></pre>
+<h3 id="vs-code-host-project-workflow">VS Code Host Project Workflow</h3>
+<p>For a runnable C# host project, open
+<code>samples/trusted-csharp-host</code> in VS Code. The sample includes <code>.vscode</code> launch
+and task files so a developer can press <code>F5</code>, set breakpoints inside the
+registered callbacks, and watch SQL and Admin Forms automation invoke ordinary
+C# code.</p>
+<pre><code class="language-powershell">dotnet run --project samples\trusted-csharp-host\TrustedCSharpHostSample.csproj
+</code></pre>
+<p>The sample demonstrates:</p>
+<ul>
+<li><code>DatabaseOptions.ConfigureFunctions(...)</code> for a trusted scalar function.</li>
+<li>SQL calling the function by name.</li>
+<li><code>DbCommandRegistry</code> for a trusted host command.</li>
+<li>An Admin Forms <code>DbActionSequence</code> that sets a field and then runs the
+command.</li>
+</ul>
+<p>The VS Code story stays host-owned: VS Code is the editor/debugger for the C#
+host project, while database metadata stores names and declarative action data
+only.</p>
+<h3 id="end-to-end-developer-handoff">End-To-End Developer Handoff</h3>
+<p>The production workflow is a handoff between an app builder and a host
+developer:</p>
+<ol>
+<li>The app builder creates database metadata that references a callback by name.
+Examples include a formula such as <code>=Slugify([Name])</code> or a form action step
+such as <code>RunCommand</code> with command name <code>SendOpsDigest</code>.</li>
+<li>Admin records only the callback name, arity/kind metadata, action arguments,
+and reference location. It does not store C# source.</li>
+<li>The callback catalog compares referenced names with the callbacks registered
+by the current host. Missing names appear as missing callback readiness.</li>
+<li>The app builder copies the generated registration stub from Admin and gives
+it to the host developer.</li>
+<li>The host developer implements the C# function or command in the host
+project, registers it during startup, and debugs it in VS Code like normal
+application code.</li>
+<li>The host is restarted. Admin refreshes callback readiness, and the reference
+changes from missing to registered/allowed when the name, kind, and arity
+match.</li>
+</ol>
+<p>For Admin itself, host-owned demo callbacks are registered in
+<code>src/CSharpDB.Admin/Services/AdminHostCallbacks.cs</code>. A scalar function is
+registered with <code>DbFunctionRegistry</code>:</p>
+<pre><code class="language-csharp">functions.AddScalar(
+    &quot;Slugify&quot;,
+    arity: 1,
+    options: new DbScalarFunctionOptions(
+        ReturnType: DbType.Text,
+        IsDeterministic: true,
+        NullPropagating: true),
+    invoke: static (_, args) =&gt; DbValue.FromText(Slugify(args[0].AsText)));
+</code></pre>
+<p>A command callback is registered with <code>DbCommandRegistry</code>:</p>
+<pre><code class="language-csharp">commands.AddCommand(
+    &quot;SendOpsDigest&quot;,
+    new DbCommandOptions(&quot;Sends a fulfillment operations digest.&quot;),
+    static context =&gt;
+    {
+        string source = context.Arguments.TryGetValue(&quot;source&quot;, out DbValue value)
+            ? value.AsText
+            : &quot;unknown&quot;;
+
+        // Call host-owned services here.
+        return DbCommandResult.Success($&quot;Digest requested by {source}.&quot;);
+    });
+</code></pre>
+<p>That C# code belongs to the host application. The database still stores only the
+name <code>SendOpsDigest</code> and any declarative action arguments.</p>
+<h3 id="stored-procedures-in-the-mix">Stored Procedures In The Mix</h3>
+<p>Stored procedures are different from trusted callbacks. They are database-owned
+SQL definitions with parameter metadata. They are useful when the logic should
+stay inside CSharpDB and can be expressed as SQL:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Need</th>
+  <th>Prefer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Reusable multi-statement table work</td>
+  <td>Stored procedure</td>
+</tr>
+<tr>
+  <td>Transactional updates plus follow-up result sets</td>
+  <td>Stored procedure</td>
+</tr>
+<tr>
+  <td>A form button that runs reviewed database logic</td>
+  <td><code>RunProcedure</code></td>
+</tr>
+<tr>
+  <td>External API, email, filesystem, queue, or host service call</td>
+  <td>Trusted command callback</td>
+</tr>
+<tr>
+  <td>Custom scalar calculation inside SQL expressions</td>
+  <td>Trusted scalar function</td>
+</tr>
+<tr>
+  <td>UI-only behavior such as filtering or control state</td>
+  <td>Declarative macro action</td>
+</tr>
+</tbody>
+</table>
+<p>A stored procedure can be executed directly through the client API:</p>
+<pre><code class="language-csharp">ProcedureExecutionResult result = await client.ExecuteProcedureAsync(
+    &quot;AllocateOrder&quot;,
+    new Dictionary&lt;string, object?&gt;
+    {
+        [&quot;orderId&quot;] = 7005,
+        [&quot;allocatedBy&quot;] = &quot;Wave Planner&quot;,
+        [&quot;note&quot;] = &quot;Allocated from a reviewed procedure.&quot;,
+    });
+</code></pre>
+<p>Admin's SQL editor also accepts <code>EXEC</code> as an Admin command surface:</p>
+<pre><code class="language-sql">EXEC AllocateOrder @orderId = 7005, @allocatedBy = 'Wave Planner';
+EXEC RefreshOperationalStats;
+EXEC tutorial_OpenOrderSnapshot { &quot;status&quot;: &quot;released&quot; };
+</code></pre>
+<p>Use <code>RunProcedure</code> from form metadata only when the rendered host enables
+procedure actions. Use <code>RunCommand</code> when the same button needs host-owned C#.
+When both are needed, run the procedure first for database work and the command
+second for the external side effect.</p>
+<hr />
+<h2 id="registration-rules">Registration Rules</h2>
+<p>Function names are SQL identifiers:</p>
+<ul>
+<li>They must start with a letter or <code>_</code>.</li>
+<li>Remaining characters must be letters, digits, or <code>_</code>.</li>
+<li>Lookup is case-insensitive, so <code>Slugify</code>, <code>slugify</code>, and <code>SLUGIFY</code> refer to the same function.</li>
+<li>A user function name can only be registered once. V1 does not support overloads by arity.</li>
+<li>Reserved built-ins cannot be overridden. Current reserved names are <code>TEXT</code>, <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, and <code>MAX</code>.</li>
+<li><code>arity</code> must match the number of arguments used by the expression.</li>
+</ul>
+<p>Registration failures throw immediately so host applications fail at startup instead of later during a query.</p>
+<p><code>ConfigureFunctions</code> sets the function registry for the returned <code>DatabaseOptions</code>. If you chain multiple option helpers, keep all function registrations in one <code>ConfigureFunctions</code> call or assign a single <code>DbFunctionRegistry</code> to <code>DatabaseOptions.Functions</code>.</p>
+<hr />
+<h2 id="function-options">Function Options</h2>
+<p>Each function can include <code>DbScalarFunctionOptions</code>:</p>
+<pre><code class="language-csharp">new DbScalarFunctionOptions(
+    ReturnType: DbType.Text,
+    IsDeterministic: true,
+    NullPropagating: true,
+    Description: &quot;Formats a URL slug.&quot;,
+    AdditionalCapabilities:
+    [
+        new DbExtensionCapabilityRequest(DbExtensionCapability.Clock)
+    ])
+</code></pre>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Option</th>
+  <th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>ReturnType</code></td>
+  <td>Optional metadata describing the expected return type.</td>
+</tr>
+<tr>
+  <td><code>IsDeterministic</code></td>
+  <td>Marks the function as returning the same output for the same inputs. V1 exposes the metadata but does not use it for constant folding or index planning.</td>
+</tr>
+<tr>
+  <td><code>NullPropagating</code></td>
+  <td>If any argument is <code>NULL</code>, CSharpDB returns <code>NULL</code> without invoking the delegate.</td>
+</tr>
+<tr>
+  <td><code>Description</code></td>
+  <td>Optional human-readable text for host tools and Admin visibility.</td>
+</tr>
+<tr>
+  <td><code>AdditionalCapabilities</code></td>
+  <td>Optional capability metadata beyond the implicit <code>ScalarFunctions</code> capability. This is for CSharpDB policy mediation and visibility, not a .NET sandbox.</td>
+</tr>
+<tr>
+  <td><code>Metadata</code></td>
+  <td>Optional host-defined descriptor metadata.</td>
+</tr>
+</tbody>
+</table>
+<p>Without <code>NullPropagating</code>, <code>DbValue.Null</code> is passed to the delegate and the function decides what to do.</p>
+<pre><code class="language-csharp">functions.AddScalar(
+    &quot;CoalesceText&quot;,
+    arity: 2,
+    options: new DbScalarFunctionOptions(DbType.Text),
+    invoke: static (_, args) =&gt;
+        args[0].IsNull ? args[1] : args[0]);
+</code></pre>
+<p>Registered scalar functions expose <code>DbScalarFunctionDefinition.Descriptor</code> and
+<code>DbFunctionRegistry.Callbacks</code>. The descriptor always uses
+<code>DbExtensionRuntimeKind.HostCallback</code>, records the callback kind, name, arity,
+return type, deterministic/null behavior, and includes the implicit
+<code>ScalarFunctions</code> capability plus any additional capabilities declared in the
+options.</p>
+<p>Commands expose the same descriptor shape through <code>DbCommandDefinition</code>.
+Command descriptors include the implicit <code>Commands</code> capability plus any
+additional capabilities declared in <code>DbCommandOptions</code>, along with description,
+timeout, and long-running metadata.</p>
+<p>Hosts can evaluate descriptor capabilities with <code>DbExtensionPolicyEvaluator</code>:</p>
+<pre><code class="language-csharp">DbHostCallbackDescriptor descriptor = commandRegistry.Callbacks.Single();
+DbExtensionPolicyDecision decision = DbExtensionPolicyEvaluator.Evaluate(
+    descriptor,
+    new DbExtensionPolicy(
+        AllowExtensions: true,
+        Grants:
+        [
+            new DbExtensionCapabilityGrant(
+                DbExtensionCapability.Commands,
+                DbExtensionCapabilityGrantStatus.Granted),
+            new DbExtensionCapabilityGrant(
+                DbExtensionCapability.ReadDatabase,
+                DbExtensionCapabilityGrantStatus.Granted),
+        ]),
+    DbExtensionHostMode.Embedded);
+</code></pre>
+<p>Policy evaluation controls what CSharpDB-mediated APIs should allow. It does
+not restrict arbitrary in-process .NET calls made by trusted host code.</p>
+<hr />
+<h2 id="sql-usage">SQL Usage</h2>
+<p>Registered scalar functions can be used in non-aggregate SQL expression positions:</p>
+<pre><code class="language-sql">SELECT Slugify(title) FROM articles;
+SELECT * FROM articles WHERE IsEven(id) = 1;
+SELECT * FROM articles ORDER BY Slugify(title);
+INSERT INTO articles VALUES (3, 'New Title', Slugify('New Title'));
+UPDATE articles SET slug = Slugify(title) WHERE slug IS NULL;
+</code></pre>
+<p>They also work in trigger bodies and SQL procedure bodies because those paths execute through the same SQL expression evaluator:</p>
+<pre><code class="language-sql">CREATE TABLE article_audit (article_id INTEGER, slug TEXT);
+
+CREATE TRIGGER articles_ai AFTER INSERT ON articles
+BEGIN
+    INSERT INTO article_audit VALUES (NEW.id, Slugify(NEW.title));
+END;
+</code></pre>
+<p>Custom functions stay on the residual expression path in V1:</p>
+<ul>
+<li>No index pushdown is inferred from a custom function.</li>
+<li>No generated-column or expression-index behavior is added.</li>
+<li>No constant folding or cost assumptions are made from custom function metadata.</li>
+</ul>
+<p>That keeps existing query and storage paths unchanged unless a query actually calls a registered function.</p>
+<hr />
+<h2 id="direct-client-usage">Direct Client Usage</h2>
+<p>Direct clients pass functions through <code>DirectDatabaseOptions</code>:</p>
+<pre><code class="language-csharp">using CSharpDB.Client;
+using CSharpDB.Engine;
+using CSharpDB.Primitives;
+
+await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    DataSource = &quot;app.db&quot;,
+    DirectDatabaseOptions = new DatabaseOptions()
+        .ConfigureFunctions(functions =&gt;
+        {
+            functions.AddScalar(
+                &quot;AddOne&quot;,
+                1,
+                new DbScalarFunctionOptions(DbType.Integer, IsDeterministic: true, NullPropagating: true),
+                static (_, args) =&gt; DbValue.FromInteger(args[0].AsInteger + 1));
+        }),
+});
+
+await client.ExecuteSqlAsync(&quot;CREATE TABLE numbers (value INTEGER);&quot;);
+await client.ExecuteSqlAsync(&quot;INSERT INTO numbers VALUES (41);&quot;);
+
+var result = await client.ExecuteSqlAsync(&quot;SELECT AddOne(value) FROM numbers;&quot;);
+</code></pre>
+<p><code>DirectDatabaseOptions</code> is only valid for direct transport. It is rejected for HTTP and gRPC clients because delegates cannot be serialized to another process.</p>
+<hr />
+<h2 id="remote-host-usage">Remote Host Usage</h2>
+<p>HTTP and gRPC clients cannot send C# delegates. Remote SQL can call a custom function only when that function is registered inside the host process that owns the database.</p>
+<p>The practical rule is:</p>
+<ul>
+<li>Embedded or direct client: register functions in <code>DatabaseOptions</code> or <code>DirectDatabaseOptions</code>.</li>
+<li>Remote client: register functions where the daemon, API host, or application server opens the database.</li>
+<li>Pipeline packages, report definitions, form definitions, procedures, and SQL text store function names and expressions only. They do not store C# function bodies.</li>
+<li>Admin Forms, Admin Reports, and pipeline packages also store generated <code>automation</code> metadata that lists required trusted commands and scalar functions by name, surface, and location. This is an import/export contract for hosts; it is not executable code.</li>
+</ul>
+<hr />
+<h2 id="admin-forms">Admin Forms</h2>
+<p>Admin Forms computed formulas can call registered scalar functions when the formula evaluator receives a <code>DbFunctionRegistry</code>.</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Forms.Evaluation;
+using CSharpDB.Primitives;
+
+var functions = DbFunctionRegistry.Create(builder =&gt;
+{
+    builder.AddScalar(
+        &quot;Tax&quot;,
+        1,
+        new DbScalarFunctionOptions(DbType.Real, IsDeterministic: true, NullPropagating: true),
+        static (_, args) =&gt; DbValue.FromReal(args[0].AsReal * 0.0825));
+});
+
+double? tax = FormulaEvaluator.Evaluate(
+    &quot;=Tax(Subtotal)&quot;,
+    fieldResolver: name =&gt; name == &quot;Subtotal&quot; ? 100.00 : null,
+    functions: functions);
+</code></pre>
+<p>Forms formulas are numeric formulas. A custom function used from <code>FormulaEvaluator.Evaluate</code> should return <code>INTEGER</code> or <code>REAL</code>; other return types evaluate to <code>null</code> in that surface. Existing aggregate formulas such as <code>=SUM(OrderItems.LineTotal)</code> remain built-in form behavior and are not replaced by custom scalar functions.</p>
+<p>Admin Forms can also bind lifecycle events to trusted commands. Form definitions store event names and command names only; the C# command bodies stay registered in the host process.</p>
+<pre><code class="language-csharp">var form = existingForm with
+{
+    EventBindings =
+    [
+        new FormEventBinding(FormEventKind.OnOpen, &quot;AuditFormOpen&quot;),
+        new FormEventBinding(FormEventKind.BeforeInsert, &quot;ValidateCustomerCreate&quot;),
+        new FormEventBinding(FormEventKind.AfterUpdate, &quot;AuditCustomerChange&quot;),
+    ],
+};
+</code></pre>
+<p>Supported form-level events in this slice are:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Event</th>
+  <th>When it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>OnOpen</code></td>
+  <td>After the form definition and source table are resolved, before records load.</td>
+</tr>
+<tr>
+  <td><code>OnLoad</code></td>
+  <td>After the initial record page loads.</td>
+</tr>
+<tr>
+  <td><code>BeforeInsert</code></td>
+  <td>Before a new record is inserted. Returning <code>DbCommandResult.Failure(...)</code> cancels the insert.</td>
+</tr>
+<tr>
+  <td><code>AfterInsert</code></td>
+  <td>After a new record is inserted.</td>
+</tr>
+<tr>
+  <td><code>BeforeUpdate</code></td>
+  <td>Before an existing record is updated. Returning failure cancels the update.</td>
+</tr>
+<tr>
+  <td><code>AfterUpdate</code></td>
+  <td>After an existing record is updated.</td>
+</tr>
+<tr>
+  <td><code>BeforeDelete</code></td>
+  <td>Before the current record is deleted. Returning failure cancels the delete.</td>
+</tr>
+<tr>
+  <td><code>AfterDelete</code></td>
+  <td>After the current record is deleted.</td>
+</tr>
+</tbody>
+</table>
+<p>Command context arguments include the current record fields converted to <code>DbValue</code>. Static arguments configured on the event binding override same-named record fields. Metadata includes <code>surface</code>, <code>formId</code>, <code>formName</code>, <code>tableName</code>, and <code>event</code>.</p>
+<p>The Admin Forms designer preserves form event bindings and exposes them in the property inspector when no control is selected. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer. The same editor can attach a visual action sequence to the event.</p>
+<p>Admin Forms also include control-level trusted command events. Form controls store event names, command names, and optional JSON arguments in the form definition. At runtime, the renderer invokes the registered host command with the current record fields plus event-specific arguments.</p>
+<pre><code class="language-csharp">var textBox = existingTextBox with
+{
+    EventBindings =
+    [
+        new ControlEventBinding(
+            ControlEventKind.OnChange,
+            &quot;NormalizeCustomerName&quot;,
+            new Dictionary&lt;string, object?&gt; { [&quot;source&quot;] = &quot;name-textbox&quot; }),
+        new ControlEventBinding(ControlEventKind.OnLostFocus, &quot;ValidateCustomerName&quot;),
+    ],
+};
+</code></pre>
+<p>Supported control events in this slice are:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Event</th>
+  <th>When it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>OnClick</code></td>
+  <td>When a label or command button is clicked.</td>
+</tr>
+<tr>
+  <td><code>OnChange</code></td>
+  <td>After an input, checkbox, radio, select, lookup, or textarea updates its bound field.</td>
+</tr>
+<tr>
+  <td><code>OnGotFocus</code></td>
+  <td>When an interactive control receives focus.</td>
+</tr>
+<tr>
+  <td><code>OnLostFocus</code></td>
+  <td>When an interactive control loses focus.</td>
+</tr>
+</tbody>
+</table>
+<p>Control event metadata includes the Forms metadata plus <code>event</code>, <code>controlId</code>, <code>controlType</code>, and <code>fieldName</code> for bound controls. Arguments include current record fields and event details such as <code>fieldName</code>, <code>value</code>, and <code>oldValue</code> for field changes. Static arguments configured on the event binding override same-named runtime arguments.</p>
+<p>The Admin Forms designer exposes selected-control event bindings in the property inspector. If the host has registered trusted commands, the designer shows those command names; otherwise it stores the command name typed by the designer. Selected-control events use the same visual action-sequence editor as form lifecycle events.</p>
+<p>Admin Forms also include a command button control. Command buttons store a display label, a command name, and optional JSON arguments in the form definition. At runtime, clicking the button invokes the registered host command with the current record fields plus the configured arguments. Command buttons can also use <code>ControlEventKind.OnClick</code> bindings, which allows a button to be driven entirely by the shared control-event model.</p>
+<pre><code class="language-csharp">var button = new ControlDefinition(
+    &quot;btn-ship&quot;,
+    &quot;commandButton&quot;,
+    new Rect(24, 320, 160, 34),
+    Binding: null,
+    Props: new PropertyBag(new Dictionary&lt;string, object?&gt;
+    {
+        [&quot;text&quot;] = &quot;Ship Order&quot;,
+        [&quot;commandName&quot;] = &quot;ShipOrder&quot;,
+        [&quot;commandArguments&quot;] = new Dictionary&lt;string, object?&gt;
+        {
+            [&quot;source&quot;] = &quot;form-button&quot;,
+        },
+    }),
+    ValidationOverride: null);
+</code></pre>
+<p>Command button direct-command metadata includes the same form metadata as lifecycle events, plus <code>event = &quot;Click&quot;</code>, <code>controlId</code>, and <code>controlType</code>.</p>
+<hr />
+<h2 id="declarative-admin-forms-action-sequences">Declarative Admin Forms Action Sequences</h2>
+<p>Admin Forms event bindings can also store small declarative action sequences.
+This is the first Access-style macro layer for CSharpDB Forms: the form stores
+action metadata, while any executable C# still lives in host-registered trusted
+commands.</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Forms.Models;
+using CSharpDB.Primitives;
+
+var shipButton = existingButton with
+{
+    EventBindings =
+    [
+        new ControlEventBinding(
+            ControlEventKind.OnClick,
+            CommandName: string.Empty,
+            ActionSequence: new DbActionSequence(
+            [
+                new DbActionStep(
+                    DbActionKind.SetFieldValue,
+                    Target: &quot;Status&quot;,
+                    Value: &quot;Shipped&quot;),
+                new DbActionStep(
+                    DbActionKind.RunCommand,
+                    CommandName: &quot;AuditOrderStatus&quot;,
+                    Condition: &quot;Status = 'Shipped'&quot;,
+                    Arguments: new Dictionary&lt;string, object?&gt;
+                    {
+                        [&quot;source&quot;] = &quot;ship-button&quot;,
+                    }),
+                new DbActionStep(
+                    DbActionKind.ShowMessage,
+                    Message: &quot;Order marked as shipped.&quot;),
+            ],
+            Name: &quot;ShipButtonActions&quot;)),
+    ],
+};
+</code></pre>
+<p>The action set is intentionally form-focused:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Action</th>
+  <th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>RunCommand</code></td>
+  <td>Invokes a host-registered trusted command by name.</td>
+</tr>
+<tr>
+  <td><code>RunActionSequence</code></td>
+  <td>Invokes a reusable named form action sequence stored on the form definition.</td>
+</tr>
+<tr>
+  <td><code>SetFieldValue</code></td>
+  <td>Updates a target field in the current mutable form record.</td>
+</tr>
+<tr>
+  <td><code>ShowMessage</code></td>
+  <td>Sends a message when the current Forms surface provides a command/message callback.</td>
+</tr>
+<tr>
+  <td><code>Stop</code></td>
+  <td>Ends the current sequence successfully.</td>
+</tr>
+<tr>
+  <td><code>NewRecord</code></td>
+  <td>Starts a new record in the rendered form.</td>
+</tr>
+<tr>
+  <td><code>SaveRecord</code></td>
+  <td>Saves the current rendered record through the normal form save path.</td>
+</tr>
+<tr>
+  <td><code>DeleteRecord</code></td>
+  <td>Deletes the current persisted rendered record through the normal form delete path.</td>
+</tr>
+<tr>
+  <td><code>RefreshRecords</code></td>
+  <td>Reloads the current record/page while preserving the current primary key when possible.</td>
+</tr>
+<tr>
+  <td><code>PreviousRecord</code></td>
+  <td>Moves the rendered form to the previous record.</td>
+</tr>
+<tr>
+  <td><code>NextRecord</code></td>
+  <td>Moves the rendered form to the next record.</td>
+</tr>
+<tr>
+  <td><code>GoToRecord</code></td>
+  <td>Navigates to a primary-key value from <code>Value</code>, <code>Arguments[&quot;value&quot;]</code>, <code>Arguments[&quot;recordId&quot;]</code>, <code>Arguments[&quot;primaryKey&quot;]</code>, or the field named by <code>Target</code>.</td>
+</tr>
+<tr>
+  <td><code>OpenForm</code></td>
+  <td>Opens another saved form through the rendered form host.</td>
+</tr>
+<tr>
+  <td><code>CloseForm</code></td>
+  <td>Closes the current or named rendered form surface.</td>
+</tr>
+<tr>
+  <td><code>ApplyFilter</code></td>
+  <td>Applies a form or data-grid filter.</td>
+</tr>
+<tr>
+  <td><code>ClearFilter</code></td>
+  <td>Clears a form or data-grid filter.</td>
+</tr>
+<tr>
+  <td><code>RunSql</code></td>
+  <td>Executes SQL through the rendered host when SQL actions are enabled by policy.</td>
+</tr>
+<tr>
+  <td><code>RunProcedure</code></td>
+  <td>Executes a saved procedure through the rendered host when procedure actions are enabled by policy.</td>
+</tr>
+<tr>
+  <td><code>SetControlProperty</code></td>
+  <td>Overrides a rendered control property such as <code>visible</code>, <code>enabled</code>, <code>readOnly</code>, <code>text</code>, <code>placeholder</code>, or bound <code>value</code>.</td>
+</tr>
+<tr>
+  <td><code>SetControlVisibility</code></td>
+  <td>Short form for setting a rendered control's <code>visible</code> property.</td>
+</tr>
+<tr>
+  <td><code>SetControlEnabled</code></td>
+  <td>Short form for setting a rendered control's <code>enabled</code> property.</td>
+</tr>
+<tr>
+  <td><code>SetControlReadOnly</code></td>
+  <td>Short form for setting a rendered control's <code>readOnly</code> property.</td>
+</tr>
+</tbody>
+</table>
+<p>Reusable action sequences are stored once on the form and invoked by name from
+form events, control events, or command buttons:</p>
+<pre><code class="language-csharp">var form = existingForm with
+{
+    ActionSequences =
+    [
+        new DbActionSequence(
+        [
+            new DbActionStep(DbActionKind.SetFieldValue, Target: &quot;Status&quot;, Value: &quot;Ready&quot;),
+            new DbActionStep(DbActionKind.RunCommand, CommandName: &quot;AuditReady&quot;),
+        ],
+        Name: &quot;PrepareReadyStatus&quot;),
+    ],
+    EventBindings =
+    [
+        new FormEventBinding(
+            FormEventKind.BeforeUpdate,
+            string.Empty,
+            ActionSequence: new DbActionSequence(
+            [
+                new DbActionStep(
+                    DbActionKind.RunActionSequence,
+                    SequenceName: &quot;PrepareReadyStatus&quot;,
+                    Arguments: new Dictionary&lt;string, object?&gt; { [&quot;source&quot;] = &quot;before-update&quot; }),
+            ])),
+    ],
+};
+</code></pre>
+<p><code>RunActionSequence</code> arguments become runtime arguments for the nested sequence,
+so nested <code>RunCommand</code> steps receive current record fields, binding arguments,
+caller-supplied sequence arguments, and their own step arguments. Recursive
+sequence loops fail with a nesting-limit error instead of running forever.</p>
+<p>Action sequences can be attached to form lifecycle bindings or selected-control
+bindings. A binding can contain only a command, only an action sequence, or a
+command followed by an action sequence:</p>
+<pre><code class="language-csharp">var form = existingForm with
+{
+    EventBindings =
+    [
+        new FormEventBinding(
+            FormEventKind.BeforeInsert,
+            &quot;ValidateOrder&quot;,
+            ActionSequence: new DbActionSequence(
+            [
+                new DbActionStep(
+                    DbActionKind.SetFieldValue,
+                    Target: &quot;Status&quot;,
+                    Value: &quot;Draft&quot;),
+            ])),
+    ],
+};
+</code></pre>
+<p>The Admin Forms property inspector exposes action sequences with a visual
+editor on form-level and selected-control event bindings. Designers can add a
+sequence, name it, add command, reusable-sequence, field, message, stop,
+rendered record, form, filter, SQL/procedure, and control-property steps,
+reorder or remove steps, choose registered commands or reusable sequences when
+available, and set per-step conditions and
+<code>StopOnFailure</code>. The form-level property inspector also includes a reusable
+action-sequence library editor. JSON editing remains only for optional binding,
+<code>RunCommand</code>, or <code>RunActionSequence</code> argument payloads.</p>
+<p>For <code>RunCommand</code>, command arguments are built from current record fields,
+binding arguments, runtime event arguments, and step arguments, with later
+sources overriding earlier ones. Command metadata includes the Forms metadata
+plus <code>actionKind</code>, <code>actionStep</code>, optional <code>actionSequence</code>, and optional
+<code>actionCondition</code>.</p>
+<p>Every action step can include a <code>Condition</code>. Empty conditions run the step.
+False conditions skip only that step. Malformed conditions fail through the
+normal step failure path, so <code>StopOnFailure = false</code> can allow a later step to
+continue.</p>
+<p>Supported condition syntax is intentionally small:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Syntax</th>
+  <th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Truthy value</td>
+  <td><code>IsActive</code></td>
+</tr>
+<tr>
+  <td>Equality</td>
+  <td><code>Status = 'Ready'</code> or <code>[Status] == &quot;Ready&quot;</code></td>
+</tr>
+<tr>
+  <td>Inequality</td>
+  <td><code>Status &lt;&gt; 'Closed'</code> or <code>Status != 'Closed'</code></td>
+</tr>
+<tr>
+  <td>Numeric comparison</td>
+  <td><code>Amount &gt; 0</code>, <code>Quantity &lt;= 10</code></td>
+</tr>
+<tr>
+  <td>Null comparison</td>
+  <td><code>ClosedAt = null</code></td>
+</tr>
+</tbody>
+</table>
+<p>Condition values are resolved from current record fields, binding arguments,
+runtime event arguments, and step arguments using the same later-wins order as
+command arguments. A leading <code>=</code> is accepted for macro-style conditions, for
+example <code>=Status = 'Ready'</code>.</p>
+<p>When forms are saved through <code>DbFormRepository</code> or exported through
+<code>FormAutomationMetadata.NormalizeForExport(...)</code>, the definition's <code>automation</code>
+metadata is regenerated from form events, command buttons, selected-control
+events, reusable action sequences, action-sequence <code>RunCommand</code> steps, and
+computed-control formulas. Older form JSON without automation metadata is
+backfilled when it is loaded.</p>
+<p><code>SetFieldValue</code> can update mutable records in form lifecycle events such as
+<code>BeforeInsert</code> and <code>BeforeUpdate</code>, and it can update the current rendered record
+from control events or command-button clicks.</p>
+<p>Built-in record, form navigation, filter, SQL/procedure, and control-property
+actions require a rendered Admin Forms data-entry runtime. They are intended for
+command buttons and selected-control events. Headless form lifecycle dispatch
+can still run <code>SetFieldValue</code>, <code>ShowMessage</code>, <code>Stop</code>, and <code>RunCommand</code>, but it
+reports a failure if a sequence asks for actions that need the rendered form
+instance.</p>
+<p>Action sequences do not include loops, a <code>RunCode</code> macro action,
+database-owned plugins, or remote delegate serialization. Database-owned C#
+form modules are handled as trusted event handlers through the separate code
+module runtime. Rendered Admin form runtimes support direct SQL and procedure
+actions only when the host explicitly enables those capabilities.</p>
+<hr />
+<h2 id="admin-reports">Admin Reports</h2>
+<p>Admin Reports preview rendering accepts the same registry through <code>DefaultReportPreviewService</code>:</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Reports.Services;
+using CSharpDB.Primitives;
+
+var previewService = new DefaultReportPreviewService(
+    dbClient,
+    sourceProvider,
+    functions);
+</code></pre>
+<p>Numeric calculated expressions can call numeric-returning functions:</p>
+<pre><code class="language-text">=Tax([Subtotal])
+</code></pre>
+<p>Calculated text can use a scalar function as the whole expression, including text-returning functions:</p>
+<pre><code class="language-text">=FormatInvoiceLabel([InvoiceNumber], [CustomerName])
+</code></pre>
+<p>Report aggregate formulas such as <code>=SUM([Subtotal])</code> remain built-in report behavior.</p>
+<p>Admin Reports can also bind preview-render lifecycle events to trusted commands. Report definitions store event names, command names, and optional static arguments only; the C# command bodies stay registered by the host process.</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Reports.Models;
+
+var report = existingReport with
+{
+    EventBindings =
+    [
+        new ReportEventBinding(ReportEventKind.OnOpen, &quot;AuditReportOpen&quot;),
+        new ReportEventBinding(ReportEventKind.BeforeRender, &quot;PrepareReportContext&quot;),
+        new ReportEventBinding(ReportEventKind.AfterRender, &quot;PublishReportRendered&quot;),
+    ],
+};
+</code></pre>
+<p>Supported report events are:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Event</th>
+  <th>When it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>OnOpen</code></td>
+  <td>After the report source is resolved, before preview rows are loaded.</td>
+</tr>
+<tr>
+  <td><code>BeforeRender</code></td>
+  <td>After preview rows are loaded and capped, before pagination and calculated text rendering.</td>
+</tr>
+<tr>
+  <td><code>AfterRender</code></td>
+  <td>After preview pages are produced, before the preview result is returned.</td>
+</tr>
+</tbody>
+</table>
+<p>Command context arguments include render metrics such as <code>rowCount</code>, <code>loadedRowCount</code>, <code>rowTruncated</code>, <code>pageCount</code>, <code>isTruncated</code>, and <code>hasSchemaDrift</code> depending on the event. Static arguments configured on the binding override same-named runtime arguments. Metadata includes <code>surface = AdminReports</code>, <code>reportId</code>, <code>reportName</code>, <code>sourceKind</code>, <code>sourceName</code>, and <code>event</code>.</p>
+<p>When reports are saved through <code>DbReportRepository</code> or exported through
+<code>ReportAutomationMetadata.NormalizeForExport(...)</code>, the definition's
+<code>automation</code> metadata is regenerated from report event bindings and calculated
+text expressions. Older report JSON without automation metadata is backfilled
+when it is loaded.</p>
+<p>Register report commands through the reports service registration overload:</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Reports.Services;
+using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminReports(commands =&gt;
+{
+    commands.AddCommand(&quot;PublishReportRendered&quot;, static context =&gt;
+    {
+        string reportName = context.Metadata[&quot;reportName&quot;];
+        long pageCount = context.Arguments[&quot;pageCount&quot;].AsInteger;
+
+        PublishReportMetric(reportName, pageCount);
+        return DbCommandResult.Success();
+    });
+});
+</code></pre>
+<hr />
+<h2 id="pipelines">Pipelines</h2>
+<p>Pipelines can call registered scalar functions in filter expressions and derived-column expressions when the runner or component factory is constructed with a registry.</p>
+<pre><code class="language-csharp">using CSharpDB.Client.Pipelines;
+using CSharpDB.Pipelines.Models;
+using CSharpDB.Primitives;
+
+var functions = DbFunctionRegistry.Create(builder =&gt;
+{
+    builder.AddScalar(
+        &quot;NormalizeStatus&quot;,
+        1,
+        new DbScalarFunctionOptions(DbType.Text, IsDeterministic: true, NullPropagating: true),
+        static (_, args) =&gt; DbValue.FromText(args[0].AsText.Trim().ToLowerInvariant()));
+});
+
+var runner = new CSharpDbPipelineRunner(client, functions);
+
+var package = new PipelinePackageDefinition
+{
+    Name = &quot;active-customers&quot;,
+    Version = &quot;1.0.0&quot;,
+    Source = new PipelineSourceDefinition
+    {
+        Kind = PipelineSourceKind.CsvFile,
+        Path = &quot;customers.csv&quot;,
+        HasHeaderRow = true,
+    },
+    Transforms =
+    [
+        new PipelineTransformDefinition
+        {
+            Kind = PipelineTransformKind.Filter,
+            FilterExpression = &quot;NormalizeStatus(status) == 'active'&quot;,
+        },
+        new PipelineTransformDefinition
+        {
+            Kind = PipelineTransformKind.Derive,
+            DerivedColumns =
+            [
+                new PipelineDerivedColumn
+                {
+                    Name = &quot;status_key&quot;,
+                    Expression = &quot;NormalizeStatus(status)&quot;,
+                },
+            ],
+        },
+    ],
+    Destination = new PipelineDestinationDefinition
+    {
+        Kind = PipelineDestinationKind.JsonFile,
+        Path = &quot;active-customers.json&quot;,
+    },
+};
+
+await runner.RunPackageAsync(package);
+</code></pre>
+<p>Pipeline package JSON stores expressions such as <code>NormalizeStatus(status)</code> plus generated <code>automation</code> metadata listing the required scalar function names. The C# delegate must be registered by the process that runs the package.</p>
+<p>Pipelines can also invoke trusted commands from run hooks. Hook definitions are serialized with the package, but they store only the hook event, command name, optional static arguments, and generated automation metadata:</p>
+<pre><code class="language-csharp">var commands = DbCommandRegistry.Create(builder =&gt;
+{
+    builder.AddCommand(&quot;NotifyPipeline&quot;, static context =&gt;
+    {
+        string pipelineName = context.Metadata[&quot;pipelineName&quot;];
+        string status = context.Arguments[&quot;status&quot;].AsText;
+        long rowsWritten = context.Arguments[&quot;rowsWritten&quot;].AsInteger;
+
+        NotifyOps(pipelineName, status, rowsWritten);
+        return DbCommandResult.Success();
+    });
+});
+
+var runner = new CSharpDbPipelineRunner(client, functions, commands);
+
+var package = new PipelinePackageDefinition
+{
+    Name = &quot;active-customers&quot;,
+    Version = &quot;1.0.0&quot;,
+    Source = new PipelineSourceDefinition
+    {
+        Kind = PipelineSourceKind.CsvFile,
+        Path = &quot;customers.csv&quot;,
+    },
+    Destination = new PipelineDestinationDefinition
+    {
+        Kind = PipelineDestinationKind.JsonFile,
+        Path = &quot;active-customers.json&quot;,
+    },
+    Hooks =
+    [
+        new PipelineCommandHookDefinition
+        {
+            Event = PipelineCommandHookEvent.OnRunSucceeded,
+            CommandName = &quot;NotifyPipeline&quot;,
+            Arguments = new Dictionary&lt;string, object?&gt;
+            {
+                [&quot;channel&quot;] = &quot;ops&quot;,
+            },
+        },
+    ],
+};
+</code></pre>
+<p>Supported pipeline hook events are:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Event</th>
+  <th>When it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>OnRunStarted</code></td>
+  <td>After package validation and run logging, before components are created.</td>
+</tr>
+<tr>
+  <td><code>OnBatchCompleted</code></td>
+  <td>After each source batch is transformed/written, metrics and checkpoints are updated, and reject limits pass.</td>
+</tr>
+<tr>
+  <td><code>OnRunSucceeded</code></td>
+  <td>After destination completion and before the successful run is logged as completed.</td>
+</tr>
+<tr>
+  <td><code>OnRunFailed</code></td>
+  <td>When the orchestrator is about to return a failed <code>PipelineRunResult</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Hook arguments include <code>runId</code>, <code>pipelineName</code>, <code>pipelineVersion</code>, <code>mode</code>, <code>event</code>, <code>status</code>, <code>rowsRead</code>, <code>rowsWritten</code>, <code>rowsRejected</code>, and <code>batchesCompleted</code>. Batch hooks also include <code>batchNumber</code>, <code>startingRowNumber</code>, and <code>batchRowCount</code>. Failure hooks include <code>errorSummary</code>. Metadata includes <code>surface = Pipelines</code>, <code>pipelineName</code>, <code>pipelineVersion</code>, <code>runId</code>, <code>mode</code>, and <code>event</code>.</p>
+<p><code>PipelinePackageSerializer</code> refreshes the <code>automation</code> manifest when packages are serialized, saved, deserialized, or loaded from disk. <code>PipelinePackageValidator</code> accepts older packages without a manifest, but if a manifest is present and no longer matches the package expressions/hooks, validation reports stale automation metadata so the package can be re-exported.</p>
+<p><code>Validate</code> mode does not invoke command hooks, so package validation stays side-effect free. Missing command registration or a failing hook with <code>StopOnFailure = true</code> fails the run normally. For <code>OnRunFailed</code>, hook failures are appended to the failed run's error summary instead of recursively dispatching more failure hooks.</p>
+<hr />
+<h2 id="error-handling">Error Handling</h2>
+<p>Missing SQL functions fail with the existing unknown scalar function error. Function exceptions are wrapped with the function name and the surrounding statement follows normal rollback behavior.</p>
+<pre><code class="language-csharp">functions.AddScalar(
+    &quot;RequirePositive&quot;,
+    1,
+    new DbScalarFunctionOptions(DbType.Integer, NullPropagating: true),
+    static (context, args) =&gt;
+    {
+        long value = args[0].AsInteger;
+        if (value &lt;= 0)
+            throw new ArgumentOutOfRangeException(context.FunctionName, &quot;Value must be positive.&quot;);
+
+        return DbValue.FromInteger(value);
+    });
+</code></pre>
+<p>For SQL write statements, a failing function aborts the statement. If the statement is inside a transaction, normal transaction rollback rules apply.</p>
+<p>Admin Forms formulas intentionally return <code>null</code> for invalid formulas, unsupported function return types, missing functions, division by zero, or exceptions. Pipeline functions throw runtime errors unless the pipeline error mode handles the affected row.</p>
+<p>Trusted command failures are surface-specific. Form before-events can cancel writes, report event failures fail preview rendering, and pipeline hook failures produce a failed <code>PipelineRunResult</code> unless the binding sets <code>StopOnFailure = false</code>. Timed-out commands are reported as command failures; caller-requested cancellation still propagates as cancellation instead of being converted to a failure message.</p>
+<p>Forms action-sequence failures follow the same binding-level <code>StopOnFailure</code>
+rule. Step-level <code>StopOnFailure = false</code> lets a later step continue after that
+step fails; otherwise the sequence reports the failure to the surrounding form
+or control event.</p>
+<hr />
+<h2 id="performance-guidance">Performance Guidance</h2>
+<p>Custom functions run only when an expression calls them. Queries and writes that do not use custom functions stay on the existing paths.</p>
+<p>For low overhead:</p>
+<ul>
+<li>Prefer <code>NullPropagating = true</code> when a function naturally returns null for null input.</li>
+<li>Avoid database calls, blocking I/O, sleeps, and long network calls inside delegates.</li>
+<li>For command callbacks that call application services, prefer <code>AddAsyncCommand(...)</code>, honor the provided cancellation token, and set a timeout that matches the user-facing workflow.</li>
+<li>Keep delegates thread-safe. A function may be called by concurrent queries in the same host process.</li>
+<li>Capture immutable services or thread-safe services in closures when application integration is needed.</li>
+<li>Use <code>IsDeterministic = true</code> for accurate metadata, but do not rely on V1 to optimize from it.</li>
+</ul>
+<hr />
+<h2 id="current-limitations">Current Limitations</h2>
+<p>V1 does not support:</p>
+<ul>
+<li>Aggregate UDFs.</li>
+<li>Table-valued UDFs.</li>
+<li>Database-owned C# modules beyond the local Admin Forms event-handler MVP,
+such as report modules, procedure modules, or remote/daemon execution.</li>
+<li>Sandboxed execution.</li>
+<li>Async scalar delegates.</li>
+<li>Passing a database handle into the function context.</li>
+<li>Sending delegates over HTTP, gRPC, or pipeline package files.</li>
+<li>Optimizer pushdown, expression indexes, generated columns, or constant folding based on custom function metadata.</li>
+<li>Additional Access-style control events such as double-click, key, mouse, timer, and dirty/current events.</li>
+<li>Richer macro/action scripts with loops, reusable UI rule presets, additional event surfaces, or <code>RunCode</code> action invocation.</li>
+</ul>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

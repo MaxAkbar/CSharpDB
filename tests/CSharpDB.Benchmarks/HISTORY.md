@@ -7,7 +7,87 @@ This file preserves the benchmark release logs, failed-run notes, investigation 
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current main README is promoted from the April 26, 2026 release-core run and the April 27, 2026 UTC guardrail compare. Earlier release-prep failures are retained below as investigation history, not as the current published state.
+The current main README is promoted from the May 6, 2026 release-core run and guardrail compare. The latest May 31, 2026 guardrail close-out is clean for current code after the temporary-table hot-path fix. Failed and earlier release-prep runs are retained below as investigation history, not as the current published scorecard.
+
+## May 31, 2026 Guardrail Close-Out - Current Code Clean
+
+The release guardrail investigation found a real hot-path regression from temporary-table shadow checks in durable `SELECT` and `INSERT` fast paths. The fix adds a session-context counter to `TemporaryTableManager` and guards temp-table lookups so normal durable sessions with no temp tables avoid the extra catalog resolution work.
+
+The full post-fix guardrail run completed the micro, commit fan-in, durable SQL batching, insert fan-in, and write diagnostics stages. It stopped once during `WriteTransaction Diagnostics` run 2 without a .NET crash event or benchmark-reported `fatalErrors` / `exhaustedConflicts`. The identical focused write-transaction diagnostic repeat completed successfully, its median CSV was staged into the current diagnostic set, and the final baseline comparison passed.
+
+```powershell
+dotnet build .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release -m:1
+dotnet test .\tests\CSharpDB.Tests\CSharpDB.Tests.csproj -m:1 --filter "FullyQualifiedName~TemporaryTable"
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --write-transaction-diagnostics --repeat 3 --repro
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
+  -ReportPath .\tests\CSharpDB.Benchmarks\results\perf-guardrails-last.md `
+  -ThresholdsPath .\tests\CSharpDB.Benchmarks\perf-thresholds.json `
+  -CurrentMicroResultsDir .\tests\CSharpDB.Benchmarks\results\.tmp-current-micro-run
+```
+
+| Item | Result |
+|------|--------|
+| Temporary-table focused tests | `passed 9/9` |
+| Focused point lookup after fix | `passed`; `RowCount=1000` was `501.7 ns` vs `488.9 ns` baseline (`+2.62%`, threshold `15%`); `RowCount=100000` was `707.9 ns` vs `893.9 ns` baseline (`-20.81%`, threshold `8%`) |
+| Full post-fix wrapper | Produced current micro and diagnostic artifacts, then stopped during `WriteTransaction Diagnostics` run 2 |
+| Focused WriteTransaction Diagnostics | `passed`; produced `write-transaction-diagnostics-20260531-141442-median-of-3.csv` |
+| Final release guardrail compare | `Compared 187 rows against baseline. PASS=187, WARN=0, SKIP=0, FAIL=0` |
+| Final report timestamp | `2026-05-31 14:25:50Z` |
+| Runner | `Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.8` |
+
+Close-out artifacts:
+
+| Artifact | Path |
+|----------|------|
+| Full wrapper run log | `tests/CSharpDB.Benchmarks/results/release-guardrail-after-temp-hotpath-fix-20260531-004505/stdout.log` |
+| Focused WriteTransaction log | `tests/CSharpDB.Benchmarks/results/focused-write-transaction-diagnostics-20260531-071434/run.log` |
+| Final compare log | `tests/CSharpDB.Benchmarks/results/compare-after-focused-write-transaction-20260531-072546/compare.log` |
+| Final report | `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md` |
+
+## May 30-31, 2026 Release-Core Attempt - Not Promoted
+
+The release-core suite completed before the temp-table hot-path fix. Its initial release guardrail comparison failed one micro row, so the May 31 release-core artifacts were not promoted into the generated README scorecard. The focused insert reruns below later showed that row was volatile guardrail noise, but the release-core scorecard still stayed on the May 6 promoted artifacts because current code changed during close-out.
+
+```powershell
+dotnet build .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release -m:1
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tests\CSharpDB.Benchmarks\scripts\Run-Perf-Guardrails.ps1 -Mode release
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter "*Micro.InsertBenchmarks.BatchInsert_100_PreparedBatch*"
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter "*Micro.InsertBenchmarks*"
+```
+
+| Item | Result |
+|------|--------|
+| Release build | `passed` |
+| Release-core status | `completed` |
+| Release-core completion | `Saturday, May 30, 2026 7:31:54 PM PT` (`2026-05-31 02:31:54Z`) |
+| Release-core duration | `about 68 minutes` |
+| Release guardrail compare | `Compared 187 rows against baseline. PASS=186, WARN=0, SKIP=0, FAIL=1` |
+| Release guardrail status | `FAILED - not promoted` |
+| Release guardrail report | `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md` |
+| Guardrail report timestamp | `2026-05-31 04:19:59Z` |
+| Runner | `Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.8` |
+| Commit | `f246e2fb485ff55870652ac3d9d5834cae493383` |
+| Focused x100 prepared rerun | `passed`; failed row reran at `3.818 ms` with `17.99 KB` allocated |
+| Focused full InsertBenchmarks rerun | `passed 24/24`; failed row reran at `4.023 ms` vs `4.737 ms` baseline (`-15.07%`) |
+
+Failure detail:
+
+| CSV | Row | Delta | Threshold | Notes |
+|-----|-----|------:|----------:|-------|
+| `CSharpDB.Benchmarks.Micro.InsertBenchmarks-report.csv` | `Method='Batch INSERT x100 prepared batch'; PreSeededRows=100` | `+32.13% mean` | `Mean<=8%` | Allocation improved by `-27.65%` / `-7,045 B`; focused reruns did not reproduce the slowdown, and the later close-out above cleared the current guardrail set. |
+
+Release-core source artifacts from the completed but unpromoted run:
+
+| Artifact | Path |
+|----------|------|
+| Durable master comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260531-012329-median-of-3.csv` |
+| Durable SQL batching | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260531-014220-median-of-3.csv` |
+| Concurrent durable write | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260531-020454-median-of-3.csv` |
+| Hybrid storage mode | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260531-021121-median-of-3.csv` |
+| Hybrid hot-set read | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260531-022709-median-of-3.csv` |
+| Hybrid cold open | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260531-022751-median-of-3.csv` |
+| SQLite comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260531-022847-median-of-3.csv` |
 
 ## April 26-27, 2026 Release-Core Promotion
 
@@ -1587,5 +1667,5 @@ Hot-cache point-lookup reference for CSharpDB:
 ## See Also
 
 - [Project README](../../README.md)
-- [Architecture Guide](../../docs/architecture.md)
-- [Roadmap](../../docs/roadmap.md)
+- [Architecture Guide](https://csharpdb.com/architecture.html)
+- [Roadmap](https://csharpdb.com/roadmap.html)

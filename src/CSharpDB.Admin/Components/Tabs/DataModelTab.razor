@@ -290,6 +290,11 @@
                     @if (SelectedRelationship.Kind != DataModelRelationshipKind.ExternalArchiveForeignKey)
                     {
                         <div class="data-model-schema-actions">
+                            <button class="toolbar-btn"
+                                    @onclick="OpenSelectedRelationshipHygiene"
+                                    title="Find child rows without a parent">
+                                <i class="bi bi-shield-check"></i> Find Orphans
+                            </button>
                             <button class="toolbar-btn danger"
                                     disabled="@HasPendingDropForSelectedRelationship"
                                     @onclick="StageDropSelectedRelationshipAsync"
@@ -920,6 +925,20 @@
     {
         QueryDesignerState designerState = DataModels.ToQueryDesignerState(_state);
         TabManager.OpenQueryDesignerTab(designerState);
+    }
+
+    private void OpenSelectedRelationshipHygiene()
+    {
+        if (SelectedRelationship is null)
+            return;
+
+        TabManager.OpenDataHygieneTab(new DataHygieneSeed(
+            DataHygieneMode.Orphans,
+            TableName: SelectedRelationship.LeftTable,
+            ChildTableName: SelectedRelationship.LeftTable,
+            ChildColumnName: SelectedRelationship.LeftColumn,
+            ParentTableName: SelectedRelationship.RightTable,
+            ParentColumnName: SelectedRelationship.RightColumn));
     }
 
     private void ToggleAddSourcePanel()

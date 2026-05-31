@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>ADO.NET and EF Core Storage Tuning — CSharpDB</title>
+    <meta name="description" content="Embedded storage tuning options for CSharpDB ADO.NET and EF Core callers, including presets and open modes.">
+    <link rel="canonical" href="https://csharpdb.com/docs/ado-ef-storage-tuning.html">
+    <meta property="og:title" content="ADO.NET and EF Core Storage Tuning — CSharpDB">
+    <meta property="og:description" content="Embedded storage tuning options for CSharpDB ADO.NET and EF Core callers, including presets and open modes.">
+    <meta property="og:url" content="https://csharpdb.com/docs/ado-ef-storage-tuning.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "ADO.NET and EF Core Storage Tuning",
+        "description": "Embedded storage tuning options for CSharpDB ADO.NET and EF Core callers, including presets and open modes.",
+        "url": "https://csharpdb.com/docs/ado-ef-storage-tuning.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'ADO.NET and EF Core Storage Tuning',
+        description: 'Embedded storage tuning options for CSharpDB ADO.NET and EF Core callers, including presets and open modes.',
+        keywords: 'CSharpDB ADO.NET storage tuning, EF Core storage preset, embedded open mode',
+        canonicalPath: 'docs/ado-ef-storage-tuning.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#summary">Summary</a></li>
+                        <li><a href="#public-surface">Public Surface</a></li>
+                        <li><a href="#ado-net-examples">ADO.NET Examples</a></li>
+                        <li><a href="#ef-core-examples">EF Core Examples</a></li>
+                        <li><a href="#precedence-and-pooling">Precedence and Pooling</a></li>
+                        <li><a href="#unsupported-cases">Unsupported Cases</a></li>
+                        <li><a href="#practical-preset-guidance">Practical Preset Guidance</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/ado-ef-storage-tuning/README.md because it is public provider guidance.</div>
+<h1 id="ado-net-and-ef-core-embedded-storage-tuning">ADO.NET and EF Core Embedded Storage Tuning</h1>
+<p><code>CSharpDB.Data</code> and <code>CSharpDB.EntityFrameworkCore</code> now expose the same
+embedded storage-engine tuning surface that already existed at the engine
+level. That lets ADO.NET and EF Core callers opt into the read, write, and
+hybrid performance presets documented in <code>src/CSharpDB.Storage/README.md</code>
+without changing default behavior for existing applications.</p>
+<h2 id="summary">Summary</h2>
+<ul>
+<li>No behavior changes unless you opt in.</li>
+<li>Connection strings expose a small convenience surface:
+<code>Storage Preset</code> and <code>Embedded Open Mode</code>.</li>
+<li>Full engine composition still lives on <code>DatabaseOptions</code> and
+<code>HybridDatabaseOptions</code>.</li>
+<li>EF Core can apply the same settings through the provider-specific
+<code>CSharpDbDbContextOptionsBuilder</code>.</li>
+</ul>
+<h2 id="public-surface">Public Surface</h2>
+<p>ADO.NET:</p>
+<ul>
+<li><code>CSharpDbConnection.DirectDatabaseOptions</code></li>
+<li><code>CSharpDbConnection.HybridDatabaseOptions</code></li>
+<li>additive <code>CSharpDbConnection</code> constructor overloads for direct and hybrid
+options</li>
+<li><code>CSharpDbConnectionStringBuilder.StoragePreset</code></li>
+<li><code>CSharpDbConnectionStringBuilder.EmbeddedOpenMode</code></li>
+</ul>
+<p>EF Core:</p>
+<ul>
+<li><code>UseDirectDatabaseOptions(DatabaseOptions)</code></li>
+<li><code>UseHybridDatabaseOptions(HybridDatabaseOptions)</code></li>
+<li><code>UseStoragePreset(CSharpDbStoragePreset)</code></li>
+<li><code>UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode)</code></li>
+</ul>
+<p>Connection-string keywords:</p>
+<ul>
+<li><code>Storage Preset</code></li>
+<li><code>Embedded Open Mode</code></li>
+</ul>
+<p>Supported <code>Storage Preset</code> values:</p>
+<ul>
+<li><code>DirectLookupOptimized</code></li>
+<li><code>DirectColdFileLookup</code></li>
+<li><code>HybridFileCache</code></li>
+<li><code>WriteOptimized</code></li>
+<li><code>LowLatencyDurableWrite</code></li>
+</ul>
+<p>Supported <code>Embedded Open Mode</code> values:</p>
+<ul>
+<li><code>Direct</code></li>
+<li><code>HybridIncrementalDurable</code></li>
+<li><code>HybridSnapshot</code></li>
+</ul>
+<p>Both keywords parse case-insensitively.</p>
+<h2 id="ado-net-examples">ADO.NET Examples</h2>
+<p>Use full direct options when you want exact engine control:</p>
+<pre><code class="language-csharp">using CSharpDB.Data;
+using CSharpDB.Engine;
+
+var directOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+
+await using var connection = new CSharpDbConnection(
+    &quot;Data Source=ingest.cdb&quot;,
+    directOptions);
+
+await connection.OpenAsync();
+</code></pre>
+<p>Use hybrid open mode plus direct options when you want a lazy-resident
+file-backed runtime:</p>
+<pre><code class="language-csharp">using CSharpDB.Data;
+using CSharpDB.Engine;
+
+var directOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt; builder.UseDirectLookupOptimizedPreset());
+
+var hybridOptions = new HybridDatabaseOptions
+{
+    PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+    HotTableNames = [&quot;users&quot;, &quot;sessions&quot;],
+};
+
+await using var connection = new CSharpDbConnection(&quot;Data Source=app.cdb&quot;)
+{
+    DirectDatabaseOptions = directOptions,
+    HybridDatabaseOptions = hybridOptions,
+};
+
+await connection.OpenAsync();
+</code></pre>
+<p>Use connection-string convenience keywords when a named preset is enough:</p>
+<pre><code class="language-csharp">await using var connection = new CSharpDbConnection(
+    &quot;Data Source=app.cdb;Storage Preset=WriteOptimized;Embedded Open Mode=HybridIncrementalDurable&quot;);
+
+await connection.OpenAsync();
+</code></pre>
+<h2 id="ef-core-examples">EF Core Examples</h2>
+<p>Apply engine options directly:</p>
+<pre><code class="language-csharp">using CSharpDB.Engine;
+using CSharpDB.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+var directOptions = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt; builder.UseWriteOptimizedPreset());
+
+var options = new DbContextOptionsBuilder&lt;AppDbContext&gt;()
+    .UseCSharpDb(
+        &quot;Data Source=app.cdb&quot;,
+        csharpdb =&gt; csharpdb.UseDirectDatabaseOptions(directOptions))
+    .Options;
+</code></pre>
+<p>Apply named presets and embedded open mode through the provider builder:</p>
+<pre><code class="language-csharp">var options = new DbContextOptionsBuilder&lt;AppDbContext&gt;()
+    .UseCSharpDb(
+        &quot;Data Source=app.cdb&quot;,
+        csharpdb =&gt;
+        {
+            csharpdb.UseStoragePreset(CSharpDbStoragePreset.WriteOptimized);
+            csharpdb.UseEmbeddedOpenMode(CSharpDbEmbeddedOpenMode.HybridIncrementalDurable);
+        })
+    .Options;
+</code></pre>
+<p>If you pass an existing <code>CSharpDbConnection</code>, EF Core validates that any
+provider builder tuning matches the supplied connection. It does not mutate the
+existing connection object.</p>
+<h2 id="precedence-and-pooling">Precedence and Pooling</h2>
+<ul>
+<li>Explicit <code>DirectDatabaseOptions</code> override <code>Storage Preset</code>.</li>
+<li>Explicit <code>HybridDatabaseOptions</code> override <code>Embedded Open Mode</code>.</li>
+<li>Connection-string preset and open-mode keywords only fill gaps when the
+corresponding explicit options object is absent.</li>
+<li>Pooling remains supported for file-backed embedded opens.</li>
+<li>Pool identity is options-aware in v1.</li>
+<li>The pool key includes the normalized file target, max pool size, effective
+embedded open mode, effective preset selection, and explicit options object
+identity.</li>
+<li>Separate explicit options object instances do not share a pool in v1 even if
+their contents are equivalent.</li>
+<li><code>ClearPool(connectionString)</code> clears all pooled entries for the normalized
+file-backed target.</li>
+</ul>
+<h2 id="unsupported-cases">Unsupported Cases</h2>
+<ul>
+<li>Remote <code>Http</code>, <code>Grpc</code>, and <code>NamedPipes</code> connections reject embedded tuning.</li>
+<li>Named shared-memory databases reject embedded tuning.</li>
+<li>Private <code>:memory:</code> databases support direct tuning, but not hybrid open
+modes.</li>
+<li>EF Core still rejects pooled connections, endpoint connections, non-direct
+transports, and named shared-memory databases.</li>
+</ul>
+<h2 id="practical-preset-guidance">Practical Preset Guidance</h2>
+<p>Use these as the first measurement targets:</p>
+<ul>
+<li><code>WriteOptimized</code> for file-backed durable ingest and general write-heavy
+embedded workloads.</li>
+<li><code>LowLatencyDurableWrite</code> only as a measure-first variant when you want to
+test deferred advisory planner-stat persistence.</li>
+<li><code>DirectLookupOptimized</code> for hot local file-backed lookup workloads.</li>
+<li><code>DirectColdFileLookup</code> for colder or cache-pressured direct file reads where
+memory-mapped clean-page reads help.</li>
+<li><code>HybridFileCache</code> for explicit bounded file-cache experiments.</li>
+</ul>
+<p>As of April 20, 2026, the repository benchmark guidance still treats
+<code>WriteOptimized</code> as the stable first preset for file-backed durable write
+paths, while <code>LowLatencyDurableWrite</code> remains a workload-specific experiment
+rather than a blanket default change.</p>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

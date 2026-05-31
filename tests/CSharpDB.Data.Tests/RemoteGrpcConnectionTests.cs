@@ -115,6 +115,33 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TempTables_RequireTransactionSession_OverGrpcDaemon()
+    {
+        await using var conn = CreateConnection();
+        await conn.OpenAsync(Ct);
+
+        using (var rejected = conn.CreateCommand())
+        {
+            rejected.CommandText = "CREATE TEMP TABLE grpc_temp (id INTEGER PRIMARY KEY);";
+            var ex = await Assert.ThrowsAsync<CSharpDbDataException>(() => rejected.ExecuteNonQueryAsync(Ct));
+            Assert.Contains("transaction session", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        await using var tx = await conn.BeginTransactionAsync(Ct);
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "CREATE TEMP TABLE grpc_temp (id INTEGER PRIMARY KEY);";
+            await cmd.ExecuteNonQueryAsync(Ct);
+            cmd.CommandText = "INSERT INTO grpc_temp VALUES (1);";
+            await cmd.ExecuteNonQueryAsync(Ct);
+            cmd.CommandText = "SELECT COUNT(*) FROM grpc_temp;";
+            Assert.Equal(1L, await cmd.ExecuteScalarAsync(Ct));
+        }
+
+        await tx.CommitAsync(Ct);
+    }
+
+    [Fact]
     public async Task GetSchema_RemoteGrpcConnection_UsesDaemonMetadata()
     {
         await using var conn = CreateConnection();

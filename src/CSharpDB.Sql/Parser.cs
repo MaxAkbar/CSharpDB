@@ -143,6 +143,19 @@ public sealed class Parser
         return parser.ParseStatement();
     }
 
+    public static Expression ParseExpressionSql(string sql)
+    {
+        var tokenizer = new Tokenizer(sql);
+        var tokens = tokenizer.Tokenize();
+        var parser = new Parser(tokens);
+        var expression = parser.ParseExpression();
+        if (parser.Peek().Type == TokenType.Semicolon)
+            parser.Advance();
+        if (parser.Peek().Type != TokenType.Eof)
+            throw parser.Error($"Unexpected token '{parser.Peek().Value}' after expression.");
+        return expression;
+    }
+
     /// <summary>
     /// Fast-path parser for simple single-table SELECT queries:
     /// SELECT col-list FROM table [WHERE col = literal [AND col = literal]*] [;]
@@ -191,6 +204,11 @@ public sealed class Parser
             TokenType.With => ParseWith(),
             TokenType.Analyze => ParseAnalyze(),
             TokenType.Explain => ParseExplain(),
+            TokenType.Find => ParseFind(),
+            TokenType.Dedup => ParseDedup(),
+            TokenType.Merge => ParseMergeDuplicates(),
+            TokenType.Persist => ParsePersist(),
+            TokenType.Validate => ParseValidateTable(),
             _ => throw Error($"Unexpected token '{token.Value}', expected a statement."),
         };
 
@@ -1315,14 +1333,27 @@ public sealed class Parser
             Advance(); // consume TRIGGER
             return ParseCreateTriggerBody();
         }
+        if (t == TokenType.Validation)
+        {
+            Advance(); // consume VALIDATION
+            Expect(TokenType.Rule);
+            return ParseCreateValidationRuleBody();
+        }
+        if (t is TokenType.Temp or TokenType.Temporary)
+        {
+            Advance(); // consume TEMP/TEMPORARY
+            Expect(TokenType.Table);
+            return ParseCreateTableBody(isTemporary: true, tableKeywordConsumed: true);
+        }
 
         // Default: CREATE TABLE
-        return ParseCreateTableBody();
+        return ParseCreateTableBody(isTemporary: false, tableKeywordConsumed: false);
     }
 
-    private CreateTableStatement ParseCreateTableBody()
+    private CreateTableStatement ParseCreateTableBody(bool isTemporary, bool tableKeywordConsumed)
     {
-        Expect(TokenType.Table);
+        if (!tableKeywordConsumed)
+            Expect(TokenType.Table);
 
         bool ifNotExists = false;
         if (Peek().Type == TokenType.If)
@@ -1352,6 +1383,7 @@ public sealed class Parser
             TableName = tableName,
             Columns = columns,
             IfNotExists = ifNotExists,
+            IsTemporary = isTemporary,
         };
     }
 
@@ -1584,14 +1616,21 @@ public sealed class Parser
             Advance(); // consume TRIGGER
             return ParseDropTriggerBody();
         }
+        if (t is TokenType.Temp or TokenType.Temporary)
+        {
+            Advance(); // consume TEMP/TEMPORARY
+            Expect(TokenType.Table);
+            return ParseDropTableBody(isTemporary: true, tableKeywordConsumed: true);
+        }
 
         // Default: DROP TABLE
-        return ParseDropTableBody();
+        return ParseDropTableBody(isTemporary: false, tableKeywordConsumed: false);
     }
 
-    private DropTableStatement ParseDropTableBody()
+    private DropTableStatement ParseDropTableBody(bool isTemporary, bool tableKeywordConsumed)
     {
-        Expect(TokenType.Table);
+        if (!tableKeywordConsumed)
+            Expect(TokenType.Table);
 
         bool ifExists = false;
         if (Peek().Type == TokenType.If)
@@ -1602,7 +1641,7 @@ public sealed class Parser
         }
 
         string tableName = ExpectIdentifier();
-        return new DropTableStatement { TableName = tableName, IfExists = ifExists };
+        return new DropTableStatement { TableName = tableName, IfExists = ifExists, IsTemporary = isTemporary };
     }
 
     private DropIndexStatement ParseDropIndexBody()
@@ -2094,6 +2133,157 @@ public sealed class Parser
         return new ExplainEstimateStatement { Target = target };
     }
 
+    private FindDuplicatesStatement ParseFindDuplicates()
+    {
+        Expect(TokenType.Find);
+        Expect(TokenType.Duplicates);
+        Expect(TokenType.In);
+        string tableName = ParseMultipartIdentifier();
+        Expect(TokenType.On);
+
+        return new FindDuplicatesStatement
+        {
+            TableName = tableName,
+            KeyExpressions = ParseExpressionList(),
+        };
+    }
+
+    private Statement ParseFind()
+    {
+        if (_tokens[_pos + 1].Type == TokenType.Duplicates)
+            return ParseFindDuplicates();
+
+        Expect(TokenType.Find);
+        Expect(TokenType.Orphans);
+        Expect(TokenType.In);
+        (string childTable, string? childColumn) = ParseRequiredTargetWithOptionalColumn();
+
+        string? parentTable = null;
+        string? parentColumn = null;
+        if (TryConsume(TokenType.References))
+        {
+            if (childColumn is null)
+                throw Error("Explicit orphan references require a child column.");
+
+            (parentTable, parentColumn) = ParseRequiredTargetWithOptionalColumn();
+            if (parentColumn is null)
+                throw Error("Explicit orphan references require a parent column.");
+        }
+        else if (childColumn is not null)
+        {
+            throw Error("Child column orphan checks require a REFERENCES clause.");
+        }
+
+        return new FindOrphansStatement
+        {
+            ChildTableName = childTable,
+            ChildColumnName = childColumn,
+            ParentTableName = parentTable,
+            ParentColumnName = parentColumn,
+        };
+    }
+
+    private DedupStatement ParseDedup()
+    {
+        Expect(TokenType.Dedup);
+        string tableName = ParseMultipartIdentifier();
+        Expect(TokenType.On);
+        var keyExpressions = ParseExpressionList();
+        Expect(TokenType.Keep);
+
+        DuplicateKeepMode keepMode = Peek().Type switch
+        {
+            TokenType.First => DuplicateKeepMode.First,
+            TokenType.Last => DuplicateKeepMode.Last,
+            _ => throw Error("Expected FIRST or LAST after KEEP."),
+        };
+        Advance();
+
+        return new DedupStatement
+        {
+            TableName = tableName,
+            KeyExpressions = keyExpressions,
+            KeepMode = keepMode,
+        };
+    }
+
+    private MergeDuplicatesStatement ParseMergeDuplicates()
+    {
+        Expect(TokenType.Merge);
+        Expect(TokenType.Duplicates);
+        string tableName = ParseMultipartIdentifier();
+        Expect(TokenType.On);
+
+        return new MergeDuplicatesStatement
+        {
+            TableName = tableName,
+            KeyExpressions = ParseExpressionList(),
+        };
+    }
+
+    private CreateValidationRuleStatement ParseCreateValidationRuleBody()
+    {
+        string ruleName = ExpectIdentifier();
+        Expect(TokenType.On);
+        (string tableName, string? columnName) = ParseRequiredTargetWithOptionalColumn();
+        Expect(TokenType.As);
+        Expression expression = ParseExpression();
+        Expect(TokenType.Message);
+        string message = Expect(TokenType.StringLiteral).Value;
+
+        return new CreateValidationRuleStatement
+        {
+            RuleName = ruleName,
+            TableName = tableName,
+            ColumnName = columnName,
+            Expression = expression,
+            Message = message,
+        };
+    }
+
+    private ValidateTableStatement ParseValidateTable()
+    {
+        Expect(TokenType.Validate);
+        Expect(TokenType.Table);
+        return new ValidateTableStatement { TableName = ParseMultipartIdentifier() };
+    }
+
+    private PersistTempTableStatement ParsePersist()
+    {
+        Expect(TokenType.Persist);
+        if (!TryConsume(TokenType.Temp))
+            Expect(TokenType.Temporary);
+        Expect(TokenType.Table);
+        string tempTableName = ExpectIdentifier();
+        Expect(TokenType.As);
+        string targetTableName = ExpectIdentifier();
+
+        return new PersistTempTableStatement
+        {
+            TempTableName = tempTableName,
+            TargetTableName = targetTableName,
+        };
+    }
+
+    private List<Expression> ParseExpressionList()
+    {
+        var expressions = new List<Expression> { ParseExpression() };
+        while (TryConsume(TokenType.Comma))
+            expressions.Add(ParseExpression());
+
+        return expressions;
+    }
+
+    private (string TableName, string? ColumnName) ParseRequiredTargetWithOptionalColumn()
+    {
+        string first = ExpectIdentifier();
+        if (!TryConsume(TokenType.Dot))
+            return (first, null);
+
+        string second = ExpectIdentifier();
+        return (first, second);
+    }
+
     private UpdateStatement ParseUpdate()
     {
         Expect(TokenType.Update);
@@ -2569,7 +2759,7 @@ public sealed class Parser
             case TokenType.Parameter:
                 Advance();
                 return new ParameterExpression { Name = token.Value };
-            case TokenType.Identifier:
+            case var identifierType when IsIdentifierLike(identifierType):
                 Advance();
                 // Check for qualified column ref: table.column
                 if (Peek().Type == TokenType.Dot)
@@ -2632,11 +2822,29 @@ public sealed class Parser
     private string ExpectIdentifier()
     {
         var token = Peek();
-        if (token.Type != TokenType.Identifier)
+        if (!IsIdentifierLike(token.Type))
             throw Error($"Expected identifier, got '{token.Value}' ({token.Type}).");
         Advance();
         return token.Value;
     }
+
+    private static bool IsIdentifierLike(TokenType type) =>
+        type is TokenType.Identifier
+            or TokenType.Find
+            or TokenType.Duplicates
+            or TokenType.Dedup
+            or TokenType.Keep
+            or TokenType.First
+            or TokenType.Last
+            or TokenType.Merge
+            or TokenType.Validation
+            or TokenType.Rule
+            or TokenType.Message
+            or TokenType.Validate
+            or TokenType.Orphans
+            or TokenType.Temp
+            or TokenType.Temporary
+            or TokenType.Persist;
 
     private string? ParseOptionalCollationName()
     {

@@ -52,9 +52,21 @@
                 <div class="tree-group-header compact">
                     <i class="bi bi-tools icon-system"></i>
                     <span>Tools</span>
-                    <span class="group-count">2</span>
+                    <span class="group-count">4</span>
                 </div>
                 <div class="tree-items">
+                    <button class="tree-item command-item @(IsActiveCompareDeploy() ? "active" : "")"
+                            @onclick="() => TabManager.OpenCompareDeployTab()">
+                        <i class="bi bi-file-earmark-diff icon-system"></i>
+                        <span class="item-label">Compare / Deploy</span>
+                        <span class="item-hint">diff and scripts</span>
+                    </button>
+                    <button class="tree-item command-item @(IsActiveDataHygiene() ? "active" : "")"
+                            @onclick="() => TabManager.OpenDataHygieneTab()">
+                        <i class="bi bi-shield-check icon-system"></i>
+                        <span class="item-label">Data Hygiene</span>
+                        <span class="item-hint">quality checks</span>
+                    </button>
                     <button class="tree-item command-item @(IsActiveDataModel() ? "active" : "")"
                             @onclick="() => TabManager.OpenDataModelTab()">
                         <i class="bi bi-diagram-3 icon-view"></i>
@@ -714,6 +726,7 @@
         new SystemCatalogItem("sys.views", "views", "SELECT * FROM sys.views ORDER BY view_name;"),
         new SystemCatalogItem("sys.triggers", "triggers", "SELECT * FROM sys.triggers ORDER BY trigger_name;"),
         new SystemCatalogItem("sys.objects", "all objects", "SELECT * FROM sys.objects ORDER BY object_type, object_name;"),
+        new SystemCatalogItem("sys.validation_rules", "validation rules", "SELECT * FROM sys.validation_rules ORDER BY table_name, column_name, rule_name;"),
         new SystemCatalogItem("sys.saved_queries", "saved queries", "SELECT * FROM sys.saved_queries ORDER BY name;"),
         new SystemCatalogItem("sys.external_tables", "external tables", "SELECT * FROM sys.external_tables ORDER BY table_name;"),
         new SystemCatalogItem("sys.diagrams", "diagrams", "SELECT * FROM sys.diagrams ORDER BY name;"),
@@ -732,7 +745,7 @@
     private IReadOnlyList<ReportDefinition>? _reports;
     private string _searchQuery = string.Empty;
     private string _objectFilter = "all";
-    private readonly HashSet<string> _expandedGroups = new() { "tables", "externalTables", "collections", "forms", "reports", "system", "views", "procedures", "callbacks" };
+    private readonly HashSet<string> _expandedGroups = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _expandedTableNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _tableSchemaLoadFailures = new(StringComparer.OrdinalIgnoreCase);
@@ -1210,6 +1223,15 @@
     private void OpenSystemCatalogTab(SystemCatalogItem item)
         => TabManager.OpenSystemCatalogTab(item.Name, item.Sql);
 
+    private void OpenDataHygiene(string tableName, DataHygieneMode mode)
+        => TabManager.OpenDataHygieneTab(new DataHygieneSeed(mode, TableName: tableName));
+
+    private void OpenCompareDeploy(string tableName, CompareDeployMode mode)
+        => TabManager.OpenCompareDeployTab(new CompareDeploySeed(mode, TableName: tableName));
+
+    private void OpenTableScript(string tableName)
+        => TabManager.OpenTableScriptTab(tableName);
+
     private void OpenExternalTable(string tableName)
         => TabManager.OpenQueryTab($"SELECT * FROM {RequireSqlIdentifier(tableName)} LIMIT 50;");
 
@@ -1282,6 +1304,12 @@
 
     private bool IsActiveDataModel()
         => TabManager.ActiveTab?.Kind == TabKind.DataModel;
+
+    private bool IsActiveDataHygiene()
+        => TabManager.ActiveTab?.Kind == TabKind.DataHygiene;
+
+    private bool IsActiveCompareDeploy()
+        => TabManager.ActiveTab?.Kind == TabKind.CompareDeploy;
 
     private bool IsActiveSchema(string type, string name)
     {
@@ -1428,10 +1456,17 @@
         {
             new() { Label = "Open", Icon = "bi-table", OnClick = () => TabManager.OpenTableTab(tableName) },
             new() { Label = "Design", Icon = "bi-file-earmark-code", OnClick = () => TabManager.OpenTableSchemaTab(tableName) },
+            new() { Label = "Script Table...", Icon = "bi-file-earmark-code", OnClick = () => OpenTableScript(tableName) },
             new() { Label = "Show in Data Model", Icon = "bi-diagram-3", OnClick = () => TabManager.OpenDataModelTab(tableName) },
             new() { Label = "Design Form...", Icon = "bi-ui-checks-grid", OnClick = () => TabManager.OpenFormDesignerTab(initialTableName: tableName, title: $"{tableName} Form") },
             new() { Label = "Design Report...", Icon = "bi-file-earmark-richtext", OnClick = () => TabManager.OpenReportDesignerTab(sourceKind: ReportSourceKind.Table.ToString(), sourceName: tableName, title: $"{tableName} Report") },
             new() { Label = "Import / Export...", Icon = "bi-arrow-left-right", OnClick = () => TabManager.OpenImportExportTab(tableName) },
+            new() { Label = "Compare / Deploy...", Icon = "bi-file-earmark-diff", OnClick = () => OpenCompareDeploy(tableName, CompareDeployMode.Data) },
+            new() { Label = "Data Hygiene...", Icon = "bi-shield-check", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Duplicates) },
+            ContextMenuItem.Separator(),
+            new() { Label = "Find Duplicates", Icon = "bi-intersect", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Duplicates) },
+            new() { Label = "Validate Table", Icon = "bi-shield-check", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Validation) },
+            new() { Label = "Find Orphans", Icon = "bi-link-45deg", OnClick = () => OpenDataHygiene(tableName, DataHygieneMode.Orphans) },
             ContextMenuItem.Separator(),
             new() { Label = "Select Top 50", Icon = "bi-terminal", OnClick = () => TabManager.OpenQueryTab($"SELECT * FROM {tableName} LIMIT 50;") },
             new() { Label = "Select Count", Icon = "bi-123", OnClick = () => TabManager.OpenQueryTab($"SELECT COUNT(*) AS row_count FROM {tableName};") },

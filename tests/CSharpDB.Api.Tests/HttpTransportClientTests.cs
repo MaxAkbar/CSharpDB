@@ -146,6 +146,38 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_RejectsStatelessTempCommandsButSupportsTransactionTempWorkflow()
+    {
+        SqlExecutionResult rejected = await _client.ExecuteSqlAsync(
+            "CREATE TEMP TABLE http_temp (id INTEGER PRIMARY KEY);",
+            Ct);
+        Assert.NotNull(rejected.Error);
+        Assert.Contains("transaction session", rejected.Error, StringComparison.OrdinalIgnoreCase);
+
+        var tx = await _client.BeginTransactionAsync(Ct);
+        SqlExecutionResult create = await _client.ExecuteInTransactionAsync(
+            tx.TransactionId,
+            "CREATE TEMP TABLE http_temp (id INTEGER PRIMARY KEY);",
+            Ct);
+        Assert.Null(create.Error);
+
+        SqlExecutionResult insert = await _client.ExecuteInTransactionAsync(
+            tx.TransactionId,
+            "INSERT INTO http_temp VALUES (1);",
+            Ct);
+        Assert.Null(insert.Error);
+
+        SqlExecutionResult count = await _client.ExecuteInTransactionAsync(
+            tx.TransactionId,
+            "SELECT COUNT(*) FROM http_temp;",
+            Ct);
+        Assert.Null(count.Error);
+        Assert.Equal(1L, Convert.ToInt64(Assert.Single(count.Rows!)[0]));
+
+        await _client.CommitTransactionAsync(tx.TransactionId, Ct);
+    }
+
+    [Fact]
     public async Task RestApi_DefaultNoAuthModeStillWorks()
     {
         DatabaseInfo info = await _client.GetInfoAsync(Ct);

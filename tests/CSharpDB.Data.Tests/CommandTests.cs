@@ -71,6 +71,26 @@ public class CommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteReaderAsync_FindDuplicates_ReturnsQueryRows()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "INSERT INTO customers VALUES (1, 'a@example.com'), (2, 'a@example.com'), (3, 'b@example.com');";
+        Assert.Equal(3, await cmd.ExecuteNonQueryAsync(Ct));
+
+        cmd.CommandText = "FIND DUPLICATES IN customers ON email;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+        Assert.True(await reader.ReadAsync(Ct));
+        Assert.Equal("['a@example.com']", reader.GetString(0));
+        Assert.Equal(2L, reader.GetInt64(1));
+        Assert.Equal(1L, reader.GetInt64(2));
+        Assert.Equal("2", reader.GetString(4));
+        Assert.False(await reader.ReadAsync(Ct));
+    }
+
+    [Fact]
     public async Task Prepare_CachesParameterizedTemplate_AndReusesAcrossValues()
     {
         var cmd = (CSharpDbCommand)_conn.CreateCommand();
@@ -440,4 +460,3 @@ public class CommandTests : IAsyncLifetime
         Assert.Throws<NotSupportedException>(() => cmd.CommandType = CommandType.StoredProcedure);
     }
 }
-

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Forms and Reports - CSharpDB Studio Help</title>
+    <link rel="icon" type="image/png" href="../icon2.png">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand"><img src="../icon2.png" alt=""><div><strong>CSharpDB Studio</strong><span>Offline help</span></div></div>
+            <nav class="nav" aria-label="Help topics">
+                <div class="nav-label">Start</div>
+                <a href="index.html">Overview</a>
+                <a href="workspace.html">Workspace</a>
+                <a href="data-and-schema.html">Data and schema</a>
+                <a class="active" href="forms-and-reports.html">Forms and reports</a>
+                <a href="operations.html">Operations</a>
+                <a href="shortcuts.html">Shortcuts</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="content-inner">
+                <div class="eyebrow">Forms and reports</div>
+                <h1>Build Operational Screens and Printable Output</h1>
+                <p class="lead">Studio includes Access-style designers for data entry forms and banded reports. Both store metadata in the database and can be opened from Object Explorer.</p>
+
+                <h2>Form Designer</h2>
+                <p>Create forms from the title bar, from a table context menu, or from the Forms group in Object Explorer. The designer uses toolbox, canvas, layers, and property inspector panels.</p>
+                <div class="screen">
+                    <img src="images/form-designer-tab.png" alt="Form designer with toolbox, canvas, and property inspector">
+                    <p class="caption">The form designer supports drag and drop layout, breakpoint-specific positioning, property editing, validation, and action sequences.</p>
+                </div>
+                <table>
+                    <thead><tr><th>Area</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td>Toolbox</td><td>Add labels, text inputs, numbers, dates, checkboxes, selects, lookups, computed fields, child grids, and child tabs.</td></tr>
+                        <tr><td>Canvas</td><td>Position controls visually, resize them, use snapping, and preview layout.</td></tr>
+                        <tr><td>Layers</td><td>Select, reorder, and inspect controls in the form hierarchy.</td></tr>
+                        <tr><td>Properties</td><td>Configure binding, appearance, validation overrides, control events, and action sequences.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Form Data Entry</h2>
+                <p>Open the runtime data entry view from the designer toolbar or from Object Explorer. Runtime forms provide record navigation, search, save/delete, validation, printing, and a jump back to design mode.</p>
+                <div class="screen">
+                    <img src="images/form-entry-tab.png" alt="Runtime form data entry view">
+                    <p class="caption">Runtime forms combine a rendered form, record list, navigation, search, and validation feedback.</p>
+                </div>
+
+                <h2>Reports</h2>
+                <p>Reports are printable, banded layouts bound to tables, views, or saved queries. Use them for operational summaries, invoices, labels, and review packets.</p>
+                <div class="grid">
+                    <section class="card">
+                        <h3>Report bands</h3>
+                        <p>Use report header/footer, page header/footer, group header/footer, and detail bands to control where content renders.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Controls</h3>
+                        <p>Place labels, bound text, calculated text, lines, and boxes on the canvas.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Expressions</h3>
+                        <p>Calculated text supports field references, arithmetic, page number, print date, and aggregate functions such as SUM and COUNT.</p>
+                    </section>
+                    <section class="card">
+                        <h3>Preview and print</h3>
+                        <p>Render reports with live data, navigate pages, refresh output, and use browser printing.</p>
+                    </section>
+                </div>
+
+                <h2>Automation and Callbacks</h2>
+                <p>Form and report metadata can reference host-owned callbacks for validation, command execution, and lifecycle events. Missing callbacks are visible in readiness and diagnostics surfaces so app builders and host developers can coordinate safely.</p>
+
+                <div class="callout">
+                    <strong>Host-owned code:</strong> database metadata stores names and action data. The trusted C# implementation belongs in the host project startup registration.
+                </div>
+
+                <div class="next">
+                    <a class="button" href="data-and-schema.html">Back: Data and schema</a>
+                    <a class="button primary" href="operations.html">Next: Operations</a>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

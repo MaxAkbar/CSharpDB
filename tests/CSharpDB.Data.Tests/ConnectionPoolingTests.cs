@@ -53,6 +53,30 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenClose_WithPoolingEnabled_ClearsTemporaryTablesBeforePooling()
+    {
+        string cs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+
+        await using (var first = new CSharpDbConnection(cs))
+        {
+            await first.OpenAsync(Ct);
+            await ExecuteNonQueryAsync(first, "CREATE TEMP TABLE scratch (id INTEGER PRIMARY KEY);");
+            await ExecuteNonQueryAsync(first, "INSERT INTO scratch VALUES (1);");
+            Assert.Equal(1L, await ExecuteScalarAsync(first, "SELECT COUNT(*) FROM scratch;"));
+            await first.CloseAsync();
+        }
+
+        await using (var second = new CSharpDbConnection(cs))
+        {
+            await second.OpenAsync(Ct);
+            Assert.Equal(0L, await ExecuteScalarAsync(second, "SELECT COUNT(*) FROM sys.temp_tables;"));
+            await Assert.ThrowsAsync<CSharpDbDataException>(
+                async () => await ExecuteScalarAsync(second, "SELECT COUNT(*) FROM scratch;"));
+            await second.CloseAsync();
+        }
+    }
+
+    [Fact]
     public async Task ClearPoolAsync_RemovesIdleEntries()
     {
         string cs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
@@ -136,5 +160,19 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
         {
             // Best-effort cleanup for temp benchmark/test files.
         }
+    }
+
+    private static async Task ExecuteNonQueryAsync(CSharpDbConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(Ct);
+    }
+
+    private static async Task<object?> ExecuteScalarAsync(CSharpDbConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return await command.ExecuteScalarAsync(Ct);
     }
 }

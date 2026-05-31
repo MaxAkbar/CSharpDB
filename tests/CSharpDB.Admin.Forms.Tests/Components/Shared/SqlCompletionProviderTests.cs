@@ -249,6 +249,23 @@ public sealed class SqlCompletionProviderTests
         Assert.Contains(result.Suggestions, s => s.Label == "OFFSET");
     }
 
+    [Fact]
+    public void GetCompletions_TypedFind_SuggestsHygieneCommands()
+    {
+        var result = SqlCompletionProvider.GetCompletions("find", 4, CreateCatalog());
+
+        Assert.Contains(result.Suggestions, s => s.Label == "FIND DUPLICATES IN");
+        Assert.Contains(result.Suggestions, s => s.Label == "FIND ORPHANS IN");
+    }
+
+    [Fact]
+    public void GetCompletions_FromContextSuggestsValidationRulesCatalog()
+    {
+        var result = SqlCompletionProvider.GetCompletions("SELECT * FROM sys.val", "SELECT * FROM sys.val".Length, CreateCatalog());
+
+        Assert.Contains(result.Suggestions, s => s.Label == "sys.validation_rules" && s.Detail == "system catalog");
+    }
+
     private static SqlCompletionCatalog CreateCatalog()
         => new()
         {
@@ -258,6 +275,7 @@ public sealed class SqlCompletionProviderTests
                 new SqlCompletionSource("Orders", SqlCompletionSourceKind.Table),
                 new SqlCompletionSource("CustomerSummary", SqlCompletionSourceKind.View),
                 new SqlCompletionSource("sys.tables", SqlCompletionSourceKind.SystemCatalog),
+                new SqlCompletionSource("sys.validation_rules", SqlCompletionSourceKind.SystemCatalog),
             ],
             ColumnsBySource = new Dictionary<string, IReadOnlyList<SqlCompletionColumn>>(StringComparer.OrdinalIgnoreCase)
             {

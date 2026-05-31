@@ -50,6 +50,7 @@ public sealed class Database : IAsyncDisposable
     private readonly ISchemaSerializer _schemaSerializer;
     private readonly IIndexProvider _indexProvider;
     private readonly ICatalogStore _catalogStore;
+    private readonly TemporaryTableManager _temporaryTables;
     private readonly AdvisoryStatisticsPersistenceMode _advisoryStatisticsPersistenceMode;
     private readonly DbFunctionRegistry _functions;
     private readonly string? _databasePath;
@@ -141,7 +142,8 @@ public sealed class Database : IAsyncDisposable
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
         DbFunctionRegistry? functions = null,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null,
-        string? databasePath = null)
+        string? databasePath = null,
+        StorageEngineOptions? temporaryStorageOptions = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -149,6 +151,7 @@ public sealed class Database : IAsyncDisposable
         _schemaSerializer = schemaSerializer;
         _indexProvider = indexProvider;
         _catalogStore = catalogStore;
+        _temporaryTables = new TemporaryTableManager(temporaryStorageOptions ?? new StorageEngineOptions());
         _advisoryStatisticsPersistenceMode = advisoryStatisticsPersistenceMode;
         _functions = functions ?? DbFunctionRegistry.Empty;
         _databasePath = string.IsNullOrWhiteSpace(databasePath) ? null : Path.GetFullPath(databasePath);
@@ -166,7 +169,8 @@ public sealed class Database : IAsyncDisposable
             useTransientNextRowIdHints: false,
             functions: _functions,
             adaptiveQueryReoptimization: adaptiveQueryReoptimization,
-            externalTableBasePath: GetExternalTableBasePath(_databasePath));
+            externalTableBasePath: GetExternalTableBasePath(_databasePath),
+            temporaryTables: _temporaryTables);
         _statementCache = new StatementCache(DefaultStatementCacheCapacity);
         _observedSchemaVersion = catalog.SchemaVersion;
         RefreshSharedNextRowIdHintsFromCatalog();
@@ -203,7 +207,8 @@ public sealed class Database : IAsyncDisposable
                 useTransientNextRowIdHints: true,
                 functions: _functions,
                 adaptiveQueryReoptimization: _planner.AdaptiveQueryReoptimization,
-                externalTableBasePath: GetExternalTableBasePath(_databasePath))
+                externalTableBasePath: GetExternalTableBasePath(_databasePath),
+                temporaryTables: _temporaryTables)
             {
                 PreferSyncPointLookups = PreferSyncPointLookups,
             };
@@ -551,7 +556,8 @@ public sealed class Database : IAsyncDisposable
             context.AdvisoryStatisticsPersistenceMode,
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
-            options.Functions);
+            options.Functions,
+            temporaryStorageOptions: options.StorageEngineOptions);
     }
 
     /// <summary>
@@ -617,7 +623,8 @@ public sealed class Database : IAsyncDisposable
                 options.AdaptiveQueryReoptimization,
                 options.Functions,
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers),
-                fullPath);
+                fullPath,
+                temporaryStorageOptions: options.StorageEngineOptions);
             return snapshotDatabase;
         }
 
@@ -633,7 +640,8 @@ public sealed class Database : IAsyncDisposable
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
             options.Functions,
-            databasePath: fullPath);
+            databasePath: fullPath,
+            temporaryStorageOptions: options.StorageEngineOptions);
         try
         {
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
@@ -694,7 +702,8 @@ public sealed class Database : IAsyncDisposable
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
             options.Functions,
-            databasePath: fullPath);
+            databasePath: fullPath,
+            temporaryStorageOptions: options.StorageEngineOptions);
     }
 
     /// <summary>
@@ -720,7 +729,8 @@ public sealed class Database : IAsyncDisposable
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
             options.Functions,
-            databasePath: fullPath);
+            databasePath: fullPath,
+            temporaryStorageOptions: options.StorageEngineOptions);
     }
 
     /// <summary>
@@ -748,6 +758,12 @@ public sealed class Database : IAsyncDisposable
         SimplePrimaryKeyLookupSql lookup,
         CancellationToken ct)
     {
+        if (_temporaryTables.HasAnyTableContext && _planner.HasTemporaryTable(lookup.TableName))
+        {
+            var tempLookupStatement = Parser.Parse(SelectToSql(lookup));
+            return await ExecuteStatementAsync(tempLookupStatement, ct);
+        }
+
         var directResult = await _planner.TryExecuteSimplePrimaryKeyLookupDirectAsync(lookup, ct);
         if (directResult != null)
             return directResult;
@@ -826,6 +842,9 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<QueryResult> ExecuteWriteStatementAsync(Statement stmt, CancellationToken ct)
     {
+        if (_planner.ShouldExecuteInSessionTemporaryState(stmt))
+            return await _planner.ExecuteAsync(stmt, ct);
+
         if (_inTransaction)
         {
             if (stmt is InsertStatement explicitInsert)
@@ -912,6 +931,14 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<QueryResult> ExecuteSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
     {
+        if (_temporaryTables.HasAnyTableContext && _planner.HasTemporaryTable(insert.TableName))
+        {
+            return await _planner.ExecuteSimpleInsertAsync(
+                insert,
+                persistRootChanges: false,
+                ct);
+        }
+
         if (_inTransaction)
         {
             return await _planner.ExecuteSimpleInsertAsync(
@@ -1138,6 +1165,11 @@ public sealed class Database : IAsyncDisposable
     /// </summary>
     public IReadOnlyCollection<string> GetTableNames() => _catalog.GetTableNames();
 
+    internal ValueTask ClearTemporaryTablesAsync() => _temporaryTables.ClearAsync();
+
+    internal IDisposable EnterTemporaryTableSessionScope(object sessionKey) =>
+        _temporaryTables.EnterSessionScope(sessionKey);
+
     internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
     /// <summary>
@@ -1202,6 +1234,9 @@ public sealed class Database : IAsyncDisposable
             throw new InvalidOperationException(
                 "Full-text indexes cannot be created while an explicit transaction is active.");
         }
+
+        if (_planner.HasTemporaryTable(tableName))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support full-text indexes in V1.");
 
         TableSchema tableSchema = _catalog.GetTable(tableName)
             ?? throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
@@ -1874,6 +1909,7 @@ public sealed class Database : IAsyncDisposable
         }
         finally
         {
+            await _temporaryTables.DisposeAsync();
             await _pager.DisposeAsync();
             _hybridPersistenceCoordinator?.Dispose();
             _writeOperationGate.Dispose();
@@ -2479,7 +2515,9 @@ public sealed class Database : IAsyncDisposable
             string.Equals(tableName, "sys.planner_heavy_hitters", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys_planner_heavy_hitters", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys.planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(tableName, "sys_planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase);
+            string.Equals(tableName, "sys_planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.validation_rules", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_validation_rules", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

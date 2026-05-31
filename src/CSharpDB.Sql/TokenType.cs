@@ -83,6 +83,9 @@ public enum TokenType
     Unique,
     View,
     External,
+    Temp,
+    Temporary,
+    Persist,
     With,
     Recursive,
     Analyze,
@@ -98,6 +101,18 @@ public enum TokenType
     End,
     New,
     Old,
+    Find,
+    Duplicates,
+    Dedup,
+    Keep,
+    First,
+    Last,
+    Merge,
+    Validation,
+    Rule,
+    Message,
+    Validate,
+    Orphans,
 
     // Operators
     Equals,         // =

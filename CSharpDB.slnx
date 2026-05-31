@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/scripts/">
     <File Path="scripts/Publish-CSharpDbDaemonRelease.ps1" />
+    <File Path="scripts/Publish-CSharpDbAdminStorePackage.ps1" />
     <File Path="scripts/Start-CSharpDbAdminAndDaemon.ps1" />
   </Folder>
   <Folder Name="/deploy/daemon/windows/">
@@ -31,6 +32,7 @@
     <Project Path="src/CSharpDB.Pipelines/CSharpDB.Pipelines.csproj" />
     <Project Path="src/CSharpDB.CodeModules/CSharpDB.CodeModules.csproj" />
     <Project Path="src/CSharpDB.Client/CSharpDB.Client.csproj" />
+    <Project Path="src/CSharpDB.DevOps/CSharpDB.DevOps.csproj" />
     <Project Path="src/CSharpDB.Engine/CSharpDB.Engine.csproj" />
     <Project Path="src/CSharpDB.Generators/CSharpDB.Generators.csproj" />
     <Project Path="src/CSharpDB.Execution/CSharpDB.Execution.csproj" />
@@ -42,6 +44,7 @@
     <Project Path="src/CSharpDB.Data/CSharpDB.Data.csproj" />
     <Project Path="src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj" />
     <Project Path="src/CSharpDB.Admin/CSharpDB.Admin.csproj" />
+    <Project Path="src/CSharpDB.Admin.Desktop/CSharpDB.Admin.Desktop.csproj" />
     <Project Path="src/CSharpDB.Admin.Forms/CSharpDB.Admin.Forms.csproj" />
     <Project Path="src/CSharpDB.Admin.ImportExport/CSharpDB.Admin.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Admin.Reports/CSharpDB.Admin.Reports.csproj" />
@@ -55,6 +58,7 @@
     <Project Path="tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj" />
     <Project Path="tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj" />
     <Project Path="tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj" />
+    <Project Path="tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj" />
     <Project Path="tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj" />
     <Project Path="tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj" />
     <Project Path="tests/CSharpDB.Admin.Forms.Tests/CSharpDB.Admin.Forms.Tests.csproj" />

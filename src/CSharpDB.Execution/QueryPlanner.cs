@@ -20,6 +20,7 @@ public sealed class QueryPlanner
     private const string InternalSavedQueriesTableName = "__saved_queries";
     private const string InternalExternalTablesTableName = "__external_tables";
     private const string InternalDataModelDiagramsTableName = "__data_model_diagrams";
+    private const string InternalValidationRulesTableName = "__validation_rules";
     private const int AnalyzeHistogramBucketCount = 16;
     private const int AnalyzeFrequentValueCount = 8;
     private const int MaxJoinReorderDpLeafCount = 6;
@@ -55,6 +56,16 @@ public sealed class QueryPlanner
         string SourceTableName,
         long RowCount,
         DateTimeOffset CreatedUtc);
+
+    private sealed record ValidationRule(
+        long Id,
+        string RuleName,
+        string TableName,
+        string? ColumnName,
+        string ExpressionSql,
+        string Message,
+        DateTimeOffset CreatedUtc,
+        bool IsEnabled);
 
     private readonly record struct ExplainEstimateResult(TableSchema? Schema, bool HasRows, long Rows);
 
@@ -333,6 +344,78 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "updated_utc", Type = DbType.Text, Nullable = false },
     ];
 
+    private static readonly ColumnDefinition[] InternalValidationRulesColumns =
+    [
+        new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
+        new ColumnDefinition { Name = "rule_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "expression_sql", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "message", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "is_enabled", Type = DbType.Integer, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] SystemValidationRulesColumns =
+    [
+        new ColumnDefinition { Name = "rule_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "expression_sql", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "message", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "created_utc", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "is_enabled", Type = DbType.Integer, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] HygieneDuplicateResultColumns =
+    [
+        new ColumnDefinition { Name = "key_values", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "group_size", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "winner_rowid", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "winner_primary_key", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "duplicate_rowids", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "duplicate_primary_keys", Type = DbType.Text, Nullable = true },
+    ];
+
+    private static readonly ColumnDefinition[] HygieneDedupResultColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "duplicate_group_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "rows_deleted", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "rows_kept", Type = DbType.Integer, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] HygieneMergeResultColumns =
+    [
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "duplicate_group_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "rows_updated", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "rows_deleted", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "merge_conflict_count", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "merge_conflicts", Type = DbType.Text, Nullable = true },
+    ];
+
+    private static readonly ColumnDefinition[] HygieneValidationResultColumns =
+    [
+        new ColumnDefinition { Name = "rule_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "table_name", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "column_name", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "rowid", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "primary_key", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "message", Type = DbType.Text, Nullable = false },
+    ];
+
+    private static readonly ColumnDefinition[] HygieneOrphanResultColumns =
+    [
+        new ColumnDefinition { Name = "constraint_name", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "child_table", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "child_column", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "child_rowid", Type = DbType.Integer, Nullable = false },
+        new ColumnDefinition { Name = "child_value", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "parent_table", Type = DbType.Text, Nullable = false },
+        new ColumnDefinition { Name = "parent_column", Type = DbType.Text, Nullable = false },
+    ];
+
     private static readonly ColumnDefinition[] InternalExternalTablesColumns =
     [
         new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false, IsPrimaryKey = true },
@@ -378,6 +461,7 @@ public sealed class QueryPlanner
     private readonly DbFunctionRegistry _functions;
     private readonly Func<string, long?>? _tableRowCountProvider;
     private readonly string _externalTableBasePath;
+    private readonly TemporaryTableManager? _temporaryTables;
 
     /// <summary>
     /// CTE materialized results, scoped to the current WITH query execution.
@@ -414,6 +498,7 @@ public sealed class QueryPlanner
     private List<DbValue[]>? _systemObjectsRowsCache;
     private List<DbValue[]>? _systemExternalTablesRowsCache;
     private List<DbValue[]>? _systemDiagramsRowsCache;
+    private List<DbValue[]>? _systemValidationRulesRowsCache;
     private IReadOnlyList<ExternalTableRegistration>? _externalTableRegistrationsCache;
     private long? _systemColumnsCountCache;
     private long? _systemIndexesCountCache;
@@ -618,7 +703,8 @@ public sealed class QueryPlanner
         bool useTransientNextRowIdHints,
         DbFunctionRegistry? functions,
         AdaptiveQueryReoptimizationOptions? adaptiveQueryReoptimization = null,
-        string? externalTableBasePath = null)
+        string? externalTableBasePath = null,
+        TemporaryTableManager? temporaryTables = null)
     {
         _pager = pager;
         _catalog = catalog;
@@ -631,6 +717,7 @@ public sealed class QueryPlanner
         _externalTableBasePath = string.IsNullOrWhiteSpace(externalTableBasePath)
             ? Directory.GetCurrentDirectory()
             : externalTableBasePath;
+        _temporaryTables = temporaryTables;
         _nextRowIdHintProvider = nextRowIdHintProvider;
         _nextRowIdReservationProvider = nextRowIdReservationProvider;
         _nextRowIdRangeReservationProvider = nextRowIdRangeReservationProvider;
@@ -654,12 +741,34 @@ public sealed class QueryPlanner
         var committed = new List<KeyValuePair<string, long>>(_dirtyNextRowIdTables.Count);
         foreach (string tableName in _dirtyNextRowIdTables)
         {
+            if (IsTemporaryTable(tableName))
+                continue;
+
             if (_nextRowIdCache.TryGetValue(tableName, out long nextRowId) && nextRowId > 0)
                 committed.Add(new KeyValuePair<string, long>(tableName, nextRowId));
         }
 
         return committed;
     }
+
+    public bool HasTemporaryTables => _temporaryTables?.HasAnyTableContext == true;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool HasTemporaryTable(string tableName) =>
+        _temporaryTables is { HasAnyTableContext: true } temporaryTables &&
+        temporaryTables.HasTable(tableName);
+
+    public bool ShouldExecuteInSessionTemporaryState(Statement stmt) =>
+        stmt switch
+        {
+            CreateTableStatement { IsTemporary: true } => true,
+            DropTableStatement { IsTemporary: true } => true,
+            DropTableStatement drop when HasTemporaryTable(drop.TableName) => true,
+            InsertStatement insert when HasTemporaryTable(insert.TableName) => true,
+            DeleteStatement delete when HasTemporaryTable(delete.TableName) => true,
+            UpdateStatement update when HasTemporaryTable(update.TableName) => true,
+            _ => false,
+        };
 
     public ValueTask<QueryResult> ExecuteAsync(Statement stmt, CancellationToken ct = default)
     {
@@ -681,10 +790,21 @@ public sealed class QueryPlanner
             DropTableStatement drop => await ExecuteSchemaMutationAsync(
                 token => ExecuteDropTableAsync(drop, token),
                 ct),
+            PersistTempTableStatement persistTemp => await ExecuteSchemaMutationAsync(
+                token => ExecutePersistTempTableAsync(persistTemp, token),
+                ct),
             DropExternalTableStatement dropExternal => await ExecuteSchemaMutationAsync(
                 token => ExecuteDropExternalTableAsync(dropExternal, token),
                 ct),
             InsertStatement insert => await ExecuteInsertAsync(insert, persistRootChanges: true, ct),
+            FindDuplicatesStatement findDuplicates => await ExecuteFindDuplicatesAsync(findDuplicates, ct),
+            DedupStatement dedup => await ExecuteDedupAsync(dedup, ct),
+            MergeDuplicatesStatement mergeDuplicates => await ExecuteMergeDuplicatesAsync(mergeDuplicates, ct),
+            CreateValidationRuleStatement createValidationRule => await ExecuteSchemaMutationAsync(
+                token => ExecuteCreateValidationRuleAsync(createValidationRule, token),
+                ct),
+            ValidateTableStatement validateTable => await ExecuteValidateTableAsync(validateTable, ct),
+            FindOrphansStatement findOrphans => await ExecuteFindOrphansAsync(findOrphans, ct),
             QueryStatement query => await ExecuteQueryAsync(query, ct),
             DeleteStatement delete => await ExecuteDeleteAsync(delete, ct),
             UpdateStatement update => await ExecuteUpdateAsync(update, ct),
@@ -885,6 +1005,8 @@ public sealed class QueryPlanner
         _systemTriggersRowsCache = null;
         _systemObjectsRowsCache = null;
         _systemExternalTablesRowsCache = null;
+        _systemDiagramsRowsCache = null;
+        _systemValidationRulesRowsCache = null;
         _externalTableRegistrationsCache = null;
         _systemColumnsCountCache = null;
         _systemIndexesCountCache = null;
@@ -931,6 +1053,17 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateTableAsync(CreateTableStatement stmt, CancellationToken ct)
     {
+        if (stmt.IsTemporary)
+            return await ExecuteCreateTemporaryTableAsync(stmt, ct);
+
+        if (HasTemporaryTable(stmt.TableName))
+        {
+            if (stmt.IfNotExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Temporary table '{stmt.TableName}' already exists.");
+        }
+
         if (ObjectNameExists(stmt.TableName))
         {
             if (stmt.IfNotExists)
@@ -972,10 +1105,58 @@ public sealed class QueryPlanner
         return new QueryResult(0);
     }
 
+    private async ValueTask<QueryResult> ExecuteCreateTemporaryTableAsync(CreateTableStatement stmt, CancellationToken ct)
+    {
+        TemporaryTableManager temporaryTables = RequireTemporaryTables();
+        if (temporaryTables.HasTable(stmt.TableName))
+        {
+            if (stmt.IfNotExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Temporary table '{stmt.TableName}' already exists.");
+        }
+
+        if (stmt.Columns.Any(static c => c.ForeignKey is not null))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support foreign keys in V1.");
+
+        var columns = stmt.Columns.Select(c => new ColumnDefinition
+        {
+            Name = c.Name,
+            Type = MapType(c.TypeToken),
+            IsPrimaryKey = c.IsPrimaryKey,
+            IsIdentity = c.IsIdentity || (c.IsPrimaryKey && c.TypeToken == TokenType.Integer),
+            Nullable = c.IsNullable,
+            Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
+        }).ToArray();
+
+        var schema = new TableSchema
+        {
+            TableName = stmt.TableName,
+            Columns = columns,
+            ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
+            NextRowId = 1,
+        };
+
+        await temporaryTables.CreateTableAsync(schema, ct);
+        _nextRowIdCache.Remove(stmt.TableName);
+        _rowIdReservationLeases.Remove(stmt.TableName);
+        _dirtyNextRowIdTables.Remove(stmt.TableName);
+        InvalidateTempSystemCatalogCaches();
+        return new QueryResult(0);
+    }
+
     private async ValueTask<QueryResult> ExecuteCreateExternalTableAsync(
         CreateExternalTableStatement stmt,
         CancellationToken ct)
     {
+        if (HasTemporaryTable(stmt.TableName))
+        {
+            if (stmt.IfNotExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Temporary table '{stmt.TableName}' already exists.");
+        }
+
         if (ObjectNameExists(stmt.TableName))
         {
             if (stmt.IfNotExists)
@@ -1030,6 +1211,9 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteDropTableAsync(DropTableStatement stmt, CancellationToken ct)
     {
+        if (stmt.IsTemporary || HasTemporaryTable(stmt.TableName))
+            return await ExecuteDropTemporaryTableAsync(stmt, ct);
+
         if (TryGetExternalTableRegistration(stmt.TableName, out _))
         {
             throw new CSharpDbException(
@@ -1058,6 +1242,106 @@ public sealed class QueryPlanner
         return new QueryResult(0);
     }
 
+    private async ValueTask<QueryResult> ExecuteDropTemporaryTableAsync(DropTableStatement stmt, CancellationToken ct)
+    {
+        TemporaryTableManager temporaryTables = RequireTemporaryTables();
+        if (!temporaryTables.HasTable(stmt.TableName))
+        {
+            if (stmt.IfExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Temporary table '{stmt.TableName}' not found.");
+        }
+
+        await temporaryTables.DropTableAsync(stmt.TableName, ct);
+        _nextRowIdCache.Remove(stmt.TableName);
+        _rowIdReservationLeases.Remove(stmt.TableName);
+        _dirtyNextRowIdTables.Remove(stmt.TableName);
+        InvalidateTempSystemCatalogCaches();
+        return new QueryResult(0);
+    }
+
+    private async ValueTask<QueryResult> ExecutePersistTempTableAsync(PersistTempTableStatement stmt, CancellationToken ct)
+    {
+        TemporaryTableManager temporaryTables = RequireTemporaryTables();
+        if (!temporaryTables.TryGetTable(stmt.TempTableName, out TableSchema tempSchema))
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Temporary table '{stmt.TempTableName}' not found.");
+
+        if (ObjectNameExists(stmt.TargetTableName) || temporaryTables.HasTable(stmt.TargetTableName))
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table '{stmt.TargetTableName}' already exists.");
+
+        var targetSchema = new TableSchema
+        {
+            TableName = stmt.TargetTableName,
+            Columns = tempSchema.Columns.Select(static column => new ColumnDefinition
+            {
+                Name = column.Name,
+                Type = column.Type,
+                Nullable = column.Nullable,
+                IsPrimaryKey = column.IsPrimaryKey,
+                IsIdentity = column.IsIdentity,
+                Collation = column.Collation,
+            }).ToArray(),
+            ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
+            NextRowId = 1,
+        };
+
+        await _catalog.CreateTableAsync(targetSchema, ct);
+
+        BTree tempTree = temporaryTables.GetTableTree(stmt.TempTableName);
+        BTree targetTree = _catalog.GetTableTree(stmt.TargetTableName, _pager);
+        int? capacityHint = TryGetCachedTreeRowCountCapacityHint(tempTree);
+        var scan = new TableScanOperator(tempTree, tempSchema, GetReadSerializer(tempSchema), capacityHint);
+        long persisted = 0;
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer = new();
+
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                DbValue[] row = (DbValue[])scan.Current.Clone();
+                await ExecuteBareInsertRowAsync(
+                    stmt.TargetTableName,
+                    targetSchema,
+                    targetTree,
+                    row,
+                    traversalPath: null,
+                    traversalSet: null,
+                    reusableEncodingBuffer,
+                    rowIdReservationCountHint: 1,
+                    ct);
+                persisted++;
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        if (persisted > 0)
+            await _catalog.AdjustTableRowCountKnownExactAsync(stmt.TargetTableName, persisted, ct);
+        await _catalog.PersistRootPageChangesAsync(stmt.TargetTableName, ct);
+
+        var resultSchema = new[]
+        {
+            new ColumnDefinition { Name = "temp_table", Type = DbType.Text, Nullable = false },
+            new ColumnDefinition { Name = "target_table", Type = DbType.Text, Nullable = false },
+            new ColumnDefinition { Name = "rows_persisted", Type = DbType.Integer, Nullable = false },
+        };
+        var rows = new List<DbValue[]>
+        {
+            new[]
+            {
+                DbValue.FromText(stmt.TempTableName),
+                DbValue.FromText(stmt.TargetTableName),
+                DbValue.FromInteger(persisted),
+            },
+        };
+
+        return QueryResult.FromMaterializedRows(resultSchema, rows);
+    }
+
     private async ValueTask<QueryResult> ExecuteDropExternalTableAsync(
         DropExternalTableStatement stmt,
         CancellationToken ct)
@@ -1079,6 +1363,9 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteAlterTableAsync(AlterTableStatement stmt, CancellationToken ct)
     {
+        if (HasTemporaryTable(stmt.TableName))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support ALTER TABLE in V1.");
+
         ThrowIfExternalTableTarget(stmt.TableName, "altered");
         var schema = GetSchema(stmt.TableName);
 
@@ -1140,6 +1427,16 @@ public sealed class QueryPlanner
                     throw new CSharpDbException(
                         ErrorCode.ConstraintViolation,
                         $"Cannot drop column '{drop.ColumnName}' because it is referenced by a foreign key.");
+                }
+
+                IndexSchema? dependentIndex = _catalog.GetIndexesForTable(stmt.TableName)
+                    .FirstOrDefault(index => index.Columns.Any(column =>
+                        string.Equals(column, drop.ColumnName, StringComparison.OrdinalIgnoreCase)));
+                if (dependentIndex is not null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot drop column '{drop.ColumnName}' because index '{dependentIndex.IndexName}' depends on it.");
                 }
 
                 var newCols = schema.Columns.Where((_, i) => i != colIdx).ToArray();
@@ -1260,6 +1557,9 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateIndexAsync(CreateIndexStatement stmt, CancellationToken ct)
     {
+        if (HasTemporaryTable(stmt.TableName))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support secondary indexes in V1.");
+
         if (stmt.IfNotExists && _catalog.GetIndex(stmt.IndexName) != null)
             return new QueryResult(0);
 
@@ -1387,6 +1687,14 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateViewAsync(CreateViewStatement stmt, CancellationToken ct)
     {
+        if (HasTemporaryTable(stmt.ViewName))
+        {
+            if (stmt.IfNotExists)
+                return new QueryResult(0);
+
+            throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Temporary table '{stmt.ViewName}' already exists.");
+        }
+
         if (ObjectNameExists(stmt.ViewName))
         {
             if (stmt.IfNotExists)
@@ -1546,7 +1854,8 @@ public sealed class QueryPlanner
         CollateExpression collate => $"{ExprToSql(collate.Operand)} COLLATE {collate.Collation}",
         FunctionCallExpression func => func.IsStarArg ? $"{func.FunctionName}(*)"
             : $"{func.FunctionName}({(func.IsDistinct ? "DISTINCT " : "")}{string.Join(", ", func.Arguments.Select(ExprToSql))})",
-        LikeExpression like => $"{ExprToSql(like.Operand)}{(like.Negated ? " NOT" : "")} LIKE {ExprToSql(like.Pattern)}",
+        LikeExpression like => $"{ExprToSql(like.Operand)}{(like.Negated ? " NOT" : "")} LIKE {ExprToSql(like.Pattern)}"
+            + (like.EscapeChar != null ? $" ESCAPE {ExprToSql(like.EscapeChar)}" : string.Empty),
         InExpression inE => $"{ExprToSql(inE.Operand)}{(inE.Negated ? " NOT" : "")} IN ({string.Join(", ", inE.Values.Select(ExprToSql))})",
         InSubqueryExpression inSubquery => $"{ExprToSql(inSubquery.Operand)}{(inSubquery.Negated ? " NOT" : "")} IN ({QueryToSql(inSubquery.Query)})",
         ScalarSubqueryExpression scalarSubquery => $"({QueryToSql(scalarSubquery.Query)})",
@@ -2238,6 +2547,9 @@ public sealed class QueryPlanner
         if (_cteData != null && _cteData.TryGetValue(tableRef.TableName, out var cteInfo))
             return CreateQualifiedSchema(cteInfo.Schema.TableName, cteInfo.Schema.Columns, tableRef.Alias ?? tableRef.TableName);
 
+        if (TryGetTemporaryTable(tableRef.TableName, out var tempSchema))
+            return CreateQualifiedSchema(tempSchema.TableName, tempSchema.Columns, tableRef.Alias ?? tableRef.TableName);
+
         if (TryBuildSystemCatalogSource(tableRef, out var systemSource))
             return systemSource.schema;
 
@@ -2415,6 +2727,13 @@ public sealed class QueryPlanner
         _ => false,
     };
 
+    private bool TableRefContainsTemporaryTable(TableRef tableRef) => tableRef switch
+    {
+        SimpleTableRef simple => HasTemporaryTable(simple.TableName),
+        JoinTableRef join => TableRefContainsTemporaryTable(join.Left) || TableRefContainsTemporaryTable(join.Right),
+        _ => false,
+    };
+
     private static bool ContainsSubqueries(Expression expression) => expression switch
     {
         InSubqueryExpression => true,
@@ -2442,6 +2761,9 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteCreateTriggerAsync(CreateTriggerStatement stmt, CancellationToken ct)
     {
+        if (HasTemporaryTable(stmt.TableName))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support triggers in V1.");
+
         if (stmt.IfNotExists && _catalog.GetTrigger(stmt.TriggerName) != null)
             return new QueryResult(0);
 
@@ -3490,6 +3812,9 @@ public sealed class QueryPlanner
 
     private async ValueTask AnalyzeTableAsync(string tableName, CancellationToken ct)
     {
+        if (HasTemporaryTable(tableName))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support ANALYZE in V1.");
+
         if (_catalog.IsView(tableName) || IsSystemCatalogTable(tableName))
             throw new CSharpDbException(ErrorCode.SyntaxError, $"ANALYZE does not support '{tableName}'.");
 
@@ -4154,6 +4479,9 @@ public sealed class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct = default)
     {
+        if (HasTemporaryTable(stmt.TableName))
+            return await ExecuteTemporaryInsertAsync(stmt, ct);
+
         ThrowIfExternalTableTarget(stmt.TableName, "modified with INSERT");
         if (ContainsSubqueries(stmt))
             stmt = await RewriteSubqueriesInInsertAsync(stmt, ct);
@@ -4215,6 +4543,57 @@ public sealed class QueryPlanner
         }
 
         await FinalizeInsertStatementAsync(mutationContext, stmt.TableName, inserted, persistRootChanges, ct);
+
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+    }
+
+    private async ValueTask<QueryResult> ExecuteTemporaryInsertAsync(InsertStatement stmt, CancellationToken ct)
+    {
+        TemporaryTableManager temporaryTables = RequireTemporaryTables();
+        if (ContainsSubqueries(stmt))
+            stmt = await RewriteSubqueriesInInsertAsync(stmt, ct);
+        if (ContainsSubqueries(stmt))
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Correlated subqueries are not supported in INSERT VALUES.");
+        }
+
+        TableSchema schema = GetSchema(stmt.TableName);
+        BTree tree = temporaryTables.GetTableTree(stmt.TableName);
+        int inserted = 0;
+        long? generatedIntegerKey = null;
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer =
+            stmt.ValueRows.Count > 1 ? new ReusableInsertEncodingBuffer() : null;
+
+        await temporaryTables.ExecuteWriteAsync(
+            async (_, token) =>
+            {
+                foreach (var valueRow in stmt.ValueRows)
+                {
+                    DbValue[] row = ResolveInsertRow(schema, stmt.ColumnNames, valueRow);
+                    InsertRowResult insertRow = await ExecuteBareInsertRowAsync(
+                        stmt.TableName,
+                        schema,
+                        tree,
+                        row,
+                        traversalPath: null,
+                        traversalSet: null,
+                        reusableEncodingBuffer,
+                        rowIdReservationCountHint: Math.Max(1, stmt.ValueRows.Count - inserted),
+                        token);
+                    if (stmt.ValueRows.Count == 1)
+                        generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    inserted++;
+                }
+
+                if (inserted > 0)
+                {
+                    await temporaryTables.AdjustTableRowCountAsync(stmt.TableName, inserted, token);
+                    await temporaryTables.PersistRootPageChangesAsync(stmt.TableName, token);
+                }
+            },
+            ct);
 
         return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
     }
@@ -4907,6 +5286,9 @@ public sealed class QueryPlanner
         if (_cteData != null)
             return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
 
+        if (HasTemporaryTables && TableRefContainsTemporaryTable(stmt.From))
+            return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
+
         if (_selectPlanCache.TryGetValue(stmt, out var cachedPlan))
         {
             _selectPlanCacheHitCount++;
@@ -5060,6 +5442,7 @@ public sealed class QueryPlanner
             stmt.From is not JoinTableRef join ||
             stmt.Columns.Any(static c => c.IsStar) ||
             ContainsSubqueries(stmt) ||
+            (HasTemporaryTables && TableRefContainsTemporaryTable(stmt.From)) ||
             !IsAdaptiveJoinCandidate(join))
         {
             return null;
@@ -5123,6 +5506,9 @@ public sealed class QueryPlanner
         // projections in declared FROM order unless a later projection restores
         // the public column order.
         if (stmt.Columns.Any(static c => c.IsStar))
+            return stmt.From;
+
+        if (HasTemporaryTables && TableRefContainsTemporaryTable(stmt.From))
             return stmt.From;
 
         if (preserveJoinOrderForRowGoal)
@@ -5190,7 +5576,8 @@ public sealed class QueryPlanner
         if (stmt.From is SimpleTableRef simpleRef &&
             !_catalog.IsView(simpleRef.TableName) &&
             !IsSystemCatalogTable(simpleRef.TableName) &&
-            !IsExternalTable(simpleRef.TableName))
+            !IsExternalTable(simpleRef.TableName) &&
+            !HasTemporaryTable(simpleRef.TableName))
         {
             if (stmt.Where != null)
             {
@@ -6002,6 +6389,9 @@ public sealed class QueryPlanner
         bool persistRootChanges,
         CancellationToken ct = default)
     {
+        if (HasTemporaryTable(insert.TableName))
+            return await ExecuteTemporarySimpleInsertAsync(insert, ct);
+
         ThrowIfExternalTableTarget(insert.TableName, "modified with INSERT");
         var schema = GetSchema(insert.TableName);
         int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
@@ -6077,6 +6467,52 @@ public sealed class QueryPlanner
         }
 
         await FinalizeInsertStatementAsync(mutationContext, insert.TableName, inserted, persistRootChanges, ct);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+    }
+
+    private async ValueTask<QueryResult> ExecuteTemporarySimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
+    {
+        TemporaryTableManager temporaryTables = RequireTemporaryTables();
+        TableSchema schema = GetSchema(insert.TableName);
+        int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
+            ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
+            : null;
+        BTree tree = temporaryTables.GetTableTree(insert.TableName);
+
+        int inserted = 0;
+        long? generatedIntegerKey = null;
+        ReusableInsertEncodingBuffer? reusableEncodingBuffer =
+            insert.RowCount > 1 ? new ReusableInsertEncodingBuffer() : null;
+
+        await temporaryTables.ExecuteWriteAsync(
+            async (_, token) =>
+            {
+                for (int i = 0; i < insert.RowCount; i++)
+                {
+                    DbValue[] row = ResolveSimpleInsertRow(schema, explicitColumnIndices, insert.ValueRows[i]);
+                    InsertRowResult insertRow = await ExecuteBareInsertRowAsync(
+                        insert.TableName,
+                        schema,
+                        tree,
+                        row,
+                        traversalPath: null,
+                        traversalSet: null,
+                        reusableEncodingBuffer,
+                        rowIdReservationCountHint: Math.Max(1, insert.RowCount - inserted),
+                        token);
+                    if (insert.RowCount == 1)
+                        generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    inserted++;
+                }
+
+                if (inserted > 0)
+                {
+                    await temporaryTables.AdjustTableRowCountAsync(insert.TableName, inserted, token);
+                    await temporaryTables.PersistRootPageChangesAsync(insert.TableName, token);
+                }
+            },
+            ct);
+
         return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
     }
 
@@ -6618,6 +7054,9 @@ public sealed class QueryPlanner
             "sys.objects" => CountSystemObjects(),
             "sys.external_tables" => GetExternalTableRegistrations().Count,
             "sys.diagrams" => CountSystemDiagrams(),
+            "sys.validation_rules" => CountSystemValidationRules(),
+            "sys.temp_tables" => _temporaryTables?.GetTableNames().Count ?? 0,
+            "sys.temp_columns" => CountSystemTempColumns(),
             "sys.table_stats" => _catalog.GetTableStatistics().Count,
             "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             "sys.planner_histograms" => CountPlannerHistogramRows(),
@@ -7806,6 +8245,9 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteDeleteAsync(DeleteStatement stmt, CancellationToken ct)
     {
+        if (HasTemporaryTable(stmt.TableName))
+            return await ExecuteTemporaryDeleteAsync(stmt, ct);
+
         ThrowIfExternalTableTarget(stmt.TableName, "modified with DELETE");
         if (ContainsSubqueries(stmt))
             stmt = await RewriteSubqueriesInDeleteAsync(stmt, ct);
@@ -7892,6 +8334,9 @@ public sealed class QueryPlanner
 
     private async ValueTask<QueryResult> ExecuteUpdateAsync(UpdateStatement stmt, CancellationToken ct)
     {
+        if (HasTemporaryTable(stmt.TableName))
+            return await ExecuteTemporaryUpdateAsync(stmt, ct);
+
         ThrowIfExternalTableTarget(stmt.TableName, "modified with UPDATE");
         if (ContainsSubqueries(stmt))
             stmt = await RewriteSubqueriesInUpdateAsync(stmt, ct);
@@ -8030,6 +8475,981 @@ public sealed class QueryPlanner
         return new QueryResult(updates.Count);
     }
 
+    private async ValueTask<QueryResult> ExecuteTemporaryDeleteAsync(DeleteStatement stmt, CancellationToken ct)
+    {
+        TemporaryTableManager temporaryTables = RequireTemporaryTables();
+        if (ContainsSubqueries(stmt))
+            stmt = await RewriteSubqueriesInDeleteAsync(stmt, ct);
+        bool hasRemainingSubqueries = ContainsSubqueries(stmt);
+
+        TableSchema schema = GetSchema(stmt.TableName);
+        BTree tree = temporaryTables.GetTableTree(stmt.TableName);
+        int? deleteCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var rowsToDelete = deleteCapacityHint.HasValue
+            ? new List<(long rowId, DbValue[] row)>(deleteCapacityHint.Value)
+            : new List<(long rowId, DbValue[] row)>();
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                if (stmt.Where != null)
+                {
+                    var result = hasRemainingSubqueries && ContainsSubqueries(stmt.Where)
+                        ? await EvaluateExpressionWithSubqueriesAsync(
+                            stmt.Where,
+                            scan.Current,
+                            schema,
+                            Array.Empty<CorrelationScope>(),
+                            ct)
+                        : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema, _functions);
+                    if (!result.IsTruthy)
+                        continue;
+                }
+
+                rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        await temporaryTables.ExecuteWriteAsync(
+            async (_, token) =>
+            {
+                foreach (var (rowId, row) in rowsToDelete)
+                {
+                    await tree.DeleteAsync(rowId, token);
+                    RecordLogicalMutationWrites(stmt.TableName, schema, oldRow: row, newRow: null, oldRowId: rowId);
+                }
+
+                if (rowsToDelete.Count > 0)
+                {
+                    await temporaryTables.AdjustTableRowCountAsync(stmt.TableName, -rowsToDelete.Count, token);
+                    await temporaryTables.PersistRootPageChangesAsync(stmt.TableName, token);
+                }
+            },
+            ct);
+
+        return new QueryResult(rowsToDelete.Count);
+    }
+
+    private async ValueTask<QueryResult> ExecuteTemporaryUpdateAsync(UpdateStatement stmt, CancellationToken ct)
+    {
+        TemporaryTableManager temporaryTables = RequireTemporaryTables();
+        if (ContainsSubqueries(stmt))
+            stmt = await RewriteSubqueriesInUpdateAsync(stmt, ct);
+        bool hasRemainingSubqueries = ContainsSubqueries(stmt);
+
+        TableSchema schema = GetSchema(stmt.TableName);
+        BTree tree = temporaryTables.GetTableTree(stmt.TableName);
+        int pkIdx = schema.PrimaryKeyColumnIndex;
+        bool hasIntegerPrimaryKey = pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer;
+        int? updateCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var updates = updateCapacityHint.HasValue
+            ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updateCapacityHint.Value)
+            : new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                if (stmt.Where != null)
+                {
+                    var result = hasRemainingSubqueries && ContainsSubqueries(stmt.Where)
+                        ? await EvaluateExpressionWithSubqueriesAsync(
+                            stmt.Where,
+                            scan.Current,
+                            schema,
+                            Array.Empty<CorrelationScope>(),
+                            ct)
+                        : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema, _functions);
+                    if (!result.IsTruthy)
+                        continue;
+                }
+
+                var oldRow = (DbValue[])scan.Current.Clone();
+                var newRow = (DbValue[])scan.Current.Clone();
+                foreach (var set in stmt.SetClauses)
+                {
+                    int colIdx = schema.GetColumnIndex(set.ColumnName);
+                    if (colIdx < 0)
+                        throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{set.ColumnName}' not found.");
+                    newRow[colIdx] = hasRemainingSubqueries && ContainsSubqueries(set.Value)
+                        ? await EvaluateExpressionWithSubqueriesAsync(
+                            set.Value,
+                            scan.Current,
+                            schema,
+                            Array.Empty<CorrelationScope>(),
+                            ct)
+                        : ExpressionEvaluator.Evaluate(set.Value, scan.Current, schema, _functions);
+                }
+
+                updates.Add((scan.CurrentRowId, oldRow, newRow));
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        await temporaryTables.ExecuteWriteAsync(
+            async (_, token) =>
+            {
+                foreach (var (rowId, oldRow, newRow) in updates)
+                {
+                    long newRowId = rowId;
+                    if (hasIntegerPrimaryKey)
+                    {
+                        if (newRow[pkIdx].IsNull)
+                            newRow[pkIdx] = DbValue.FromInteger(rowId);
+
+                        if (newRow[pkIdx].Type != DbType.Integer)
+                            throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
+
+                        newRowId = newRow[pkIdx].AsInteger;
+                    }
+
+                    await tree.DeleteAsync(rowId, token);
+                    await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), token);
+                    RecordLogicalMutationWrites(stmt.TableName, schema, oldRow, newRow, rowId, newRowId);
+                    if (newRowId >= 0 && newRowId < long.MaxValue)
+                        ObserveExplicitRowId(stmt.TableName, schema, checked(newRowId + 1));
+                }
+
+                if (updates.Count > 0)
+                    await temporaryTables.PersistRootPageChangesAsync(stmt.TableName, token);
+            },
+            ct);
+
+        return new QueryResult(updates.Count);
+    }
+
+    #region Data Hygiene
+
+    private readonly record struct HygieneRow(long RowId, DbValue[] Row);
+
+    private sealed class DuplicateGroup
+    {
+        public required string Key { get; init; }
+        public required string KeyDisplay { get; init; }
+        public List<HygieneRow> Rows { get; } = new();
+    }
+
+    private sealed record OrphanCheckSpec(
+        string? ConstraintName,
+        string ChildTableName,
+        string ChildColumnName,
+        TableSchema ChildSchema,
+        int ChildColumnIndex,
+        string ParentTableName,
+        string ParentColumnName,
+        TableSchema ParentSchema,
+        int ParentColumnIndex);
+
+    private async ValueTask<QueryResult> ExecuteFindDuplicatesAsync(FindDuplicatesStatement stmt, CancellationToken ct)
+    {
+        ThrowIfTemporaryTableTarget(stmt.TableName, "scanned by data hygiene commands");
+
+        var schema = GetSchema(stmt.TableName);
+        var groups = await BuildDuplicateGroupsAsync(stmt.TableName, schema, stmt.KeyExpressions, DuplicateKeepMode.First, ct);
+        var rows = new List<DbValue[]>(groups.Count);
+
+        foreach (DuplicateGroup group in groups.OrderBy(g => g.KeyDisplay, StringComparer.Ordinal))
+        {
+            HygieneRow winner = SelectDuplicateWinner(group.Rows, schema, DuplicateKeepMode.First);
+            var duplicateRows = group.Rows
+                .Where(row => row.RowId != winner.RowId)
+                .OrderBy(row => row.RowId)
+                .ToArray();
+
+            rows.Add(
+            [
+                DbValue.FromText(group.KeyDisplay),
+                DbValue.FromInteger(group.Rows.Count),
+                DbValue.FromInteger(winner.RowId),
+                GetPrimaryKeyText(schema, winner.Row),
+                DbValue.FromText(string.Join(",", duplicateRows.Select(row => row.RowId.ToString(CultureInfo.InvariantCulture)))),
+                GetPrimaryKeyListText(schema, duplicateRows),
+            ]);
+        }
+
+        return QueryResult.FromMaterializedRows(HygieneDuplicateResultColumns, rows);
+    }
+
+    private async ValueTask<QueryResult> ExecuteDedupAsync(DedupStatement stmt, CancellationToken ct)
+    {
+        ThrowIfTemporaryTableTarget(stmt.TableName, "deduplicated");
+        ThrowIfExternalTableTarget(stmt.TableName, "deduplicated");
+
+        var schema = GetSchema(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
+        var indexes = _catalog.GetIndexesForTable(stmt.TableName);
+        var groups = await BuildDuplicateGroupsAsync(stmt.TableName, schema, stmt.KeyExpressions, stmt.KeepMode, ct);
+        var rowsToDelete = new List<HygieneRow>();
+
+        foreach (DuplicateGroup group in groups)
+        {
+            HygieneRow winner = SelectDuplicateWinner(group.Rows, schema, stmt.KeepMode);
+            rowsToDelete.AddRange(group.Rows.Where(row => row.RowId != winner.RowId));
+        }
+
+        int deleted = await ApplyHygieneDeletesAsync(stmt.TableName, schema, tree, indexes, rowsToDelete, ct);
+        var rows = new List<DbValue[]>
+        {
+            new DbValue[]
+            {
+                DbValue.FromText(stmt.TableName),
+                DbValue.FromInteger(groups.Count),
+                DbValue.FromInteger(deleted),
+                DbValue.FromInteger(groups.Count)
+            },
+        };
+
+        return QueryResult.FromMaterializedRows(HygieneDedupResultColumns, rows);
+    }
+
+    private async ValueTask<QueryResult> ExecuteMergeDuplicatesAsync(MergeDuplicatesStatement stmt, CancellationToken ct)
+    {
+        ThrowIfTemporaryTableTarget(stmt.TableName, "merged");
+        ThrowIfExternalTableTarget(stmt.TableName, "merged");
+
+        var schema = GetSchema(stmt.TableName);
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
+        var indexes = _catalog.GetIndexesForTable(stmt.TableName);
+        var groups = await BuildDuplicateGroupsAsync(stmt.TableName, schema, stmt.KeyExpressions, DuplicateKeepMode.First, ct);
+        var rowsToDelete = new List<HygieneRow>();
+        var updates = new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
+        var conflicts = new List<string>();
+
+        foreach (DuplicateGroup group in groups)
+        {
+            HygieneRow winner = SelectDuplicateWinner(group.Rows, schema, DuplicateKeepMode.First);
+            DbValue[] mergedRow = (DbValue[])winner.Row.Clone();
+            bool changed = false;
+
+            for (int columnIndex = 0; columnIndex < schema.Columns.Count; columnIndex++)
+            {
+                if (columnIndex == schema.PrimaryKeyColumnIndex || !mergedRow[columnIndex].IsNull)
+                    continue;
+
+                string? collation = schema.Columns[columnIndex].Type == DbType.Text
+                    ? CollationSupport.NormalizeMetadataName(schema.Columns[columnIndex].Collation)
+                    : null;
+                var candidates = new List<DbValue>();
+                foreach (HygieneRow candidateRow in group.Rows)
+                {
+                    if (candidateRow.RowId == winner.RowId)
+                        continue;
+
+                    DbValue candidate = candidateRow.Row[columnIndex];
+                    if (candidate.IsNull || ContainsEquivalentValue(candidates, candidate, collation))
+                        continue;
+
+                    candidates.Add(candidate);
+                    if (candidates.Count > 1)
+                        break;
+                }
+
+                if (candidates.Count == 1)
+                {
+                    mergedRow[columnIndex] = candidates[0];
+                    changed = true;
+                }
+                else if (candidates.Count > 1)
+                {
+                    conflicts.Add($"rowid={winner.RowId}, column={schema.Columns[columnIndex].Name}");
+                }
+            }
+
+            if (changed)
+                updates.Add((winner.RowId, winner.Row, mergedRow));
+
+            rowsToDelete.AddRange(group.Rows.Where(row => row.RowId != winner.RowId));
+        }
+
+        int updated = await ApplyHygieneUpdatesAsync(stmt.TableName, schema, tree, indexes, updates, ct);
+        int deleted = await ApplyHygieneDeletesAsync(stmt.TableName, schema, tree, indexes, rowsToDelete, ct);
+        var rows = new List<DbValue[]>
+        {
+            new DbValue[]
+            {
+                DbValue.FromText(stmt.TableName),
+                DbValue.FromInteger(groups.Count),
+                DbValue.FromInteger(updated),
+                DbValue.FromInteger(deleted),
+                DbValue.FromInteger(conflicts.Count),
+                conflicts.Count == 0 ? DbValue.Null : DbValue.FromText(string.Join("; ", conflicts))
+            },
+        };
+
+        return QueryResult.FromMaterializedRows(HygieneMergeResultColumns, rows);
+    }
+
+    private async ValueTask<List<DuplicateGroup>> BuildDuplicateGroupsAsync(
+        string tableName,
+        TableSchema schema,
+        List<Expression> keyExpressions,
+        DuplicateKeepMode keepMode,
+        CancellationToken ct)
+    {
+        if (keyExpressions.Count == 0)
+            throw new CSharpDbException(ErrorCode.SyntaxError, "At least one duplicate key expression is required.");
+
+        var evaluationSchema = CreateHygieneEvaluationSchema(schema);
+        ValidateHygieneExpressions(keyExpressions, evaluationSchema);
+        string?[] collations = keyExpressions
+            .Select(expression => CollationSupport.ResolveExpressionCollation(expression, evaluationSchema))
+            .ToArray();
+
+        var groups = new Dictionary<string, DuplicateGroup>(StringComparer.Ordinal);
+        var tree = _catalog.GetTableTree(tableName, _pager);
+        int? capacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), capacityHint);
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                var keyValues = new DbValue[keyExpressions.Count];
+                for (int i = 0; i < keyExpressions.Count; i++)
+                    keyValues[i] = ExpressionEvaluator.Evaluate(keyExpressions[i], scan.Current, evaluationSchema, _functions);
+
+                string key = BuildHygieneKey(keyValues, collations);
+                if (!groups.TryGetValue(key, out DuplicateGroup? group))
+                {
+                    group = new DuplicateGroup
+                    {
+                        Key = key,
+                        KeyDisplay = FormatDbValueList(keyValues),
+                    };
+                    groups.Add(key, group);
+                }
+
+                group.Rows.Add(new HygieneRow(scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        return groups.Values
+            .Where(group => group.Rows.Count > 1)
+            .OrderBy(group => SelectDuplicateWinner(group.Rows, schema, keepMode).RowId)
+            .ToList();
+    }
+
+    private static HygieneRow SelectDuplicateWinner(
+        IReadOnlyList<HygieneRow> rows,
+        TableSchema schema,
+        DuplicateKeepMode keepMode)
+    {
+        int pkIndex = schema.PrimaryKeyColumnIndex;
+        bool usePrimaryKey = pkIndex >= 0 &&
+            rows.All(row => pkIndex < row.Row.Length && !row.Row[pkIndex].IsNull);
+        string? pkCollation = usePrimaryKey && schema.Columns[pkIndex].Type == DbType.Text
+            ? CollationSupport.NormalizeMetadataName(schema.Columns[pkIndex].Collation)
+            : null;
+
+        HygieneRow winner = rows[0];
+        for (int i = 1; i < rows.Count; i++)
+        {
+            HygieneRow candidate = rows[i];
+            int comparison = usePrimaryKey
+                ? CollationSupport.Compare(candidate.Row[pkIndex], winner.Row[pkIndex], pkCollation)
+                : candidate.RowId.CompareTo(winner.RowId);
+
+            if ((keepMode == DuplicateKeepMode.First && comparison < 0) ||
+                (keepMode == DuplicateKeepMode.Last && comparison > 0))
+            {
+                winner = candidate;
+            }
+        }
+
+        return winner;
+    }
+
+    private async ValueTask<int> ApplyHygieneDeletesAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        IReadOnlyList<IndexSchema> indexes,
+        IReadOnlyList<HygieneRow> rowsToDelete,
+        CancellationToken ct)
+    {
+        if (rowsToDelete.Count == 0)
+            return 0;
+
+        bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(tableName).Count > 0;
+        if (!hasIncomingForeignKeys)
+        {
+            int deleted = 0;
+            foreach (HygieneRow rowToDelete in rowsToDelete.OrderBy(row => row.RowId))
+            {
+                DbValue[]? currentRow = await TryLoadRowAsync(tableName, schema, rowToDelete.RowId, ct);
+                if (currentRow is null)
+                    continue;
+
+                await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Delete, currentRow, null, schema, ct);
+                await tree.DeleteAsync(rowToDelete.RowId, ct);
+                RecordLogicalMutationWrites(tableName, schema, oldRow: currentRow, newRow: null, oldRowId: rowToDelete.RowId);
+                await DeleteFromAllIndexesAsync(indexes, schema, currentRow, rowToDelete.RowId, ct);
+                await _catalog.AdjustTableRowCountAsync(tableName, -1, ct);
+                await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Delete, currentRow, null, schema, ct);
+                deleted++;
+            }
+
+            if (deleted > 0)
+                await _catalog.MarkTableColumnStatisticsStaleAsync(tableName, ct);
+
+            await _catalog.PersistRootPageChangesAsync(tableName, ct);
+            return deleted;
+        }
+
+        int cascadingDeleted = 0;
+        var mutationContext = new ForeignKeyMutationContext();
+        foreach (HygieneRow rowToDelete in rowsToDelete.OrderBy(row => row.RowId))
+        {
+            if (await DeleteRowWithForeignKeysAsync(
+                    tableName,
+                    schema,
+                    tree,
+                    indexes,
+                    rowToDelete.RowId,
+                    mutationContext,
+                    depth: 0,
+                    ct))
+            {
+                cascadingDeleted++;
+            }
+        }
+
+        await PersistForeignKeyMutationContextAsync(mutationContext, tableName, cascadingDeleted > 0, persistRootChanges: true, ct);
+        return cascadingDeleted;
+    }
+
+    private async ValueTask<int> ApplyHygieneUpdatesAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        IReadOnlyList<IndexSchema> indexes,
+        IReadOnlyList<(long rowId, DbValue[] oldRow, DbValue[] newRow)> updates,
+        CancellationToken ct)
+    {
+        if (updates.Count == 0)
+            return 0;
+
+        int pkIdx = schema.PrimaryKeyColumnIndex;
+        bool hasIntegerPrimaryKey = pkIdx >= 0 && schema.Columns[pkIdx].Type == DbType.Integer;
+        bool hasOutgoingForeignKeys = _catalog.GetForeignKeysForTable(tableName).Count > 0;
+        bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(tableName).Count > 0;
+        var mutationContext = hasOutgoingForeignKeys || hasIncomingForeignKeys
+            ? new ForeignKeyMutationContext()
+            : null;
+        int updated = 0;
+
+        foreach (var (rowId, oldRow, newRow) in updates)
+        {
+            await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+
+            long newRowId = rowId;
+            if (hasIntegerPrimaryKey)
+            {
+                if (newRow[pkIdx].IsNull)
+                    newRow[pkIdx] = DbValue.FromInteger(rowId);
+
+                if (newRow[pkIdx].Type != DbType.Integer)
+                    throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
+
+                newRowId = newRow[pkIdx].AsInteger;
+            }
+
+            if (mutationContext is not null)
+            {
+                await ValidateIncomingForeignKeyUpdatesAsync(tableName, schema, rowId, oldRow, newRow, ct);
+                await ValidateOutgoingForeignKeysAsync(tableName, schema, oldRow, newRow, ct);
+            }
+
+            await tree.DeleteAsync(rowId, ct);
+            await tree.InsertAsync(newRowId, _recordSerializer.Encode(newRow), ct);
+            RecordLogicalMutationWrites(tableName, schema, oldRow, newRow, rowId, newRowId);
+            await UpdateAllIndexesAsync(indexes, schema, oldRow, newRow, rowId, newRowId, ct);
+
+            if (mutationContext is not null)
+            {
+                mutationContext.TouchedTables.Add(tableName);
+                mutationContext.StaleTables.Add(tableName);
+            }
+
+            await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            updated++;
+        }
+
+        await PersistForeignKeyMutationContextAsync(mutationContext, tableName, updated > 0, persistRootChanges: true, ct);
+        return updated;
+    }
+
+    private async ValueTask<QueryResult> ExecuteCreateValidationRuleAsync(CreateValidationRuleStatement stmt, CancellationToken ct)
+    {
+        ThrowIfTemporaryTableTarget(stmt.TableName, "used by validation rules");
+
+        var targetSchema = GetSchema(stmt.TableName);
+        if (stmt.ColumnName is not null && targetSchema.GetColumnIndex(stmt.ColumnName) < 0)
+            throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{stmt.ColumnName}' not found in table '{stmt.TableName}'.");
+
+        var evaluationSchema = CreateHygieneEvaluationSchema(targetSchema);
+        ValidateHygieneExpressions([stmt.Expression], evaluationSchema);
+
+        TableSchema validationSchema = await EnsureValidationRulesCatalogAsync(ct);
+        var existingRules = await LoadValidationRulesAsync(validationSchema, ct);
+        if (existingRules.Any(rule => string.Equals(rule.RuleName, stmt.RuleName, StringComparison.OrdinalIgnoreCase)))
+            throw new CSharpDbException(ErrorCode.DuplicateKey, $"Validation rule '{stmt.RuleName}' already exists.");
+
+        string expressionSql = ExprToSql(stmt.Expression);
+        string createdUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        var insert = new InsertStatement
+        {
+            TableName = InternalValidationRulesTableName,
+            ColumnNames =
+            [
+                "rule_name",
+                "table_name",
+                "column_name",
+                "expression_sql",
+                "message",
+                "created_utc",
+                "is_enabled"
+            ],
+            ValueRows =
+            [
+                [
+                    CreateLiteralExpression(DbValue.FromText(stmt.RuleName)),
+                    CreateLiteralExpression(DbValue.FromText(stmt.TableName)),
+                    CreateLiteralExpression(stmt.ColumnName is null ? DbValue.Null : DbValue.FromText(stmt.ColumnName)),
+                    CreateLiteralExpression(DbValue.FromText(expressionSql)),
+                    CreateLiteralExpression(DbValue.FromText(stmt.Message)),
+                    CreateLiteralExpression(DbValue.FromText(createdUtc)),
+                    CreateLiteralExpression(DbValue.FromInteger(1))
+                ]
+            ],
+        };
+
+        await ExecuteInsertAsync(insert, persistRootChanges: true, ct);
+        _systemValidationRulesRowsCache = null;
+        return new QueryResult(0);
+    }
+
+    private async ValueTask<QueryResult> ExecuteValidateTableAsync(ValidateTableStatement stmt, CancellationToken ct)
+    {
+        ThrowIfTemporaryTableTarget(stmt.TableName, "validated by SQL validation rules");
+
+        var targetSchema = GetSchema(stmt.TableName);
+        var evaluationSchema = CreateHygieneEvaluationSchema(targetSchema);
+        var rules = (await LoadValidationRulesAsync(ct))
+            .Where(rule => rule.IsEnabled && string.Equals(rule.TableName, stmt.TableName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (rules.Length == 0)
+            return QueryResult.FromMaterializedRows(HygieneValidationResultColumns, new List<DbValue[]>());
+
+        var compiledRules = new List<(ValidationRule Rule, Expression Expression)>(rules.Length);
+        foreach (ValidationRule rule in rules)
+        {
+            if (rule.ColumnName is not null && targetSchema.GetColumnIndex(rule.ColumnName) < 0)
+                continue;
+
+            Expression expression = Parser.ParseExpressionSql(rule.ExpressionSql);
+            ValidateHygieneExpressions([expression], evaluationSchema);
+            compiledRules.Add((rule, expression));
+        }
+
+        var rows = new List<DbValue[]>();
+        var tree = _catalog.GetTableTree(stmt.TableName, _pager);
+        int? capacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var scan = new TableScanOperator(tree, targetSchema, GetReadSerializer(targetSchema), capacityHint);
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                foreach (var (rule, expression) in compiledRules)
+                {
+                    DbValue result = ExpressionEvaluator.Evaluate(expression, scan.Current, evaluationSchema, _functions);
+                    if (result.IsTruthy)
+                        continue;
+
+                    rows.Add(
+                    [
+                        DbValue.FromText(rule.RuleName),
+                        DbValue.FromText(rule.TableName),
+                        rule.ColumnName is null ? DbValue.Null : DbValue.FromText(rule.ColumnName),
+                        DbValue.FromInteger(scan.CurrentRowId),
+                        GetPrimaryKeyText(targetSchema, scan.Current),
+                        DbValue.FromText(rule.Message),
+                    ]);
+                }
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        return QueryResult.FromMaterializedRows(HygieneValidationResultColumns, rows);
+    }
+
+    private async ValueTask<QueryResult> ExecuteFindOrphansAsync(FindOrphansStatement stmt, CancellationToken ct)
+    {
+        ThrowIfTemporaryTableTarget(stmt.ChildTableName, "scanned by orphan detection");
+        if (stmt.ParentTableName is not null)
+            ThrowIfTemporaryTableTarget(stmt.ParentTableName, "referenced by orphan detection");
+
+        var specs = BuildOrphanCheckSpecs(stmt);
+        var rows = new List<DbValue[]>();
+
+        foreach (OrphanCheckSpec spec in specs)
+        {
+            string? parentCollation = spec.ParentSchema.Columns[spec.ParentColumnIndex].Type == DbType.Text
+                ? CollationSupport.NormalizeMetadataName(spec.ParentSchema.Columns[spec.ParentColumnIndex].Collation)
+                : null;
+            bool useDirectParentLookup = CanUseParentLookup(spec.ParentSchema, spec.ParentColumnIndex);
+            HashSet<string>? parentValueSet = useDirectParentLookup
+                ? null
+                : await BuildParentValueSetAsync(spec.ParentSchema, spec.ParentColumnIndex, parentCollation, ct);
+
+            var childTree = _catalog.GetTableTree(spec.ChildTableName, _pager);
+            int? capacityHint = TryGetCachedTreeRowCountCapacityHint(childTree);
+            var scan = new TableScanOperator(childTree, spec.ChildSchema, GetReadSerializer(spec.ChildSchema), capacityHint);
+            await scan.OpenAsync(ct);
+            try
+            {
+                while (await scan.MoveNextAsync(ct))
+                {
+                    DbValue childValue = scan.Current[spec.ChildColumnIndex];
+                    if (childValue.IsNull)
+                        continue;
+
+                    bool parentExists = useDirectParentLookup
+                        ? await ParentRowExistsAsync(spec.ParentSchema, spec.ParentColumnIndex, childValue, ct)
+                        : parentValueSet!.Contains(SerializeHygieneValue(childValue, parentCollation));
+                    if (parentExists)
+                        continue;
+
+                    rows.Add(
+                    [
+                        spec.ConstraintName is null ? DbValue.Null : DbValue.FromText(spec.ConstraintName),
+                        DbValue.FromText(spec.ChildTableName),
+                        DbValue.FromText(spec.ChildColumnName),
+                        DbValue.FromInteger(scan.CurrentRowId),
+                        DbValue.FromText(FormatDbValue(childValue)),
+                        DbValue.FromText(spec.ParentTableName),
+                        DbValue.FromText(spec.ParentColumnName),
+                    ]);
+                }
+            }
+            finally
+            {
+                await scan.DisposeAsync();
+            }
+        }
+
+        return QueryResult.FromMaterializedRows(HygieneOrphanResultColumns, rows);
+    }
+
+    private List<OrphanCheckSpec> BuildOrphanCheckSpecs(FindOrphansStatement stmt)
+    {
+        var childSchema = GetSchema(stmt.ChildTableName);
+        var specs = new List<OrphanCheckSpec>();
+
+        if (stmt.ChildColumnName is not null)
+        {
+            if (stmt.ParentTableName is null || stmt.ParentColumnName is null)
+                throw new CSharpDbException(ErrorCode.SyntaxError, "Explicit orphan checks require a REFERENCES target.");
+
+            int childColumnIndex = childSchema.GetColumnIndex(stmt.ChildColumnName);
+            if (childColumnIndex < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{stmt.ChildColumnName}' not found in table '{stmt.ChildTableName}'.");
+
+            var parentSchema = GetSchema(stmt.ParentTableName);
+            int parentColumnIndex = parentSchema.GetColumnIndex(stmt.ParentColumnName);
+            if (parentColumnIndex < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{stmt.ParentColumnName}' not found in table '{stmt.ParentTableName}'.");
+
+            specs.Add(new OrphanCheckSpec(
+                null,
+                stmt.ChildTableName,
+                stmt.ChildColumnName,
+                childSchema,
+                childColumnIndex,
+                stmt.ParentTableName,
+                stmt.ParentColumnName,
+                parentSchema,
+                parentColumnIndex));
+            return specs;
+        }
+
+        foreach (ForeignKeyDefinition foreignKey in childSchema.ForeignKeys)
+        {
+            int childColumnIndex = childSchema.GetColumnIndex(foreignKey.ColumnName);
+            var parentSchema = GetSchema(foreignKey.ReferencedTableName);
+            int parentColumnIndex = parentSchema.GetColumnIndex(foreignKey.ReferencedColumnName);
+            if (childColumnIndex < 0 || parentColumnIndex < 0)
+                continue;
+
+            specs.Add(new OrphanCheckSpec(
+                foreignKey.ConstraintName,
+                stmt.ChildTableName,
+                foreignKey.ColumnName,
+                childSchema,
+                childColumnIndex,
+                foreignKey.ReferencedTableName,
+                foreignKey.ReferencedColumnName,
+                parentSchema,
+                parentColumnIndex));
+        }
+
+        return specs;
+    }
+
+    private async ValueTask<HashSet<string>> BuildParentValueSetAsync(
+        TableSchema parentSchema,
+        int parentColumnIndex,
+        string? parentCollation,
+        CancellationToken ct)
+    {
+        var values = new HashSet<string>(StringComparer.Ordinal);
+        var parentTree = _catalog.GetTableTree(parentSchema.TableName, _pager);
+        int? capacityHint = TryGetCachedTreeRowCountCapacityHint(parentTree);
+        var scan = new TableScanOperator(parentTree, parentSchema, GetReadSerializer(parentSchema), capacityHint);
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                DbValue value = scan.Current[parentColumnIndex];
+                if (!value.IsNull)
+                    values.Add(SerializeHygieneValue(value, parentCollation));
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        return values;
+    }
+
+    private bool CanUseParentLookup(TableSchema parentSchema, int parentColumnIndex) =>
+        parentColumnIndex == parentSchema.PrimaryKeyColumnIndex &&
+        parentSchema.Columns[parentColumnIndex].Type == DbType.Integer ||
+        FindSingleColumnForeignKeyLookupIndex(parentSchema, parentColumnIndex) is not null;
+
+    private async ValueTask<List<ValidationRule>> LoadValidationRulesAsync(CancellationToken ct)
+    {
+        if (_catalog.GetTable(InternalValidationRulesTableName) is not { } schema)
+            return [];
+
+        ValidateValidationRulesCatalogSchema(schema);
+        return await LoadValidationRulesAsync(schema, ct);
+    }
+
+    private List<ValidationRule> LoadValidationRules(TableSchema schema, CancellationToken ct) =>
+        LoadValidationRulesAsync(schema, ct).AsTask().GetAwaiter().GetResult();
+
+    private async ValueTask<List<ValidationRule>> LoadValidationRulesAsync(TableSchema schema, CancellationToken ct)
+    {
+        int idIndex = schema.GetColumnIndex("id");
+        int ruleNameIndex = schema.GetColumnIndex("rule_name");
+        int tableNameIndex = schema.GetColumnIndex("table_name");
+        int columnNameIndex = schema.GetColumnIndex("column_name");
+        int expressionSqlIndex = schema.GetColumnIndex("expression_sql");
+        int messageIndex = schema.GetColumnIndex("message");
+        int createdUtcIndex = schema.GetColumnIndex("created_utc");
+        int isEnabledIndex = schema.GetColumnIndex("is_enabled");
+        var rows = new List<ValidationRule>((int)Math.Min(CountSystemValidationRules(), int.MaxValue));
+
+        var tree = _catalog.GetTableTree(InternalValidationRulesTableName, _pager);
+        int? capacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), capacityHint);
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                DbValue[] row = scan.Current;
+                string createdUtcText = row[createdUtcIndex].Type == DbType.Text ? row[createdUtcIndex].AsText : string.Empty;
+                DateTimeOffset createdUtc = DateTimeOffset.TryParse(
+                    createdUtcText,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind,
+                    out DateTimeOffset parsed)
+                    ? parsed
+                    : DateTimeOffset.MinValue;
+
+                rows.Add(new ValidationRule(
+                    row[idIndex].Type == DbType.Integer ? row[idIndex].AsInteger : scan.CurrentRowId,
+                    row[ruleNameIndex].AsText,
+                    row[tableNameIndex].AsText,
+                    row[columnNameIndex].IsNull ? null : row[columnNameIndex].AsText,
+                    row[expressionSqlIndex].AsText,
+                    row[messageIndex].AsText,
+                    createdUtc,
+                    row[isEnabledIndex].Type == DbType.Integer && row[isEnabledIndex].AsInteger != 0));
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        return rows;
+    }
+
+    private static TableSchema CreateHygieneEvaluationSchema(TableSchema schema)
+    {
+        var qualified = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < schema.Columns.Count; i++)
+            qualified[$"{schema.TableName}.{schema.Columns[i].Name}"] = i;
+
+        return new TableSchema
+        {
+            TableName = schema.TableName,
+            Columns = schema.Columns,
+            ForeignKeys = schema.ForeignKeys,
+            NextRowId = schema.NextRowId,
+            QualifiedMappings = qualified,
+        };
+    }
+
+    private static void ValidateHygieneExpressions(IReadOnlyList<Expression> expressions, TableSchema schema)
+    {
+        foreach (Expression expression in expressions)
+            ValidateHygieneExpression(expression, schema);
+    }
+
+    private static void ValidateHygieneExpression(Expression expression, TableSchema schema)
+    {
+        if (ContainsSubqueries(expression))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Data hygiene expressions do not support subqueries.");
+
+        switch (expression)
+        {
+            case ColumnRefExpression columnRef:
+                if (!TryResolveColumnIndex(columnRef, schema, out _))
+                    throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnRef.ColumnName}' not found.");
+                break;
+            case BinaryExpression binary:
+                ValidateHygieneExpression(binary.Left, schema);
+                ValidateHygieneExpression(binary.Right, schema);
+                break;
+            case UnaryExpression unary:
+                ValidateHygieneExpression(unary.Operand, schema);
+                break;
+            case CollateExpression collate:
+                ValidateHygieneExpression(collate.Operand, schema);
+                break;
+            case LikeExpression like:
+                ValidateHygieneExpression(like.Operand, schema);
+                ValidateHygieneExpression(like.Pattern, schema);
+                if (like.EscapeChar is not null)
+                    ValidateHygieneExpression(like.EscapeChar, schema);
+                break;
+            case InExpression inExpression:
+                ValidateHygieneExpression(inExpression.Operand, schema);
+                foreach (Expression value in inExpression.Values)
+                    ValidateHygieneExpression(value, schema);
+                break;
+            case BetweenExpression between:
+                ValidateHygieneExpression(between.Operand, schema);
+                ValidateHygieneExpression(between.Low, schema);
+                ValidateHygieneExpression(between.High, schema);
+                break;
+            case IsNullExpression isNull:
+                ValidateHygieneExpression(isNull.Operand, schema);
+                break;
+            case FunctionCallExpression functionCall:
+                foreach (Expression argument in functionCall.Arguments)
+                    ValidateHygieneExpression(argument, schema);
+                break;
+        }
+    }
+
+    private static bool ContainsEquivalentValue(IReadOnlyList<DbValue> values, DbValue candidate, string? collation)
+    {
+        foreach (DbValue existing in values)
+        {
+            if (CollationSupport.Compare(existing, candidate, collation) == 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string BuildHygieneKey(IReadOnlyList<DbValue> values, IReadOnlyList<string?> collations)
+    {
+        var builder = new StringBuilder();
+        for (int i = 0; i < values.Count; i++)
+        {
+            if (i > 0)
+                builder.Append('|');
+            builder.Append(SerializeHygieneValue(values[i], collations[i]));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string SerializeHygieneValue(DbValue value, string? collation)
+    {
+        string text = value.Type switch
+        {
+            DbType.Null => string.Empty,
+            DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
+            DbType.Real => BitConverter.DoubleToInt64Bits(value.AsReal).ToString(CultureInfo.InvariantCulture),
+            DbType.Text => CollationSupport.NormalizeText(value.AsText, collation),
+            DbType.Blob => Convert.ToBase64String(value.AsBlob),
+            _ => string.Empty,
+        };
+
+        return $"{(int)value.Type}:{text.Length}:{text}";
+    }
+
+    private static DbValue GetPrimaryKeyText(TableSchema schema, DbValue[] row)
+    {
+        int pkIndex = schema.PrimaryKeyColumnIndex;
+        if (pkIndex < 0 || pkIndex >= row.Length)
+            return DbValue.Null;
+
+        return DbValue.FromText(FormatDbValue(row[pkIndex]));
+    }
+
+    private static DbValue GetPrimaryKeyListText(TableSchema schema, IReadOnlyList<HygieneRow> rows)
+    {
+        int pkIndex = schema.PrimaryKeyColumnIndex;
+        if (pkIndex < 0)
+            return DbValue.Null;
+
+        return DbValue.FromText(string.Join(",", rows.Select(row => FormatDbValue(row.Row[pkIndex]))));
+    }
+
+    private static string FormatDbValueList(IReadOnlyList<DbValue> values) =>
+        "[" + string.Join(", ", values.Select(FormatDbValue)) + "]";
+
+    private static string FormatDbValue(DbValue value) => value.Type switch
+    {
+        DbType.Null => "NULL",
+        DbType.Integer => value.AsInteger.ToString(CultureInfo.InvariantCulture),
+        DbType.Real => value.AsReal.ToString("R", CultureInfo.InvariantCulture),
+        DbType.Text => "'" + value.AsText.Replace("'", "''") + "'",
+        DbType.Blob => "X'" + Convert.ToHexString(value.AsBlob) + "'",
+        _ => value.ToString(),
+    };
+
+    #endregion
+
     #endregion
 
     #region FROM Clause / JOIN / View Expansion
@@ -8077,6 +9497,40 @@ public sealed class QueryPlanner
                 };
 
                 return (cteOp, cteSchema);
+            }
+
+            if (TryGetTemporaryTable(simple.TableName, out var tempSchema))
+            {
+                BTree tempTree = RequireTemporaryTables().GetTableTree(simple.TableName);
+                IOperator tempOp = new TableScanOperator(
+                    tempTree,
+                    tempSchema,
+                    GetReadSerializer(tempSchema),
+                    TryGetCachedTreeRowCountCapacityHint(tempTree));
+
+                string tempAlias = simple.Alias ?? simple.TableName;
+                var tempQualified = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < tempSchema.Columns.Count; i++)
+                    tempQualified[$"{tempAlias}.{tempSchema.Columns[i].Name}"] = i;
+
+                var qualifiedTempSchema = new TableSchema
+                {
+                    TableName = tempSchema.TableName,
+                    Columns = tempSchema.Columns,
+                    QualifiedMappings = tempQualified,
+                };
+
+                if (pushDownOuterLocalPredicates &&
+                    TryCollectLocalJoinLeafPredicates(outerWhere, simple, qualifiedTempSchema, out var tempLocalConjuncts) &&
+                    CombineConjuncts(tempLocalConjuncts) is { } tempLocalPredicate)
+                {
+                    tempOp = new FilterOperator(
+                        tempOp,
+                        GetOrCompileSpanExpression(tempLocalPredicate, qualifiedTempSchema),
+                        TryCreateFilterBatchPlan(tempOp, tempLocalPredicate, qualifiedTempSchema));
+                }
+
+                return (tempOp, qualifiedTempSchema);
             }
 
             if (TryBuildSystemCatalogSource(simple, out var systemSource))
@@ -8275,6 +9729,7 @@ public sealed class QueryPlanner
         if (tableRef is JoinTableRef join)
         {
             if (allowJoinReorder &&
+                !TableRefContainsTemporaryTable(join) &&
                 !preserveJoinOrderForRowGoal &&
                 TryReorderInnerJoinChain(join, outerWhere, out var reordered))
             {
@@ -9975,6 +11430,8 @@ public sealed class QueryPlanner
             return false;
         if (IsExternalTable(rightSimple.TableName))
             return false;
+        if (HasTemporaryTable(rightSimple.TableName))
+            return false;
 
         if (_cteData != null && _cteData.ContainsKey(rightSimple.TableName))
             return false;
@@ -10311,6 +11768,12 @@ public sealed class QueryPlanner
 
         if (tableRef is SimpleTableRef simple)
         {
+            if (_temporaryTables is not null &&
+                _temporaryTables.TryGetExactTableRowCount(simple.TableName, out count))
+            {
+                return true;
+            }
+
             if (_catalog.IsView(simple.TableName))
                 return false;
             if (IsSystemCatalogTable(simple.TableName))
@@ -15331,6 +16794,26 @@ public sealed class QueryPlanner
         return schema;
     }
 
+    private async ValueTask<TableSchema> EnsureValidationRulesCatalogAsync(CancellationToken ct)
+    {
+        if (_catalog.GetTable(InternalValidationRulesTableName) is { } existing)
+        {
+            ValidateValidationRulesCatalogSchema(existing);
+            return existing;
+        }
+
+        var schema = new TableSchema
+        {
+            TableName = InternalValidationRulesTableName,
+            Columns = InternalValidationRulesColumns,
+            NextRowId = 1,
+        };
+
+        await _catalog.CreateTableAsync(schema, ct);
+        _systemValidationRulesRowsCache = null;
+        return schema;
+    }
+
     private static void ValidateExternalTablesCatalogSchema(TableSchema schema)
     {
         foreach (ColumnDefinition requiredColumn in InternalExternalTablesColumns)
@@ -15346,10 +16829,58 @@ public sealed class QueryPlanner
         }
     }
 
+    private static void ValidateValidationRulesCatalogSchema(TableSchema schema)
+    {
+        foreach (ColumnDefinition requiredColumn in InternalValidationRulesColumns)
+        {
+            int columnIndex = schema.GetColumnIndex(requiredColumn.Name);
+            if (columnIndex < 0 ||
+                schema.Columns[columnIndex].Type != requiredColumn.Type)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Internal validation rule metadata table '{InternalValidationRulesTableName}' has an unexpected schema.");
+            }
+        }
+    }
+
     private bool ObjectNameExists(string name) =>
         _catalog.GetTable(name) != null ||
         _catalog.GetViewSql(name) != null ||
         TryGetExternalTableRegistration(name, out _);
+
+    private TemporaryTableManager RequireTemporaryTables() =>
+        _temporaryTables ?? throw new CSharpDbException(
+            ErrorCode.SyntaxError,
+            "Temporary tables are not available in this execution context.");
+
+    private bool IsTemporaryTable(string tableName) =>
+        _temporaryTables?.HasTable(tableName) == true;
+
+    private bool TryGetTemporaryTable(string tableName, out TableSchema schema)
+    {
+        if (_temporaryTables is { HasAnyTableContext: true } temporaryTables)
+            return temporaryTables.TryGetTable(tableName, out schema);
+
+        schema = null!;
+        return false;
+    }
+
+    private BTree GetTableTree(string tableName)
+    {
+        if (_temporaryTables?.HasTable(tableName) == true)
+            return _temporaryTables.GetTableTree(tableName);
+
+        return _catalog.GetTableTree(tableName, _pager);
+    }
+
+    private void InvalidateTempSystemCatalogCaches()
+    {
+        _systemCatalogSchemaCache.Remove("sys.temp_tables");
+        _systemCatalogSchemaCache.Remove("sys_temp_tables");
+        _systemCatalogSchemaCache.Remove("sys.temp_columns");
+        _systemCatalogSchemaCache.Remove("sys_temp_columns");
+    }
 
     private bool IsExternalTable(string tableName) =>
         TryGetExternalTableRegistration(tableName, out _);
@@ -15534,6 +17065,16 @@ public sealed class QueryPlanner
             $"External table '{registration.TableName}' is read-only and cannot be {operation}.");
     }
 
+    private void ThrowIfTemporaryTableTarget(string tableName, string operation)
+    {
+        if (!HasTemporaryTable(tableName))
+            return;
+
+        throw new CSharpDbException(
+            ErrorCode.SyntaxError,
+            $"Temporary table '{tableName}' cannot be {operation} in V1.");
+    }
+
     private bool TryBuildExternalTableSource(SimpleTableRef tableRef, out (IOperator op, TableSchema schema) source)
     {
         source = default;
@@ -15615,7 +17156,8 @@ public sealed class QueryPlanner
 
     private static bool IsHiddenInternalCatalogTable(string tableName) =>
         string.Equals(tableName, InternalExternalTablesTableName, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(tableName, InternalDataModelDiagramsTableName, StringComparison.OrdinalIgnoreCase);
+        || string.Equals(tableName, InternalDataModelDiagramsTableName, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(tableName, InternalValidationRulesTableName, StringComparison.OrdinalIgnoreCase);
 
     private static bool TryNormalizeSystemCatalogTableName(string tableName, out string normalized)
     {
@@ -15686,6 +17228,27 @@ public sealed class QueryPlanner
             string.Equals(tableName, "sys_diagrams", StringComparison.OrdinalIgnoreCase))
         {
             normalized = "sys.diagrams";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.validation_rules", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_validation_rules", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.validation_rules";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.temp_tables", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_temp_tables", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.temp_tables";
+            return true;
+        }
+
+        if (string.Equals(tableName, "sys.temp_columns", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_temp_columns", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "sys.temp_columns";
             return true;
         }
 
@@ -15804,6 +17367,21 @@ public sealed class QueryPlanner
             case "sys.diagrams":
                 columns = SystemDiagramsColumns;
                 rows = BuildSystemDiagramsRows();
+                break;
+
+            case "sys.validation_rules":
+                columns = SystemValidationRulesColumns;
+                rows = BuildSystemValidationRulesRows();
+                break;
+
+            case "sys.temp_tables":
+                columns = SystemTablesColumns;
+                rows = BuildSystemTempTablesRows();
+                break;
+
+            case "sys.temp_columns":
+                columns = SystemColumnsColumns;
+                rows = BuildSystemTempColumnsRows();
                 break;
 
             case "sys.table_stats":
@@ -15934,6 +17512,65 @@ public sealed class QueryPlanner
         }
 
         _systemColumnsRowsCache = rows;
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemTempTablesRows()
+    {
+        if (_temporaryTables is null)
+            return new List<DbValue[]>();
+
+        var tableNames = _temporaryTables.GetTableNames();
+        var rows = new List<DbValue[]>(tableNames.Count);
+        foreach (string tableName in tableNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!_temporaryTables.TryGetTable(tableName, out var schema))
+                continue;
+
+            string? pkName = schema.PrimaryKeyColumnIndex >= 0
+                ? schema.Columns[schema.PrimaryKeyColumnIndex].Name
+                : null;
+
+            rows.Add(
+            [
+                DbValue.FromText(tableName),
+                DbValue.FromInteger(schema.Columns.Count),
+                pkName is null ? DbValue.Null : DbValue.FromText(pkName),
+            ]);
+        }
+
+        return rows;
+    }
+
+    private List<DbValue[]> BuildSystemTempColumnsRows()
+    {
+        if (_temporaryTables is null)
+            return new List<DbValue[]>();
+
+        var tableNames = _temporaryTables.GetTableNames();
+        var rows = new List<DbValue[]>(tableNames.Count * 4);
+        foreach (string tableName in tableNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!_temporaryTables.TryGetTable(tableName, out var schema))
+                continue;
+
+            for (int i = 0; i < schema.Columns.Count; i++)
+            {
+                var col = schema.Columns[i];
+                rows.Add(
+                [
+                    DbValue.FromText(tableName),
+                    DbValue.FromText(col.Name),
+                    DbValue.FromInteger(i + 1),
+                    DbValue.FromText(col.Type.ToString().ToUpperInvariant()),
+                    DbValue.FromInteger(col.Nullable ? 1 : 0),
+                    DbValue.FromInteger(col.IsPrimaryKey ? 1 : 0),
+                    DbValue.FromInteger(col.IsIdentity ? 1 : 0),
+                    col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
+                ]);
+            }
+        }
+
         return rows;
     }
 
@@ -16290,6 +17927,39 @@ public sealed class QueryPlanner
         }
     }
 
+    private List<DbValue[]> BuildSystemValidationRulesRows()
+    {
+        if (_systemValidationRulesRowsCache != null)
+            return _systemValidationRulesRowsCache;
+
+        if (_catalog.GetTable(InternalValidationRulesTableName) is not { } schema)
+        {
+            _systemValidationRulesRowsCache = [];
+            return _systemValidationRulesRowsCache;
+        }
+
+        var rules = LoadValidationRules(schema, CancellationToken.None);
+        var rows = new List<DbValue[]>(rules.Count);
+        foreach (ValidationRule rule in rules
+                     .OrderBy(rule => rule.TableName, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(rule => rule.RuleName, StringComparer.OrdinalIgnoreCase))
+        {
+            rows.Add(
+            [
+                DbValue.FromText(rule.RuleName),
+                DbValue.FromText(rule.TableName),
+                rule.ColumnName is null ? DbValue.Null : DbValue.FromText(rule.ColumnName),
+                DbValue.FromText(rule.ExpressionSql),
+                DbValue.FromText(rule.Message),
+                DbValue.FromText(rule.CreatedUtc.ToString("O", CultureInfo.InvariantCulture)),
+                DbValue.FromInteger(rule.IsEnabled ? 1 : 0),
+            ]);
+        }
+
+        _systemValidationRulesRowsCache = rows;
+        return rows;
+    }
+
     private List<DbValue[]> BuildSystemTableStatsRows()
     {
         var tableStats = _catalog.GetTableStatistics();
@@ -16357,6 +18027,9 @@ public sealed class QueryPlanner
             "sys.objects" => CountSystemObjects(),
             "sys.external_tables" => GetExternalTableRegistrations().Count,
             "sys.diagrams" => CountSystemDiagrams(),
+            "sys.validation_rules" => CountSystemValidationRules(),
+            "sys.temp_tables" => _temporaryTables?.GetTableNames().Count ?? 0,
+            "sys.temp_columns" => CountSystemTempColumns(),
             "sys.table_stats" => _catalog.GetTableStatistics().Count,
             "sys.column_stats" => _catalog.GetColumnStatistics().Count,
             "sys.planner_histograms" => CountPlannerHistogramRows(),
@@ -16364,6 +18037,24 @@ public sealed class QueryPlanner
             "sys.planner_index_prefix_stats" => CountPlannerIndexPrefixRows(),
             _ => 0,
         };
+    }
+
+    private long CountSystemValidationRules() =>
+        TryGetTableRowCount(InternalValidationRulesTableName, out long validationRuleRows) ? validationRuleRows : 0;
+
+    private long CountSystemTempColumns()
+    {
+        if (_temporaryTables is null)
+            return 0;
+
+        long count = 0;
+        foreach (string tableName in _temporaryTables.GetTableNames())
+        {
+            if (_temporaryTables.TryGetTable(tableName, out var schema))
+                count += schema.Columns.Count;
+        }
+
+        return count;
     }
 
     private long CountPlannerHeavyHitterRows()
@@ -16517,8 +18208,10 @@ public sealed class QueryPlanner
     }
 
     private TableSchema GetSchema(string tableName) =>
-        _catalog.GetTable(tableName)
-        ?? throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
+        TryGetTemporaryTable(tableName, out var tempSchema)
+            ? tempSchema
+            : _catalog.GetTable(tableName)
+              ?? throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
 
     private IRecordSerializer GetReadSerializer(TableSchema schema)
         => _collectionReadSerializer != null && IsCollectionBackingSchema(schema)

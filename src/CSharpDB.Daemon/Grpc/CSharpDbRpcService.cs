@@ -2,6 +2,7 @@ using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
+using CSharpDB.Sql;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using CoreDbException = CSharpDB.Primitives.CSharpDbException;
@@ -221,7 +222,12 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
         => ExecuteAsync(context, ct => client.ExecuteProcedureAsync(request.Name, ReadRequiredObject(request.Args), ct), GrpcModelMapper.ToMessage);
 
     public override Task<SqlExecutionResultMessage> ExecuteSql(SqlRequest request, ServerCallContext context)
-        => ExecuteAsync(context, ct => client.ExecuteSqlAsync(request.Sql, ct), GrpcModelMapper.ToMessage);
+    {
+        if (TryCreateStatelessTemporaryTableSqlRejection(request.Sql, out var rejection))
+            return Task.FromResult(GrpcModelMapper.ToMessage(rejection));
+
+        return ExecuteAsync(context, ct => client.ExecuteSqlAsync(request.Sql, ct), GrpcModelMapper.ToMessage);
+    }
 
     public override Task<TransactionSessionInfoMessage> BeginTransaction(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.BeginTransactionAsync(ct), GrpcModelMapper.ToMessage);
@@ -307,6 +313,33 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
         {
             throw TranslateException(ex);
         }
+    }
+
+    private static bool TryCreateStatelessTemporaryTableSqlRejection(string sql, out SqlExecutionResult result)
+    {
+        result = null!;
+
+        try
+        {
+            foreach (string statementSql in SqlScriptSplitter.SplitExecutableStatements(sql))
+            {
+                Statement statement = Parser.Parse(statementSql);
+                if (!SqlStatementClassifier.IsTemporaryTableStatement(statement))
+                    continue;
+
+                result = new SqlExecutionResult
+                {
+                    Error = "Temporary table commands require a transaction session when using stateless gRPC. Use BeginTransaction and ExecuteInTransaction for remote temporary table workflows.",
+                };
+                return true;
+            }
+        }
+        catch (CoreDbException)
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private async Task<Empty> ExecuteEmptyAsync(ServerCallContext context, Func<CancellationToken, Task> action)

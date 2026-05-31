@@ -1,5 +1,6 @@
 using CSharpDB.Admin.Models;
 using CSharpDB.Admin.Services;
+using CSharpDB.DevOps;
 
 namespace CSharpDB.Admin.Forms.Tests.Admin;
 
@@ -145,6 +146,86 @@ public class TabManagerServiceTests
         Assert.Same(first, second);
         Assert.Equal(2, manager.Tabs.Count);
         Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenDataHygieneTab_CreatesGlobalTabWithSeed()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Validation, TableName: "customers"));
+
+        Assert.Equal("data-hygiene", tab.Id);
+        Assert.Equal(TabKind.DataHygiene, tab.Kind);
+        Assert.Equal(DataHygieneMode.Validation, tab.InitialDataHygieneSeed!.Mode);
+        Assert.Equal("customers", tab.InitialDataHygieneSeed.TableName);
+        Assert.Equal(1, tab.DataHygieneSeedVersion);
+        Assert.Equal(tab, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenDataHygieneTab_DeduplicatesAndUpdatesSeed()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Duplicates, TableName: "customers"));
+        TabDescriptor second = manager.OpenDataHygieneTab(new DataHygieneSeed(
+            DataHygieneMode.Orphans,
+            TableName: "orders",
+            ChildTableName: "orders",
+            ChildColumnName: "customer_id",
+            ParentTableName: "customers",
+            ParentColumnName: "id"));
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(DataHygieneMode.Orphans, second.InitialDataHygieneSeed!.Mode);
+        Assert.Equal("orders", second.InitialDataHygieneSeed.TableName);
+        Assert.Equal("customer_id", second.InitialDataHygieneSeed.ChildColumnName);
+        Assert.Equal(2, second.DataHygieneSeedVersion);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenCompareDeployTab_DeduplicatesAndUpdatesSeed()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenCompareDeployTab(new CompareDeploySeed(CompareDeployMode.Schema, TableName: "customers"));
+        TabDescriptor second = manager.OpenCompareDeployTab(new CompareDeploySeed(CompareDeployMode.Data, TableName: "orders", SourcePath: "baseline.db"));
+
+        Assert.Same(first, second);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal("compare-deploy", second.Id);
+        Assert.Equal(TabKind.CompareDeploy, second.Kind);
+        Assert.Equal(CompareDeployMode.Data, second.InitialCompareDeploySeed!.Mode);
+        Assert.Equal("orders", second.InitialCompareDeploySeed.TableName);
+        Assert.Equal("baseline.db", second.InitialCompareDeploySeed.SourcePath);
+        Assert.Equal(2, second.CompareDeploySeedVersion);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
+    public void OpenTableScriptTab_SeedsCompareDeployForSelectedTable()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor tab = manager.OpenTableScriptTab("customers");
+
+        Assert.Equal("compare-deploy", tab.Id);
+        Assert.Equal(TabKind.CompareDeploy, tab.Kind);
+        Assert.Equal(CompareDeployMode.Schema, tab.InitialCompareDeploySeed!.Mode);
+        Assert.Equal("customers", tab.InitialCompareDeploySeed.TableName);
+        Assert.Equal(CompareDeployEndpointKind.CurrentDatabase, tab.InitialCompareDeploySeed.SourceKind);
+        Assert.Equal(CompareDeployEndpointKind.CurrentDatabase, tab.InitialCompareDeploySeed.TargetKind);
+        Assert.Equal(CompareDeployScriptEndpoint.Target, tab.InitialCompareDeploySeed.ScriptEndpoint);
+        Assert.Equal(SchemaObjectKind.Table, tab.InitialCompareDeploySeed.ScriptObjectKind);
+        Assert.Equal("customers", tab.InitialCompareDeploySeed.ScriptObjectName);
+        Assert.True(tab.InitialCompareDeploySeed.ScriptIncludeIndexes.GetValueOrDefault());
+        Assert.True(tab.InitialCompareDeploySeed.ScriptIncludeTriggers.GetValueOrDefault());
+        Assert.True(tab.InitialCompareDeploySeed.ScriptOnOpen);
+        Assert.Equal(1, tab.CompareDeploySeedVersion);
+        Assert.Equal(tab, manager.ActiveTab);
     }
 
     [Fact]

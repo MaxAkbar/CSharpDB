@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Form Control Extensibility — CSharpDB</title>
+    <meta name="description" content="Extend CSharpDB Admin Forms with custom Blazor designer previews, runtime controls, and property editors.">
+    <link rel="canonical" href="https://csharpdb.com/docs/form-control-extensibility.html">
+    <meta property="og:title" content="Form Control Extensibility — CSharpDB">
+    <meta property="og:description" content="Extend CSharpDB Admin Forms with custom Blazor designer previews, runtime controls, and property editors.">
+    <meta property="og:url" content="https://csharpdb.com/docs/form-control-extensibility.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Form Control Extensibility",
+        "description": "Extend CSharpDB Admin Forms with custom Blazor designer previews, runtime controls, and property editors.",
+        "url": "https://csharpdb.com/docs/form-control-extensibility.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Form Control Extensibility',
+        description: 'Extend CSharpDB Admin Forms with custom Blazor designer previews, runtime controls, and property editors.',
+        keywords: 'CSharpDB Admin Forms custom controls, form control extensibility, Blazor form controls',
+        canonicalPath: 'docs/form-control-extensibility.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#registration">Registration</a></li>
+                        <li><a href="#descriptor-fields">Descriptor Fields</a></li>
+                        <li><a href="#component-contexts">Component Contexts</a></li>
+                        <li><a href="#generic-property-schema">Generic Property Schema</a></li>
+                        <li><a href="#sample-rating-control">Sample Rating Control</a></li>
+                        <li><a href="#current-limits">Current Limits</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/admin-forms-access-parity/form-control-extensibility.md because it is host developer documentation.</div>
+<h1 id="form-control-extensibility">Form Control Extensibility</h1>
+<p>Admin Forms controls are persisted as <code>ControlDefinition.ControlType</code> plus a
+free-form <code>PropertyBag</code>. The extensibility registry turns that existing wire
+shape into a developer API: a host can add designer toolbox entries, placement
+defaults, property editing, designer previews, and runtime rendering without
+changing saved form JSON.</p>
+<h2 id="registration">Registration</h2>
+<p>Register built-ins with <code>AddCSharpDbAdminForms()</code>, then add custom controls with
+<code>AddCSharpDbAdminFormControls(...)</code>:</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Forms.Models;
+using CSharpDB.Admin.Forms.Services;
+
+builder.Services.AddCSharpDbAdminForms();
+builder.Services.AddCSharpDbAdminFormControls(controls =&gt;
+{
+    controls.Add(new FormControlDescriptor
+    {
+        ControlType = &quot;rating&quot;,
+        DisplayName = &quot;Rating&quot;,
+        ToolboxGroup = &quot;Custom&quot;,
+        IconText = &quot;*&quot;,
+        DefaultWidth = 220,
+        DefaultHeight = 48,
+        SupportsBinding = true,
+        ParticipatesInTabOrder = true,
+        DefaultProps = new Dictionary&lt;string, object?&gt;
+        {
+            [&quot;max&quot;] = 5,
+            [&quot;displayMode&quot;] = &quot;buttons&quot;,
+        },
+        DesignerPreviewComponentType = typeof(RatingDesignerPreview),
+        RuntimeComponentType = typeof(RatingRuntimeControl),
+        PropertyEditorComponentType = typeof(RatingPropertyEditor),
+    });
+});
+</code></pre>
+<p>The same registration must exist anywhere the form is designed or rendered.
+Unknown control types are preserved in form metadata and render as placeholders.</p>
+<h2 id="descriptor-fields">Descriptor Fields</h2>
+<p><code>FormControlDescriptor</code> defines the designer and runtime contract:</p>
+<ul>
+<li><code>ControlType</code>: persisted control type string.</li>
+<li><code>DisplayName</code>, <code>ToolboxGroup</code>, <code>IconText</code>, <code>Description</code>: toolbox and labels.</li>
+<li><code>DefaultWidth</code>, <code>DefaultHeight</code>, <code>DefaultProps</code>: new-control placement.</li>
+<li><code>SupportsBinding</code>: whether placement and the inspector create a field binding.</li>
+<li><code>ParticipatesInTabOrder</code>: whether the control joins tab-order editing.</li>
+<li><code>PropertyDescriptors</code>: generic property fields for simple custom props.</li>
+<li><code>DesignerPreviewComponentType</code>: optional Blazor preview component.</li>
+<li><code>RuntimeComponentType</code>: optional Blazor data-entry component.</li>
+<li><code>PropertyEditorComponentType</code>: optional custom property editor.</li>
+<li><code>ReplaceBuiltInRuntime</code>: lets a host explicitly replace a built-in runtime
+renderer while keeping the built-in designer metadata.</li>
+</ul>
+<p>Duplicate custom control types fail when the registry is resolved. Built-in
+runtime replacement also fails unless <code>ReplaceBuiltInRuntime = true</code>.</p>
+<h2 id="component-contexts">Component Contexts</h2>
+<p>Custom components receive a single <code>Context</code> parameter.</p>
+<p>Designer previews use <code>FormControlDesignContext</code>:</p>
+<pre><code class="language-csharp">[Parameter, EditorRequired]
+public FormControlDesignContext Context { get; set; } = default!;
+</code></pre>
+<p>Runtime controls use <code>FormControlRuntimeContext</code>:</p>
+<pre><code class="language-csharp">[Parameter, EditorRequired]
+public FormControlRuntimeContext Context { get; set; } = default!;
+</code></pre>
+<p>The runtime context includes the form, control metadata, current record, bound
+field/value, resolved choices, enabled/read-only state, validation error,
+tab-index, <code>SetValueAsync</code>, and <code>DispatchEventAsync</code>.</p>
+<p>Custom property editors use <code>FormControlPropertyContext</code>:</p>
+<pre><code class="language-csharp">[Parameter, EditorRequired]
+public FormControlPropertyContext Context { get; set; } = default!;
+</code></pre>
+<p>Use <code>Context.SetPropertyAsync(name, value)</code> to write into the control
+<code>PropertyBag</code>.</p>
+<h2 id="generic-property-schema">Generic Property Schema</h2>
+<p>For simple controls, skip a custom property editor and define
+<code>PropertyDescriptors</code>:</p>
+<pre><code class="language-csharp">PropertyDescriptors =
+[
+    new FormControlPropertyDescriptor
+    {
+        Name = &quot;max&quot;,
+        Label = &quot;Maximum Rating&quot;,
+        Editor = FormControlPropertyEditor.Number,
+        DefaultValue = 5,
+        HelpText = &quot;Allowed values are 1 through 10.&quot;,
+    },
+    new FormControlPropertyDescriptor
+    {
+        Name = &quot;displayMode&quot;,
+        Label = &quot;Display Mode&quot;,
+        Editor = FormControlPropertyEditor.Select,
+        Options =
+        [
+            new FormControlPropertyOption(&quot;buttons&quot;, &quot;Buttons&quot;),
+            new FormControlPropertyOption(&quot;compact&quot;, &quot;Compact&quot;),
+        ],
+    },
+];
+</code></pre>
+<p>Generic editors support <code>Text</code>, <code>TextArea</code>, <code>Number</code>, <code>Checkbox</code>, and <code>Select</code>.</p>
+<h2 id="sample-rating-control">Sample Rating Control</h2>
+<p>The Admin host includes a compiled sample custom control at:</p>
+<ul>
+<li><code>src/CSharpDB.Admin/Components/Samples/FormControls/RatingDesignerPreview.razor</code></li>
+<li><code>src/CSharpDB.Admin/Components/Samples/FormControls/RatingRuntimeControl.razor</code></li>
+<li><code>src/CSharpDB.Admin/Components/Samples/FormControls/RatingPropertyEditor.razor</code></li>
+<li><code>src/CSharpDB.Admin/Components/Samples/FormControls/SampleRatingControlRegistration.cs</code></li>
+</ul>
+<p>It is disabled by default. Enable it for local testing with:</p>
+<pre><code class="language-powershell">$env:AdminForms__EnableSampleControls = 'true'
+dotnet run --project src\CSharpDB.Admin --urls http://127.0.0.1:61818
+</code></pre>
+<p>The sample registers <code>sampleRating</code> under the <code>Custom</code> toolbox group. It binds to
+a scalar field, writes the selected numeric rating through <code>SetValueAsync</code>, and
+dispatches click events with runtime arguments.</p>
+<h2 id="current-limits">Current Limits</h2>
+<p>V1 custom controls are leaf controls. They can be placed inside existing
+<code>tabControl</code> pages, but custom containers do not own or render child controls
+yet. Custom components must be compiled into the host app or referenced
+assemblies; form JSON never loads arbitrary component assemblies.</p>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

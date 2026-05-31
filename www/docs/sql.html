@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>SQL Reference — CSharpDB</title>
-    <meta name="description" content="CSharpDB SQL reference — CREATE TABLE, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, aggregate functions, indexes, and expression syntax.">
+    <meta name="description" content="CSharpDB SQL reference — CREATE TABLE, temporary tables, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, data hygiene commands, aggregate functions, indexes, and expression syntax.">
     <link rel="canonical" href="https://csharpdb.com/docs/sql.html">
     <meta property="og:title" content="SQL Reference — CSharpDB">
-    <meta property="og:description" content="CSharpDB SQL reference — CREATE TABLE, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, aggregate functions, indexes, and expression syntax.">
+    <meta property="og:description" content="CSharpDB SQL reference — CREATE TABLE, temporary tables, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, data hygiene commands, aggregate functions, indexes, and expression syntax.">
     <meta property="og:url" content="https://csharpdb.com/docs/sql.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "SQL Reference",
-        "description": "CSharpDB SQL reference — CREATE TABLE, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, aggregate functions, indexes, and expression syntax.",
+        "description": "CSharpDB SQL reference — CREATE TABLE, temporary tables, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, data hygiene commands, aggregate functions, indexes, and expression syntax.",
         "url": "https://csharpdb.com/docs/sql.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,8 +33,8 @@
         window.currentPage = 'docs'; window.pagePathPrefix = '../';
         window.pageConfig = {
             title: 'SQL Reference',
-            description: 'CSharpDB SQL reference \u2014 CREATE TABLE, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, aggregate functions, indexes, and expression syntax.',
-            keywords: 'CSharpDB SQL, SQL reference, CREATE TABLE, SELECT, JOIN, aggregate functions, SQL syntax',
+            description: 'CSharpDB SQL reference \u2014 CREATE TABLE, temporary tables, SELECT, INSERT, UPDATE, DELETE, JOINs, subqueries, data hygiene commands, aggregate functions, indexes, and expression syntax.',
+            keywords: 'CSharpDB SQL, SQL reference, CREATE TABLE, temporary tables, SELECT, JOIN, data hygiene, duplicates, validation rules, orphan detection, SQL syntax',
             canonicalPath: 'docs/sql.html',
             ogType: 'article',
         };
@@ -63,6 +63,19 @@
     Photo     <span class="tp">BLOB</span>
 );</code></pre>
                 </div>
+
+                <h3>Temporary Tables</h3>
+                <div class="code-block" data-title="SQL">
+                    <pre><code><span class="kw">CREATE TEMP TABLE</span> StageEmployees (
+    Id   <span class="tp">INTEGER</span> <span class="kw">PRIMARY KEY IDENTITY</span>,
+    Name <span class="tp">TEXT</span>
+);
+
+<span class="kw">INSERT INTO</span> StageEmployees (Name) <span class="kw">VALUES</span> (<span class="str">'Ada'</span>);
+<span class="kw">PERSIST TEMP TABLE</span> StageEmployees <span class="kw">AS</span> ImportedEmployees;
+<span class="kw">DROP TEMP TABLE IF EXISTS</span> StageEmployees;</code></pre>
+                </div>
+                <p>Temporary tables are in-memory and session-scoped. They resolve before durable tables, are hidden from <code>sys.tables</code> and backups, and appear only in <code>sys.temp_tables</code>/<code>sys_temp_tables</code> and <code>sys.temp_columns</code>/<code>sys_temp_columns</code>. Stateless HTTP/gRPC SQL execution rejects temp commands; use transaction sessions for remote temp workflows.</p>
 
                 <h3>CREATE INDEX</h3>
                 <div class="code-block" data-title="SQL">
@@ -155,6 +168,34 @@
 <span class="kw">DELETE FROM</span> Employees <span class="kw">WHERE</span> Id = <span class="num">99</span>;</code></pre>
                 </div>
 
+                <h2>Data Hygiene</h2>
+                <p>Use SQL-first hygiene commands to preview duplicates, deduplicate or merge rows transactionally, store audit-only validation rules, and find orphaned child values.</p>
+
+                <div class="code-block" data-title="SQL">
+                    <pre><code><span class="cm">-- Preview duplicate groups without changing data</span>
+<span class="kw">FIND DUPLICATES IN</span> Customers <span class="kw">ON</span> Email <span class="kw">COLLATE</span> NOCASE;
+
+<span class="cm">-- Delete non-winners through normal index/FK/trigger mutation paths</span>
+<span class="kw">DEDUP</span> Customers <span class="kw">ON</span> Email <span class="kw">KEEP FIRST</span>;
+
+<span class="cm">-- Fill NULL winner fields when exactly one duplicate value is available</span>
+<span class="kw">MERGE DUPLICATES</span> Customers <span class="kw">ON</span> Email;
+
+<span class="cm">-- Store and evaluate audit-only SQL validation rules</span>
+<span class="kw">CREATE VALIDATION RULE</span> ValidEmail
+    <span class="kw">ON</span> Customers.Email
+    <span class="kw">AS</span> Email <span class="kw">LIKE</span> <span class="str">'%@%'</span>
+    <span class="kw">MESSAGE</span> <span class="str">'Email must contain @'</span>;
+
+<span class="kw">VALIDATE TABLE</span> Customers;
+
+<span class="cm">-- Check declared FKs or an explicit child/parent relationship</span>
+<span class="kw">FIND ORPHANS IN</span> Bookings;
+<span class="kw">FIND ORPHANS IN</span> Bookings.BookId <span class="kw">REFERENCES</span> Books.Id;</code></pre>
+                </div>
+
+                <p>Hygiene commands return normal query rows, so they work through embedded SQL, ADO.NET, Admin query tabs, the CLI, HTTP, and gRPC. Validation rules are stored in a hidden internal table and exposed through <code>sys.validation_rules</code> and <code>sys_validation_rules</code>.</p>
+
                 <h2>Built-in Functions</h2>
 
                 <h3>String Functions</h3>
@@ -218,6 +259,9 @@
                         <tr><td><code>sys.foreign_keys</code></td><td>Foreign key constraints, referenced targets, delete actions, and support-index ownership</td></tr>
                         <tr><td><code>sys.views</code></td><td>View definitions and SQL</td></tr>
                         <tr><td><code>sys.triggers</code></td><td>Trigger metadata</td></tr>
+                        <tr><td><code>sys.validation_rules</code></td><td>Database-owned audit validation rules and their SQL expressions</td></tr>
+                        <tr><td><code>sys.temp_tables</code></td><td>Current-session temporary table metadata</td></tr>
+                        <tr><td><code>sys.temp_columns</code></td><td>Current-session temporary column metadata</td></tr>
                         <tr><td><code>sys.table_stats</code></td><td>Row count and page usage per table</td></tr>
                         <tr><td><code>sys.column_stats</code></td><td>Cardinality, NULL count, min/max per column</td></tr>
                     </tbody>

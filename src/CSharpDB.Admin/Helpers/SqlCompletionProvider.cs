@@ -92,6 +92,12 @@ public static partial class SqlCompletionProvider
         new("CREATE TABLE", "CREATE TABLE ", "create table"),
         new("CREATE INDEX", "CREATE INDEX ", "create index"),
         new("EXEC", "EXEC ", "execute procedure"),
+        new("FIND DUPLICATES IN", "FIND DUPLICATES IN ", "preview duplicate groups"),
+        new("DEDUP", "DEDUP ", "delete duplicate rows"),
+        new("MERGE DUPLICATES", "MERGE DUPLICATES ", "merge duplicate rows"),
+        new("CREATE VALIDATION RULE", "CREATE VALIDATION RULE ", "create audit rule"),
+        new("VALIDATE TABLE", "VALIDATE TABLE ", "run validation rules"),
+        new("FIND ORPHANS IN", "FIND ORPHANS IN ", "find orphaned child rows"),
     ];
 
     private static readonly SqlCompletionKeyword[] s_functions =

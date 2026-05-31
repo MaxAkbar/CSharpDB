@@ -160,6 +160,28 @@ dotnet run</code></pre>
                     </li>
                 </ul>
 
+                <!-- ───────── Operational Workspaces ───────── -->
+                <h2 id="operational-workspaces">Operational Workspaces</h2>
+                <p>Studio includes dedicated workspaces for recurring database operations that need guided review, previews, and confirmation before changes are applied.</p>
+                <ul class="feature-list">
+                    <li>
+                        <i class="bi bi-shield-check"></i>
+                        <div><strong>Data Hygiene</strong><span>Find duplicate groups, run audit validation rules, detect orphaned foreign-key values, and preview destructive cleanup actions before running <code>DEDUP</code> or <code>MERGE DUPLICATES</code>.</span></div>
+                    </li>
+                    <li>
+                        <i class="bi bi-arrow-left-right"></i>
+                        <div><strong>Compare / Deploy</strong><span>Compare schemas or selected table data across source and target databases, review drift, preview scripts, and deploy only after explicit confirmation. See <a href="database-devops.html">Database DevOps</a>.</span></div>
+                    </li>
+                    <li>
+                        <i class="bi bi-file-earmark-code"></i>
+                        <div><strong>Script Selected Objects</strong><span>Generate SQL for a selected table with options for indexes, triggers, related objects, and data so object-level scripts can be reviewed before use.</span></div>
+                    </li>
+                    <li>
+                        <i class="bi bi-collection"></i>
+                        <div><strong>Collections</strong><span>Browse and edit JSON document collections from the Admin workspace. See <a href="admin-collections.html">Admin Collections</a>.</span></div>
+                    </li>
+                </ul>
+
                 <!-- ───────── Query Editor ───────── -->
                 <h2 id="query-editor">Query Editor</h2>
                 <p>Open a new query tab from the sidebar (<strong>New Query</strong> button) or press <kbd>Ctrl+N</kbd>. The query editor provides a full SQL editing experience with syntax highlighting.</p>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Workspace - CSharpDB Studio Help</title>
+    <link rel="icon" type="image/png" href="../icon2.png">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand"><img src="../icon2.png" alt=""><div><strong>CSharpDB Studio</strong><span>Offline help</span></div></div>
+            <nav class="nav" aria-label="Help topics">
+                <div class="nav-label">Start</div>
+                <a href="index.html">Overview</a>
+                <a class="active" href="workspace.html">Workspace</a>
+                <a href="data-and-schema.html">Data and schema</a>
+                <a href="forms-and-reports.html">Forms and reports</a>
+                <a href="operations.html">Operations</a>
+                <a href="shortcuts.html">Shortcuts</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="content-inner">
+                <div class="eyebrow">Workspace</div>
+                <h1>Navigate the Studio Workspace</h1>
+                <p class="lead">Studio uses a dense desktop layout: a title bar for global commands, Object Explorer for database objects, a tab strip for active work, and a status bar for connection context.</p>
+
+                <h2>Title Bar</h2>
+                <p>The title bar contains the current database, the command palette, common creation commands, theme toggle, sidebar toggle, and keyboard shortcut help.</p>
+                <table>
+                    <thead><tr><th>Area</th><th>Use it for</th></tr></thead>
+                    <tbody>
+                        <tr><td>Database switcher</td><td>Open or switch to another database path.</td></tr>
+                        <tr><td>Search anything</td><td>Open the command palette for tables, forms, reports, procedures, callbacks, and common commands.</td></tr>
+                        <tr><td>New Query / Table / Form / Procedure</td><td>Create common objects without navigating through Object Explorer.</td></tr>
+                        <tr><td>Theme and layout buttons</td><td>Toggle dark/light mode, hide the sidebar, or show shortcuts.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Object Explorer</h2>
+                <p>Object Explorer is the left navigation tree. It groups user tables, external tables, collections, forms, reports, views, procedures, callbacks, storage tools, and pinned or recent items.</p>
+                <ul>
+                    <li>Use filter chips to narrow the tree by object type.</li>
+                    <li>Use the search box to filter object names.</li>
+                    <li>Click an object to open its default tab.</li>
+                    <li>Right-click objects for contextual actions such as design, preview, copy name, import/export, or delete.</li>
+                    <li>Use Refresh when external tools or another process may have changed metadata.</li>
+                </ul>
+
+                <h2>Tabs</h2>
+                <p>Each task opens in a tab. Tabs preserve local state, so a query, form designer, report preview, and storage scan can remain open at the same time.</p>
+                <ul>
+                    <li>Click a tab to activate it.</li>
+                    <li>Use the close button to close a tab.</li>
+                    <li>Press <kbd>Ctrl</kbd>+<kbd>W</kbd> to close the active closable tab.</li>
+                    <li>Use recent items in Object Explorer to reopen frequently used tabs.</li>
+                </ul>
+
+                <h2>Command Palette</h2>
+                <p>Open the command palette with <kbd>Ctrl</kbd>+<kbd>K</kbd>. It is the fastest way to jump to known objects, run common commands, create objects, or return to recent work.</p>
+
+                <div class="screen">
+                    <img src="images/query-tab.png" alt="Query editor tab">
+                    <p class="caption">A query tab combines a SQL editor, toolbar actions, saved queries, execution status, and results.</p>
+                </div>
+
+                <div class="next">
+                    <a class="button" href="index.html">Back to overview</a>
+                    <a class="button primary" href="data-and-schema.html">Next: Data and schema</a>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

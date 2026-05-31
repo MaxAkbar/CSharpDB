@@ -42,6 +42,8 @@ builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
 builder.Services.AddScoped<ModalService>();
 builder.Services.AddScoped<DatabaseChangeService>();
+builder.Services.AddScoped<DataHygieneAdminService>();
+builder.Services.AddScoped<CompareDeployAdminService>();
 builder.Services.AddScoped<HostCallbackCatalogService>();
 builder.Services.AddScoped<HostCallbackPolicyService>();
 builder.Services.AddScoped<HostCallbackReadinessService>();
@@ -79,6 +81,7 @@ app.UseAntiforgery();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 app.MapCSharpDbAdminImportExport();
+app.MapCSharpDbDesktopShellEndpoints();
 
 app.Run();
 
@@ -99,3 +102,5 @@ static CSharpDbTransport? ParseTransport(string? value)
         _ => throw new InvalidOperationException($"Unsupported transport '{value}'."),
     };
 }
+
+public partial class Program;

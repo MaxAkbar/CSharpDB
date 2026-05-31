@@ -1,0 +1,46 @@
+name: Admin Store Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "MSIX package version, for example 3.9.0"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build CSharpDB Studio MSIX
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build Store package
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          $arguments = @()
+          if (-not [string]::IsNullOrWhiteSpace($version)) {
+            $arguments += @('-Version', $version)
+          }
+
+          .\scripts\Publish-CSharpDbAdminStorePackage.ps1 @arguments
+
+      - name: Upload Store package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharpdb-studio-store-package
+          path: |
+            artifacts/admin-store/packages/*.msix
+            artifacts/admin-store/packages/*.msixupload
+          if-no-files-found: error

@@ -2,10 +2,12 @@
   "schemaVersion": 1,
   "metadata": {
     "Published snapshot": "May 6, 2026 release-core snapshot",
-    "Run date": "Release-core artifacts captured May 6, 2026 UTC; latest release guardrail compare captured May 6, 2026 UTC",
-    "Promotion status": "Published tables are promoted from the May 6 release-core suite; latest release guardrail compare passed after focused close-out validation",
+    "Run date": "Release-core artifacts captured May 6, 2026 UTC; latest release guardrail close-out captured May 31, 2026 UTC",
+    "Promotion status": "Published tables remain promoted from the May 6 release-core suite; the May 31 guardrail close-out is clean for current code after the temporary-table hot-path fix, but no newer release-core scorecard was promoted",
     "Latest release guardrail": "PASS=187, WARN=0, SKIP=0, FAIL=0",
-    "Runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7",
+    "Close-out note": "Full post-fix guardrail produced the current micro and diagnostic artifacts; WriteTransaction Diagnostics stopped once during the full wrapper, then the identical focused repeat completed and was staged before the final compare",
+    "Published runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7",
+    "Latest compare runner": "Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.8",
     "Repro mode": "priority=High, affinity=0xFF when captured with --repro",
     "Commit": "47a700950a150669ce404294c594dd845550f460"
   },
@@ -59,7 +61,7 @@
             { "value": "Release health" },
             { "value": "Latest guardrail compare" },
             { "value": "PASS: PASS=187, FAIL=0" },
-            { "value": "`Run-Perf-Guardrails.ps1 -Mode release` after close-out validation" }
+            { "value": "`Run-Perf-Guardrails.ps1 -Mode release` after the temp-table hot-path fix, with focused `--write-transaction-diagnostics --repeat 3 --repro` close-out for the interrupted wrapper step" }
           ]
         },
         {

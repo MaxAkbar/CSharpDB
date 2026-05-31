@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>CSharpDB vs SQLite Performance Guide — CSharpDB</title>
+    <meta name="description" content="How to compare CSharpDB and SQLite fairly, including benchmark setup, durability, write batching, and workload guidance.">
+    <link rel="canonical" href="https://csharpdb.com/docs/csharpdb-vs-sqlite-performance-guide.html">
+    <meta property="og:title" content="CSharpDB vs SQLite Performance Guide — CSharpDB">
+    <meta property="og:description" content="How to compare CSharpDB and SQLite fairly, including benchmark setup, durability, write batching, and workload guidance.">
+    <meta property="og:url" content="https://csharpdb.com/docs/csharpdb-vs-sqlite-performance-guide.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "CSharpDB vs SQLite Performance Guide",
+        "description": "How to compare CSharpDB and SQLite fairly, including benchmark setup, durability, write batching, and workload guidance.",
+        "url": "https://csharpdb.com/docs/csharpdb-vs-sqlite-performance-guide.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'CSharpDB vs SQLite Performance Guide',
+        description: 'How to compare CSharpDB and SQLite fairly, including benchmark setup, durability, write batching, and workload guidance.',
+        keywords: 'CSharpDB vs SQLite, performance guide, benchmark fairness, durable writes',
+        canonicalPath: 'docs/csharpdb-vs-sqlite-performance-guide.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#why-this-matters">Why This Matters</a></li>
+                        <li><a href="#the-four-comparison-surfaces">The Four Comparison Surfaces</a></li>
+                        <li class="toc-child"><a href="#1-durable-single-writer-bulk-inserts">1. Durable Single-Writer Bulk Inserts</a></li>
+                        <li class="toc-child"><a href="#2-direct-engine-vs-sqlite-c-api-under-concurrent-writers">2. Direct Engine vs SQLite C API Under Concurrent Writers</a></li>
+                        <li class="toc-child"><a href="#3-ado-net-vs-ado-net">3. ADO.NET vs ADO.NET</a></li>
+                        <li class="toc-child"><a href="#4-ef-core-vs-ef-core">4. EF Core vs EF Core</a></li>
+                        <li><a href="#current-durable-insert-snapshot">Current Durable Insert Snapshot</a></li>
+                        <li><a href="#how-concurrent-requests-are-actually-issued">How Concurrent Requests Are Actually Issued</a></li>
+                        <li class="toc-child"><a href="#csharpdb-engine-vs-sqlite-c-api">CSharpDB Engine vs SQLite C API</a></li>
+                        <li class="toc-child"><a href="#ado-net-comparison">ADO.NET Comparison</a></li>
+                        <li class="toc-child"><a href="#ef-core-comparison">EF Core Comparison</a></li>
+                        <li><a href="#how-to-get-the-most-performance-out-of-csharpdb">How To Get the Most Performance Out of CSharpDB</a></li>
+                        <li class="toc-child"><a href="#1-use-the-right-surface">1. Use the Right Surface</a></li>
+                        <li class="toc-child"><a href="#2-batch-commits">2. Batch Commits</a></li>
+                        <li class="toc-child"><a href="#3-use-the-write-heavy-storage-preset">3. Use the Write-Heavy Storage Preset</a></li>
+                        <li class="toc-child"><a href="#4-keep-primary-keys-monotonic-when-you-can">4. Keep Primary Keys Monotonic When You Can</a></li>
+                        <li class="toc-child"><a href="#5-avoid-secondary-indexes-during-the-hot-ingest-path-unless-you-need-them">5. Avoid Secondary Indexes During the Hot Ingest Path Unless You Need Them</a></li>
+                        <li class="toc-child"><a href="#6-choose-the-right-multi-writer-mode">6. Choose the Right Multi-Writer Mode</a></li>
+                        <li class="toc-child"><a href="#7-treat-durable-group-commit-as-an-expert-knob">7. Treat Durable Group Commit as an Expert Knob</a></li>
+                        <li><a href="#common-comparison-mistakes">Common Comparison Mistakes</a></li>
+                        <li class="toc-child"><a href="#comparing-different-layers">Comparing Different Layers</a></li>
+                        <li class="toc-child"><a href="#comparing-different-durability-contracts">Comparing Different Durability Contracts</a></li>
+                        <li class="toc-child"><a href="#comparing-different-statement-shapes">Comparing Different Statement Shapes</a></li>
+                        <li class="toc-child"><a href="#mixing-up-disjoint-writers-and-hot-right-edge-writers">Mixing Up Disjoint Writers and Hot Right-Edge Writers</a></li>
+                        <li><a href="#recommended-reproduction-commands">Recommended Reproduction Commands</a></li>
+                        <li><a href="#suggested-blog-framing">Suggested Blog Framing</a></li>
+                        <li><a href="#source-material">Source Material</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/query-and-durable-write-performance/csharpdb-vs-sqlite-performance-guide.md because it is public benchmark guidance.</div>
+<h1 id="how-to-compare-csharpdb-and-sqlite-fairly">How To Compare CSharpDB and SQLite Fairly</h1>
+<p>This note is the practical comparison guide behind the benchmark matrix in this
+repo.</p>
+<p>It has two goals:</p>
+<ol>
+<li>explain how to compare CSharpDB and SQLite without mixing unlike surfaces</li>
+<li>show which CSharpDB features matter most when you want maximum write
+throughput</li>
+</ol>
+<p>The short version is simple:</p>
+<ul>
+<li>compare engine to engine, provider to provider, and ORM to ORM</li>
+<li>keep durability and batching rules aligned</li>
+<li>use the CSharpDB insert surfaces that avoid per-row SQL/planner overhead</li>
+<li>separate disjoint-key concurrency from hot right-edge contention</li>
+</ul>
+<h2 id="why-this-matters">Why This Matters</h2>
+<p>It is easy to make an unfair database comparison by accident.</p>
+<p>These are not equivalent:</p>
+<ul>
+<li>CSharpDB engine API versus SQLite through ADO.NET</li>
+<li>durable file-backed inserts versus shared-memory non-durable inserts</li>
+<li>single-writer monotonic primary keys versus many writers fighting over the
+same right edge</li>
+<li>prepared and reused insert commands on one side versus ad-hoc SQL strings on
+the other</li>
+</ul>
+<p>The benchmark suite in this repo deliberately splits those questions apart so
+the comparison stays defensible.</p>
+<h2 id="the-four-comparison-surfaces">The Four Comparison Surfaces</h2>
+<h3 id="1-durable-single-writer-bulk-inserts">1. Durable Single-Writer Bulk Inserts</h3>
+<p>This is the primary apples-to-apples insert comparison.</p>
+<ul>
+<li>CSharpDB side:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/DurableSqlBatchingBenchmark.cs">DurableSqlBatchingBenchmark.cs</a></li>
+<li>SQLite side:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/SqliteComparisonBenchmark.cs">SqliteComparisonBenchmark.cs</a></li>
+</ul>
+<p>Controls:</p>
+<ul>
+<li>file-backed durable mode</li>
+<li>same four-column schema
+<code>id INTEGER PRIMARY KEY, value INTEGER, text_col TEXT, category TEXT</code></li>
+<li>same monotonic primary-key insert pattern</li>
+<li>explicit transaction batching</li>
+<li>prepared statement reuse on the SQLite side</li>
+<li>batch sizes <code>1000</code> and <code>10000</code></li>
+<li>SQLite uses <code>journal_mode=WAL</code> and <code>synchronous=FULL</code></li>
+</ul>
+<p>This surface answers:</p>
+<p>What is the raw durable insert throughput gap once the comparison is aligned?</p>
+<h3 id="2-direct-engine-vs-sqlite-c-api-under-concurrent-writers">2. Direct Engine vs SQLite C API Under Concurrent Writers</h3>
+<p>This is the engine-level multi-writer comparison.</p>
+<ul>
+<li>Harness:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/ConcurrentSqliteCApiComparisonBenchmark.cs">ConcurrentSqliteCApiComparisonBenchmark.cs</a></li>
+</ul>
+<p>Controls:</p>
+<ul>
+<li>one durable file-backed database per run</li>
+<li>one local writer task per writer</li>
+<li>same writer counts, key patterns, and run durations</li>
+<li>CSharpDB is exercised directly through the engine</li>
+<li>SQLite is exercised directly through the native C API</li>
+</ul>
+<p>This surface answers:</p>
+<p>How do the two engines behave when multiple local writers are issuing inserts at
+the same time against the same database?</p>
+<h3 id="3-ado-net-vs-ado-net">3. ADO.NET vs ADO.NET</h3>
+<p>This is the provider-layer comparison.</p>
+<ul>
+<li>Harness:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/StrictInsertComparisonBenchmark.cs">StrictInsertComparisonBenchmark.cs</a></li>
+<li>Harness:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/ConcurrentAdoNetComparisonBenchmark.cs">ConcurrentAdoNetComparisonBenchmark.cs</a></li>
+</ul>
+<p>Controls:</p>
+<ul>
+<li><code>StrictInsertComparisonBenchmark</code> is the file-backed single-writer provider comparison</li>
+<li>on the CSharpDB side it now opens through <code>CSharpDB.Data</code> with
+<code>Storage Preset=WriteOptimized</code> and <code>Embedded Open Mode=Direct</code></li>
+<li>SQLite stays file-backed through <code>Microsoft.Data.Sqlite</code> with
+<code>journal_mode=WAL</code> and <code>synchronous=FULL</code></li>
+<li>one writer task per connection</li>
+<li>one prepared command per writer</li>
+<li>same explicit key patterns</li>
+<li>CSharpDB through <code>CSharpDB.Data</code></li>
+<li>SQLite through <code>Microsoft.Data.Sqlite</code></li>
+</ul>
+<p>Important limitation:</p>
+<ul>
+<li><code>ConcurrentAdoNetComparisonBenchmark</code> is intentionally shared-memory and
+non-durable on both sides, so it does not use the new CSharpDB embedded
+tuning surface</li>
+</ul>
+<p>This surface answers:</p>
+<p>How much provider overhead and contention behavior comes from the ADO.NET layer
+rather than the durable storage engine?</p>
+<h3 id="4-ef-core-vs-ef-core">4. EF Core vs EF Core</h3>
+<p>This is the ORM-layer comparison.</p>
+<ul>
+<li>Harness:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/EfCoreComparisonBenchmark.cs">EfCoreComparisonBenchmark.cs</a></li>
+</ul>
+<p>Current scope:</p>
+<ul>
+<li><code>--efcore-compare</code>: single-row and <code>100</code>-row <code>SaveChangesAsync</code> with one
+open connection held for the timed run</li>
+<li><code>--efcore-compare-hybrid-shared-connection</code>: the same insert shapes with
+one externally-owned open connection reused across short-lived <code>DbContext</code>
+instances</li>
+<li><code>--efcore-compare-auto-open-close</code>: the same insert shapes with EF-managed
+auto-open/close left in the measurement</li>
+<li>CSharpDB EF Core provider versus SQLite EF Core provider in both cases</li>
+</ul>
+<p>Important limitation:</p>
+<ul>
+<li>as of April 21, 2026 there is not a dedicated concurrent EF Core comparison
+harness in this repo</li>
+</ul>
+<p>This surface answers:</p>
+<p>What happens once you move up to EF Core instead of using the engine or ADO.NET
+directly?</p>
+<h2 id="current-durable-insert-snapshot">Current Durable Insert Snapshot</h2>
+<p>As of April 21, 2026 (promoted from the release-core run with
+<code>PASS=185, WARN=0, SKIP=0, FAIL=0</code>), the matched single-writer durable rerun on
+this runner produced:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Surface</th>
+  <th style="text-align:right">Rows/sec</th>
+  <th style="text-align:right">P50</th>
+  <th style="text-align:right">P99</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>CSharpDB <code>InsertBatch B1000</code></td>
+  <td style="text-align:right"><code>204,028</code></td>
+  <td style="text-align:right">4.1034 ms</td>
+  <td style="text-align:right">9.5599 ms</td>
+</tr>
+<tr>
+  <td>SQLite prepared bulk <code>B1000</code></td>
+  <td style="text-align:right"><code>192,059</code></td>
+  <td style="text-align:right">4.7479 ms</td>
+  <td style="text-align:right">18.1078 ms</td>
+</tr>
+<tr>
+  <td>CSharpDB <code>InsertBatch B10000</code></td>
+  <td style="text-align:right"><code>798,254</code></td>
+  <td style="text-align:right">8.7019 ms</td>
+  <td style="text-align:right">119.0664 ms</td>
+</tr>
+<tr>
+  <td>SQLite prepared bulk <code>B10000</code></td>
+  <td style="text-align:right"><code>539,562</code></td>
+  <td style="text-align:right">16.6275 ms</td>
+  <td style="text-align:right">43.3034 ms</td>
+</tr>
+</tbody>
+</table>
+<p>Interpretation:</p>
+<ul>
+<li>at <code>B1000</code>, CSharpDB is about <code>106.2%</code> of SQLite</li>
+<li>at <code>B10000</code>, CSharpDB is about <code>147.9%</code> of SQLite</li>
+</ul>
+<p>Those numbers came from:</p>
+<ul>
+<li><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260421-214227-median-of-3.csv">CSharpDB durable batching median CSV</a>
+(<code>DurableSqlBatching_BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic_10s</code> and
+<code>DurableSqlBatching_BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic_10s</code> rows)</li>
+<li><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260421-222824-median-of-3.csv">SQLite comparison median CSV</a></li>
+<li>Full scorecard and full comparison table:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md">tests/CSharpDB.Benchmarks/SQLITE_COMPARISON.md</a></li>
+</ul>
+<p>That does not mean CSharpDB wins every insert shape. It means the matched
+durable monotonic bulk row is now ahead on this runner.</p>
+<p>The remaining harder cases are mostly:</p>
+<ul>
+<li>secondary-index maintenance</li>
+<li>random-key locality</li>
+<li>hot right-edge multi-writer contention</li>
+</ul>
+<h2 id="how-concurrent-requests-are-actually-issued">How Concurrent Requests Are Actually Issued</h2>
+<p>This is the part that usually gets hand-waved in blog posts. In this repo it is
+explicit in code.</p>
+<h3 id="csharpdb-engine-vs-sqlite-c-api">CSharpDB Engine vs SQLite C API</h3>
+<p>The concurrent engine harness is in
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/ConcurrentSqliteCApiComparisonBenchmark.cs">ConcurrentSqliteCApiComparisonBenchmark.cs</a>.</p>
+<p>For CSharpDB:</p>
+<ul>
+<li>one shared <code>Database</code> instance is opened for the scenario</li>
+<li>one <code>Task.Run(...)</code> is created per writer</li>
+<li>a start gate releases all writers at the same time</li>
+<li>each writer loops for the measured duration</li>
+<li>each loop performs one insert commit</li>
+<li>the writer surface is either:<ul>
+<li><code>Database.ExecuteAsync(sql)</code> for raw SQL, or</li>
+<li><code>PrepareInsertBatch(&quot;bench&quot;)</code> reused as a one-row batch</li>
+</ul>
+</li>
+<li>for concurrent insert scenarios, the engine can use
+<code>ImplicitInsertExecutionMode.ConcurrentWriteTransactions</code></li>
+</ul>
+<p>For SQLite C API:</p>
+<ul>
+<li>one <code>Task.Run(...)</code> is created per writer</li>
+<li>each writer opens its own native SQLite connection handle to the same file</li>
+<li>each writer prepares one native insert statement once</li>
+<li>each loop rebinds <code>id</code>, calls <code>sqlite3_step</code>, then resets the statement</li>
+<li>each loop is one auto-commit insert</li>
+<li>SQLite uses <code>WAL</code>, <code>FULL</code>, and a <code>busy_timeout</code></li>
+</ul>
+<p>The critical difference is:</p>
+<ul>
+<li>CSharpDB shares one in-process engine object and decides internally how to
+route the write path</li>
+<li>SQLite uses one connection handle per writer and relies on SQLite's own
+single-writer WAL rules</li>
+</ul>
+<h3 id="ado-net-comparison">ADO.NET Comparison</h3>
+<p>The provider harness is in
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/ConcurrentAdoNetComparisonBenchmark.cs">ConcurrentAdoNetComparisonBenchmark.cs</a>.</p>
+<p>For both providers:</p>
+<ul>
+<li>one <code>Task.Run(...)</code> per writer</li>
+<li>one connection per writer</li>
+<li>one prepared command per writer</li>
+<li>each loop performs one <code>ExecuteNonQueryAsync()</code></li>
+</ul>
+<p>The important difference here is the storage target:</p>
+<ul>
+<li>CSharpDB ADO.NET uses a shared-memory in-process target</li>
+<li>SQLite ADO.NET uses shared in-memory SQLite with <code>journal_mode=MEMORY</code></li>
+</ul>
+<p>That is intentional. This harness is not trying to answer the durable engine
+question again. It is isolating provider-layer overhead.</p>
+<h3 id="ef-core-comparison">EF Core Comparison</h3>
+<p>The EF Core harness is in
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/EfCoreComparisonBenchmark.cs">EfCoreComparisonBenchmark.cs</a>.</p>
+<p>Today it is single-writer only:</p>
+<ul>
+<li>either:<ul>
+<li>one open connection held for the whole timed run in <code>--efcore-compare</code>, or</li>
+<li>one externally-owned open connection reused across short-lived contexts in
+<code>--efcore-compare-hybrid-shared-connection</code>, or</li>
+<li>EF-managed auto-open/close in <code>--efcore-compare-auto-open-close</code></li>
+</ul>
+</li>
+<li>one <code>SaveChangesAsync()</code> loop</li>
+<li>either one row or <code>100</code> rows per save</li>
+<li>on the CSharpDB side the benchmark now uses <code>UseStoragePreset(WriteOptimized)</code>
+and <code>UseEmbeddedOpenMode(Direct)</code></li>
+<li>SQLite EF Core stays file-backed with <code>journal_mode=WAL</code> and
+<code>synchronous=FULL</code></li>
+</ul>
+<p>So if you are writing about concurrency, do not imply the repo already has a
+parallel EF Core benchmark. It does not yet.</p>
+<h2 id="how-to-get-the-most-performance-out-of-csharpdb">How To Get the Most Performance Out of CSharpDB</h2>
+<p>If your goal is high write throughput, the highest-value rules are these.</p>
+<h3 id="1-use-the-right-surface">1. Use the Right Surface</h3>
+<p>If you are inside the engine layer, prefer <code>PrepareInsertBatch(...)</code> over
+building one SQL string per row.</p>
+<p>Example:</p>
+<pre><code class="language-csharp">using CSharpDB.Engine;
+using CSharpDB.Primitives;
+
+var options = new DatabaseOptions()
+    .ConfigureStorageEngine(builder =&gt;
+    {
+        builder.UseWriteOptimizedPreset();
+    });
+
+await using var db = await Database.OpenAsync(&quot;ingest.db&quot;, options);
+
+await db.ExecuteAsync(&quot;&quot;&quot;
+    CREATE TABLE IF NOT EXISTS bench (
+        id INTEGER PRIMARY KEY,
+        value INTEGER,
+        text_col TEXT,
+        category TEXT
+    )
+    &quot;&quot;&quot;);
+
+var batch = db.PrepareInsertBatch(&quot;bench&quot;, initialCapacity: 1000);
+
+await db.BeginTransactionAsync();
+try
+{
+    for (int block = 0; block &lt; 100; block++)
+    {
+        for (int i = 0; i &lt; 1000; i++)
+        {
+            int id = (block * 1000) + i;
+            batch.AddRow(
+                DbValue.FromInteger(id),
+                DbValue.FromInteger(id),
+                DbValue.FromText(&quot;durable_batch&quot;),
+                DbValue.FromText(&quot;Alpha&quot;));
+        }
+
+        await batch.ExecuteAsync();
+    }
+
+    await db.CommitAsync();
+}
+catch
+{
+    await db.RollbackAsync();
+    throw;
+}
+</code></pre>
+<p>If you are using <code>CSharpDB.Data</code>, the equivalent optimization is the familiar
+ADO.NET path:</p>
+<ul>
+<li>create one <code>DbCommand</code></li>
+<li>bind parameters</li>
+<li>call <code>Prepare()</code></li>
+<li>reuse that command</li>
+</ul>
+<h3 id="2-batch-commits">2. Batch Commits</h3>
+<p>The current practical starting point for durable ingest is:</p>
+<ul>
+<li>start at <code>1000</code> rows per commit</li>
+<li>measure <code>10000</code> only for dedicated ingest jobs that can tolerate larger
+commit latency and larger WAL bursts</li>
+</ul>
+<p>Single-row durable auto-commit inserts are the wrong baseline if your real
+application naturally batches work.</p>
+<h3 id="3-use-the-write-heavy-storage-preset">3. Use the Write-Heavy Storage Preset</h3>
+<p>For durable file-backed ingest, start from
+<code>UseWriteOptimizedPreset()</code>.</p>
+<p>That preset is the intended baseline for write-heavy embedded workloads and is
+documented in:</p>
+<ul>
+<li><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/src/CSharpDB.Storage/README.md">src/CSharpDB.Storage/README.md</a></li>
+<li><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/src/CSharpDB.Engine/README.md">src/CSharpDB.Engine/README.md</a></li>
+</ul>
+<h3 id="4-keep-primary-keys-monotonic-when-you-can">4. Keep Primary Keys Monotonic When You Can</h3>
+<p>Monotonic primary keys are materially cheaper than random keys.</p>
+<p>Why:</p>
+<ul>
+<li>the table B-tree stays on the right edge</li>
+<li>leaf splits are predictable</li>
+<li>locality is much better</li>
+</ul>
+<p>The current Plan 5 data shows that random-key primary inserts are still a major
+cliff relative to monotonic inserts.</p>
+<h3 id="5-avoid-secondary-indexes-during-the-hot-ingest-path-unless-you-need-them">5. Avoid Secondary Indexes During the Hot Ingest Path Unless You Need Them</h3>
+<p>Every extra secondary index adds work on every insert.</p>
+<p>The recent tuning work showed:</p>
+<ul>
+<li>PK-only monotonic bulk is no longer the main limiter</li>
+<li>realistic indexed ingest is now dominated by secondary-index maintenance</li>
+<li>duplicate-bucket work has improved a lot, but ordinary secondary B-tree
+maintenance is still expensive</li>
+</ul>
+<p>The simplest win is still:</p>
+<ul>
+<li>load first</li>
+<li>add indexes after, if your workflow allows it</li>
+</ul>
+<h3 id="6-choose-the-right-multi-writer-mode">6. Choose the Right Multi-Writer Mode</h3>
+<p>For shared <code>Database</code> insert workloads, the key question is whether writers are
+mostly disjoint or all fighting over the same hot end of the table.</p>
+<p>Recommended guidance:</p>
+<ul>
+<li>keep the default serialized implicit insert mode for hot right-edge insert
+loops</li>
+<li>measure <code>ConcurrentWriteTransactions</code> when many tasks insert into disjoint
+explicit key ranges on one shared <code>Database</code></li>
+<li>if each writer needs several statements to commit atomically, use explicit
+write-transaction APIs instead of trying to fake it with independent
+auto-commit inserts</li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-csharp">using CSharpDB.Engine;
+using CSharpDB.Execution;
+
+var options = new DatabaseOptions
+{
+    ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+}.ConfigureStorageEngine(builder =&gt;
+{
+    builder.UseWriteOptimizedPreset();
+});
+
+await using var db = await Database.OpenAsync(&quot;ingest.db&quot;, options);
+</code></pre>
+<p>This is a measure-first setting. It is not a blanket &quot;turn this on and all
+concurrent inserts get faster&quot; switch.</p>
+<h3 id="7-treat-durable-group-commit-as-an-expert-knob">7. Treat Durable Group Commit as an Expert Knob</h3>
+<p><code>UseDurableGroupCommit(...)</code> exists, but it should be driven by benchmark
+evidence, not by assumption.</p>
+<p>Use it when:</p>
+<ul>
+<li>several writers are already overlapping</li>
+<li>you want to trade some latency for better flush sharing</li>
+</ul>
+<p>Do not assume it is the first or biggest lever. In this repo, batching and key
+shape mattered earlier and more often.</p>
+<h2 id="common-comparison-mistakes">Common Comparison Mistakes</h2>
+<p>If you are turning this into a public comparison, avoid these mistakes.</p>
+<h3 id="comparing-different-layers">Comparing Different Layers</h3>
+<p>Bad:</p>
+<ul>
+<li>CSharpDB engine API versus SQLite ADO.NET</li>
+</ul>
+<p>Good:</p>
+<ul>
+<li>engine versus C API</li>
+<li>ADO.NET versus ADO.NET</li>
+<li>EF Core versus EF Core</li>
+</ul>
+<h3 id="comparing-different-durability-contracts">Comparing Different Durability Contracts</h3>
+<p>Bad:</p>
+<ul>
+<li>durable file-backed CSharpDB versus in-memory SQLite</li>
+</ul>
+<p>Good:</p>
+<ul>
+<li>same durability on both sides</li>
+<li>same journal/WAL assumptions</li>
+<li>same transaction boundaries</li>
+</ul>
+<h3 id="comparing-different-statement-shapes">Comparing Different Statement Shapes</h3>
+<p>Bad:</p>
+<ul>
+<li>one side uses prepared statements and batching</li>
+<li>the other side reparses one SQL string per row</li>
+</ul>
+<p>Good:</p>
+<ul>
+<li>both sides reuse prepared work where that surface supports it</li>
+<li>both sides batch at the same logical point</li>
+</ul>
+<h3 id="mixing-up-disjoint-writers-and-hot-right-edge-writers">Mixing Up Disjoint Writers and Hot Right-Edge Writers</h3>
+<p>These are different workloads.</p>
+<ul>
+<li>disjoint writers test fan-in and conflict avoidance</li>
+<li>hot right-edge writers test structural contention</li>
+</ul>
+<p>If you collapse them into one headline number, the story becomes misleading.</p>
+<h2 id="recommended-reproduction-commands">Recommended Reproduction Commands</h2>
+<p>Matched durable single-writer bulk comparison:</p>
+<pre><code class="language-powershell">dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --durable-sql-batching-scenario BatchSweep_InsertBatch_B1000_Baseline_PkOnly_Monotonic --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --durable-sql-batching-scenario BatchSweep_InsertBatch_B10000_Baseline_PkOnly_Monotonic --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --sqlite-compare --repeat 3 --repro
+</code></pre>
+<p>Concurrent direct engine versus SQLite C API:</p>
+<pre><code class="language-powershell">dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --concurrent-sqlite-capi-compare --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --concurrent-sqlite-capi-compare-scenario CSharpDB_InsertBatch_DisjointConcurrent_W8_Batch250us --repro
+</code></pre>
+<p>Concurrent ADO.NET provider comparison:</p>
+<pre><code class="language-powershell">dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --concurrent-adonet-compare --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --concurrent-adonet-compare-scenario SQLite_AdoNet_Disjoint_W8 --repro
+</code></pre>
+<p>EF Core comparison:</p>
+<pre><code class="language-powershell">dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --efcore-compare --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --efcore-compare-hybrid-shared-connection --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --efcore-compare-auto-open-close --repeat 3 --repro
+</code></pre>
+<h2 id="suggested-blog-framing">Suggested Blog Framing</h2>
+<p>If you are turning this into a public blog post, the cleanest narrative is:</p>
+<ol>
+<li>start with the fairness rules</li>
+<li>show the matched durable single-writer bulk result</li>
+<li>explain why that does not answer the concurrency question</li>
+<li>split concurrency into:<ul>
+<li>engine versus engine</li>
+<li>provider versus provider</li>
+</ul>
+</li>
+<li>explain which CSharpDB features matter most:<ul>
+<li><code>PrepareInsertBatch(...)</code></li>
+<li><code>UseWriteOptimizedPreset()</code></li>
+<li>monotonic keys</li>
+<li>fewer hot-path secondary indexes</li>
+<li><code>ConcurrentWriteTransactions</code> only for the right insert shape</li>
+</ul>
+</li>
+<li>finish with the current honest conclusion:<ul>
+<li>CSharpDB is now ahead on the matched durable monotonic bulk row on this
+runner</li>
+<li>the harder remaining work is mostly indexed ingest and hot-contention
+behavior, not the PK-only bulk path</li>
+</ul>
+</li>
+</ol>
+<h2 id="source-material">Source Material</h2>
+<p>If you want to cross-link the deeper internal notes, start with:</p>
+<ul>
+<li>the benchmark suite source artifacts</li>
+<li><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/README.md">tests/CSharpDB.Benchmarks/README.md</a></li>
+<li><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/src/CSharpDB.Engine/README.md">src/CSharpDB.Engine/README.md</a></li>
+<li><a href="https://github.com/MaxAkbar/CSharpDB/blob/main/src/CSharpDB.Storage/README.md">src/CSharpDB.Storage/README.md</a></li>
+</ul>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

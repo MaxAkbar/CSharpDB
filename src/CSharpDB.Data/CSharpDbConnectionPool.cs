@@ -113,6 +113,9 @@ internal sealed class CSharpDbConnectionPool
     {
         ArgumentNullException.ThrowIfNull(client);
 
+        if (client is CSharpDbClient csharpDbClient)
+            await csharpDbClient.ReleaseCachedDatabaseAsync();
+
         bool disposeImmediately;
         lock (_gate)
         {

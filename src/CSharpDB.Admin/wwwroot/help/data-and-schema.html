@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Data and Schema - CSharpDB Studio Help</title>
+    <link rel="icon" type="image/png" href="../icon2.png">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand"><img src="../icon2.png" alt=""><div><strong>CSharpDB Studio</strong><span>Offline help</span></div></div>
+            <nav class="nav" aria-label="Help topics">
+                <div class="nav-label">Start</div>
+                <a href="index.html">Overview</a>
+                <a href="workspace.html">Workspace</a>
+                <a class="active" href="data-and-schema.html">Data and schema</a>
+                <a href="forms-and-reports.html">Forms and reports</a>
+                <a href="operations.html">Operations</a>
+                <a href="shortcuts.html">Shortcuts</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="content-inner">
+                <div class="eyebrow">Data and schema</div>
+                <h1>Browse Data and Manage Schema</h1>
+                <p class="lead">Open database objects from Object Explorer to inspect records, edit values, create schema objects, and verify database structure.</p>
+
+                <h2>Tables and Views</h2>
+                <p>Click a table or view to open a data tab. The grid supports paging, sorting, filtering, selection, and inline edits when the source is writable.</p>
+                <div class="screen">
+                    <img src="images/data-tab.png" alt="Data browser with typed columns and filters">
+                    <p class="caption">The data browser shows row values, column filters, sort state, and pending edits.</p>
+                </div>
+                <ul>
+                    <li>Use column filters to narrow the visible rows.</li>
+                    <li>Click column headers to sort ascending or descending.</li>
+                    <li>Use Add Row, Delete Rows, Save, and Discard for editable tables.</li>
+                    <li>Use page size and pager controls for large tables.</li>
+                </ul>
+
+                <h2>Collections</h2>
+                <p>Collections contain JSON documents keyed by document id. Collection tabs show document keys, JSON kind, compact previews, and a formatted JSON detail panel.</p>
+                <ul>
+                    <li>Open existing collections from Object Explorer.</li>
+                    <li>Create documents with a nonblank key and valid JSON.</li>
+                    <li>Save writes through the collection client API.</li>
+                    <li>Delete removes selected documents after confirmation.</li>
+                </ul>
+
+                <h2>Schema Designer</h2>
+                <p>Use table schema tabs to inspect columns, constraints, indexes, triggers, and related forms. Schema edits should be deliberate because they change database structure.</p>
+                <div class="screen">
+                    <img src="images/schema-tab.png" alt="Schema view with columns, constraints, indexes, and triggers">
+                    <p class="caption">Schema view combines inspection and creation tools for table structure.</p>
+                </div>
+
+                <table>
+                    <thead><tr><th>Section</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td>Columns</td><td>Review names, data types, primary key state, identity state, and nullability.</td></tr>
+                        <tr><td>Alter Table</td><td>Add or drop columns using guided forms.</td></tr>
+                        <tr><td>Indexes</td><td>Inspect or create indexes, including unique indexes.</td></tr>
+                        <tr><td>Triggers</td><td>Inspect or create trigger definitions for insert, update, or delete events.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Query Editor</h2>
+                <p>Use query tabs for ad hoc SQL, saved queries, query plans, table stats, column stats, and result review.</p>
+                <table>
+                    <thead><tr><th>Action</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>Run</td><td>Executes SQL and shows results, row count, and elapsed time.</td></tr>
+                        <tr><td>Analyze</td><td>Shows the execution plan without changing data.</td></tr>
+                        <tr><td>Format</td><td>Reformats SQL for readability.</td></tr>
+                        <tr><td>Save</td><td>Stores reusable SQL in the saved query catalog.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="next">
+                    <a class="button" href="workspace.html">Back: Workspace</a>
+                    <a class="button primary" href="forms-and-reports.html">Next: Forms and reports</a>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

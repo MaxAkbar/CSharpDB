@@ -18,6 +18,11 @@ database objects.
 - SQL query tabs with paged results and guided SQL completions
 - procedure editor and execution surface
 - storage inspection and maintenance views
+- Compare / Deploy workspace for schema compare, data compare, drift reports,
+  independent source/target selection, object-level schema script-out with
+  related object options, direct table script-out actions from selected tables,
+  script preview, and confirmation-gated script apply to writable database
+  targets
 - ETL pipeline designer, JSON package editor, stored pipeline catalog, and run
   history views
 - form designer and data-entry tabs from `CSharpDB.Admin.Forms`
@@ -108,7 +113,7 @@ dotnet run --project src/CSharpDB.Admin/CSharpDB.Admin.csproj
 - `Program.cs` - Blazor host startup and database client wiring
 - `Components/Layout` - shell layout, object explorer, tabs, and status UI
 - `Components/Tabs` - table, collection, query, procedure, storage, pipeline,
-  form, and report tab surfaces
+  Compare / Deploy, form, and report tab surfaces
 - `Components/Shared` - shared grid, editor, modal, context menu, and toast UI
 - `Services` - tab manager, database holder, change notifications, modal, toast,
   and theme services
@@ -118,6 +123,7 @@ dotnet run --project src/CSharpDB.Admin/CSharpDB.Admin.csproj
 ## Dependencies
 
 - `CSharpDB.Client`
+- `CSharpDB.DevOps`
 - `CSharpDB.Admin.Forms`
 - `CSharpDB.Admin.Reports`
 - ASP.NET Core Razor Components

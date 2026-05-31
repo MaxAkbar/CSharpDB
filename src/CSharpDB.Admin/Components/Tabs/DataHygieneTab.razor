@@ -1,0 +1,939 @@
+@using System.Globalization
+@inject DataHygieneAdminService Hygiene
+@inject DatabaseChangeService Changes
+@inject ToastService Toast
+@inject ModalService Modal
+
+<div class="data-hygiene-tab">
+    <div class="toolbar data-hygiene-toolbar">
+        <button class="@GetModeClass(DataHygieneMode.Duplicates)" @onclick="() => SetMode(DataHygieneMode.Duplicates)">
+            <i class="bi bi-intersect"></i> Duplicates
+        </button>
+        <button class="@GetModeClass(DataHygieneMode.Validation)" @onclick="() => SetMode(DataHygieneMode.Validation)">
+            <i class="bi bi-shield-check"></i> Validation
+        </button>
+        <button class="@GetModeClass(DataHygieneMode.Orphans)" @onclick="() => SetMode(DataHygieneMode.Orphans)">
+            <i class="bi bi-link-45deg"></i> Orphans
+        </button>
+        <button class="@GetModeClass(DataHygieneMode.History)" @onclick="() => SetMode(DataHygieneMode.History)">
+            <i class="bi bi-clock-history"></i> History
+        </button>
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-btn" @onclick="RefreshMetadataAsync" disabled="@_loading">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">
+            @if (_loading)
+            {
+                <span>Running</span>
+            }
+            else if (!string.IsNullOrWhiteSpace(_status))
+            {
+                <span>@_status</span>
+            }
+        </div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
+    }
+
+    @if (_mode == DataHygieneMode.Duplicates)
+    {
+        <section class="data-hygiene-panel">
+            <div class="data-hygiene-form-grid">
+                <div class="schema-field">
+                    <label>Table</label>
+                    <select class="schema-input mono" value="@_duplicateTable" @onchange="OnDuplicateTableChanged">
+                        <option value="">Select table...</option>
+                        @foreach (string table in _tables)
+                        {
+                            <option value="@table">@table</option>
+                        }
+                    </select>
+                </div>
+                <div class="schema-field">
+                    <label>Keep</label>
+                    <select class="schema-input" value="@_keepMode" @onchange="OnKeepModeChanged">
+                        <option value="@DataHygieneKeepMode.First">FIRST</option>
+                        <option value="@DataHygieneKeepMode.Last">LAST</option>
+                    </select>
+                </div>
+                <div class="schema-field wide">
+                    <label>Duplicate key expression</label>
+                    <input class="schema-input mono"
+                           value="@_duplicateKeyExpression"
+                           @oninput="OnDuplicateKeyChanged"
+                           placeholder="Email or LOWER(Email), Phone" />
+                </div>
+            </div>
+
+            @if (_duplicateColumns.Count > 0)
+            {
+                <div class="data-hygiene-column-strip">
+                    @foreach (ColumnDefinition column in _duplicateColumns)
+                    {
+                        var current = column;
+                        <button type="button" class="toolbar-btn" @onclick="() => UseDuplicateColumn(current.Name)">
+                            <i class="bi @GetColumnIconClass(current)"></i> @current.Name
+                        </button>
+                    }
+                </div>
+            }
+
+            <div class="data-hygiene-actions">
+                <button class="toolbar-btn primary" @onclick="PreviewDuplicatesAsync" disabled="@(!CanPreviewDuplicates)">
+                    <i class="bi bi-search"></i> Preview Duplicates
+                </button>
+                <button class="toolbar-btn danger" @onclick="DedupAsync" disabled="@(!CanMutateDuplicates)">
+                    <i class="bi bi-trash3"></i> Dedup
+                </button>
+                <button class="toolbar-btn danger" @onclick="MergeDuplicatesAsync" disabled="@(!CanMutateDuplicates)">
+                    <i class="bi bi-union"></i> Merge
+                </button>
+                @if (_duplicatePreview is not null && !_duplicatePreviewCurrent)
+                {
+                    <span class="data-hygiene-stale">Preview is stale</span>
+                }
+            </div>
+
+            @if (_duplicatePreview is not null)
+            {
+                <div class="data-hygiene-result-header">
+                    <strong>@_duplicatePreview.Rows.Count duplicate group@(_duplicatePreview.Rows.Count == 1 ? "" : "s")</strong>
+                    <span>@FormatElapsed(_duplicatePreview.Elapsed)</span>
+                </div>
+                <div class="data-hygiene-table-wrap">
+                    <table class="schema-table data-hygiene-results-table duplicate-results-table">
+                        <colgroup>
+                            <col class="duplicate-key-col" />
+                            <col class="duplicate-count-col" />
+                            <col class="duplicate-winner-col" />
+                            <col class="duplicate-winner-col" />
+                            <col class="duplicate-list-col" />
+                            <col class="duplicate-list-col" />
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th>Key</th>
+                                <th>Group</th>
+                                <th>Winner rowid</th>
+                                <th>Winner PK</th>
+                                <th>Duplicate rowids</th>
+                                <th>Duplicate PKs</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (_duplicatePreview.Rows.Count == 0)
+                            {
+                                <tr><td colspan="6" class="empty-cell">No duplicate groups found</td></tr>
+                            }
+                            else
+                            {
+                                @foreach (DataHygieneDuplicateGroup row in _duplicatePreview.Rows)
+                                {
+                                    <tr>
+                                        <td class="mono-cell"><span class="data-hygiene-cell-preview">@DisplayPreview(row.KeyValues)</span></td>
+                                        <td>@row.GroupSize.ToString(CultureInfo.InvariantCulture)</td>
+                                        <td class="mono-cell">@Display(row.WinnerRowId)</td>
+                                        <td class="mono-cell">@Display(row.WinnerPrimaryKey)</td>
+                                        <td class="mono-cell"><span class="data-hygiene-cell-preview">@DisplayDuplicateMembers(row.DuplicateRowIds, row.GroupSize)</span></td>
+                                        <td class="mono-cell"><span class="data-hygiene-cell-preview">@DisplayDuplicateMembers(row.DuplicatePrimaryKeys, row.GroupSize)</span></td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+    }
+    else if (_mode == DataHygieneMode.Validation)
+    {
+        <section class="data-hygiene-panel">
+            <div class="data-hygiene-form-grid">
+                <div class="schema-field">
+                    <label>Table</label>
+                    <select class="schema-input mono" value="@_validationTable" @onchange="OnValidationTableChanged">
+                        <option value="">Select table...</option>
+                        @foreach (string table in _tables)
+                        {
+                            <option value="@table">@table</option>
+                        }
+                    </select>
+                </div>
+                <div class="schema-field">
+                    <label>Column</label>
+                    <select class="schema-input mono" @bind="_ruleColumn">
+                        <option value="">Row rule</option>
+                        @foreach (ColumnDefinition column in _validationColumns)
+                        {
+                            <option value="@column.Name">@column.Name</option>
+                        }
+                    </select>
+                </div>
+                <div class="schema-field">
+                    <label>Rule name</label>
+                    <input class="schema-input mono" @bind="_ruleName" placeholder="valid_email" />
+                </div>
+                <div class="schema-field wide">
+                    <label>Expression</label>
+                    <input class="schema-input mono" @bind="_ruleExpression" placeholder="@ValidationExpressionPlaceholder" />
+                </div>
+                <div class="schema-field wide">
+                    <label>Message</label>
+                    <input class="schema-input" @bind="_ruleMessage" placeholder="@ValidationMessagePlaceholder" />
+                </div>
+            </div>
+
+            <div class="data-hygiene-actions">
+                <button class="toolbar-btn primary" @onclick="CreateValidationRuleAsync" disabled="@(!CanCreateValidationRule)">
+                    <i class="bi bi-plus-lg"></i> Create Rule
+                </button>
+                <button class="toolbar-btn" @onclick="ValidateTableAsync" disabled="@(!CanValidateTable)">
+                    <i class="bi bi-shield-check"></i> Validate Table
+                </button>
+                <button class="toolbar-btn" @onclick="RefreshValidationRulesAsync" disabled="@_loading">
+                    <i class="bi bi-list-check"></i> Refresh Rules
+                </button>
+            </div>
+
+            <div class="data-hygiene-split">
+                <section>
+                    <div class="data-hygiene-result-header">
+                        <strong>Validation rules</strong>
+                        <span>@_validationRules.Count</span>
+                    </div>
+                    <table class="schema-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Target</th>
+                                <th>Expression</th>
+                                <th>Message</th>
+                                <th>Enabled</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (_validationRules.Count == 0)
+                            {
+                                <tr><td colspan="5" class="empty-cell">No validation rules</td></tr>
+                            }
+                            else
+                            {
+                                @foreach (DataHygieneValidationRuleRow rule in _validationRules)
+                                {
+                                    <tr>
+                                        <td class="mono-cell">@rule.RuleName</td>
+                                        <td class="mono-cell">@FormatTarget(rule.TableName, rule.ColumnName)</td>
+                                        <td class="mono-cell">@rule.ExpressionSql</td>
+                                        <td>@rule.Message</td>
+                                        <td>@(rule.IsEnabled ? "Yes" : "No")</td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </section>
+
+                <section>
+                    <div class="data-hygiene-result-header">
+                        <strong>Violations</strong>
+                        <span>@(_validationViolations?.Rows.Count.ToString(CultureInfo.InvariantCulture) ?? "0")</span>
+                    </div>
+                    <table class="schema-table">
+                        <thead>
+                            <tr>
+                                <th>Rule</th>
+                                <th>Target</th>
+                                <th>Rowid</th>
+                                <th>PK</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (_validationViolations is null)
+                            {
+                                <tr><td colspan="5" class="empty-cell">No validation run</td></tr>
+                            }
+                            else if (_validationViolations.Rows.Count == 0)
+                            {
+                                <tr><td colspan="5" class="empty-cell">No violations found</td></tr>
+                            }
+                            else
+                            {
+                                @foreach (DataHygieneValidationViolation violation in _validationViolations.Rows)
+                                {
+                                    <tr>
+                                        <td class="mono-cell">@violation.RuleName</td>
+                                        <td class="mono-cell">@FormatTarget(violation.TableName, violation.ColumnName)</td>
+                                        <td class="mono-cell">@Display(violation.RowId)</td>
+                                        <td class="mono-cell">@Display(violation.PrimaryKey)</td>
+                                        <td>@violation.Message</td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </section>
+            </div>
+        </section>
+    }
+    else if (_mode == DataHygieneMode.Orphans)
+    {
+        <section class="data-hygiene-panel">
+            <div class="data-hygiene-form-grid">
+                <div class="schema-field">
+                    <label>Table</label>
+                    <select class="schema-input mono" value="@_orphanTable" @onchange="OnOrphanTableChanged">
+                        <option value="">Select table...</option>
+                        @foreach (string table in _tables)
+                        {
+                            <option value="@table">@table</option>
+                        }
+                    </select>
+                </div>
+                <div class="schema-field wide">
+                    <label>Declared relationships</label>
+                    <select class="schema-input mono" @bind="_selectedForeignKey">
+                        <option value="">All declared relationships</option>
+                        @foreach (DataHygieneForeignKeyOption fk in _declaredForeignKeys)
+                        {
+                            <option value="@fk.ConstraintName">@FormatRelationship(fk)</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            <div class="data-hygiene-actions">
+                <button class="toolbar-btn primary" @onclick="FindDeclaredOrphansAsync" disabled="@(!CanFindDeclaredOrphans)">
+                    <i class="bi bi-search"></i> Find Declared Orphans
+                </button>
+            </div>
+
+            <div class="data-hygiene-form-grid">
+                <div class="schema-field">
+                    <label>Child table</label>
+                    <select class="schema-input mono" value="@_explicitChildTable" @onchange="OnExplicitChildTableChanged">
+                        <option value="">Select child...</option>
+                        @foreach (string table in _tables)
+                        {
+                            <option value="@table">@table</option>
+                        }
+                    </select>
+                </div>
+                <div class="schema-field">
+                    <label>Child column</label>
+                    <select class="schema-input mono" @bind="_explicitChildColumn">
+                        <option value="">Select column...</option>
+                        @foreach (ColumnDefinition column in _explicitChildColumns)
+                        {
+                            <option value="@column.Name">@column.Name</option>
+                        }
+                    </select>
+                </div>
+                <div class="schema-field">
+                    <label>Parent table</label>
+                    <select class="schema-input mono" value="@_explicitParentTable" @onchange="OnExplicitParentTableChanged">
+                        <option value="">Select parent...</option>
+                        @foreach (string table in _tables)
+                        {
+                            <option value="@table">@table</option>
+                        }
+                    </select>
+                </div>
+                <div class="schema-field">
+                    <label>Parent column</label>
+                    <select class="schema-input mono" @bind="_explicitParentColumn">
+                        <option value="">Select column...</option>
+                        @foreach (ColumnDefinition column in _explicitParentColumns)
+                        {
+                            <option value="@column.Name">@column.Name</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            <div class="data-hygiene-actions">
+                <button class="toolbar-btn primary" @onclick="FindExplicitOrphansAsync" disabled="@(!CanFindExplicitOrphans)">
+                    <i class="bi bi-search"></i> Find Explicit Orphans
+                </button>
+            </div>
+
+            @if (_orphanResult is not null)
+            {
+                <div class="data-hygiene-result-header">
+                    <strong>@_orphanResult.Rows.Count orphan row@(_orphanResult.Rows.Count == 1 ? "" : "s")</strong>
+                    <span>@FormatElapsed(_orphanResult.Elapsed)</span>
+                </div>
+                <table class="schema-table">
+                    <thead>
+                        <tr>
+                            <th>Constraint</th>
+                            <th>Child</th>
+                            <th>Child rowid</th>
+                            <th>Value</th>
+                            <th>Parent</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (_orphanResult.Rows.Count == 0)
+                        {
+                            <tr><td colspan="5" class="empty-cell">No orphan rows found</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (DataHygieneOrphanRow orphan in _orphanResult.Rows)
+                            {
+                                <tr>
+                                    <td class="mono-cell">@Display(orphan.ConstraintName)</td>
+                                    <td class="mono-cell">@FormatTarget(orphan.ChildTable, orphan.ChildColumn)</td>
+                                    <td class="mono-cell">@Display(orphan.ChildRowId)</td>
+                                    <td class="mono-cell">@Display(orphan.ChildValue)</td>
+                                    <td class="mono-cell">@FormatTarget(orphan.ParentTable, orphan.ParentColumn)</td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+    }
+    else
+    {
+        <section class="data-hygiene-panel">
+            <div class="data-hygiene-result-header">
+                <strong>History</strong>
+                <button class="toolbar-btn" @onclick="ClearHistory" disabled="@(_history.Count == 0)">
+                    <i class="bi bi-x-lg"></i> Clear
+                </button>
+            </div>
+            <table class="schema-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Operation</th>
+                        <th>Summary</th>
+                        <th>Elapsed</th>
+                        <th>SQL</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_history.Count == 0)
+                    {
+                        <tr><td colspan="5" class="empty-cell">No hygiene commands run</td></tr>
+                    }
+                    else
+                    {
+                        @foreach (DataHygieneHistoryEntry entry in _history)
+                        {
+                            <tr class="@(entry.IsError ? "danger-row" : "")">
+                                <td>@entry.Timestamp.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+                                <td>@entry.Operation</td>
+                                <td>@entry.Summary</td>
+                                <td>@(entry.Elapsed is null ? "" : FormatElapsed(entry.Elapsed.Value))</td>
+                                <td class="mono-cell">@entry.Sql</td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+</div>
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+
+    private const string ValidationExpressionPlaceholder = "Email LIKE '%@%'";
+    private const string ValidationMessagePlaceholder = "Email must contain @";
+
+    private DataHygieneMode _mode = DataHygieneMode.Duplicates;
+    private IReadOnlyList<string> _tables = [];
+    private bool _loading;
+    private string? _error;
+    private string? _status;
+    private int _appliedSeedVersion = -1;
+
+    private string _duplicateTable = string.Empty;
+    private string _duplicateKeyExpression = string.Empty;
+    private DataHygieneKeepMode _keepMode = DataHygieneKeepMode.First;
+    private IReadOnlyList<ColumnDefinition> _duplicateColumns = [];
+    private DataHygieneResultSet<DataHygieneDuplicateGroup>? _duplicatePreview;
+    private bool _duplicatePreviewCurrent;
+    private string _duplicatePreviewSignature = string.Empty;
+
+    private string _validationTable = string.Empty;
+    private IReadOnlyList<ColumnDefinition> _validationColumns = [];
+    private IReadOnlyList<DataHygieneValidationRuleRow> _validationRules = [];
+    private DataHygieneResultSet<DataHygieneValidationViolation>? _validationViolations;
+    private string _ruleName = string.Empty;
+    private string _ruleColumn = string.Empty;
+    private string _ruleExpression = string.Empty;
+    private string _ruleMessage = string.Empty;
+
+    private string _orphanTable = string.Empty;
+    private IReadOnlyList<DataHygieneForeignKeyOption> _declaredForeignKeys = [];
+    private string _selectedForeignKey = string.Empty;
+    private DataHygieneResultSet<DataHygieneOrphanRow>? _orphanResult;
+    private string _explicitChildTable = string.Empty;
+    private string _explicitChildColumn = string.Empty;
+    private IReadOnlyList<ColumnDefinition> _explicitChildColumns = [];
+    private string _explicitParentTable = string.Empty;
+    private string _explicitParentColumn = string.Empty;
+    private IReadOnlyList<ColumnDefinition> _explicitParentColumns = [];
+
+    private readonly List<DataHygieneHistoryEntry> _history = [];
+
+    private bool CanPreviewDuplicates =>
+        !_loading
+        && !string.IsNullOrWhiteSpace(_duplicateTable)
+        && !string.IsNullOrWhiteSpace(_duplicateKeyExpression);
+
+    private bool CanMutateDuplicates =>
+        CanPreviewDuplicates
+        && _duplicatePreviewCurrent
+        && _duplicatePreview is { Rows.Count: > 0 };
+
+    private bool CanCreateValidationRule =>
+        !_loading
+        && !string.IsNullOrWhiteSpace(_validationTable)
+        && !string.IsNullOrWhiteSpace(_ruleName)
+        && !string.IsNullOrWhiteSpace(_ruleExpression)
+        && !string.IsNullOrWhiteSpace(_ruleMessage);
+
+    private bool CanValidateTable =>
+        !_loading
+        && !string.IsNullOrWhiteSpace(_validationTable);
+
+    private bool CanFindDeclaredOrphans =>
+        !_loading
+        && !string.IsNullOrWhiteSpace(_orphanTable);
+
+    private bool CanFindExplicitOrphans =>
+        !_loading
+        && !string.IsNullOrWhiteSpace(_explicitChildTable)
+        && !string.IsNullOrWhiteSpace(_explicitChildColumn)
+        && !string.IsNullOrWhiteSpace(_explicitParentTable)
+        && !string.IsNullOrWhiteSpace(_explicitParentColumn);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshMetadataAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Tab is null || Tab.DataHygieneSeedVersion == _appliedSeedVersion)
+            return;
+
+        _appliedSeedVersion = Tab.DataHygieneSeedVersion;
+        ApplySeed(Tab.InitialDataHygieneSeed);
+        await LoadSelectedMetadataAsync();
+    }
+
+    private async Task RefreshMetadataAsync()
+    {
+        await RunAsync("Refresh metadata", string.Empty, async () =>
+        {
+            _tables = await Hygiene.GetUserTableNamesAsync();
+            EnsureDefaultTables();
+            await LoadSelectedMetadataAsync();
+            await RefreshValidationRulesCoreAsync();
+            _status = $"{_tables.Count} table{(_tables.Count == 1 ? "" : "s")} loaded";
+        }, addSuccessHistory: false);
+    }
+
+    private async Task LoadSelectedMetadataAsync()
+    {
+        await LoadDuplicateColumnsAsync();
+        await LoadValidationColumnsAsync();
+        await LoadDeclaredForeignKeysAsync();
+        await LoadExplicitColumnsAsync();
+    }
+
+    private void EnsureDefaultTables()
+    {
+        string? first = _tables.FirstOrDefault();
+        if (first is null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_duplicateTable))
+            _duplicateTable = first;
+        if (string.IsNullOrWhiteSpace(_validationTable))
+            _validationTable = first;
+        if (string.IsNullOrWhiteSpace(_orphanTable))
+            _orphanTable = first;
+        if (string.IsNullOrWhiteSpace(_explicitChildTable))
+            _explicitChildTable = first;
+        if (string.IsNullOrWhiteSpace(_explicitParentTable))
+            _explicitParentTable = first;
+    }
+
+    private void ApplySeed(DataHygieneSeed? seed)
+    {
+        if (seed is null)
+            return;
+
+        _mode = seed.Mode;
+        if (!string.IsNullOrWhiteSpace(seed.TableName))
+        {
+            _duplicateTable = seed.TableName.Trim();
+            _validationTable = seed.TableName.Trim();
+            _orphanTable = seed.TableName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(seed.ChildTableName))
+            _explicitChildTable = seed.ChildTableName.Trim();
+        if (!string.IsNullOrWhiteSpace(seed.ChildColumnName))
+            _explicitChildColumn = seed.ChildColumnName.Trim();
+        if (!string.IsNullOrWhiteSpace(seed.ParentTableName))
+            _explicitParentTable = seed.ParentTableName.Trim();
+        if (!string.IsNullOrWhiteSpace(seed.ParentColumnName))
+            _explicitParentColumn = seed.ParentColumnName.Trim();
+
+        InvalidateDuplicatePreview();
+    }
+
+    private void SetMode(DataHygieneMode mode)
+    {
+        _mode = mode;
+        _error = null;
+    }
+
+    private string GetModeClass(DataHygieneMode mode)
+        => _mode == mode ? "toolbar-btn primary" : "toolbar-btn";
+
+    private async Task OnDuplicateTableChanged(ChangeEventArgs e)
+    {
+        _duplicateTable = e.Value?.ToString() ?? string.Empty;
+        _duplicateKeyExpression = string.Empty;
+        InvalidateDuplicatePreview();
+        await LoadDuplicateColumnsAsync();
+    }
+
+    private void OnDuplicateKeyChanged(ChangeEventArgs e)
+    {
+        _duplicateKeyExpression = e.Value?.ToString() ?? string.Empty;
+        InvalidateDuplicatePreview();
+    }
+
+    private void OnKeepModeChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse(e.Value?.ToString(), out DataHygieneKeepMode keepMode))
+            _keepMode = keepMode;
+
+        InvalidateDuplicatePreview();
+    }
+
+    private void UseDuplicateColumn(string columnName)
+    {
+        _duplicateKeyExpression = columnName;
+        InvalidateDuplicatePreview();
+    }
+
+    private async Task LoadDuplicateColumnsAsync()
+    {
+        _duplicateColumns = await LoadColumnsAsync(_duplicateTable);
+        if (string.IsNullOrWhiteSpace(_duplicateKeyExpression))
+            _duplicateKeyExpression = _duplicateColumns.FirstOrDefault(static column => column.Type == DbType.Text)?.Name
+                ?? _duplicateColumns.FirstOrDefault()?.Name
+                ?? string.Empty;
+    }
+
+    private async Task PreviewDuplicatesAsync()
+    {
+        await RunAsync("Find duplicates", BuildDuplicateSignature(), async () =>
+        {
+            _duplicatePreview = await Hygiene.FindDuplicatesAsync(_duplicateTable, _duplicateKeyExpression);
+            _duplicatePreviewSignature = BuildDuplicateSignature();
+            _duplicatePreviewCurrent = true;
+            _status = $"{_duplicatePreview.Rows.Count} duplicate group{(_duplicatePreview.Rows.Count == 1 ? "" : "s")}";
+            AddHistory("Find duplicates", _duplicatePreview.Sql, _status, _duplicatePreview.Elapsed);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task DedupAsync()
+    {
+        if (!CanMutateDuplicates)
+            return;
+
+        string message = $"DEDUP {_duplicateTable} on {_duplicateKeyExpression}\nGroups: {_duplicatePreview!.Rows.Count}\nRows to delete: {DuplicateRowsToDelete()}\nKeep: {_keepMode.ToString().ToUpperInvariant()}";
+        if (!await Modal.ConfirmAsync("Dedup Duplicates", message, "Dedup", isDanger: true))
+            return;
+
+        await RunAsync("Dedup", BuildDuplicateSignature(), async () =>
+        {
+            DataHygieneResultSet<DataHygieneMutationSummary> result = await Hygiene.DedupAsync(_duplicateTable, _duplicateKeyExpression, _keepMode);
+            DataHygieneMutationSummary summary = result.Rows.FirstOrDefault() ?? new("DEDUP", _duplicateTable, 0, 0, 0, 0, 0, null);
+            string text = $"{summary.RowsDeleted} row(s) deleted across {summary.DuplicateGroupCount} group(s)";
+            _status = text;
+            _duplicatePreviewCurrent = false;
+            AddHistory("Dedup", result.Sql, text, result.Elapsed);
+            Changes.NotifyChanged();
+            Toast.Success(text);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task MergeDuplicatesAsync()
+    {
+        if (!CanMutateDuplicates)
+            return;
+
+        string message = $"MERGE DUPLICATES {_duplicateTable} on {_duplicateKeyExpression}\nGroups: {_duplicatePreview!.Rows.Count}\nRows to delete: {DuplicateRowsToDelete()}\nWinner rows may be updated when null fields can be filled safely.";
+        if (!await Modal.ConfirmAsync("Merge Duplicates", message, "Merge", isDanger: true))
+            return;
+
+        await RunAsync("Merge duplicates", BuildDuplicateSignature(), async () =>
+        {
+            DataHygieneResultSet<DataHygieneMutationSummary> result = await Hygiene.MergeDuplicatesAsync(_duplicateTable, _duplicateKeyExpression);
+            DataHygieneMutationSummary summary = result.Rows.FirstOrDefault() ?? new("MERGE DUPLICATES", _duplicateTable, 0, 0, 0, 0, 0, null);
+            string text = $"{summary.RowsUpdated} row(s) updated, {summary.RowsDeleted} row(s) deleted, {summary.MergeConflictCount} conflict(s)";
+            _status = text;
+            _duplicatePreviewCurrent = false;
+            AddHistory("Merge duplicates", result.Sql, text, result.Elapsed);
+            Changes.NotifyChanged();
+            Toast.Success(text);
+        }, addSuccessHistory: false);
+    }
+
+    private string BuildDuplicateSignature()
+        => $"{_duplicateTable}|{_duplicateKeyExpression}|{_keepMode}";
+
+    private long DuplicateRowsToDelete()
+        => _duplicatePreview?.Rows.Sum(static row => Math.Max(0, row.GroupSize - 1)) ?? 0;
+
+    private void InvalidateDuplicatePreview()
+    {
+        if (_duplicatePreview is not null && _duplicatePreviewSignature != BuildDuplicateSignature())
+            _duplicatePreviewCurrent = false;
+    }
+
+    private async Task OnValidationTableChanged(ChangeEventArgs e)
+    {
+        _validationTable = e.Value?.ToString() ?? string.Empty;
+        _ruleColumn = string.Empty;
+        _validationViolations = null;
+        await LoadValidationColumnsAsync();
+    }
+
+    private async Task LoadValidationColumnsAsync()
+    {
+        _validationColumns = await LoadColumnsAsync(_validationTable);
+    }
+
+    private async Task RefreshValidationRulesAsync()
+    {
+        await RunAsync("Refresh validation rules", string.Empty, async () =>
+        {
+            await RefreshValidationRulesCoreAsync();
+            _status = $"{_validationRules.Count} validation rule{(_validationRules.Count == 1 ? "" : "s")}";
+        }, addSuccessHistory: false);
+    }
+
+    private async Task RefreshValidationRulesCoreAsync()
+    {
+        DataHygieneResultSet<DataHygieneValidationRuleRow> result = await Hygiene.ListValidationRulesAsync();
+        _validationRules = result.Rows;
+    }
+
+    private async Task CreateValidationRuleAsync()
+    {
+        await RunAsync("Create validation rule", _ruleName, async () =>
+        {
+            DataHygieneResultSet<DataHygieneMutationSummary> result = await Hygiene.CreateValidationRuleAsync(
+                _ruleName,
+                _validationTable,
+                string.IsNullOrWhiteSpace(_ruleColumn) ? null : _ruleColumn,
+                _ruleExpression,
+                _ruleMessage);
+
+            string text = $"Created validation rule {_ruleName}";
+            AddHistory("Create validation rule", result.Sql, text, result.Elapsed);
+            _status = text;
+            _ruleName = string.Empty;
+            _ruleExpression = string.Empty;
+            _ruleMessage = string.Empty;
+            await RefreshValidationRulesCoreAsync();
+            Changes.NotifyChanged();
+            Toast.Success(text);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task ValidateTableAsync()
+    {
+        await RunAsync("Validate table", _validationTable, async () =>
+        {
+            _validationViolations = await Hygiene.ValidateTableAsync(_validationTable);
+            _status = $"{_validationViolations.Rows.Count} violation{(_validationViolations.Rows.Count == 1 ? "" : "s")}";
+            AddHistory("Validate table", _validationViolations.Sql, _status, _validationViolations.Elapsed);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task OnOrphanTableChanged(ChangeEventArgs e)
+    {
+        _orphanTable = e.Value?.ToString() ?? string.Empty;
+        _orphanResult = null;
+        await LoadDeclaredForeignKeysAsync();
+    }
+
+    private async Task LoadDeclaredForeignKeysAsync()
+    {
+        _declaredForeignKeys = string.IsNullOrWhiteSpace(_orphanTable)
+            ? []
+            : await Hygiene.GetForeignKeyOptionsAsync(_orphanTable);
+
+        if (!string.IsNullOrWhiteSpace(_selectedForeignKey)
+            && !_declaredForeignKeys.Any(fk => string.Equals(fk.ConstraintName, _selectedForeignKey, StringComparison.OrdinalIgnoreCase)))
+        {
+            _selectedForeignKey = string.Empty;
+        }
+    }
+
+    private async Task FindDeclaredOrphansAsync()
+    {
+        await RunAsync("Find declared orphans", _orphanTable, async () =>
+        {
+            _orphanResult = await Hygiene.FindOrphansInTableAsync(_orphanTable);
+            _status = $"{_orphanResult.Rows.Count} orphan row{(_orphanResult.Rows.Count == 1 ? "" : "s")}";
+            AddHistory("Find declared orphans", _orphanResult.Sql, _status, _orphanResult.Elapsed);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task OnExplicitChildTableChanged(ChangeEventArgs e)
+    {
+        _explicitChildTable = e.Value?.ToString() ?? string.Empty;
+        _explicitChildColumn = string.Empty;
+        _orphanResult = null;
+        await LoadExplicitChildColumnsAsync();
+    }
+
+    private async Task OnExplicitParentTableChanged(ChangeEventArgs e)
+    {
+        _explicitParentTable = e.Value?.ToString() ?? string.Empty;
+        _explicitParentColumn = string.Empty;
+        _orphanResult = null;
+        await LoadExplicitParentColumnsAsync();
+    }
+
+    private async Task LoadExplicitColumnsAsync()
+    {
+        await LoadExplicitChildColumnsAsync();
+        await LoadExplicitParentColumnsAsync();
+    }
+
+    private async Task LoadExplicitChildColumnsAsync()
+    {
+        _explicitChildColumns = await LoadColumnsAsync(_explicitChildTable);
+        if (string.IsNullOrWhiteSpace(_explicitChildColumn))
+            _explicitChildColumn = _explicitChildColumns.FirstOrDefault()?.Name ?? string.Empty;
+    }
+
+    private async Task LoadExplicitParentColumnsAsync()
+    {
+        _explicitParentColumns = await LoadColumnsAsync(_explicitParentTable);
+        if (string.IsNullOrWhiteSpace(_explicitParentColumn))
+            _explicitParentColumn = _explicitParentColumns.FirstOrDefault(static column => column.IsPrimaryKey)?.Name
+                ?? _explicitParentColumns.FirstOrDefault()?.Name
+                ?? string.Empty;
+    }
+
+    private async Task FindExplicitOrphansAsync()
+    {
+        await RunAsync("Find explicit orphans", FormatExplicitReference(), async () =>
+        {
+            _orphanResult = await Hygiene.FindOrphansExplicitAsync(
+                _explicitChildTable,
+                _explicitChildColumn,
+                _explicitParentTable,
+                _explicitParentColumn);
+            _status = $"{_orphanResult.Rows.Count} orphan row{(_orphanResult.Rows.Count == 1 ? "" : "s")}";
+            AddHistory("Find explicit orphans", _orphanResult.Sql, _status, _orphanResult.Elapsed);
+        }, addSuccessHistory: false);
+    }
+
+    private async Task<IReadOnlyList<ColumnDefinition>> LoadColumnsAsync(string tableName)
+    {
+        if (string.IsNullOrWhiteSpace(tableName))
+            return [];
+
+        TableSchema? schema = await Hygiene.GetTableSchemaAsync(tableName);
+        return schema?.Columns ?? [];
+    }
+
+    private async Task RunAsync(string operation, string context, Func<Task> action, bool addSuccessHistory = true)
+    {
+        if (_loading)
+            return;
+
+        _loading = true;
+        _error = null;
+        try
+        {
+            await action();
+            if (addSuccessHistory)
+                AddHistory(operation, context, "Completed", null);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _status = operation + " failed";
+            AddHistory(operation, context, ex.Message, null, isError: true);
+            Toast.Error(ex.Message);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void AddHistory(string operation, string sql, string summary, TimeSpan? elapsed = null, bool isError = false)
+    {
+        _history.Insert(0, new DataHygieneHistoryEntry(DateTime.UtcNow, operation, sql, summary, elapsed, isError));
+        if (_history.Count > 40)
+            _history.RemoveRange(40, _history.Count - 40);
+    }
+
+    private void ClearHistory() => _history.Clear();
+
+    private static string Display(string? value)
+        => string.IsNullOrEmpty(value) ? "NULL" : value;
+
+    private static string DisplayPreview(string? value, int maxLength = 140)
+    {
+        string text = Display(value);
+        return text.Length <= maxLength ? text : text[..maxLength] + "...";
+    }
+
+    private static string DisplayDuplicateMembers(string? value, long groupSize)
+    {
+        string text = Display(value);
+        if (text.Length <= 160)
+            return text;
+
+        long duplicateCount = Math.Max(0, groupSize - 1);
+        return text[..160] + $"... ({duplicateCount.ToString("N0", CultureInfo.InvariantCulture)} total)";
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+        => elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture) + " ms";
+
+    private static string FormatTarget(string tableName, string? columnName)
+        => string.IsNullOrWhiteSpace(columnName) ? tableName : $"{tableName}.{columnName}";
+
+    private static string FormatRelationship(DataHygieneForeignKeyOption option)
+        => $"{option.ChildTable}.{option.ChildColumn} -> {option.ParentTable}.{option.ParentColumn}";
+
+    private string FormatExplicitReference()
+        => $"{_explicitChildTable}.{_explicitChildColumn} -> {_explicitParentTable}.{_explicitParentColumn}";
+
+    private static string GetColumnIconClass(ColumnDefinition column)
+        => column.IsPrimaryKey ? "bi-key" : column.Type switch
+        {
+            DbType.Integer or DbType.Real => "bi-123",
+            DbType.Blob => "bi-file-binary",
+            _ => "bi-fonts",
+        };
+}

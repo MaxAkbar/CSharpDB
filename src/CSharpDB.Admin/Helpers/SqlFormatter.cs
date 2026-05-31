@@ -13,14 +13,15 @@ public static partial class SqlFormatter
         "SELECT", "FROM", "WHERE", "AND", "OR", "ORDER", "GROUP", "HAVING",
         "LIMIT", "OFFSET", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS",
         "OUTER", "ON", "SET", "VALUES", "INTO", "INSERT", "UPDATE",
-        "DELETE", "CREATE", "ALTER", "DROP", "BEGIN", "END", "UNION"
+        "DELETE", "CREATE", "ALTER", "DROP", "BEGIN", "END", "UNION",
+        "FIND", "DEDUP", "MERGE", "VALIDATE"
     };
 
     private static readonly HashSet<string> NewlineBeforeClauses = new(StringComparer.OrdinalIgnoreCase)
     {
         "FROM", "WHERE", "AND", "OR", "ORDER", "GROUP", "HAVING",
         "LIMIT", "OFFSET", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS",
-        "ON", "SET", "VALUES", "UNION"
+        "ON", "SET", "VALUES", "UNION", "MESSAGE", "REFERENCES"
     };
 
     private static readonly HashSet<string> AllKeywords = new(StringComparer.OrdinalIgnoreCase)
@@ -36,6 +37,8 @@ public static partial class SqlFormatter
         "IF", "ELSE", "CASE", "WHEN", "THEN", "COLUMN", "CONSTRAINT", "ADD", "RENAME", "TO",
         "BEFORE", "AFTER", "FOR", "EACH", "ROW",
         "IDENTITY", "AUTOINCREMENT",
+        "FIND", "DUPLICATES", "DEDUP", "KEEP", "FIRST", "LAST", "MERGE",
+        "VALIDATION", "RULE", "MESSAGE", "VALIDATE", "ORPHANS",
         "INTEGER", "TEXT", "REAL", "BLOB", "BOOLEAN", "INT", "VARCHAR", "CHAR",
         "TRUE", "FALSE", "NOT"
     };

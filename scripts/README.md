@@ -10,11 +10,17 @@ and are included in daemon release archives.
 
 ## How The Scripts Fit The Release Cycle
 
-There are three different script groups:
+The release and local workflow notes are grouped by audience:
 
 - Release maintainers use `scripts/Publish-CSharpDbDaemonRelease.ps1` directly
   for local packaging checks. The GitHub Release workflow also uses this script
   when a `v*` tag is pushed.
+- Store release maintainers use
+  `scripts/Publish-CSharpDbAdminStorePackage.ps1` on Windows to produce the
+  CSharpDB Studio MSIX and `.msixupload` artifacts for Partner Center.
+- Mac/Linux Studio direct-download packaging remains planned future work. It
+  uses a native launcher plus the user's default browser instead of an embedded
+  WebView shell.
 - Operators use the service scripts after a release is published. These scripts
   are included inside each daemon archive under `service/`.
 - Developers use `Start-CSharpDbAdminAndDaemon.ps1` and
@@ -211,6 +217,47 @@ Default runtimes:
 
 Outputs are written under `artifacts\daemon-release` unless `-OutputRoot` is
 provided.
+
+### `Publish-CSharpDbAdminStorePackage.ps1`
+
+Use this on Windows when preparing the Microsoft Store package for CSharpDB
+Studio.
+
+What it does:
+
+- publishes `src/CSharpDB.Admin` self-contained for `win-x64`
+- publishes the WPF/WebView2 desktop shell from `src/CSharpDB.Admin.Desktop`
+- copies the Admin host into `artifacts\admin-store\publish\desktop\admin`
+  so `CSharpDB.Admin.Desktop.exe` can be smoke-tested before packaging
+- stages the Admin host under the desktop shell's private `admin` folder
+- creates app visual assets from the existing Admin icon
+- signs the MSIX with a local test certificate by default and exports the
+  public `.cer` beside the package
+- emits a local `.msix` and Store `.msixupload` under `artifacts\admin-store`
+
+Example:
+
+```powershell
+.\scripts\Publish-CSharpDbAdminStorePackage.ps1 -Version 3.4.0
+```
+
+For local App Installer testing, import the exported test certificate from an
+elevated PowerShell session before double-clicking the `.msix`:
+
+```powershell
+Import-Certificate `
+  -FilePath artifacts\admin-store\packages\csharpdb-studio-v3.4.0-win-x64-local-test.cer `
+  -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+```
+
+You can also run the packaging script from an elevated PowerShell session with
+`-TrustLocalTestCertificate` to perform that import automatically. Use
+`-SkipSigning` only for packaging diagnostics; unsigned MSIX files cannot be
+installed directly with App Installer.
+
+The package identity starts as `MaxAkbar.CSharpDBStudio` with publisher
+`CN=MaxAkbar`; associate the package with Partner Center before submission so
+the final Store identity and publisher are applied.
 
 ## Daemon Service Installers
 

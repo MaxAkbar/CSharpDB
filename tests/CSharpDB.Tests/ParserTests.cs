@@ -18,6 +18,20 @@ public class ParserTests
     }
 
     [Theory]
+    [InlineData("CREATE TEMP TABLE scratch (id INTEGER PRIMARY KEY)", true)]
+    [InlineData("CREATE TEMPORARY TABLE IF NOT EXISTS scratch (id INTEGER PRIMARY KEY)", true)]
+    [InlineData("CREATE TABLE scratch (id INTEGER PRIMARY KEY)", false)]
+    public void Parse_CreateTable_TemporaryFlag(string sql, bool expectedTemporary)
+    {
+        var stmt = Parser.Parse(sql);
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+
+        Assert.Equal(expectedTemporary, create.IsTemporary);
+        if (sql.Contains("IF NOT EXISTS", StringComparison.OrdinalIgnoreCase))
+            Assert.True(create.IfNotExists);
+    }
+
+    [Theory]
     [InlineData("CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT)")]
     [InlineData("CREATE TABLE users (id INTEGER AUTOINCREMENT PRIMARY KEY, name TEXT)")]
     [InlineData("CREATE TABLE users (id INTEGER IDENTITY PRIMARY KEY, name TEXT)")]
@@ -120,6 +134,32 @@ public class ParserTests
 
         Assert.Equal("archived_customers", drop.TableName);
         Assert.True(drop.IfExists);
+    }
+
+    [Theory]
+    [InlineData("DROP TEMP TABLE scratch", true, false)]
+    [InlineData("DROP TEMPORARY TABLE IF EXISTS scratch", true, true)]
+    [InlineData("DROP TABLE scratch", false, false)]
+    public void Parse_DropTable_TemporaryFlag(string sql, bool expectedTemporary, bool expectedIfExists)
+    {
+        var stmt = Parser.Parse(sql);
+        var drop = Assert.IsType<DropTableStatement>(stmt);
+
+        Assert.Equal("scratch", drop.TableName);
+        Assert.Equal(expectedTemporary, drop.IsTemporary);
+        Assert.Equal(expectedIfExists, drop.IfExists);
+    }
+
+    [Theory]
+    [InlineData("PERSIST TEMP TABLE scratch AS durable_scratch")]
+    [InlineData("PERSIST TEMPORARY TABLE scratch AS durable_scratch")]
+    public void Parse_PersistTempTable(string sql)
+    {
+        var stmt = Parser.Parse(sql);
+        var persist = Assert.IsType<PersistTempTableStatement>(stmt);
+
+        Assert.Equal("scratch", persist.TempTableName);
+        Assert.Equal("durable_scratch", persist.TargetTableName);
     }
 
     [Fact]
@@ -1231,6 +1271,86 @@ public class ParserTests
         var colRef = Assert.IsType<ColumnRefExpression>(insert.ValueRows[0][0]);
         Assert.Equal("NEW", colRef.TableAlias);
         Assert.Equal("id", colRef.ColumnName);
+    }
+
+    [Fact]
+    public void Parse_FindDuplicates()
+    {
+        var stmt = Parser.Parse("FIND DUPLICATES IN customers ON email COLLATE NOCASE, phone");
+        var find = Assert.IsType<FindDuplicatesStatement>(stmt);
+
+        Assert.Equal("customers", find.TableName);
+        Assert.Equal(2, find.KeyExpressions.Count);
+    }
+
+    [Theory]
+    [InlineData("DEDUP customers ON email KEEP FIRST", DuplicateKeepMode.First)]
+    [InlineData("DEDUP customers ON email KEEP LAST", DuplicateKeepMode.Last)]
+    public void Parse_Dedup(string sql, DuplicateKeepMode expectedKeepMode)
+    {
+        var stmt = Parser.Parse(sql);
+        var dedup = Assert.IsType<DedupStatement>(stmt);
+
+        Assert.Equal("customers", dedup.TableName);
+        Assert.Single(dedup.KeyExpressions);
+        Assert.Equal(expectedKeepMode, dedup.KeepMode);
+    }
+
+    [Fact]
+    public void Parse_MergeDuplicates()
+    {
+        var stmt = Parser.Parse("MERGE DUPLICATES customers ON email");
+        var merge = Assert.IsType<MergeDuplicatesStatement>(stmt);
+
+        Assert.Equal("customers", merge.TableName);
+        Assert.Single(merge.KeyExpressions);
+    }
+
+    [Fact]
+    public void Parse_CreateValidationRule()
+    {
+        var stmt = Parser.Parse(
+            "CREATE VALIDATION RULE valid_email ON customers.email AS email LIKE '%@%' MESSAGE 'Email must contain @'");
+        var rule = Assert.IsType<CreateValidationRuleStatement>(stmt);
+
+        Assert.Equal("valid_email", rule.RuleName);
+        Assert.Equal("customers", rule.TableName);
+        Assert.Equal("email", rule.ColumnName);
+        Assert.Equal("Email must contain @", rule.Message);
+        Assert.IsType<LikeExpression>(rule.Expression);
+    }
+
+    [Fact]
+    public void Parse_ValidateTable()
+    {
+        var stmt = Parser.Parse("VALIDATE TABLE customers");
+        var validate = Assert.IsType<ValidateTableStatement>(stmt);
+
+        Assert.Equal("customers", validate.TableName);
+    }
+
+    [Fact]
+    public void Parse_FindOrphansExplicitReference()
+    {
+        var stmt = Parser.Parse("FIND ORPHANS IN bookings.book_id REFERENCES books.id");
+        var find = Assert.IsType<FindOrphansStatement>(stmt);
+
+        Assert.Equal("bookings", find.ChildTableName);
+        Assert.Equal("book_id", find.ChildColumnName);
+        Assert.Equal("books", find.ParentTableName);
+        Assert.Equal("id", find.ParentColumnName);
+    }
+
+    [Fact]
+    public void Parse_FindOrphansDeclaredReferences()
+    {
+        var stmt = Parser.Parse("FIND ORPHANS IN bookings");
+        var find = Assert.IsType<FindOrphansStatement>(stmt);
+
+        Assert.Equal("bookings", find.ChildTableName);
+        Assert.Null(find.ChildColumnName);
+        Assert.Null(find.ParentTableName);
+        Assert.Null(find.ParentColumnName);
     }
 
     #endregion

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Operations - CSharpDB Studio Help</title>
+    <link rel="icon" type="image/png" href="../icon2.png">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand"><img src="../icon2.png" alt=""><div><strong>CSharpDB Studio</strong><span>Offline help</span></div></div>
+            <nav class="nav" aria-label="Help topics">
+                <div class="nav-label">Start</div>
+                <a href="index.html">Overview</a>
+                <a href="workspace.html">Workspace</a>
+                <a href="data-and-schema.html">Data and schema</a>
+                <a href="forms-and-reports.html">Forms and reports</a>
+                <a class="active" href="operations.html">Operations</a>
+                <a href="shortcuts.html">Shortcuts</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="content-inner">
+                <div class="eyebrow">Operations</div>
+                <h1>Inspect, Maintain, Import, and Export</h1>
+                <p class="lead">Studio includes operational surfaces for storage diagnostics, table archive import/export, external tables, pipelines, procedures, and host callback readiness.</p>
+
+                <h2>Storage Inspector</h2>
+                <p>The Storage tab shows low-level database health and maintenance information. Use it when diagnosing file size, WAL behavior, page distribution, index health, or maintenance actions.</p>
+                <div class="screen">
+                    <img src="images/storage-tab.png" alt="Storage inspector diagnostics">
+                    <p class="caption">Storage Inspector shows database header values, WAL state, page usage, fragmentation, integrity findings, and maintenance controls.</p>
+                </div>
+                <table>
+                    <thead><tr><th>Panel</th><th>Use it for</th></tr></thead>
+                    <tbody>
+                        <tr><td>Database Header</td><td>Check page size, page count, schema root, freelist state, version, and file metadata.</td></tr>
+                        <tr><td>WAL</td><td>Review write-ahead log existence, frame count, commit frames, and integrity status.</td></tr>
+                        <tr><td>Space Usage</td><td>Compare declared pages, physical pages, WAL size, free pages, and fragmentation indicators.</td></tr>
+                        <tr><td>Maintenance</td><td>Run scoped reindex, vacuum, backup, restore, and foreign-key retrofit checks where available.</td></tr>
+                        <tr><td>Page Drill-Down</td><td>Inspect a page by id, optionally including raw hex output.</td></tr>
+                    </tbody>
+                </table>
+
+                <h2>Import and Export</h2>
+                <p>Use Import / Export for table archive workflows, backups of selected data, restore operations, and external table registration. Long-running actions show progress and are designed to avoid blocking the rest of the workspace.</p>
+
+                <h2>Pipelines</h2>
+                <p>The Pipeline tab is a visual ETL builder for repeatable source-to-destination workflows.</p>
+                <div class="screen">
+                    <img src="images/pipeline-tab.png" alt="Pipeline designer">
+                    <p class="caption">The pipeline designer lets you configure source, transforms, destination, validation, dry-run, and execution from one tab.</p>
+                </div>
+                <ul>
+                    <li>Choose a source such as CSV, JSON, table, or SQL query.</li>
+                    <li>Add transforms such as select, rename, cast, filter, derive, and deduplicate.</li>
+                    <li>Validate before execution to catch shape errors.</li>
+                    <li>Use dry run before writing destination data.</li>
+                </ul>
+
+                <h2>Procedures and Code Modules</h2>
+                <p>Procedure tabs let you define metadata, SQL body, parameters, and test arguments. Code module and callback surfaces help coordinate trusted host-owned C# functions, commands, validation rules, and form/report automation hooks.</p>
+                <div class="screen">
+                    <img src="images/procedure-tab.png" alt="Procedure editor">
+                    <p class="caption">The procedure editor combines definition, parameters, and test execution in one view.</p>
+                </div>
+
+                <h2>Operational Safety</h2>
+                <ul>
+                    <li>Destructive commands ask for confirmation.</li>
+                    <li>Metadata readiness panels surface missing callbacks before runtime use.</li>
+                    <li>Preview and dry-run commands are available for pipelines and reports where supported.</li>
+                    <li>Use backups before large schema, import, restore, or maintenance operations.</li>
+                </ul>
+
+                <div class="next">
+                    <a class="button" href="forms-and-reports.html">Back: Forms and reports</a>
+                    <a class="button primary" href="shortcuts.html">Next: Shortcuts</a>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

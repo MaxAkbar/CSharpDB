@@ -44,9 +44,51 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/</loc>
-    <lastmod>2026-04-20</lastmod>
+    <lastmod>2026-05-24</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/access-style-macro-actions.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/admin-collections.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/ado-ef-storage-tuning.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/configuration.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/csharpdb-vs-sqlite-performance-guide.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/database-devops.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/form-control-extensibility.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
   </url>
   <url>
     <loc>https://csharpdb.com/docs/getting-started.html</loc>
@@ -62,7 +104,7 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/admin-ui.html</loc>
-    <lastmod>2026-03-27</lastmod>
+    <lastmod>2026-05-24</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -122,7 +164,7 @@
   </url>
   <url>
     <loc>https://csharpdb.com/docs/entity-framework-core.html</loc>
-    <lastmod>2026-04-26</lastmod>
+    <lastmod>2026-05-24</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
@@ -241,8 +283,26 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://csharpdb.com/docs/trusted-csharp-functions.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/trusted-validation-rules.html</loc>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
     <loc>https://csharpdb.com/docs/tutorials/</loc>
-    <lastmod>2026-04-20</lastmod>
+    <lastmod>2026-05-24</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/tutorials/fulfillment-ops-admin-automation.html</loc>
+    <lastmod>2026-05-24</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>

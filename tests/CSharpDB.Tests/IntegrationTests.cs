@@ -6467,6 +6467,18 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AlterTable_DropIndexedColumn_Fails()
+    {
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE INDEX idx_t_age ON t(age)", TestContext.Current.CancellationToken);
+
+        CSharpDbException ex = await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync("ALTER TABLE t DROP COLUMN age", TestContext.Current.CancellationToken));
+
+        Assert.Contains("idx_t_age", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AlterTable_DropPrimaryKey_Fails()
     {
         await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", TestContext.Current.CancellationToken);

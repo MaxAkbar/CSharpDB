@@ -80,6 +80,9 @@ public sealed class Tokenizer
         ["UNIQUE"] = TokenType.Unique,
         ["VIEW"] = TokenType.View,
         ["EXTERNAL"] = TokenType.External,
+        ["TEMP"] = TokenType.Temp,
+        ["TEMPORARY"] = TokenType.Temporary,
+        ["PERSIST"] = TokenType.Persist,
         ["WITH"] = TokenType.With,
         ["RECURSIVE"] = TokenType.Recursive,
         ["ANALYZE"] = TokenType.Analyze,
@@ -95,6 +98,18 @@ public sealed class Tokenizer
         ["END"] = TokenType.End,
         ["NEW"] = TokenType.New,
         ["OLD"] = TokenType.Old,
+        ["FIND"] = TokenType.Find,
+        ["DUPLICATES"] = TokenType.Duplicates,
+        ["DEDUP"] = TokenType.Dedup,
+        ["KEEP"] = TokenType.Keep,
+        ["FIRST"] = TokenType.First,
+        ["LAST"] = TokenType.Last,
+        ["MERGE"] = TokenType.Merge,
+        ["VALIDATION"] = TokenType.Validation,
+        ["RULE"] = TokenType.Rule,
+        ["MESSAGE"] = TokenType.Message,
+        ["VALIDATE"] = TokenType.Validate,
+        ["ORPHANS"] = TokenType.Orphans,
     };
 
     private readonly string _input;

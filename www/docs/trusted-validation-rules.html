@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Trusted Validation Rules — CSharpDB</title>
+    <meta name="description" content="Admin Forms trusted C# validation rule registration, metadata, diagnostics, and host policy behavior.">
+    <link rel="canonical" href="https://csharpdb.com/docs/trusted-validation-rules.html">
+    <meta property="og:title" content="Trusted Validation Rules — CSharpDB">
+    <meta property="og:description" content="Admin Forms trusted C# validation rule registration, metadata, diagnostics, and host policy behavior.">
+    <meta property="og:url" content="https://csharpdb.com/docs/trusted-validation-rules.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Trusted Validation Rules",
+        "description": "Admin Forms trusted C# validation rule registration, metadata, diagnostics, and host policy behavior.",
+        "url": "https://csharpdb.com/docs/trusted-validation-rules.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Trusted Validation Rules',
+        description: 'Admin Forms trusted C# validation rule registration, metadata, diagnostics, and host policy behavior.',
+        keywords: 'CSharpDB validation rules, Admin Forms validation, trusted C# validation',
+        canonicalPath: 'docs/trusted-validation-rules.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#register-rules">Register Rules</a></li>
+                        <li><a href="#field-level-rules">Field-Level Rules</a></li>
+                        <li><a href="#form-level-rules">Form-Level Rules</a></li>
+                        <li><a href="#runtime-context">Runtime Context</a></li>
+                        <li><a href="#policy">Policy</a></li>
+                        <li><a href="#failure-behavior">Failure Behavior</a></li>
+                        <li><a href="#generated-stubs">Generated Stubs</a></li>
+                        <li><a href="#runnable-sample">Runnable Sample</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/trusted-csharp-functions/validation-rules.md because it is public Admin Forms host guidance.</div>
+<h1 id="trusted-validation-rules">Trusted Validation Rules</h1>
+<p>Admin Forms can run host-registered validation callbacks before a record is
+saved. The form stores only the validation rule name, fallback message, and JSON
+parameters. The C# callback body is compiled into the host application and
+registered during startup.</p>
+<p>Validation rules are trusted in-process callbacks. They are intended for
+business checks that do not belong in generic field metadata, such as
+cross-field validation, tenant-specific policies, or checks against host-owned
+services.</p>
+<h2 id="register-rules">Register Rules</h2>
+<p>Register rules with <code>AddCSharpDbAdminFormValidationRules(...)</code>:</p>
+<pre><code class="language-csharp">using CSharpDB.Admin.Forms.Services;
+using CSharpDB.Primitives;
+
+builder.Services.AddCSharpDbAdminFormValidationRules(rules =&gt;
+{
+    rules.AddRule(
+        &quot;CustomerNamePolicy&quot;,
+        new DbValidationRuleOptions(
+            Description: &quot;Rejects placeholder customer names.&quot;,
+            Timeout: TimeSpan.FromSeconds(2)),
+        static (context, ct) =&gt;
+        {
+            string text = context.Value.IsNull ? string.Empty : context.Value.AsText;
+            string blockedText = context.Parameters.TryGetValue(&quot;blockedText&quot;, out DbValue configured)
+                &amp;&amp; !configured.IsNull
+                    ? configured.AsText
+                    : &quot;test&quot;;
+
+            DbValidationRuleResult result = text.Contains(blockedText, StringComparison.OrdinalIgnoreCase)
+                ? DbValidationRuleResult.Failure(
+                    context.FallbackMessage ?? &quot;Customer name is not allowed.&quot;,
+                    context.FieldName,
+                    context.RuleName)
+                : DbValidationRuleResult.Success();
+            return ValueTask.FromResult(result);
+        });
+});
+</code></pre>
+<p>Rule names are case-insensitive identifiers. Duplicate names fail during
+registration so the host fails fast at startup.</p>
+<h2 id="field-level-rules">Field-Level Rules</h2>
+<p>Field-level rules are attached to a bound control through
+<code>ValidationOverride.AddRules</code>. The runtime context includes the current field
+value, field name, control id, full record, parameters, and metadata.</p>
+<pre><code class="language-csharp">new ControlDefinition(
+    &quot;customer-name&quot;,
+    &quot;text&quot;,
+    new Rect(24, 72, 240, 32),
+    new BindingDefinition(&quot;Name&quot;, &quot;TwoWay&quot;),
+    PropertyBag.Empty,
+    new ValidationOverride(
+        DisableInferredRules: false,
+        AddRules:
+        [
+            new ValidationRule(
+                &quot;CustomerNamePolicy&quot;,
+                &quot;Use the real customer name, not a placeholder.&quot;,
+                new Dictionary&lt;string, object?&gt;
+                {
+                    [&quot;blockedText&quot;] = &quot;test&quot;,
+                }),
+        ],
+        DisableRuleIds: []));
+</code></pre>
+<p>The fallback message is used when the callback returns a failure without a more
+specific message. Parameters are converted to <code>DbValue</code> and are available through
+<code>context.Parameters</code>.</p>
+<h2 id="form-level-rules">Form-Level Rules</h2>
+<p>Form-level rules live on <code>FormDefinition.ValidationRules</code>. Use them for
+cross-field checks and global save policies. A form-level callback can return
+field-specific failures or global failures. A failure with <code>FieldName = null</code> or
+an empty field name is shown as a form-level error.</p>
+<pre><code class="language-csharp">builder.Services.AddCSharpDbAdminFormValidationRules(rules =&gt;
+{
+    rules.AddRule(
+        &quot;CustomerReadyForInsert&quot;,
+        static context =&gt;
+        {
+            string status = context.Record.TryGetValue(&quot;Status&quot;, out DbValue value)
+                &amp;&amp; !value.IsNull
+                    ? value.AsText
+                    : string.Empty;
+
+            return string.Equals(status, &quot;Ready&quot;, StringComparison.OrdinalIgnoreCase)
+                ? DbValidationRuleResult.Success()
+                : DbValidationRuleResult.Failure(
+                    [
+                        new DbValidationFailure(
+                            &quot;Status&quot;,
+                            &quot;Customer status must be Ready before save.&quot;,
+                            context.RuleName),
+                    ],
+                    &quot;Customer record is not ready.&quot;);
+        });
+});
+</code></pre>
+<p>Attach the rule to the form:</p>
+<pre><code class="language-csharp">var form = existingForm with
+{
+    ValidationRules =
+    [
+        new ValidationRule(
+            &quot;CustomerReadyForInsert&quot;,
+            &quot;Customer status must be Ready before save.&quot;,
+            new Dictionary&lt;string, object?&gt;()),
+    ],
+};
+</code></pre>
+<h2 id="runtime-context">Runtime Context</h2>
+<p>Every rule receives <code>DbValidationRuleContext</code>:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Property</th>
+  <th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>RuleName</code></td>
+  <td>The registered callback name.</td>
+</tr>
+<tr>
+  <td><code>Scope</code></td>
+  <td><code>Field</code> or <code>Form</code>.</td>
+</tr>
+<tr>
+  <td><code>Record</code></td>
+  <td>Full current record as <code>IReadOnlyDictionary&lt;string, DbValue&gt;</code>.</td>
+</tr>
+<tr>
+  <td><code>Parameters</code></td>
+  <td>JSON parameters from form metadata as <code>DbValue</code>s.</td>
+</tr>
+<tr>
+  <td><code>Metadata</code></td>
+  <td>Surface, owner, location, correlation id, and form details.</td>
+</tr>
+<tr>
+  <td><code>FormId</code>, <code>FormName</code>, <code>TableName</code></td>
+  <td>Current form source metadata.</td>
+</tr>
+<tr>
+  <td><code>ControlId</code>, <code>FieldName</code>, <code>Value</code></td>
+  <td>Field-level context; null/default for form-level rules.</td>
+</tr>
+<tr>
+  <td><code>FallbackMessage</code></td>
+  <td>Designer-provided fallback message.</td>
+</tr>
+</tbody>
+</table>
+<p>Validation callbacks are asynchronous:</p>
+<pre><code class="language-csharp">public delegate ValueTask&lt;DbValidationRuleResult&gt; DbValidationRuleDelegate(
+    DbValidationRuleContext context,
+    CancellationToken ct);
+</code></pre>
+<p>Pass the cancellation token to host I/O. If a rule uses host services, capture
+thread-safe services in the registration closure or register the rule from a
+host-owned composition root.</p>
+<h2 id="policy">Policy</h2>
+<p>Validation rules request the <code>DbExtensionCapability.ValidationRules</code>
+capability. <code>DbExtensionPolicies.DefaultHostCallbackPolicy</code> grants validation
+rules by default. If the host uses a custom policy, it must grant that
+capability:</p>
+<pre><code class="language-csharp">builder.Services.AddSingleton(new DbExtensionPolicy(
+    AllowExtensions: true,
+    Grants:
+    [
+        new DbExtensionCapabilityGrant(
+            DbExtensionCapability.ValidationRules,
+            DbExtensionCapabilityGrantStatus.Granted,
+            Exports: [&quot;CustomerNamePolicy&quot;, &quot;CustomerReadyForInsert&quot;]),
+    ],
+    DefaultTimeout: TimeSpan.FromSeconds(5),
+    RequireSignature: true,
+    AllowedHostModes: DbExtensionHostMode.Embedded));
+</code></pre>
+<p>Scoped grants can use <code>Exports</code>, <code>Tables</code>, and <code>Scope</code>. Deny grants take
+precedence over allows when both match a callback request.</p>
+<h2 id="failure-behavior">Failure Behavior</h2>
+<p>Validation rules fail closed. Save is blocked when a rule is:</p>
+<ul>
+<li>not registered</li>
+<li>denied by policy</li>
+<li>timed out</li>
+<li>canceled by the validation runtime</li>
+<li>throwing an exception</li>
+<li>returning a failed result</li>
+</ul>
+<p>The Admin callbacks tab shows registered validation rules, saved references,
+policy decisions, and diagnostics history. Missing references mean saved form
+metadata names a rule that the current host has not registered.</p>
+<h2 id="generated-stubs">Generated Stubs</h2>
+<p>Forms export automation metadata for validation rule references. The callback
+catalog can generate starter registrations:</p>
+<pre><code class="language-csharp">public static void Register(
+    DbFunctionRegistryBuilder functions,
+    DbCommandRegistryBuilder commands,
+    DbValidationRuleRegistryBuilder validationRules)
+{
+    validationRules.AddRule(
+        &quot;CustomerNamePolicy&quot;,
+        new DbValidationRuleOptions(
+            Description: &quot;TODO: describe validation rule.&quot;),
+        static async (context, ct) =&gt;
+        {
+            await ValueTask.CompletedTask;
+            return DbValidationRuleResult.Success();
+        });
+}
+</code></pre>
+<p>The generated code is a handoff artifact. Keep the rule implementation in the
+host project, not in form JSON or database metadata.</p>
+<h2 id="runnable-sample">Runnable Sample</h2>
+<p>The trusted host sample registers scalar functions, commands, and validation
+rules:</p>
+<pre><code class="language-powershell">dotnet run --project samples\trusted-csharp-host\TrustedCSharpHostSample.csproj
+</code></pre>
+<p>The sample exports form automation metadata, validates that the referenced
+callbacks are registered, prints generated stubs, and runs a validation demo.</p>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

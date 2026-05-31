@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>Database DevOps Toolkit — CSharpDB</title>
+    <meta name="description" content="CSharpDB Database DevOps Toolkit guide for schema compare, data compare, drift reports, script previews, and Admin Compare / Deploy.">
+    <link rel="canonical" href="https://csharpdb.com/docs/database-devops.html">
+    <meta property="og:title" content="Database DevOps Toolkit — CSharpDB">
+    <meta property="og:description" content="CSharpDB Database DevOps Toolkit guide for schema compare, data compare, drift reports, script previews, and Admin Compare / Deploy.">
+    <meta property="og:url" content="https://csharpdb.com/docs/database-devops.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "Database DevOps Toolkit",
+        "description": "CSharpDB Database DevOps Toolkit guide for schema compare, data compare, drift reports, script previews, and Admin Compare / Deploy.",
+        "url": "https://csharpdb.com/docs/database-devops.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+    <style>
+        .doc-toc .toc-child a { padding-left: 14px; font-size: 0.83rem; }
+        .source-ref-body .code-block { margin: 20px 0 24px; }
+    </style>
+</head>
+<body>
+    <script>
+    window.currentPage = 'docs'; window.pagePathPrefix = '../';
+    window.pageConfig = {
+        title: 'Database DevOps Toolkit',
+        description: 'CSharpDB Database DevOps Toolkit guide for schema compare, data compare, drift reports, script previews, and Admin Compare / Deploy.',
+        keywords: 'CSharpDB database DevOps, schema compare, data compare, drift report, compare deploy, script preview',
+        canonicalPath: 'docs/database-devops.html',
+        ogType: 'article',
+    };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+
+            <aside class="doc-sidebar">
+                <nav class="doc-toc">
+                    <h4>On This Page</h4>
+                    <ul>
+                        <li><a href="#summary-and-goals">Summary And Goals</a></li>
+                        <li><a href="#current-foundation">Current Foundation</a></li>
+                        <li><a href="#implementation-status">Implementation Status</a></li>
+                        <li><a href="#v1-toolkit-scope">V1 Toolkit Scope</a></li>
+                        <li><a href="#compare-targets">Compare Targets</a></li>
+                        <li><a href="#schema-compare">Schema Compare</a></li>
+                        <li><a href="#data-compare">Data Compare</a></li>
+                        <li><a href="#drift-reports">Drift Reports</a></li>
+                        <li><a href="#deployment-script-generation">Deployment Script Generation</a></li>
+                        <li><a href="#cli-and-admin-workflows">CLI And Admin Workflows</a></li>
+                        <li><a href="#future-toolkit-phases">Future Toolkit Phases</a></li>
+                        <li><a href="#non-goals">Non-Goals</a></li>
+                        <li><a href="#phased-implementation-plan">Phased Implementation Plan</a></li>
+                        <li><a href="#future-test-plan">Future Test Plan</a></li>
+                    </ul>
+                </nav>
+            </aside>
+            <div class="doc-content source-ref-body">
+                <div class="callout callout-info"><strong>Consolidated documentation.</strong> Migrated from docs/database-devops-toolkit/README.md because the first implementation is now shipped through CLI and Admin.</div>
+<h1 id="database-devops-toolkit">Database DevOps Toolkit</h1>
+<p>This page captures the first-party CSharpDB Database DevOps Toolkit. The
+current implementation focuses on compare and deploy workflows that help
+developers and operators understand differences between databases, archives,
+and environments before applying changes.</p>
+<h2 id="summary-and-goals">Summary And Goals</h2>
+<p>The toolkit makes database change management a normal CSharpDB workflow
+instead of an external script collection. V1 helps users answer:</p>
+<ul>
+<li>What schema changed between two databases?</li>
+<li>What rows differ between a live table and another database or archive?</li>
+<li>Has a database drifted from a known baseline?</li>
+<li>What SQL would synchronize the target with the source?</li>
+<li>Which changes are destructive and need explicit review?</li>
+</ul>
+<p>The goal is a scriptable CLI and visual Admin experience backed by the same
+shared comparison services.</p>
+<h2 id="current-foundation">Current Foundation</h2>
+<p>CSharpDB already has the primitives needed for a compare/deploy toolkit:</p>
+<ul>
+<li><code>ICSharpDbClient</code> exposes schema, table, index, view, trigger, procedure,
+data, maintenance, backup, and inspection operations across direct and remote
+transports.</li>
+<li>Client backup and restore can create database-level snapshots.</li>
+<li>Native <code>.csdbtable</code> archives can export table schema and rows with manifest
+metadata.</li>
+<li>Admin already has object explorer, query tabs, storage/maintenance tooling,
+Import / Export, and table browsing.</li>
+<li>The <code>csharpdb</code> CLI already has interactive SQL, maintenance, inspection, ETL,
+backup, restore, and script execution commands.</li>
+</ul>
+<p>The toolkit should build on those surfaces instead of creating separate
+database access paths.</p>
+<h2 id="implementation-status">Implementation Status</h2>
+<p>The first implementation checkpoint is in place:</p>
+<ul>
+<li><code>CSharpDB.DevOps</code> contains shared schema compare models, live database target
+reads through <code>ICSharpDbClient</code>, <code>.csdbtable</code> archive target reads, schema diff
+services, JSON-safe result contracts, and deployment preview script rendering.</li>
+<li><code>csharpdb compare schema &lt;source&gt; &lt;target&gt; [--json] [--script-out &lt;file&gt;]</code>
+compares two existing database files or <code>.csdbtable</code> archives and can emit a
+preview script.</li>
+<li><code>csharpdb compare data &lt;source&gt; &lt;target&gt; --table &lt;name&gt; [--key &lt;columns&gt;] [--json] [--script-out &lt;file&gt;]</code> performs keyed row comparison and can emit a
+preview data sync script with <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> statements.</li>
+<li><code>csharpdb drift &lt;dbfile&gt; --baseline &lt;archive-or-dbfile&gt; [--table &lt;name&gt;] [--key &lt;columns&gt;] [--json]</code> reports schema drift and optional table-level
+data drift. It returns a warning exit code when drift is found.</li>
+<li>Script generation is preview-oriented: missing tables, added columns, indexes,
+views, triggers, and data row changes can be emitted as SQL, while destructive
+or unsupported schema changes are commented with warnings for review.</li>
+<li>Admin includes a Compare / Deploy workspace under Tools and table context
+menus. It supports independent source and target selection, schema compare,
+data compare, drift summaries, object-level schema script-out with optional
+related indexes/triggers/views/procedures, direct script-out from a selected
+table, script previews, stale-preview tracking, and confirmation-gated apply
+through the existing
+<code>ICSharpDbClient.ExecuteSqlAsync</code> path.</li>
+</ul>
+<h2 id="v1-toolkit-scope">V1 Toolkit Scope</h2>
+<p>V1 is focused on compare/deploy:</p>
+<ul>
+<li>Schema compare.</li>
+<li>Data compare.</li>
+<li>Drift reports.</li>
+<li>Generated schema deployment scripts.</li>
+<li>Generated data sync scripts.</li>
+<li>CLI commands for automation and CI.</li>
+<li>Admin Compare / Deploy workflow for visual review.</li>
+</ul>
+<p>V1 does not ship masking, cloning, monitoring, SQL linting, dependency graphs,
+or SQL unit testing as finished features. Those remain future toolkit phases.</p>
+<h2 id="compare-targets">Compare Targets</h2>
+<p>The first implementation supports these target types:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Target</th>
+  <th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Live CSharpDB database</td>
+  <td>Compare an active database through <code>ICSharpDbClient</code>.</td>
+</tr>
+<tr>
+  <td>Backup database</td>
+  <td>Open or restore a database backup as a comparison target.</td>
+</tr>
+<tr>
+  <td><code>.csdbtable</code> table archive</td>
+  <td>Compare a live table to an exported table snapshot.</td>
+</tr>
+<tr>
+  <td>SQL script target</td>
+  <td>Future source-control target for schema scripts and migrations.</td>
+</tr>
+</tbody>
+</table>
+<p>Target adapters should normalize schema and row access behind shared toolkit
+interfaces so CLI and Admin use the same comparison behavior.</p>
+<h2 id="schema-compare">Schema Compare</h2>
+<p>Schema compare should identify structural differences between source and target
+schemas.</p>
+<p>V1 should cover:</p>
+<ul>
+<li>Added, removed, and changed tables.</li>
+<li>Added, removed, and changed columns.</li>
+<li>Column type, nullability, identity, primary-key, collation, and foreign-key
+differences where metadata is available.</li>
+<li>Added, removed, and changed indexes.</li>
+<li>Added, removed, and changed views.</li>
+<li>Added, removed, and changed triggers.</li>
+<li>Added, removed, and changed procedures.</li>
+</ul>
+<p>The output should group changes by object type and include warnings for
+destructive changes such as dropped tables, dropped columns, type changes, and
+nullable-to-not-null changes.</p>
+<h2 id="data-compare">Data Compare</h2>
+<p>Data compare should identify row-level differences for selected tables.</p>
+<p>V1 should report:</p>
+<ul>
+<li>Rows present in source but missing in target.</li>
+<li>Rows present in target but missing in source.</li>
+<li>Rows present in both with changed column values.</li>
+<li>Rows that cannot be matched because no stable key is available.</li>
+</ul>
+<p>Default key behavior:</p>
+<ul>
+<li>Use the table primary key when one exists.</li>
+<li>Require explicit <code>--key &lt;columns&gt;</code> when no primary key or stable key exists.</li>
+<li>Support composite keys when explicitly supplied.</li>
+<li>Treat <code>NULL</code>, text collation, and blobs consistently with CSharpDB value
+comparison semantics.</li>
+</ul>
+<p>The comparison should stream rows where practical so large tables do not require
+loading both sides fully into memory.</p>
+<h2 id="drift-reports">Drift Reports</h2>
+<p>Drift reports compare a database against a known baseline and summarize whether
+the current database still matches the expected state.</p>
+<p>V1 baseline sources:</p>
+<ul>
+<li>Backup database.</li>
+<li><code>.csdbtable</code> archive or archive manifest for table-level drift.</li>
+<li>Future SQL script/source-control target.</li>
+</ul>
+<p>The report should include:</p>
+<ul>
+<li>Schema drift summary.</li>
+<li>Optional data drift summary for selected tables.</li>
+<li>Destructive or risky differences.</li>
+<li>Machine-readable JSON output for CI.</li>
+<li>Human-readable CLI and Admin summaries.</li>
+</ul>
+<h2 id="deployment-script-generation">Deployment Script Generation</h2>
+<p>Generated scripts should be preview-first. The toolkit should never silently
+apply destructive changes.</p>
+<p>Schema deployment scripts should:</p>
+<ul>
+<li>Use dependency-aware ordering where metadata allows.</li>
+<li>Create missing objects before dependent objects.</li>
+<li>Warn for destructive changes.</li>
+<li>Avoid pretending every destructive schema change is automatically safe.</li>
+</ul>
+<p>Data sync scripts should:</p>
+<ul>
+<li>Use normal <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> statements.</li>
+<li>Escape values correctly, including text, blobs, and nulls.</li>
+<li>Use primary key or explicit key predicates.</li>
+<li>Refuse script generation when no stable key exists.</li>
+</ul>
+<p>CLI execution of generated scripts should require an explicit apply option in a
+future runtime implementation. Admin execution should require a confirmation
+step after preview.</p>
+<h2 id="cli-and-admin-workflows">CLI And Admin Workflows</h2>
+<p>CLI shapes:</p>
+<pre><code class="language-powershell">csharpdb compare schema &lt;source&gt; &lt;target&gt; [--json] [--script-out &lt;file&gt;]
+csharpdb compare data &lt;source&gt; &lt;target&gt; --table &lt;name&gt; [--key &lt;columns&gt;] [--json] [--script-out &lt;file&gt;]
+csharpdb drift &lt;dbfile&gt; --baseline &lt;archive-or-manifest&gt; [--json]
+</code></pre>
+<p>Admin workflow:</p>
+<ul>
+<li>Use the <code>Compare / Deploy</code> entry under Tools, command palette, or a table
+context menu.</li>
+<li>Choose source and target independently from current Admin database, database
+file, or <code>.csdbtable</code> table archive endpoints.</li>
+<li>Apply generated scripts only to writable targets: the current Admin database
+or a database file. Table archive targets are read-only compare inputs.</li>
+<li>Show schema diffs grouped by object type.</li>
+<li>Show data diffs for selected tables with insert, update, and delete counts
+plus row previews.</li>
+<li>Surface destructive or risky changes as warnings in the diff and generated
+script.</li>
+<li>Show generated schema or data deployment script previews.</li>
+<li>Script a selected table, view, index, trigger, or procedure from either
+selected endpoint. Table scripting can include or exclude indexes, triggers,
+related views, and related procedures.</li>
+<li>Open a selected table's script directly from Object Explorer, the table tab,
+or command palette with the table preselected and scripted.</li>
+<li>Require an explicit confirmation before executing generated scripts.</li>
+</ul>
+<h2 id="future-toolkit-phases">Future Toolkit Phases</h2>
+<p>After compare/deploy, the toolkit can expand into:</p>
+<ul>
+<li>Data masking and anonymization.</li>
+<li>Lightweight clones for development and testing.</li>
+<li>Database monitoring and health history.</li>
+<li>SQL formatting and linting.</li>
+<li>Dependency and impact analysis for table/column changes.</li>
+<li>SQL-level unit tests.</li>
+<li>Source-control schema baselines and migration review.</li>
+<li>Single-row or table restore from archives.</li>
+</ul>
+<p>These should reuse the same target adapters, diff models, archive readers, and
+Admin/CLI surfaces where possible.</p>
+<h2 id="non-goals">Non-Goals</h2>
+<ul>
+<li>No masking or anonymization in V1.</li>
+<li>No lightweight clone feature in V1.</li>
+<li>No production monitoring dashboard in V1.</li>
+<li>No SQL formatter or linter in V1.</li>
+<li>No dependency graph or impact analyzer in V1.</li>
+<li>No SQL unit testing framework in V1.</li>
+<li>No SQL script/source-control target required for V1.</li>
+<li>No silent execution of destructive generated scripts.</li>
+</ul>
+<h2 id="phased-implementation-plan">Phased Implementation Plan</h2>
+<p>Phase 1: shared compare foundation.</p>
+<ul>
+<li>Add shared toolkit models and target adapters.</li>
+<li>Implement live database and <code>.csdbtable</code> archive target reads.</li>
+<li>Implement schema diff output for tables, columns, indexes, views, triggers,
+and procedures.</li>
+<li>Add JSON result contracts for CLI and Admin.</li>
+</ul>
+<p>Phase 2: schema deploy scripts.</p>
+<ul>
+<li>Generate schema deployment script previews from schema diffs.</li>
+<li>Add destructive-change warnings.</li>
+<li>Add CLI schema compare command with JSON and script output.</li>
+<li>Add Admin schema diff preview.</li>
+<li>Status: implemented.</li>
+</ul>
+<p>Phase 3: data compare and sync scripts.</p>
+<ul>
+<li>Implement keyed row comparison for selected tables.</li>
+<li>Generate data sync script previews.</li>
+<li>Add CLI data compare command.</li>
+<li>Add Admin data diff preview.</li>
+<li>Status: implemented.</li>
+</ul>
+<p>Phase 4: drift reports.</p>
+<ul>
+<li>Add baseline comparison against backups and table archives.</li>
+<li>Add CLI drift command.</li>
+<li>Add Admin drift summary.</li>
+<li>Add CI-oriented JSON output and failure codes.</li>
+<li>Status: implemented.</li>
+</ul>
+<h2 id="future-test-plan">Future Test Plan</h2>
+<ul>
+<li>Schema diff tests for tables, columns, indexes, views, triggers, and
+procedures.</li>
+<li>Data diff tests for inserted, deleted, updated, null, blob, composite-key,
+missing-key, and empty-table cases.</li>
+<li>Archive target tests comparing live table data to <code>.csdbtable</code> exports.</li>
+<li>Script generation tests for ordering, escaping, destructive warnings, and
+invalid sync cases.</li>
+<li>CLI tests for schema compare, data compare, drift, JSON output, script output,
+and validation failures.</li>
+<li>Admin service tests for target loading, diff preview, script preview, and
+destructive execution confirmation.</li>
+</ul>
+
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
+    <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
   </ItemGroup>
 
 </Project>

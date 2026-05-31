@@ -26,7 +26,7 @@ Current release health:
 |---|---|
 | Latest release guardrail | `PASS` |
 | Latest compare | `PASS=187, WARN=0, SKIP=0, FAIL=0` |
-| Promotion state | Current published tables are promoted from the April 26, 2026 release-core suite |
+| Promotion state | Current published tables remain promoted from the May 6, 2026 release-core suite; the May 31, 2026 guardrail close-out is clean for current code after the temporary-table hot-path fix |
 | Durability default | CSharpDB values are durable unless a row explicitly says otherwise |
 
 ## Core Performance Scorecard
@@ -41,10 +41,12 @@ The generated block below contains the scorecard first, then the current core re
 | Field | Value |
 |---|---|
 | Published snapshot | May 6, 2026 release-core snapshot |
-| Run date | Release-core artifacts captured May 6, 2026 UTC; latest release guardrail compare captured May 6, 2026 UTC |
-| Promotion status | Published tables are promoted from the May 6 release-core suite; latest release guardrail compare passed after focused close-out validation |
+| Run date | Release-core artifacts captured May 6, 2026 UTC; latest release guardrail close-out captured May 31, 2026 UTC |
+| Promotion status | Published tables remain promoted from the May 6 release-core suite; the May 31 guardrail close-out is clean for current code after the temporary-table hot-path fix, but no newer release-core scorecard was promoted |
 | Latest release guardrail | PASS=187, WARN=0, SKIP=0, FAIL=0 |
-| Runner | Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7 |
+| Close-out note | Full post-fix guardrail produced the current micro and diagnostic artifacts; WriteTransaction Diagnostics stopped once during the full wrapper, then the identical focused repeat completed and was staged before the final compare |
+| Published runner | Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.7 |
+| Latest compare runner | Intel i9-11900K, 16 logical cores, Windows 10.0.26300, .NET SDK 10.0.203, .NET runtime 10.0.8 |
 | Repro mode | priority=High, affinity=0xFF when captured with --repro |
 | Commit | 47a700950a150669ce404294c594dd845550f460 |
 
@@ -66,7 +68,7 @@ These are the headline rows readers should use first. Detailed tables below map 
 
 | Area | Metric | Result | Source |
 |---|---|---|---|
-| Release health | Latest guardrail compare | PASS: PASS=187, FAIL=0 | `Run-Perf-Guardrails.ps1 -Mode release` after close-out validation |
+| Release health | Latest guardrail compare | PASS: PASS=187, FAIL=0 | `Run-Perf-Guardrails.ps1 -Mode release` after the temp-table hot-path fix, with focused `--write-transaction-diagnostics --repeat 3 --repro` close-out for the interrupted wrapper step |
 | SQL durable write | Single INSERT | 267.1 ops/sec | `master` |
 | SQL durable write | Batch x100 | 25.56K rows/sec | `master` |
 | SQL hot read | Point lookup | 1.48M ops/sec | `master` |
