@@ -758,7 +758,7 @@ public sealed class Database : IAsyncDisposable
         SimplePrimaryKeyLookupSql lookup,
         CancellationToken ct)
     {
-        if (_planner.HasTemporaryTable(lookup.TableName))
+        if (_temporaryTables.HasAnyTableContext && _planner.HasTemporaryTable(lookup.TableName))
         {
             var tempLookupStatement = Parser.Parse(SelectToSql(lookup));
             return await ExecuteStatementAsync(tempLookupStatement, ct);
@@ -931,7 +931,7 @@ public sealed class Database : IAsyncDisposable
 
     private async ValueTask<QueryResult> ExecuteSimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
     {
-        if (_planner.HasTemporaryTable(insert.TableName))
+        if (_temporaryTables.HasAnyTableContext && _planner.HasTemporaryTable(insert.TableName))
         {
             return await _planner.ExecuteSimpleInsertAsync(
                 insert,

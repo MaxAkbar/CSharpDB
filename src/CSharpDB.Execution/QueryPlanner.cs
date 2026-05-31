@@ -751,8 +751,12 @@ public sealed class QueryPlanner
         return committed;
     }
 
+    public bool HasTemporaryTables => _temporaryTables?.HasAnyTableContext == true;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool HasTemporaryTable(string tableName) =>
-        _temporaryTables?.HasTable(tableName) == true;
+        _temporaryTables is { HasAnyTableContext: true } temporaryTables &&
+        temporaryTables.HasTable(tableName);
 
     public bool ShouldExecuteInSessionTemporaryState(Statement stmt) =>
         stmt switch
@@ -5282,7 +5286,7 @@ public sealed class QueryPlanner
         if (_cteData != null)
             return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
 
-        if (TableRefContainsTemporaryTable(stmt.From))
+        if (HasTemporaryTables && TableRefContainsTemporaryTable(stmt.From))
             return ExecuteSelectGeneral(stmt, suppressAdaptiveReoptimization);
 
         if (_selectPlanCache.TryGetValue(stmt, out var cachedPlan))
@@ -5438,7 +5442,7 @@ public sealed class QueryPlanner
             stmt.From is not JoinTableRef join ||
             stmt.Columns.Any(static c => c.IsStar) ||
             ContainsSubqueries(stmt) ||
-            TableRefContainsTemporaryTable(stmt.From) ||
+            (HasTemporaryTables && TableRefContainsTemporaryTable(stmt.From)) ||
             !IsAdaptiveJoinCandidate(join))
         {
             return null;
@@ -5504,7 +5508,7 @@ public sealed class QueryPlanner
         if (stmt.Columns.Any(static c => c.IsStar))
             return stmt.From;
 
-        if (TableRefContainsTemporaryTable(stmt.From))
+        if (HasTemporaryTables && TableRefContainsTemporaryTable(stmt.From))
             return stmt.From;
 
         if (preserveJoinOrderForRowGoal)
@@ -16855,8 +16859,8 @@ public sealed class QueryPlanner
 
     private bool TryGetTemporaryTable(string tableName, out TableSchema schema)
     {
-        if (_temporaryTables is not null)
-            return _temporaryTables.TryGetTable(tableName, out schema);
+        if (_temporaryTables is { HasAnyTableContext: true } temporaryTables)
+            return temporaryTables.TryGetTable(tableName, out schema);
 
         schema = null!;
         return false;

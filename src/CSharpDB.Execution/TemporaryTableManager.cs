@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.BTrees;
 using CSharpDB.Storage.Catalog;
@@ -13,6 +14,7 @@ internal sealed class TemporaryTableManager : IAsyncDisposable
     private readonly AsyncLocal<object?> _currentSessionKey = new();
     private readonly Dictionary<object, StorageEngineContext> _sessionContexts = new();
     private StorageEngineContext? _defaultContext;
+    private int _contextCount;
 
     public TemporaryTableManager(StorageEngineOptions storageOptions)
     {
@@ -20,8 +22,16 @@ internal sealed class TemporaryTableManager : IAsyncDisposable
         _storageOptions = storageOptions;
     }
 
-    public bool HasTable(string tableName) =>
-        GetCurrentContextOrNull()?.Catalog.GetTable(tableName) is not null;
+    public bool HasAnyTableContext => Volatile.Read(ref _contextCount) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool HasTable(string tableName)
+    {
+        if (!HasAnyTableContext)
+            return false;
+
+        return GetCurrentContextOrNull()?.Catalog.GetTable(tableName) is not null;
+    }
 
     public bool TryGetTable(string tableName, out TableSchema schema)
     {
@@ -142,13 +152,16 @@ internal sealed class TemporaryTableManager : IAsyncDisposable
             {
                 StorageEngineContext defaultContext = _defaultContext;
                 _defaultContext = null;
+                Interlocked.Decrement(ref _contextCount);
                 await defaultContext.Pager.DisposeAsync();
             }
 
             if (_sessionContexts.Count > 0)
             {
                 StorageEngineContext[] sessionContexts = _sessionContexts.Values.ToArray();
+                int removedCount = _sessionContexts.Count;
                 _sessionContexts.Clear();
+                Interlocked.Add(ref _contextCount, -removedCount);
                 foreach (StorageEngineContext context in sessionContexts)
                     await context.Pager.DisposeAsync();
             }
@@ -195,9 +208,15 @@ internal sealed class TemporaryTableManager : IAsyncDisposable
         object? sessionKey = _currentSessionKey.Value;
         if (sessionKey is null)
         {
+            if (_defaultContext is null)
+                Interlocked.Increment(ref _contextCount);
+
             _defaultContext = context;
             return;
         }
+
+        if (!_sessionContexts.ContainsKey(sessionKey))
+            Interlocked.Increment(ref _contextCount);
 
         _sessionContexts[sessionKey] = context;
     }
@@ -207,6 +226,7 @@ internal sealed class TemporaryTableManager : IAsyncDisposable
         if (!_sessionContexts.Remove(sessionKey, out StorageEngineContext? context))
             return;
 
+        Interlocked.Decrement(ref _contextCount);
         await context.Pager.DisposeAsync();
     }
 
