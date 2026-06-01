@@ -108,6 +108,28 @@ public sealed class CSharpDbShardedClientTests
                 Enabled = true,
                 Path = catalogPath,
             };
+            options.Directories =
+            [
+                new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = "orders_by_id",
+                    TargetKeyspace = "tenants",
+                    Description = "order id lookup",
+                },
+            ];
+            options.DirectoryEntries =
+            [
+                new CSharpDbShardDirectoryEntry
+                {
+                    DirectoryName = "orders_by_id",
+                    LookupKey = "SO-1",
+                    TargetKeyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    ShardId = "s0",
+                    MapVersion = 1,
+                    State = "Active",
+                },
+            ];
 
             await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
             {
@@ -250,6 +272,28 @@ public sealed class CSharpDbShardedClientTests
                 Enabled = true,
                 Path = catalogPath,
             };
+            options.Directories =
+            [
+                new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = "orders_by_id",
+                    TargetKeyspace = "tenants",
+                    Description = "order id lookup",
+                },
+            ];
+            options.DirectoryEntries =
+            [
+                new CSharpDbShardDirectoryEntry
+                {
+                    DirectoryName = "orders_by_id",
+                    LookupKey = "SO-1",
+                    TargetKeyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    ShardId = "s0",
+                    MapVersion = 1,
+                    State = "Active",
+                },
+            ];
 
             await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
             {
@@ -349,6 +393,19 @@ public sealed class CSharpDbShardedClientTests
                 CSharpDbShardCatalogState pending = await client.GetShardCatalogAsync(Ct);
                 Assert.Equal(1, pending.ActiveMap.MapVersion);
                 Assert.Equal("s1", pending.PendingMap!.ExactKeyPins["tenant-a"]);
+                Assert.Equal(1, Assert.Single(pending.PendingMap.Directories).EntryCount);
+
+                CSharpDbShardMigrationHistoryEntry history = Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
+                Assert.Equal(migration.MigrationId, history.MigrationId);
+                Assert.Equal("ExactRouteKey", history.MigrationType);
+                Assert.True(history.Succeeded);
+                Assert.Equal("PendingActivation", history.Status);
+                Assert.Equal("tenant-a", history.RouteKey);
+                Assert.Equal("s0", history.SourceShardId);
+                Assert.Equal("s1", history.DestinationShardId);
+                Assert.Equal(2, history.PendingMapVersion);
+                Assert.Equal(2, Assert.Single(history.Tables).SourceRows);
+                Assert.Equal(1, Assert.Single(history.Collections).SourceDocuments);
             }
 
             await using (var reloaded = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
@@ -360,6 +417,8 @@ public sealed class CSharpDbShardedClientTests
                 }, Ct);
                 Assert.Equal("s1", resolution.ShardId);
                 Assert.Equal(2, resolution.MapVersion);
+                CSharpDbShardMapSnapshot reloadedMap = await reloaded.GetShardMapAsync(Ct);
+                Assert.Equal(1, Assert.Single(reloadedMap.Directories).EntryCount);
 
                 ICSharpDbClient tenantA = reloaded.ForRoute(new CSharpDbRouteContext
                 {
@@ -373,6 +432,9 @@ public sealed class CSharpDbShardedClientTests
                 JsonElement? document = await tenantA.GetDocumentAsync("order_documents", "doc-1", Ct);
                 Assert.NotNull(document);
                 Assert.Equal("paid", document.Value.GetProperty("status").GetString());
+
+                CSharpDbShardMigrationHistoryEntry history = Assert.Single(await reloaded.GetShardMigrationHistoryAsync(Ct));
+                Assert.Equal("PendingActivation", history.Status);
             }
         }
         finally
@@ -409,6 +471,12 @@ public sealed class CSharpDbShardedClientTests
             Assert.False(migration.Succeeded);
             Assert.Equal("Rejected", migration.Status);
             Assert.Contains(migration.Issues, issue => issue.Code == "missing-manifest-items");
+
+            CSharpDbShardMigrationHistoryEntry history = Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
+            Assert.Equal(migration.MigrationId, history.MigrationId);
+            Assert.Equal("Rejected", history.Status);
+            Assert.False(history.Succeeded);
+            Assert.Contains(history.Issues, issue => issue.Code == "missing-manifest-items");
         }
         finally
         {
@@ -447,6 +515,67 @@ public sealed class CSharpDbShardedClientTests
 
             await Assert.ThrowsAsync<CSharpDbClientException>(
                 () => ((ICSharpDbClient)client).ExecuteSqlAsync("SELECT 1;", Ct));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task ReadOnlyFanOut_ReturnsPerShardResultsAndRejectsWrites()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            await using var client = await CSharpDbShardedClient.CreateAsync(CreateOptions(directory), ct: Ct);
+            IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
+                await client.ExecuteSqlOnAllShardsAsync(
+                    "CREATE TABLE fanout_items (id INTEGER PRIMARY KEY, tenant_id TEXT, name TEXT);",
+                    Ct);
+            Assert.All(schemaResults, result => Assert.Null(result.Error));
+
+            ICSharpDbClient tenantA = client.ForRoute(new CSharpDbRouteContext
+            {
+                Keyspace = "tenants",
+                Key = "tenant-a",
+            });
+            ICSharpDbClient tenantB = client.ForRoute(new CSharpDbRouteContext
+            {
+                Keyspace = "tenants",
+                Key = "tenant-b",
+            });
+
+            Assert.Equal(1, await tenantA.InsertRowAsync("fanout_items", new Dictionary<string, object?>
+            {
+                ["id"] = 1L,
+                ["tenant_id"] = "tenant-a",
+                ["name"] = "alpha",
+            }, Ct));
+            Assert.Equal(1, await tenantB.InsertRowAsync("fanout_items", new Dictionary<string, object?>
+            {
+                ["id"] = 2L,
+                ["tenant_id"] = "tenant-b",
+                ["name"] = "bravo",
+            }, Ct));
+
+            IReadOnlyList<CSharpDbShardSqlExecutionResult> readResults =
+                await client.ExecuteReadOnlySqlOnAllShardsAsync(
+                    "SELECT COUNT(*) FROM fanout_items;",
+                    Ct);
+
+            Assert.Equal(2, readResults.Count);
+            Assert.All(readResults, result =>
+            {
+                Assert.Null(result.Error);
+                Assert.True(result.Result!.IsQuery);
+                Assert.Equal(1L, Assert.IsType<long>(Assert.Single(result.Result.Rows!)[0]));
+            });
+
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                () => client.ExecuteReadOnlySqlOnAllShardsAsync(
+                    "INSERT INTO fanout_items (id, tenant_id, name) VALUES (3, 'tenant-a', 'blocked');",
+                    Ct));
         }
         finally
         {

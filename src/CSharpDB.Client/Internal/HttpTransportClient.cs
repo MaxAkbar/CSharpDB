@@ -81,6 +81,20 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         }).ToList();
     }
 
+    public async Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteReadOnlySqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/sql/read-all"), new { Sql = sql }, ct);
+        var payload = await ReadRequiredAsync<List<ApiShardSqlExecutionResultResponse>>(response, ct);
+        return payload.Select(item => new CSharpDbShardSqlExecutionResult
+        {
+            ShardId = item.ShardId,
+            Result = item.Result is null ? null : MapSqlResult(item.Result),
+            Error = item.Error,
+        }).ToList();
+    }
+
     public async Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/catalog"), payload: null, ct);
@@ -109,6 +123,12 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/migrations/exact-route-key"), request, ct);
         return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/migrations"), payload: null, ct);
+        return await ReadRequiredAsync<List<CSharpDbShardMigrationHistoryEntry>>(response, ct);
     }
 
     public async Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)

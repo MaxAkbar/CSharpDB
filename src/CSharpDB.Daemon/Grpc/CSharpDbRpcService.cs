@@ -39,6 +39,14 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
             return response;
         });
 
+    public override Task<ShardSqlExecutionResultListResponse> ExecuteReadOnlySqlOnAllShards(SqlRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ExecuteReadOnlySqlOnAllShardsAsync(request.Sql, ct), value =>
+        {
+            var response = new ShardSqlExecutionResultListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
     public override Task<ShardCatalogStateMessage> GetShardCatalog(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => GetShardAdminClient().GetShardCatalogAsync(ct), GrpcModelMapper.ToMessage);
 
@@ -50,6 +58,14 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
 
     public override Task<ShardMigrationResultMessage> MigrateExactRouteKey(ShardExactKeyMigrationRequestMessage request, ServerCallContext context)
         => ExecuteAsync(context, ct => GetShardAdminClient().MigrateExactRouteKeyAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardMigrationHistoryListResponse> GetShardMigrationHistory(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMigrationHistoryAsync(ct), value =>
+        {
+            var response = new ShardMigrationHistoryListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
 
     public override Task<StringList> GetTableNames(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetTableNamesAsync(ct), GrpcModelMapper.ToStringList);

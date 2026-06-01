@@ -245,6 +245,12 @@ Implemented first slice:
   restarted.
 - Verification failure leaves the active map unchanged.
 - Missing manifest items are rejected.
+- Added catalog-backed migration history with `GetShardMigrationHistoryAsync`,
+  REST `GET /api/sharding/migrations`, and gRPC `GetShardMigrationHistory`.
+- Migration history records rejected, failed, and pending-activation outcomes
+  when catalog mode is writable.
+- Exact-key migration repairs matching shard-directory entries to the
+  destination shard and pending map version.
 
 Key work:
 
@@ -259,18 +265,15 @@ Key work:
 - Verify counts and checksums. (first slice implemented)
 - Update exact-key pins or bucket ownership only after verification. (exact-key
   pins implemented)
-- Record migration history and final status. (result status and catalog history
-  comment implemented; durable migration history remains)
+- Record migration history and final status. (first slice implemented)
 - Leave the old map active when migration verification fails. (first slice
   implemented)
 
 Remaining work:
 
-- Add durable migration history as a first-class catalog section, not only the
-  apply history comment.
 - Add resumable/retryable migration states for partial copy failures.
-- Add shard-directory repair or stale marking when directory entries point at
-  the old shard.
+- Add broader shard-directory repair/stale marking for partial and resumed
+  migrations.
 - Add bucket-range migration after exact-key movement is stable.
 - Add Admin UX for migration preview, progress, verification, and confirmation.
 
@@ -286,11 +289,22 @@ Admin workflow:
 Goal: provide explicit fan-out read tooling for diagnostics and Admin without
 claiming general distributed SQL support.
 
+Implemented first slice:
+
+- Added explicit read-only SQL fan-out through
+  `ICSharpDbShardAdminClient.ExecuteReadOnlySqlOnAllShardsAsync(...)`.
+- Added REST `POST /api/sharding/sql/read-all`.
+- Added gRPC `ExecuteReadOnlySqlOnAllShards`.
+- Validates SQL before fan-out and rejects DDL/DML statements.
+- Returns per-shard result sets and errors; it does not aggregate results into a
+  single distributed query result.
+
 Key work:
 
-- Add explicit scatter/gather read APIs for Admin and diagnostics.
+- Add explicit scatter/gather read APIs for Admin and diagnostics. SQL fan-out is
+  available first.
 - Support read-only fan-out SQL execution with per-shard results and per-shard
-  errors.
+  errors. Basic SQL validation is implemented for the first slice.
 - Present Admin output as per-shard result sets by default.
 - Add aggregate helpers only when they are explicit API operations.
 

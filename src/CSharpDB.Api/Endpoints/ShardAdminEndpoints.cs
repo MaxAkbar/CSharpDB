@@ -11,9 +11,11 @@ public static class ShardAdminEndpoints
         group.MapPost("/sharding/resolve", ResolveRoute);
         group.MapGet("/sharding/status", GetShardStatus);
         group.MapPost("/sharding/sql/execute-all", ExecuteSqlOnAllShards);
+        group.MapPost("/sharding/sql/read-all", ExecuteReadOnlySqlOnAllShards);
         group.MapGet("/sharding/catalog", GetShardCatalog);
         group.MapPost("/sharding/catalog/validate", ValidateShardCatalogUpdate);
         group.MapPost("/sharding/catalog/apply", ApplyShardCatalogUpdate);
+        group.MapGet("/sharding/migrations", GetShardMigrationHistory);
         group.MapPost("/sharding/migrations/exact-route-key", MigrateExactRouteKey);
         return group;
     }
@@ -66,6 +68,31 @@ public static class ShardAdminEndpoints
             result.Error)).ToList());
     }
 
+    private static async Task<IResult> ExecuteReadOnlySqlOnAllShards(
+        ExecuteSqlRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        try
+        {
+            IReadOnlyList<CSharpDbShardSqlExecutionResult> results =
+                await shardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(request.Sql, ct);
+
+            return Results.Ok(results.Select(result => new ShardSqlExecutionResultResponse(
+                result.ShardId,
+                result.Result is null ? null : SqlEndpoints.ToResponse(result.Result),
+                result.Error)).ToList());
+        }
+        catch (CSharpDbClientException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+    }
+
     private static async Task<IResult> GetShardCatalog(ICSharpDbClient db, CancellationToken ct)
     {
         ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
@@ -111,6 +138,15 @@ public static class ShardAdminEndpoints
 
         CSharpDbShardMigrationResult result = await shardAdmin.MigrateExactRouteKeyAsync(request, ct);
         return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> GetShardMigrationHistory(ICSharpDbClient db, CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        return Results.Ok(await shardAdmin.GetShardMigrationHistoryAsync(ct));
     }
 
     private static ICSharpDbShardAdminClient? GetShardAdmin(ICSharpDbClient db)

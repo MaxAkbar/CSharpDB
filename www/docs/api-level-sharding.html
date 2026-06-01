@@ -389,11 +389,22 @@ CSharpDbShardResolution preview = await shardAdmin.ResolveRouteAsync(new CSharpD
 IReadOnlyList&lt;CSharpDbShardStatus&gt; status = await shardAdmin.GetShardStatusAsync();</code></pre>
                 </div>
 
-                <p>The REST endpoints are <code>GET /api/sharding/map</code>, <code>POST /api/sharding/resolve</code>, <code>GET /api/sharding/status</code>, and <code>POST /api/sharding/sql/execute-all</code>. The gRPC contract exposes matching calls named <code>GetShardMap</code>, <code>ResolveShardRoute</code>, <code>GetShardStatus</code>, and <code>ExecuteSqlOnAllShards</code>.</p>
+                <p>The REST endpoints are <code>GET /api/sharding/map</code>, <code>POST /api/sharding/resolve</code>, <code>GET /api/sharding/status</code>, <code>POST /api/sharding/sql/execute-all</code>, and <code>POST /api/sharding/sql/read-all</code>. The gRPC contract exposes matching calls named <code>GetShardMap</code>, <code>ResolveShardRoute</code>, <code>GetShardStatus</code>, <code>ExecuteSqlOnAllShards</code>, and <code>ExecuteReadOnlySqlOnAllShards</code>.</p>
 
                 <div class="callout callout-info">
-                    <strong>Admin operations are explicit.</strong> Execute-on-all-shards is intended for schema setup and diagnostics. It returns one result per shard and does not create a distributed SQL planner.
+                    <strong>Admin operations are explicit.</strong> Execute-on-all-shards is intended for schema setup. Read-only fan-out is intended for diagnostics and Admin views. Both return one result per shard and do not create a distributed SQL planner.
                 </div>
+
+                <h3>Read-Only Fan-Out</h3>
+                <p>Use read-only fan-out when an operator needs a per-shard diagnostic view, such as row counts or simple health queries. CSharpDB validates the SQL before routing and rejects DDL/DML statements.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>IReadOnlyList&lt;CSharpDbShardSqlExecutionResult&gt; counts =
+    await shardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(
+        "SELECT COUNT(*) FROM orders;");</code></pre>
+                </div>
+
+                <p>The returned results stay grouped by shard. The caller decides whether to show each shard separately, merge rows for a report, or compute a small explicit rollup. Normal application paging should still use route-aware calls so the app controls the route keys and the amount of data read.</p>
 
                 <h3>Catalog-Backed Map Updates</h3>
                 <p>Operator-managed catalog mode lets a daemon load the shard map from a JSON catalog file at startup and persist proposed map changes through admin APIs. Applying a catalog change writes a pending map; it does not silently change the live router.</p>
@@ -471,7 +482,14 @@ CSharpDbShardCatalogApplyResult applied =
     });</code></pre>
                 </div>
 
-                <p>The REST endpoint is <code>POST /api/sharding/migrations/exact-route-key</code>. The gRPC contract exposes <code>MigrateExactRouteKey</code>. A successful migration returns <code>Status = "PendingActivation"</code> and <code>RequiresRestart = true</code>; the live router keeps the old map until restart. This slice does not move bucket ranges and does not infer ownership from arbitrary SQL predicates.</p>
+                <p>The REST endpoint is <code>POST /api/sharding/migrations/exact-route-key</code>. The gRPC contract exposes <code>MigrateExactRouteKey</code>. A successful migration returns <code>Status = "PendingActivation"</code> and <code>RequiresRestart = true</code>; the live router keeps the old map until restart.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>IReadOnlyList&lt;CSharpDbShardMigrationHistoryEntry&gt; history =
+    await shardAdmin.GetShardMigrationHistoryAsync();</code></pre>
+                </div>
+
+                <p>If shard-directory entries point at the moved route key, the pending catalog map updates those entries to the destination shard and pending map version. Writable catalog mode records rejected, failed, and pending-activation migration outcomes. Query history with <code>GET /api/sharding/migrations</code> or gRPC <code>GetShardMigrationHistory</code>. This slice does not move bucket ranges and does not infer ownership from arbitrary SQL predicates.</p>
 
                 <h2>ADO.NET</h2>
                 <p>ADO.NET callers can bind a connection to one route with connection-string keys. Every command on that connection is sent to the same route.</p>
@@ -504,14 +522,15 @@ await sharded.CommitTransactionAsync(tx.TransactionId);</code></pre>
                 <ul>
                     <li>Single-shard SQL execution when a route key is provided.</li>
                     <li>Single-shard row APIs, collection APIs, saved queries, procedures, and transaction sessions.</li>
-                    <li>Shard status checks and execute-on-all-shards schema setup helpers.</li>
+                    <li>Shard status checks, execute-on-all-shards schema setup helpers, and explicit read-only fan-out for diagnostics.</li>
                     <li>Operator-controlled exact route-key migration with manifest-based copy and verification.</li>
+                    <li>Catalog-backed migration history for exact route-key migration outcomes.</li>
                     <li>Direct, HTTP, gRPC, and ADO.NET route context propagation.</li>
                 </ul>
 
                 <h3>Not Supported In V1</h3>
                 <ul>
-                    <li>Cross-shard joins, aggregates, queries, or transactions.</li>
+                    <li>Automatic cross-shard joins, aggregates, arbitrary queries, or transactions.</li>
                     <li>Automatic resharding or data movement.</li>
                     <li>Automatic SQL inference from arbitrary <code>WHERE</code> clauses.</li>
                     <li>Replication, failover, or shard health based rerouting.</li>

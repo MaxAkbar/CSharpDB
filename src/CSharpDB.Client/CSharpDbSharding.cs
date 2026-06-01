@@ -247,6 +247,8 @@ public sealed class CSharpDbShardMigrationCollectionResult
 public sealed class CSharpDbShardMigrationResult
 {
     public required string MigrationId { get; init; }
+    public DateTimeOffset StartedUtc { get; init; }
+    public DateTimeOffset CompletedUtc { get; init; }
     public bool Succeeded { get; init; }
     public required string Status { get; init; }
     public required string Message { get; init; }
@@ -263,6 +265,30 @@ public sealed class CSharpDbShardMigrationResult
     public CSharpDbShardCatalogApplyResult? CatalogApplyResult { get; init; }
 }
 
+public sealed class CSharpDbShardMigrationHistoryEntry
+{
+    public required string MigrationId { get; init; }
+    public required string MigrationType { get; init; }
+    public DateTimeOffset StartedUtc { get; init; }
+    public DateTimeOffset CompletedUtc { get; init; }
+    public DateTimeOffset RecordedUtc { get; init; }
+    public bool Succeeded { get; init; }
+    public required string Status { get; init; }
+    public required string Message { get; init; }
+    public required string Keyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public required string SourceShardId { get; init; }
+    public required string DestinationShardId { get; init; }
+    public int MapVersion { get; init; }
+    public int? PendingMapVersion { get; init; }
+    public bool RequiresRestart { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+    public List<CSharpDbShardMigrationTableResult> Tables { get; init; } = [];
+    public List<CSharpDbShardMigrationCollectionResult> Collections { get; init; } = [];
+    public List<CSharpDbShardCatalogIssue> Issues { get; init; } = [];
+}
+
 public interface ICSharpDbShardAdminClient : IAsyncDisposable
 {
     string DataSource { get; }
@@ -271,10 +297,12 @@ public interface ICSharpDbShardAdminClient : IAsyncDisposable
     Task<CSharpDbShardResolution> ResolveRouteAsync(CSharpDbRouteContext routeContext, CancellationToken ct = default);
     Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default);
     Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(string sql, CancellationToken ct = default);
+    Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteReadOnlySqlOnAllShardsAsync(string sql, CancellationToken ct = default);
     Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default);
     Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
     Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
     Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(CSharpDbShardExactKeyMigrationRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default);
 }
 
 public interface ICSharpDbRouteContextAccessor

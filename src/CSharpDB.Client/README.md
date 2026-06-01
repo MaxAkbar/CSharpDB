@@ -207,6 +207,20 @@ operations. It exposes the map snapshot, route simulation, per-shard health, and
 explicit execute-on-all-shards SQL for schema setup. It does not add automatic
 cross-shard query planning.
 
+For diagnostics and Admin read screens, use the read-only fan-out helper:
+
+```csharp
+IReadOnlyList<CSharpDbShardSqlExecutionResult> counts =
+    await shardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(
+        "SELECT COUNT(*) FROM orders;");
+```
+
+`ExecuteReadOnlySqlOnAllShardsAsync(...)` validates the SQL before fan-out and
+rejects DDL/DML statements. Results stay grouped by shard so callers can show
+which shard produced each row set or error. Use
+`ExecuteSqlOnAllShardsAsync(...)` only for explicit operator actions such as
+schema setup.
+
 Phase 3 starts operator-managed catalog support. When
 `CSharpDbShardingOptions.Catalog.Enabled` is true, the sharded client can load a
 map from a catalog JSON file at startup. Catalog updates are validated and
@@ -278,8 +292,18 @@ CSharpDbShardMigrationResult migrated =
 
 Exact-key migration requires writable catalog mode. A successful migration
 returns `Status = "PendingActivation"` and `RequiresRestart = true`; the active
-router is not changed until the sharded client is recreated. The first Phase 4
-slice does not move bucket ranges or infer ownership from SQL predicates.
+router is not changed until the sharded client is recreated. If shard-directory
+entries point at the moved route key, the pending catalog map updates those
+entries to the destination shard and pending map version. Writable catalog mode
+also records migration history that can be queried later:
+
+```csharp
+IReadOnlyList<CSharpDbShardMigrationHistoryEntry> history =
+    await shardAdmin.GetShardMigrationHistoryAsync();
+```
+
+The first Phase 4 slice does not move bucket ranges or infer ownership from SQL
+predicates.
 
 V1 intentionally supports single-shard operations only. Cross-shard joins,
 cross-shard transactions, automatic resharding, replication, and failover remain

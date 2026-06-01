@@ -436,6 +436,33 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
             Assert.Contains("shard_admin_schema", await tenantA.GetTableNamesAsync(Ct));
             Assert.Contains("shard_admin_schema", await tenantB.GetTableNamesAsync(Ct));
+            Assert.Equal(1, await tenantA.InsertRowAsync("shard_admin_schema", new Dictionary<string, object?>
+            {
+                ["id"] = 1L,
+                ["name"] = "tenant-a",
+            }, Ct));
+            Assert.Equal(1, await tenantB.InsertRowAsync("shard_admin_schema", new Dictionary<string, object?>
+            {
+                ["id"] = 2L,
+                ["name"] = "tenant-b",
+            }, Ct));
+
+            IReadOnlyList<CSharpDbShardSqlExecutionResult> readResults =
+                await restAdmin.ExecuteReadOnlySqlOnAllShardsAsync(
+                    "SELECT COUNT(*) FROM shard_admin_schema;",
+                    Ct);
+            Assert.Equal(2, readResults.Count);
+            Assert.All(readResults, result =>
+            {
+                Assert.Null(result.Error);
+                Assert.True(result.Result!.IsQuery);
+                Assert.Equal(1L, Assert.IsType<long>(Assert.Single(result.Result.Rows!)[0]));
+            });
+
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                () => grpcAdmin.ExecuteReadOnlySqlOnAllShardsAsync(
+                    "CREATE TABLE read_all_rejected (id INTEGER PRIMARY KEY);",
+                    Ct));
         }
         finally
         {
@@ -643,6 +670,18 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal(1, pending.ActiveMap.MapVersion);
                 Assert.Equal(2, pending.PendingMap!.MapVersion);
                 Assert.Equal("s1", pending.PendingMap.ExactKeyPins["tenant-a"]);
+
+                CSharpDbShardMigrationHistoryEntry restHistory = Assert.Single(await restAdmin.GetShardMigrationHistoryAsync(Ct));
+                Assert.Equal(migration.MigrationId, restHistory.MigrationId);
+                Assert.Equal("ExactRouteKey", restHistory.MigrationType);
+                Assert.True(restHistory.Succeeded);
+                Assert.Equal("PendingActivation", restHistory.Status);
+                Assert.Equal("tenant-a", restHistory.RouteKey);
+
+                CSharpDbShardMigrationHistoryEntry grpcHistory = Assert.Single(await grpcAdmin.GetShardMigrationHistoryAsync(Ct));
+                Assert.Equal(restHistory.MigrationId, grpcHistory.MigrationId);
+                Assert.Equal(restHistory.Status, grpcHistory.Status);
+                Assert.Equal("s1", grpcHistory.DestinationShardId);
             }
 
             using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))

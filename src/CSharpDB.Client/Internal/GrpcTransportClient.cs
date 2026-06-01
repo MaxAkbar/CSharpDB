@@ -83,6 +83,14 @@ internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdmin
             response => (IReadOnlyList<CSharpDbShardSqlExecutionResult>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
             ct);
 
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteReadOnlySqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ExecuteReadOnlySqlOnAllShardsAsync(new SqlRequest { Sql = sql }, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardSqlExecutionResult>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
     public Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
         => CallAsync(_client.GetShardCatalogAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
@@ -108,6 +116,12 @@ internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdmin
         => CallAsync(
             _client.MigrateExactRouteKeyAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
             GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardMigrationHistoryAsync(EmptyRequest, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardMigrationHistoryEntry>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
             ct);
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)

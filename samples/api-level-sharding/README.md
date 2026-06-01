@@ -43,6 +43,7 @@ The sample models these user flows:
 - `ExactKeyPins` for operator-controlled placement of hot or archival months.
 - `ICSharpDbShardAdminClient` for map snapshots, route preview, shard status, and schema setup.
 - `ExecuteSqlOnAllShardsAsync(...)` for explicit schema setup across shards.
+- `ExecuteReadOnlySqlOnAllShardsAsync(...)` for diagnostic read-only fan-out with one result per shard.
 - `ForRoute(...)` for normal application requests.
 - `ForShardId(...)` for admin/debug inspection.
 - Application-level page filling across route keys when one UI page spans more than one month.
@@ -206,6 +207,29 @@ This usually fits infinite scroll better than numbered pages. It avoids global c
 
 This is application-level aggregation. CSharpDB V1 does not run a distributed query plan for this.
 
+## Diagnostic Read-Only Fan-Out
+
+The shard-admin surface also has a read-only fan-out helper for diagnostics and
+Admin screens. For example, an operator can ask every shard for an order count
+and display the result by shard:
+
+```csharp
+IReadOnlyList<CSharpDbShardSqlExecutionResult> counts =
+    await shardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(
+        "SELECT COUNT(*) FROM orders;");
+
+foreach (CSharpDbShardSqlExecutionResult shard in counts)
+{
+    Console.WriteLine($"{shard.ShardId}: {shard.Error ?? "ok"}");
+}
+```
+
+This is intentionally not the same as the customer order-history flow. The
+customer flow should keep using route-aware calls so the app controls which
+months are read, how much data is fetched, and how pages are filled. The
+read-only fan-out helper returns per-shard results and leaves any merge, rollup,
+or presentation decision to the caller.
+
 ## Operational Notes
 
 This is API-level routing, not distributed SQL. A normal request supplies one application-owned route key and lands on one shard. V1 does not infer the shard from arbitrary `WHERE` clauses, run cross-shard joins, move data automatically when bucket ownership changes, or coordinate cross-shard transactions.
@@ -214,4 +238,4 @@ For order history, the application owns the history navigation model. Recent ord
 
 The important invariant is that bucket ownership is stable. Adding a shard should be a migration project: copy the relevant data, update the bucket map version, deploy the new map, and verify ownership. Do not replace this with `hash(key) % shardCount`; changing the shard count would silently remap existing keys.
 
-Phase 4 starts that migration project with exact route-key movement. In catalog mode, an operator can call `MigrateExactRouteKeyAsync(...)` with a manifest for the route-owned tables and collections. CSharpDB fences writes for that route key, copies the matching rows/documents, verifies counts and checksums, then writes a pending exact-key pin that takes effect after the sharded client or daemon is restarted. Bucket-range movement and automatic SQL ownership inference remain outside this sample.
+Phase 4 starts that migration project with exact route-key movement. In catalog mode, an operator can call `MigrateExactRouteKeyAsync(...)` with a manifest for the route-owned tables and collections. CSharpDB fences writes for that route key, copies the matching rows/documents, verifies counts and checksums, then writes a pending exact-key pin that takes effect after the sharded client or daemon is restarted. The same catalog records migration history that can be read with `GetShardMigrationHistoryAsync()`. Bucket-range movement and automatic SQL ownership inference remain outside this sample.

@@ -307,6 +307,17 @@ writes a pending exact-key pin to the catalog. Restart the daemon after a
 successful migration to activate the new route. Bucket-range migration and
 automatic SQL ownership inference are not part of this slice.
 
+Migration history is stored in the same catalog file when catalog writes are
+enabled. Query it with REST `GET /api/sharding/migrations` or gRPC
+`GetShardMigrationHistory`. Matching shard-directory entries are also moved to
+the destination shard in the pending catalog map.
+
+Read-only fan-out is available for diagnostics and Admin views through REST
+`POST /api/sharding/sql/read-all` or gRPC `ExecuteReadOnlySqlOnAllShards`. The
+daemon rejects DDL/DML before routing the request and returns one result per
+shard. Use `/api/sharding/sql/execute-all` only for explicit operator actions
+such as schema setup.
+
 ### API-Key Security
 
 Set `CSharpDB:Daemon:Security:Mode=ApiKey` to protect both REST `/api/*` and
@@ -408,12 +419,17 @@ var preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
 
 The same surface is available through REST under `/api/sharding/map`,
 `/api/sharding/resolve`, `/api/sharding/status`, and
-`/api/sharding/sql/execute-all`. Catalog mode adds `/api/sharding/catalog`,
-`/api/sharding/catalog/validate`, `/api/sharding/catalog/apply`, and
+`/api/sharding/sql/execute-all`. Read-only fan-out is available through REST
+`/api/sharding/sql/read-all` and gRPC `ExecuteReadOnlySqlOnAllShards`; it
+validates SQL before fan-out and returns per-shard results without combining
+them into one distributed query result. Catalog mode adds
+`/api/sharding/catalog`, `/api/sharding/catalog/validate`,
+`/api/sharding/catalog/apply`, and `/api/sharding/migrations`; exact-key
+movement uses
 `/api/sharding/migrations/exact-route-key`. These
 endpoints are for topology, route simulation, health checks, explicit schema
-setup, operator-managed catalog updates, and exact route-key migration; they do
-not enable automatic cross-shard SQL.
+setup, read-only diagnostics, operator-managed catalog updates, and exact
+route-key migration; they do not enable automatic cross-shard SQL.
 
 Notes:
 

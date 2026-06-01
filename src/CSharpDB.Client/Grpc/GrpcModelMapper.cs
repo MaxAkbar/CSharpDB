@@ -861,6 +861,8 @@ public static class GrpcModelMapper
         var message = new ShardMigrationResultMessage
         {
             MigrationId = value.MigrationId,
+            StartedUtc = Timestamp.FromDateTimeOffset(value.StartedUtc),
+            CompletedUtc = Timestamp.FromDateTimeOffset(value.CompletedUtc),
             Succeeded = value.Succeeded,
             Status = value.Status,
             Message = value.Message,
@@ -883,6 +885,8 @@ public static class GrpcModelMapper
         => new()
         {
             MigrationId = value.MigrationId,
+            StartedUtc = value.StartedUtc.ToDateTimeOffset(),
+            CompletedUtc = value.CompletedUtc.ToDateTimeOffset(),
             Succeeded = value.Succeeded,
             Status = value.Status,
             Message = value.Message,
@@ -897,6 +901,59 @@ public static class GrpcModelMapper
             Collections = value.Collections.Select(ToModel).ToList(),
             Issues = value.Issues.Select(ToModel).ToList(),
             CatalogApplyResult = value.CatalogApplyResult is null ? null : ToModel(value.CatalogApplyResult),
+        };
+
+    public static ShardMigrationHistoryEntryMessage ToMessage(CSharpDbShardMigrationHistoryEntry value)
+    {
+        var message = new ShardMigrationHistoryEntryMessage
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            StartedUtc = Timestamp.FromDateTimeOffset(value.StartedUtc),
+            CompletedUtc = Timestamp.FromDateTimeOffset(value.CompletedUtc),
+            RecordedUtc = Timestamp.FromDateTimeOffset(value.RecordedUtc),
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+        message.Tables.Add(value.Tables.Select(ToMessage));
+        message.Collections.Add(value.Collections.Select(ToMessage));
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationHistoryEntry ToModel(ShardMigrationHistoryEntryMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            StartedUtc = value.StartedUtc.ToDateTimeOffset(),
+            CompletedUtc = value.CompletedUtc.ToDateTimeOffset(),
+            RecordedUtc = value.RecordedUtc.ToDateTimeOffset(),
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            Operator = value.Operator,
+            Comment = value.Comment,
+            Tables = value.Tables.Select(ToModel).ToList(),
+            Collections = value.Collections.Select(ToModel).ToList(),
+            Issues = value.Issues.Select(ToModel).ToList(),
         };
 
     public static ProcedureParameterDefinitionMessage ToMessage(ProcedureParameterDefinition value)
