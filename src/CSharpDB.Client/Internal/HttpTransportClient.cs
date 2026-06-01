@@ -103,6 +103,14 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         return await ReadRequiredAsync<CSharpDbShardCatalogApplyResult>(response, ct);
     }
 
+    public async Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(
+        CSharpDbShardExactKeyMigrationRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/migrations/exact-route-key"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
     public async Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/info"), payload: null, ct);

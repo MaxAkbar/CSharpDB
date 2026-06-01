@@ -48,6 +48,9 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
     public override Task<ShardCatalogApplyResultMessage> ApplyShardCatalogUpdate(ShardCatalogUpdateRequestMessage request, ServerCallContext context)
         => ExecuteAsync(context, ct => GetShardAdminClient().ApplyShardCatalogUpdateAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
 
+    public override Task<ShardMigrationResultMessage> MigrateExactRouteKey(ShardExactKeyMigrationRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().MigrateExactRouteKeyAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
     public override Task<StringList> GetTableNames(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetTableNamesAsync(ct), GrpcModelMapper.ToStringList);
 

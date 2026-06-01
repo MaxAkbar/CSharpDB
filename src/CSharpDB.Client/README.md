@@ -238,6 +238,49 @@ writes the catalog file. Recreate the sharded client or restart the daemon to
 activate the new map. Bucket ownership or exact-key pin changes are rejected
 unless the operator explicitly acknowledges the metadata-only change.
 
+Phase 4 starts controlled resharding with exact route-key migration. The
+operator supplies a manifest that names the route-owned tables and collections;
+the client fences writes for that route key, copies matching rows/documents to
+the destination shard, verifies counts and checksums, then writes a pending
+exact-key pin to the catalog.
+
+```csharp
+CSharpDbShardMigrationResult migrated =
+    await shardAdmin.MigrateExactRouteKeyAsync(new CSharpDbShardExactKeyMigrationRequest
+    {
+        Keyspace = "orders_by_month",
+        RouteKey = "2026-05",
+        DestinationShardId = "archive-1",
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        Operator = "ops",
+        Manifest = new CSharpDbShardMigrationManifest
+        {
+            Tables =
+            [
+                new CSharpDbShardMigrationTableManifest
+                {
+                    TableName = "orders",
+                    RouteKeyColumn = "order_month",
+                    PrimaryKeyColumn = "id",
+                },
+            ],
+            Collections =
+            [
+                new CSharpDbShardMigrationCollectionManifest
+                {
+                    CollectionName = "order_documents",
+                    RouteKeyPropertyName = "orderMonth",
+                },
+            ],
+        },
+    });
+```
+
+Exact-key migration requires writable catalog mode. A successful migration
+returns `Status = "PendingActivation"` and `RequiresRestart = true`; the active
+router is not changed until the sharded client is recreated. The first Phase 4
+slice does not move bucket ranges or infer ownership from SQL predicates.
+
 V1 intentionally supports single-shard operations only. Cross-shard joins,
 cross-shard transactions, automatic resharding, replication, and failover remain
 out of scope. Changing bucket ownership requires an operator-controlled data

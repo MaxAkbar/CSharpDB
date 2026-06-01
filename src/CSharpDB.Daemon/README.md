@@ -298,6 +298,15 @@ Catalog update endpoints:
 - gRPC: `GetShardCatalog`, `ValidateShardCatalogUpdate`, and
   `ApplyShardCatalogUpdate`
 
+Controlled resharding starts with exact route-key migration. Operators call
+`POST /api/sharding/migrations/exact-route-key` or the gRPC
+`MigrateExactRouteKey` method with a manifest that names route-owned tables and
+collections. The daemon fences writes for the affected route key, copies the
+manifest data to the destination shard, verifies counts and checksums, and then
+writes a pending exact-key pin to the catalog. Restart the daemon after a
+successful migration to activate the new route. Bucket-range migration and
+automatic SQL ownership inference are not part of this slice.
+
 ### API-Key Security
 
 Set `CSharpDB:Daemon:Security:Mode=ApiKey` to protect both REST `/api/*` and
@@ -400,10 +409,11 @@ var preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
 The same surface is available through REST under `/api/sharding/map`,
 `/api/sharding/resolve`, `/api/sharding/status`, and
 `/api/sharding/sql/execute-all`. Catalog mode adds `/api/sharding/catalog`,
-`/api/sharding/catalog/validate`, and `/api/sharding/catalog/apply`. These
+`/api/sharding/catalog/validate`, `/api/sharding/catalog/apply`, and
+`/api/sharding/migrations/exact-route-key`. These
 endpoints are for topology, route simulation, health checks, explicit schema
-setup, and operator-managed catalog updates; they do not enable automatic
-cross-shard SQL.
+setup, operator-managed catalog updates, and exact route-key migration; they do
+not enable automatic cross-shard SQL.
 
 Notes:
 

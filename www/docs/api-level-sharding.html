@@ -436,6 +436,43 @@ CSharpDbShardCatalogApplyResult applied =
 
                 <p>Catalog update endpoints are <code>GET /api/sharding/catalog</code>, <code>POST /api/sharding/catalog/validate</code>, and <code>POST /api/sharding/catalog/apply</code>. The gRPC contract exposes <code>GetShardCatalog</code>, <code>ValidateShardCatalogUpdate</code>, and <code>ApplyShardCatalogUpdate</code>. A successful apply returns <code>RequiresRestart = true</code>; restart the daemon or recreate the sharded client to activate the new map.</p>
 
+                <h3>Controlled Exact-Key Migration</h3>
+                <p>Phase 4 starts with exact route-key migration. The operator provides a manifest that identifies the route-owned tables and collections. CSharpDB fences writes for that route key, copies matching rows/documents to the destination shard, verifies counts and checksums, then writes a pending exact-key pin to the catalog.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>CSharpDbShardMigrationResult migrated =
+    await shardAdmin.MigrateExactRouteKeyAsync(new CSharpDbShardExactKeyMigrationRequest
+    {
+        Keyspace = "orders_by_month",
+        RouteKey = "2026-05",
+        DestinationShardId = "archive-1",
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        Operator = "ops",
+        Manifest = new CSharpDbShardMigrationManifest
+        {
+            Tables =
+            [
+                new CSharpDbShardMigrationTableManifest
+                {
+                    TableName = "orders",
+                    RouteKeyColumn = "order_month",
+                    PrimaryKeyColumn = "id",
+                },
+            ],
+            Collections =
+            [
+                new CSharpDbShardMigrationCollectionManifest
+                {
+                    CollectionName = "order_documents",
+                    RouteKeyPropertyName = "orderMonth",
+                },
+            ],
+        },
+    });</code></pre>
+                </div>
+
+                <p>The REST endpoint is <code>POST /api/sharding/migrations/exact-route-key</code>. The gRPC contract exposes <code>MigrateExactRouteKey</code>. A successful migration returns <code>Status = "PendingActivation"</code> and <code>RequiresRestart = true</code>; the live router keeps the old map until restart. This slice does not move bucket ranges and does not infer ownership from arbitrary SQL predicates.</p>
+
                 <h2>ADO.NET</h2>
                 <p>ADO.NET callers can bind a connection to one route with connection-string keys. Every command on that connection is sent to the same route.</p>
 
@@ -468,6 +505,7 @@ await sharded.CommitTransactionAsync(tx.TransactionId);</code></pre>
                     <li>Single-shard SQL execution when a route key is provided.</li>
                     <li>Single-shard row APIs, collection APIs, saved queries, procedures, and transaction sessions.</li>
                     <li>Shard status checks and execute-on-all-shards schema setup helpers.</li>
+                    <li>Operator-controlled exact route-key migration with manifest-based copy and verification.</li>
                     <li>Direct, HTTP, gRPC, and ADO.NET route context propagation.</li>
                 </ul>
 

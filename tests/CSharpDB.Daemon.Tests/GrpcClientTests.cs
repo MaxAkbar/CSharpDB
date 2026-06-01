@@ -571,6 +571,117 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Daemon_ShardExactKeyMigrationRestAndGrpcWritesPendingMap()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shard_migration_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string catalogPath = Path.Combine(directory, "catalog", "shards.json");
+            Dictionary<string, string?> config = CreateShardingConfig(directory).ToDictionary();
+            config["CSharpDB:Sharding:Catalog:Enabled"] = "true";
+            config["CSharpDB:Sharding:Catalog:Path"] = catalogPath;
+
+            using (var factory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            {
+                using var grpcTransportClient = CreateGrpcHttpClient(factory);
+                using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("http://localhost"),
+                });
+
+                await using var restAdmin = CreateHttpShardAdmin(httpTransportClient);
+                await using var grpcAdmin = CreateGrpcShardAdmin(grpcTransportClient);
+
+                IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
+                    await restAdmin.ExecuteSqlOnAllShardsAsync(
+                        "CREATE TABLE remote_orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER);",
+                        Ct);
+                Assert.All(schemaResults, result => Assert.Null(result.Error));
+
+                await using var tenantA = CreateHttpClient(
+                    httpTransportClient,
+                    routeContext: new CSharpDbRouteContext { Keyspace = "tenants", Key = "tenant-a" });
+                Assert.Equal(1, await tenantA.InsertRowAsync("remote_orders", new Dictionary<string, object?>
+                {
+                    ["id"] = 10L,
+                    ["tenant_id"] = "tenant-a",
+                    ["total"] = 123L,
+                }, Ct));
+
+                CSharpDbShardMigrationResult migration = await grpcAdmin.MigrateExactRouteKeyAsync(
+                    new CSharpDbShardExactKeyMigrationRequest
+                    {
+                        Keyspace = "tenants",
+                        RouteKey = "tenant-a",
+                        DestinationShardId = "s1",
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "daemon-test",
+                        Manifest = new CSharpDbShardMigrationManifest
+                        {
+                            Tables =
+                            [
+                                new CSharpDbShardMigrationTableManifest
+                                {
+                                    TableName = "remote_orders",
+                                    RouteKeyColumn = "tenant_id",
+                                    PrimaryKeyColumn = "id",
+                                },
+                            ],
+                        },
+                    },
+                    Ct);
+
+                Assert.True(migration.Succeeded, string.Join(Environment.NewLine, migration.Issues.Select(issue => issue.Message)));
+                Assert.Equal("PendingActivation", migration.Status);
+                Assert.Equal("s0", migration.SourceShardId);
+                Assert.Equal("s1", migration.DestinationShardId);
+                Assert.True(migration.RequiresRestart);
+                Assert.Equal(1, Assert.Single(migration.Tables).SourceRows);
+
+                CSharpDbShardCatalogState pending = await restAdmin.GetShardCatalogAsync(Ct);
+                Assert.Equal(1, pending.ActiveMap.MapVersion);
+                Assert.Equal(2, pending.PendingMap!.MapVersion);
+                Assert.Equal("s1", pending.PendingMap.ExactKeyPins["tenant-a"]);
+            }
+
+            using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            {
+                using var httpTransportClient = reloadedFactory.CreateClient(new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("http://localhost"),
+                });
+
+                await using var tenantA = CreateHttpClient(
+                    httpTransportClient,
+                    routeContext: new CSharpDbRouteContext { Keyspace = "tenants", Key = "tenant-a" });
+
+                Dictionary<string, object?>? row = await tenantA.GetRowByPkAsync("remote_orders", "id", 10L, Ct);
+                Assert.NotNull(row);
+                Assert.Equal(123L, Assert.IsType<long>(row!["total"]));
+            }
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task Daemon_RestApiCanBeDisabledWithoutDisablingGrpc()
     {
         using var factory = new TestDaemonFactory(

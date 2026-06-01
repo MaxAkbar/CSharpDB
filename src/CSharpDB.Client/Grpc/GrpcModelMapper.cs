@@ -723,6 +723,182 @@ public static class GrpcModelMapper
             PendingMap = value.PendingMap is null ? null : ToModel(value.PendingMap),
         };
 
+    public static ShardMigrationTableManifestMessage ToMessage(CSharpDbShardMigrationTableManifest value)
+        => new()
+        {
+            TableName = value.TableName,
+            RouteKeyColumn = value.RouteKeyColumn,
+            PrimaryKeyColumn = value.PrimaryKeyColumn,
+        };
+
+    public static CSharpDbShardMigrationTableManifest ToModel(ShardMigrationTableManifestMessage value)
+        => new()
+        {
+            TableName = value.TableName,
+            RouteKeyColumn = value.RouteKeyColumn,
+            PrimaryKeyColumn = value.PrimaryKeyColumn,
+        };
+
+    public static ShardMigrationCollectionManifestMessage ToMessage(CSharpDbShardMigrationCollectionManifest value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            RouteKeyPropertyName = value.RouteKeyPropertyName,
+        };
+
+    public static CSharpDbShardMigrationCollectionManifest ToModel(ShardMigrationCollectionManifestMessage value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            RouteKeyPropertyName = value.RouteKeyPropertyName,
+        };
+
+    public static ShardMigrationManifestMessage ToMessage(CSharpDbShardMigrationManifest value)
+    {
+        var message = new ShardMigrationManifestMessage
+        {
+            PageSize = value.PageSize,
+        };
+        message.Tables.Add(value.Tables.Select(ToMessage));
+        message.Collections.Add(value.Collections.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationManifest ToModel(ShardMigrationManifestMessage value)
+        => new()
+        {
+            PageSize = value.PageSize <= 0 ? 500 : value.PageSize,
+            Tables = value.Tables.Select(ToModel).ToList(),
+            Collections = value.Collections.Select(ToModel).ToList(),
+        };
+
+    public static ShardExactKeyMigrationRequestMessage ToMessage(CSharpDbShardExactKeyMigrationRequest value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            DestinationShardId = value.DestinationShardId,
+            Manifest = ToMessage(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardExactKeyMigrationRequest ToModel(ShardExactKeyMigrationRequestMessage value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            DestinationShardId = value.DestinationShardId,
+            Manifest = value.Manifest is null ? new CSharpDbShardMigrationManifest() : ToModel(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardMigrationTableResultMessage ToMessage(CSharpDbShardMigrationTableResult value)
+        => new()
+        {
+            TableName = value.TableName,
+            SourceRows = value.SourceRows,
+            DestinationRows = value.DestinationRows,
+            RowsCopied = value.RowsCopied,
+            SourceRowsDeleted = value.SourceRowsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static CSharpDbShardMigrationTableResult ToModel(ShardMigrationTableResultMessage value)
+        => new()
+        {
+            TableName = value.TableName,
+            SourceRows = value.SourceRows,
+            DestinationRows = value.DestinationRows,
+            RowsCopied = value.RowsCopied,
+            SourceRowsDeleted = value.SourceRowsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static ShardMigrationCollectionResultMessage ToMessage(CSharpDbShardMigrationCollectionResult value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            SourceDocuments = value.SourceDocuments,
+            DestinationDocuments = value.DestinationDocuments,
+            DocumentsCopied = value.DocumentsCopied,
+            SourceDocumentsDeleted = value.SourceDocumentsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static CSharpDbShardMigrationCollectionResult ToModel(ShardMigrationCollectionResultMessage value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            SourceDocuments = value.SourceDocuments,
+            DestinationDocuments = value.DestinationDocuments,
+            DocumentsCopied = value.DocumentsCopied,
+            SourceDocumentsDeleted = value.SourceDocumentsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static ShardMigrationResultMessage ToMessage(CSharpDbShardMigrationResult value)
+    {
+        var message = new ShardMigrationResultMessage
+        {
+            MigrationId = value.MigrationId,
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToMessage(value.CatalogApplyResult),
+        };
+        message.Tables.Add(value.Tables.Select(ToMessage));
+        message.Collections.Add(value.Collections.Select(ToMessage));
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationResult ToModel(ShardMigrationResultMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            Tables = value.Tables.Select(ToModel).ToList(),
+            Collections = value.Collections.Select(ToModel).ToList(),
+            Issues = value.Issues.Select(ToModel).ToList(),
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToModel(value.CatalogApplyResult),
+        };
+
     public static ProcedureParameterDefinitionMessage ToMessage(ProcedureParameterDefinition value)
         => new()
         {

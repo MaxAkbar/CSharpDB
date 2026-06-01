@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -16,18 +18,22 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private readonly Dictionary<string, ICSharpDbClient> _clients;
     private readonly ICSharpDbRouteContextAccessor? _routeContextAccessor;
     private readonly CSharpDbShardCatalogStore? _catalogStore;
+    private readonly CSharpDbShardingOptions _effectiveOptions;
+    private readonly ConcurrentDictionary<string, byte> _writeFences = new(StringComparer.Ordinal);
     private readonly RoutedClient _requestRoutedClient;
 
     private CSharpDbShardedClient(
         CSharpDbShardMap map,
         Dictionary<string, ICSharpDbClient> clients,
         ICSharpDbRouteContextAccessor? routeContextAccessor,
-        CSharpDbShardCatalogStore? catalogStore)
+        CSharpDbShardCatalogStore? catalogStore,
+        CSharpDbShardingOptions effectiveOptions)
     {
         _map = map;
         _clients = clients;
         _routeContextAccessor = routeContextAccessor;
         _catalogStore = catalogStore;
+        _effectiveOptions = effectiveOptions;
         _requestRoutedClient = new RoutedClient(this, fixedRoute: null);
     }
 
@@ -200,6 +206,237 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         }
 
         return _catalogStore.ApplyAsync(_map.ToSnapshot(), request, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(
+        CSharpDbShardExactKeyMigrationRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Manifest);
+
+        string migrationId = CreateMigrationId();
+        string keyspace = string.Empty;
+        string routeKey = string.Empty;
+        string sourceShardId = string.Empty;
+        string destinationShardId = string.Empty;
+        var issues = new List<CSharpDbShardCatalogIssue>();
+
+        try
+        {
+            (keyspace, routeKey) = CSharpDbShardMap.NormalizeRoute(new CSharpDbRouteContext
+            {
+                Keyspace = request.Keyspace,
+                Key = request.RouteKey,
+            });
+            destinationShardId = CSharpDbShardMap.NormalizeShardId(request.DestinationShardId);
+
+            if (_catalogStore is null)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "catalog-not-enabled",
+                    "Exact route-key migration requires catalog mode so the verified ownership change can be recorded."));
+            }
+            else if (!_catalogStore.CanWrite)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "catalog-read-only",
+                    "Exact route-key migration requires writable catalog mode."));
+            }
+
+            if (request.ExpectedCurrentMapVersion is int expectedVersion && expectedVersion != _map.MapVersion)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "map-version-mismatch",
+                    $"Expected current map version {expectedVersion}, but the live map version is {_map.MapVersion}."));
+            }
+
+            CSharpDbShardResolution sourceResolution = _map.Resolve(new CSharpDbRouteContext
+            {
+                Keyspace = keyspace,
+                Key = routeKey,
+            });
+            sourceShardId = sourceResolution.ShardId;
+
+            CSharpDbShardDefinition destinationShard = _map.GetShard(destinationShardId);
+            if (!destinationShard.Enabled)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "destination-shard-disabled",
+                    $"Destination shard '{destinationShardId}' is disabled."));
+            }
+
+            if (string.Equals(sourceShardId, destinationShardId, StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "destination-is-source",
+                    $"Route key '{routeKey}' already resolves to shard '{sourceShardId}'."));
+            }
+
+            ValidateMigrationManifest(request.Manifest, issues);
+            if (HasErrors(issues))
+            {
+                return CreateMigrationResult(
+                    migrationId,
+                    succeeded: false,
+                    status: "Rejected",
+                    message: "Exact route-key migration request was rejected by validation.",
+                    keyspace,
+                    routeKey,
+                    sourceShardId,
+                    destinationShardId,
+                    pendingMapVersion: null,
+                    requiresRestart: false,
+                    [],
+                    [],
+                    issues,
+                    catalogApplyResult: null);
+            }
+
+            string fenceKey = BuildFenceKey(keyspace, routeKey);
+            if (!_writeFences.TryAdd(fenceKey, 0))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "route-key-already-fenced",
+                    $"Route key '{routeKey}' already has an active migration fence."));
+                return CreateMigrationResult(
+                    migrationId,
+                    succeeded: false,
+                    status: "Rejected",
+                    message: "Exact route-key migration request was rejected because the route key is already fenced.",
+                    keyspace,
+                    routeKey,
+                    sourceShardId,
+                    destinationShardId,
+                    pendingMapVersion: null,
+                    requiresRestart: false,
+                    [],
+                    [],
+                    issues,
+                    catalogApplyResult: null);
+            }
+
+            try
+            {
+                int pageSize = NormalizeMigrationPageSize(request.Manifest.PageSize);
+                ICSharpDbClient sourceClient = GetShardClient(sourceShardId);
+                ICSharpDbClient destinationClient = GetShardClient(destinationShardId);
+
+                var tableResults = new List<CSharpDbShardMigrationTableResult>();
+                foreach (CSharpDbShardMigrationTableManifest table in request.Manifest.Tables)
+                {
+                    CSharpDbShardMigrationTableResult result = await MigrateTableAsync(
+                        table,
+                        routeKey,
+                        sourceClient,
+                        destinationClient,
+                        request.OverwriteDestinationRows,
+                        request.DeleteSourceAfterVerification,
+                        pageSize,
+                        ct).ConfigureAwait(false);
+                    tableResults.Add(result);
+                    if (!result.Verified)
+                    {
+                        issues.Add(CreateMigrationIssue(
+                            "table-verification-failed",
+                            $"Table '{result.TableName}' did not verify: {result.Error ?? "checksum or count mismatch"}"));
+                    }
+                }
+
+                var collectionResults = new List<CSharpDbShardMigrationCollectionResult>();
+                foreach (CSharpDbShardMigrationCollectionManifest collection in request.Manifest.Collections)
+                {
+                    CSharpDbShardMigrationCollectionResult result = await MigrateCollectionAsync(
+                        collection,
+                        routeKey,
+                        sourceClient,
+                        destinationClient,
+                        request.DeleteSourceAfterVerification,
+                        pageSize,
+                        ct).ConfigureAwait(false);
+                    collectionResults.Add(result);
+                    if (!result.Verified)
+                    {
+                        issues.Add(CreateMigrationIssue(
+                            "collection-verification-failed",
+                            $"Collection '{result.CollectionName}' did not verify: {result.Error ?? "checksum or count mismatch"}"));
+                    }
+                }
+
+                if (HasErrors(issues))
+                {
+                    return CreateMigrationResult(
+                        migrationId,
+                        succeeded: false,
+                        status: "VerificationFailed",
+                        message: "Exact route-key migration copied data, but verification failed. The active shard map was left unchanged.",
+                        keyspace,
+                        routeKey,
+                        sourceShardId,
+                        destinationShardId,
+                        pendingMapVersion: null,
+                        requiresRestart: false,
+                        tableResults,
+                        collectionResults,
+                        issues,
+                        catalogApplyResult: null);
+                }
+
+                CSharpDbShardingOptions proposedOptions = BuildExactRouteMigrationOptions(routeKey, destinationShardId);
+                CSharpDbShardCatalogApplyResult applyResult = await ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                {
+                    Options = proposedOptions,
+                    ExpectedCurrentMapVersion = _map.MapVersion,
+                    AllowMetadataOnlyOwnershipChange = true,
+                    Operator = request.Operator,
+                    Comment = string.IsNullOrWhiteSpace(request.Comment)
+                        ? $"Exact route-key migration {migrationId}: {routeKey} -> {destinationShardId}"
+                        : $"{request.Comment} (migration {migrationId})",
+                }, ct).ConfigureAwait(false);
+
+                issues.AddRange(applyResult.Validation.Issues);
+                return CreateMigrationResult(
+                    migrationId,
+                    succeeded: applyResult.Applied,
+                    status: applyResult.Applied ? "PendingActivation" : "CatalogApplyFailed",
+                    message: applyResult.Applied
+                        ? "Exact route-key migration verified and wrote a pending shard map. Restart or recreate the sharded client to activate the new route."
+                        : "Exact route-key migration verified data movement, but the catalog update failed. The active shard map was left unchanged.",
+                    keyspace,
+                    routeKey,
+                    sourceShardId,
+                    destinationShardId,
+                    pendingMapVersion: applyResult.PendingMap?.MapVersion,
+                    requiresRestart: applyResult.RequiresRestart,
+                    tableResults,
+                    collectionResults,
+                    issues,
+                    applyResult);
+            }
+            finally
+            {
+                _writeFences.TryRemove(fenceKey, out _);
+            }
+        }
+        catch (Exception ex) when (ex is CSharpDbClientException or CSharpDbClientConfigurationException or ArgumentException or InvalidOperationException)
+        {
+            issues.Add(CreateMigrationIssue("migration-failed", ex.Message));
+            return CreateMigrationResult(
+                migrationId,
+                succeeded: false,
+                status: "Failed",
+                message: "Exact route-key migration failed. The active shard map was left unchanged.",
+                keyspace,
+                routeKey,
+                sourceShardId,
+                destinationShardId,
+                pendingMapVersion: null,
+                requiresRestart: false,
+                [],
+                [],
+                issues,
+                catalogApplyResult: null);
+        }
     }
 
     public Task<CSharpDbShardResolution> ResolveRouteAsync(
@@ -584,7 +821,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         foreach (CSharpDbShardDefinition shard in map.Shards.Where(shard => shard.Enabled))
             clients.Add(shard.ShardId, CSharpDbClient.Create(BuildShardClientOptions(shard, effectiveOptions)));
 
-        return new CSharpDbShardedClient(map, clients, routeContextAccessor, catalogStore);
+        return new CSharpDbShardedClient(
+            map,
+            clients,
+            routeContextAccessor,
+            catalogStore,
+            CSharpDbShardCatalogStore.CloneOptionsForRuntime(effectiveOptions));
     }
 
     private async Task WarmAsync(CancellationToken ct)
@@ -626,6 +868,419 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             CollectionCount = collectionCount,
             SavedQueryCount = savedQueryCount,
         };
+    }
+
+    private async Task<CSharpDbShardMigrationTableResult> MigrateTableAsync(
+        CSharpDbShardMigrationTableManifest manifest,
+        string routeKey,
+        ICSharpDbClient sourceClient,
+        ICSharpDbClient destinationClient,
+        bool overwriteDestinationRows,
+        bool deleteSourceAfterVerification,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string tableName = NormalizeRequired(manifest.TableName, nameof(manifest.TableName));
+        try
+        {
+            var sourceRows = await ReadRouteTableRowsAsync(sourceClient, manifest, routeKey, pageSize, ct).ConfigureAwait(false);
+            int copied = 0;
+            foreach (Dictionary<string, object?> row in sourceRows.Rows)
+            {
+                object pkValue = GetRequiredRowValue(row, sourceRows.PrimaryKeyColumn, tableName);
+                Dictionary<string, object?>? existing = overwriteDestinationRows
+                    ? await destinationClient.GetRowByPkAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, ct).ConfigureAwait(false)
+                    : null;
+
+                if (existing is null)
+                    copied += await destinationClient.InsertRowAsync(tableName, row, ct).ConfigureAwait(false);
+                else
+                    copied += await destinationClient.UpdateRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, row, ct).ConfigureAwait(false);
+            }
+
+            var destinationRows = await ReadRouteTableRowsAsync(destinationClient, manifest, routeKey, pageSize, ct).ConfigureAwait(false);
+            string sourceChecksum = ComputeTableChecksum(sourceRows.Rows, sourceRows.Schema.Columns, sourceRows.PrimaryKeyColumn);
+            string destinationChecksum = ComputeTableChecksum(destinationRows.Rows, destinationRows.Schema.Columns, destinationRows.PrimaryKeyColumn);
+            bool verified = sourceRows.Rows.Count == destinationRows.Rows.Count &&
+                            string.Equals(sourceChecksum, destinationChecksum, StringComparison.Ordinal);
+
+            int deleted = 0;
+            if (verified && deleteSourceAfterVerification)
+            {
+                foreach (Dictionary<string, object?> row in sourceRows.Rows)
+                {
+                    object pkValue = GetRequiredRowValue(row, sourceRows.PrimaryKeyColumn, tableName);
+                    deleted += await sourceClient.DeleteRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, ct).ConfigureAwait(false);
+                }
+            }
+
+            return new CSharpDbShardMigrationTableResult
+            {
+                TableName = tableName,
+                SourceRows = sourceRows.Rows.Count,
+                DestinationRows = destinationRows.Rows.Count,
+                RowsCopied = copied,
+                SourceRowsDeleted = deleted,
+                Verified = verified,
+                SourceChecksum = sourceChecksum,
+                DestinationChecksum = destinationChecksum,
+                Error = verified ? null : "Destination route-key row set does not match source row set.",
+            };
+        }
+        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        {
+            return new CSharpDbShardMigrationTableResult
+            {
+                TableName = tableName,
+                SourceRows = 0,
+                DestinationRows = 0,
+                RowsCopied = 0,
+                SourceRowsDeleted = 0,
+                Verified = false,
+                Error = ex.Message,
+            };
+        }
+    }
+
+    private async Task<CSharpDbShardMigrationCollectionResult> MigrateCollectionAsync(
+        CSharpDbShardMigrationCollectionManifest manifest,
+        string routeKey,
+        ICSharpDbClient sourceClient,
+        ICSharpDbClient destinationClient,
+        bool deleteSourceAfterVerification,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string collectionName = NormalizeRequired(manifest.CollectionName, nameof(manifest.CollectionName));
+        try
+        {
+            IReadOnlyList<CollectionDocument> sourceDocuments =
+                await ReadRouteCollectionDocumentsAsync(sourceClient, manifest, routeKey, pageSize, ct).ConfigureAwait(false);
+            int copied = 0;
+            foreach (CollectionDocument document in sourceDocuments)
+            {
+                await destinationClient.PutDocumentAsync(collectionName, document.Key, document.Document, ct).ConfigureAwait(false);
+                copied++;
+            }
+
+            IReadOnlyList<CollectionDocument> destinationDocuments =
+                await ReadRouteCollectionDocumentsAsync(destinationClient, manifest, routeKey, pageSize, ct).ConfigureAwait(false);
+            string sourceChecksum = ComputeCollectionChecksum(sourceDocuments);
+            string destinationChecksum = ComputeCollectionChecksum(destinationDocuments);
+            bool verified = sourceDocuments.Count == destinationDocuments.Count &&
+                            string.Equals(sourceChecksum, destinationChecksum, StringComparison.Ordinal);
+
+            int deleted = 0;
+            if (verified && deleteSourceAfterVerification)
+            {
+                foreach (CollectionDocument document in sourceDocuments)
+                {
+                    if (await sourceClient.DeleteDocumentAsync(collectionName, document.Key, ct).ConfigureAwait(false))
+                        deleted++;
+                }
+            }
+
+            return new CSharpDbShardMigrationCollectionResult
+            {
+                CollectionName = collectionName,
+                SourceDocuments = sourceDocuments.Count,
+                DestinationDocuments = destinationDocuments.Count,
+                DocumentsCopied = copied,
+                SourceDocumentsDeleted = deleted,
+                Verified = verified,
+                SourceChecksum = sourceChecksum,
+                DestinationChecksum = destinationChecksum,
+                Error = verified ? null : "Destination route-key document set does not match source document set.",
+            };
+        }
+        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        {
+            return new CSharpDbShardMigrationCollectionResult
+            {
+                CollectionName = collectionName,
+                SourceDocuments = 0,
+                DestinationDocuments = 0,
+                DocumentsCopied = 0,
+                SourceDocumentsDeleted = 0,
+                Verified = false,
+                Error = ex.Message,
+            };
+        }
+    }
+
+    private static async Task<RouteTableRows> ReadRouteTableRowsAsync(
+        ICSharpDbClient client,
+        CSharpDbShardMigrationTableManifest manifest,
+        string routeKey,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string tableName = NormalizeRequired(manifest.TableName, nameof(manifest.TableName));
+        string routeKeyColumn = NormalizeRequired(manifest.RouteKeyColumn, nameof(manifest.RouteKeyColumn));
+        string primaryKeyColumn = NormalizeRequired(manifest.PrimaryKeyColumn, nameof(manifest.PrimaryKeyColumn));
+        TableSchema schema = await client.GetTableSchemaAsync(tableName, ct).ConfigureAwait(false)
+                             ?? throw new CSharpDbClientException($"Table '{tableName}' was not found.");
+
+        ColumnDefinition routeColumn = FindColumn(schema, routeKeyColumn);
+        ColumnDefinition primaryKey = FindColumn(schema, primaryKeyColumn);
+        var rows = new List<Dictionary<string, object?>>();
+        int page = 1;
+        while (true)
+        {
+            TableBrowseResult result = await client.BrowseTableAsync(tableName, page, pageSize, ct).ConfigureAwait(false);
+            foreach (object?[] row in result.Rows)
+            {
+                Dictionary<string, object?> values = ToRowDictionary(schema, row);
+                if (RouteValueMatches(values[routeColumn.Name], routeKey))
+                    rows.Add(values);
+            }
+
+            if (page >= result.TotalPages || result.Rows.Count == 0)
+                break;
+
+            page++;
+        }
+
+        return new RouteTableRows(schema, routeColumn.Name, primaryKey.Name, rows);
+    }
+
+    private static async Task<IReadOnlyList<CollectionDocument>> ReadRouteCollectionDocumentsAsync(
+        ICSharpDbClient client,
+        CSharpDbShardMigrationCollectionManifest manifest,
+        string routeKey,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string collectionName = NormalizeRequired(manifest.CollectionName, nameof(manifest.CollectionName));
+        string routePropertyName = NormalizeRequired(manifest.RouteKeyPropertyName, nameof(manifest.RouteKeyPropertyName));
+        var documents = new List<CollectionDocument>();
+        int page = 1;
+        while (true)
+        {
+            CollectionBrowseResult result = await client.BrowseCollectionAsync(collectionName, page, pageSize, ct).ConfigureAwait(false);
+            foreach (CollectionDocument document in result.Documents)
+            {
+                if (DocumentRouteValueMatches(document.Document, routePropertyName, routeKey))
+                    documents.Add(document);
+            }
+
+            if (page >= result.TotalPages || result.Documents.Count == 0)
+                break;
+
+            page++;
+        }
+
+        return documents;
+    }
+
+    private CSharpDbShardingOptions BuildExactRouteMigrationOptions(string routeKey, string destinationShardId)
+    {
+        CSharpDbShardingOptions proposed = CSharpDbShardCatalogStore.CloneOptionsForRuntime(_effectiveOptions);
+        proposed.MapVersion = _map.MapVersion + 1;
+        proposed.Keyspace = _map.Keyspace;
+        proposed.ExactKeyPins[routeKey] = destinationShardId;
+        return proposed;
+    }
+
+    private CSharpDbShardMigrationResult CreateMigrationResult(
+        string migrationId,
+        bool succeeded,
+        string status,
+        string message,
+        string keyspace,
+        string routeKey,
+        string sourceShardId,
+        string destinationShardId,
+        int? pendingMapVersion,
+        bool requiresRestart,
+        List<CSharpDbShardMigrationTableResult> tableResults,
+        List<CSharpDbShardMigrationCollectionResult> collectionResults,
+        List<CSharpDbShardCatalogIssue> issues,
+        CSharpDbShardCatalogApplyResult? catalogApplyResult)
+        => new()
+        {
+            MigrationId = migrationId,
+            Succeeded = succeeded,
+            Status = status,
+            Message = message,
+            Keyspace = keyspace,
+            RouteKey = routeKey,
+            SourceShardId = sourceShardId,
+            DestinationShardId = destinationShardId,
+            MapVersion = _map.MapVersion,
+            PendingMapVersion = pendingMapVersion,
+            RequiresRestart = requiresRestart,
+            Tables = tableResults,
+            Collections = collectionResults,
+            Issues = issues,
+            CatalogApplyResult = catalogApplyResult,
+        };
+
+    private static void ValidateMigrationManifest(
+        CSharpDbShardMigrationManifest manifest,
+        List<CSharpDbShardCatalogIssue> issues)
+    {
+        if (manifest.PageSize <= 0)
+        {
+            issues.Add(CreateMigrationIssue(
+                "invalid-page-size",
+                "Migration manifest PageSize must be greater than 0."));
+        }
+
+        if (manifest.Tables.Count == 0 && manifest.Collections.Count == 0)
+        {
+            issues.Add(CreateMigrationIssue(
+                "missing-manifest-items",
+                "Exact route-key migration requires at least one table or collection manifest item."));
+        }
+
+        foreach (CSharpDbShardMigrationTableManifest table in manifest.Tables)
+        {
+            ValidateRequired(table.TableName, "table name", issues);
+            ValidateRequired(table.RouteKeyColumn, $"table '{table.TableName}' route-key column", issues);
+            ValidateRequired(table.PrimaryKeyColumn, $"table '{table.TableName}' primary-key column", issues);
+        }
+
+        foreach (CSharpDbShardMigrationCollectionManifest collection in manifest.Collections)
+        {
+            ValidateRequired(collection.CollectionName, "collection name", issues);
+            ValidateRequired(collection.RouteKeyPropertyName, $"collection '{collection.CollectionName}' route-key property", issues);
+        }
+    }
+
+    private static void ValidateRequired(
+        string? value,
+        string name,
+        List<CSharpDbShardCatalogIssue> issues)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            issues.Add(CreateMigrationIssue("missing-manifest-value", $"Migration manifest requires {name}."));
+    }
+
+    private static CSharpDbShardCatalogIssue CreateMigrationIssue(string code, string message)
+        => new()
+        {
+            Severity = CSharpDbShardCatalogIssueSeverity.Error,
+            Code = code,
+            Message = message,
+        };
+
+    private static bool HasErrors(IEnumerable<CSharpDbShardCatalogIssue> issues)
+        => issues.Any(issue => issue.Severity == CSharpDbShardCatalogIssueSeverity.Error);
+
+    private static int NormalizeMigrationPageSize(int pageSize)
+        => Math.Clamp(pageSize, 1, 5000);
+
+    private static string NormalizeRequired(string value, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException($"{name} is required.", name);
+        return value.Trim();
+    }
+
+    private static ColumnDefinition FindColumn(TableSchema schema, string columnName)
+        => schema.Columns.FirstOrDefault(column => string.Equals(column.Name, columnName, StringComparison.OrdinalIgnoreCase))
+           ?? throw new CSharpDbClientException($"Column '{columnName}' was not found in table '{schema.TableName}'.");
+
+    private static Dictionary<string, object?> ToRowDictionary(TableSchema schema, object?[] row)
+    {
+        var values = new Dictionary<string, object?>(schema.Columns.Count, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < schema.Columns.Count; i++)
+            values[schema.Columns[i].Name] = i < row.Length ? row[i] : null;
+        return values;
+    }
+
+    private static object GetRequiredRowValue(
+        IReadOnlyDictionary<string, object?> row,
+        string columnName,
+        string tableName)
+        => row.TryGetValue(columnName, out object? value) && value is not null
+            ? value
+            : throw new CSharpDbClientException($"Migrated row in table '{tableName}' has a null primary-key value in column '{columnName}'.");
+
+    private static bool RouteValueMatches(object? value, string routeKey)
+    {
+        if (value is null)
+            return false;
+        if (value is string text)
+            return string.Equals(text, routeKey, StringComparison.Ordinal);
+        return string.Equals(Convert.ToString(value, CultureInfo.InvariantCulture), routeKey, StringComparison.Ordinal);
+    }
+
+    private static bool DocumentRouteValueMatches(JsonElement document, string routePropertyName, string routeKey)
+    {
+        if (document.ValueKind != JsonValueKind.Object ||
+            !document.TryGetProperty(routePropertyName, out JsonElement routeValue))
+        {
+            return false;
+        }
+
+        return routeValue.ValueKind == JsonValueKind.String
+            ? string.Equals(routeValue.GetString(), routeKey, StringComparison.Ordinal)
+            : string.Equals(routeValue.ToString(), routeKey, StringComparison.Ordinal);
+    }
+
+    private static string ComputeTableChecksum(
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        IReadOnlyList<ColumnDefinition> columns,
+        string primaryKeyColumn)
+    {
+        var projected = rows
+            .OrderBy(row => CanonicalValue(row.TryGetValue(primaryKeyColumn, out object? value) ? value : null), StringComparer.Ordinal)
+            .Select(row => columns.Select(column => row.TryGetValue(column.Name, out object? value) ? NormalizeChecksumValue(value) : null).ToArray())
+            .ToArray();
+
+        return ComputeJsonChecksum(projected);
+    }
+
+    private static string ComputeCollectionChecksum(IReadOnlyList<CollectionDocument> documents)
+    {
+        var projected = documents
+            .OrderBy(document => document.Key, StringComparer.Ordinal)
+            .Select(document => new object?[] { document.Key, document.Document.GetRawText() })
+            .ToArray();
+
+        return ComputeJsonChecksum(projected);
+    }
+
+    private static object? NormalizeChecksumValue(object? value)
+        => value switch
+        {
+            null => null,
+            byte[] bytes => Convert.ToBase64String(bytes),
+            JsonElement json => json.GetRawText(),
+            _ => value,
+        };
+
+    private static string CanonicalValue(object? value)
+        => value switch
+        {
+            null => string.Empty,
+            byte[] bytes => Convert.ToBase64String(bytes),
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+            _ => value.ToString() ?? string.Empty,
+        };
+
+    private static string ComputeJsonChecksum<T>(T value)
+    {
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(value);
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    private static string CreateMigrationId()
+        => $"csdbmig-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+
+    private static string BuildFenceKey(string keyspace, string routeKey)
+        => $"{keyspace.Length}:{keyspace}|{routeKey.Length}:{routeKey}";
+
+    private void ThrowIfRouteFenced(CSharpDbRouteContext routeContext)
+    {
+        var (keyspace, routeKey) = CSharpDbShardMap.NormalizeRoute(routeContext);
+        if (_writeFences.ContainsKey(BuildFenceKey(keyspace, routeKey)))
+        {
+            throw new CSharpDbClientException(
+                $"Route key '{routeKey}' in keyspace '{keyspace}' is fenced by an active shard migration.");
+        }
     }
 
     private static CSharpDbClientOptions BuildShardClientOptions(
@@ -781,49 +1436,49 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => ResolveClient().GetRowByPkAsync(tableName, pkColumn, pkValue, ct);
 
         public Task<int> InsertRowAsync(string tableName, Dictionary<string, object?> values, CancellationToken ct = default)
-            => ResolveClient().InsertRowAsync(tableName, values, ct);
+            => ResolveWritableClient().InsertRowAsync(tableName, values, ct);
 
         public Task<int> UpdateRowAsync(string tableName, string pkColumn, object pkValue, Dictionary<string, object?> values, CancellationToken ct = default)
-            => ResolveClient().UpdateRowAsync(tableName, pkColumn, pkValue, values, ct);
+            => ResolveWritableClient().UpdateRowAsync(tableName, pkColumn, pkValue, values, ct);
 
         public Task<int> DeleteRowAsync(string tableName, string pkColumn, object pkValue, CancellationToken ct = default)
-            => ResolveClient().DeleteRowAsync(tableName, pkColumn, pkValue, ct);
+            => ResolveWritableClient().DeleteRowAsync(tableName, pkColumn, pkValue, ct);
 
         public Task DropTableAsync(string tableName, CancellationToken ct = default)
-            => ResolveClient().DropTableAsync(tableName, ct);
+            => ResolveWritableClient().DropTableAsync(tableName, ct);
 
         public Task RenameTableAsync(string tableName, string newTableName, CancellationToken ct = default)
-            => ResolveClient().RenameTableAsync(tableName, newTableName, ct);
+            => ResolveWritableClient().RenameTableAsync(tableName, newTableName, ct);
 
         public Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, CancellationToken ct = default)
-            => ResolveClient().AddColumnAsync(tableName, columnName, type, notNull, ct);
+            => ResolveWritableClient().AddColumnAsync(tableName, columnName, type, notNull, ct);
 
         public Task AddColumnAsync(string tableName, string columnName, DbType type, bool notNull, string? collation, CancellationToken ct = default)
-            => ResolveClient().AddColumnAsync(tableName, columnName, type, notNull, collation, ct);
+            => ResolveWritableClient().AddColumnAsync(tableName, columnName, type, notNull, collation, ct);
 
         public Task DropColumnAsync(string tableName, string columnName, CancellationToken ct = default)
-            => ResolveClient().DropColumnAsync(tableName, columnName, ct);
+            => ResolveWritableClient().DropColumnAsync(tableName, columnName, ct);
 
         public Task RenameColumnAsync(string tableName, string oldColumnName, string newColumnName, CancellationToken ct = default)
-            => ResolveClient().RenameColumnAsync(tableName, oldColumnName, newColumnName, ct);
+            => ResolveWritableClient().RenameColumnAsync(tableName, oldColumnName, newColumnName, ct);
 
         public Task<IReadOnlyList<IndexSchema>> GetIndexesAsync(CancellationToken ct = default)
             => ResolveClient().GetIndexesAsync(ct);
 
         public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
-            => ResolveClient().CreateIndexAsync(indexName, tableName, columnName, isUnique, ct);
+            => ResolveWritableClient().CreateIndexAsync(indexName, tableName, columnName, isUnique, ct);
 
         public Task CreateIndexAsync(string indexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
-            => ResolveClient().CreateIndexAsync(indexName, tableName, columnName, isUnique, collation, ct);
+            => ResolveWritableClient().CreateIndexAsync(indexName, tableName, columnName, isUnique, collation, ct);
 
         public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, CancellationToken ct = default)
-            => ResolveClient().UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, ct);
+            => ResolveWritableClient().UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, ct);
 
         public Task UpdateIndexAsync(string existingIndexName, string newIndexName, string tableName, string columnName, bool isUnique, string? collation, CancellationToken ct = default)
-            => ResolveClient().UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, collation, ct);
+            => ResolveWritableClient().UpdateIndexAsync(existingIndexName, newIndexName, tableName, columnName, isUnique, collation, ct);
 
         public Task DropIndexAsync(string indexName, CancellationToken ct = default)
-            => ResolveClient().DropIndexAsync(indexName, ct);
+            => ResolveWritableClient().DropIndexAsync(indexName, ct);
 
         public Task<IReadOnlyList<string>> GetViewNamesAsync(CancellationToken ct = default)
             => ResolveClient().GetViewNamesAsync(ct);
@@ -841,25 +1496,25 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => ResolveClient().BrowseViewAsync(viewName, page, pageSize, ct);
 
         public Task CreateViewAsync(string viewName, string selectSql, CancellationToken ct = default)
-            => ResolveClient().CreateViewAsync(viewName, selectSql, ct);
+            => ResolveWritableClient().CreateViewAsync(viewName, selectSql, ct);
 
         public Task UpdateViewAsync(string existingViewName, string newViewName, string selectSql, CancellationToken ct = default)
-            => ResolveClient().UpdateViewAsync(existingViewName, newViewName, selectSql, ct);
+            => ResolveWritableClient().UpdateViewAsync(existingViewName, newViewName, selectSql, ct);
 
         public Task DropViewAsync(string viewName, CancellationToken ct = default)
-            => ResolveClient().DropViewAsync(viewName, ct);
+            => ResolveWritableClient().DropViewAsync(viewName, ct);
 
         public Task<IReadOnlyList<TriggerSchema>> GetTriggersAsync(CancellationToken ct = default)
             => ResolveClient().GetTriggersAsync(ct);
 
         public Task CreateTriggerAsync(string triggerName, string tableName, TriggerTiming timing, TriggerEvent triggerEvent, string bodySql, CancellationToken ct = default)
-            => ResolveClient().CreateTriggerAsync(triggerName, tableName, timing, triggerEvent, bodySql, ct);
+            => ResolveWritableClient().CreateTriggerAsync(triggerName, tableName, timing, triggerEvent, bodySql, ct);
 
         public Task UpdateTriggerAsync(string existingTriggerName, string newTriggerName, string tableName, TriggerTiming timing, TriggerEvent triggerEvent, string bodySql, CancellationToken ct = default)
-            => ResolveClient().UpdateTriggerAsync(existingTriggerName, newTriggerName, tableName, timing, triggerEvent, bodySql, ct);
+            => ResolveWritableClient().UpdateTriggerAsync(existingTriggerName, newTriggerName, tableName, timing, triggerEvent, bodySql, ct);
 
         public Task DropTriggerAsync(string triggerName, CancellationToken ct = default)
-            => ResolveClient().DropTriggerAsync(triggerName, ct);
+            => ResolveWritableClient().DropTriggerAsync(triggerName, ct);
 
         public Task<IReadOnlyList<SavedQueryDefinition>> GetSavedQueriesAsync(CancellationToken ct = default)
             => ResolveClient().GetSavedQueriesAsync(ct);
@@ -868,10 +1523,10 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => ResolveClient().GetSavedQueryAsync(name, ct);
 
         public Task<SavedQueryDefinition> UpsertSavedQueryAsync(string name, string sqlText, CancellationToken ct = default)
-            => ResolveClient().UpsertSavedQueryAsync(name, sqlText, ct);
+            => ResolveWritableClient().UpsertSavedQueryAsync(name, sqlText, ct);
 
         public Task DeleteSavedQueryAsync(string name, CancellationToken ct = default)
-            => ResolveClient().DeleteSavedQueryAsync(name, ct);
+            => ResolveWritableClient().DeleteSavedQueryAsync(name, ct);
 
         public Task<IReadOnlyList<ProcedureDefinition>> GetProceduresAsync(bool includeDisabled = true, CancellationToken ct = default)
             => ResolveClient().GetProceduresAsync(includeDisabled, ct);
@@ -880,23 +1535,24 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => ResolveClient().GetProcedureAsync(name, ct);
 
         public Task CreateProcedureAsync(ProcedureDefinition definition, CancellationToken ct = default)
-            => ResolveClient().CreateProcedureAsync(definition, ct);
+            => ResolveWritableClient().CreateProcedureAsync(definition, ct);
 
         public Task UpdateProcedureAsync(string existingName, ProcedureDefinition definition, CancellationToken ct = default)
-            => ResolveClient().UpdateProcedureAsync(existingName, definition, ct);
+            => ResolveWritableClient().UpdateProcedureAsync(existingName, definition, ct);
 
         public Task DeleteProcedureAsync(string name, CancellationToken ct = default)
-            => ResolveClient().DeleteProcedureAsync(name, ct);
+            => ResolveWritableClient().DeleteProcedureAsync(name, ct);
 
         public Task<ProcedureExecutionResult> ExecuteProcedureAsync(string name, IReadOnlyDictionary<string, object?> args, CancellationToken ct = default)
-            => ResolveClient().ExecuteProcedureAsync(name, args, ct);
+            => ResolveWritableClient().ExecuteProcedureAsync(name, args, ct);
 
         public Task<SqlExecutionResult> ExecuteSqlAsync(string sql, CancellationToken ct = default)
-            => ResolveClient().ExecuteSqlAsync(sql, ct);
+            => ResolveWritableClient().ExecuteSqlAsync(sql, ct);
 
         public async Task<TransactionSessionInfo> BeginTransactionAsync(CancellationToken ct = default)
         {
             CSharpDbRouteContext routeContext = GetRequiredRoute();
+            _owner.ThrowIfRouteFenced(routeContext);
             CSharpDbShardResolution resolution = _owner.ResolveRoute(routeContext);
             TransactionSessionInfo inner = await _owner.GetShardClient(resolution.ShardId)
                 .BeginTransactionAsync(ct)
@@ -912,6 +1568,8 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         public Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default)
         {
             CSharpDbRouteContext? route = GetOptionalRoute();
+            if (route is not null)
+                _owner.ThrowIfRouteFenced(route);
             var (client, innerTransactionId, _) = _owner.ResolveTransactionClient(transactionId, route);
             return client.ExecuteInTransactionAsync(innerTransactionId, sql, ct);
         }
@@ -943,34 +1601,34 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => ResolveClient().GetDocumentAsync(collectionName, key, ct);
 
         public Task PutDocumentAsync(string collectionName, string key, System.Text.Json.JsonElement document, CancellationToken ct = default)
-            => ResolveClient().PutDocumentAsync(collectionName, key, document, ct);
+            => ResolveWritableClient().PutDocumentAsync(collectionName, key, document, ct);
 
         public Task<bool> DeleteDocumentAsync(string collectionName, string key, CancellationToken ct = default)
-            => ResolveClient().DeleteDocumentAsync(collectionName, key, ct);
+            => ResolveWritableClient().DeleteDocumentAsync(collectionName, key, ct);
 
         public Task DropCollectionAsync(string collectionName, CancellationToken ct = default)
-            => ResolveClient().DropCollectionAsync(collectionName, ct);
+            => ResolveWritableClient().DropCollectionAsync(collectionName, ct);
 
         public Task CheckpointAsync(CancellationToken ct = default)
-            => ResolveClient().CheckpointAsync(ct);
+            => ResolveWritableClient().CheckpointAsync(ct);
 
         public Task<BackupResult> BackupAsync(BackupRequest request, CancellationToken ct = default)
             => ResolveClient().BackupAsync(request, ct);
 
         public Task<RestoreResult> RestoreAsync(RestoreRequest request, CancellationToken ct = default)
-            => ResolveClient().RestoreAsync(request, ct);
+            => ResolveWritableClient().RestoreAsync(request, ct);
 
         public Task<ForeignKeyMigrationResult> MigrateForeignKeysAsync(ForeignKeyMigrationRequest request, CancellationToken ct = default)
-            => ResolveClient().MigrateForeignKeysAsync(request, ct);
+            => ResolveWritableClient().MigrateForeignKeysAsync(request, ct);
 
         public Task<DatabaseMaintenanceReport> GetMaintenanceReportAsync(CancellationToken ct = default)
             => ResolveClient().GetMaintenanceReportAsync(ct);
 
         public Task<ReindexResult> ReindexAsync(ReindexRequest request, CancellationToken ct = default)
-            => ResolveClient().ReindexAsync(request, ct);
+            => ResolveWritableClient().ReindexAsync(request, ct);
 
         public Task<VacuumResult> VacuumAsync(CancellationToken ct = default)
-            => ResolveClient().VacuumAsync(ct);
+            => ResolveWritableClient().VacuumAsync(ct);
 
         public Task<DatabaseInspectReport> InspectStorageAsync(string? databasePath = null, bool includePages = false, CancellationToken ct = default)
             => ResolveClient().InspectStorageAsync(databasePath, includePages, ct);
@@ -989,6 +1647,13 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         private ICSharpDbClient ResolveClient()
             => _owner.ResolveClient(GetRequiredRoute());
 
+        private ICSharpDbClient ResolveWritableClient()
+        {
+            CSharpDbRouteContext route = GetRequiredRoute();
+            _owner.ThrowIfRouteFenced(route);
+            return _owner.ResolveClient(route);
+        }
+
         private CSharpDbRouteContext GetRequiredRoute()
             => GetOptionalRoute()
                ?? throw new CSharpDbClientException(
@@ -997,6 +1662,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         private CSharpDbRouteContext? GetOptionalRoute()
             => _fixedRoute ?? _owner.GetCurrentRoute();
     }
+
+    private sealed record RouteTableRows(
+        TableSchema Schema,
+        string RouteKeyColumn,
+        string PrimaryKeyColumn,
+        List<Dictionary<string, object?>> Rows);
 
     private sealed class CSharpDbShardCatalogStore
     {
@@ -1010,6 +1681,11 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             _options = options;
             _path = path;
         }
+
+        public bool CanWrite => _options.AllowWrites;
+
+        public static CSharpDbShardingOptions CloneOptionsForRuntime(CSharpDbShardingOptions options)
+            => CloneOptions(options, includeRuntimeOptions: true);
 
         public static CSharpDbShardingOptions ResolveEffectiveOptions(CSharpDbShardingOptions configuredOptions)
         {

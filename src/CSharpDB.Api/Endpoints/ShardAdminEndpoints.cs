@@ -14,6 +14,7 @@ public static class ShardAdminEndpoints
         group.MapGet("/sharding/catalog", GetShardCatalog);
         group.MapPost("/sharding/catalog/validate", ValidateShardCatalogUpdate);
         group.MapPost("/sharding/catalog/apply", ApplyShardCatalogUpdate);
+        group.MapPost("/sharding/migrations/exact-route-key", MigrateExactRouteKey);
         return group;
     }
 
@@ -97,6 +98,19 @@ public static class ShardAdminEndpoints
 
         CSharpDbShardCatalogApplyResult result = await shardAdmin.ApplyShardCatalogUpdateAsync(request, ct);
         return result.Applied ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> MigrateExactRouteKey(
+        CSharpDbShardExactKeyMigrationRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        CSharpDbShardMigrationResult result = await shardAdmin.MigrateExactRouteKeyAsync(request, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
     }
 
     private static ICSharpDbShardAdminClient? GetShardAdmin(ICSharpDbClient db)

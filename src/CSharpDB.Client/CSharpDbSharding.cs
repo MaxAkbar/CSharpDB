@@ -185,6 +185,84 @@ public sealed class CSharpDbShardCatalogApplyResult
     public CSharpDbShardMapSnapshot? PendingMap { get; init; }
 }
 
+public sealed class CSharpDbShardMigrationManifest
+{
+    public int PageSize { get; init; } = 500;
+    public List<CSharpDbShardMigrationTableManifest> Tables { get; init; } = [];
+    public List<CSharpDbShardMigrationCollectionManifest> Collections { get; init; } = [];
+}
+
+public sealed class CSharpDbShardMigrationTableManifest
+{
+    public required string TableName { get; init; }
+    public required string RouteKeyColumn { get; init; }
+    public required string PrimaryKeyColumn { get; init; }
+}
+
+public sealed class CSharpDbShardMigrationCollectionManifest
+{
+    public required string CollectionName { get; init; }
+    public required string RouteKeyPropertyName { get; init; }
+}
+
+public sealed class CSharpDbShardExactKeyMigrationRequest
+{
+    public required string Keyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public required string DestinationShardId { get; init; }
+    public required CSharpDbShardMigrationManifest Manifest { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public bool OverwriteDestinationRows { get; init; } = true;
+    public bool DeleteSourceAfterVerification { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardMigrationTableResult
+{
+    public required string TableName { get; init; }
+    public int SourceRows { get; init; }
+    public int DestinationRows { get; init; }
+    public int RowsCopied { get; init; }
+    public int SourceRowsDeleted { get; init; }
+    public bool Verified { get; init; }
+    public string? SourceChecksum { get; init; }
+    public string? DestinationChecksum { get; init; }
+    public string? Error { get; init; }
+}
+
+public sealed class CSharpDbShardMigrationCollectionResult
+{
+    public required string CollectionName { get; init; }
+    public int SourceDocuments { get; init; }
+    public int DestinationDocuments { get; init; }
+    public int DocumentsCopied { get; init; }
+    public int SourceDocumentsDeleted { get; init; }
+    public bool Verified { get; init; }
+    public string? SourceChecksum { get; init; }
+    public string? DestinationChecksum { get; init; }
+    public string? Error { get; init; }
+}
+
+public sealed class CSharpDbShardMigrationResult
+{
+    public required string MigrationId { get; init; }
+    public bool Succeeded { get; init; }
+    public required string Status { get; init; }
+    public required string Message { get; init; }
+    public required string Keyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public required string SourceShardId { get; init; }
+    public required string DestinationShardId { get; init; }
+    public int MapVersion { get; init; }
+    public int? PendingMapVersion { get; init; }
+    public bool RequiresRestart { get; init; }
+    public List<CSharpDbShardMigrationTableResult> Tables { get; init; } = [];
+    public List<CSharpDbShardMigrationCollectionResult> Collections { get; init; } = [];
+    public List<CSharpDbShardCatalogIssue> Issues { get; init; } = [];
+    public CSharpDbShardCatalogApplyResult? CatalogApplyResult { get; init; }
+}
+
 public interface ICSharpDbShardAdminClient : IAsyncDisposable
 {
     string DataSource { get; }
@@ -196,6 +274,7 @@ public interface ICSharpDbShardAdminClient : IAsyncDisposable
     Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default);
     Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
     Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(CSharpDbShardExactKeyMigrationRequest request, CancellationToken ct = default);
 }
 
 public interface ICSharpDbRouteContextAccessor

@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
 
@@ -229,6 +230,185 @@ public sealed class CSharpDbShardedClientTests
 
             Assert.True(acknowledged.IsValid);
             Assert.True(acknowledged.RequiresDataMigration);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task ExactKeyMigration_CopiesManifestDataAndWritesPendingPin()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            string catalogPath = Path.Combine(directory, "catalog.json");
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = catalogPath,
+            };
+
+            await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
+                    await client.ExecuteSqlOnAllShardsAsync(
+                        "CREATE TABLE orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER);",
+                        Ct);
+                Assert.All(schemaResults, result => Assert.Null(result.Error));
+
+                ICSharpDbClient tenantA = client.ForRoute(new CSharpDbRouteContext
+                {
+                    Keyspace = "tenants",
+                    Key = "tenant-a",
+                });
+                ICSharpDbClient tenantB = client.ForRoute(new CSharpDbRouteContext
+                {
+                    Keyspace = "tenants",
+                    Key = "tenant-b",
+                });
+
+                Assert.Equal(1, await tenantA.InsertRowAsync("orders", new Dictionary<string, object?>
+                {
+                    ["id"] = 1L,
+                    ["tenant_id"] = "tenant-a",
+                    ["total"] = 42L,
+                }, Ct));
+                Assert.Equal(1, await tenantA.InsertRowAsync("orders", new Dictionary<string, object?>
+                {
+                    ["id"] = 2L,
+                    ["tenant_id"] = "tenant-a",
+                    ["total"] = 99L,
+                }, Ct));
+                Assert.Equal(1, await tenantB.InsertRowAsync("orders", new Dictionary<string, object?>
+                {
+                    ["id"] = 3L,
+                    ["tenant_id"] = "tenant-b",
+                    ["total"] = 7L,
+                }, Ct));
+
+                using JsonDocument sourceDocument = JsonDocument.Parse("""{"tenantId":"tenant-a","status":"paid"}""");
+                await tenantA.PutDocumentAsync("order_documents", "doc-1", sourceDocument.RootElement, Ct);
+
+                CSharpDbShardMigrationResult migration = await client.MigrateExactRouteKeyAsync(
+                    new CSharpDbShardExactKeyMigrationRequest
+                    {
+                        Keyspace = "tenants",
+                        RouteKey = "tenant-a",
+                        DestinationShardId = "s1",
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "test",
+                        Manifest = new CSharpDbShardMigrationManifest
+                        {
+                            PageSize = 2,
+                            Tables =
+                            [
+                                new CSharpDbShardMigrationTableManifest
+                                {
+                                    TableName = "orders",
+                                    RouteKeyColumn = "tenant_id",
+                                    PrimaryKeyColumn = "id",
+                                },
+                            ],
+                            Collections =
+                            [
+                                new CSharpDbShardMigrationCollectionManifest
+                                {
+                                    CollectionName = "order_documents",
+                                    RouteKeyPropertyName = "tenantId",
+                                },
+                            ],
+                        },
+                    },
+                    Ct);
+
+                Assert.True(migration.Succeeded, string.Join(Environment.NewLine, migration.Issues.Select(issue => issue.Message)));
+                Assert.Equal("PendingActivation", migration.Status);
+                Assert.Equal("s0", migration.SourceShardId);
+                Assert.Equal("s1", migration.DestinationShardId);
+                Assert.Equal(2, migration.PendingMapVersion);
+                Assert.True(migration.RequiresRestart);
+
+                CSharpDbShardMigrationTableResult table = Assert.Single(migration.Tables);
+                Assert.True(table.Verified, table.Error);
+                Assert.Equal(2, table.SourceRows);
+                Assert.Equal(2, table.DestinationRows);
+                Assert.Equal(2, table.RowsCopied);
+
+                CSharpDbShardMigrationCollectionResult collection = Assert.Single(migration.Collections);
+                Assert.True(collection.Verified, collection.Error);
+                Assert.Equal(1, collection.SourceDocuments);
+                Assert.Equal(1, collection.DestinationDocuments);
+
+                Dictionary<string, object?>? copied = await client.ForShardId("s1").GetRowByPkAsync("orders", "id", 1L, Ct);
+                Assert.NotNull(copied);
+                Assert.Equal("tenant-a", Assert.IsType<string>(copied!["tenant_id"]));
+
+                CSharpDbShardCatalogState pending = await client.GetShardCatalogAsync(Ct);
+                Assert.Equal(1, pending.ActiveMap.MapVersion);
+                Assert.Equal("s1", pending.PendingMap!.ExactKeyPins["tenant-a"]);
+            }
+
+            await using (var reloaded = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardResolution resolution = await reloaded.ResolveRouteAsync(new CSharpDbRouteContext
+                {
+                    Keyspace = "tenants",
+                    Key = "tenant-a",
+                }, Ct);
+                Assert.Equal("s1", resolution.ShardId);
+                Assert.Equal(2, resolution.MapVersion);
+
+                ICSharpDbClient tenantA = reloaded.ForRoute(new CSharpDbRouteContext
+                {
+                    Keyspace = "tenants",
+                    Key = "tenant-a",
+                });
+                Dictionary<string, object?>? row = await tenantA.GetRowByPkAsync("orders", "id", 2L, Ct);
+                Assert.NotNull(row);
+                Assert.Equal(99L, Assert.IsType<long>(row!["total"]));
+
+                JsonElement? document = await tenantA.GetDocumentAsync("order_documents", "doc-1", Ct);
+                Assert.NotNull(document);
+                Assert.Equal("paid", document.Value.GetProperty("status").GetString());
+            }
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task ExactKeyMigration_RejectsMissingManifestItems()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = Path.Combine(directory, "catalog.json"),
+            };
+
+            await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
+            CSharpDbShardMigrationResult migration = await client.MigrateExactRouteKeyAsync(
+                new CSharpDbShardExactKeyMigrationRequest
+                {
+                    Keyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    DestinationShardId = "s1",
+                    ExpectedCurrentMapVersion = 1,
+                    Manifest = new CSharpDbShardMigrationManifest(),
+                },
+                Ct);
+
+            Assert.False(migration.Succeeded);
+            Assert.Equal("Rejected", migration.Status);
+            Assert.Contains(migration.Issues, issue => issue.Code == "missing-manifest-items");
         }
         finally
         {

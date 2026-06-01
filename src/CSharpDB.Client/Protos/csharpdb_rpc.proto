@@ -19,6 +19,7 @@ service CSharpDbRpc {
   rpc GetShardCatalog (google.protobuf.Empty) returns (ShardCatalogStateMessage);
   rpc ValidateShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogValidationResultMessage);
   rpc ApplyShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogApplyResultMessage);
+  rpc MigrateExactRouteKey (ShardExactKeyMigrationRequestMessage) returns (ShardMigrationResultMessage);
   rpc GetTableNames (google.protobuf.Empty) returns (StringList);
   rpc GetTableSchema (TableNameRequest) returns (OptionalTableSchemaResponse);
   rpc GetRowCount (TableNameRequest) returns (google.protobuf.Int32Value);
@@ -306,6 +307,77 @@ message ShardCatalogApplyResultMessage {
   string message = 3;
   ShardCatalogValidationResultMessage validation = 4;
   ShardMapSnapshotMessage pending_map = 5;
+}
+
+message ShardMigrationTableManifestMessage {
+  string table_name = 1;
+  string route_key_column = 2;
+  string primary_key_column = 3;
+}
+
+message ShardMigrationCollectionManifestMessage {
+  string collection_name = 1;
+  string route_key_property_name = 2;
+}
+
+message ShardMigrationManifestMessage {
+  int32 page_size = 1;
+  repeated ShardMigrationTableManifestMessage tables = 2;
+  repeated ShardMigrationCollectionManifestMessage collections = 3;
+}
+
+message ShardExactKeyMigrationRequestMessage {
+  string keyspace = 1;
+  string route_key = 2;
+  string destination_shard_id = 3;
+  ShardMigrationManifestMessage manifest = 4;
+  google.protobuf.Int32Value expected_current_map_version = 5;
+  bool overwrite_destination_rows = 6;
+  bool delete_source_after_verification = 7;
+  google.protobuf.StringValue operator = 8;
+  google.protobuf.StringValue comment = 9;
+}
+
+message ShardMigrationTableResultMessage {
+  string table_name = 1;
+  int32 source_rows = 2;
+  int32 destination_rows = 3;
+  int32 rows_copied = 4;
+  int32 source_rows_deleted = 5;
+  bool verified = 6;
+  google.protobuf.StringValue source_checksum = 7;
+  google.protobuf.StringValue destination_checksum = 8;
+  google.protobuf.StringValue error = 9;
+}
+
+message ShardMigrationCollectionResultMessage {
+  string collection_name = 1;
+  int32 source_documents = 2;
+  int32 destination_documents = 3;
+  int32 documents_copied = 4;
+  int32 source_documents_deleted = 5;
+  bool verified = 6;
+  google.protobuf.StringValue source_checksum = 7;
+  google.protobuf.StringValue destination_checksum = 8;
+  google.protobuf.StringValue error = 9;
+}
+
+message ShardMigrationResultMessage {
+  string migration_id = 1;
+  bool succeeded = 2;
+  string status = 3;
+  string message = 4;
+  string keyspace = 5;
+  string route_key = 6;
+  string source_shard_id = 7;
+  string destination_shard_id = 8;
+  int32 map_version = 9;
+  google.protobuf.Int32Value pending_map_version = 10;
+  bool requires_restart = 11;
+  repeated ShardMigrationTableResultMessage tables = 12;
+  repeated ShardMigrationCollectionResultMessage collections = 13;
+  repeated ShardCatalogIssueMessage issues = 14;
+  ShardCatalogApplyResultMessage catalog_apply_result = 15;
 }
 
 message TableNameRequest {

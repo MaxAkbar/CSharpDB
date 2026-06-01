@@ -228,19 +228,51 @@ Important design rules:
 Goal: move route-key owned data safely and deliberately. Resharding is an
 operator workflow, not automatic dynamic membership.
 
+Implemented first slice:
+
+- Added exact route-key migration through `ICSharpDbShardAdminClient`.
+- Added REST `POST /api/sharding/migrations/exact-route-key`.
+- Added gRPC `MigrateExactRouteKey`.
+- Migration manifests can name route-owned tables by route-key column and
+  primary-key column.
+- Migration manifests can name route-owned collections by a top-level route-key
+  JSON property.
+- The sharded client fences writes for the affected route key while migration is
+  active.
+- The migration copies matching rows/documents to the destination shard, verifies
+  counts and checksums, and writes a pending exact-key pin to the catalog.
+- The live map remains unchanged until the sharded client or daemon is
+  restarted.
+- Verification failure leaves the active map unchanged.
+- Missing manifest items are rejected.
+
 Key work:
 
-- Start with exact route-key migration.
+- Start with exact route-key migration. (first slice implemented)
 - Add bucket-range migration after exact-key movement is stable.
 - Require a migration manifest that identifies key-owned data per table and
-  collection.
+  collection. (first slice implemented)
 - Do not infer ownership from arbitrary SQL clauses.
-- Fence writes for affected route keys while migration is active.
-- Copy data from source shard to destination shard.
-- Verify counts and checksums.
-- Update exact-key pins or bucket ownership only after verification.
-- Record migration history and final status.
-- Leave the old map active when migration verification fails.
+- Fence writes for affected route keys while migration is active. (first slice
+  implemented)
+- Copy data from source shard to destination shard. (first slice implemented)
+- Verify counts and checksums. (first slice implemented)
+- Update exact-key pins or bucket ownership only after verification. (exact-key
+  pins implemented)
+- Record migration history and final status. (result status and catalog history
+  comment implemented; durable migration history remains)
+- Leave the old map active when migration verification fails. (first slice
+  implemented)
+
+Remaining work:
+
+- Add durable migration history as a first-class catalog section, not only the
+  apply history comment.
+- Add resumable/retryable migration states for partial copy failures.
+- Add shard-directory repair or stale marking when directory entries point at
+  the old shard.
+- Add bucket-range migration after exact-key movement is stable.
+- Add Admin UX for migration preview, progress, verification, and confirmation.
 
 Admin workflow:
 

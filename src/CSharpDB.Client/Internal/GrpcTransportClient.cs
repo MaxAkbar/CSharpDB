@@ -102,6 +102,14 @@ internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdmin
             GrpcModelMapper.ToModel,
             ct);
 
+    public Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(
+        CSharpDbShardExactKeyMigrationRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.MigrateExactRouteKeyAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
         => CallAsync(_client.GetInfoAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 
