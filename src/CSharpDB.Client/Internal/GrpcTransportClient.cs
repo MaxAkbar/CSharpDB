@@ -24,7 +24,8 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         Uri endpoint,
         HttpClient? httpClient = null,
         string? apiKey = null,
-        string? apiKeyHeaderName = null)
+        string? apiKeyHeaderName = null,
+        CSharpDbRouteContext? routeContext = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -46,15 +47,13 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         }
 
         _channel = GrpcChannel.ForAddress(endpoint, channelOptions);
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            _client = new CSharpDbRpc.CSharpDbRpcClient(_channel);
-        }
-        else
-        {
-            var invoker = _channel.Intercept(new GrpcApiKeyClientInterceptor(apiKey, apiKeyHeaderName));
-            _client = new CSharpDbRpc.CSharpDbRpcClient(invoker);
-        }
+        CallInvoker invoker = _channel.CreateCallInvoker();
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            invoker = invoker.Intercept(new GrpcApiKeyClientInterceptor(apiKey, apiKeyHeaderName));
+        if (routeContext is not null)
+            invoker = invoker.Intercept(new GrpcRouteContextClientInterceptor(routeContext));
+
+        _client = new CSharpDbRpc.CSharpDbRpcClient(invoker);
     }
 
     public string DataSource => _endpoint;

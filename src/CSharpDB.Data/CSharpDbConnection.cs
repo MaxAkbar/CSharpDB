@@ -462,6 +462,7 @@ public sealed class CSharpDbConnection : DbConnection
             Transport = transport,
             Endpoint = endpoint,
             HttpClient = TransportHttpClient,
+            RouteContext = BuildRouteContext(builder),
         }, cancellationToken);
 
         return new RemoteDatabaseSession(client);
@@ -478,6 +479,7 @@ public sealed class CSharpDbConnection : DbConnection
             ConnectionString = connectionString,
             DirectDatabaseOptions = directDatabaseOptions,
             HybridDatabaseOptions = hybridDatabaseOptions,
+            RouteContext = BuildRouteContext(new CSharpDbConnectionStringBuilder(connectionString)),
         }, cancellationToken);
 
     private static PoolKey CreatePoolKey(
@@ -582,6 +584,23 @@ public sealed class CSharpDbConnection : DbConnection
             "pipe" => CSharpDbTransport.NamedPipes,
             _ => throw new InvalidOperationException(
                 $"Unsupported Transport '{value}'. Expected Direct, Http, Grpc, or NamedPipes."),
+        };
+    }
+
+    private static CSharpDbRouteContext? BuildRouteContext(CSharpDbConnectionStringBuilder builder)
+    {
+        bool hasKeyspace = !string.IsNullOrWhiteSpace(builder.ShardKeyspace);
+        bool hasKey = !string.IsNullOrWhiteSpace(builder.ShardKey);
+        if (!hasKeyspace && !hasKey)
+            return null;
+
+        if (!hasKeyspace || !hasKey)
+            throw new InvalidOperationException("Both 'Shard Keyspace' and 'Shard Key' are required for sharded CSharpDB connections.");
+
+        return new CSharpDbRouteContext
+        {
+            Keyspace = builder.ShardKeyspace.Trim(),
+            Key = builder.ShardKey.Trim(),
         };
     }
 

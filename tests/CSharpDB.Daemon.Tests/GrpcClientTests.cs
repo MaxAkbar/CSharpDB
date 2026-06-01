@@ -308,6 +308,72 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Daemon_ShardedRestAndGrpcClients_RouteByHeaderMetadata()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shards_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var factory = new TestDaemonFactory(
+                Path.Combine(directory, "unused.db"),
+                CreateShardingConfig(directory));
+            using var grpcTransportClient = CreateGrpcHttpClient(factory);
+            using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("http://localhost"),
+            });
+
+            await using var restTenantA = CreateHttpClient(
+                httpTransportClient,
+                routeContext: new CSharpDbRouteContext { Keyspace = "tenants", Key = "tenant-a" });
+            await using var grpcTenantB = CreateGrpcClient(
+                grpcTransportClient,
+                routeContext: new CSharpDbRouteContext { Keyspace = "tenants", Key = "tenant-b" });
+
+            Assert.Null((await restTenantA.ExecuteSqlAsync("CREATE TABLE routed_items (id INTEGER PRIMARY KEY, name TEXT);", Ct)).Error);
+            Assert.Equal(1, await restTenantA.InsertRowAsync("routed_items", new Dictionary<string, object?>
+            {
+                ["id"] = 1L,
+                ["name"] = "rest-a",
+            }, Ct));
+
+            Assert.Null((await grpcTenantB.ExecuteSqlAsync("CREATE TABLE routed_items (id INTEGER PRIMARY KEY, name TEXT);", Ct)).Error);
+            Assert.Equal(1, await grpcTenantB.InsertRowAsync("routed_items", new Dictionary<string, object?>
+            {
+                ["id"] = 1L,
+                ["name"] = "grpc-b",
+            }, Ct));
+
+            Dictionary<string, object?>? rowA = await restTenantA.GetRowByPkAsync("routed_items", "id", 1L, Ct);
+            Dictionary<string, object?>? rowB = await grpcTenantB.GetRowByPkAsync("routed_items", "id", 1L, Ct);
+            Assert.Equal("rest-a", Assert.IsType<string>(rowA!["name"]));
+            Assert.Equal("grpc-b", Assert.IsType<string>(rowB!["name"]));
+
+            await using var missingRoute = CreateGrpcClient(grpcTransportClient);
+            await Assert.ThrowsAsync<CSharpDbClientException>(
+                () => missingRoute.ExecuteSqlAsync("SELECT 1;", Ct));
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task Daemon_RestApiCanBeDisabledWithoutDisablingGrpc()
     {
         using var factory = new TestDaemonFactory(
@@ -670,13 +736,17 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal("contract", documentResponse.Value.ObjectValue.Fields["tags"].ArrayValue.Items[1].StringValue);
     }
 
-    private ICSharpDbClient CreateGrpcClient(HttpClient transportClient, string? apiKey = null)
+    private ICSharpDbClient CreateGrpcClient(
+        HttpClient transportClient,
+        string? apiKey = null,
+        CSharpDbRouteContext? routeContext = null)
         => CSharpDbClient.Create(new CSharpDbClientOptions
         {
             Transport = CSharpDbTransport.Grpc,
             Endpoint = "http://localhost",
             HttpClient = transportClient,
             ApiKey = apiKey,
+            RouteContext = routeContext,
         });
 
     private HttpClient CreateGrpcHttpClient()
@@ -698,14 +768,39 @@ public sealed class GrpcClientTests : IAsyncLifetime
         };
     }
 
-    private static ICSharpDbClient CreateHttpClient(HttpClient transportClient, string? apiKey = null)
+    private static ICSharpDbClient CreateHttpClient(
+        HttpClient transportClient,
+        string? apiKey = null,
+        CSharpDbRouteContext? routeContext = null)
         => CSharpDbClient.Create(new CSharpDbClientOptions
         {
             Transport = CSharpDbTransport.Http,
             Endpoint = "http://localhost",
             HttpClient = transportClient,
             ApiKey = apiKey,
+            RouteContext = routeContext,
         });
+
+    private static IReadOnlyDictionary<string, string?> CreateShardingConfig(string directory)
+        => new Dictionary<string, string?>
+        {
+            ["CSharpDB:Sharding:Enabled"] = "true",
+            ["CSharpDB:Sharding:Keyspace"] = "tenants",
+            ["CSharpDB:Sharding:MapVersion"] = "1",
+            ["CSharpDB:Sharding:VirtualBucketCount"] = "4",
+            ["CSharpDB:Sharding:Shards:0:ShardId"] = "s0",
+            ["CSharpDB:Sharding:Shards:0:DataSource"] = Path.Combine(directory, "s0.db"),
+            ["CSharpDB:Sharding:Shards:1:ShardId"] = "s1",
+            ["CSharpDB:Sharding:Shards:1:DataSource"] = Path.Combine(directory, "s1.db"),
+            ["CSharpDB:Sharding:BucketRanges:0:StartBucketInclusive"] = "0",
+            ["CSharpDB:Sharding:BucketRanges:0:EndBucketExclusive"] = "2",
+            ["CSharpDB:Sharding:BucketRanges:0:ShardId"] = "s0",
+            ["CSharpDB:Sharding:BucketRanges:1:StartBucketInclusive"] = "2",
+            ["CSharpDB:Sharding:BucketRanges:1:EndBucketExclusive"] = "4",
+            ["CSharpDB:Sharding:BucketRanges:1:ShardId"] = "s1",
+            ["CSharpDB:Sharding:ExactKeyPins:tenant-a"] = "s0",
+            ["CSharpDB:Sharding:ExactKeyPins:tenant-b"] = "s1",
+        };
 
     private static DaemonHostDatabaseOptions GetResolvedHostDatabaseOptions(TestDaemonFactory factory)
         => factory.Services.GetRequiredService<DaemonHostDatabaseOptions>();

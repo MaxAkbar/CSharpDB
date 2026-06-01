@@ -20,12 +20,14 @@ internal static class ClientTransportResolver
                 resolution.EndpointUri!,
                 options.HttpClient,
                 options.ApiKey,
-                options.ApiKeyHeaderName),
+                options.ApiKeyHeaderName,
+                options.RouteContext),
             CSharpDbTransport.Grpc => new GrpcTransportClient(
                 resolution.EndpointUri!,
                 options.HttpClient,
                 options.ApiKey,
-                options.ApiKeyHeaderName),
+                options.ApiKeyHeaderName,
+                options.RouteContext),
             CSharpDbTransport.NamedPipes => throw CreateNotImplementedTransportException(CSharpDbTransport.NamedPipes),
             _ => throw new CSharpDbClientConfigurationException($"Unsupported transport '{resolution.Transport}'."),
         };

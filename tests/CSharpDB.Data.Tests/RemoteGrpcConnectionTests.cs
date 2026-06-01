@@ -142,6 +142,70 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ShardRouteConnectionString_RoutesCommandsToOneShard()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_data_shards_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var factory = new TestDaemonFactory(
+                Path.Combine(directory, "unused.db"),
+                CreateShardingConfig(directory));
+            using var transportClient = CreateGrpcHttpClient(factory);
+
+            await using var tenantA = new CSharpDbConnection(
+                "Transport=Grpc;Endpoint=http://localhost;Shard Keyspace=tenants;Shard Key=tenant-a",
+                transportClient);
+            await tenantA.OpenAsync(Ct);
+            using (var cmd = tenantA.CreateCommand())
+            {
+                cmd.CommandText = "CREATE TABLE routed_ado (id INTEGER PRIMARY KEY, name TEXT);";
+                await cmd.ExecuteNonQueryAsync(Ct);
+                cmd.CommandText = "INSERT INTO routed_ado VALUES (1, 'tenant-a');";
+                await cmd.ExecuteNonQueryAsync(Ct);
+            }
+
+            await using var tenantB = new CSharpDbConnection(
+                "Transport=Grpc;Endpoint=http://localhost;Shard Keyspace=tenants;Shard Key=tenant-b",
+                transportClient);
+            await tenantB.OpenAsync(Ct);
+            using (var cmd = tenantB.CreateCommand())
+            {
+                cmd.CommandText = "CREATE TABLE routed_ado (id INTEGER PRIMARY KEY, name TEXT);";
+                await cmd.ExecuteNonQueryAsync(Ct);
+                cmd.CommandText = "INSERT INTO routed_ado VALUES (1, 'tenant-b');";
+                await cmd.ExecuteNonQueryAsync(Ct);
+                cmd.CommandText = "SELECT name FROM routed_ado WHERE id = 1;";
+                Assert.Equal("tenant-b", await cmd.ExecuteScalarAsync(Ct));
+            }
+
+            using (var verify = tenantA.CreateCommand())
+            {
+                verify.CommandText = "SELECT name FROM routed_ado WHERE id = 1;";
+                Assert.Equal("tenant-a", await verify.ExecuteScalarAsync(Ct));
+            }
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task GetSchema_RemoteGrpcConnection_UsesDaemonMetadata()
     {
         await using var conn = CreateConnection();
@@ -185,17 +249,48 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         }
     }
 
-    private sealed class TestDaemonFactory(string dbPath) : WebApplicationFactory<Program>
+    private static IReadOnlyDictionary<string, string?> CreateShardingConfig(string directory)
+        => new Dictionary<string, string?>
+        {
+            ["CSharpDB:Sharding:Enabled"] = "true",
+            ["CSharpDB:Sharding:Keyspace"] = "tenants",
+            ["CSharpDB:Sharding:MapVersion"] = "1",
+            ["CSharpDB:Sharding:VirtualBucketCount"] = "4",
+            ["CSharpDB:Sharding:Shards:0:ShardId"] = "s0",
+            ["CSharpDB:Sharding:Shards:0:DataSource"] = Path.Combine(directory, "s0.db"),
+            ["CSharpDB:Sharding:Shards:1:ShardId"] = "s1",
+            ["CSharpDB:Sharding:Shards:1:DataSource"] = Path.Combine(directory, "s1.db"),
+            ["CSharpDB:Sharding:BucketRanges:0:StartBucketInclusive"] = "0",
+            ["CSharpDB:Sharding:BucketRanges:0:EndBucketExclusive"] = "2",
+            ["CSharpDB:Sharding:BucketRanges:0:ShardId"] = "s0",
+            ["CSharpDB:Sharding:BucketRanges:1:StartBucketInclusive"] = "2",
+            ["CSharpDB:Sharding:BucketRanges:1:EndBucketExclusive"] = "4",
+            ["CSharpDB:Sharding:BucketRanges:1:ShardId"] = "s1",
+            ["CSharpDB:Sharding:ExactKeyPins:tenant-a"] = "s0",
+            ["CSharpDB:Sharding:ExactKeyPins:tenant-b"] = "s1",
+        };
+
+    private sealed class TestDaemonFactory(
+        string dbPath,
+        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
             builder.ConfigureAppConfiguration((_, config) =>
             {
-                config.AddInMemoryCollection(new Dictionary<string, string?>
+                var values = new Dictionary<string, string?>
                 {
                     ["ConnectionStrings:CSharpDB"] = $"Data Source={dbPath}",
-                });
+                };
+
+                if (extraConfig is not null)
+                {
+                    foreach (var pair in extraConfig)
+                        values[pair.Key] = pair.Value;
+                }
+
+                config.AddInMemoryCollection(values);
             });
         }
     }

@@ -5,10 +5,22 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ─── Services ───────────────────────────────────────────────
 
-builder.Services.AddCSharpDbClient(sp => new CSharpDbClientOptions
+builder.Services.AddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IConfiguration>().GetSection("CSharpDB:Sharding").Get<CSharpDbShardingOptions>()
+    ?? new CSharpDbShardingOptions());
+builder.Services.AddSingleton<ICSharpDbClient>(sp =>
 {
-    ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
-        ?? "Data Source=csharpdb.db",
+    CSharpDbShardingOptions shardingOptions = sp.GetRequiredService<CSharpDbShardingOptions>();
+    return shardingOptions.Enabled
+        ? CSharpDbShardedClient.Create(
+            shardingOptions,
+            sp.GetRequiredService<ICSharpDbRouteContextAccessor>())
+        : CSharpDbClient.Create(new CSharpDbClientOptions
+        {
+            ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
+                ?? "Data Source=csharpdb.db",
+        });
 });
 
 builder.Services.AddCSharpDbRestApi(builder.Configuration.GetSection("CSharpDB:Api:Security"));

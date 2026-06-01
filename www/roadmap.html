@@ -515,9 +515,9 @@
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
                                 <h4>API-Level Sharding</h4>
-                                <span class="roadmap-badge roadmap-badge-research">Research</span>
+                                <span class="roadmap-badge roadmap-badge-done">Done</span>
                             </div>
-                            <p>Route API/daemon requests across multiple warm CSharpDB database files so independent tenants or shard keys can use separate WAL and commit paths, with v1 focused on single-shard writes and point reads.</p>
+                            <p>Route-aware client, REST, gRPC, daemon, and ADO.NET surfaces can target single-shard operations across multiple warm CSharpDB database files using explicit keyspace/shard-key context and stable virtual-bucket ownership.</p>
                         </div>
                         <div class="roadmap-item">
                             <div class="roadmap-item-header">
@@ -545,6 +545,7 @@
                             <tr><td>RowId</td><td>Legacy table schemas without persisted high-water metadata may pay a one-time key scan on first insert</td></tr>
                             <tr><td>Collections</td><td><code>FindByIndexAsync</code> supports declared field-equality lookups; <code>FindByPathAsync</code> and <code>FindByPathRangeAsync</code> support path-based queries on indexed paths; <code>FindAsync</code> remains a full scan for unindexed predicates. Generated collections require registered descriptors for existing collection indexes; unsupported generated model shapes warn and use the source-generated JSON fallback instead of binary direct payloads</td></tr>
                             <tr><td>External Tables</td><td>Native <code>.csdbtable</code> archives can be registered and queried as read-only external tables. Writable external tables are planned as an opt-in <code>.csdbx</code> format; current archives remain read-only, and broader external indexes, range seeks, and deeper planner costing remain planned</td></tr>
+                            <tr><td>Sharding</td><td>API-level sharding routes explicit keyspace/shard-key requests to one database file at a time. Cross-shard SQL, cross-shard transactions, automatic resharding/data movement, replication, and failover remain planned or out of scope for v1</td></tr>
                             <tr><td>Networking</td><td><code>CSharpDB.Daemon</code> now hosts both REST and gRPC from one process; named pipes remain reserved but are not implemented end to end today</td></tr>
                             <tr><td>Security</td><td>Remote REST and daemon gRPC support opt-in API-key authentication, defaulting to <code>None</code> for compatibility. JWT, RBAC, mTLS helpers, TLS-specific configuration, and at-rest encryption are not implemented</td></tr>
                             <tr><td>Admin Forms</td><td>The Forms designer/runtime supports the core generated-form and data-entry path plus trusted command-backed automation, including lifecycle events, command buttons, selected-control events, conditional UI rules, domain formula helpers, declarative action sequences, and local C# code modules. It still needs Access-parity work for responsive runtime rendering, complete inferred validation, richer form modes, additional events, advanced filtering/sorting, report/query/import/export actions, macro loops/on-error/temp vars, and broader controls</td></tr>

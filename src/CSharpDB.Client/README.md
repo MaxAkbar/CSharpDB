@@ -118,6 +118,76 @@ var client = CSharpDbClient.Create(new CSharpDbClientOptions
 API-key mode is shared-secret authentication only. It does not provide JWT,
 RBAC, mTLS, or TLS termination.
 
+## API-Level Sharding
+
+`CSharpDB.Client` can route requests across multiple ordinary CSharpDB database
+files with `CSharpDbShardedClient`. Sharding is an API/daemon feature: each
+shard is still a standalone database file with its own WAL and commit path.
+
+V1 uses an explicit route context instead of SQL inference. For an e-commerce
+order-history workload, the route key could be the order month (`yyyy-MM`):
+
+```csharp
+await using var sharded = await CSharpDbShardedClient.CreateAsync(new CSharpDbShardingOptions
+{
+    Enabled = true,
+    Keyspace = "orders_by_month",
+    MapVersion = 1,
+    VirtualBucketCount = 4096,
+    Shards =
+    [
+        new CSharpDbShardDefinition { ShardId = "s0", DataSource = "orders-s0.db" },
+        new CSharpDbShardDefinition { ShardId = "s1", DataSource = "orders-s1.db" },
+    ],
+    BucketRanges =
+    [
+        new CSharpDbShardBucketRange { StartBucketInclusive = 0, EndBucketExclusive = 2048, ShardId = "s0" },
+        new CSharpDbShardBucketRange { StartBucketInclusive = 2048, EndBucketExclusive = 4096, ShardId = "s1" },
+    ],
+});
+
+ICSharpDbClient juneOrders = sharded.ForRoute(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+
+await juneOrders.ExecuteSqlAsync("""
+    SELECT order_number, order_date, amount
+    FROM orders
+    WHERE order_month = '2026-06'
+    ORDER BY order_date DESC
+    LIMIT 25 OFFSET 0;
+    """);
+```
+
+Remote clients pass the same route through headers/metadata by setting
+`CSharpDbClientOptions.RouteContext`. REST uses `X-CSharpDB-Keyspace` and
+`X-CSharpDB-Shard-Key`; gRPC sends the same names as lowercase metadata.
+
+The route key gets the request to the right database file. Queries should still
+filter on the route-key column because several route keys can share one physical
+shard. If a view spans multiple months, the caller explicitly runs multiple
+routed requests and combines the results.
+
+For paged history that crosses route keys, fill the page in application code:
+query the newest route first, append its rows, then continue to older route keys
+until the requested page size is satisfied. For later pages, skip whole routes by
+count before applying a route-local `OFFSET`.
+
+Other application patterns are valid when the UI has a bounded route window. A
+recent-orders view can query the current and previous month, merge by
+`order_date DESC, id DESC`, and take the requested page size even if that reads a
+few extra rows. A date-range filter can compute the month route keys in the
+range, query each with the same date predicate, and merge/limit the result. An
+infinite-scroll API can avoid global counts by returning a continuation token
+that records the remaining route keys and per-route cursor state.
+
+V1 intentionally supports single-shard operations only. Cross-shard joins,
+cross-shard transactions, automatic resharding, replication, and failover remain
+out of scope. Changing bucket ownership requires an operator-controlled data
+migration before the map is changed.
+
 ## Supported Surface
 
 The current `ICSharpDbClient` includes:

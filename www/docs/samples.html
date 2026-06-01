@@ -45,6 +45,24 @@
                     <strong>Looking for explanation-first guides?</strong> Use <a href="tutorials/index.html">Tutorials</a> for step-by-step walkthroughs. This page is for runnable samples, example apps, and companion code you can adapt directly.
                 </div>
 
+                <h2>API-Level Sharding</h2>
+                <p>The API-level sharding sample is the fastest way to see route-key based sharding in action. It uses an e-commerce order-history scenario: recent orders are paged from the current month route, a 10-row page can be filled from multiple month routes, older history is loaded by selecting an older month route, and the docs outline bounded over-fetch and continuation-token alternatives.</p>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj</code></pre>
+                </div>
+
+                <div class="next-steps-grid" style="margin-bottom: 40px;">
+                    <a href="api-level-sharding.html" class="next-step-card">
+                        <h4>API-Level Sharding Guide</h4>
+                        <p>Routing model, daemon config, remote headers, ADO.NET route keys, transactions, and V1 limits</p>
+                    </a>
+                    <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/api-level-sharding" class="next-step-card">
+                        <h4>Sample Source</h4>
+                        <p>Runnable project with four direct shard files, month route keys, and deterministic console output</p>
+                    </a>
+                </div>
+
                 <h2>CSV Bulk Import via the Public API</h2>
                 <p>If you want a practical relational bulk-ingest example today, start with the runnable CSV bulk import sample. It demonstrates the current best-practice path on the public engine API: <code>UseWriteOptimizedPreset()</code>, <code>PrepareInsertBatch(...)</code>, explicit transaction batching, and secondary indexes created after the load.</p>
 
