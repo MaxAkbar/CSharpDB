@@ -374,6 +374,90 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Daemon_ShardAdminRestAndGrpcExposeMapStatusAndExecuteAll()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shard_admin_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var factory = new TestDaemonFactory(
+                Path.Combine(directory, "unused.db"),
+                CreateShardingConfig(directory));
+            using var grpcTransportClient = CreateGrpcHttpClient(factory);
+            using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("http://localhost"),
+            });
+
+            await using var restAdmin = CreateHttpShardAdmin(httpTransportClient);
+            await using var grpcAdmin = CreateGrpcShardAdmin(grpcTransportClient);
+
+            CSharpDbShardMapSnapshot map = await restAdmin.GetShardMapAsync(Ct);
+            Assert.Equal("tenants", map.Keyspace);
+            Assert.Equal(4, map.VirtualBucketCount);
+            Assert.Equal(["s0", "s1"], map.Shards.Select(shard => shard.ShardId).ToArray());
+            Assert.Equal("s0", map.ExactKeyPins["tenant-a"]);
+            Assert.Empty(map.Directories);
+
+            CSharpDbShardResolution resolution = await grpcAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+            {
+                Keyspace = "tenants",
+                Key = "tenant-b",
+            }, Ct);
+            Assert.Equal("s1", resolution.ShardId);
+
+            IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
+                await grpcAdmin.ExecuteSqlOnAllShardsAsync(
+                    "CREATE TABLE shard_admin_schema (id INTEGER PRIMARY KEY, name TEXT);",
+                    Ct);
+            Assert.Equal(2, schemaResults.Count);
+            Assert.All(schemaResults, result =>
+            {
+                Assert.Null(result.Error);
+                Assert.NotNull(result.Result);
+                Assert.Null(result.Result!.Error);
+            });
+
+            IReadOnlyList<CSharpDbShardStatus> statuses = await restAdmin.GetShardStatusAsync(Ct);
+            Assert.Equal(2, statuses.Count);
+            Assert.All(statuses, status =>
+            {
+                Assert.True(status.Enabled);
+                Assert.True(status.Healthy);
+                Assert.NotNull(status.Info);
+            });
+
+            await using var tenantA = CreateHttpClient(
+                httpTransportClient,
+                routeContext: new CSharpDbRouteContext { Keyspace = "tenants", Key = "tenant-a" });
+            await using var tenantB = CreateGrpcClient(
+                grpcTransportClient,
+                routeContext: new CSharpDbRouteContext { Keyspace = "tenants", Key = "tenant-b" });
+
+            Assert.Contains("shard_admin_schema", await tenantA.GetTableNamesAsync(Ct));
+            Assert.Contains("shard_admin_schema", await tenantB.GetTableNamesAsync(Ct));
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task Daemon_RestApiCanBeDisabledWithoutDisablingGrpc()
     {
         using var factory = new TestDaemonFactory(
@@ -779,6 +863,22 @@ public sealed class GrpcClientTests : IAsyncLifetime
             HttpClient = transportClient,
             ApiKey = apiKey,
             RouteContext = routeContext,
+        });
+
+    private static ICSharpDbShardAdminClient CreateHttpShardAdmin(HttpClient transportClient)
+        => CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Http,
+            Endpoint = "http://localhost",
+            HttpClient = transportClient,
+        });
+
+    private static ICSharpDbShardAdminClient CreateGrpcShardAdmin(HttpClient transportClient)
+        => CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Grpc,
+            Endpoint = "http://localhost",
+            HttpClient = transportClient,
         });
 
     private static IReadOnlyDictionary<string, string?> CreateShardingConfig(string directory)

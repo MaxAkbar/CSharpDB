@@ -46,7 +46,7 @@
                 </div>
 
                 <h2>API-Level Sharding</h2>
-                <p>The API-level sharding sample is the fastest way to see route-key based sharding in action. It uses an e-commerce order-history scenario: recent orders are paged from the current month route, a 10-row page can be filled from multiple month routes, older history is loaded by selecting an older month route, and the docs outline bounded over-fetch and continuation-token alternatives.</p>
+                <p>The API-level sharding sample is the fastest way to see route-key based sharding in action. It uses an e-commerce order-history scenario: recent orders are paged from the current month route, a 10-row page can be filled from multiple month routes, older history is loaded by selecting an older month route, the shard-admin map/status snapshot is printed, and the docs outline bounded over-fetch and continuation-token alternatives.</p>
 
                 <div class="code-block" data-title="Bash">
                     <pre><code>dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj</code></pre>

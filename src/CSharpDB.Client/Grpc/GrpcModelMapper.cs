@@ -353,6 +353,170 @@ public static class GrpcModelMapper
             SavedQueryCount = value.SavedQueryCount,
         };
 
+    public static ShardDefinitionMessage ToMessage(CSharpDbShardDefinitionSnapshot value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Enabled = value.Enabled,
+            Transport = value.Transport?.ToString(),
+            Endpoint = value.Endpoint,
+            DataSource = value.DataSource,
+            HasConnectionString = value.HasConnectionString,
+            HasApiKey = value.HasApiKey,
+            ApiKeyHeaderName = value.ApiKeyHeaderName,
+        };
+
+    public static CSharpDbShardDefinitionSnapshot ToModel(ShardDefinitionMessage value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Enabled = value.Enabled,
+            Transport = TryParseTransport(value.Transport),
+            Endpoint = value.Endpoint,
+            DataSource = value.DataSource,
+            HasConnectionString = value.HasConnectionString,
+            HasApiKey = value.HasApiKey,
+            ApiKeyHeaderName = value.ApiKeyHeaderName,
+        };
+
+    public static ShardBucketRangeMessage ToMessage(CSharpDbShardBucketRange value)
+        => new()
+        {
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            ShardId = value.ShardId,
+        };
+
+    public static CSharpDbShardBucketRange ToModel(ShardBucketRangeMessage value)
+        => new()
+        {
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            ShardId = value.ShardId,
+        };
+
+    public static ShardDirectoryDefinitionMessage ToMessage(CSharpDbShardDirectoryDefinition value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            TargetKeyspace = value.TargetKeyspace,
+            Description = value.Description,
+            ReadOnly = value.ReadOnly,
+            EntryCount = value.EntryCount,
+        };
+
+    public static CSharpDbShardDirectoryDefinition ToModel(ShardDirectoryDefinitionMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            TargetKeyspace = value.TargetKeyspace,
+            Description = value.Description,
+            ReadOnly = value.ReadOnly,
+            EntryCount = value.EntryCount,
+        };
+
+    public static ShardMapSnapshotMessage ToMessage(CSharpDbShardMapSnapshot value)
+    {
+        var message = new ShardMapSnapshotMessage
+        {
+            Keyspace = value.Keyspace,
+            MapVersion = value.MapVersion,
+            VirtualBucketCount = value.VirtualBucketCount,
+        };
+
+        message.Shards.Add(value.Shards.Select(ToMessage));
+        message.BucketRanges.Add(value.BucketRanges.Select(ToMessage));
+        message.ExactKeyPins.Add(value.ExactKeyPins);
+        message.Directories.Add(value.Directories.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMapSnapshot ToModel(ShardMapSnapshotMessage value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            MapVersion = value.MapVersion,
+            VirtualBucketCount = value.VirtualBucketCount,
+            Shards = value.Shards.Select(ToModel).ToList(),
+            BucketRanges = value.BucketRanges.Select(ToModel).ToList(),
+            ExactKeyPins = new Dictionary<string, string>(value.ExactKeyPins, StringComparer.Ordinal),
+            Directories = value.Directories.Select(ToModel).ToList(),
+        };
+
+    public static ShardRouteRequest ToMessage(CSharpDbRouteContext value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+        };
+
+    public static CSharpDbRouteContext ToModel(ShardRouteRequest value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+        };
+
+    public static ShardResolutionMessage ToMessage(CSharpDbShardResolution value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+            Token = value.Token,
+            Bucket = value.Bucket,
+            ShardId = value.ShardId,
+            MapVersion = value.MapVersion,
+        };
+
+    public static CSharpDbShardResolution ToModel(ShardResolutionMessage value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+            Token = value.Token,
+            Bucket = value.Bucket,
+            ShardId = value.ShardId,
+            MapVersion = value.MapVersion,
+        };
+
+    public static ShardStatusMessage ToMessage(CSharpDbShardStatus value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            DataSource = value.DataSource,
+            Enabled = value.Enabled,
+            Healthy = value.Healthy,
+            Error = value.Error,
+            Info = value.Info is null ? null : ToMessage(value.Info),
+        };
+
+    public static CSharpDbShardStatus ToModel(ShardStatusMessage value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            DataSource = value.DataSource,
+            Enabled = value.Enabled,
+            Healthy = value.Healthy,
+            Error = value.Error,
+            Info = value.Info is null ? null : ToModel(value.Info),
+        };
+
+    public static ShardSqlExecutionResultMessage ToMessage(CSharpDbShardSqlExecutionResult value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Result = value.Result is null ? null : ToMessage(value.Result),
+            Error = value.Error,
+        };
+
+    public static CSharpDbShardSqlExecutionResult ToModel(ShardSqlExecutionResultMessage value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Result = value.Result is null ? null : ToModel(value.Result),
+            Error = value.Error,
+        };
+
     public static ProcedureParameterDefinitionMessage ToMessage(ProcedureParameterDefinition value)
         => new()
         {
@@ -1160,6 +1324,13 @@ public static class GrpcModelMapper
             Salt2 = value.Salt2,
             Issues = value.Issues.Select(ToModel).ToList(),
         };
+
+    private static CSharpDbTransport? TryParseTransport(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? null
+            : System.Enum.TryParse(value, ignoreCase: true, out CSharpDbTransport transport)
+                ? transport
+                : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported transport enum.");
 
     private static Timestamp ToTimestamp(DateTime value)
     {

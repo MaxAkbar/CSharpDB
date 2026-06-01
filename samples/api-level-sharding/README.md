@@ -10,7 +10,7 @@ Run it from the repository root:
 dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj
 ```
 
-The program creates four local shard database files under the build output directory, applies the same `orders` schema to every shard, pins several month route keys to specific shards for clear output, and shows how the app explicitly routes current and older order-history pages.
+The program creates four local shard database files under the build output directory, applies the same `orders` schema to every shard through the shard-admin surface, pins several month route keys to specific shards for clear output, and shows how the app explicitly routes current and older order-history pages.
 
 ## Scenario
 
@@ -41,7 +41,8 @@ The sample models these user flows:
 - Stable virtual-bucket ownership through `BucketRanges`.
 - Month-based route keys for order-history partitioning.
 - `ExactKeyPins` for operator-controlled placement of hot or archival months.
-- `ExecuteSqlOnAllShardsAsync(...)` for schema setup.
+- `ICSharpDbShardAdminClient` for map snapshots, route preview, shard status, and schema setup.
+- `ExecuteSqlOnAllShardsAsync(...)` for explicit schema setup across shards.
 - `ForRoute(...)` for normal application requests.
 - `ForShardId(...)` for admin/debug inspection.
 - Application-level page filling across route keys when one UI page spans more than one month.
@@ -64,6 +65,14 @@ Month route map
 2026-05 bucket=.. shard=shard-1 token=0x...
 2026-04 bucket=.. shard=shard-2 token=0x...
 2025-12 bucket=.. shard=shard-3 token=0x...
+
+Shard admin snapshot
+--------------------
+Map version:       1
+Shard definitions: 4
+Bucket ranges:     4
+Exact pins:        4
+Directory indexes: 0 (read-only placeholder for future global lookups)
 
 Recent orders page
 ------------------

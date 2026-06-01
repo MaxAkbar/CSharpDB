@@ -12,7 +12,7 @@ using Empty = Google.Protobuf.WellKnownTypes.Empty;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed class GrpcTransportClient : ICSharpDbClient
+internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient
 {
     private static readonly Empty EmptyRequest = new();
 
@@ -57,6 +57,31 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
     }
 
     public string DataSource => _endpoint;
+
+    public Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
+        => CallAsync(_client.GetShardMapAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+
+    public Task<CSharpDbShardResolution> ResolveRouteAsync(
+        CSharpDbRouteContext routeContext,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ResolveShardRouteAsync(GrpcModelMapper.ToMessage(routeContext), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardStatusAsync(EmptyRequest, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardStatus>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ExecuteSqlOnAllShardsAsync(new SqlRequest { Sql = sql }, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardSqlExecutionResult>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
         => CallAsync(_client.GetInfoAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);

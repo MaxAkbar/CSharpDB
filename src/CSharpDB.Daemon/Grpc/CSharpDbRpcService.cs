@@ -17,6 +17,28 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
     public override Task<DatabaseInfoMessage> GetInfo(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetInfoAsync(ct), GrpcModelMapper.ToMessage);
 
+    public override Task<ShardMapSnapshotMessage> GetShardMap(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMapAsync(ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardResolutionMessage> ResolveShardRoute(ShardRouteRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ResolveRouteAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardStatusListResponse> GetShardStatus(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardStatusAsync(ct), value =>
+        {
+            var response = new ShardStatusListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<ShardSqlExecutionResultListResponse> ExecuteSqlOnAllShards(SqlRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ExecuteSqlOnAllShardsAsync(request.Sql, ct), value =>
+        {
+            var response = new ShardSqlExecutionResultListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
     public override Task<StringList> GetTableNames(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetTableNamesAsync(ct), GrpcModelMapper.ToStringList);
 
@@ -373,6 +395,11 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
 
     private static string? NullIfEmpty(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private ICSharpDbShardAdminClient GetShardAdminClient()
+        => client as ICSharpDbShardAdminClient
+           ?? throw new CSharpDbClientException(
+               "CSharpDB shard-admin APIs are available only when API-level sharding is enabled.");
 
     private static RpcException TranslateException(Exception ex)
     {

@@ -183,6 +183,30 @@ range, query each with the same date predicate, and merge/limit the result. An
 infinite-scroll API can avoid global counts by returning a continuation token
 that records the remaining route keys and per-route cursor state.
 
+Phase 2 adds an explicit shard-admin surface for topology and operational views:
+
+```csharp
+await using ICSharpDbShardAdminClient shardAdmin =
+    CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+    {
+        Transport = CSharpDbTransport.Grpc,
+        Endpoint = "https://db-host:5821",
+    });
+
+CSharpDbShardMapSnapshot map = await shardAdmin.GetShardMapAsync();
+CSharpDbShardResolution preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+IReadOnlyList<CSharpDbShardStatus> status = await shardAdmin.GetShardStatusAsync();
+```
+
+The shard-admin surface is separate from normal `ICSharpDbClient` data
+operations. It exposes the map snapshot, route simulation, per-shard health, and
+explicit execute-on-all-shards SQL for schema setup. It does not add automatic
+cross-shard query planning.
+
 V1 intentionally supports single-shard operations only. Cross-shard joins,
 cross-shard transactions, automatic resharding, replication, and failover remain
 out of scope. Changing bucket ownership requires an operator-controlled data

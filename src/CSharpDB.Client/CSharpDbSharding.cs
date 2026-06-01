@@ -33,6 +33,29 @@ public sealed class CSharpDbShardDefinition
     public string? ApiKeyHeaderName { get; set; }
 }
 
+public sealed class CSharpDbShardMapSnapshot
+{
+    public required string Keyspace { get; init; }
+    public int MapVersion { get; init; }
+    public int VirtualBucketCount { get; init; }
+    public List<CSharpDbShardDefinitionSnapshot> Shards { get; init; } = [];
+    public List<CSharpDbShardBucketRange> BucketRanges { get; init; } = [];
+    public Dictionary<string, string> ExactKeyPins { get; init; } = new(StringComparer.Ordinal);
+    public List<CSharpDbShardDirectoryDefinition> Directories { get; init; } = [];
+}
+
+public sealed class CSharpDbShardDefinitionSnapshot
+{
+    public required string ShardId { get; init; }
+    public bool Enabled { get; init; }
+    public CSharpDbTransport? Transport { get; init; }
+    public string? Endpoint { get; init; }
+    public string? DataSource { get; init; }
+    public bool HasConnectionString { get; init; }
+    public bool HasApiKey { get; init; }
+    public string? ApiKeyHeaderName { get; init; }
+}
+
 public sealed class CSharpDbShardBucketRange
 {
     public int StartBucketInclusive { get; set; }
@@ -65,6 +88,42 @@ public sealed class CSharpDbShardSqlExecutionResult
     public required string ShardId { get; init; }
     public Models.SqlExecutionResult? Result { get; init; }
     public string? Error { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryDefinition
+{
+    public required string DirectoryName { get; init; }
+    public required string TargetKeyspace { get; init; }
+    public string? Description { get; init; }
+    public bool ReadOnly { get; init; } = true;
+    public int EntryCount { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryEntry
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public required string TargetKeyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public required string ShardId { get; init; }
+    public int MapVersion { get; init; }
+    public required string State { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryResolution
+{
+    public required CSharpDbShardDirectoryEntry Entry { get; init; }
+    public required CSharpDbShardResolution RouteResolution { get; init; }
+}
+
+public interface ICSharpDbShardAdminClient : IAsyncDisposable
+{
+    string DataSource { get; }
+
+    Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default);
+    Task<CSharpDbShardResolution> ResolveRouteAsync(CSharpDbRouteContext routeContext, CancellationToken ct = default);
+    Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(string sql, CancellationToken ct = default);
 }
 
 public interface ICSharpDbRouteContextAccessor

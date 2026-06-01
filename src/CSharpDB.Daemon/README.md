@@ -359,6 +359,32 @@ await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
 var info = await client.GetInfoAsync();
 ```
 
+Shard-admin example for a sharded daemon:
+
+```csharp
+using CSharpDB.Client;
+
+await using var shardAdmin = CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "http://localhost:5820",
+});
+
+var map = await shardAdmin.GetShardMapAsync();
+var status = await shardAdmin.GetShardStatusAsync();
+var preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+```
+
+The same surface is available through REST under `/api/sharding/map`,
+`/api/sharding/resolve`, `/api/sharding/status`, and
+`/api/sharding/sql/execute-all`. These endpoints are for topology, route
+simulation, health checks, and explicit schema setup; they do not enable
+automatic cross-shard SQL.
+
 Notes:
 
 - use `Transport = Grpc` for the generated RPC contract

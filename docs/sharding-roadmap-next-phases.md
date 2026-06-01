@@ -60,9 +60,20 @@ Important limits:
 Goal: expose shard topology and operational status through explicit admin
 interfaces instead of overloading normal `ICSharpDbClient` data operations.
 
+First implementation slice:
+
+- Added `ICSharpDbShardAdminClient`.
+- Added read-only map snapshot models, route resolution preview, shard status,
+  and explicit execute-on-all-shards SQL.
+- Exposed the shard-admin surface through direct sharded clients, REST endpoints,
+  and gRPC RPCs.
+- Added read-only shard-directory model types as placeholders for future global
+  lookup indexes. Static config still returns an empty directory list.
+- Admin UI workspace work remains for the next slice.
+
 Key work:
 
-- Add a shard-admin client surface such as `ICSharpDbShardAdminClient`.
+- Add a shard-admin client surface such as `ICSharpDbShardAdminClient`. (started)
 - Expose shard map snapshot, route resolution preview, shard health/status, and
   execute-schema-on-all-shards operations.
 - Add REST and gRPC shard-admin endpoints so Admin can manage remote sharded

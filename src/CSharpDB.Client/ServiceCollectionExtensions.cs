@@ -41,6 +41,7 @@ public static class ServiceCollectionExtensions
             options,
             sp.GetService<ICSharpDbRouteContextAccessor>()));
         services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
+        services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
         return services;
     }
 
@@ -56,6 +57,30 @@ public static class ServiceCollectionExtensions
             optionsFactory(sp),
             sp.GetService<ICSharpDbRouteContextAccessor>()));
         services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
+        services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
+        return services;
+    }
+
+    public static IServiceCollection AddCSharpDbShardAdminClient(
+        this IServiceCollection services,
+        CSharpDbClientOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+
+        services.AddSingleton(options);
+        services.AddSingleton<ICSharpDbShardAdminClient>(_ => CSharpDbClient.CreateShardAdmin(options));
+        return services;
+    }
+
+    public static IServiceCollection AddCSharpDbShardAdminClient(
+        this IServiceCollection services,
+        Func<IServiceProvider, CSharpDbClientOptions> optionsFactory)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(optionsFactory);
+
+        services.AddSingleton<ICSharpDbShardAdminClient>(sp => CSharpDbClient.CreateShardAdmin(optionsFactory(sp)));
         return services;
     }
 }

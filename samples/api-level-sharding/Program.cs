@@ -22,8 +22,9 @@ internal static class ApiLevelShardingSampleProgram
 
         var options = CreateShardingOptions(dataDirectory);
         await using var sharded = await CSharpDbShardedClient.CreateAsync(options);
+        ICSharpDbShardAdminClient shardAdmin = sharded;
 
-        await CreateSchemaOnEveryShardAsync(sharded);
+        await CreateSchemaOnEveryShardAsync(shardAdmin);
         await SeedOrderHistoryAsync(sharded);
         await DemonstrateTransactionRoutingAsync(sharded);
 
@@ -36,7 +37,8 @@ internal static class ApiLevelShardingSampleProgram
         Console.WriteLine($"Shard files:     {dataDirectory}");
         Console.WriteLine();
 
-        PrintRouteMap(sharded, ["2026-06", "2026-05", "2026-04", "2025-12"]);
+        await PrintRouteMapAsync(shardAdmin, ["2026-06", "2026-05", "2026-04", "2025-12"]);
+        await PrintShardAdminSnapshotAsync(shardAdmin);
         await PrintRecentOrdersPageAsync(sharded);
         await PrintOlderMonthPageAsync(sharded, "2026-05");
         await PrintFilledHistoryPageAsync(sharded, ["2026-06", "2026-05", "2026-04", "2025-12"]);
@@ -83,9 +85,9 @@ internal static class ApiLevelShardingSampleProgram
             },
         };
 
-    private static async Task CreateSchemaOnEveryShardAsync(CSharpDbShardedClient sharded)
+    private static async Task CreateSchemaOnEveryShardAsync(ICSharpDbShardAdminClient shardAdmin)
     {
-        IReadOnlyList<CSharpDbShardSqlExecutionResult> results = await sharded.ExecuteSqlOnAllShardsAsync("""
+        IReadOnlyList<CSharpDbShardSqlExecutionResult> results = await shardAdmin.ExecuteSqlOnAllShardsAsync("""
             CREATE TABLE orders (
                 id INTEGER PRIMARY KEY,
                 order_month TEXT NOT NULL,
@@ -99,7 +101,7 @@ internal static class ApiLevelShardingSampleProgram
 
         ThrowIfAnyShardFailed(results);
 
-        results = await sharded.ExecuteSqlOnAllShardsAsync(
+        results = await shardAdmin.ExecuteSqlOnAllShardsAsync(
             "CREATE INDEX idx_orders_customer_date ON orders (customer_id, order_date);");
 
         ThrowIfAnyShardFailed(results);
@@ -162,17 +164,35 @@ internal static class ApiLevelShardingSampleProgram
         });
     }
 
-    private static void PrintRouteMap(CSharpDbShardedClient sharded, IReadOnlyList<string> months)
+    private static async Task PrintRouteMapAsync(ICSharpDbShardAdminClient shardAdmin, IReadOnlyList<string> months)
     {
         Console.WriteLine("Month route map");
         Console.WriteLine("---------------");
         foreach (string month in months)
         {
             CSharpDbRouteContext route = RouteForMonth(month);
-            CSharpDbShardResolution resolution = sharded.ResolveRoute(route);
+            CSharpDbShardResolution resolution = await shardAdmin.ResolveRouteAsync(route);
             Console.WriteLine(
                 $"{month,-7} bucket={resolution.Bucket,2} shard={resolution.ShardId,-7} token=0x{resolution.Token:X16}");
         }
+
+        Console.WriteLine();
+    }
+
+    private static async Task PrintShardAdminSnapshotAsync(ICSharpDbShardAdminClient shardAdmin)
+    {
+        CSharpDbShardMapSnapshot map = await shardAdmin.GetShardMapAsync();
+        IReadOnlyList<CSharpDbShardStatus> statuses = await shardAdmin.GetShardStatusAsync();
+
+        Console.WriteLine("Shard admin snapshot");
+        Console.WriteLine("--------------------");
+        Console.WriteLine($"Map version:       {map.MapVersion}");
+        Console.WriteLine($"Shard definitions: {map.Shards.Count}");
+        Console.WriteLine($"Bucket ranges:     {map.BucketRanges.Count}");
+        Console.WriteLine($"Exact pins:        {map.ExactKeyPins.Count}");
+        Console.WriteLine($"Directory indexes: {map.Directories.Count} (read-only placeholder for future global lookups)");
+        foreach (CSharpDbShardStatus status in statuses)
+            Console.WriteLine($"{status.ShardId,-7} enabled={status.Enabled,-5} healthy={status.Healthy,-5} source={status.DataSource}");
 
         Console.WriteLine();
     }

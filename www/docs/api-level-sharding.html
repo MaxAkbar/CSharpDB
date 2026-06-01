@@ -369,6 +369,32 @@ X-CSharpDB-Shard-Key: 2026-06</code></pre>
 await client.ExecuteSqlAsync("SELECT COUNT(*) FROM orders WHERE order_month = '2026-06';");</code></pre>
                 </div>
 
+                <h2>Shard Admin APIs</h2>
+                <p>Shard-admin APIs expose topology and operational state without overloading normal data operations. They are available for direct sharded clients and through both REST and gRPC daemon transports.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using ICSharpDbShardAdminClient shardAdmin =
+    CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+    {
+        Transport = CSharpDbTransport.Grpc,
+        Endpoint = "https://localhost:61818",
+    });
+
+CSharpDbShardMapSnapshot map = await shardAdmin.GetShardMapAsync();
+CSharpDbShardResolution preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+IReadOnlyList&lt;CSharpDbShardStatus&gt; status = await shardAdmin.GetShardStatusAsync();</code></pre>
+                </div>
+
+                <p>The REST endpoints are <code>GET /api/sharding/map</code>, <code>POST /api/sharding/resolve</code>, <code>GET /api/sharding/status</code>, and <code>POST /api/sharding/sql/execute-all</code>. The gRPC contract exposes matching calls named <code>GetShardMap</code>, <code>ResolveShardRoute</code>, <code>GetShardStatus</code>, and <code>ExecuteSqlOnAllShards</code>.</p>
+
+                <div class="callout callout-info">
+                    <strong>Admin operations are explicit.</strong> Execute-on-all-shards is intended for schema setup and diagnostics. It returns one result per shard and does not create a distributed SQL planner.
+                </div>
+
                 <h2>ADO.NET</h2>
                 <p>ADO.NET callers can bind a connection to one route with connection-string keys. Every command on that connection is sent to the same route.</p>
 

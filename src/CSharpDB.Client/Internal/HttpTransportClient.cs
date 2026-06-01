@@ -7,7 +7,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class HttpTransportClient : ICSharpDbClient
+internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient
 {
     private static readonly JsonSerializerOptions s_jsonOptions = CreateJsonOptions();
 
@@ -46,6 +46,40 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     }
 
     public string DataSource => _endpoint.AbsoluteUri;
+
+    public async Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/map"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardMapSnapshot>(response, ct);
+    }
+
+    public async Task<CSharpDbShardResolution> ResolveRouteAsync(
+        CSharpDbRouteContext routeContext,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/resolve"), routeContext, ct);
+        return await ReadRequiredAsync<CSharpDbShardResolution>(response, ct);
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/status"), payload: null, ct);
+        return await ReadRequiredAsync<List<CSharpDbShardStatus>>(response, ct);
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/sql/execute-all"), new { Sql = sql }, ct);
+        var payload = await ReadRequiredAsync<List<ApiShardSqlExecutionResultResponse>>(response, ct);
+        return payload.Select(item => new CSharpDbShardSqlExecutionResult
+        {
+            ShardId = item.ShardId,
+            Result = item.Result is null ? null : MapSqlResult(item.Result),
+            Error = item.Error,
+        }).ToList();
+    }
 
     public async Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
     {
@@ -1028,6 +1062,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     private sealed record ApiViewResponse(string ViewName, string Sql);
     private sealed record ApiTriggerResponse(string TriggerName, string TableName, string Timing, string Event, string BodySql);
     private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, string[]? ColumnTypes, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs);
+    private sealed record ApiShardSqlExecutionResultResponse(string ShardId, ApiSqlResultResponse? Result, string? Error);
     private sealed record ApiProcedureDetailResponse(string Name, string BodySql, IReadOnlyList<ApiProcedureParameterResponse> Parameters, string? Description, bool IsEnabled, DateTime CreatedUtc, DateTime UpdatedUtc);
     private sealed record ApiProcedureParameterResponse(string Name, string Type, bool Required, object? Default, string? Description);
     private sealed record ApiProcedureExecutionResponse(string ProcedureName, bool Succeeded, IReadOnlyList<ApiProcedureStatementResultResponse> Statements, string? Error, int? FailedStatementIndex, double ElapsedMs);

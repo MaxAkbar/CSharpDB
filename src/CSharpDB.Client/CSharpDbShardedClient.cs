@@ -6,7 +6,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client;
 
-public sealed class CSharpDbShardedClient : ICSharpDbClient
+public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient
 {
     private const string TransactionPrefix = "csdbshard";
 
@@ -71,6 +71,14 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient
 
     public CSharpDbShardResolution ResolveRoute(CSharpDbRouteContext routeContext)
         => _map.Resolve(routeContext);
+
+    public Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
+        => Task.FromResult(_map.ToSnapshot());
+
+    public Task<CSharpDbShardResolution> ResolveRouteAsync(
+        CSharpDbRouteContext routeContext,
+        CancellationToken ct = default)
+        => Task.FromResult(ResolveRoute(routeContext));
 
     public async Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default)
     {
@@ -917,6 +925,18 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient
                 ? shard
                 : throw new CSharpDbClientException($"Shard '{shardId}' is not configured.");
 
+        public CSharpDbShardMapSnapshot ToSnapshot()
+            => new()
+            {
+                Keyspace = Keyspace,
+                MapVersion = MapVersion,
+                VirtualBucketCount = VirtualBucketCount,
+                Shards = Shards.Select(ToShardSnapshot).ToList(),
+                BucketRanges = BuildBucketRangeSnapshot(),
+                ExactKeyPins = new Dictionary<string, string>(_exactKeyPins, StringComparer.Ordinal),
+                Directories = [],
+            };
+
         public static (string Keyspace, string Key) NormalizeRoute(CSharpDbRouteContext routeContext)
         {
             ArgumentNullException.ThrowIfNull(routeContext);
@@ -941,6 +961,49 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient
             }
 
             return normalized;
+        }
+
+        private static CSharpDbShardDefinitionSnapshot ToShardSnapshot(CSharpDbShardDefinition shard)
+            => new()
+            {
+                ShardId = shard.ShardId,
+                Enabled = shard.Enabled,
+                Transport = shard.Transport,
+                Endpoint = shard.Endpoint,
+                DataSource = shard.DataSource,
+                HasConnectionString = !string.IsNullOrWhiteSpace(shard.ConnectionString),
+                HasApiKey = !string.IsNullOrWhiteSpace(shard.ApiKey),
+                ApiKeyHeaderName = shard.ApiKeyHeaderName,
+            };
+
+        private List<CSharpDbShardBucketRange> BuildBucketRangeSnapshot()
+        {
+            var ranges = new List<CSharpDbShardBucketRange>();
+            int start = 0;
+            string current = _bucketOwners[0];
+            for (int bucket = 1; bucket < _bucketOwners.Length; bucket++)
+            {
+                if (string.Equals(_bucketOwners[bucket], current, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                ranges.Add(new CSharpDbShardBucketRange
+                {
+                    StartBucketInclusive = start,
+                    EndBucketExclusive = bucket,
+                    ShardId = current,
+                });
+                start = bucket;
+                current = _bucketOwners[bucket];
+            }
+
+            ranges.Add(new CSharpDbShardBucketRange
+            {
+                StartBucketInclusive = start,
+                EndBucketExclusive = _bucketOwners.Length,
+                ShardId = current,
+            });
+
+            return ranges;
         }
 
         private static string[] BuildBucketOwners(

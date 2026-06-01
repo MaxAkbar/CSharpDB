@@ -20,6 +20,19 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSha
         return new CSharpDbClient(ClientTransportResolver.Create(options));
     }
 
+    public static ICSharpDbShardAdminClient CreateShardAdmin(CSharpDbClientOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        ICSharpDbClient client = ClientTransportResolver.Create(options);
+        if (client is ICSharpDbShardAdminClient shardAdminClient)
+            return shardAdminClient;
+
+        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        throw new CSharpDbClientConfigurationException(
+            $"Transport '{options.Transport}' does not expose CSharpDB shard-admin APIs.");
+    }
+
     public string DataSource => _inner.DataSource;
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;

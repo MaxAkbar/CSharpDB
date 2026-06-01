@@ -12,6 +12,10 @@ import "google/protobuf/wrappers.proto";
 
 service CSharpDbRpc {
   rpc GetInfo (google.protobuf.Empty) returns (DatabaseInfoMessage);
+  rpc GetShardMap (google.protobuf.Empty) returns (ShardMapSnapshotMessage);
+  rpc ResolveShardRoute (ShardRouteRequest) returns (ShardResolutionMessage);
+  rpc GetShardStatus (google.protobuf.Empty) returns (ShardStatusListResponse);
+  rpc ExecuteSqlOnAllShards (SqlRequest) returns (ShardSqlExecutionResultListResponse);
   rpc GetTableNames (google.protobuf.Empty) returns (StringList);
   rpc GetTableSchema (TableNameRequest) returns (OptionalTableSchemaResponse);
   rpc GetRowCount (TableNameRequest) returns (google.protobuf.Int32Value);
@@ -148,6 +152,78 @@ message VariantArrayList {
 
 message StringList {
   repeated string values = 1;
+}
+
+message ShardDefinitionMessage {
+  string shard_id = 1;
+  bool enabled = 2;
+  google.protobuf.StringValue transport = 3;
+  google.protobuf.StringValue endpoint = 4;
+  google.protobuf.StringValue data_source = 5;
+  bool has_connection_string = 6;
+  bool has_api_key = 7;
+  google.protobuf.StringValue api_key_header_name = 8;
+}
+
+message ShardBucketRangeMessage {
+  int32 start_bucket_inclusive = 1;
+  int32 end_bucket_exclusive = 2;
+  string shard_id = 3;
+}
+
+message ShardDirectoryDefinitionMessage {
+  string directory_name = 1;
+  string target_keyspace = 2;
+  google.protobuf.StringValue description = 3;
+  bool read_only = 4;
+  int32 entry_count = 5;
+}
+
+message ShardMapSnapshotMessage {
+  string keyspace = 1;
+  int32 map_version = 2;
+  int32 virtual_bucket_count = 3;
+  repeated ShardDefinitionMessage shards = 4;
+  repeated ShardBucketRangeMessage bucket_ranges = 5;
+  map<string, string> exact_key_pins = 6;
+  repeated ShardDirectoryDefinitionMessage directories = 7;
+}
+
+message ShardRouteRequest {
+  string keyspace = 1;
+  string key = 2;
+}
+
+message ShardResolutionMessage {
+  string keyspace = 1;
+  string key = 2;
+  uint64 token = 3;
+  int32 bucket = 4;
+  string shard_id = 5;
+  int32 map_version = 6;
+}
+
+message ShardStatusMessage {
+  string shard_id = 1;
+  string data_source = 2;
+  bool enabled = 3;
+  bool healthy = 4;
+  google.protobuf.StringValue error = 5;
+  DatabaseInfoMessage info = 6;
+}
+
+message ShardStatusListResponse {
+  repeated ShardStatusMessage items = 1;
+}
+
+message ShardSqlExecutionResultMessage {
+  string shard_id = 1;
+  SqlExecutionResultMessage result = 2;
+  google.protobuf.StringValue error = 3;
+}
+
+message ShardSqlExecutionResultListResponse {
+  repeated ShardSqlExecutionResultMessage items = 1;
 }
 
 message TableNameRequest {

@@ -111,7 +111,7 @@ Root-level helpers:
 - Code: [Program.cs](api-level-sharding/Program.cs)
 - Docs: [README.md](api-level-sharding/README.md)
 - Domain: e-commerce order history routed by `yyyy-MM` order month across four local shard files
-- Good for: `CSharpDbShardedClient`, `CSharpDbRouteContext`, virtual bucket maps, month route keys, exact route-key pins, route-bound clients, execute-on-all-shards schema setup, paged recent/older order history, precise page fill across route keys, bounded over-fetch alternatives, shard-prefixed transaction ids, and missing-route failure behavior
+- Good for: `CSharpDbShardedClient`, `ICSharpDbShardAdminClient`, `CSharpDbRouteContext`, virtual bucket maps, month route keys, exact route-key pins, route-bound clients, shard-admin map/status/route preview, execute-on-all-shards schema setup, paged recent/older order history, precise page fill across route keys, bounded over-fetch alternatives, shard-prefixed transaction ids, and missing-route failure behavior
 
 ### Collection Indexing Walkthrough
 
@@ -251,7 +251,7 @@ This sample demonstrates the current best-practice SQL bulk-ingest path on the p
 dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj
 ```
 
-This sample creates four shard database files, applies a shared order schema to every shard, routes recent and older order-history pages by explicit month route key, demonstrates filling a 10-row page from two month routes, demonstrates exact-key month pins, and commits a transaction using only the shard-prefixed transaction id.
+This sample creates four shard database files, applies a shared order schema to every shard through the shard-admin surface, prints the shard-admin map/status snapshot, routes recent and older order-history pages by explicit month route key, demonstrates filling a 10-row page from two month routes, demonstrates exact-key month pins, and commits a transaction using only the shard-prefixed transaction id.
 
 ### Option 8: Run the Platform Showcase Demo
 

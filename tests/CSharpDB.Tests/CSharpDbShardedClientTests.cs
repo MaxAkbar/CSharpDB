@@ -46,6 +46,55 @@ public sealed class CSharpDbShardedClientTests
     }
 
     [Fact]
+    public async Task ShardAdmin_ReturnsReadOnlyMapSnapshotAndRoutePreview()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            await using var client = await CSharpDbShardedClient.CreateAsync(CreateOptions(directory), ct: Ct);
+
+            CSharpDbShardMapSnapshot snapshot = await client.GetShardMapAsync(Ct);
+
+            Assert.Equal("tenants", snapshot.Keyspace);
+            Assert.Equal(1, snapshot.MapVersion);
+            Assert.Equal(4, snapshot.VirtualBucketCount);
+            Assert.Equal(["s0", "s1"], snapshot.Shards.Select(shard => shard.ShardId).ToArray());
+            Assert.All(snapshot.Shards, shard => Assert.False(shard.HasApiKey));
+            Assert.Equal("s0", snapshot.ExactKeyPins["tenant-a"]);
+            Assert.Equal("s1", snapshot.ExactKeyPins["tenant-b"]);
+            Assert.Empty(snapshot.Directories);
+
+            Assert.Collection(
+                snapshot.BucketRanges,
+                range =>
+                {
+                    Assert.Equal(0, range.StartBucketInclusive);
+                    Assert.Equal(2, range.EndBucketExclusive);
+                    Assert.Equal("s0", range.ShardId);
+                },
+                range =>
+                {
+                    Assert.Equal(2, range.StartBucketInclusive);
+                    Assert.Equal(4, range.EndBucketExclusive);
+                    Assert.Equal("s1", range.ShardId);
+                });
+
+            CSharpDbShardResolution resolution = await client.ResolveRouteAsync(new CSharpDbRouteContext
+            {
+                Keyspace = "tenants",
+                Key = "tenant-b",
+            }, Ct);
+
+            Assert.Equal("s1", resolution.ShardId);
+            Assert.Equal(1, resolution.MapVersion);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task RouteBoundClient_RoutesOperationsToStableShard()
     {
         string directory = CreateTempDirectory();
