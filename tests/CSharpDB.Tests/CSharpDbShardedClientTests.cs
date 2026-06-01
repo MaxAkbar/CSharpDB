@@ -95,6 +95,148 @@ public sealed class CSharpDbShardedClientTests
     }
 
     [Fact]
+    public async Task CatalogApply_WritesPendingMapAndReloadUsesCatalogVersion()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            string catalogPath = Path.Combine(directory, "shard-catalog.json");
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = catalogPath,
+            };
+
+            await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardCatalogState initial = await client.GetShardCatalogAsync(Ct);
+                Assert.True(initial.IsCatalogEnabled);
+                Assert.True(initial.IsWritable);
+                Assert.Equal(1, initial.ActiveMap.MapVersion);
+                Assert.Null(initial.PendingMap);
+
+                CSharpDbShardingOptions proposed = CreateOptions(directory);
+                proposed.MapVersion = 2;
+                proposed.Catalog = options.Catalog;
+                proposed.Directories =
+                [
+                    new CSharpDbShardDirectoryDefinition
+                    {
+                        DirectoryName = "orders_by_id",
+                        TargetKeyspace = "tenants",
+                        Description = "order id lookup",
+                    },
+                ];
+                proposed.DirectoryEntries =
+                [
+                    new CSharpDbShardDirectoryEntry
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-1",
+                        TargetKeyspace = "tenants",
+                        RouteKey = "tenant-a",
+                        ShardId = "s0",
+                        MapVersion = 2,
+                        State = "Active",
+                    },
+                ];
+
+                CSharpDbShardCatalogValidationResult validation =
+                    await client.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                    {
+                        Options = proposed,
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "test",
+                        Comment = "add directory metadata",
+                    }, Ct);
+
+                Assert.True(validation.IsValid);
+                Assert.False(validation.RequiresDataMigration);
+                Assert.NotNull(validation.Preview);
+                Assert.Equal(2, validation.Preview!.MapVersion);
+                Assert.Equal(1, Assert.Single(validation.Preview.Directories).EntryCount);
+
+                CSharpDbShardCatalogApplyResult applied =
+                    await client.ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                    {
+                        Options = proposed,
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "test",
+                        Comment = "add directory metadata",
+                    }, Ct);
+
+                Assert.True(applied.Applied);
+                Assert.True(applied.RequiresRestart);
+                Assert.True(File.Exists(catalogPath));
+
+                CSharpDbShardCatalogState pending = await client.GetShardCatalogAsync(Ct);
+                Assert.Equal(1, pending.ActiveMap.MapVersion);
+                Assert.Equal(2, pending.PendingMap!.MapVersion);
+                Assert.Single(pending.History);
+            }
+
+            await using (var reloaded = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardMapSnapshot reloadedMap = await reloaded.GetShardMapAsync(Ct);
+                Assert.Equal(2, reloadedMap.MapVersion);
+                Assert.Equal(1, Assert.Single(reloadedMap.Directories).EntryCount);
+            }
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task CatalogValidation_RejectsOwnershipChangeWithoutAcknowledgement()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = Path.Combine(directory, "catalog.json"),
+            };
+
+            await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
+            CSharpDbShardingOptions proposed = CreateOptions(directory);
+            proposed.MapVersion = 2;
+            proposed.Catalog = options.Catalog;
+            proposed.ExactKeyPins["tenant-a"] = "s1";
+
+            CSharpDbShardCatalogValidationResult validation =
+                await client.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                {
+                    Options = proposed,
+                    ExpectedCurrentMapVersion = 1,
+                }, Ct);
+
+            Assert.False(validation.IsValid);
+            Assert.True(validation.RequiresDataMigration);
+            Assert.Contains(validation.Issues, issue => issue.Code == "migration-required");
+
+            CSharpDbShardCatalogValidationResult acknowledged =
+                await client.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                {
+                    Options = proposed,
+                    ExpectedCurrentMapVersion = 1,
+                    AllowMetadataOnlyOwnershipChange = true,
+                }, Ct);
+
+            Assert.True(acknowledged.IsValid);
+            Assert.True(acknowledged.RequiresDataMigration);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task RouteBoundClient_RoutesOperationsToStableShard()
     {
         string directory = CreateTempDirectory();

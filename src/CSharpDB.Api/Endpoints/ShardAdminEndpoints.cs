@@ -11,6 +11,9 @@ public static class ShardAdminEndpoints
         group.MapPost("/sharding/resolve", ResolveRoute);
         group.MapGet("/sharding/status", GetShardStatus);
         group.MapPost("/sharding/sql/execute-all", ExecuteSqlOnAllShards);
+        group.MapGet("/sharding/catalog", GetShardCatalog);
+        group.MapPost("/sharding/catalog/validate", ValidateShardCatalogUpdate);
+        group.MapPost("/sharding/catalog/apply", ApplyShardCatalogUpdate);
         return group;
     }
 
@@ -60,6 +63,40 @@ public static class ShardAdminEndpoints
             result.ShardId,
             result.Result is null ? null : SqlEndpoints.ToResponse(result.Result),
             result.Error)).ToList());
+    }
+
+    private static async Task<IResult> GetShardCatalog(ICSharpDbClient db, CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        return Results.Ok(await shardAdmin.GetShardCatalogAsync(ct));
+    }
+
+    private static async Task<IResult> ValidateShardCatalogUpdate(
+        CSharpDbShardCatalogUpdateRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        return Results.Ok(await shardAdmin.ValidateShardCatalogUpdateAsync(request, ct));
+    }
+
+    private static async Task<IResult> ApplyShardCatalogUpdate(
+        CSharpDbShardCatalogUpdateRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        CSharpDbShardCatalogApplyResult result = await shardAdmin.ApplyShardCatalogUpdateAsync(request, ct);
+        return result.Applied ? Results.Ok(result) : Results.BadRequest(result);
     }
 
     private static ICSharpDbShardAdminClient? GetShardAdmin(ICSharpDbClient db)

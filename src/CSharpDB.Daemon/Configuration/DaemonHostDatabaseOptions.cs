@@ -85,6 +85,9 @@ internal static class DaemonClientOptionsBuilder
             Shards = bound.Shards ?? [],
             BucketRanges = bound.BucketRanges ?? [],
             ExactKeyPins = bound.ExactKeyPins ?? new Dictionary<string, string>(StringComparer.Ordinal),
+            Directories = bound.Directories ?? [],
+            DirectoryEntries = bound.DirectoryEntries ?? [],
+            Catalog = bound.Catalog ?? new CSharpDbShardCatalogOptions(),
             DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions),
             HybridDatabaseOptions = hostDatabaseOptions.OpenMode == DaemonHostOpenMode.HybridIncrementalDurable
                 ? BuildHybridDatabaseOptions(hostDatabaseOptions)

@@ -17,8 +17,18 @@ public sealed class CSharpDbShardingOptions
     public CSharpDbShardDefinition[] Shards { get; set; } = [];
     public CSharpDbShardBucketRange[] BucketRanges { get; set; } = [];
     public Dictionary<string, string> ExactKeyPins { get; set; } = new(StringComparer.Ordinal);
+    public CSharpDbShardDirectoryDefinition[] Directories { get; set; } = [];
+    public CSharpDbShardDirectoryEntry[] DirectoryEntries { get; set; } = [];
+    public CSharpDbShardCatalogOptions Catalog { get; set; } = new();
     public DatabaseOptions? DirectDatabaseOptions { get; set; }
     public HybridDatabaseOptions? HybridDatabaseOptions { get; set; }
+}
+
+public sealed class CSharpDbShardCatalogOptions
+{
+    public bool Enabled { get; set; }
+    public string? Path { get; set; }
+    public bool AllowWrites { get; set; } = true;
 }
 
 public sealed class CSharpDbShardDefinition
@@ -116,6 +126,65 @@ public sealed class CSharpDbShardDirectoryResolution
     public required CSharpDbShardResolution RouteResolution { get; init; }
 }
 
+public sealed class CSharpDbShardCatalogState
+{
+    public required string Source { get; init; }
+    public bool IsCatalogEnabled { get; init; }
+    public bool IsWritable { get; init; }
+    public required CSharpDbShardMapSnapshot ActiveMap { get; init; }
+    public CSharpDbShardMapSnapshot? PendingMap { get; init; }
+    public List<CSharpDbShardCatalogHistoryEntry> History { get; init; } = [];
+}
+
+public sealed class CSharpDbShardCatalogHistoryEntry
+{
+    public DateTimeOffset AppliedUtc { get; init; }
+    public int MapVersion { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+    public bool MetadataOnlyOwnershipChange { get; init; }
+}
+
+public enum CSharpDbShardCatalogIssueSeverity
+{
+    Info = 0,
+    Warning = 1,
+    Error = 2,
+}
+
+public sealed class CSharpDbShardCatalogIssue
+{
+    public CSharpDbShardCatalogIssueSeverity Severity { get; init; }
+    public required string Code { get; init; }
+    public required string Message { get; init; }
+}
+
+public sealed class CSharpDbShardCatalogValidationResult
+{
+    public bool IsValid { get; init; }
+    public bool RequiresDataMigration { get; init; }
+    public CSharpDbShardMapSnapshot? Preview { get; init; }
+    public List<CSharpDbShardCatalogIssue> Issues { get; init; } = [];
+}
+
+public sealed class CSharpDbShardCatalogUpdateRequest
+{
+    public required CSharpDbShardingOptions Options { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public bool AllowMetadataOnlyOwnershipChange { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardCatalogApplyResult
+{
+    public bool Applied { get; init; }
+    public bool RequiresRestart { get; init; }
+    public required string Message { get; init; }
+    public required CSharpDbShardCatalogValidationResult Validation { get; init; }
+    public CSharpDbShardMapSnapshot? PendingMap { get; init; }
+}
+
 public interface ICSharpDbShardAdminClient : IAsyncDisposable
 {
     string DataSource { get; }
@@ -124,6 +193,9 @@ public interface ICSharpDbShardAdminClient : IAsyncDisposable
     Task<CSharpDbShardResolution> ResolveRouteAsync(CSharpDbRouteContext routeContext, CancellationToken ct = default);
     Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default);
     Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(string sql, CancellationToken ct = default);
+    Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default);
+    Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
 }
 
 public interface ICSharpDbRouteContextAccessor

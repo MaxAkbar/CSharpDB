@@ -16,6 +16,9 @@ service CSharpDbRpc {
   rpc ResolveShardRoute (ShardRouteRequest) returns (ShardResolutionMessage);
   rpc GetShardStatus (google.protobuf.Empty) returns (ShardStatusListResponse);
   rpc ExecuteSqlOnAllShards (SqlRequest) returns (ShardSqlExecutionResultListResponse);
+  rpc GetShardCatalog (google.protobuf.Empty) returns (ShardCatalogStateMessage);
+  rpc ValidateShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogValidationResultMessage);
+  rpc ApplyShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogApplyResultMessage);
   rpc GetTableNames (google.protobuf.Empty) returns (StringList);
   rpc GetTableSchema (TableNameRequest) returns (OptionalTableSchemaResponse);
   rpc GetRowCount (TableNameRequest) returns (google.protobuf.Int32Value);
@@ -165,6 +168,17 @@ message ShardDefinitionMessage {
   google.protobuf.StringValue api_key_header_name = 8;
 }
 
+message ShardTargetDefinitionMessage {
+  string shard_id = 1;
+  bool enabled = 2;
+  google.protobuf.StringValue transport = 3;
+  google.protobuf.StringValue endpoint = 4;
+  google.protobuf.StringValue connection_string = 5;
+  google.protobuf.StringValue data_source = 6;
+  google.protobuf.StringValue api_key = 7;
+  google.protobuf.StringValue api_key_header_name = 8;
+}
+
 message ShardBucketRangeMessage {
   int32 start_bucket_inclusive = 1;
   int32 end_bucket_exclusive = 2;
@@ -179,6 +193,16 @@ message ShardDirectoryDefinitionMessage {
   int32 entry_count = 5;
 }
 
+message ShardDirectoryEntryMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  string target_keyspace = 3;
+  string route_key = 4;
+  string shard_id = 5;
+  int32 map_version = 6;
+  string state = 7;
+}
+
 message ShardMapSnapshotMessage {
   string keyspace = 1;
   int32 map_version = 2;
@@ -187,6 +211,18 @@ message ShardMapSnapshotMessage {
   repeated ShardBucketRangeMessage bucket_ranges = 5;
   map<string, string> exact_key_pins = 6;
   repeated ShardDirectoryDefinitionMessage directories = 7;
+}
+
+message ShardingOptionsMessage {
+  bool enabled = 1;
+  string keyspace = 2;
+  int32 map_version = 3;
+  int32 virtual_bucket_count = 4;
+  repeated ShardTargetDefinitionMessage shards = 5;
+  repeated ShardBucketRangeMessage bucket_ranges = 6;
+  map<string, string> exact_key_pins = 7;
+  repeated ShardDirectoryDefinitionMessage directories = 8;
+  repeated ShardDirectoryEntryMessage directory_entries = 9;
 }
 
 message ShardRouteRequest {
@@ -224,6 +260,52 @@ message ShardSqlExecutionResultMessage {
 
 message ShardSqlExecutionResultListResponse {
   repeated ShardSqlExecutionResultMessage items = 1;
+}
+
+message ShardCatalogHistoryEntryMessage {
+  google.protobuf.Timestamp applied_utc = 1;
+  int32 map_version = 2;
+  google.protobuf.StringValue operator = 3;
+  google.protobuf.StringValue comment = 4;
+  bool metadata_only_ownership_change = 5;
+}
+
+message ShardCatalogStateMessage {
+  string source = 1;
+  bool is_catalog_enabled = 2;
+  bool is_writable = 3;
+  ShardMapSnapshotMessage active_map = 4;
+  ShardMapSnapshotMessage pending_map = 5;
+  repeated ShardCatalogHistoryEntryMessage history = 6;
+}
+
+message ShardCatalogIssueMessage {
+  string severity = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message ShardCatalogValidationResultMessage {
+  bool is_valid = 1;
+  bool requires_data_migration = 2;
+  ShardMapSnapshotMessage preview = 3;
+  repeated ShardCatalogIssueMessage issues = 4;
+}
+
+message ShardCatalogUpdateRequestMessage {
+  ShardingOptionsMessage options = 1;
+  google.protobuf.Int32Value expected_current_map_version = 2;
+  bool allow_metadata_only_ownership_change = 3;
+  google.protobuf.StringValue operator = 4;
+  google.protobuf.StringValue comment = 5;
+}
+
+message ShardCatalogApplyResultMessage {
+  bool applied = 1;
+  bool requires_restart = 2;
+  string message = 3;
+  ShardCatalogValidationResultMessage validation = 4;
+  ShardMapSnapshotMessage pending_map = 5;
 }
 
 message TableNameRequest {

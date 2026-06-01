@@ -265,6 +265,11 @@ Example:
       "ExactKeyPins": {
         "2026-06": "s0",
         "2026-05": "s1"
+      },
+      "Catalog": {
+        "Enabled": true,
+        "Path": "data/shard-catalog.json",
+        "AllowWrites": true
       }
     }
   }
@@ -279,6 +284,19 @@ automatic data movement when bucket ownership changes.
 Routing does not replace row filtering. Queries should still include the route
 column, such as `WHERE order_month = '2026-06'`, because multiple route keys can
 share one shard.
+
+When catalog mode is enabled, the daemon reads the catalog file at startup if it
+exists; otherwise it starts from the configured `CSharpDB:Sharding` map. Operator
+catalog updates validate a proposed map and write it to the catalog file as a
+pending map. The live daemon does not silently change routing. Restart the daemon
+after a successful apply to activate the new map.
+
+Catalog update endpoints:
+
+- REST: `/api/sharding/catalog`, `/api/sharding/catalog/validate`, and
+  `/api/sharding/catalog/apply`
+- gRPC: `GetShardCatalog`, `ValidateShardCatalogUpdate`, and
+  `ApplyShardCatalogUpdate`
 
 ### API-Key Security
 
@@ -381,9 +399,11 @@ var preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
 
 The same surface is available through REST under `/api/sharding/map`,
 `/api/sharding/resolve`, `/api/sharding/status`, and
-`/api/sharding/sql/execute-all`. These endpoints are for topology, route
-simulation, health checks, and explicit schema setup; they do not enable
-automatic cross-shard SQL.
+`/api/sharding/sql/execute-all`. Catalog mode adds `/api/sharding/catalog`,
+`/api/sharding/catalog/validate`, and `/api/sharding/catalog/apply`. These
+endpoints are for topology, route simulation, health checks, explicit schema
+setup, and operator-managed catalog updates; they do not enable automatic
+cross-shard SQL.
 
 Notes:
 

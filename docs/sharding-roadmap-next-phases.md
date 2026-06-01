@@ -98,12 +98,28 @@ Key work:
 Goal: make shard maps inspectable and editable through an operator workflow
 while preserving config-only deployments.
 
+First implementation slice:
+
+- Added catalog-backed mode with `CSharpDB:Sharding:Catalog`.
+- Added JSON catalog file loading at sharded-client startup.
+- Added catalog state, validation, and apply models.
+- Added REST and gRPC APIs to inspect the live/pending catalog state, validate a
+  proposed map, and persist an applied map.
+- Applying a catalog update writes a pending map and returns
+  `RequiresRestart = true`; it does not mutate live routing in-process.
+- Map version checks and migration-required validation prevent silent bucket or
+  exact-pin ownership changes unless an operator explicitly acknowledges a
+  metadata-only change.
+- Directory definitions and directory entries validate against route ownership,
+  giving the future global shard-directory index a persisted metadata home.
+- Admin UI draft/apply screens remain for a later slice.
+
 Key work:
 
-- Add catalog-backed mode behind configuration.
+- Add catalog-backed mode behind configuration. (started)
 - Store keyspace, map versions, shard definitions, bucket ranges, exact-key
-  pins, disabled/read-only flags, and change history.
-- Let Admin draft, validate, preview, and apply catalog changes.
+  pins, disabled/read-only flags, and change history. (started)
+- Let Admin draft, validate, preview, and apply catalog changes. (backend API started)
 - Add operator-managed shard-directory entries for alternate lookup keys that
   must resolve to a route context before data can be queried.
 - Support directory entry states such as `Reserved`, `Active`, `Moving`,

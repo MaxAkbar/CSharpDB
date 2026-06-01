@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using CSharpDB.Client.Models;
 using CSharpDB.Storage.Diagnostics;
 
@@ -13,16 +15,19 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private readonly CSharpDbShardMap _map;
     private readonly Dictionary<string, ICSharpDbClient> _clients;
     private readonly ICSharpDbRouteContextAccessor? _routeContextAccessor;
+    private readonly CSharpDbShardCatalogStore? _catalogStore;
     private readonly RoutedClient _requestRoutedClient;
 
     private CSharpDbShardedClient(
         CSharpDbShardMap map,
         Dictionary<string, ICSharpDbClient> clients,
-        ICSharpDbRouteContextAccessor? routeContextAccessor)
+        ICSharpDbRouteContextAccessor? routeContextAccessor,
+        CSharpDbShardCatalogStore? catalogStore)
     {
         _map = map;
         _clients = clients;
         _routeContextAccessor = routeContextAccessor;
+        _catalogStore = catalogStore;
         _requestRoutedClient = new RoutedClient(this, fixedRoute: null);
     }
 
@@ -60,6 +65,83 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         return BinaryPrimitives.ReadUInt64BigEndian(hash.AsSpan(0, sizeof(ulong)));
     }
 
+    public static CSharpDbShardMapSnapshot CreateShardMapSnapshot(CSharpDbShardingOptions options)
+        => CSharpDbShardMap.Create(options).ToSnapshot();
+
+    public static CSharpDbShardCatalogValidationResult ValidateCatalogUpdate(
+        CSharpDbShardMapSnapshot currentMap,
+        CSharpDbShardCatalogUpdateRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(currentMap);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Options);
+
+        var issues = new List<CSharpDbShardCatalogIssue>();
+        CSharpDbShardMapSnapshot? preview = null;
+        bool requiresDataMigration = false;
+
+        if (request.ExpectedCurrentMapVersion is int expectedVersion &&
+            expectedVersion != currentMap.MapVersion)
+        {
+            issues.Add(new CSharpDbShardCatalogIssue
+            {
+                Severity = CSharpDbShardCatalogIssueSeverity.Error,
+                Code = "map-version-mismatch",
+                Message = $"Expected current map version {expectedVersion}, but the live map version is {currentMap.MapVersion}.",
+            });
+        }
+
+        try
+        {
+            preview = CreateShardMapSnapshot(request.Options);
+        }
+        catch (Exception ex) when (ex is CSharpDbClientConfigurationException or CSharpDbClientException or ArgumentException)
+        {
+            issues.Add(new CSharpDbShardCatalogIssue
+            {
+                Severity = CSharpDbShardCatalogIssueSeverity.Error,
+                Code = "invalid-map",
+                Message = ex.Message,
+            });
+        }
+
+        if (preview is not null)
+        {
+            if (preview.MapVersion <= currentMap.MapVersion)
+            {
+                issues.Add(new CSharpDbShardCatalogIssue
+                {
+                    Severity = CSharpDbShardCatalogIssueSeverity.Error,
+                    Code = "map-version-not-incremented",
+                    Message = $"Proposed map version {preview.MapVersion} must be greater than the live map version {currentMap.MapVersion}.",
+                });
+            }
+
+            requiresDataMigration = HasOwnershipChange(currentMap, preview);
+            if (requiresDataMigration && !request.AllowMetadataOnlyOwnershipChange)
+            {
+                issues.Add(new CSharpDbShardCatalogIssue
+                {
+                    Severity = CSharpDbShardCatalogIssueSeverity.Error,
+                    Code = "migration-required",
+                    Message = "Bucket ranges or exact-key pins changed. Move or verify affected data first, or explicitly acknowledge a metadata-only ownership change.",
+                });
+            }
+
+            if (!requiresDataMigration)
+            {
+                issues.Add(new CSharpDbShardCatalogIssue
+                {
+                    Severity = CSharpDbShardCatalogIssueSeverity.Info,
+                    Code = "metadata-compatible",
+                    Message = "The proposed map does not change bucket ownership or exact-key pins.",
+                });
+            }
+        }
+
+        return CreateValidationResult(issues, preview, requiresDataMigration);
+    }
+
     public ICSharpDbClient ForRoute(CSharpDbRouteContext routeContext)
     {
         ArgumentNullException.ThrowIfNull(routeContext);
@@ -74,6 +156,51 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
 
     public Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
         => Task.FromResult(_map.ToSnapshot());
+
+    public Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
+        => _catalogStore is null
+            ? Task.FromResult(new CSharpDbShardCatalogState
+            {
+                Source = "runtime-config",
+                IsCatalogEnabled = false,
+                IsWritable = false,
+                ActiveMap = _map.ToSnapshot(),
+                PendingMap = null,
+                History = [],
+            })
+            : _catalogStore.GetStateAsync(_map.ToSnapshot(), ct);
+
+    public Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+        => Task.FromResult(ValidateCatalogUpdate(_map.ToSnapshot(), request));
+
+    public Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+    {
+        if (_catalogStore is null)
+        {
+            var validation = ValidateCatalogUpdate(_map.ToSnapshot(), request);
+            validation.Issues.Add(new CSharpDbShardCatalogIssue
+            {
+                Severity = CSharpDbShardCatalogIssueSeverity.Error,
+                Code = "catalog-not-enabled",
+                Message = "Shard catalog writes require CSharpDB:Sharding:Catalog:Enabled=true.",
+            });
+
+            return Task.FromResult(new CSharpDbShardCatalogApplyResult
+            {
+                Applied = false,
+                RequiresRestart = false,
+                Message = "Shard catalog writes are not enabled.",
+                Validation = CreateValidationResult(validation.Issues, validation.Preview, validation.RequiresDataMigration),
+                PendingMap = null,
+            });
+        }
+
+        return _catalogStore.ApplyAsync(_map.ToSnapshot(), request, ct);
+    }
 
     public Task<CSharpDbShardResolution> ResolveRouteAsync(
         CSharpDbRouteContext routeContext,
@@ -376,6 +503,72 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     public Task<IndexInspectReport> CheckIndexesAsync(string? databasePath = null, string? indexName = null, int? sampleSize = null, CancellationToken ct = default)
         => _requestRoutedClient.CheckIndexesAsync(databasePath, indexName, sampleSize, ct);
 
+    private static CSharpDbShardCatalogValidationResult CreateValidationResult(
+        List<CSharpDbShardCatalogIssue> issues,
+        CSharpDbShardMapSnapshot? preview,
+        bool requiresDataMigration)
+        => new()
+        {
+            IsValid = issues.All(issue => issue.Severity != CSharpDbShardCatalogIssueSeverity.Error),
+            RequiresDataMigration = requiresDataMigration,
+            Preview = preview,
+            Issues = issues,
+        };
+
+    private static bool HasOwnershipChange(CSharpDbShardMapSnapshot currentMap, CSharpDbShardMapSnapshot proposedMap)
+    {
+        if (!string.Equals(currentMap.Keyspace, proposedMap.Keyspace, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (currentMap.VirtualBucketCount != proposedMap.VirtualBucketCount)
+            return true;
+        if (!BucketRangesEqual(currentMap.BucketRanges, proposedMap.BucketRanges))
+            return true;
+        if (!DictionaryEqual(currentMap.ExactKeyPins, proposedMap.ExactKeyPins, StringComparer.Ordinal))
+            return true;
+
+        return false;
+    }
+
+    private static bool BucketRangesEqual(
+        IReadOnlyList<CSharpDbShardBucketRange> left,
+        IReadOnlyList<CSharpDbShardBucketRange> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+
+        for (int i = 0; i < left.Count; i++)
+        {
+            if (left[i].StartBucketInclusive != right[i].StartBucketInclusive ||
+                left[i].EndBucketExclusive != right[i].EndBucketExclusive ||
+                !string.Equals(left[i].ShardId, right[i].ShardId, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool DictionaryEqual(
+        IReadOnlyDictionary<string, string> left,
+        IReadOnlyDictionary<string, string> right,
+        StringComparer keyComparer)
+    {
+        if (left.Count != right.Count)
+            return false;
+
+        foreach ((string key, string value) in left)
+        {
+            if (!right.TryGetValue(key, out string? otherValue) ||
+                !keyComparer.Equals(value, otherValue))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static CSharpDbShardedClient CreateCore(
         CSharpDbShardingOptions options,
         ICSharpDbRouteContextAccessor? routeContextAccessor)
@@ -384,12 +577,14 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         if (!options.Enabled)
             throw new CSharpDbClientConfigurationException("CSharpDB sharding options are disabled.");
 
-        CSharpDbShardMap map = CSharpDbShardMap.Create(options);
+        CSharpDbShardingOptions effectiveOptions = CSharpDbShardCatalogStore.ResolveEffectiveOptions(options);
+        CSharpDbShardCatalogStore? catalogStore = CSharpDbShardCatalogStore.Create(options, effectiveOptions);
+        CSharpDbShardMap map = CSharpDbShardMap.Create(effectiveOptions);
         var clients = new Dictionary<string, ICSharpDbClient>(StringComparer.OrdinalIgnoreCase);
         foreach (CSharpDbShardDefinition shard in map.Shards.Where(shard => shard.Enabled))
-            clients.Add(shard.ShardId, CSharpDbClient.Create(BuildShardClientOptions(shard, options)));
+            clients.Add(shard.ShardId, CSharpDbClient.Create(BuildShardClientOptions(shard, effectiveOptions)));
 
-        return new CSharpDbShardedClient(map, clients, routeContextAccessor);
+        return new CSharpDbShardedClient(map, clients, routeContextAccessor, catalogStore);
     }
 
     private async Task WarmAsync(CancellationToken ct)
@@ -803,11 +998,266 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => _fixedRoute ?? _owner.GetCurrentRoute();
     }
 
+    private sealed class CSharpDbShardCatalogStore
+    {
+        private static readonly JsonSerializerOptions s_jsonOptions = CreateJsonOptions();
+
+        private readonly CSharpDbShardCatalogOptions _options;
+        private readonly string _path;
+
+        private CSharpDbShardCatalogStore(CSharpDbShardCatalogOptions options, string path)
+        {
+            _options = options;
+            _path = path;
+        }
+
+        public static CSharpDbShardingOptions ResolveEffectiveOptions(CSharpDbShardingOptions configuredOptions)
+        {
+            ArgumentNullException.ThrowIfNull(configuredOptions);
+
+            if (configuredOptions.Catalog?.Enabled != true)
+                return CloneOptions(configuredOptions, includeRuntimeOptions: true);
+
+            string path = NormalizeCatalogPath(configuredOptions.Catalog);
+            if (!File.Exists(path))
+                return CloneOptions(configuredOptions, includeRuntimeOptions: true);
+
+            CSharpDbShardCatalogDocument document = ReadDocument(path);
+            CSharpDbShardingOptions effective = CloneOptions(document.ActiveMap, includeRuntimeOptions: false);
+            effective.Enabled = configuredOptions.Enabled;
+            effective.Catalog = CloneCatalogOptions(configuredOptions.Catalog);
+            effective.DirectDatabaseOptions = configuredOptions.DirectDatabaseOptions;
+            effective.HybridDatabaseOptions = configuredOptions.HybridDatabaseOptions;
+            return effective;
+        }
+
+        public static CSharpDbShardCatalogStore? Create(
+            CSharpDbShardingOptions configuredOptions,
+            CSharpDbShardingOptions effectiveOptions)
+        {
+            ArgumentNullException.ThrowIfNull(configuredOptions);
+            ArgumentNullException.ThrowIfNull(effectiveOptions);
+
+            if (configuredOptions.Catalog?.Enabled != true)
+                return null;
+
+            string path = NormalizeCatalogPath(configuredOptions.Catalog);
+            return new CSharpDbShardCatalogStore(CloneCatalogOptions(configuredOptions.Catalog), path);
+        }
+
+        public async Task<CSharpDbShardCatalogState> GetStateAsync(
+            CSharpDbShardMapSnapshot activeMap,
+            CancellationToken ct)
+        {
+            CSharpDbShardCatalogDocument? document = File.Exists(_path)
+                ? await ReadDocumentAsync(_path, ct).ConfigureAwait(false)
+                : null;
+
+            CSharpDbShardMapSnapshot? pendingMap = null;
+            if (document?.ActiveMap is not null)
+            {
+                CSharpDbShardMapSnapshot catalogMap = CreateShardMapSnapshot(document.ActiveMap);
+                if (catalogMap.MapVersion != activeMap.MapVersion)
+                    pendingMap = catalogMap;
+            }
+
+            return new CSharpDbShardCatalogState
+            {
+                Source = _path,
+                IsCatalogEnabled = true,
+                IsWritable = _options.AllowWrites,
+                ActiveMap = activeMap,
+                PendingMap = pendingMap,
+                History = document?.History ?? [],
+            };
+        }
+
+        public async Task<CSharpDbShardCatalogApplyResult> ApplyAsync(
+            CSharpDbShardMapSnapshot currentMap,
+            CSharpDbShardCatalogUpdateRequest request,
+            CancellationToken ct)
+        {
+            CSharpDbShardCatalogValidationResult validation = ValidateCatalogUpdate(currentMap, request);
+            if (!_options.AllowWrites)
+            {
+                validation.Issues.Add(new CSharpDbShardCatalogIssue
+                {
+                    Severity = CSharpDbShardCatalogIssueSeverity.Error,
+                    Code = "catalog-read-only",
+                    Message = "Shard catalog writes are disabled by configuration.",
+                });
+                validation = CreateValidationResult(validation.Issues, validation.Preview, validation.RequiresDataMigration);
+            }
+
+            if (!validation.IsValid || validation.Preview is null)
+            {
+                return new CSharpDbShardCatalogApplyResult
+                {
+                    Applied = false,
+                    RequiresRestart = false,
+                    Message = "Shard catalog update was rejected by validation.",
+                    Validation = validation,
+                    PendingMap = validation.Preview,
+                };
+            }
+
+            CSharpDbShardCatalogDocument document = File.Exists(_path)
+                ? await ReadDocumentAsync(_path, ct).ConfigureAwait(false)
+                : new CSharpDbShardCatalogDocument();
+
+            document.ActiveMap = CloneOptions(request.Options, includeRuntimeOptions: false);
+            document.History.Add(new CSharpDbShardCatalogHistoryEntry
+            {
+                AppliedUtc = DateTimeOffset.UtcNow,
+                MapVersion = validation.Preview.MapVersion,
+                Operator = request.Operator,
+                Comment = request.Comment,
+                MetadataOnlyOwnershipChange = validation.RequiresDataMigration && request.AllowMetadataOnlyOwnershipChange,
+            });
+
+            string? directory = Path.GetDirectoryName(_path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            await using (FileStream stream = File.Create(_path))
+            {
+                await JsonSerializer.SerializeAsync(stream, document, s_jsonOptions, ct).ConfigureAwait(false);
+            }
+
+            return new CSharpDbShardCatalogApplyResult
+            {
+                Applied = true,
+                RequiresRestart = true,
+                Message = "Shard catalog update was written. Restart or recreate the sharded client to activate the new map.",
+                Validation = validation,
+                PendingMap = validation.Preview,
+            };
+        }
+
+        private static string NormalizeCatalogPath(CSharpDbShardCatalogOptions options)
+        {
+            if (string.IsNullOrWhiteSpace(options.Path))
+                throw new CSharpDbClientConfigurationException("CSharpDB shard catalog mode requires Catalog:Path.");
+
+            return Path.GetFullPath(options.Path.Trim());
+        }
+
+        private static CSharpDbShardCatalogDocument ReadDocument(string path)
+        {
+            using FileStream stream = File.OpenRead(path);
+            return JsonSerializer.Deserialize<CSharpDbShardCatalogDocument>(stream, s_jsonOptions)
+                   ?? throw new CSharpDbClientConfigurationException($"Shard catalog file '{path}' is empty.");
+        }
+
+        private static async Task<CSharpDbShardCatalogDocument> ReadDocumentAsync(string path, CancellationToken ct)
+        {
+            await using FileStream stream = File.OpenRead(path);
+            return await JsonSerializer.DeserializeAsync<CSharpDbShardCatalogDocument>(stream, s_jsonOptions, ct).ConfigureAwait(false)
+                   ?? throw new CSharpDbClientConfigurationException($"Shard catalog file '{path}' is empty.");
+        }
+
+        private static CSharpDbShardingOptions CloneOptions(
+            CSharpDbShardingOptions options,
+            bool includeRuntimeOptions)
+            => new()
+            {
+                Enabled = options.Enabled,
+                Keyspace = options.Keyspace,
+                MapVersion = options.MapVersion,
+                VirtualBucketCount = options.VirtualBucketCount,
+                Shards = options.Shards.Select(CloneShard).ToArray(),
+                BucketRanges = options.BucketRanges.Select(CloneBucketRange).ToArray(),
+                ExactKeyPins = new Dictionary<string, string>(options.ExactKeyPins ?? [], StringComparer.Ordinal),
+                Directories = options.Directories.Select(CloneDirectory).ToArray(),
+                DirectoryEntries = options.DirectoryEntries.Select(CloneDirectoryEntry).ToArray(),
+                Catalog = includeRuntimeOptions ? CloneCatalogOptions(options.Catalog) : new CSharpDbShardCatalogOptions(),
+                DirectDatabaseOptions = includeRuntimeOptions ? options.DirectDatabaseOptions : null,
+                HybridDatabaseOptions = includeRuntimeOptions ? options.HybridDatabaseOptions : null,
+            };
+
+        private static CSharpDbShardDefinition CloneShard(CSharpDbShardDefinition shard)
+            => new()
+            {
+                ShardId = shard.ShardId,
+                Enabled = shard.Enabled,
+                Transport = shard.Transport,
+                Endpoint = shard.Endpoint,
+                ConnectionString = shard.ConnectionString,
+                DataSource = shard.DataSource,
+                ApiKey = shard.ApiKey,
+                ApiKeyHeaderName = shard.ApiKeyHeaderName,
+            };
+
+        private static CSharpDbShardBucketRange CloneBucketRange(CSharpDbShardBucketRange range)
+            => new()
+            {
+                StartBucketInclusive = range.StartBucketInclusive,
+                EndBucketExclusive = range.EndBucketExclusive,
+                ShardId = range.ShardId,
+            };
+
+        private static CSharpDbShardDirectoryDefinition CloneDirectory(CSharpDbShardDirectoryDefinition directory)
+            => new()
+            {
+                DirectoryName = directory.DirectoryName,
+                TargetKeyspace = directory.TargetKeyspace,
+                Description = directory.Description,
+                ReadOnly = directory.ReadOnly,
+                EntryCount = directory.EntryCount,
+            };
+
+        private static CSharpDbShardDirectoryEntry CloneDirectoryEntry(CSharpDbShardDirectoryEntry entry)
+            => new()
+            {
+                DirectoryName = entry.DirectoryName,
+                LookupKey = entry.LookupKey,
+                TargetKeyspace = entry.TargetKeyspace,
+                RouteKey = entry.RouteKey,
+                ShardId = entry.ShardId,
+                MapVersion = entry.MapVersion,
+                State = entry.State,
+            };
+
+        private static CSharpDbShardCatalogOptions CloneCatalogOptions(CSharpDbShardCatalogOptions? options)
+            => new()
+            {
+                Enabled = options?.Enabled ?? false,
+                Path = options?.Path,
+                AllowWrites = options?.AllowWrites ?? true,
+            };
+
+        private static JsonSerializerOptions CreateJsonOptions()
+        {
+            var options = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            };
+            options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+            return options;
+        }
+
+        private sealed class CSharpDbShardCatalogDocument
+        {
+            public int FormatVersion { get; set; } = 1;
+            public CSharpDbShardingOptions ActiveMap { get; set; } = new()
+            {
+                Enabled = true,
+                Keyspace = "default",
+                Shards = [],
+            };
+            public List<CSharpDbShardCatalogHistoryEntry> History { get; set; } = [];
+        }
+    }
+
     private sealed class CSharpDbShardMap
     {
         private readonly Dictionary<string, CSharpDbShardDefinition> _shards;
         private readonly string[] _bucketOwners;
         private readonly Dictionary<string, string> _exactKeyPins;
+        private readonly IReadOnlyList<CSharpDbShardDirectoryDefinition> _directories;
+        private readonly IReadOnlyList<CSharpDbShardDirectoryEntry> _directoryEntries;
 
         private CSharpDbShardMap(
             string keyspace,
@@ -816,7 +1266,9 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             IReadOnlyList<CSharpDbShardDefinition> shards,
             Dictionary<string, CSharpDbShardDefinition> shardMap,
             string[] bucketOwners,
-            Dictionary<string, string> exactKeyPins)
+            Dictionary<string, string> exactKeyPins,
+            IReadOnlyList<CSharpDbShardDirectoryDefinition> directories,
+            IReadOnlyList<CSharpDbShardDirectoryEntry> directoryEntries)
         {
             Keyspace = keyspace;
             MapVersion = mapVersion;
@@ -825,6 +1277,8 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             _shards = shardMap;
             _bucketOwners = bucketOwners;
             _exactKeyPins = exactKeyPins;
+            _directories = directories;
+            _directoryEntries = directoryEntries;
         }
 
         public string Keyspace { get; }
@@ -880,6 +1334,20 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 exactKeyPins[key] = shardId;
             }
 
+            List<CSharpDbShardDirectoryDefinition> directories = NormalizeDirectories(options.Directories);
+
+            var map = new CSharpDbShardMap(
+                keyspace,
+                options.MapVersion,
+                options.VirtualBucketCount,
+                normalizedShards,
+                shardMap,
+                bucketOwners,
+                exactKeyPins,
+                directories,
+                []);
+
+            List<CSharpDbShardDirectoryEntry> directoryEntries = map.NormalizeDirectoryEntries(options.DirectoryEntries, directories);
             return new CSharpDbShardMap(
                 keyspace,
                 options.MapVersion,
@@ -887,7 +1355,9 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 normalizedShards,
                 shardMap,
                 bucketOwners,
-                exactKeyPins);
+                exactKeyPins,
+                directories,
+                directoryEntries);
         }
 
         public CSharpDbShardResolution Resolve(CSharpDbRouteContext routeContext)
@@ -934,7 +1404,15 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 Shards = Shards.Select(ToShardSnapshot).ToList(),
                 BucketRanges = BuildBucketRangeSnapshot(),
                 ExactKeyPins = new Dictionary<string, string>(_exactKeyPins, StringComparer.Ordinal),
-                Directories = [],
+                Directories = _directories.Select(directory => new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = directory.DirectoryName,
+                    TargetKeyspace = directory.TargetKeyspace,
+                    Description = directory.Description,
+                    ReadOnly = directory.ReadOnly,
+                    EntryCount = _directoryEntries.Count(entry =>
+                        string.Equals(entry.DirectoryName, directory.DirectoryName, StringComparison.OrdinalIgnoreCase)),
+                }).ToList(),
             };
 
         public static (string Keyspace, string Key) NormalizeRoute(CSharpDbRouteContext routeContext)
@@ -975,6 +1453,92 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 HasApiKey = !string.IsNullOrWhiteSpace(shard.ApiKey),
                 ApiKeyHeaderName = shard.ApiKeyHeaderName,
             };
+
+        private static List<CSharpDbShardDirectoryDefinition> NormalizeDirectories(
+            IReadOnlyList<CSharpDbShardDirectoryDefinition>? directories)
+        {
+            var normalized = new List<CSharpDbShardDirectoryDefinition>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (CSharpDbShardDirectoryDefinition directory in directories ?? [])
+            {
+                string directoryName = NormalizeNonEmpty(directory.DirectoryName, nameof(directory.DirectoryName));
+                string targetKeyspace = NormalizeNonEmpty(directory.TargetKeyspace, nameof(directory.TargetKeyspace));
+                if (!seen.Add(directoryName))
+                    throw new CSharpDbClientConfigurationException($"Duplicate shard-directory name '{directoryName}'.");
+
+                normalized.Add(new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = directoryName,
+                    TargetKeyspace = targetKeyspace,
+                    Description = NormalizeOptional(directory.Description),
+                    ReadOnly = directory.ReadOnly,
+                    EntryCount = 0,
+                });
+            }
+
+            return normalized;
+        }
+
+        private List<CSharpDbShardDirectoryEntry> NormalizeDirectoryEntries(
+            IReadOnlyList<CSharpDbShardDirectoryEntry>? entries,
+            IReadOnlyList<CSharpDbShardDirectoryDefinition> directories)
+        {
+            var normalized = new List<CSharpDbShardDirectoryEntry>();
+            var directoryMap = directories.ToDictionary(
+                directory => directory.DirectoryName,
+                StringComparer.OrdinalIgnoreCase);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (CSharpDbShardDirectoryEntry entry in entries ?? [])
+            {
+                string directoryName = NormalizeNonEmpty(entry.DirectoryName, nameof(entry.DirectoryName));
+                string lookupKey = NormalizeNonEmpty(entry.LookupKey, nameof(entry.LookupKey));
+                string targetKeyspace = NormalizeNonEmpty(entry.TargetKeyspace, nameof(entry.TargetKeyspace));
+                string routeKey = NormalizeNonEmpty(entry.RouteKey, nameof(entry.RouteKey));
+                string shardId = NormalizeShardId(entry.ShardId);
+                string state = NormalizeNonEmpty(entry.State, nameof(entry.State));
+
+                if (!directoryMap.TryGetValue(directoryName, out CSharpDbShardDirectoryDefinition? directory))
+                    throw new CSharpDbClientConfigurationException($"Shard-directory entry '{directoryName}:{lookupKey}' references unknown directory '{directoryName}'.");
+                if (!string.Equals(directory.TargetKeyspace, targetKeyspace, StringComparison.OrdinalIgnoreCase))
+                    throw new CSharpDbClientConfigurationException($"Shard-directory entry '{directoryName}:{lookupKey}' target keyspace '{targetKeyspace}' does not match directory keyspace '{directory.TargetKeyspace}'.");
+                if (!IsValidDirectoryEntryState(state))
+                    throw new CSharpDbClientConfigurationException($"Shard-directory entry '{directoryName}:{lookupKey}' has invalid state '{state}'.");
+                if (entry.MapVersion <= 0)
+                    throw new CSharpDbClientConfigurationException($"Shard-directory entry '{directoryName}:{lookupKey}' requires MapVersion greater than 0.");
+                if (entry.MapVersion > MapVersion)
+                    throw new CSharpDbClientConfigurationException($"Shard-directory entry '{directoryName}:{lookupKey}' references future map version {entry.MapVersion}.");
+                if (!seen.Add($"{directoryName}\0{lookupKey}"))
+                    throw new CSharpDbClientConfigurationException($"Duplicate shard-directory entry '{directoryName}:{lookupKey}'.");
+
+                CSharpDbShardResolution resolution = Resolve(new CSharpDbRouteContext
+                {
+                    Keyspace = targetKeyspace,
+                    Key = routeKey,
+                });
+                if (!string.Equals(resolution.ShardId, shardId, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new CSharpDbClientConfigurationException(
+                        $"Shard-directory entry '{directoryName}:{lookupKey}' points to shard '{shardId}', but route key '{routeKey}' resolves to shard '{resolution.ShardId}'.");
+                }
+
+                normalized.Add(new CSharpDbShardDirectoryEntry
+                {
+                    DirectoryName = directoryName,
+                    LookupKey = lookupKey,
+                    TargetKeyspace = targetKeyspace,
+                    RouteKey = routeKey,
+                    ShardId = shardId,
+                    MapVersion = entry.MapVersion,
+                    State = state,
+                });
+            }
+
+            return normalized;
+        }
+
+        private static bool IsValidDirectoryEntryState(string state)
+            => state is "Reserved" or "Active" or "Moving" or "Disabled" or "Deleted";
 
         private List<CSharpDbShardBucketRange> BuildBucketRangeSnapshot()
         {

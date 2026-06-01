@@ -83,6 +83,25 @@ internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdmin
             response => (IReadOnlyList<CSharpDbShardSqlExecutionResult>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
             ct);
 
+    public Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
+        => CallAsync(_client.GetShardCatalogAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+
+    public Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ValidateShardCatalogUpdateAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ApplyShardCatalogUpdateAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
         => CallAsync(_client.GetInfoAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
 

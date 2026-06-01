@@ -81,6 +81,28 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         }).ToList();
     }
 
+    public async Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/catalog"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardCatalogState>(response, ct);
+    }
+
+    public async Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/catalog/validate"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardCatalogValidationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/catalog/apply"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardCatalogApplyResult>(response, ct);
+    }
+
     public async Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/info"), payload: null, ct);

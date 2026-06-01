@@ -207,6 +207,37 @@ operations. It exposes the map snapshot, route simulation, per-shard health, and
 explicit execute-on-all-shards SQL for schema setup. It does not add automatic
 cross-shard query planning.
 
+Phase 3 starts operator-managed catalog support. When
+`CSharpDbShardingOptions.Catalog.Enabled` is true, the sharded client can load a
+map from a catalog JSON file at startup. Catalog updates are validated and
+persisted as pending map changes; they do not mutate the live router in-process.
+
+```csharp
+CSharpDbShardCatalogState catalog = await shardAdmin.GetShardCatalogAsync();
+
+CSharpDbShardCatalogValidationResult validation =
+    await shardAdmin.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+    {
+        Options = proposedOptions,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+    });
+
+CSharpDbShardCatalogApplyResult applied =
+    await shardAdmin.ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+    {
+        Options = proposedOptions,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        AllowMetadataOnlyOwnershipChange = true,
+        Operator = "ops",
+        Comment = "data was moved by migration job 2026-06-01",
+    });
+```
+
+`ApplyShardCatalogUpdateAsync(...)` returns `RequiresRestart = true` when it
+writes the catalog file. Recreate the sharded client or restart the daemon to
+activate the new map. Bucket ownership or exact-key pin changes are rejected
+unless the operator explicitly acknowledges the metadata-only change.
+
 V1 intentionally supports single-shard operations only. Cross-shard joins,
 cross-shard transactions, automatic resharding, replication, and failover remain
 out of scope. Changing bucket ownership requires an operator-controlled data

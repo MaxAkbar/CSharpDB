@@ -458,6 +458,119 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Daemon_ShardCatalogRestAndGrpcValidateApplyAndReload()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shard_catalog_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string catalogPath = Path.Combine(directory, "catalog", "shards.json");
+            Dictionary<string, string?> config = CreateShardingConfig(directory).ToDictionary();
+            config["CSharpDB:Sharding:Catalog:Enabled"] = "true";
+            config["CSharpDB:Sharding:Catalog:Path"] = catalogPath;
+
+            using (var factory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            {
+                using var grpcTransportClient = CreateGrpcHttpClient(factory);
+                using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("http://localhost"),
+                });
+
+                await using var restAdmin = CreateHttpShardAdmin(httpTransportClient);
+                await using var grpcAdmin = CreateGrpcShardAdmin(grpcTransportClient);
+
+                CSharpDbShardCatalogState initial = await restAdmin.GetShardCatalogAsync(Ct);
+                Assert.True(initial.IsCatalogEnabled);
+                Assert.True(initial.IsWritable);
+                Assert.Equal(1, initial.ActiveMap.MapVersion);
+                Assert.Null(initial.PendingMap);
+
+                CSharpDbShardingOptions proposed = CreateShardingOptions(directory, mapVersion: 2, catalogPath);
+                proposed.Directories =
+                [
+                    new CSharpDbShardDirectoryDefinition
+                    {
+                        DirectoryName = "orders_by_id",
+                        TargetKeyspace = "tenants",
+                        Description = "remote order lookup",
+                    },
+                ];
+                proposed.DirectoryEntries =
+                [
+                    new CSharpDbShardDirectoryEntry
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-REMOTE-1",
+                        TargetKeyspace = "tenants",
+                        RouteKey = "tenant-b",
+                        ShardId = "s1",
+                        MapVersion = 2,
+                        State = "Active",
+                    },
+                ];
+
+                CSharpDbShardCatalogValidationResult validation =
+                    await grpcAdmin.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                    {
+                        Options = proposed,
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "daemon-test",
+                        Comment = "add directory metadata",
+                    }, Ct);
+                Assert.True(validation.IsValid);
+                Assert.Equal(2, validation.Preview!.MapVersion);
+
+                CSharpDbShardCatalogApplyResult applied =
+                    await restAdmin.ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                    {
+                        Options = proposed,
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "daemon-test",
+                        Comment = "add directory metadata",
+                    }, Ct);
+                Assert.True(applied.Applied);
+                Assert.True(applied.RequiresRestart);
+                Assert.True(File.Exists(catalogPath));
+
+                CSharpDbShardCatalogState pending = await grpcAdmin.GetShardCatalogAsync(Ct);
+                Assert.Equal(1, pending.ActiveMap.MapVersion);
+                Assert.Equal(2, pending.PendingMap!.MapVersion);
+                Assert.Single(pending.History);
+            }
+
+            using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            {
+                using var grpcTransportClient = CreateGrpcHttpClient(reloadedFactory);
+                await using var grpcAdmin = CreateGrpcShardAdmin(grpcTransportClient);
+
+                CSharpDbShardCatalogState reloaded = await grpcAdmin.GetShardCatalogAsync(Ct);
+                Assert.Equal(2, reloaded.ActiveMap.MapVersion);
+                Assert.Null(reloaded.PendingMap);
+                Assert.Equal(1, Assert.Single(reloaded.ActiveMap.Directories).EntryCount);
+            }
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task Daemon_RestApiCanBeDisabledWithoutDisablingGrpc()
     {
         using var factory = new TestDaemonFactory(
@@ -900,6 +1013,38 @@ public sealed class GrpcClientTests : IAsyncLifetime
             ["CSharpDB:Sharding:BucketRanges:1:ShardId"] = "s1",
             ["CSharpDB:Sharding:ExactKeyPins:tenant-a"] = "s0",
             ["CSharpDB:Sharding:ExactKeyPins:tenant-b"] = "s1",
+        };
+
+    private static CSharpDbShardingOptions CreateShardingOptions(
+        string directory,
+        int mapVersion,
+        string? catalogPath = null)
+        => new()
+        {
+            Enabled = true,
+            Keyspace = "tenants",
+            MapVersion = mapVersion,
+            VirtualBucketCount = 4,
+            Shards =
+            [
+                new CSharpDbShardDefinition { ShardId = "s0", DataSource = Path.Combine(directory, "s0.db") },
+                new CSharpDbShardDefinition { ShardId = "s1", DataSource = Path.Combine(directory, "s1.db") },
+            ],
+            BucketRanges =
+            [
+                new CSharpDbShardBucketRange { StartBucketInclusive = 0, EndBucketExclusive = 2, ShardId = "s0" },
+                new CSharpDbShardBucketRange { StartBucketInclusive = 2, EndBucketExclusive = 4, ShardId = "s1" },
+            ],
+            ExactKeyPins = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tenant-a"] = "s0",
+                ["tenant-b"] = "s1",
+            },
+            Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = catalogPath is not null,
+                Path = catalogPath,
+            },
         };
 
     private static DaemonHostDatabaseOptions GetResolvedHostDatabaseOptions(TestDaemonFactory factory)

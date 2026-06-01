@@ -395,6 +395,47 @@ IReadOnlyList&lt;CSharpDbShardStatus&gt; status = await shardAdmin.GetShardStatu
                     <strong>Admin operations are explicit.</strong> Execute-on-all-shards is intended for schema setup and diagnostics. It returns one result per shard and does not create a distributed SQL planner.
                 </div>
 
+                <h3>Catalog-Backed Map Updates</h3>
+                <p>Operator-managed catalog mode lets a daemon load the shard map from a JSON catalog file at startup and persist proposed map changes through admin APIs. Applying a catalog change writes a pending map; it does not silently change the live router.</p>
+
+                <div class="code-block" data-title="appsettings.json">
+                    <pre><code>{
+  "CSharpDB": {
+    "Sharding": {
+      "Enabled": true,
+      "Catalog": {
+        "Enabled": true,
+        "Path": "data/shard-catalog.json",
+        "AllowWrites": true
+      }
+    }
+  }
+}</code></pre>
+                </div>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>CSharpDbShardCatalogState catalog = await shardAdmin.GetShardCatalogAsync();
+
+CSharpDbShardCatalogValidationResult validation =
+    await shardAdmin.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+    {
+        Options = proposedOptions,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+    });
+
+CSharpDbShardCatalogApplyResult applied =
+    await shardAdmin.ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+    {
+        Options = proposedOptions,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        AllowMetadataOnlyOwnershipChange = true,
+        Operator = "ops",
+        Comment = "data was moved by migration job 2026-06-01",
+    });</code></pre>
+                </div>
+
+                <p>Catalog update endpoints are <code>GET /api/sharding/catalog</code>, <code>POST /api/sharding/catalog/validate</code>, and <code>POST /api/sharding/catalog/apply</code>. The gRPC contract exposes <code>GetShardCatalog</code>, <code>ValidateShardCatalogUpdate</code>, and <code>ApplyShardCatalogUpdate</code>. A successful apply returns <code>RequiresRestart = true</code>; restart the daemon or recreate the sharded client to activate the new map.</p>
+
                 <h2>ADO.NET</h2>
                 <p>ADO.NET callers can bind a connection to one route with connection-string keys. Every command on that connection is sent to the same route.</p>
 
