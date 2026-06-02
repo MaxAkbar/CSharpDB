@@ -35,6 +35,11 @@ public sealed class CSharpDbShardDefinition
 {
     public required string ShardId { get; set; }
     public bool Enabled { get; set; } = true;
+    public string Role { get; set; } = CSharpDbShardRoles.Primary;
+    public string? PrimaryShardId { get; set; }
+    public bool PromotionEligible { get; set; }
+    public long? ReplicationLagBytes { get; set; }
+    public DateTimeOffset? LastReplicatedUtc { get; set; }
     public CSharpDbTransport? Transport { get; set; }
     public string? Endpoint { get; set; }
     public string? ConnectionString { get; set; }
@@ -58,6 +63,11 @@ public sealed class CSharpDbShardDefinitionSnapshot
 {
     public required string ShardId { get; init; }
     public bool Enabled { get; init; }
+    public required string Role { get; init; }
+    public string? PrimaryShardId { get; init; }
+    public bool PromotionEligible { get; init; }
+    public long? ReplicationLagBytes { get; init; }
+    public DateTimeOffset? LastReplicatedUtc { get; init; }
     public CSharpDbTransport? Transport { get; init; }
     public string? Endpoint { get; init; }
     public string? DataSource { get; init; }
@@ -89,8 +99,20 @@ public sealed class CSharpDbShardStatus
     public required string DataSource { get; init; }
     public bool Enabled { get; init; }
     public bool Healthy { get; init; }
+    public required string Role { get; init; }
+    public string? PrimaryShardId { get; init; }
+    public bool PromotionEligible { get; init; }
+    public bool CanPromote { get; init; }
+    public long? ReplicationLagBytes { get; init; }
+    public DateTimeOffset? LastReplicatedUtc { get; init; }
     public string? Error { get; init; }
     public Models.DatabaseInfo? Info { get; init; }
+}
+
+public static class CSharpDbShardRoles
+{
+    public const string Primary = "Primary";
+    public const string Replica = "Replica";
 }
 
 public sealed class CSharpDbShardSqlExecutionResult

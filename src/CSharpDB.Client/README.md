@@ -161,6 +161,27 @@ await juneOrders.ExecuteSqlAsync("""
     """);
 ```
 
+Shard definitions can include Phase 6 replica metadata:
+
+```csharp
+new CSharpDbShardDefinition
+{
+    ShardId = "s1-replica",
+    DataSource = "orders-s1-replica.db",
+    Role = CSharpDbShardRoles.Replica,
+    PrimaryShardId = "s1",
+    PromotionEligible = true,
+    ReplicationLagBytes = 256,
+    LastReplicatedUtc = DateTimeOffset.UtcNow,
+}
+```
+
+This first Phase 6 slice is metadata-only. Map snapshots and shard status expose
+role, primary shard, promotion eligibility, and operator-reported lag. Bucket
+ranges and exact route-key pins must still reference primary shards. CSharpDB
+does not copy data to replicas, promote replicas, or reroute traffic based on
+health in this slice.
+
 Remote clients pass the same route through headers/metadata by setting
 `CSharpDbClientOptions.RouteContext`. REST uses `X-CSharpDB-Keyspace` and
 `X-CSharpDB-Shard-Key`; gRPC sends the same names as lowercase metadata.

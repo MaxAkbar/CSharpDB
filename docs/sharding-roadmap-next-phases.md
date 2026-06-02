@@ -320,12 +320,23 @@ Out of scope:
 Goal: add high-availability primitives after catalog and resharding workflows are
 stable.
 
+Implemented first slice:
+
+- Added shard role metadata for `Primary` and `Replica` shards.
+- Added replica relationships through `PrimaryShardId`.
+- Added promotion eligibility plus operator-reported replication lag metadata.
+- Exposed role/replica metadata in map snapshots and shard status over direct,
+  REST, and gRPC clients.
+- Validation prevents replicas from owning bucket ranges or exact route-key pins.
+- No replication copy, automatic promotion, or health-based rerouting is
+  implemented in this slice.
+
 Key work:
 
 - Build replication from retained change feeds or WAL-derived replication
   primitives, not router retry behavior.
 - Add catalog metadata for shard roles, replicas, health, lag, and promotion
-  eligibility.
+  eligibility. (metadata first slice implemented)
 - Start with manual/operator-confirmed failover.
 - Add automatic failover policy only after manual failover is proven.
 - Add Admin views for replica health, lag, promote/demote actions, and failover

@@ -61,6 +61,7 @@ public sealed class CSharpDbShardedClientTests
             Assert.Equal(4, snapshot.VirtualBucketCount);
             Assert.Equal(["s0", "s1"], snapshot.Shards.Select(shard => shard.ShardId).ToArray());
             Assert.All(snapshot.Shards, shard => Assert.False(shard.HasApiKey));
+            Assert.All(snapshot.Shards, shard => Assert.Equal(CSharpDbShardRoles.Primary, shard.Role));
             Assert.Equal("s0", snapshot.ExactKeyPins["tenant-a"]);
             Assert.Equal("s1", snapshot.ExactKeyPins["tenant-b"]);
             Assert.Empty(snapshot.Directories);
@@ -88,6 +89,98 @@ public sealed class CSharpDbShardedClientTests
 
             Assert.Equal("s1", resolution.ShardId);
             Assert.Equal(1, resolution.MapVersion);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task ReplicaMetadata_IsExposedAndCannotOwnRoutes()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            DateTimeOffset lastReplicatedUtc = new(2026, 6, 1, 12, 30, 0, TimeSpan.Zero);
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Shards =
+            [
+                .. options.Shards,
+                new CSharpDbShardDefinition
+                {
+                    ShardId = "s1-replica",
+                    DataSource = Path.Combine(directory, "s1-replica.db"),
+                    Role = CSharpDbShardRoles.Replica,
+                    PrimaryShardId = "s1",
+                    PromotionEligible = true,
+                    ReplicationLagBytes = 128,
+                    LastReplicatedUtc = lastReplicatedUtc,
+                },
+            ];
+
+            await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardDefinitionSnapshot replica = Assert.Single(
+                    (await client.GetShardMapAsync(Ct)).Shards,
+                    shard => shard.ShardId == "s1-replica");
+                Assert.Equal(CSharpDbShardRoles.Replica, replica.Role);
+                Assert.Equal("s1", replica.PrimaryShardId);
+                Assert.True(replica.PromotionEligible);
+                Assert.Equal(128, replica.ReplicationLagBytes);
+                Assert.Equal(lastReplicatedUtc, replica.LastReplicatedUtc);
+
+                CSharpDbShardStatus replicaStatus = Assert.Single(
+                    await client.GetShardStatusAsync(Ct),
+                    status => status.ShardId == "s1-replica");
+                Assert.True(replicaStatus.Healthy);
+                Assert.Equal(CSharpDbShardRoles.Replica, replicaStatus.Role);
+                Assert.Equal("s1", replicaStatus.PrimaryShardId);
+                Assert.True(replicaStatus.PromotionEligible);
+                Assert.True(replicaStatus.CanPromote);
+                Assert.Equal(128, replicaStatus.ReplicationLagBytes);
+                Assert.Equal(lastReplicatedUtc, replicaStatus.LastReplicatedUtc);
+            }
+
+            CSharpDbShardingOptions replicaBucketOwner = CreateOptions(directory);
+            replicaBucketOwner.Shards =
+            [
+                .. replicaBucketOwner.Shards,
+                new CSharpDbShardDefinition
+                {
+                    ShardId = "s1-replica",
+                    DataSource = Path.Combine(directory, "s1-replica.db"),
+                    Role = CSharpDbShardRoles.Replica,
+                    PrimaryShardId = "s1",
+                },
+            ];
+            replicaBucketOwner.BucketRanges =
+            [
+                new CSharpDbShardBucketRange { StartBucketInclusive = 0, EndBucketExclusive = 2, ShardId = "s0" },
+                new CSharpDbShardBucketRange { StartBucketInclusive = 2, EndBucketExclusive = 4, ShardId = "s1-replica" },
+            ];
+
+            CSharpDbClientConfigurationException bucketError = await Assert.ThrowsAsync<CSharpDbClientConfigurationException>(
+                () => CSharpDbShardedClient.CreateAsync(replicaBucketOwner, ct: Ct));
+            Assert.Contains("only primary shards", bucketError.Message);
+
+            CSharpDbShardingOptions replicaPinnedOwner = CreateOptions(directory);
+            replicaPinnedOwner.Shards =
+            [
+                .. replicaPinnedOwner.Shards,
+                new CSharpDbShardDefinition
+                {
+                    ShardId = "s1-replica",
+                    DataSource = Path.Combine(directory, "s1-replica.db"),
+                    Role = CSharpDbShardRoles.Replica,
+                    PrimaryShardId = "s1",
+                },
+            ];
+            replicaPinnedOwner.ExactKeyPins["tenant-b"] = "s1-replica";
+
+            CSharpDbClientConfigurationException pinError = await Assert.ThrowsAsync<CSharpDbClientConfigurationException>(
+                () => CSharpDbShardedClient.CreateAsync(replicaPinnedOwner, ct: Ct));
+            Assert.Contains("only primary shards", pinError.Message);
         }
         finally
         {

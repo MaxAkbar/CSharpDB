@@ -485,6 +485,74 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Daemon_ShardReplicaMetadataFlowsThroughRestAndGrpc()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shard_replica_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var factory = new TestDaemonFactory(
+                Path.Combine(directory, "unused.db"),
+                CreateShardingConfigWithReplica(directory));
+            using var grpcTransportClient = CreateGrpcHttpClient(factory);
+            using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("http://localhost"),
+            });
+
+            await using var restAdmin = CreateHttpShardAdmin(httpTransportClient);
+            await using var grpcAdmin = CreateGrpcShardAdmin(grpcTransportClient);
+
+            CSharpDbShardDefinitionSnapshot restReplica = Assert.Single(
+                (await restAdmin.GetShardMapAsync(Ct)).Shards,
+                shard => shard.ShardId == "s1-replica");
+            Assert.Equal(CSharpDbShardRoles.Replica, restReplica.Role);
+            Assert.Equal("s1", restReplica.PrimaryShardId);
+            Assert.True(restReplica.PromotionEligible);
+            Assert.Equal(256, restReplica.ReplicationLagBytes);
+            Assert.NotNull(restReplica.LastReplicatedUtc);
+
+            CSharpDbShardDefinitionSnapshot grpcReplica = Assert.Single(
+                (await grpcAdmin.GetShardMapAsync(Ct)).Shards,
+                shard => shard.ShardId == "s1-replica");
+            Assert.Equal(restReplica.Role, grpcReplica.Role);
+            Assert.Equal(restReplica.PrimaryShardId, grpcReplica.PrimaryShardId);
+            Assert.Equal(restReplica.ReplicationLagBytes, grpcReplica.ReplicationLagBytes);
+
+            CSharpDbShardStatus grpcReplicaStatus = Assert.Single(
+                await grpcAdmin.GetShardStatusAsync(Ct),
+                status => status.ShardId == "s1-replica");
+            Assert.True(grpcReplicaStatus.Healthy);
+            Assert.Equal(CSharpDbShardRoles.Replica, grpcReplicaStatus.Role);
+            Assert.Equal("s1", grpcReplicaStatus.PrimaryShardId);
+            Assert.True(grpcReplicaStatus.PromotionEligible);
+            Assert.True(grpcReplicaStatus.CanPromote);
+            Assert.Equal(256, grpcReplicaStatus.ReplicationLagBytes);
+            Assert.NotNull(grpcReplicaStatus.LastReplicatedUtc);
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "s1-replica.db"));
+            TryDelete(Path.Combine(directory, "s1-replica.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task Daemon_ShardCatalogRestAndGrpcValidateApplyAndReload()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shard_catalog_{Guid.NewGuid():N}");
@@ -1164,6 +1232,19 @@ public sealed class GrpcClientTests : IAsyncLifetime
             ["CSharpDB:Sharding:ExactKeyPins:tenant-a"] = "s0",
             ["CSharpDB:Sharding:ExactKeyPins:tenant-b"] = "s1",
         };
+
+    private static IReadOnlyDictionary<string, string?> CreateShardingConfigWithReplica(string directory)
+    {
+        var config = CreateShardingConfig(directory).ToDictionary();
+        config["CSharpDB:Sharding:Shards:2:ShardId"] = "s1-replica";
+        config["CSharpDB:Sharding:Shards:2:DataSource"] = Path.Combine(directory, "s1-replica.db");
+        config["CSharpDB:Sharding:Shards:2:Role"] = CSharpDbShardRoles.Replica;
+        config["CSharpDB:Sharding:Shards:2:PrimaryShardId"] = "s1";
+        config["CSharpDB:Sharding:Shards:2:PromotionEligible"] = "true";
+        config["CSharpDB:Sharding:Shards:2:ReplicationLagBytes"] = "256";
+        config["CSharpDB:Sharding:Shards:2:LastReplicatedUtc"] = "2026-06-01T12:30:00+00:00";
+        return config;
+    }
 
     private static CSharpDbShardingOptions CreateShardingOptions(
         string directory,

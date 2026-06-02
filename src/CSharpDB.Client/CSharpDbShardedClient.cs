@@ -479,6 +479,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     DataSource = GetConfiguredDataSource(shard),
                     Enabled = false,
                     Healthy = false,
+                    Role = shard.Role,
+                    PrimaryShardId = shard.PrimaryShardId,
+                    PromotionEligible = shard.PromotionEligible,
+                    CanPromote = false,
+                    ReplicationLagBytes = shard.ReplicationLagBytes,
+                    LastReplicatedUtc = shard.LastReplicatedUtc,
                     Error = "Shard is disabled.",
                 });
                 continue;
@@ -494,6 +500,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     DataSource = client.DataSource,
                     Enabled = true,
                     Healthy = true,
+                    Role = shard.Role,
+                    PrimaryShardId = shard.PrimaryShardId,
+                    PromotionEligible = shard.PromotionEligible,
+                    CanPromote = IsReplicaRole(shard.Role) && shard.PromotionEligible,
+                    ReplicationLagBytes = shard.ReplicationLagBytes,
+                    LastReplicatedUtc = shard.LastReplicatedUtc,
                     Info = info,
                 });
             }
@@ -505,6 +517,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     DataSource = GetConfiguredDataSource(shard),
                     Enabled = true,
                     Healthy = false,
+                    Role = shard.Role,
+                    PrimaryShardId = shard.PrimaryShardId,
+                    PromotionEligible = shard.PromotionEligible,
+                    CanPromote = false,
+                    ReplicationLagBytes = shard.ReplicationLagBytes,
+                    LastReplicatedUtc = shard.LastReplicatedUtc,
                     Error = ex.Message,
                 });
             }
@@ -1312,6 +1330,9 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private static bool HasErrors(IEnumerable<CSharpDbShardCatalogIssue> issues)
         => issues.Any(issue => issue.Severity == CSharpDbShardCatalogIssueSeverity.Error);
 
+    private static bool IsReplicaRole(string role)
+        => string.Equals(role, CSharpDbShardRoles.Replica, StringComparison.OrdinalIgnoreCase);
+
     private static void ValidateReadOnlyFanOutSql(string sql)
     {
         if (string.IsNullOrWhiteSpace(sql))
@@ -2061,6 +2082,11 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             {
                 ShardId = shard.ShardId,
                 Enabled = shard.Enabled,
+                Role = shard.Role,
+                PrimaryShardId = shard.PrimaryShardId,
+                PromotionEligible = shard.PromotionEligible,
+                ReplicationLagBytes = shard.ReplicationLagBytes,
+                LastReplicatedUtc = shard.LastReplicatedUtc,
                 Transport = shard.Transport,
                 Endpoint = shard.Endpoint,
                 ConnectionString = shard.ConnectionString,
@@ -2215,6 +2241,13 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 {
                     ShardId = shardId,
                     Enabled = shard.Enabled,
+                    Role = NormalizeShardRole(shard.Role),
+                    PrimaryShardId = string.IsNullOrWhiteSpace(shard.PrimaryShardId)
+                        ? null
+                        : NormalizeShardId(shard.PrimaryShardId),
+                    PromotionEligible = shard.PromotionEligible,
+                    ReplicationLagBytes = shard.ReplicationLagBytes,
+                    LastReplicatedUtc = shard.LastReplicatedUtc,
                     Transport = shard.Transport,
                     Endpoint = NormalizeOptional(shard.Endpoint),
                     ConnectionString = NormalizeOptional(shard.ConnectionString),
@@ -2229,6 +2262,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
 
             if (!normalizedShards.Any(shard => shard.Enabled))
                 throw new CSharpDbClientConfigurationException("CSharpDB sharding requires at least one enabled shard.");
+            ValidateShardReplicationMetadata(normalizedShards, shardMap);
 
             string[] bucketOwners = BuildBucketOwners(options, normalizedShards, shardMap);
             var exactKeyPins = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -2236,8 +2270,9 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             {
                 string key = NormalizeNonEmpty(pin.Key, "ExactKeyPins key");
                 string shardId = NormalizeShardId(pin.Value);
-                if (!shardMap.ContainsKey(shardId))
+                if (!shardMap.TryGetValue(shardId, out CSharpDbShardDefinition? shard))
                     throw new CSharpDbClientConfigurationException($"Exact route-key pin '{key}' references unknown shard '{shardId}'.");
+                ValidateRouteOwnerShard(shard, $"Exact route-key pin '{key}'");
                 exactKeyPins[key] = shardId;
             }
 
@@ -2353,6 +2388,11 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             {
                 ShardId = shard.ShardId,
                 Enabled = shard.Enabled,
+                Role = shard.Role,
+                PrimaryShardId = shard.PrimaryShardId,
+                PromotionEligible = shard.PromotionEligible,
+                ReplicationLagBytes = shard.ReplicationLagBytes,
+                LastReplicatedUtc = shard.LastReplicatedUtc,
                 Transport = shard.Transport,
                 Endpoint = shard.Endpoint,
                 DataSource = shard.DataSource,
@@ -2497,8 +2537,9 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             foreach (CSharpDbShardBucketRange range in options.BucketRanges)
             {
                 string shardId = NormalizeShardId(range.ShardId);
-                if (!shardMap.ContainsKey(shardId))
+                if (!shardMap.TryGetValue(shardId, out CSharpDbShardDefinition? shard))
                     throw new CSharpDbClientConfigurationException($"Bucket range references unknown shard '{shardId}'.");
+                ValidateRouteOwnerShard(shard, $"Bucket range [{range.StartBucketInclusive}, {range.EndBucketExclusive})");
                 if (range.StartBucketInclusive < 0 ||
                     range.EndBucketExclusive > options.VirtualBucketCount ||
                     range.StartBucketInclusive >= range.EndBucketExclusive)
@@ -2523,6 +2564,64 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             }
 
             return bucketOwners!;
+        }
+
+        private static string NormalizeShardRole(string? role)
+        {
+            string normalized = NormalizeNonEmpty(role ?? CSharpDbShardRoles.Primary, nameof(CSharpDbShardDefinition.Role));
+            if (string.Equals(normalized, CSharpDbShardRoles.Primary, StringComparison.OrdinalIgnoreCase))
+                return CSharpDbShardRoles.Primary;
+            if (string.Equals(normalized, CSharpDbShardRoles.Replica, StringComparison.OrdinalIgnoreCase))
+                return CSharpDbShardRoles.Replica;
+
+            throw new CSharpDbClientConfigurationException(
+                $"Shard role '{normalized}' is invalid. Supported roles are '{CSharpDbShardRoles.Primary}' and '{CSharpDbShardRoles.Replica}'.");
+        }
+
+        private static bool IsReplicaRole(string role)
+            => string.Equals(role, CSharpDbShardRoles.Replica, StringComparison.OrdinalIgnoreCase);
+
+        private static void ValidateShardReplicationMetadata(
+            IReadOnlyList<CSharpDbShardDefinition> shards,
+            IReadOnlyDictionary<string, CSharpDbShardDefinition> shardMap)
+        {
+            foreach (CSharpDbShardDefinition shard in shards)
+            {
+                if (shard.ReplicationLagBytes is < 0)
+                    throw new CSharpDbClientConfigurationException($"Shard '{shard.ShardId}' ReplicationLagBytes cannot be negative.");
+
+                if (IsReplicaRole(shard.Role))
+                {
+                    string? primaryShardId = shard.PrimaryShardId is null ? null : NormalizeShardId(shard.PrimaryShardId);
+                    if (string.IsNullOrWhiteSpace(primaryShardId))
+                        throw new CSharpDbClientConfigurationException($"Replica shard '{shard.ShardId}' requires PrimaryShardId.");
+                    if (string.Equals(primaryShardId, shard.ShardId, StringComparison.OrdinalIgnoreCase))
+                        throw new CSharpDbClientConfigurationException($"Replica shard '{shard.ShardId}' cannot reference itself as PrimaryShardId.");
+                    if (!shardMap.TryGetValue(primaryShardId, out CSharpDbShardDefinition? primary))
+                        throw new CSharpDbClientConfigurationException($"Replica shard '{shard.ShardId}' references unknown primary shard '{primaryShardId}'.");
+                    if (!string.Equals(primary.Role, CSharpDbShardRoles.Primary, StringComparison.OrdinalIgnoreCase))
+                        throw new CSharpDbClientConfigurationException($"Replica shard '{shard.ShardId}' PrimaryShardId '{primaryShardId}' must reference a primary shard.");
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(shard.PrimaryShardId))
+                    throw new CSharpDbClientConfigurationException($"Primary shard '{shard.ShardId}' cannot set PrimaryShardId.");
+                if (shard.PromotionEligible)
+                    throw new CSharpDbClientConfigurationException($"Primary shard '{shard.ShardId}' cannot be marked PromotionEligible.");
+                if (shard.ReplicationLagBytes is not null)
+                    throw new CSharpDbClientConfigurationException($"Primary shard '{shard.ShardId}' cannot set ReplicationLagBytes.");
+                if (shard.LastReplicatedUtc is not null)
+                    throw new CSharpDbClientConfigurationException($"Primary shard '{shard.ShardId}' cannot set LastReplicatedUtc.");
+            }
+        }
+
+        private static void ValidateRouteOwnerShard(CSharpDbShardDefinition shard, string source)
+        {
+            if (string.Equals(shard.Role, CSharpDbShardRoles.Primary, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            throw new CSharpDbClientConfigurationException(
+                $"{source} references shard '{shard.ShardId}', but only primary shards can own route buckets or exact route-key pins.");
         }
 
         private static void ValidateShardTarget(CSharpDbShardDefinition shard)

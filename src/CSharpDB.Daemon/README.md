@@ -256,7 +256,16 @@ Example:
       "VirtualBucketCount": 4096,
       "Shards": [
         { "ShardId": "s0", "DataSource": "orders-s0.db" },
-        { "ShardId": "s1", "DataSource": "orders-s1.db" }
+        { "ShardId": "s1", "DataSource": "orders-s1.db" },
+        {
+          "ShardId": "s1-replica",
+          "DataSource": "orders-s1-replica.db",
+          "Role": "Replica",
+          "PrimaryShardId": "s1",
+          "PromotionEligible": true,
+          "ReplicationLagBytes": 256,
+          "LastReplicatedUtc": "2026-06-01T12:30:00+00:00"
+        }
       ],
       "BucketRanges": [
         { "StartBucketInclusive": 0, "EndBucketExclusive": 2048, "ShardId": "s0" },
@@ -280,6 +289,12 @@ All shard files use the daemon host database open-mode and storage tuning
 settings. V1 requires route context for single-shard operations and does not
 perform cross-shard SQL, cross-shard transactions, replication, failover, or
 automatic data movement when bucket ownership changes.
+
+Replica metadata is informational in this slice. `Role = "Replica"` shards can
+name their `PrimaryShardId`, promotion eligibility, and operator-reported lag.
+Shard map snapshots and status responses expose those fields, but bucket ranges
+and exact route-key pins must still point to primary shards. The daemon does not
+copy data to replicas, promote replicas, or reroute traffic based on health yet.
 
 Routing does not replace row filtering. Queries should still include the route
 column, such as `WHERE order_month = '2026-06'`, because multiple route keys can

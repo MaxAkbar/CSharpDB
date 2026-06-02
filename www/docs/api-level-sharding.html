@@ -159,6 +159,24 @@ CSharpDbShardResolution resolution = sharded.ResolveRoute(route);
 Console.WriteLine($"{route.Key} =&gt; bucket {resolution.Bucket}, shard {resolution.ShardId}");</code></pre>
                 </div>
 
+                <h3>Replica Metadata</h3>
+                <p>Shard definitions can carry Phase 6 replica metadata for operational views. This is metadata only: CSharpDB exposes the role, primary shard, promotion eligibility, and operator-reported lag, but it does not copy data, promote replicas, or reroute traffic based on health in this slice.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>new CSharpDbShardDefinition
+{
+    ShardId = "shard-1-replica",
+    DataSource = "data/shard-1-replica.db",
+    Role = CSharpDbShardRoles.Replica,
+    PrimaryShardId = "shard-1",
+    PromotionEligible = true,
+    ReplicationLagBytes = 256,
+    LastReplicatedUtc = DateTimeOffset.UtcNow,
+}</code></pre>
+                </div>
+
+                <p>Bucket ranges and exact route-key pins must still point to primary shards. Replicas appear in map snapshots and shard status so Admin and operators can inspect the intended topology before replication and failover mechanics are added.</p>
+
                 <h2>Recent And Older Pages</h2>
                 <p>A recent order-history page uses the current route key. An older page uses the route key selected by the user. Both queries still filter on <code>order_month</code>.</p>
 
@@ -525,6 +543,7 @@ await sharded.CommitTransactionAsync(tx.TransactionId);</code></pre>
                     <li>Shard status checks, execute-on-all-shards schema setup helpers, and explicit read-only fan-out for diagnostics.</li>
                     <li>Operator-controlled exact route-key migration with manifest-based copy and verification.</li>
                     <li>Catalog-backed migration history for exact route-key migration outcomes.</li>
+                    <li>Replica role metadata in shard maps and status responses.</li>
                     <li>Direct, HTTP, gRPC, and ADO.NET route context propagation.</li>
                 </ul>
 
@@ -533,7 +552,7 @@ await sharded.CommitTransactionAsync(tx.TransactionId);</code></pre>
                     <li>Automatic cross-shard joins, aggregates, arbitrary queries, or transactions.</li>
                     <li>Automatic resharding or data movement.</li>
                     <li>Automatic SQL inference from arbitrary <code>WHERE</code> clauses.</li>
-                    <li>Replication, failover, or shard health based rerouting.</li>
+                    <li>Data replication, replica promotion, failover, or shard health based rerouting.</li>
                 </ul>
 
                 <h2>Operator Checklist</h2>

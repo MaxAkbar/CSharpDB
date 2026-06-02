@@ -364,6 +364,13 @@ public static class GrpcModelMapper
             HasConnectionString = value.HasConnectionString,
             HasApiKey = value.HasApiKey,
             ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.LastReplicatedUtc.Value)
+                : null,
         };
 
     public static ShardTargetDefinitionMessage ToMessage(CSharpDbShardDefinition value)
@@ -377,6 +384,13 @@ public static class GrpcModelMapper
             DataSource = value.DataSource,
             ApiKey = value.ApiKey,
             ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.LastReplicatedUtc.Value)
+                : null,
         };
 
     public static CSharpDbShardDefinition ToModel(ShardTargetDefinitionMessage value)
@@ -390,6 +404,11 @@ public static class GrpcModelMapper
             DataSource = value.DataSource,
             ApiKey = value.ApiKey,
             ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = string.IsNullOrWhiteSpace(value.Role) ? CSharpDbShardRoles.Primary : value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc?.ToDateTimeOffset(),
         };
 
     public static CSharpDbShardDefinitionSnapshot ToModel(ShardDefinitionMessage value)
@@ -403,6 +422,11 @@ public static class GrpcModelMapper
             HasConnectionString = value.HasConnectionString,
             HasApiKey = value.HasApiKey,
             ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = string.IsNullOrWhiteSpace(value.Role) ? CSharpDbShardRoles.Primary : value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc?.ToDateTimeOffset(),
         };
 
     public static ShardBucketRangeMessage ToMessage(CSharpDbShardBucketRange value)
@@ -570,6 +594,14 @@ public static class GrpcModelMapper
             Healthy = value.Healthy,
             Error = value.Error,
             Info = value.Info is null ? null : ToMessage(value.Info),
+            Role = value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            CanPromote = value.CanPromote,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.LastReplicatedUtc.Value)
+                : null,
         };
 
     public static CSharpDbShardStatus ToModel(ShardStatusMessage value)
@@ -581,6 +613,12 @@ public static class GrpcModelMapper
             Healthy = value.Healthy,
             Error = value.Error,
             Info = value.Info is null ? null : ToModel(value.Info),
+            Role = string.IsNullOrWhiteSpace(value.Role) ? CSharpDbShardRoles.Primary : value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            CanPromote = value.CanPromote,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc?.ToDateTimeOffset(),
         };
 
     public static ShardSqlExecutionResultMessage ToMessage(CSharpDbShardSqlExecutionResult value)
