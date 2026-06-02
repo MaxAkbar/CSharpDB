@@ -251,20 +251,27 @@ Implemented first slice:
   when catalog mode is writable.
 - Exact-key migration repairs matching shard-directory entries to the
   destination shard and pending map version.
+- Added bucket-range migration through `MigrateBucketRangeAsync`, REST
+  `POST /api/sharding/migrations/bucket-range`, and gRPC `MigrateBucketRange`.
+- Bucket-range migration copies unpinned route-key rows/documents whose route
+  keys hash into the requested bucket range, verifies checksums, fences affected
+  bucket writes, and writes pending bucket ownership to the catalog.
 
 Key work:
 
 - Start with exact route-key migration. (first slice implemented)
-- Add bucket-range migration after exact-key movement is stable.
+- Add bucket-range migration after exact-key movement is stable. (first slice
+  implemented)
 - Require a migration manifest that identifies key-owned data per table and
-  collection. (first slice implemented)
+  collection. (exact-key and bucket-range slices implemented)
 - Do not infer ownership from arbitrary SQL clauses.
 - Fence writes for affected route keys while migration is active. (first slice
-  implemented)
-- Copy data from source shard to destination shard. (first slice implemented)
-- Verify counts and checksums. (first slice implemented)
+  implemented; bucket-range fences implemented)
+- Copy data from source shard to destination shard. (exact-key and bucket-range
+  slices implemented)
+- Verify counts and checksums. (exact-key and bucket-range slices implemented)
 - Update exact-key pins or bucket ownership only after verification. (exact-key
-  pins implemented)
+  pins and bucket ownership implemented)
 - Record migration history and final status. (first slice implemented)
 - Leave the old map active when migration verification fails. (first slice
   implemented)
@@ -274,7 +281,6 @@ Remaining work:
 - Add resumable/retryable migration states for partial copy failures.
 - Add broader shard-directory repair/stale marking for partial and resumed
   migrations.
-- Add bucket-range migration after exact-key movement is stable.
 - Add Admin UX for migration preview, progress, verification, and confirmation.
 
 Admin workflow:
@@ -318,7 +324,8 @@ Out of scope:
 ## Phase 6: Replication And Failover
 
 Goal: add high-availability primitives after catalog and resharding workflows are
-stable.
+stable. Actual replication and failover are deferred out of the next sharding
+release.
 
 Implemented first slice:
 

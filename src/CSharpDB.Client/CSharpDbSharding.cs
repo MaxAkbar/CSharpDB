@@ -240,6 +240,21 @@ public sealed class CSharpDbShardExactKeyMigrationRequest
     public string? Comment { get; init; }
 }
 
+public sealed class CSharpDbShardBucketRangeMigrationRequest
+{
+    public required string Keyspace { get; init; }
+    public required string SourceShardId { get; init; }
+    public required string DestinationShardId { get; init; }
+    public int StartBucketInclusive { get; init; }
+    public int EndBucketExclusive { get; init; }
+    public required CSharpDbShardMigrationManifest Manifest { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public bool OverwriteDestinationRows { get; init; } = true;
+    public bool DeleteSourceAfterVerification { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
 public sealed class CSharpDbShardMigrationTableResult
 {
     public required string TableName { get; init; }
@@ -324,6 +339,7 @@ public interface ICSharpDbShardAdminClient : IAsyncDisposable
     Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
     Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default);
     Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(CSharpDbShardExactKeyMigrationRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(CSharpDbShardBucketRangeMigrationRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default);
 }
 

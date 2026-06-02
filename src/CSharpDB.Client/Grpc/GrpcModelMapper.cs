@@ -838,6 +838,38 @@ public static class GrpcModelMapper
             Comment = value.Comment,
         };
 
+    public static ShardBucketRangeMigrationRequestMessage ToMessage(CSharpDbShardBucketRangeMigrationRequest value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            Manifest = ToMessage(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardBucketRangeMigrationRequest ToModel(ShardBucketRangeMigrationRequestMessage value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            Manifest = value.Manifest is null ? new CSharpDbShardMigrationManifest() : ToModel(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
     public static ShardMigrationTableResultMessage ToMessage(CSharpDbShardMigrationTableResult value)
         => new()
         {

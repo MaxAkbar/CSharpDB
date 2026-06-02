@@ -125,6 +125,14 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
     }
 
+    public async Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(
+        CSharpDbShardBucketRangeMigrationRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/migrations/bucket-range"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
     public async Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/migrations"), payload: null, ct);

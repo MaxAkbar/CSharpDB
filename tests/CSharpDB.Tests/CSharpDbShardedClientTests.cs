@@ -537,6 +537,122 @@ public sealed class CSharpDbShardedClientTests
     }
 
     [Fact]
+    public async Task BucketRangeMigration_CopiesManifestDataAndWritesPendingBucketMap()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            string routeKey = FindRouteKeyForBucket("tenants", bucket: 0, virtualBucketCount: 4);
+            string catalogPath = Path.Combine(directory, "catalog.json");
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = catalogPath,
+            };
+
+            await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
+                    await client.ExecuteSqlOnAllShardsAsync(
+                        "CREATE TABLE bucket_orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER);",
+                        Ct);
+                Assert.All(schemaResults, result => Assert.Null(result.Error));
+
+                ICSharpDbClient routed = client.ForRoute(new CSharpDbRouteContext
+                {
+                    Keyspace = "tenants",
+                    Key = routeKey,
+                });
+                Assert.Equal(1, await routed.InsertRowAsync("bucket_orders", new Dictionary<string, object?>
+                {
+                    ["id"] = 20L,
+                    ["tenant_id"] = routeKey,
+                    ["total"] = 500L,
+                }, Ct));
+
+                CSharpDbShardMigrationResult migration = await client.MigrateBucketRangeAsync(
+                    new CSharpDbShardBucketRangeMigrationRequest
+                    {
+                        Keyspace = "tenants",
+                        SourceShardId = "s0",
+                        DestinationShardId = "s1",
+                        StartBucketInclusive = 0,
+                        EndBucketExclusive = 1,
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "test",
+                        Manifest = new CSharpDbShardMigrationManifest
+                        {
+                            Tables =
+                            [
+                                new CSharpDbShardMigrationTableManifest
+                                {
+                                    TableName = "bucket_orders",
+                                    RouteKeyColumn = "tenant_id",
+                                    PrimaryKeyColumn = "id",
+                                },
+                            ],
+                        },
+                    },
+                    Ct);
+
+                Assert.True(migration.Succeeded, string.Join(Environment.NewLine, migration.Issues.Select(issue => issue.Message)));
+                Assert.Equal("PendingActivation", migration.Status);
+                Assert.Equal("bucket-range:[0,1)", migration.RouteKey);
+                Assert.Equal("s0", migration.SourceShardId);
+                Assert.Equal("s1", migration.DestinationShardId);
+                Assert.Equal(2, migration.PendingMapVersion);
+
+                CSharpDbShardMigrationTableResult table = Assert.Single(migration.Tables);
+                Assert.True(table.Verified, table.Error);
+                Assert.Equal(1, table.SourceRows);
+                Assert.Equal(1, table.DestinationRows);
+                Assert.Equal(1, table.RowsCopied);
+
+                Dictionary<string, object?>? copied = await client.ForShardId("s1").GetRowByPkAsync("bucket_orders", "id", 20L, Ct);
+                Assert.NotNull(copied);
+                Assert.Equal(routeKey, Assert.IsType<string>(copied!["tenant_id"]));
+
+                CSharpDbShardCatalogState pending = await client.GetShardCatalogAsync(Ct);
+                Assert.Equal(1, pending.ActiveMap.MapVersion);
+                Assert.Equal(2, pending.PendingMap!.MapVersion);
+                Assert.Equal("s1", GetOwnerForBucket(pending.PendingMap, 0));
+                Assert.Equal("s0", GetOwnerForBucket(pending.PendingMap, 1));
+
+                CSharpDbShardMigrationHistoryEntry history = Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
+                Assert.Equal(migration.MigrationId, history.MigrationId);
+                Assert.Equal("BucketRange", history.MigrationType);
+                Assert.Equal("bucket-range:[0,1)", history.RouteKey);
+                Assert.Equal("PendingActivation", history.Status);
+            }
+
+            await using (var reloaded = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardResolution resolution = await reloaded.ResolveRouteAsync(new CSharpDbRouteContext
+                {
+                    Keyspace = "tenants",
+                    Key = routeKey,
+                }, Ct);
+                Assert.Equal("s1", resolution.ShardId);
+                Assert.Equal(2, resolution.MapVersion);
+
+                ICSharpDbClient routed = reloaded.ForRoute(new CSharpDbRouteContext
+                {
+                    Keyspace = "tenants",
+                    Key = routeKey,
+                });
+                Dictionary<string, object?>? row = await routed.GetRowByPkAsync("bucket_orders", "id", 20L, Ct);
+                Assert.NotNull(row);
+                Assert.Equal(500L, Assert.IsType<long>(row!["total"]));
+            }
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task ExactKeyMigration_RejectsMissingManifestItems()
     {
         string directory = CreateTempDirectory();
@@ -822,6 +938,28 @@ public sealed class CSharpDbShardedClientTests
                 ["tenant-b"] = "s1",
             },
         };
+
+    private static string FindRouteKeyForBucket(string keyspace, int bucket, int virtualBucketCount)
+    {
+        for (int i = 0; i < 10_000; i++)
+        {
+            string routeKey = $"bucket-{bucket}-{i}";
+            ulong token = CSharpDbShardedClient.ComputeRouteToken(new CSharpDbRouteContext
+            {
+                Keyspace = keyspace,
+                Key = routeKey,
+            });
+            if ((int)(token % (ulong)virtualBucketCount) == bucket)
+                return routeKey;
+        }
+
+        throw new InvalidOperationException($"Could not find a route key for bucket {bucket}.");
+    }
+
+    private static string GetOwnerForBucket(CSharpDbShardMapSnapshot map, int bucket)
+        => map.BucketRanges.Single(range =>
+            bucket >= range.StartBucketInclusive &&
+            bucket < range.EndBucketExclusive).ShardId;
 
     private static string CreateTempDirectory()
     {

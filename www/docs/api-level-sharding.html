@@ -502,12 +502,32 @@ CSharpDbShardCatalogApplyResult applied =
 
                 <p>The REST endpoint is <code>POST /api/sharding/migrations/exact-route-key</code>. The gRPC contract exposes <code>MigrateExactRouteKey</code>. A successful migration returns <code>Status = "PendingActivation"</code> and <code>RequiresRestart = true</code>; the live router keeps the old map until restart.</p>
 
+                <h3>Controlled Bucket-Range Movement</h3>
+                <p>Bucket-range movement uses the same manifest shape, but moves every unpinned route key whose hash bucket falls inside an operator-selected virtual-bucket interval. The requested buckets must be wholly owned by the source shard. Exact route-key pins are left in place because pins override bucket ownership.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>CSharpDbShardMigrationResult movedBuckets =
+    await shardAdmin.MigrateBucketRangeAsync(new CSharpDbShardBucketRangeMigrationRequest
+    {
+        Keyspace = "orders_by_month",
+        SourceShardId = "hot-1",
+        DestinationShardId = "archive-1",
+        StartBucketInclusive = 1024,
+        EndBucketExclusive = 1536,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        Operator = "ops",
+        Manifest = manifest,
+    });</code></pre>
+                </div>
+
+                <p>The REST endpoint is <code>POST /api/sharding/migrations/bucket-range</code>. The gRPC contract exposes <code>MigrateBucketRange</code>. A successful movement writes a pending bucket map and still requires a daemon restart or sharded-client recreation before live routing changes.</p>
+
                 <div class="code-block" data-title="C#">
                     <pre><code>IReadOnlyList&lt;CSharpDbShardMigrationHistoryEntry&gt; history =
     await shardAdmin.GetShardMigrationHistoryAsync();</code></pre>
                 </div>
 
-                <p>If shard-directory entries point at the moved route key, the pending catalog map updates those entries to the destination shard and pending map version. Writable catalog mode records rejected, failed, and pending-activation migration outcomes. Query history with <code>GET /api/sharding/migrations</code> or gRPC <code>GetShardMigrationHistory</code>. This slice does not move bucket ranges and does not infer ownership from arbitrary SQL predicates.</p>
+                <p>If shard-directory entries point at moved routes, the pending catalog map updates those entries to the destination shard and pending map version where the movement can be determined safely. Writable catalog mode records rejected, failed, and pending-activation migration outcomes. Query history with <code>GET /api/sharding/migrations</code> or gRPC <code>GetShardMigrationHistory</code>. These APIs do not infer ownership from arbitrary SQL predicates.</p>
 
                 <h2>ADO.NET</h2>
                 <p>ADO.NET callers can bind a connection to one route with connection-string keys. Every command on that connection is sent to the same route.</p>
@@ -541,7 +561,7 @@ await sharded.CommitTransactionAsync(tx.TransactionId);</code></pre>
                     <li>Single-shard SQL execution when a route key is provided.</li>
                     <li>Single-shard row APIs, collection APIs, saved queries, procedures, and transaction sessions.</li>
                     <li>Shard status checks, execute-on-all-shards schema setup helpers, and explicit read-only fan-out for diagnostics.</li>
-                    <li>Operator-controlled exact route-key migration with manifest-based copy and verification.</li>
+                    <li>Operator-controlled exact route-key and bucket-range movement with manifest-based copy and verification.</li>
                     <li>Catalog-backed migration history for exact route-key migration outcomes.</li>
                     <li>Replica role metadata in shard maps and status responses.</li>
                     <li>Direct, HTTP, gRPC, and ADO.NET route context propagation.</li>

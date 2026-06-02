@@ -21,6 +21,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private readonly CSharpDbShardCatalogStore? _catalogStore;
     private readonly CSharpDbShardingOptions _effectiveOptions;
     private readonly ConcurrentDictionary<string, byte> _writeFences = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, BucketRangeFence> _bucketRangeFences = new(StringComparer.Ordinal);
     private readonly RoutedClient _requestRoutedClient;
 
     private CSharpDbShardedClient(
@@ -272,6 +273,12 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     "destination-shard-disabled",
                     $"Destination shard '{destinationShardId}' is disabled."));
             }
+            if (!string.Equals(destinationShard.Role, CSharpDbShardRoles.Primary, StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "destination-shard-not-primary",
+                    $"Destination shard '{destinationShardId}' is a {destinationShard.Role} shard. Exact route-key ownership can move only to primary shards."));
+            }
 
             if (string.Equals(sourceShardId, destinationShardId, StringComparison.OrdinalIgnoreCase))
             {
@@ -457,6 +464,285 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 issues,
                 catalogApplyResult: null);
             await TryRecordMigrationHistoryAsync(failedResult, request, ct).ConfigureAwait(false);
+            return failedResult;
+        }
+    }
+
+    public async Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(
+        CSharpDbShardBucketRangeMigrationRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Manifest);
+
+        DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
+        string migrationId = CreateMigrationId(startedUtc);
+        string keyspace = string.Empty;
+        string routeKey = string.Empty;
+        string sourceShardId = string.Empty;
+        string destinationShardId = string.Empty;
+        var issues = new List<CSharpDbShardCatalogIssue>();
+
+        try
+        {
+            keyspace = NormalizeRequired(request.Keyspace, nameof(request.Keyspace));
+            routeKey = FormatBucketRangeRouteKey(request.StartBucketInclusive, request.EndBucketExclusive);
+            sourceShardId = CSharpDbShardMap.NormalizeShardId(request.SourceShardId);
+            destinationShardId = CSharpDbShardMap.NormalizeShardId(request.DestinationShardId);
+
+            if (!string.Equals(keyspace, _map.Keyspace, StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "keyspace-mismatch",
+                    $"Bucket-range migration keyspace '{keyspace}' does not match configured keyspace '{_map.Keyspace}'."));
+            }
+
+            if (_catalogStore is null)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "catalog-not-enabled",
+                    "Bucket-range migration requires catalog mode so the verified ownership change can be recorded."));
+            }
+            else if (!_catalogStore.CanWrite)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "catalog-read-only",
+                    "Bucket-range migration requires writable catalog mode."));
+            }
+
+            if (request.ExpectedCurrentMapVersion is int expectedVersion && expectedVersion != _map.MapVersion)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "map-version-mismatch",
+                    $"Expected current map version {expectedVersion}, but the live map version is {_map.MapVersion}."));
+            }
+
+            if (!_map.IsValidBucketRange(request.StartBucketInclusive, request.EndBucketExclusive))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "invalid-bucket-range",
+                    $"Bucket range [{request.StartBucketInclusive}, {request.EndBucketExclusive}) is outside virtual bucket count {_map.VirtualBucketCount}."));
+            }
+            else if (!_map.BucketRangeOwnedBy(request.StartBucketInclusive, request.EndBucketExclusive, sourceShardId))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "source-does-not-own-bucket-range",
+                    $"Source shard '{sourceShardId}' does not own every bucket in range [{request.StartBucketInclusive}, {request.EndBucketExclusive})."));
+            }
+
+            CSharpDbShardDefinition sourceShard = _map.GetShard(sourceShardId);
+            if (!sourceShard.Enabled)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "source-shard-disabled",
+                    $"Source shard '{sourceShardId}' is disabled."));
+            }
+
+            CSharpDbShardDefinition destinationShard = _map.GetShard(destinationShardId);
+            if (!destinationShard.Enabled)
+            {
+                issues.Add(CreateMigrationIssue(
+                    "destination-shard-disabled",
+                    $"Destination shard '{destinationShardId}' is disabled."));
+            }
+            if (!string.Equals(destinationShard.Role, CSharpDbShardRoles.Primary, StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "destination-shard-not-primary",
+                    $"Destination shard '{destinationShardId}' is a {destinationShard.Role} shard. Bucket ownership can move only to primary shards."));
+            }
+
+            if (string.Equals(sourceShardId, destinationShardId, StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "destination-is-source",
+                    $"Bucket range [{request.StartBucketInclusive}, {request.EndBucketExclusive}) already belongs to shard '{sourceShardId}'."));
+            }
+
+            ValidateMigrationManifest(request.Manifest, issues);
+            if (HasErrors(issues))
+            {
+                CSharpDbShardMigrationResult rejectedResult = CreateMigrationResult(
+                    migrationId,
+                    startedUtc,
+                    succeeded: false,
+                    status: "Rejected",
+                    message: "Bucket-range migration request was rejected by validation.",
+                    keyspace,
+                    routeKey,
+                    sourceShardId,
+                    destinationShardId,
+                    pendingMapVersion: null,
+                    requiresRestart: false,
+                    [],
+                    [],
+                    issues,
+                    catalogApplyResult: null);
+                await TryRecordMigrationHistoryAsync(rejectedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
+                return rejectedResult;
+            }
+
+            string fenceKey = BuildBucketRangeFenceKey(keyspace, request.StartBucketInclusive, request.EndBucketExclusive);
+            var fence = new BucketRangeFence(keyspace, request.StartBucketInclusive, request.EndBucketExclusive);
+            if (!TryAddBucketRangeFence(fenceKey, fence))
+            {
+                issues.Add(CreateMigrationIssue(
+                    "bucket-range-already-fenced",
+                    $"Bucket range [{request.StartBucketInclusive}, {request.EndBucketExclusive}) overlaps an active shard migration fence."));
+                CSharpDbShardMigrationResult fencedResult = CreateMigrationResult(
+                    migrationId,
+                    startedUtc,
+                    succeeded: false,
+                    status: "Rejected",
+                    message: "Bucket-range migration request was rejected because the bucket range is already fenced.",
+                    keyspace,
+                    routeKey,
+                    sourceShardId,
+                    destinationShardId,
+                    pendingMapVersion: null,
+                    requiresRestart: false,
+                    [],
+                    [],
+                    issues,
+                    catalogApplyResult: null);
+                await TryRecordMigrationHistoryAsync(fencedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
+                return fencedResult;
+            }
+
+            try
+            {
+                int pageSize = NormalizeMigrationPageSize(request.Manifest.PageSize);
+                ICSharpDbClient sourceClient = GetShardClient(sourceShardId);
+                ICSharpDbClient destinationClient = GetShardClient(destinationShardId);
+
+                var tableResults = new List<CSharpDbShardMigrationTableResult>();
+                foreach (CSharpDbShardMigrationTableManifest table in request.Manifest.Tables)
+                {
+                    CSharpDbShardMigrationTableResult tableResult = await MigrateBucketRangeTableAsync(
+                        table,
+                        request.StartBucketInclusive,
+                        request.EndBucketExclusive,
+                        sourceClient,
+                        destinationClient,
+                        request.OverwriteDestinationRows,
+                        request.DeleteSourceAfterVerification,
+                        pageSize,
+                        ct).ConfigureAwait(false);
+                    tableResults.Add(tableResult);
+                    if (!tableResult.Verified)
+                    {
+                        issues.Add(CreateMigrationIssue(
+                            "table-verification-failed",
+                            $"Table '{tableResult.TableName}' did not verify: {tableResult.Error ?? "checksum or count mismatch"}"));
+                    }
+                }
+
+                var collectionResults = new List<CSharpDbShardMigrationCollectionResult>();
+                foreach (CSharpDbShardMigrationCollectionManifest collection in request.Manifest.Collections)
+                {
+                    CSharpDbShardMigrationCollectionResult collectionResult = await MigrateBucketRangeCollectionAsync(
+                        collection,
+                        request.StartBucketInclusive,
+                        request.EndBucketExclusive,
+                        sourceClient,
+                        destinationClient,
+                        request.DeleteSourceAfterVerification,
+                        pageSize,
+                        ct).ConfigureAwait(false);
+                    collectionResults.Add(collectionResult);
+                    if (!collectionResult.Verified)
+                    {
+                        issues.Add(CreateMigrationIssue(
+                            "collection-verification-failed",
+                            $"Collection '{collectionResult.CollectionName}' did not verify: {collectionResult.Error ?? "checksum or count mismatch"}"));
+                    }
+                }
+
+                if (HasErrors(issues))
+                {
+                    CSharpDbShardMigrationResult verificationFailedResult = CreateMigrationResult(
+                        migrationId,
+                        startedUtc,
+                        succeeded: false,
+                        status: "VerificationFailed",
+                        message: "Bucket-range migration copied data, but verification failed. The active shard map was left unchanged.",
+                        keyspace,
+                        routeKey,
+                        sourceShardId,
+                        destinationShardId,
+                        pendingMapVersion: null,
+                        requiresRestart: false,
+                        tableResults,
+                        collectionResults,
+                        issues,
+                        catalogApplyResult: null);
+                    await TryRecordMigrationHistoryAsync(verificationFailedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
+                    return verificationFailedResult;
+                }
+
+                CSharpDbShardingOptions proposedOptions = BuildBucketRangeMigrationOptions(
+                    request.StartBucketInclusive,
+                    request.EndBucketExclusive,
+                    sourceShardId,
+                    destinationShardId);
+                CSharpDbShardCatalogApplyResult applyResult = await ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+                {
+                    Options = proposedOptions,
+                    ExpectedCurrentMapVersion = _map.MapVersion,
+                    AllowMetadataOnlyOwnershipChange = true,
+                    Operator = request.Operator,
+                    Comment = string.IsNullOrWhiteSpace(request.Comment)
+                        ? $"Bucket-range migration {migrationId}: [{request.StartBucketInclusive}, {request.EndBucketExclusive}) {sourceShardId} -> {destinationShardId}"
+                        : $"{request.Comment} (migration {migrationId})",
+                }, ct).ConfigureAwait(false);
+
+                issues.AddRange(applyResult.Validation.Issues);
+                CSharpDbShardMigrationResult appliedResult = CreateMigrationResult(
+                    migrationId,
+                    startedUtc,
+                    succeeded: applyResult.Applied,
+                    status: applyResult.Applied ? "PendingActivation" : "CatalogApplyFailed",
+                    message: applyResult.Applied
+                        ? "Bucket-range migration verified and wrote a pending shard map. Restart or recreate the sharded client to activate the new bucket ownership."
+                        : "Bucket-range migration verified data movement, but the catalog update failed. The active shard map was left unchanged.",
+                    keyspace,
+                    routeKey,
+                    sourceShardId,
+                    destinationShardId,
+                    pendingMapVersion: applyResult.PendingMap?.MapVersion,
+                    requiresRestart: applyResult.RequiresRestart,
+                    tableResults,
+                    collectionResults,
+                    issues,
+                    applyResult);
+                await TryRecordMigrationHistoryAsync(appliedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
+                return appliedResult;
+            }
+            finally
+            {
+                _bucketRangeFences.TryRemove(fenceKey, out _);
+            }
+        }
+        catch (Exception ex) when (ex is CSharpDbClientException or CSharpDbClientConfigurationException or ArgumentException or InvalidOperationException)
+        {
+            issues.Add(CreateMigrationIssue("migration-failed", ex.Message));
+            CSharpDbShardMigrationResult failedResult = CreateMigrationResult(
+                migrationId,
+                startedUtc,
+                succeeded: false,
+                status: "Failed",
+                message: "Bucket-range migration failed. The active shard map was left unchanged.",
+                keyspace,
+                routeKey,
+                sourceShardId,
+                destinationShardId,
+                pendingMapVersion: null,
+                requiresRestart: false,
+                [],
+                [],
+                issues,
+                catalogApplyResult: null);
+            await TryRecordMigrationHistoryAsync(failedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
             return failedResult;
         }
     }
@@ -1056,6 +1342,170 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         }
     }
 
+    private async Task<CSharpDbShardMigrationTableResult> MigrateBucketRangeTableAsync(
+        CSharpDbShardMigrationTableManifest manifest,
+        int startBucketInclusive,
+        int endBucketExclusive,
+        ICSharpDbClient sourceClient,
+        ICSharpDbClient destinationClient,
+        bool overwriteDestinationRows,
+        bool deleteSourceAfterVerification,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string tableName = NormalizeRequired(manifest.TableName, nameof(manifest.TableName));
+        try
+        {
+            var sourceRows = await ReadBucketRangeTableRowsAsync(
+                sourceClient,
+                manifest,
+                startBucketInclusive,
+                endBucketExclusive,
+                pageSize,
+                ct).ConfigureAwait(false);
+            int copied = 0;
+            foreach (Dictionary<string, object?> row in sourceRows.Rows)
+            {
+                object pkValue = GetRequiredRowValue(row, sourceRows.PrimaryKeyColumn, tableName);
+                Dictionary<string, object?>? existing = overwriteDestinationRows
+                    ? await destinationClient.GetRowByPkAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, ct).ConfigureAwait(false)
+                    : null;
+
+                if (existing is null)
+                    copied += await destinationClient.InsertRowAsync(tableName, row, ct).ConfigureAwait(false);
+                else
+                    copied += await destinationClient.UpdateRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, row, ct).ConfigureAwait(false);
+            }
+
+            var destinationRows = await ReadBucketRangeTableRowsAsync(
+                destinationClient,
+                manifest,
+                startBucketInclusive,
+                endBucketExclusive,
+                pageSize,
+                ct).ConfigureAwait(false);
+            string sourceChecksum = ComputeTableChecksum(sourceRows.Rows, sourceRows.Schema.Columns, sourceRows.PrimaryKeyColumn);
+            string destinationChecksum = ComputeTableChecksum(destinationRows.Rows, destinationRows.Schema.Columns, destinationRows.PrimaryKeyColumn);
+            bool verified = sourceRows.Rows.Count == destinationRows.Rows.Count &&
+                            string.Equals(sourceChecksum, destinationChecksum, StringComparison.Ordinal);
+
+            int deleted = 0;
+            if (verified && deleteSourceAfterVerification)
+            {
+                foreach (Dictionary<string, object?> row in sourceRows.Rows)
+                {
+                    object pkValue = GetRequiredRowValue(row, sourceRows.PrimaryKeyColumn, tableName);
+                    deleted += await sourceClient.DeleteRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, ct).ConfigureAwait(false);
+                }
+            }
+
+            return new CSharpDbShardMigrationTableResult
+            {
+                TableName = tableName,
+                SourceRows = sourceRows.Rows.Count,
+                DestinationRows = destinationRows.Rows.Count,
+                RowsCopied = copied,
+                SourceRowsDeleted = deleted,
+                Verified = verified,
+                SourceChecksum = sourceChecksum,
+                DestinationChecksum = destinationChecksum,
+                Error = verified ? null : "Destination bucket-range row set does not match source row set.",
+            };
+        }
+        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        {
+            return new CSharpDbShardMigrationTableResult
+            {
+                TableName = tableName,
+                SourceRows = 0,
+                DestinationRows = 0,
+                RowsCopied = 0,
+                SourceRowsDeleted = 0,
+                Verified = false,
+                Error = ex.Message,
+            };
+        }
+    }
+
+    private async Task<CSharpDbShardMigrationCollectionResult> MigrateBucketRangeCollectionAsync(
+        CSharpDbShardMigrationCollectionManifest manifest,
+        int startBucketInclusive,
+        int endBucketExclusive,
+        ICSharpDbClient sourceClient,
+        ICSharpDbClient destinationClient,
+        bool deleteSourceAfterVerification,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string collectionName = NormalizeRequired(manifest.CollectionName, nameof(manifest.CollectionName));
+        try
+        {
+            IReadOnlyList<CollectionDocument> sourceDocuments =
+                await ReadBucketRangeCollectionDocumentsAsync(
+                    sourceClient,
+                    manifest,
+                    startBucketInclusive,
+                    endBucketExclusive,
+                    pageSize,
+                    ct).ConfigureAwait(false);
+            int copied = 0;
+            foreach (CollectionDocument document in sourceDocuments)
+            {
+                await destinationClient.PutDocumentAsync(collectionName, document.Key, document.Document, ct).ConfigureAwait(false);
+                copied++;
+            }
+
+            IReadOnlyList<CollectionDocument> destinationDocuments =
+                await ReadBucketRangeCollectionDocumentsAsync(
+                    destinationClient,
+                    manifest,
+                    startBucketInclusive,
+                    endBucketExclusive,
+                    pageSize,
+                    ct).ConfigureAwait(false);
+            string sourceChecksum = ComputeCollectionChecksum(sourceDocuments);
+            string destinationChecksum = ComputeCollectionChecksum(destinationDocuments);
+            bool verified = sourceDocuments.Count == destinationDocuments.Count &&
+                            string.Equals(sourceChecksum, destinationChecksum, StringComparison.Ordinal);
+
+            int deleted = 0;
+            if (verified && deleteSourceAfterVerification)
+            {
+                foreach (CollectionDocument document in sourceDocuments)
+                {
+                    if (await sourceClient.DeleteDocumentAsync(collectionName, document.Key, ct).ConfigureAwait(false))
+                        deleted++;
+                }
+            }
+
+            return new CSharpDbShardMigrationCollectionResult
+            {
+                CollectionName = collectionName,
+                SourceDocuments = sourceDocuments.Count,
+                DestinationDocuments = destinationDocuments.Count,
+                DocumentsCopied = copied,
+                SourceDocumentsDeleted = deleted,
+                Verified = verified,
+                SourceChecksum = sourceChecksum,
+                DestinationChecksum = destinationChecksum,
+                Error = verified ? null : "Destination bucket-range document set does not match source document set.",
+            };
+        }
+        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        {
+            return new CSharpDbShardMigrationCollectionResult
+            {
+                CollectionName = collectionName,
+                SourceDocuments = 0,
+                DestinationDocuments = 0,
+                DocumentsCopied = 0,
+                SourceDocumentsDeleted = 0,
+                Verified = false,
+                Error = ex.Message,
+            };
+        }
+    }
+
     private static async Task<RouteTableRows> ReadRouteTableRowsAsync(
         ICSharpDbClient client,
         CSharpDbShardMigrationTableManifest manifest,
@@ -1080,6 +1530,43 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             {
                 Dictionary<string, object?> values = ToRowDictionary(schema, row);
                 if (RouteValueMatches(values[routeColumn.Name], routeKey))
+                    rows.Add(values);
+            }
+
+            if (page >= result.TotalPages || result.Rows.Count == 0)
+                break;
+
+            page++;
+        }
+
+        return new RouteTableRows(schema, routeColumn.Name, primaryKey.Name, rows);
+    }
+
+    private async Task<RouteTableRows> ReadBucketRangeTableRowsAsync(
+        ICSharpDbClient client,
+        CSharpDbShardMigrationTableManifest manifest,
+        int startBucketInclusive,
+        int endBucketExclusive,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string tableName = NormalizeRequired(manifest.TableName, nameof(manifest.TableName));
+        string routeKeyColumn = NormalizeRequired(manifest.RouteKeyColumn, nameof(manifest.RouteKeyColumn));
+        string primaryKeyColumn = NormalizeRequired(manifest.PrimaryKeyColumn, nameof(manifest.PrimaryKeyColumn));
+        TableSchema schema = await client.GetTableSchemaAsync(tableName, ct).ConfigureAwait(false)
+                             ?? throw new CSharpDbClientException($"Table '{tableName}' was not found.");
+
+        ColumnDefinition routeColumn = FindColumn(schema, routeKeyColumn);
+        ColumnDefinition primaryKey = FindColumn(schema, primaryKeyColumn);
+        var rows = new List<Dictionary<string, object?>>();
+        int page = 1;
+        while (true)
+        {
+            TableBrowseResult result = await client.BrowseTableAsync(tableName, page, pageSize, ct).ConfigureAwait(false);
+            foreach (object?[] row in result.Rows)
+            {
+                Dictionary<string, object?> values = ToRowDictionary(schema, row);
+                if (ShouldMoveBucketRangeRouteValue(values[routeColumn.Name], startBucketInclusive, endBucketExclusive))
                     rows.Add(values);
             }
 
@@ -1121,6 +1608,40 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         return documents;
     }
 
+    private async Task<IReadOnlyList<CollectionDocument>> ReadBucketRangeCollectionDocumentsAsync(
+        ICSharpDbClient client,
+        CSharpDbShardMigrationCollectionManifest manifest,
+        int startBucketInclusive,
+        int endBucketExclusive,
+        int pageSize,
+        CancellationToken ct)
+    {
+        string collectionName = NormalizeRequired(manifest.CollectionName, nameof(manifest.CollectionName));
+        string routePropertyName = NormalizeRequired(manifest.RouteKeyPropertyName, nameof(manifest.RouteKeyPropertyName));
+        var documents = new List<CollectionDocument>();
+        int page = 1;
+        while (true)
+        {
+            CollectionBrowseResult result = await client.BrowseCollectionAsync(collectionName, page, pageSize, ct).ConfigureAwait(false);
+            foreach (CollectionDocument document in result.Documents)
+            {
+                if (TryGetDocumentRouteValue(document.Document, routePropertyName, out string? routeKey) &&
+                    routeKey is not null &&
+                    ShouldMoveBucketRangeRouteKey(routeKey, startBucketInclusive, endBucketExclusive))
+                {
+                    documents.Add(document);
+                }
+            }
+
+            if (page >= result.TotalPages || result.Documents.Count == 0)
+                break;
+
+            page++;
+        }
+
+        return documents;
+    }
+
     private CSharpDbShardingOptions BuildExactRouteMigrationOptions(string routeKey, string destinationShardId)
     {
         CSharpDbShardingOptions proposed = CSharpDbShardCatalogStore.CloneOptionsForRuntime(_effectiveOptions);
@@ -1144,6 +1665,38 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         return proposed;
     }
 
+    private CSharpDbShardingOptions BuildBucketRangeMigrationOptions(
+        int startBucketInclusive,
+        int endBucketExclusive,
+        string sourceShardId,
+        string destinationShardId)
+    {
+        CSharpDbShardingOptions proposed = CSharpDbShardCatalogStore.CloneOptionsForRuntime(_effectiveOptions);
+        proposed.MapVersion = _map.MapVersion + 1;
+        proposed.Keyspace = _map.Keyspace;
+
+        string[] bucketOwners = _map.CreateBucketOwnerSnapshot();
+        for (int bucket = startBucketInclusive; bucket < endBucketExclusive; bucket++)
+            bucketOwners[bucket] = destinationShardId;
+
+        proposed.BucketRanges = BuildBucketRanges(bucketOwners);
+        proposed.DirectoryEntries = proposed.DirectoryEntries
+            .Select(entry => ShouldMoveDirectoryEntry(entry, proposed.Keyspace, sourceShardId, startBucketInclusive, endBucketExclusive)
+                ? new CSharpDbShardDirectoryEntry
+                {
+                    DirectoryName = entry.DirectoryName,
+                    LookupKey = entry.LookupKey,
+                    TargetKeyspace = entry.TargetKeyspace,
+                    RouteKey = entry.RouteKey,
+                    ShardId = destinationShardId,
+                    MapVersion = proposed.MapVersion,
+                    State = entry.State,
+                }
+                : entry)
+            .ToArray();
+        return proposed;
+    }
+
     private static bool ShouldMoveDirectoryEntry(
         CSharpDbShardDirectoryEntry entry,
         string keyspace,
@@ -1151,6 +1704,50 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         => string.Equals(entry.TargetKeyspace, keyspace, StringComparison.OrdinalIgnoreCase) &&
            string.Equals(entry.RouteKey, routeKey, StringComparison.Ordinal) &&
            !string.Equals(entry.State, "Deleted", StringComparison.Ordinal);
+
+    private bool ShouldMoveDirectoryEntry(
+        CSharpDbShardDirectoryEntry entry,
+        string keyspace,
+        string sourceShardId,
+        int startBucketInclusive,
+        int endBucketExclusive)
+        => string.Equals(entry.TargetKeyspace, keyspace, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(entry.ShardId, sourceShardId, StringComparison.OrdinalIgnoreCase) &&
+           !string.Equals(entry.State, "Deleted", StringComparison.Ordinal) &&
+           ShouldMoveBucketRangeRouteKey(entry.RouteKey, startBucketInclusive, endBucketExclusive);
+
+    private static CSharpDbShardBucketRange[] BuildBucketRanges(IReadOnlyList<string> bucketOwners)
+    {
+        if (bucketOwners.Count == 0)
+            return [];
+
+        var ranges = new List<CSharpDbShardBucketRange>();
+        int start = 0;
+        string current = bucketOwners[0];
+        for (int bucket = 1; bucket < bucketOwners.Count; bucket++)
+        {
+            if (string.Equals(bucketOwners[bucket], current, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            ranges.Add(new CSharpDbShardBucketRange
+            {
+                StartBucketInclusive = start,
+                EndBucketExclusive = bucket,
+                ShardId = current,
+            });
+            start = bucket;
+            current = bucketOwners[bucket];
+        }
+
+        ranges.Add(new CSharpDbShardBucketRange
+        {
+            StartBucketInclusive = start,
+            EndBucketExclusive = bucketOwners.Count,
+            ShardId = current,
+        });
+
+        return ranges.ToArray();
+    }
 
     private CSharpDbShardMigrationResult CreateMigrationResult(
         string migrationId,
@@ -1193,6 +1790,14 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         CSharpDbShardMigrationResult result,
         CSharpDbShardExactKeyMigrationRequest request,
         CancellationToken ct)
+        => await TryRecordMigrationHistoryAsync(result, "ExactRouteKey", request.Operator, request.Comment, ct).ConfigureAwait(false);
+
+    private async Task TryRecordMigrationHistoryAsync(
+        CSharpDbShardMigrationResult result,
+        string migrationType,
+        string? operatorName,
+        string? comment,
+        CancellationToken ct)
     {
         if (_catalogStore is null || !_catalogStore.CanWrite)
             return;
@@ -1201,7 +1806,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         {
             await _catalogStore.AppendMigrationHistoryAsync(
                 _effectiveOptions,
-                CreateMigrationHistoryEntry(result, request),
+                CreateMigrationHistoryEntry(result, migrationType, operatorName, comment),
                 ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or CSharpDbClientException or CSharpDbClientConfigurationException)
@@ -1217,11 +1822,13 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
 
     private static CSharpDbShardMigrationHistoryEntry CreateMigrationHistoryEntry(
         CSharpDbShardMigrationResult result,
-        CSharpDbShardExactKeyMigrationRequest request)
+        string migrationType,
+        string? operatorName,
+        string? comment)
         => new()
         {
             MigrationId = result.MigrationId,
-            MigrationType = "ExactRouteKey",
+            MigrationType = migrationType,
             StartedUtc = result.StartedUtc,
             CompletedUtc = result.CompletedUtc,
             RecordedUtc = DateTimeOffset.UtcNow,
@@ -1235,8 +1842,8 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             MapVersion = result.MapVersion,
             PendingMapVersion = result.PendingMapVersion,
             RequiresRestart = result.RequiresRestart,
-            Operator = request.Operator,
-            Comment = request.Comment,
+            Operator = operatorName,
+            Comment = comment,
             Tables = result.Tables.Select(CloneMigrationTableResult).ToList(),
             Collections = result.Collections.Select(CloneMigrationCollectionResult).ToList(),
             Issues = result.Issues.Select(CloneIssue).ToList(),
@@ -1391,25 +1998,73 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             : throw new CSharpDbClientException($"Migrated row in table '{tableName}' has a null primary-key value in column '{columnName}'.");
 
     private static bool RouteValueMatches(object? value, string routeKey)
-    {
-        if (value is null)
-            return false;
-        if (value is string text)
-            return string.Equals(text, routeKey, StringComparison.Ordinal);
-        return string.Equals(Convert.ToString(value, CultureInfo.InvariantCulture), routeKey, StringComparison.Ordinal);
-    }
+        => TryGetRouteValue(value, out string? normalized) &&
+           string.Equals(normalized, routeKey, StringComparison.Ordinal);
 
     private static bool DocumentRouteValueMatches(JsonElement document, string routePropertyName, string routeKey)
+        => TryGetDocumentRouteValue(document, routePropertyName, out string? normalized) &&
+           string.Equals(normalized, routeKey, StringComparison.Ordinal);
+
+    private bool ShouldMoveBucketRangeRouteValue(
+        object? value,
+        int startBucketInclusive,
+        int endBucketExclusive)
+        => TryGetRouteValue(value, out string? routeKey) &&
+           routeKey is not null &&
+           ShouldMoveBucketRangeRouteKey(routeKey, startBucketInclusive, endBucketExclusive);
+
+    private bool ShouldMoveBucketRangeRouteKey(
+        string routeKey,
+        int startBucketInclusive,
+        int endBucketExclusive)
     {
+        if (_map.HasExactKeyPin(routeKey))
+            return false;
+
+        int bucket = _map.GetBucket(routeKey);
+        return bucket >= startBucketInclusive && bucket < endBucketExclusive;
+    }
+
+    private static bool TryGetRouteValue(object? value, out string? routeKey)
+    {
+        routeKey = value switch
+        {
+            null => null,
+            string text => text,
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+            _ => value.ToString(),
+        };
+
+        if (string.IsNullOrWhiteSpace(routeKey))
+        {
+            routeKey = null;
+            return false;
+        }
+
+        routeKey = routeKey.Trim();
+        return true;
+    }
+
+    private static bool TryGetDocumentRouteValue(JsonElement document, string routePropertyName, out string? routeKey)
+    {
+        routeKey = null;
         if (document.ValueKind != JsonValueKind.Object ||
             !document.TryGetProperty(routePropertyName, out JsonElement routeValue))
         {
             return false;
         }
 
-        return routeValue.ValueKind == JsonValueKind.String
-            ? string.Equals(routeValue.GetString(), routeKey, StringComparison.Ordinal)
-            : string.Equals(routeValue.ToString(), routeKey, StringComparison.Ordinal);
+        routeKey = routeValue.ValueKind == JsonValueKind.String
+            ? routeValue.GetString()
+            : routeValue.ToString();
+        if (string.IsNullOrWhiteSpace(routeKey))
+        {
+            routeKey = null;
+            return false;
+        }
+
+        routeKey = routeKey.Trim();
+        return true;
     }
 
     private static string ComputeTableChecksum(
@@ -1462,8 +2117,22 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private static string CreateMigrationId(DateTimeOffset startedUtc)
         => $"csdbmig-{startedUtc:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
 
+    private static string FormatBucketRangeRouteKey(int startBucketInclusive, int endBucketExclusive)
+        => $"bucket-range:[{startBucketInclusive},{endBucketExclusive})";
+
     private static string BuildFenceKey(string keyspace, string routeKey)
         => $"{keyspace.Length}:{keyspace}|{routeKey.Length}:{routeKey}";
+
+    private static string BuildBucketRangeFenceKey(string keyspace, int startBucketInclusive, int endBucketExclusive)
+        => $"{keyspace.Length}:{keyspace}|{startBucketInclusive}:{endBucketExclusive}";
+
+    private bool TryAddBucketRangeFence(string fenceKey, BucketRangeFence fence)
+    {
+        if (_bucketRangeFences.Values.Any(existing => existing.Overlaps(fence)))
+            return false;
+
+        return _bucketRangeFences.TryAdd(fenceKey, fence);
+    }
 
     private void ThrowIfRouteFenced(CSharpDbRouteContext routeContext)
     {
@@ -1472,6 +2141,19 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         {
             throw new CSharpDbClientException(
                 $"Route key '{routeKey}' in keyspace '{keyspace}' is fenced by an active shard migration.");
+        }
+
+        if (_map.HasExactKeyPin(routeKey))
+            return;
+
+        int bucket = _map.GetBucket(routeKey);
+        foreach (BucketRangeFence fence in _bucketRangeFences.Values)
+        {
+            if (fence.Contains(keyspace, bucket))
+            {
+                throw new CSharpDbClientException(
+                    $"Route key '{routeKey}' in keyspace '{keyspace}' is fenced by an active shard bucket-range migration.");
+            }
         }
     }
 
@@ -1860,6 +2542,19 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         string RouteKeyColumn,
         string PrimaryKeyColumn,
         List<Dictionary<string, object?>> Rows);
+
+    private sealed record BucketRangeFence(string Keyspace, int StartBucketInclusive, int EndBucketExclusive)
+    {
+        public bool Contains(string keyspace, int bucket)
+            => string.Equals(Keyspace, keyspace, StringComparison.OrdinalIgnoreCase) &&
+               bucket >= StartBucketInclusive &&
+               bucket < EndBucketExclusive;
+
+        public bool Overlaps(BucketRangeFence other)
+            => string.Equals(Keyspace, other.Keyspace, StringComparison.OrdinalIgnoreCase) &&
+               StartBucketInclusive < other.EndBucketExclusive &&
+               other.StartBucketInclusive < EndBucketExclusive;
+    }
 
     private sealed class CSharpDbShardCatalogStore
     {
@@ -2336,6 +3031,37 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             => _shards.TryGetValue(NormalizeShardId(shardId), out CSharpDbShardDefinition? shard)
                 ? shard
                 : throw new CSharpDbClientException($"Shard '{shardId}' is not configured.");
+
+        public bool HasExactKeyPin(string routeKey)
+            => _exactKeyPins.ContainsKey(routeKey);
+
+        public int GetBucket(string routeKey)
+        {
+            ulong token = ComputeRouteToken(new CSharpDbRouteContext { Keyspace = Keyspace, Key = routeKey });
+            return (int)(token % (ulong)VirtualBucketCount);
+        }
+
+        public bool IsValidBucketRange(int startBucketInclusive, int endBucketExclusive)
+            => startBucketInclusive >= 0 &&
+               endBucketExclusive <= VirtualBucketCount &&
+               startBucketInclusive < endBucketExclusive;
+
+        public bool BucketRangeOwnedBy(int startBucketInclusive, int endBucketExclusive, string shardId)
+        {
+            if (!IsValidBucketRange(startBucketInclusive, endBucketExclusive))
+                return false;
+
+            for (int bucket = startBucketInclusive; bucket < endBucketExclusive; bucket++)
+            {
+                if (!string.Equals(_bucketOwners[bucket], shardId, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            return true;
+        }
+
+        public string[] CreateBucketOwnerSnapshot()
+            => _bucketOwners.ToArray();
 
         public CSharpDbShardMapSnapshot ToSnapshot()
             => new()

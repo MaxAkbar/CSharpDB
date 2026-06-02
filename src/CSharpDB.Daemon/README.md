@@ -313,14 +313,20 @@ Catalog update endpoints:
 - gRPC: `GetShardCatalog`, `ValidateShardCatalogUpdate`, and
   `ApplyShardCatalogUpdate`
 
-Controlled resharding starts with exact route-key migration. Operators call
-`POST /api/sharding/migrations/exact-route-key` or the gRPC
-`MigrateExactRouteKey` method with a manifest that names route-owned tables and
-collections. The daemon fences writes for the affected route key, copies the
-manifest data to the destination shard, verifies counts and checksums, and then
-writes a pending exact-key pin to the catalog. Restart the daemon after a
-successful migration to activate the new route. Bucket-range migration and
-automatic SQL ownership inference are not part of this slice.
+Controlled resharding supports exact route-key migration and bucket-range
+movement. Operators call `POST /api/sharding/migrations/exact-route-key` or
+gRPC `MigrateExactRouteKey` for one route key, and
+`POST /api/sharding/migrations/bucket-range` or gRPC `MigrateBucketRange` for a
+virtual-bucket interval. Both paths use a manifest that names route-owned tables
+and collections. The daemon fences affected writes, copies matching manifest
+data to the destination shard, verifies counts and checksums, and then writes a
+pending exact-key pin or bucket map to the catalog. Restart the daemon after a
+successful migration to activate the new route map. Automatic SQL ownership
+inference is not part of this slice.
+
+Bucket-range movement requires the requested buckets to be wholly owned by the
+source shard. Exact route-key pins are left in place and are not moved by bucket
+ownership changes.
 
 Migration history is stored in the same catalog file when catalog writes are
 enabled. Query it with REST `GET /api/sharding/migrations` or gRPC
@@ -440,11 +446,12 @@ validates SQL before fan-out and returns per-shard results without combining
 them into one distributed query result. Catalog mode adds
 `/api/sharding/catalog`, `/api/sharding/catalog/validate`,
 `/api/sharding/catalog/apply`, and `/api/sharding/migrations`; exact-key
-movement uses
-`/api/sharding/migrations/exact-route-key`. These
+movement uses `/api/sharding/migrations/exact-route-key`, and bucket-range
+movement uses `/api/sharding/migrations/bucket-range`. These
 endpoints are for topology, route simulation, health checks, explicit schema
 setup, read-only diagnostics, operator-managed catalog updates, and exact
-route-key migration; they do not enable automatic cross-shard SQL.
+route-key or bucket-range movement; they do not enable automatic cross-shard
+SQL.
 
 Notes:
 

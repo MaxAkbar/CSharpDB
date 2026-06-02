@@ -118,6 +118,14 @@ internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdmin
             GrpcModelMapper.ToModel,
             ct);
 
+    public Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(
+        CSharpDbShardBucketRangeMigrationRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.MigrateBucketRangeAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
     public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
         => CallAsync(
             _client.GetShardMigrationHistoryAsync(EmptyRequest, cancellationToken: ct),

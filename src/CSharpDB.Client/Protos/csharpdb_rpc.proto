@@ -21,6 +21,7 @@ service CSharpDbRpc {
   rpc ValidateShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogValidationResultMessage);
   rpc ApplyShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogApplyResultMessage);
   rpc MigrateExactRouteKey (ShardExactKeyMigrationRequestMessage) returns (ShardMigrationResultMessage);
+  rpc MigrateBucketRange (ShardBucketRangeMigrationRequestMessage) returns (ShardMigrationResultMessage);
   rpc GetShardMigrationHistory (google.protobuf.Empty) returns (ShardMigrationHistoryListResponse);
   rpc GetTableNames (google.protobuf.Empty) returns (StringList);
   rpc GetTableSchema (TableNameRequest) returns (OptionalTableSchemaResponse);
@@ -354,6 +355,20 @@ message ShardExactKeyMigrationRequestMessage {
   bool delete_source_after_verification = 7;
   google.protobuf.StringValue operator = 8;
   google.protobuf.StringValue comment = 9;
+}
+
+message ShardBucketRangeMigrationRequestMessage {
+  string keyspace = 1;
+  string source_shard_id = 2;
+  string destination_shard_id = 3;
+  int32 start_bucket_inclusive = 4;
+  int32 end_bucket_exclusive = 5;
+  ShardMigrationManifestMessage manifest = 6;
+  google.protobuf.Int32Value expected_current_map_version = 7;
+  bool overwrite_destination_rows = 8;
+  bool delete_source_after_verification = 9;
+  google.protobuf.StringValue operator = 10;
+  google.protobuf.StringValue comment = 11;
 }
 
 message ShardMigrationTableResultMessage {

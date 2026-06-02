@@ -323,7 +323,30 @@ IReadOnlyList<CSharpDbShardMigrationHistoryEntry> history =
     await shardAdmin.GetShardMigrationHistoryAsync();
 ```
 
-The first Phase 4 slice does not move bucket ranges or infer ownership from SQL
+Bucket-range movement uses the same manifest shape but moves all unpinned route
+keys whose SHA-256 bucket falls inside the requested range:
+
+```csharp
+CSharpDbShardMigrationResult movedBuckets =
+    await shardAdmin.MigrateBucketRangeAsync(new CSharpDbShardBucketRangeMigrationRequest
+    {
+        Keyspace = "orders_by_month",
+        SourceShardId = "hot-1",
+        DestinationShardId = "archive-1",
+        StartBucketInclusive = 1024,
+        EndBucketExclusive = 1536,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        Operator = "ops",
+        Manifest = manifest,
+    });
+```
+
+Bucket-range movement requires the requested buckets to be wholly owned by the
+source shard. Exact route-key pins are left in place and are not moved by bucket
+ownership changes. A successful move writes a pending bucket map and still
+requires recreating the sharded client or restarting the daemon.
+
+The controlled movement APIs do not infer ownership from arbitrary SQL
 predicates.
 
 V1 intentionally supports single-shard operations only. Cross-shard joins,
