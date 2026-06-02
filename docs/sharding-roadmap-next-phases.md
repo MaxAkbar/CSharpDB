@@ -29,29 +29,51 @@ Default product decisions:
 Goal: make Admin usable against a sharded keyspace without pretending CSharpDB
 supports distributed SQL.
 
+Implemented first slice:
+
+- Added per-tab route context state for Admin tabs.
+- Added a route selector that resolves keyspace plus route key through the
+  shard-admin APIs and stores shard id, bucket, token, and map version on the
+  tab.
+- Added route-bound Admin client creation through `DatabaseClientHolder`.
+- Direct sharded Admin routes through `CSharpDbShardedClient.ForRoute(...)`.
+- Remote HTTP/gRPC Admin can create route-bound clients through
+  `CSharpDbClientOptions.RouteContext`.
+- Query tabs, table/view data tabs, collection tabs, and the shared data grid
+  now use a route-bound `ICSharpDbClient` when a tab route is selected.
+- Existing unsharded Admin behavior remains unchanged when no shard map is
+  available.
+
 Key work:
 
-- Detect sharded connections during Admin startup.
+- Detect sharded connections during Admin startup. (started)
 - Preserve current unsharded behavior exactly.
-- Add per-tab route context to Admin tab state.
-- Add a route selector for keyspace and shard key.
+- Add per-tab route context to Admin tab state. (first slice implemented)
+- Add a route selector for keyspace and shard key. (first slice implemented)
 - Show resolved shard id, bucket, token, and map version for the selected route.
+  (first slice implemented)
 - Make each table/query/collection/form/report tab keep its own route snapshot.
+  (table/query/collection first slice implemented)
 - Add an Admin routing service that returns the correct route-bound
-  `ICSharpDbClient` for the current tab.
-- For direct sharded Admin, use `CSharpDbShardedClient.ForRoute(...)`.
+  `ICSharpDbClient` for the current tab. (first slice implemented)
+- For direct sharded Admin, use `CSharpDbShardedClient.ForRoute(...)`. (first
+  slice implemented)
 - For remote HTTP/gRPC Admin, create or cache route-bound clients with
-  `CSharpDbClientOptions.RouteContext`.
+  `CSharpDbClientOptions.RouteContext`. (first slice implemented)
 - Disable route-required tabs until a route is selected.
-- Label routed tabs clearly as operating on one route.
+- Label routed tabs clearly as operating on one route. (selector badge started)
 - Keep Desktop Admin default behavior unchanged: it still opens one local direct
   database unless explicitly configured for sharding.
+- Add route-aware coverage for forms, reports, pipelines, query designer, import
+  flows, and data-model/drilldown launches.
 
 Important limits:
 
 - `GetInfoAsync()` may remain aggregate/cluster-aware.
-- Table browse, SQL, collections, procedures, forms, reports, pipelines, and
-  query designer run against only the selected route.
+- Table browse, SQL, collections, and procedures run against only the selected
+  route in the first slice.
+- Forms, reports, pipelines, and query designer still need explicit route-aware
+  binding before they are considered fully sharding-ready.
 - No cross-shard query inference from SQL.
 - No automatic tenant discovery in this phase.
 
@@ -115,14 +137,17 @@ First implementation slice:
   giving the future global shard-directory index a persisted metadata home.
 - Admin now shows catalog source, active map, pending map, and recent catalog
   history in the Sharding workspace.
-- Admin UI draft/apply screens remain for a later slice.
+- Admin now has a JSON catalog draft editor in the Sharding workspace. Operators
+  can load a sanitized active or pending map template, validate it, and apply a
+  pending map through the catalog APIs with operator/comment metadata.
 
 Key work:
 
 - Add catalog-backed mode behind configuration. (started)
 - Store keyspace, map versions, shard definitions, bucket ranges, exact-key
   pins, disabled/read-only flags, and change history. (started)
-- Let Admin draft, validate, preview, and apply catalog changes. (backend API started)
+- Let Admin draft, validate, preview, and apply catalog changes. (JSON draft
+  editor first slice implemented)
 - Add operator-managed shard-directory entries for alternate lookup keys that
   must resolve to a route context before data can be queried.
 - Support directory entry states such as `Reserved`, `Active`, `Moving`,
@@ -135,6 +160,15 @@ Key work:
 - Do not silently remap existing data. Bucket ownership changes require either
   a completed migration record or an operator acknowledgement that data has
   already been moved.
+
+Admin limits:
+
+- The Admin draft editor starts from read-only map snapshots, so hidden
+  connection strings, API keys, and directory entries are not round-tripped into
+  the generated template. Operators must review and complete the JSON before
+  applying it.
+- Applying a catalog draft writes a pending map and still requires daemon restart
+  or sharded-client recreation to activate the route change.
 
 Validation requirements:
 
@@ -450,7 +484,8 @@ Release verification:
 
 ## Assumptions
 
-- Phase 1 is the next implementation target.
+- Phase 1 has a first Admin route-aware slice for query/table/collection
+  workflows; broader Admin feature coverage is still open.
 - Admin route context is per-tab.
 - Config-only sharding remains supported after catalog mode exists.
 - Global shard directory indexes are optional. They help locate a route from an

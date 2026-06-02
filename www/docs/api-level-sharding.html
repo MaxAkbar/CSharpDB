@@ -414,9 +414,18 @@ IReadOnlyList&lt;CSharpDbShardStatus&gt; status = await shardAdmin.GetShardStatu
                 </div>
 
                 <h3>Admin Sharding Workspace</h3>
-                <p>CSharpDB Studio includes a Sharding workspace for operator inspection. It shows shard definitions, bucket ranges, exact route-key pins, shard health, catalog state, migration history, and route resolution previews. The workspace is read-only in this slice; catalog edits and migration launch workflows still use the explicit admin APIs.</p>
+                <p>CSharpDB Studio includes a Sharding workspace for operator inspection. It shows shard definitions, bucket ranges, exact route-key pins, shard health, catalog state, migration history, and route resolution previews.</p>
 
                 <p>For local Admin hosting, set <code>CSharpDB:Sharding:Enabled=true</code> with the same shard map used by the daemon. For remote HTTP or gRPC Admin connections, the workspace calls the daemon shard-admin endpoints.</p>
+
+                <h3>Route-Aware Admin Tabs</h3>
+                <p>Query, table/view data, and collection tabs include a route selector when shard-admin APIs are available. Enter the keyspace and application route key, such as <code>orders_by_month</code> and <code>2026-06</code>, then apply the route. The selector resolves and displays the target shard and bucket; the tab stores that route snapshot independently from other open tabs.</p>
+
+                <p>After a route is selected, SQL execution, procedure execution, table browsing, row edits, schema actions, collection browsing, document writes, and exact-key document lookup use a route-bound <code>ICSharpDbClient</code>. Direct sharded Admin uses <code>ForRoute(...)</code>. Remote HTTP and gRPC Admin clients send the selected route through normal route headers or metadata.</p>
+
+                <div class="callout callout-warning">
+                    <strong>Admin routing is still explicit.</strong> The selector does not infer a route from <code>WHERE order_month = ...</code>, a document key, or a table name. Choose the route key first, then run the normal single-shard Admin action. Broader forms, reports, pipelines, and query-designer route binding are planned as follow-up Admin coverage.
+                </div>
 
                 <h3>Read-Only Fan-Out</h3>
                 <p>Use read-only fan-out when an operator needs a per-shard diagnostic view, such as row counts or simple health queries. CSharpDB validates the SQL before routing and rejects DDL/DML statements.</p>
@@ -469,6 +478,8 @@ CSharpDbShardCatalogApplyResult applied =
                 </div>
 
                 <p>Catalog update endpoints are <code>GET /api/sharding/catalog</code>, <code>POST /api/sharding/catalog/validate</code>, and <code>POST /api/sharding/catalog/apply</code>. The gRPC contract exposes <code>GetShardCatalog</code>, <code>ValidateShardCatalogUpdate</code>, and <code>ApplyShardCatalogUpdate</code>. A successful apply returns <code>RequiresRestart = true</code>; restart the daemon or recreate the sharded client to activate the new map.</p>
+
+                <p>CSharpDB Studio's Sharding workspace includes a JSON catalog draft editor for catalog-backed deployments. Operators can load a sanitized active or pending map template, edit the <code>CSharpDbShardingOptions</code> JSON, validate it, and apply a pending map with operator/comment metadata. Because the editor starts from read-only snapshots, hidden connection strings, API keys, and directory entries must be reviewed and supplied explicitly before applying a draft.</p>
 
                 <h3>Controlled Exact-Key Migration</h3>
                 <p>Phase 4 starts with exact route-key migration. The operator provides a manifest that identifies the route-owned tables and collections. CSharpDB fences writes for that route key, copies matching rows/documents to the destination shard, verifies counts and checksums, then writes a pending exact-key pin to the catalog.</p>

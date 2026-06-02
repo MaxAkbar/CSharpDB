@@ -598,6 +598,93 @@ body {
     gap: 6px;
 }
 
+.admin-route-selector {
+    min-height: 28px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.admin-route-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.admin-route-input {
+    width: 150px;
+    min-width: 90px;
+    height: 24px;
+    border: 0;
+    border-left: 1px solid var(--border-color);
+    outline: 0;
+    padding: 0 7px;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.admin-route-input.keyspace {
+    width: 110px;
+}
+
+.admin-route-input:disabled {
+    color: var(--text-muted);
+}
+
+.admin-route-btn {
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.admin-route-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+.admin-route-btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+}
+
+.admin-route-badge {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 7px;
+    border: 1px solid rgba(122, 162, 247, 0.32);
+    border-radius: var(--radius-sm);
+    color: var(--accent-blue);
+    background: rgba(122, 162, 247, 0.1);
+    font-family: var(--font-mono);
+    font-size: 10px;
+}
+
+.admin-route-badge.muted {
+    color: var(--text-muted);
+    border-color: var(--border-color);
+    background: transparent;
+    font-family: var(--font-ui);
+}
+
 /* ═══════════════════════════════════════════════════
    VIEW SWITCHER
    ═══════════════════════════════════════════════════ */
@@ -6663,6 +6750,97 @@ body {
 
 .sharding-table-wrap .schema-table {
     min-width: 760px;
+}
+
+.sharding-catalog-field {
+    min-width: 180px;
+    flex: 0 1 220px;
+}
+
+.sharding-catalog-field.wide {
+    min-width: 280px;
+    flex: 1 1 360px;
+}
+
+.sharding-catalog-editor {
+    min-height: 280px;
+    margin-top: 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.45;
+    resize: vertical;
+}
+
+.sharding-catalog-validation,
+.sharding-catalog-message {
+    margin-top: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+}
+
+.sharding-catalog-validation {
+    padding: 10px;
+}
+
+.sharding-catalog-validation-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.sharding-catalog-issues {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+    list-style: none;
+}
+
+.sharding-catalog-issues li {
+    display: grid;
+    grid-template-columns: minmax(120px, auto) 1fr;
+    gap: 8px;
+    padding: 7px 8px;
+    border-left: 3px solid var(--accent-blue);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.sharding-catalog-issues li.warning {
+    border-left-color: var(--accent-yellow);
+}
+
+.sharding-catalog-issues li.error {
+    border-left-color: var(--accent-red);
+}
+
+.sharding-catalog-issues strong {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.sharding-catalog-message {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.sharding-catalog-message.ok {
+    border-color: rgba(158, 206, 106, 0.35);
+    color: var(--accent-green);
+}
+
+.sharding-catalog-message.error {
+    border-color: rgba(247, 118, 142, 0.4);
+    color: var(--accent-red);
 }
 
 @media (max-width: 1200px) {

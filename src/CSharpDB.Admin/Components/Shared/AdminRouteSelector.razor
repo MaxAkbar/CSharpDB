@@ -1,0 +1,205 @@
+@using System.Globalization
+@inject ICSharpDbShardAdminClient ShardAdmin
+@inject DatabaseClientHolder DbHolder
+@inject ToastService Toast
+
+@if (_loading || _map is not null)
+{
+    <div class="admin-route-selector" title="Route this tab to one sharded database file">
+        <span class="admin-route-label">
+            <i class="bi bi-signpost-split"></i>
+            Route
+        </span>
+        <input class="admin-route-input keyspace"
+               type="text"
+               placeholder="keyspace"
+               value="@_keyspace"
+               @oninput="e => _keyspace = e.Value?.ToString() ?? string.Empty"
+               @onkeydown="HandleKeyDownAsync"
+               disabled="@(_loading || _map is null)" />
+        <input class="admin-route-input"
+               type="text"
+               placeholder="route key"
+               value="@_routeKey"
+               @oninput="e => _routeKey = e.Value?.ToString() ?? string.Empty"
+               @onkeydown="HandleKeyDownAsync"
+               disabled="@(_loading || _map is null)" />
+        <button type="button"
+                class="admin-route-btn"
+                @onclick="ApplyRouteAsync"
+                disabled="@(!CanApplyRoute)"
+                title="Resolve and apply route">
+            <i class="bi bi-check2"></i>
+        </button>
+        @if (Tab?.HasRouteContext == true)
+        {
+            <button type="button"
+                    class="admin-route-btn"
+                    @onclick="ClearRouteAsync"
+                    title="Clear route for this tab">
+                <i class="bi bi-x"></i>
+            </button>
+        }
+        @if (_loading)
+        {
+            <span class="admin-route-badge muted">Loading</span>
+        }
+        else if (_resolution is not null)
+        {
+            <span class="admin-route-badge" title="@FormatResolutionTitle()">
+                @_resolution.ShardId / b@_resolution.Bucket.ToString(CultureInfo.InvariantCulture)
+            </span>
+        }
+        else if (Tab?.RouteShardId is { Length: > 0 } shardId)
+        {
+            <span class="admin-route-badge" title="@FormatTabResolutionTitle()">
+                @shardId
+            </span>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+    [Parameter] public EventCallback<CSharpDbRouteContext?> RouteChanged { get; set; }
+
+    private CSharpDbShardMapSnapshot? _map;
+    private CSharpDbShardResolution? _resolution;
+    private string _keyspace = string.Empty;
+    private string _routeKey = string.Empty;
+    private bool _loading;
+    private bool _initializedFromTab;
+
+    private bool CanApplyRoute
+        => !_loading
+           && _map is not null
+           && !string.IsNullOrWhiteSpace(_keyspace)
+           && !string.IsNullOrWhiteSpace(_routeKey);
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!DbHolder.SupportsShardAdmin)
+            return;
+
+        _loading = true;
+        try
+        {
+            _map = await ShardAdmin.GetShardMapAsync();
+            ApplyTabStateToInputs();
+
+            if (Tab?.HasRouteContext == true)
+                await ResolveCurrentTabRouteAsync(showErrors: false);
+        }
+        catch
+        {
+            _map = null;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_map is null)
+            return;
+
+        ApplyTabStateToInputs();
+    }
+
+    private void ApplyTabStateToInputs()
+    {
+        if (_initializedFromTab)
+            return;
+
+        _keyspace = !string.IsNullOrWhiteSpace(Tab?.RouteKeyspace)
+            ? Tab!.RouteKeyspace!
+            : _map?.Keyspace ?? string.Empty;
+        _routeKey = Tab?.RouteKey ?? string.Empty;
+        _initializedFromTab = true;
+    }
+
+    private async Task ApplyRouteAsync()
+    {
+        if (!CanApplyRoute)
+            return;
+
+        var routeContext = new CSharpDbRouteContext
+        {
+            Keyspace = _keyspace.Trim(),
+            Key = _routeKey.Trim(),
+        };
+
+        try
+        {
+            _resolution = await ShardAdmin.ResolveRouteAsync(routeContext);
+
+            if (Tab is not null)
+            {
+                Tab.RouteKeyspace = _resolution.Keyspace;
+                Tab.RouteKey = _resolution.Key;
+                Tab.RouteShardId = _resolution.ShardId;
+                Tab.RouteBucket = _resolution.Bucket;
+                Tab.RouteMapVersion = _resolution.MapVersion;
+                Tab.RouteToken = _resolution.Token;
+            }
+
+            await RouteChanged.InvokeAsync(routeContext);
+            Toast.Info($"Route key '{_resolution.Key}' resolves to shard '{_resolution.ShardId}'.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to resolve route: {ex.Message}");
+        }
+    }
+
+    private async Task ClearRouteAsync()
+    {
+        Tab?.ClearRouteContext();
+        _resolution = null;
+        _routeKey = string.Empty;
+        _keyspace = _map?.Keyspace ?? string.Empty;
+        _initializedFromTab = true;
+        await RouteChanged.InvokeAsync(null);
+    }
+
+    private async Task ResolveCurrentTabRouteAsync(bool showErrors)
+    {
+        if (Tab?.RouteContext is null)
+            return;
+
+        try
+        {
+            _resolution = await ShardAdmin.ResolveRouteAsync(Tab.RouteContext);
+            Tab.RouteKeyspace = _resolution.Keyspace;
+            Tab.RouteKey = _resolution.Key;
+            Tab.RouteShardId = _resolution.ShardId;
+            Tab.RouteBucket = _resolution.Bucket;
+            Tab.RouteMapVersion = _resolution.MapVersion;
+            Tab.RouteToken = _resolution.Token;
+        }
+        catch (Exception ex)
+        {
+            if (showErrors)
+                Toast.Error($"Failed to resolve route: {ex.Message}");
+        }
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await ApplyRouteAsync();
+    }
+
+    private string FormatResolutionTitle()
+        => _resolution is null
+            ? string.Empty
+            : $"keyspace={_resolution.Keyspace}, key={_resolution.Key}, shard={_resolution.ShardId}, bucket={_resolution.Bucket}, token=0x{_resolution.Token:X16}, map={_resolution.MapVersion}";
+
+    private string FormatTabResolutionTitle()
+        => $"keyspace={Tab?.RouteKeyspace}, key={Tab?.RouteKey}, shard={Tab?.RouteShardId}, bucket={Tab?.RouteBucket}, token={FormatTabToken()}, map={Tab?.RouteMapVersion}";
+
+    private string FormatTabToken()
+        => Tab?.RouteToken is ulong token ? $"0x{token:X16}" : "-";
+}

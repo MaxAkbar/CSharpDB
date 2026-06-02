@@ -1,9 +1,11 @@
 @using System.Text.Json
 @inject ICSharpDbClient DbClient
+@inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
 @inject ToastService Toast
 @inject ModalService Modal
+@implements IAsyncDisposable
 
 <div class="data-tab collection-tab">
     <div class="data-toolbar">
@@ -15,6 +17,8 @@
             <span>/</span>
             <strong><i class="bi bi-braces icon-view"></i>@CollectionName</strong>
         </div>
+
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
 
         <div class="data-toolbar-group">
             <button type="button" class="data-toolbar-btn" @onclick="RefreshAsync" disabled="@_loading">
@@ -167,7 +171,13 @@
     [Parameter] public string CollectionName { get; set; } = string.Empty;
 
     private readonly List<CollectionDocument> _documents = new();
+    private ICSharpDbClient? _routeClient;
+    private string? _routeClientKeyspace;
+    private string? _routeClientKey;
+    private ICSharpDbClient ActiveClient => _routeClient ?? DbClient;
     private string? _loadedCollectionName;
+    private string? _loadedRouteKeyspace;
+    private string? _loadedRouteKey;
     private string? _selectedKey;
     private string _editorKey = string.Empty;
     private string _editorJson = string.Empty;
@@ -192,8 +202,12 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        bool routeChanged = IsTabRouteChanged();
+        await EnsureRouteClientAsync();
+
         bool startNewDocument = Tab?.State.Remove("StartNewDocument") == true;
-        if (string.Equals(_loadedCollectionName, CollectionName, StringComparison.Ordinal))
+        if (string.Equals(_loadedCollectionName, CollectionName, StringComparison.Ordinal)
+            && !routeChanged)
         {
             if (startNewDocument)
                 await StartNewDocumentAsync();
@@ -201,12 +215,63 @@
         }
 
         _loadedCollectionName = CollectionName;
+        _loadedRouteKeyspace = Tab?.RouteKeyspace;
+        _loadedRouteKey = Tab?.RouteKey;
         _page = 1;
         ClearEditor();
         await LoadPageAsync();
 
         if (startNewDocument)
             await StartNewDocumentAsync();
+    }
+
+    private bool IsTabRouteChanged()
+        => !string.Equals(_loadedRouteKeyspace, Tab?.RouteKeyspace, StringComparison.Ordinal)
+           || !string.Equals(_loadedRouteKey, Tab?.RouteKey, StringComparison.Ordinal);
+
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        await EnsureRouteClientAsync();
+        _loadedRouteKeyspace = Tab?.RouteKeyspace;
+        _loadedRouteKey = Tab?.RouteKey;
+        _page = 1;
+        ClearEditor();
+        await LoadPageAsync();
+        StateHasChanged();
+    }
+
+    private async Task EnsureRouteClientAsync()
+    {
+        CSharpDbRouteContext? route = Tab?.RouteContext;
+        if (route is null)
+        {
+            await DisposeRouteClientAsync();
+            return;
+        }
+
+        if (_routeClient is not null
+            && string.Equals(_routeClientKeyspace, route.Keyspace, StringComparison.Ordinal)
+            && string.Equals(_routeClientKey, route.Key, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await DisposeRouteClientAsync();
+        _routeClient = DbHolder.CreateRouteBoundClient(route);
+        _routeClientKeyspace = route.Keyspace;
+        _routeClientKey = route.Key;
+    }
+
+    private async ValueTask DisposeRouteClientAsync()
+    {
+        if (_routeClient is null)
+            return;
+
+        ICSharpDbClient routeClient = _routeClient;
+        _routeClient = null;
+        _routeClientKeyspace = null;
+        _routeClientKey = null;
+        await routeClient.DisposeAsync();
     }
 
     private async Task RefreshAsync()
@@ -260,7 +325,7 @@
         _error = null;
         try
         {
-            var result = await DbClient.BrowseCollectionAsync(CollectionName, _page, _pageSize);
+            var result = await ActiveClient.BrowseCollectionAsync(CollectionName, _page, _pageSize);
             _totalCount = result.TotalCount;
             _documents.Clear();
             _documents.AddRange(result.Documents);
@@ -268,7 +333,7 @@
             if (_page > TotalPages)
             {
                 _page = TotalPages;
-                result = await DbClient.BrowseCollectionAsync(CollectionName, _page, _pageSize);
+                result = await ActiveClient.BrowseCollectionAsync(CollectionName, _page, _pageSize);
                 _totalCount = result.TotalCount;
                 _documents.Clear();
                 _documents.AddRange(result.Documents);
@@ -346,7 +411,7 @@
 
         try
         {
-            await DbClient.PutDocumentAsync(CollectionName, key, document);
+            await ActiveClient.PutDocumentAsync(CollectionName, key, document);
             Toast.Success($"Saved document '{key}'.");
             Changes.NotifyChanged();
             _selectedKey = key;
@@ -376,7 +441,7 @@
 
         try
         {
-            bool deleted = await DbClient.DeleteDocumentAsync(CollectionName, key);
+            bool deleted = await ActiveClient.DeleteDocumentAsync(CollectionName, key);
             if (deleted)
             {
                 Toast.Success($"Deleted document '{key}'.");
@@ -422,7 +487,7 @@
         string key = _lookupKey.Trim();
         try
         {
-            JsonElement? document = await DbClient.GetDocumentAsync(CollectionName, key);
+            JsonElement? document = await ActiveClient.GetDocumentAsync(CollectionName, key);
             if (document is null)
             {
                 Toast.Info($"Document '{key}' was not found.");
@@ -506,5 +571,10 @@
         int first = ((_page - 1) * _pageSize) + 1;
         int last = Math.Min(_totalCount, first + _documents.Count - 1);
         return $"{first}-{last} of {_totalCount}";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await DisposeRouteClientAsync();
     }
 }

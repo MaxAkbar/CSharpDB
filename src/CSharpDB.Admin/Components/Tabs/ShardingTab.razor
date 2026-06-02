@@ -1,4 +1,6 @@
 @using System.Globalization
+@using System.Text.Json
+@using System.Text.Json.Serialization
 @inject ICSharpDbShardAdminClient ShardAdmin
 @inject DatabaseClientHolder DbHolder
 @inject ToastService Toast
@@ -267,6 +269,100 @@
                                     </table>
                                 </div>
                             }
+
+                            <div class="storage-subsection">
+                                <h4>Catalog Draft</h4>
+                                <p class="schema-empty">
+                                    Load a sanitized map template, edit the JSON, validate it, then apply it as a pending catalog map.
+                                    Hidden connection strings, API keys, and directory entries are not recoverable from the read-only snapshot; review the draft before applying.
+                                </p>
+
+                                <div class="storage-action-row">
+                                    <button class="toolbar-btn" @onclick="LoadActiveCatalogDraft" disabled="@(_catalog is null || _validatingCatalog || _applyingCatalog)">
+                                        <i class="bi bi-file-earmark-code"></i> Load Active Template
+                                    </button>
+                                    @if (_catalog?.PendingMap is not null)
+                                    {
+                                        <button class="toolbar-btn" @onclick="LoadPendingCatalogDraft" disabled="@(_validatingCatalog || _applyingCatalog)">
+                                            <i class="bi bi-file-diff"></i> Load Pending Template
+                                        </button>
+                                    }
+                                    <button class="toolbar-btn" @onclick="ValidateCatalogDraftAsync" disabled="@(!CanValidateCatalogDraft)">
+                                        <i class="bi bi-check2-circle"></i> Validate
+                                    </button>
+                                    <button class="toolbar-btn primary" @onclick="ApplyCatalogDraftAsync" disabled="@(!CanApplyCatalogDraft)">
+                                        <i class="bi bi-journal-check"></i> Apply Pending Map
+                                    </button>
+                                </div>
+
+                                <div class="storage-action-row">
+                                    <label class="schema-field sharding-catalog-field">
+                                        <span>Operator</span>
+                                        <input class="schema-input" @bind="_catalogOperator" @bind:event="oninput" placeholder="operator name" />
+                                    </label>
+                                    <label class="schema-field sharding-catalog-field wide">
+                                        <span>Comment</span>
+                                        <input class="schema-input" @bind="_catalogComment" @bind:event="oninput" placeholder="why this map is changing" />
+                                    </label>
+                                    <label class="storage-check">
+                                        <input type="checkbox" @bind="_catalogAllowMetadataOnlyOwnershipChange" />
+                                        <span>Acknowledge metadata-only ownership change</span>
+                                    </label>
+                                </div>
+
+                                <textarea class="schema-textarea sharding-catalog-editor"
+                                          spellcheck="false"
+                                          @bind="_catalogDraftJson"
+                                          @bind:event="oninput"
+                                          placeholder="Load a template or paste CSharpDbShardingOptions JSON..."></textarea>
+
+                                @if (!string.IsNullOrWhiteSpace(_catalogDraftError))
+                                {
+                                    <div class="sharding-catalog-message error">
+                                        <i class="bi bi-exclamation-triangle"></i>
+                                        <span>@_catalogDraftError</span>
+                                    </div>
+                                }
+
+                                @if (_catalogValidation is not null)
+                                {
+                                    <div class="sharding-catalog-validation">
+                                        <div class="sharding-catalog-validation-head">
+                                            <span class="storage-badge @(_catalogValidation.IsValid ? "storage-badge-info" : "storage-badge-error")">
+                                                @(_catalogValidation.IsValid ? "Valid" : "Invalid")
+                                            </span>
+                                            @if (_catalogValidation.RequiresDataMigration)
+                                            {
+                                                <span class="storage-badge storage-badge-warning">Ownership change</span>
+                                            }
+                                            @if (_catalogValidation.Preview is not null)
+                                            {
+                                                <span>Preview map @_catalogValidation.Preview.MapVersion for @_catalogValidation.Preview.Keyspace</span>
+                                            }
+                                        </div>
+                                        @if (_catalogValidation.Issues.Count > 0)
+                                        {
+                                            <ul class="sharding-catalog-issues">
+                                                @foreach (CSharpDbShardCatalogIssue issue in _catalogValidation.Issues)
+                                                {
+                                                    <li class="@GetCatalogIssueClass(issue)">
+                                                        <strong>@issue.Code</strong>
+                                                        <span>@issue.Message</span>
+                                                    </li>
+                                                }
+                                            </ul>
+                                        }
+                                    </div>
+                                }
+
+                                @if (_catalogApply is not null)
+                                {
+                                    <div class="sharding-catalog-message @(_catalogApply.Applied ? "ok" : "error")">
+                                        <i class="bi @(_catalogApply.Applied ? "bi-check-circle" : "bi-exclamation-triangle")"></i>
+                                        <span>@_catalogApply.Message</span>
+                                    </div>
+                                }
+                            </div>
                         }
                     </section>
 
@@ -319,11 +415,34 @@
     private IReadOnlyList<CSharpDbShardStatus> _statuses = [];
     private IReadOnlyList<CSharpDbShardMigrationHistoryEntry> _migrationHistory = [];
     private CSharpDbShardResolution? _resolution;
+    private CSharpDbShardCatalogValidationResult? _catalogValidation;
+    private CSharpDbShardCatalogApplyResult? _catalogApply;
     private string _routeKeyspace = string.Empty;
     private string _routeKey = string.Empty;
+    private string _catalogDraftJson = string.Empty;
+    private string _catalogOperator = Environment.UserName;
+    private string _catalogComment = string.Empty;
+    private string? _catalogDraftError;
     private string? _loadError;
     private bool _loading;
     private bool _resolving;
+    private bool _validatingCatalog;
+    private bool _applyingCatalog;
+    private bool _catalogAllowMetadataOnlyOwnershipChange;
+
+    private static readonly JsonSerializerOptions s_shardingJsonOptions = CreateShardingJsonOptions();
+
+    private bool CanValidateCatalogDraft
+        => _catalog is not null
+           && !_validatingCatalog
+           && !_applyingCatalog
+           && !string.IsNullOrWhiteSpace(_catalogDraftJson);
+
+    private bool CanApplyCatalogDraft
+        => _catalog?.IsWritable == true
+           && !_validatingCatalog
+           && !_applyingCatalog
+           && !string.IsNullOrWhiteSpace(_catalogDraftJson);
 
     protected override async Task OnInitializedAsync()
     {
@@ -355,6 +474,145 @@
         finally
         {
             _loading = false;
+        }
+    }
+
+    private void LoadActiveCatalogDraft()
+    {
+        if (_catalog is null)
+            return;
+
+        CSharpDbShardingOptions options = CreateDraftOptions(_catalog.ActiveMap, _catalog.ActiveMap.MapVersion + 1);
+        SetCatalogDraft(options);
+    }
+
+    private void LoadPendingCatalogDraft()
+    {
+        if (_catalog?.PendingMap is null)
+            return;
+
+        CSharpDbShardingOptions options = CreateDraftOptions(_catalog.PendingMap, _catalog.PendingMap.MapVersion);
+        SetCatalogDraft(options);
+    }
+
+    private void SetCatalogDraft(CSharpDbShardingOptions options)
+    {
+        _catalogDraftJson = JsonSerializer.Serialize(options, s_shardingJsonOptions);
+        _catalogDraftError = null;
+        _catalogValidation = null;
+        _catalogApply = null;
+    }
+
+    private async Task ValidateCatalogDraftAsync()
+    {
+        _catalogValidation = await ValidateCatalogDraftCoreAsync();
+    }
+
+    private async Task ApplyCatalogDraftAsync()
+    {
+        if (_catalog?.IsWritable != true)
+        {
+            Toast.Warning("Shard catalog is read-only for this connection.");
+            return;
+        }
+
+        CSharpDbShardingOptions? options = ReadCatalogDraftOptions();
+        if (options is null)
+            return;
+
+        _applyingCatalog = true;
+        _catalogApply = null;
+        try
+        {
+            _catalogApply = await ShardAdmin.ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+            {
+                Options = options,
+                ExpectedCurrentMapVersion = _map?.MapVersion,
+                AllowMetadataOnlyOwnershipChange = _catalogAllowMetadataOnlyOwnershipChange,
+                Operator = NormalizeOptional(_catalogOperator),
+                Comment = NormalizeOptional(_catalogComment),
+            });
+            _catalogValidation = _catalogApply.Validation;
+
+            if (_catalogApply.Applied)
+            {
+                Toast.Success(_catalogApply.Message);
+                await RefreshAsync();
+            }
+            else
+            {
+                Toast.Warning(_catalogApply.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            _catalogDraftError = ex.Message;
+            Toast.Error($"Catalog apply failed: {ex.Message}");
+        }
+        finally
+        {
+            _applyingCatalog = false;
+        }
+    }
+
+    private async Task<CSharpDbShardCatalogValidationResult?> ValidateCatalogDraftCoreAsync()
+    {
+        CSharpDbShardingOptions? options = ReadCatalogDraftOptions();
+        if (options is null)
+            return null;
+
+        _validatingCatalog = true;
+        _catalogApply = null;
+        try
+        {
+            CSharpDbShardCatalogValidationResult validation = await ShardAdmin.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+            {
+                Options = options,
+                ExpectedCurrentMapVersion = _map?.MapVersion,
+                AllowMetadataOnlyOwnershipChange = _catalogAllowMetadataOnlyOwnershipChange,
+                Operator = NormalizeOptional(_catalogOperator),
+                Comment = NormalizeOptional(_catalogComment),
+            });
+
+            if (validation.IsValid)
+                Toast.Success("Catalog draft is valid.");
+            else
+                Toast.Warning("Catalog draft has validation issues.");
+
+            return validation;
+        }
+        catch (Exception ex)
+        {
+            _catalogDraftError = ex.Message;
+            Toast.Error($"Catalog validation failed: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            _validatingCatalog = false;
+        }
+    }
+
+    private CSharpDbShardingOptions? ReadCatalogDraftOptions()
+    {
+        _catalogDraftError = null;
+        try
+        {
+            CSharpDbShardingOptions? options = JsonSerializer.Deserialize<CSharpDbShardingOptions>(_catalogDraftJson, s_shardingJsonOptions);
+            if (options is null)
+            {
+                _catalogDraftError = "Catalog draft JSON was empty.";
+                return null;
+            }
+
+            return options;
+        }
+        catch (Exception ex)
+        {
+            _catalogDraftError = $"Invalid catalog draft JSON: {ex.Message}";
+            _catalogValidation = null;
+            _catalogApply = null;
+            return null;
         }
     }
 
@@ -474,4 +732,74 @@
             : migration.RequiresOperatorRecovery
                 ? "storage-badge storage-badge-warning"
                 : "storage-badge storage-badge-error";
+
+    private static string GetCatalogIssueClass(CSharpDbShardCatalogIssue issue)
+        => issue.Severity switch
+        {
+            CSharpDbShardCatalogIssueSeverity.Error => "error",
+            CSharpDbShardCatalogIssueSeverity.Warning => "warning",
+            _ => "info",
+        };
+
+    private static CSharpDbShardingOptions CreateDraftOptions(
+        CSharpDbShardMapSnapshot map,
+        int mapVersion)
+    {
+        return new CSharpDbShardingOptions
+        {
+            Enabled = true,
+            Keyspace = map.Keyspace,
+            MapVersion = Math.Max(1, mapVersion),
+            VirtualBucketCount = map.VirtualBucketCount,
+            Shards = map.Shards.Select(CreateDraftShard).ToArray(),
+            BucketRanges = map.BucketRanges.Select(static range => new CSharpDbShardBucketRange
+            {
+                StartBucketInclusive = range.StartBucketInclusive,
+                EndBucketExclusive = range.EndBucketExclusive,
+                ShardId = range.ShardId,
+            }).ToArray(),
+            ExactKeyPins = new Dictionary<string, string>(map.ExactKeyPins, StringComparer.Ordinal),
+            Directories = map.Directories.Select(static directory => new CSharpDbShardDirectoryDefinition
+            {
+                DirectoryName = directory.DirectoryName,
+                TargetKeyspace = directory.TargetKeyspace,
+                Description = directory.Description,
+                ReadOnly = directory.ReadOnly,
+                EntryCount = directory.EntryCount,
+            }).ToArray(),
+            DirectoryEntries = [],
+        };
+    }
+
+    private static CSharpDbShardDefinition CreateDraftShard(CSharpDbShardDefinitionSnapshot shard)
+        => new()
+        {
+            ShardId = shard.ShardId,
+            Enabled = shard.Enabled,
+            Role = shard.Role,
+            PrimaryShardId = shard.PrimaryShardId,
+            PromotionEligible = shard.PromotionEligible,
+            ReplicationLagBytes = shard.ReplicationLagBytes,
+            LastReplicatedUtc = shard.LastReplicatedUtc,
+            Transport = shard.Transport,
+            Endpoint = shard.Endpoint,
+            DataSource = shard.DataSource,
+            ApiKeyHeaderName = shard.ApiKeyHeaderName,
+        };
+
+    private static string? NormalizeOptional(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static JsonSerializerOptions CreateShardingJsonOptions()
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        };
+        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        return options;
+    }
 }

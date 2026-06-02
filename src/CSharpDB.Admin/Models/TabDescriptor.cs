@@ -1,3 +1,5 @@
+using CSharpDB.Client;
+
 namespace CSharpDB.Admin.Models;
 
 public enum TabKind
@@ -163,5 +165,101 @@ public sealed class TabDescriptor
     {
         get => State.TryGetValue("ReportDesignerStateJson", out var v) ? v as string : null;
         set => State["ReportDesignerStateJson"] = value;
+    }
+
+    public string? RouteKeyspace
+    {
+        get => State.TryGetValue("RouteKeyspace", out var v) ? v as string : null;
+        set => SetOptionalState("RouteKeyspace", value);
+    }
+
+    public string? RouteKey
+    {
+        get => State.TryGetValue("RouteKey", out var v) ? v as string : null;
+        set => SetOptionalState("RouteKey", value);
+    }
+
+    public string? RouteShardId
+    {
+        get => State.TryGetValue("RouteShardId", out var v) ? v as string : null;
+        set => SetOptionalState("RouteShardId", value);
+    }
+
+    public int? RouteBucket
+    {
+        get => TryGetIntState("RouteBucket");
+        set => SetOptionalState("RouteBucket", value);
+    }
+
+    public int? RouteMapVersion
+    {
+        get => TryGetIntState("RouteMapVersion");
+        set => SetOptionalState("RouteMapVersion", value);
+    }
+
+    public ulong? RouteToken
+    {
+        get => TryGetUlongState("RouteToken");
+        set => SetOptionalState("RouteToken", value);
+    }
+
+    public bool HasRouteContext
+        => !string.IsNullOrWhiteSpace(RouteKeyspace)
+           && !string.IsNullOrWhiteSpace(RouteKey);
+
+    public CSharpDbRouteContext? RouteContext
+        => HasRouteContext
+            ? new CSharpDbRouteContext
+            {
+                Keyspace = RouteKeyspace!,
+                Key = RouteKey!,
+            }
+            : null;
+
+    public void ClearRouteContext()
+    {
+        State.Remove("RouteKeyspace");
+        State.Remove("RouteKey");
+        State.Remove("RouteShardId");
+        State.Remove("RouteBucket");
+        State.Remove("RouteMapVersion");
+        State.Remove("RouteToken");
+    }
+
+    private int? TryGetIntState(string key)
+    {
+        if (!State.TryGetValue(key, out var value))
+            return null;
+
+        return value switch
+        {
+            int intValue => intValue,
+            long longValue when longValue >= int.MinValue && longValue <= int.MaxValue => (int)longValue,
+            _ => null,
+        };
+    }
+
+    private void SetOptionalState(string key, object? value)
+    {
+        if (value is null || value is string text && string.IsNullOrWhiteSpace(text))
+        {
+            State.Remove(key);
+            return;
+        }
+
+        State[key] = value;
+    }
+
+    private ulong? TryGetUlongState(string key)
+    {
+        if (!State.TryGetValue(key, out var value))
+            return null;
+
+        return value switch
+        {
+            ulong ulongValue => ulongValue,
+            long longValue when longValue >= 0 => (ulong)longValue,
+            _ => null,
+        };
     }
 }

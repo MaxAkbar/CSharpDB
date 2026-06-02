@@ -43,12 +43,12 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
     if (shardingOptions.Enabled)
     {
         CSharpDbShardedClient shardedClient = CSharpDbShardedClient.Create(shardingOptions);
-        return new DatabaseClientHolder(shardedClient, shardedClient, hostDatabaseOptions, functions);
+        return new DatabaseClientHolder(shardedClient, shardedClient, null, hostDatabaseOptions, functions);
     }
 
     ICSharpDbClient client = CSharpDbClient.Create(options);
     ICSharpDbShardAdminClient? shardAdmin = TryCreateShardAdmin(options);
-    return new DatabaseClientHolder(client, shardAdmin, hostDatabaseOptions, functions);
+    return new DatabaseClientHolder(client, shardAdmin, options, hostDatabaseOptions, functions);
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());

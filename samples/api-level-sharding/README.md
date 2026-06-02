@@ -230,6 +230,22 @@ months are read, how much data is fetched, and how pages are filled. The
 read-only fan-out helper returns per-shard results and leaves any merge, rollup,
 or presentation decision to the caller.
 
+## Trying The Same Routes In Admin
+
+When CSharpDB Studio is configured with the same shard map, the Query, table
+data, and collection tabs show a route selector. Enter:
+
+```text
+keyspace: orders_by_month
+route key: 2026-06
+```
+
+Then run the same order-history SQL for June. To inspect older history, change
+only the route key to `2026-05` and keep the SQL filtered by
+`order_month = '2026-05'`. Admin does not infer the shard from the `WHERE`
+clause; the selected route controls the database file, and the SQL predicate
+controls the rows inside that file.
+
 ## Operational Notes
 
 This is API-level routing, not distributed SQL. A normal request supplies one application-owned route key and lands on one shard. V1 does not infer the shard from arbitrary `WHERE` clauses, run cross-shard joins, move data automatically when bucket ownership changes, or coordinate cross-shard transactions.

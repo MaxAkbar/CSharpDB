@@ -16,6 +16,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
 {
     private ICSharpDbClient _inner;
     private ICSharpDbShardAdminClient? _shardAdmin;
+    private CSharpDbClientOptions? _baseClientOptions;
     private readonly AdminHostDatabaseOptions _hostDatabaseOptions;
     private readonly DbFunctionRegistry _functions;
     private readonly object _lock = new();
@@ -25,19 +26,21 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     public DatabaseClientHolder(
         ICSharpDbClient initial,
         ICSharpDbShardAdminClient? shardAdmin,
+        CSharpDbClientOptions? baseClientOptions,
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry functions)
     {
         _inner = initial;
         _shardAdmin = shardAdmin;
+        _baseClientOptions = baseClientOptions;
         _hostDatabaseOptions = hostDatabaseOptions;
         _functions = functions;
     }
 
     public async Task SwitchAsync(string databasePath)
     {
-        var newClient = CSharpDbClient.Create(
-            AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions));
+        CSharpDbClientOptions newOptions = AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions);
+        var newClient = CSharpDbClient.Create(newOptions);
 
         // Verify the new database is accessible before swapping.
         await newClient.GetInfoAsync();
@@ -50,6 +53,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
             oldShardAdmin = _shardAdmin;
             _inner = newClient;
             _shardAdmin = null;
+            _baseClientOptions = newOptions;
         }
 
         if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
@@ -63,8 +67,34 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
 
     public string DataSource => _inner.DataSource;
     public bool SupportsShardAdmin => _shardAdmin is not null;
+    public bool SupportsRouteBoundClients
+        => _inner is CSharpDbShardedClient || _baseClientOptions is not null;
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
+
+    public ICSharpDbClient CreateRouteBoundClient(CSharpDbRouteContext routeContext)
+    {
+        ArgumentNullException.ThrowIfNull(routeContext);
+
+        ICSharpDbClient inner;
+        CSharpDbClientOptions? baseClientOptions;
+        lock (_lock)
+        {
+            inner = _inner;
+            baseClientOptions = _baseClientOptions;
+        }
+
+        if (inner is CSharpDbShardedClient shardedClient)
+            return shardedClient.ForRoute(routeContext);
+
+        if (baseClientOptions is null)
+        {
+            throw new CSharpDbClientConfigurationException(
+                "The current CSharpDB connection cannot create a route-bound Admin client.");
+        }
+
+        return CSharpDbClient.Create(CloneOptionsWithRoute(baseClientOptions, routeContext));
+    }
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
     public Task<IReadOnlyList<string>> GetTableNamesAsync(CancellationToken ct = default) => _inner.GetTableNamesAsync(ct);
@@ -186,6 +216,25 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     private ICSharpDbShardAdminClient RequireShardAdmin()
         => _shardAdmin
             ?? throw new CSharpDbClientConfigurationException("The current CSharpDB connection does not expose shard-admin APIs.");
+
+    private static CSharpDbClientOptions CloneOptionsWithRoute(
+        CSharpDbClientOptions options,
+        CSharpDbRouteContext routeContext)
+    {
+        return new CSharpDbClientOptions
+        {
+            Transport = options.Transport,
+            Endpoint = options.Endpoint,
+            ConnectionString = options.ConnectionString,
+            DataSource = options.DataSource,
+            HttpClient = options.HttpClient,
+            ApiKey = options.ApiKey,
+            ApiKeyHeaderName = options.ApiKeyHeaderName,
+            RouteContext = routeContext,
+            DirectDatabaseOptions = options.DirectDatabaseOptions,
+            HybridDatabaseOptions = options.HybridDatabaseOptions,
+        };
+    }
 
     public async ValueTask DisposeAsync()
     {
