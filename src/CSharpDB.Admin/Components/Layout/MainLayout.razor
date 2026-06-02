@@ -63,6 +63,9 @@
                                 <PipelineTab @key="tab.Id"
                                              Tab="tab" />
                                 break;
+                            case TabKind.Sharding:
+                                <ShardingTab @key="tab.Id" />
+                                break;
                             case TabKind.Storage:
                                 <StorageTab @key="tab.Id" />
                                 break;

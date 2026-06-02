@@ -1765,7 +1765,9 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         List<CSharpDbShardMigrationCollectionResult> collectionResults,
         List<CSharpDbShardCatalogIssue> issues,
         CSharpDbShardCatalogApplyResult? catalogApplyResult)
-        => new()
+    {
+        string? recoveryAction = GetMigrationRecoveryAction(status);
+        return new()
         {
             MigrationId = migrationId,
             StartedUtc = startedUtc,
@@ -1780,10 +1782,25 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             MapVersion = _map.MapVersion,
             PendingMapVersion = pendingMapVersion,
             RequiresRestart = requiresRestart,
+            RequiresOperatorRecovery = recoveryAction is not null,
+            RecoveryAction = recoveryAction,
             Tables = tableResults,
             Collections = collectionResults,
             Issues = issues,
             CatalogApplyResult = catalogApplyResult,
+        };
+    }
+
+    private static string? GetMigrationRecoveryAction(string status)
+        => status switch
+        {
+            "VerificationFailed" =>
+                "Data was copied but verification failed. Inspect row/document counts and checksums, repair source or destination data, then rerun the migration. The active shard map was left unchanged.",
+            "CatalogApplyFailed" =>
+                "Data was verified but the catalog update failed. Fix the catalog validation or write issue, then rerun the migration or apply a metadata-only ownership change after confirming destination data.",
+            "Failed" =>
+                "The migration stopped before completion. Inspect issue details, clean up or overwrite partial destination data, then rerun the same manifest. The active shard map was left unchanged.",
+            _ => null,
         };
 
     private async Task TryRecordMigrationHistoryAsync(
@@ -1842,6 +1859,8 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             MapVersion = result.MapVersion,
             PendingMapVersion = result.PendingMapVersion,
             RequiresRestart = result.RequiresRestart,
+            RequiresOperatorRecovery = result.RequiresOperatorRecovery,
+            RecoveryAction = result.RecoveryAction,
             Operator = operatorName,
             Comment = comment,
             Tables = result.Tables.Select(CloneMigrationTableResult).ToList(),
@@ -2838,6 +2857,8 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 MapVersion = entry.MapVersion,
                 PendingMapVersion = entry.PendingMapVersion,
                 RequiresRestart = entry.RequiresRestart,
+                RequiresOperatorRecovery = entry.RequiresOperatorRecovery,
+                RecoveryAction = entry.RecoveryAction,
                 Operator = entry.Operator,
                 Comment = entry.Comment,
                 Tables = entry.Tables.Select(CloneMigrationTableResult).ToList(),

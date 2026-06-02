@@ -52,7 +52,7 @@
                 <div class="tree-group-header compact">
                     <i class="bi bi-tools icon-system"></i>
                     <span>Tools</span>
-                    <span class="group-count">4</span>
+                    <span class="group-count">5</span>
                 </div>
                 <div class="tree-items">
                     <button class="tree-item command-item @(IsActiveCompareDeploy() ? "active" : "")"
@@ -72,6 +72,12 @@
                         <i class="bi bi-diagram-3 icon-view"></i>
                         <span class="item-label">Data Model</span>
                         <span class="item-hint">visual schema</span>
+                    </button>
+                    <button class="tree-item command-item @(IsActiveSharding() ? "active" : "")"
+                            @onclick="() => TabManager.OpenShardingTab()">
+                        <i class="bi bi-hdd-network icon-system"></i>
+                        <span class="item-label">Sharding</span>
+                        <span class="item-hint">routes and status</span>
                     </button>
                     <button class="tree-item command-item @(IsActiveImportExport() ? "active" : "")"
                             @onclick="() => TabManager.OpenImportExportTab()">
@@ -1310,6 +1316,9 @@
 
     private bool IsActiveCompareDeploy()
         => TabManager.ActiveTab?.Kind == TabKind.CompareDeploy;
+
+    private bool IsActiveSharding()
+        => TabManager.ActiveTab?.Kind == TabKind.Sharding;
 
     private bool IsActiveSchema(string type, string name)
     {

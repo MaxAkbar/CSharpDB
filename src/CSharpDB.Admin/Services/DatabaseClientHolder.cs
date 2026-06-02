@@ -12,9 +12,10 @@ namespace CSharpDB.Admin.Services;
 /// at runtime (e.g. when the user opens a different database file).
 /// Registered as a singleton; all Blazor circuits share the same instance.
 /// </summary>
-public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter
+public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbShardAdminClient
 {
     private ICSharpDbClient _inner;
+    private ICSharpDbShardAdminClient? _shardAdmin;
     private readonly AdminHostDatabaseOptions _hostDatabaseOptions;
     private readonly DbFunctionRegistry _functions;
     private readonly object _lock = new();
@@ -23,10 +24,12 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
 
     public DatabaseClientHolder(
         ICSharpDbClient initial,
+        ICSharpDbShardAdminClient? shardAdmin,
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry functions)
     {
         _inner = initial;
+        _shardAdmin = shardAdmin;
         _hostDatabaseOptions = hostDatabaseOptions;
         _functions = functions;
     }
@@ -40,11 +43,17 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
         await newClient.GetInfoAsync();
 
         ICSharpDbClient old;
+        ICSharpDbShardAdminClient? oldShardAdmin;
         lock (_lock)
         {
             old = _inner;
+            oldShardAdmin = _shardAdmin;
             _inner = newClient;
+            _shardAdmin = null;
         }
+
+        if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
+            await oldShardAdmin.DisposeAsync();
 
         await old.DisposeAsync();
         DatabaseChanged?.Invoke();
@@ -53,6 +62,7 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     // ── Delegated members ──────────────────────────────────
 
     public string DataSource => _inner.DataSource;
+    public bool SupportsShardAdmin => _shardAdmin is not null;
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
 
@@ -140,8 +150,50 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
             ? progressExporter.ExportTableArchiveAsync(tableName, path, progress, ct)
             : ExportTableArchiveAsync(tableName, path, ct);
 
+    public Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMapAsync(ct);
+
+    public Task<CSharpDbShardResolution> ResolveRouteAsync(CSharpDbRouteContext routeContext, CancellationToken ct = default)
+        => RequireShardAdmin().ResolveRouteAsync(routeContext, ct);
+
+    public Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardStatusAsync(ct);
+
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(string sql, CancellationToken ct = default)
+        => RequireShardAdmin().ExecuteSqlOnAllShardsAsync(sql, ct);
+
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteReadOnlySqlOnAllShardsAsync(string sql, CancellationToken ct = default)
+        => RequireShardAdmin().ExecuteReadOnlySqlOnAllShardsAsync(sql, ct);
+
+    public Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardCatalogAsync(ct);
+
+    public Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().ValidateShardCatalogUpdateAsync(request, ct);
+
+    public Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().ApplyShardCatalogUpdateAsync(request, ct);
+
+    public Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(CSharpDbShardExactKeyMigrationRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().MigrateExactRouteKeyAsync(request, ct);
+
+    public Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(CSharpDbShardBucketRangeMigrationRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().MigrateBucketRangeAsync(request, ct);
+
+    public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMigrationHistoryAsync(ct);
+
+    private ICSharpDbShardAdminClient RequireShardAdmin()
+        => _shardAdmin
+            ?? throw new CSharpDbClientConfigurationException("The current CSharpDB connection does not expose shard-admin APIs.");
+
     public async ValueTask DisposeAsync()
     {
-        await _inner.DisposeAsync();
+        ICSharpDbClient inner = _inner;
+        ICSharpDbShardAdminClient? shardAdmin = _shardAdmin;
+        if (shardAdmin is not null && !ReferenceEquals(shardAdmin, inner))
+            await shardAdmin.DisposeAsync();
+
+        await inner.DisposeAsync();
     }
 }

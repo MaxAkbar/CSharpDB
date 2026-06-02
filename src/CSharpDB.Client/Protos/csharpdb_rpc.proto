@@ -413,6 +413,8 @@ message ShardMigrationResultMessage {
   repeated ShardMigrationCollectionResultMessage collections = 15;
   repeated ShardCatalogIssueMessage issues = 16;
   ShardCatalogApplyResultMessage catalog_apply_result = 17;
+  bool requires_operator_recovery = 18;
+  google.protobuf.StringValue recovery_action = 19;
 }
 
 message ShardMigrationHistoryEntryMessage {
@@ -436,6 +438,8 @@ message ShardMigrationHistoryEntryMessage {
   repeated ShardMigrationTableResultMessage tables = 18;
   repeated ShardMigrationCollectionResultMessage collections = 19;
   repeated ShardCatalogIssueMessage issues = 20;
+  bool requires_operator_recovery = 21;
+  google.protobuf.StringValue recovery_action = 22;
 }
 
 message ShardMigrationHistoryListResponse {

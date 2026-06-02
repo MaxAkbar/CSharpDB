@@ -331,7 +331,9 @@ ownership changes.
 Migration history is stored in the same catalog file when catalog writes are
 enabled. Query it with REST `GET /api/sharding/migrations` or gRPC
 `GetShardMigrationHistory`. Matching shard-directory entries are also moved to
-the destination shard in the pending catalog map.
+the destination shard in the pending catalog map. Failed, verification-failed,
+and catalog-apply-failed outcomes include `RequiresOperatorRecovery` and
+`RecoveryAction` so Admin can surface recoverable movement states.
 
 Read-only fan-out is available for diagnostics and Admin views through REST
 `POST /api/sharding/sql/read-all` or gRPC `ExecuteReadOnlySqlOnAllShards`. The

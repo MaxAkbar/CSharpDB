@@ -102,6 +102,37 @@ public static class AdminClientOptionsBuilder
         };
     }
 
+    public static CSharpDbShardingOptions BindShardingOptions(
+        IConfiguration configuration,
+        AdminHostDatabaseOptions hostDatabaseOptions,
+        DbFunctionRegistry? functions = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
+
+        var bound = configuration.GetSection("CSharpDB:Sharding").Get<CSharpDbShardingOptions>()
+            ?? new CSharpDbShardingOptions();
+
+        if (!bound.Enabled)
+            return new CSharpDbShardingOptions { Enabled = false };
+
+        return new CSharpDbShardingOptions
+        {
+            Enabled = true,
+            Keyspace = bound.Keyspace,
+            MapVersion = bound.MapVersion,
+            VirtualBucketCount = bound.VirtualBucketCount,
+            Shards = bound.Shards ?? [],
+            BucketRanges = bound.BucketRanges ?? [],
+            ExactKeyPins = bound.ExactKeyPins ?? new Dictionary<string, string>(StringComparer.Ordinal),
+            Directories = bound.Directories ?? [],
+            DirectoryEntries = bound.DirectoryEntries ?? [],
+            Catalog = bound.Catalog ?? new CSharpDbShardCatalogOptions(),
+            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions, functions),
+            HybridDatabaseOptions = BuildHybridDatabaseOptionsOrNull(hostDatabaseOptions),
+        };
+    }
+
     public static DatabaseOptions BuildDirectDatabaseOptions(
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry? functions = null)

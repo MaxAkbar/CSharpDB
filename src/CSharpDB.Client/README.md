@@ -323,6 +323,11 @@ IReadOnlyList<CSharpDbShardMigrationHistoryEntry> history =
     await shardAdmin.GetShardMigrationHistoryAsync();
 ```
 
+Failed, verification-failed, and catalog-apply-failed movement outcomes set
+`RequiresOperatorRecovery = true` and include a `RecoveryAction` message. Use
+those fields to separate a simple rejected request from a recoverable partial
+movement state that needs cleanup, retry, or metadata-only confirmation.
+
 Bucket-range movement uses the same manifest shape but moves all unpinned route
 keys whose SHA-256 bucket falls inside the requested range:
 

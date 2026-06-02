@@ -69,7 +69,8 @@ First implementation slice:
   and gRPC RPCs.
 - Added read-only shard-directory model types as placeholders for future global
   lookup indexes. Static config still returns an empty directory list.
-- Admin UI workspace work remains for the next slice.
+- Added an Admin Sharding workspace for read-only map, shard status, catalog
+  state, migration history, and route simulation.
 
 Key work:
 
@@ -79,12 +80,12 @@ Key work:
 - Add REST and gRPC shard-admin endpoints so Admin can manage remote sharded
   daemons without direct shard-file access.
 - Add an Admin Sharding workspace with read-only views for:
-  - shard definitions;
-  - bucket ranges;
-  - exact-key pins;
-  - map version;
-  - status and errors;
-  - route simulation.
+  - shard definitions; (first slice implemented)
+  - bucket ranges; (first slice implemented)
+  - exact-key pins; (first slice implemented)
+  - map version; (first slice implemented)
+  - status and errors; (first slice implemented)
+  - route simulation. (first slice implemented)
 - Keep static config as the source of truth in this phase.
 - Add a catalog abstraction so Phase 3 can introduce persistent catalog-backed
   management without rewriting Admin.
@@ -112,6 +113,8 @@ First implementation slice:
   metadata-only change.
 - Directory definitions and directory entries validate against route ownership,
   giving the future global shard-directory index a persisted metadata home.
+- Admin now shows catalog source, active map, pending map, and recent catalog
+  history in the Sharding workspace.
 - Admin UI draft/apply screens remain for a later slice.
 
 Key work:
@@ -256,6 +259,11 @@ Implemented first slice:
 - Bucket-range migration copies unpinned route-key rows/documents whose route
   keys hash into the requested bucket range, verifies checksums, fences affected
   bucket writes, and writes pending bucket ownership to the catalog.
+- Migration results and migration history now include
+  `RequiresOperatorRecovery` and `RecoveryAction` for failed, verification
+  failed, and catalog-apply failed outcomes.
+- Admin shows migration history and surfaces recovery actions in the Sharding
+  workspace.
 
 Key work:
 
@@ -275,13 +283,17 @@ Key work:
 - Record migration history and final status. (first slice implemented)
 - Leave the old map active when migration verification fails. (first slice
   implemented)
+- Surface failures as recoverable operator states. (metadata and Admin history
+  view implemented)
 
 Remaining work:
 
-- Add resumable/retryable migration states for partial copy failures.
+- Add durable, step-level resumable/retryable migration checkpoints for partial
+  copy failures.
 - Add broader shard-directory repair/stale marking for partial and resumed
   migrations.
-- Add Admin UX for migration preview, progress, verification, and confirmation.
+- Add Admin UX for migration preview, progress, manifest editing, verification,
+  and confirmation.
 
 Admin workflow:
 

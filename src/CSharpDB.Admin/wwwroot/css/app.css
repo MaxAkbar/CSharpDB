@@ -6595,6 +6595,76 @@ body {
     opacity: 0.62;
 }
 
+.sharding-tab {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+}
+
+.sharding-tab .toolbar {
+    min-height: var(--toolbar-height);
+    height: auto;
+    flex-wrap: wrap;
+}
+
+.sharding-content {
+    display: grid;
+    gap: 14px;
+    padding: 14px;
+}
+
+.sharding-input {
+    height: 28px;
+    width: min(220px, 28vw);
+    min-width: 120px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    padding: 0 8px;
+    font-size: 12px;
+}
+
+.sharding-input:disabled {
+    opacity: 0.55;
+}
+
+.sharding-empty {
+    min-height: 260px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.sharding-empty i {
+    color: var(--accent-blue);
+    font-size: 28px;
+}
+
+.sharding-empty strong {
+    color: var(--text-primary);
+    font-size: 16px;
+}
+
+.sharding-empty span {
+    max-width: 680px;
+    overflow-wrap: anywhere;
+}
+
+.sharding-table-wrap {
+    width: 100%;
+    overflow: auto;
+}
+
+.sharding-table-wrap .schema-table {
+    min-width: 760px;
+}
+
 @media (max-width: 1200px) {
     .titlebar-toolbar .titlebar-action-btn span,
     .titlebar-action-btn {

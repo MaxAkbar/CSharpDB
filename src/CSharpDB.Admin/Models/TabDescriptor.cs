@@ -11,6 +11,7 @@ public enum TabKind
     CodeModules,
     Procedure,
     Pipeline,
+    Sharding,
     Storage,
     TableDesigner,
     FormDesigner,

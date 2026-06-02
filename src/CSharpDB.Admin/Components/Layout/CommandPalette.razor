@@ -262,6 +262,7 @@
         _items.Add(new PaletteItem("Command", "Import / Export", "Open table archive tools", "bi-arrow-left-right", "icon-system", () => { TabManager.OpenImportExportTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Compare / Deploy", "Open schema, data, and drift compare workspace", "bi-file-earmark-diff", "icon-system", () => { TabManager.OpenCompareDeployTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Data Hygiene", "Open data quality workspace", "bi-shield-check", "icon-system", () => { TabManager.OpenDataHygieneTab(); return Task.CompletedTask; }));
+        _items.Add(new PaletteItem("Command", "Sharding", "Open shard topology and route resolution", "bi-hdd-network", "icon-system", () => { TabManager.OpenShardingTab(); return Task.CompletedTask; }));
         _items.Add(new PaletteItem("Command", "Storage Inspector", "Open storage diagnostics", "bi-hdd-stack", "icon-system", () => { TabManager.OpenStorageTab(); return Task.CompletedTask; }));
     }
 

@@ -278,6 +278,22 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenShardingTab_Deduplicates()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenShardingTab();
+        TabDescriptor second = manager.OpenShardingTab();
+
+        Assert.Same(first, second);
+        Assert.Equal("sharding:admin", second.Id);
+        Assert.Equal("Sharding", second.Title);
+        Assert.Equal(TabKind.Sharding, second.Kind);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
     public void CloseTabsForObject_ClosesCollectionTab()
     {
         var manager = new TabManagerService();

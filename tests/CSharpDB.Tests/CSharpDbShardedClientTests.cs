@@ -694,6 +694,60 @@ public sealed class CSharpDbShardedClientTests
     }
 
     [Fact]
+    public async Task ExactKeyMigration_VerificationFailureRequiresOperatorRecovery()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = Path.Combine(directory, "catalog.json"),
+            };
+
+            await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
+            CSharpDbShardMigrationResult migration = await client.MigrateExactRouteKeyAsync(
+                new CSharpDbShardExactKeyMigrationRequest
+                {
+                    Keyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    DestinationShardId = "s1",
+                    ExpectedCurrentMapVersion = 1,
+                    Manifest = new CSharpDbShardMigrationManifest
+                    {
+                        Tables =
+                        [
+                            new CSharpDbShardMigrationTableManifest
+                            {
+                                TableName = "missing_orders",
+                                RouteKeyColumn = "tenant_id",
+                                PrimaryKeyColumn = "id",
+                            },
+                        ],
+                    },
+                },
+                Ct);
+
+            Assert.False(migration.Succeeded);
+            Assert.Equal("VerificationFailed", migration.Status);
+            Assert.True(migration.RequiresOperatorRecovery);
+            Assert.Contains("rerun the migration", migration.RecoveryAction);
+            Assert.Null(migration.PendingMapVersion);
+            Assert.Contains(migration.Issues, issue => issue.Code == "table-verification-failed");
+
+            CSharpDbShardMigrationHistoryEntry history = Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
+            Assert.Equal(migration.MigrationId, history.MigrationId);
+            Assert.True(history.RequiresOperatorRecovery);
+            Assert.Equal(migration.RecoveryAction, history.RecoveryAction);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task RouteBoundClient_RoutesOperationsToStableShard()
     {
         string directory = CreateTempDirectory();

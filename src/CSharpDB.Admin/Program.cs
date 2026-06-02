@@ -19,10 +19,16 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton(AdminHostCallbacks.CreateFunctionRegistry());
 builder.Services.AddSingleton(AdminHostCallbacks.CreateCommandRegistry());
 builder.Services.AddSingleton(AdminHostCallbacks.CreatePolicy());
+builder.Services.AddSingleton(sp =>
+    AdminClientOptionsBuilder.BindShardingOptions(
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<AdminHostDatabaseOptions>(),
+        sp.GetRequiredService<DbFunctionRegistry>()));
 builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     var hostDatabaseOptions = sp.GetRequiredService<AdminHostDatabaseOptions>();
+    var shardingOptions = sp.GetRequiredService<CSharpDbShardingOptions>();
     var functions = sp.GetRequiredService<DbFunctionRegistry>();
     string? endpoint = configuration["CSharpDB:Endpoint"];
     CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
@@ -34,9 +40,18 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
         endpoint,
         functions);
 
-    return new DatabaseClientHolder(CSharpDbClient.Create(options), hostDatabaseOptions, functions);
+    if (shardingOptions.Enabled)
+    {
+        CSharpDbShardedClient shardedClient = CSharpDbShardedClient.Create(shardingOptions);
+        return new DatabaseClientHolder(shardedClient, shardedClient, hostDatabaseOptions, functions);
+    }
+
+    ICSharpDbClient client = CSharpDbClient.Create(options);
+    ICSharpDbShardAdminClient? shardAdmin = TryCreateShardAdmin(options);
+    return new DatabaseClientHolder(client, shardAdmin, hostDatabaseOptions, functions);
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
+builder.Services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddScoped<TabManagerService>();
 builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
@@ -101,6 +116,18 @@ static CSharpDbTransport? ParseTransport(string? value)
         "pipe" => CSharpDbTransport.NamedPipes,
         _ => throw new InvalidOperationException($"Unsupported transport '{value}'."),
     };
+}
+
+static ICSharpDbShardAdminClient? TryCreateShardAdmin(CSharpDbClientOptions options)
+{
+    try
+    {
+        return CSharpDbClient.CreateShardAdmin(options);
+    }
+    catch (CSharpDbClientConfigurationException)
+    {
+        return null;
+    }
 }
 
 public partial class Program;

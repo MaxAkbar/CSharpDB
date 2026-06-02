@@ -1,0 +1,477 @@
+@using System.Globalization
+@inject ICSharpDbShardAdminClient ShardAdmin
+@inject DatabaseClientHolder DbHolder
+@inject ToastService Toast
+
+<div class="sharding-tab">
+    <div class="toolbar">
+        <button class="toolbar-btn" @onclick="RefreshAsync" disabled="@_loading">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <div class="toolbar-separator"></div>
+        <input class="sharding-input mono"
+               type="text"
+               placeholder="keyspace"
+               @bind="_routeKeyspace"
+               @bind:event="oninput"
+               disabled="@(_loading || _map is null)" />
+        <input class="sharding-input mono"
+               type="text"
+               placeholder="route key"
+               @bind="_routeKey"
+               @bind:event="oninput"
+               disabled="@(_loading || _map is null)" />
+        <button class="toolbar-btn" @onclick="ResolveRouteAsync" disabled="@(_loading || _resolving || _map is null)">
+            <i class="bi bi-signpost-split"></i> Resolve
+        </button>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-info">@DbHolder.DataSource</div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="loading-overlay"><span class="spinner"></span></div>
+    }
+    else if (_map is null)
+    {
+        <div class="sharding-empty">
+            <i class="bi bi-diagram-3"></i>
+            <strong>Shard admin unavailable</strong>
+            <span>@(_loadError ?? "The current connection does not expose shard-admin APIs.")</span>
+        </div>
+    }
+    else
+    {
+        <div class="heavy-layout">
+            <aside class="heavy-rail">
+                <div class="heavy-rail-head">Sharding</div>
+                <div class="heavy-rail-section">
+                    <div class="heavy-rail-label">Topology</div>
+                    <a class="heavy-rail-item active" href="#sharding-summary"><i class="bi bi-speedometer2"></i><span>Summary</span></a>
+                    <a class="heavy-rail-item" href="#sharding-shards"><i class="bi bi-hdd-network"></i><span>Shards</span><span class="badge">@_map.Shards.Count</span></a>
+                    <a class="heavy-rail-item" href="#sharding-buckets"><i class="bi bi-grid-3x3-gap"></i><span>Buckets</span><span class="badge">@_map.BucketRanges.Count</span></a>
+                    <a class="heavy-rail-item" href="#sharding-pins"><i class="bi bi-pin-map"></i><span>Exact pins</span><span class="badge">@_map.ExactKeyPins.Count</span></a>
+                </div>
+                <div class="heavy-rail-section">
+                    <div class="heavy-rail-label">Operations</div>
+                    <a class="heavy-rail-item" href="#sharding-resolve"><i class="bi bi-signpost-split"></i><span>Resolve</span></a>
+                    <a class="heavy-rail-item" href="#sharding-catalog"><i class="bi bi-journal-check"></i><span>Catalog</span></a>
+                    <a class="heavy-rail-item" href="#sharding-migrations"><i class="bi bi-arrow-left-right"></i><span>Migrations</span><span class="badge @(_migrationHistory.Any(item => item.RequiresOperatorRecovery) ? "warn" : "")">@_migrationHistory.Count</span></a>
+                </div>
+            </aside>
+
+            <main class="heavy-pane">
+                <div class="sharding-content" id="sharding-summary">
+                    <div class="heavy-summary-strip">
+                        <div><span>Keyspace</span><strong>@_map.Keyspace</strong></div>
+                        <div><span>Map Version</span><strong>@_map.MapVersion</strong></div>
+                        <div><span>Virtual Buckets</span><strong>@_map.VirtualBucketCount</strong></div>
+                        <div><span>Pending Map</span><strong>@(_catalog?.PendingMap?.MapVersion.ToString(CultureInfo.InvariantCulture) ?? "None")</strong></div>
+                    </div>
+
+                    <div class="storage-grid">
+                        <section class="storage-card" id="sharding-resolve">
+                            <h3>Route Resolution</h3>
+                            @if (_resolution is null)
+                            {
+                                <p class="schema-empty">Enter a route key in the toolbar to preview its shard.</p>
+                            }
+                            else
+                            {
+                                <table class="schema-table">
+                                    <tbody>
+                                        <tr><th>Keyspace</th><td class="mono-cell">@_resolution.Keyspace</td></tr>
+                                        <tr><th>Route Key</th><td class="mono-cell">@_resolution.Key</td></tr>
+                                        <tr><th>Shard</th><td class="mono-cell">@_resolution.ShardId</td></tr>
+                                        <tr><th>Bucket</th><td>@_resolution.Bucket</td></tr>
+                                        <tr><th>Token</th><td class="mono-cell">@FormatToken(_resolution.Token)</td></tr>
+                                        <tr><th>Map Version</th><td>@_resolution.MapVersion</td></tr>
+                                    </tbody>
+                                </table>
+                            }
+                        </section>
+
+                        <section class="storage-card">
+                            <h3>Status Summary</h3>
+                            <table class="schema-table">
+                                <tbody>
+                                    <tr><th>Healthy Shards</th><td>@_statuses.Count(item => item.Healthy) / @_statuses.Count</td></tr>
+                                    <tr><th>Enabled Shards</th><td>@_map.Shards.Count(item => item.Enabled) / @_map.Shards.Count</td></tr>
+                                    <tr><th>Replica Metadata</th><td>@_map.Shards.Count(item => string.Equals(item.Role, CSharpDbShardRoles.Replica, StringComparison.OrdinalIgnoreCase))</td></tr>
+                                    <tr><th>Catalog Source</th><td class="mono-cell">@(_catalog?.Source ?? "Static config")</td></tr>
+                                </tbody>
+                            </table>
+                        </section>
+                    </div>
+
+                    <section class="storage-card" id="sharding-shards">
+                        <h3>Shard Definitions</h3>
+                        <div class="sharding-table-wrap">
+                            <table class="schema-table">
+                                <thead>
+                                    <tr>
+                                        <th>Shard</th>
+                                        <th>Role</th>
+                                        <th>Enabled</th>
+                                        <th>Location</th>
+                                        <th>Replica Of</th>
+                                        <th>Lag</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (CSharpDbShardDefinitionSnapshot shard in _map.Shards.OrderBy(item => item.ShardId, StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        <tr>
+                                            <td class="mono-cell">@shard.ShardId</td>
+                                            <td>@shard.Role</td>
+                                            <td><span class="storage-badge @(shard.Enabled ? "storage-badge-info" : "storage-badge-warning")">@BoolText(shard.Enabled)</span></td>
+                                            <td class="mono-cell">@FormatShardLocation(shard)</td>
+                                            <td class="mono-cell">@(shard.PrimaryShardId ?? "-")</td>
+                                            <td>@FormatLag(shard.ReplicationLagBytes)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section class="storage-card">
+                        <h3>Shard Status</h3>
+                        @if (_statuses.Count == 0)
+                        {
+                            <p class="schema-empty">No shard status rows returned.</p>
+                        }
+                        else
+                        {
+                            <div class="sharding-table-wrap">
+                                <table class="schema-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Shard</th>
+                                            <th>Health</th>
+                                            <th>Objects</th>
+                                            <th>Data Source</th>
+                                            <th>Error</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (CSharpDbShardStatus status in _statuses.OrderBy(item => item.ShardId, StringComparer.OrdinalIgnoreCase))
+                                        {
+                                            <tr>
+                                                <td class="mono-cell">@status.ShardId</td>
+                                                <td><span class="@GetHealthBadgeClass(status)">@GetHealthText(status)</span></td>
+                                                <td>@FormatObjectCounts(status.Info)</td>
+                                                <td class="mono-cell">@status.DataSource</td>
+                                                <td>@(status.Error ?? "-")</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </section>
+
+                    <div class="storage-grid">
+                        <section class="storage-card" id="sharding-buckets">
+                            <h3>Bucket Ranges</h3>
+                            <table class="schema-table">
+                                <thead>
+                                    <tr>
+                                        <th>Range</th>
+                                        <th>Shard</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (CSharpDbShardBucketRange range in _map.BucketRanges.OrderBy(item => item.StartBucketInclusive))
+                                    {
+                                        <tr>
+                                            <td class="mono-cell">[@range.StartBucketInclusive, @range.EndBucketExclusive)</td>
+                                            <td class="mono-cell">@range.ShardId</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </section>
+
+                        <section class="storage-card" id="sharding-pins">
+                            <h3>Exact Route-Key Pins</h3>
+                            @if (_map.ExactKeyPins.Count == 0)
+                            {
+                                <p class="schema-empty">No exact route-key pins.</p>
+                            }
+                            else
+                            {
+                                <table class="schema-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Route Key</th>
+                                            <th>Shard</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (KeyValuePair<string, string> pin in _map.ExactKeyPins.OrderBy(item => item.Key, StringComparer.Ordinal))
+                                        {
+                                            <tr>
+                                                <td class="mono-cell">@pin.Key</td>
+                                                <td class="mono-cell">@pin.Value</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            }
+                        </section>
+                    </div>
+
+                    <section class="storage-card" id="sharding-catalog">
+                        <h3>Catalog</h3>
+                        @if (_catalog is null)
+                        {
+                            <p class="schema-empty">Catalog state is not available for this connection.</p>
+                        }
+                        else
+                        {
+                            <table class="schema-table">
+                                <tbody>
+                                    <tr><th>Source</th><td class="mono-cell">@_catalog.Source</td></tr>
+                                    <tr><th>Enabled</th><td>@BoolText(_catalog.IsCatalogEnabled)</td></tr>
+                                    <tr><th>Writable</th><td>@BoolText(_catalog.IsWritable)</td></tr>
+                                    <tr><th>Active Map</th><td>@_catalog.ActiveMap.MapVersion</td></tr>
+                                    <tr><th>Pending Map</th><td>@(_catalog.PendingMap?.MapVersion.ToString(CultureInfo.InvariantCulture) ?? "None")</td></tr>
+                                </tbody>
+                            </table>
+
+                            @if (_catalog.History.Count > 0)
+                            {
+                                <div class="storage-subsection">
+                                    <h4>Recent Catalog Changes</h4>
+                                    <table class="schema-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Applied</th>
+                                                <th>Map</th>
+                                                <th>Operator</th>
+                                                <th>Comment</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (CSharpDbShardCatalogHistoryEntry entry in _catalog.History.OrderByDescending(item => item.AppliedUtc).Take(10))
+                                            {
+                                                <tr>
+                                                    <td>@FormatDate(entry.AppliedUtc)</td>
+                                                    <td>@entry.MapVersion</td>
+                                                    <td>@(entry.Operator ?? "-")</td>
+                                                    <td>@(entry.Comment ?? "-")</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                        }
+                    </section>
+
+                    <section class="storage-card" id="sharding-migrations">
+                        <h3>Migration History</h3>
+                        @if (_migrationHistory.Count == 0)
+                        {
+                            <p class="schema-empty">No migration history rows returned.</p>
+                        }
+                        else
+                        {
+                            <div class="sharding-table-wrap">
+                                <table class="schema-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Recorded</th>
+                                            <th>Type</th>
+                                            <th>Status</th>
+                                            <th>Route</th>
+                                            <th>Movement</th>
+                                            <th>Recovery</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (CSharpDbShardMigrationHistoryEntry migration in _migrationHistory.OrderByDescending(item => item.RecordedUtc).Take(25))
+                                        {
+                                            <tr>
+                                                <td>@FormatDate(migration.RecordedUtc)</td>
+                                                <td>@migration.MigrationType</td>
+                                                <td><span class="@GetMigrationBadgeClass(migration)">@migration.Status</span></td>
+                                                <td class="mono-cell">@migration.RouteKey</td>
+                                                <td class="mono-cell">@migration.SourceShardId -> @migration.DestinationShardId</td>
+                                                <td>@(migration.RequiresOperatorRecovery ? migration.RecoveryAction ?? "Operator recovery required." : "-")</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </section>
+                </div>
+            </main>
+        </div>
+    }
+</div>
+
+@code {
+    private CSharpDbShardMapSnapshot? _map;
+    private CSharpDbShardCatalogState? _catalog;
+    private IReadOnlyList<CSharpDbShardStatus> _statuses = [];
+    private IReadOnlyList<CSharpDbShardMigrationHistoryEntry> _migrationHistory = [];
+    private CSharpDbShardResolution? _resolution;
+    private string _routeKeyspace = string.Empty;
+    private string _routeKey = string.Empty;
+    private string? _loadError;
+    private bool _loading;
+    private bool _resolving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        _resolution = null;
+
+        try
+        {
+            _map = await ShardAdmin.GetShardMapAsync();
+            if (string.IsNullOrWhiteSpace(_routeKeyspace))
+                _routeKeyspace = _map.Keyspace;
+
+            await LoadOptionalAdminStateAsync();
+        }
+        catch (Exception ex)
+        {
+            _map = null;
+            _catalog = null;
+            _statuses = [];
+            _migrationHistory = [];
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadOptionalAdminStateAsync()
+    {
+        try
+        {
+            _statuses = await ShardAdmin.GetShardStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            _statuses = [];
+            Toast.Warning($"Shard status failed: {ex.Message}");
+        }
+
+        try
+        {
+            _catalog = await ShardAdmin.GetShardCatalogAsync();
+        }
+        catch (Exception ex)
+        {
+            _catalog = null;
+            Toast.Warning($"Shard catalog failed: {ex.Message}");
+        }
+
+        try
+        {
+            _migrationHistory = await ShardAdmin.GetShardMigrationHistoryAsync();
+        }
+        catch (Exception ex)
+        {
+            _migrationHistory = [];
+            Toast.Warning($"Shard migration history failed: {ex.Message}");
+        }
+    }
+
+    private async Task ResolveRouteAsync()
+    {
+        if (_map is null)
+            return;
+
+        string keyspace = string.IsNullOrWhiteSpace(_routeKeyspace) ? _map.Keyspace : _routeKeyspace.Trim();
+        string routeKey = _routeKey.Trim();
+        if (string.IsNullOrWhiteSpace(routeKey))
+        {
+            Toast.Error("Enter a route key.");
+            return;
+        }
+
+        _resolving = true;
+        try
+        {
+            _resolution = await ShardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+            {
+                Keyspace = keyspace,
+                Key = routeKey,
+            });
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Route resolution failed: {ex.Message}");
+        }
+        finally
+        {
+            _resolving = false;
+        }
+    }
+
+    private static string BoolText(bool value) => value ? "Yes" : "No";
+
+    private static string FormatToken(ulong token)
+        => "0x" + token.ToString("X16", CultureInfo.InvariantCulture);
+
+    private static string FormatDate(DateTimeOffset value)
+        => value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+    private static string FormatLag(long? lagBytes)
+        => lagBytes is null ? "-" : $"{lagBytes.Value:n0} bytes";
+
+    private static string FormatShardLocation(CSharpDbShardDefinitionSnapshot shard)
+    {
+        if (!string.IsNullOrWhiteSpace(shard.DataSource))
+            return shard.DataSource;
+        if (!string.IsNullOrWhiteSpace(shard.Endpoint))
+            return shard.Endpoint;
+        if (shard.HasConnectionString)
+            return "(connection string)";
+
+        return "-";
+    }
+
+    private static string FormatObjectCounts(DatabaseInfo? info)
+    {
+        if (info is null)
+            return "-";
+
+        int objects = info.TableCount + info.ViewCount + info.CollectionCount + info.ProcedureCount;
+        return $"{objects:n0} objects";
+    }
+
+    private static string GetHealthText(CSharpDbShardStatus status)
+    {
+        if (!status.Enabled)
+            return "Disabled";
+
+        return status.Healthy ? "Healthy" : "Error";
+    }
+
+    private static string GetHealthBadgeClass(CSharpDbShardStatus status)
+        => status.Enabled && status.Healthy
+            ? "storage-badge storage-badge-info"
+            : "storage-badge storage-badge-warning";
+
+    private static string GetMigrationBadgeClass(CSharpDbShardMigrationHistoryEntry migration)
+        => migration.Succeeded
+            ? "storage-badge storage-badge-info"
+            : migration.RequiresOperatorRecovery
+                ? "storage-badge storage-badge-warning"
+                : "storage-badge storage-badge-error";
+}

@@ -943,6 +943,8 @@ public static class GrpcModelMapper
             MapVersion = value.MapVersion,
             PendingMapVersion = value.PendingMapVersion,
             RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
             CatalogApplyResult = value.CatalogApplyResult is null ? null : ToMessage(value.CatalogApplyResult),
         };
         message.Tables.Add(value.Tables.Select(ToMessage));
@@ -967,6 +969,8 @@ public static class GrpcModelMapper
             MapVersion = value.MapVersion,
             PendingMapVersion = value.PendingMapVersion,
             RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
             Tables = value.Tables.Select(ToModel).ToList(),
             Collections = value.Collections.Select(ToModel).ToList(),
             Issues = value.Issues.Select(ToModel).ToList(),
@@ -992,6 +996,8 @@ public static class GrpcModelMapper
             MapVersion = value.MapVersion,
             PendingMapVersion = value.PendingMapVersion,
             RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
             Operator = value.Operator,
             Comment = value.Comment,
         };
@@ -1019,6 +1025,8 @@ public static class GrpcModelMapper
             MapVersion = value.MapVersion,
             PendingMapVersion = value.PendingMapVersion,
             RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
             Operator = value.Operator,
             Comment = value.Comment,
             Tables = value.Tables.Select(ToModel).ToList(),

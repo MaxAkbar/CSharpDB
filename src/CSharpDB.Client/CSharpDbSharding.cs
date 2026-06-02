@@ -296,6 +296,8 @@ public sealed class CSharpDbShardMigrationResult
     public int MapVersion { get; init; }
     public int? PendingMapVersion { get; init; }
     public bool RequiresRestart { get; init; }
+    public bool RequiresOperatorRecovery { get; init; }
+    public string? RecoveryAction { get; init; }
     public List<CSharpDbShardMigrationTableResult> Tables { get; init; } = [];
     public List<CSharpDbShardMigrationCollectionResult> Collections { get; init; } = [];
     public List<CSharpDbShardCatalogIssue> Issues { get; init; } = [];
@@ -319,6 +321,8 @@ public sealed class CSharpDbShardMigrationHistoryEntry
     public int MapVersion { get; init; }
     public int? PendingMapVersion { get; init; }
     public bool RequiresRestart { get; init; }
+    public bool RequiresOperatorRecovery { get; init; }
+    public string? RecoveryAction { get; init; }
     public string? Operator { get; init; }
     public string? Comment { get; init; }
     public List<CSharpDbShardMigrationTableResult> Tables { get; init; } = [];

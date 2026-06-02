@@ -189,6 +189,21 @@ public sealed class TabManagerService
         return _tabs.First(t => t.Id == tab.Id);
     }
 
+    public TabDescriptor OpenShardingTab()
+    {
+        const string tabId = "sharding:admin";
+        TabDescriptor? existing = _tabs.FirstOrDefault(t => t.Id == tabId);
+        if (existing is not null)
+        {
+            ActivateTab(existing.Id);
+            return existing;
+        }
+
+        var tab = new TabDescriptor(tabId, "Sharding", "bi-hdd-network", TabKind.Sharding);
+        OpenTab(tab);
+        return _tabs.First(t => t.Id == tab.Id);
+    }
+
     public TabDescriptor OpenPipelineTab()
     {
         int num = Interlocked.Increment(ref _queryCounter);
