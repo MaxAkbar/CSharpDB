@@ -139,6 +139,39 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         return await ReadRequiredAsync<List<CSharpDbShardMigrationHistoryEntry>>(response, ct);
     }
 
+    public async Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/migrations/progress"), payload: null, ct);
+        return await ReadRequiredAsync<List<CSharpDbShardMigrationProgress>>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(
+        string migrationId,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri($"api/sharding/migrations/{Escape(migrationId)}/progress"), payload: null, ct);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null;
+
+        return await ReadRequiredAsync<CSharpDbShardMigrationProgress>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri($"api/sharding/migrations/{Escape(migrationId)}/resume"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri($"api/sharding/migrations/{Escape(migrationId)}/retry"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
     public async Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(
         CSharpDbShardDirectoryResolveRequest request,
         CancellationToken ct = default)

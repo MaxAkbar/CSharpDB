@@ -132,6 +132,36 @@ internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdmin
             response => (IReadOnlyList<CSharpDbShardMigrationHistoryEntry>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
             ct);
 
+    public Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardMigrationProgressAsync(EmptyRequest, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardMigrationProgress>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardMigrationProgressByIdAsync(GrpcModelMapper.ToMigrationIdRequest(migrationId), cancellationToken: ct),
+            response => response.Value is null ? null : GrpcModelMapper.ToModel(response.Value),
+            ct);
+
+    public Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ResumeShardMigrationAsync(GrpcModelMapper.ToMigrationIdRequest(migrationId), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.RetryShardMigrationAsync(GrpcModelMapper.ToMigrationIdRequest(migrationId), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
     public Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(
         CSharpDbShardDirectoryResolveRequest request,
         CancellationToken ct = default)

@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using CSharpDB.Client.Models;
 using CSharpDB.Sql;
 using CSharpDB.Storage.Diagnostics;
+using CSharpDbStorageException = CSharpDB.Primitives.CSharpDbException;
 
 namespace CSharpDB.Client;
 
@@ -479,6 +480,84 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             ? Task.FromResult((IReadOnlyList<CSharpDbShardMigrationHistoryEntry>)Array.Empty<CSharpDbShardMigrationHistoryEntry>())
             : _catalogStore.GetMigrationHistoryAsync(ct);
 
+    public Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default)
+        => _catalogStore is null
+            ? Task.FromResult((IReadOnlyList<CSharpDbShardMigrationProgress>)Array.Empty<CSharpDbShardMigrationProgress>())
+            : _catalogStore.GetMigrationProgressAsync(ct);
+
+    public Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => _catalogStore is null
+            ? Task.FromResult<CSharpDbShardMigrationProgress?>(null)
+            : _catalogStore.GetMigrationProgressAsync(migrationId, ct);
+
+    public Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => ExecuteStoredShardMigrationAsync(migrationId, incrementAttempt: false, ct);
+
+    public Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => ExecuteStoredShardMigrationAsync(migrationId, incrementAttempt: true, ct);
+
+    private async Task<CSharpDbShardMigrationResult> ExecuteStoredShardMigrationAsync(
+        string migrationId,
+        bool incrementAttempt,
+        CancellationToken ct)
+    {
+        if (_catalogStore is null)
+            throw new CSharpDbClientException("Shard migration resume/retry requires catalog mode.");
+
+        string normalizedMigrationId = NormalizeMigrationId(migrationId);
+        CSharpDbShardMigrationCheckpoint checkpoint =
+            await _catalogStore.GetMigrationCheckpointAsync(normalizedMigrationId, ct).ConfigureAwait(false)
+            ?? throw new CSharpDbClientException($"Shard migration '{normalizedMigrationId}' was not found.");
+
+        if (!incrementAttempt && IsTerminalSuccessfulMigrationStatus(checkpoint.Status))
+            return CreateMigrationResultFromCheckpoint(checkpoint, "Shard migration already reached a successful terminal state.");
+
+        int attempt = incrementAttempt ? checkpoint.Attempt + 1 : checkpoint.Attempt;
+        return checkpoint.Plan.MigrationType switch
+        {
+            "ExactRouteKey" => await MigrateExactRouteKeyAsync(new CSharpDbShardExactKeyMigrationRequest
+            {
+                MigrationId = checkpoint.MigrationId,
+                Attempt = attempt,
+                Keyspace = checkpoint.Plan.Keyspace,
+                RouteKey = checkpoint.Plan.RouteKey,
+                DestinationShardId = checkpoint.Plan.DestinationShardId,
+                Manifest = CloneMigrationManifest(checkpoint.Plan.Manifest),
+                ExpectedCurrentMapVersion = checkpoint.Plan.ExpectedCurrentMapVersion,
+                OverwriteDestinationRows = true,
+                DeleteSourceAfterVerification = checkpoint.Plan.DeleteSourceAfterVerification,
+                Operator = checkpoint.Plan.Operator,
+                Comment = checkpoint.Plan.Comment,
+            }, ct).ConfigureAwait(false),
+            "BucketRange" => await MigrateBucketRangeAsync(new CSharpDbShardBucketRangeMigrationRequest
+            {
+                MigrationId = checkpoint.MigrationId,
+                Attempt = attempt,
+                Keyspace = checkpoint.Plan.Keyspace,
+                SourceShardId = checkpoint.Plan.SourceShardId,
+                DestinationShardId = checkpoint.Plan.DestinationShardId,
+                StartBucketInclusive = checkpoint.Plan.StartBucketInclusive
+                    ?? throw new CSharpDbClientException($"Shard migration '{normalizedMigrationId}' is missing StartBucketInclusive."),
+                EndBucketExclusive = checkpoint.Plan.EndBucketExclusive
+                    ?? throw new CSharpDbClientException($"Shard migration '{normalizedMigrationId}' is missing EndBucketExclusive."),
+                Manifest = CloneMigrationManifest(checkpoint.Plan.Manifest),
+                ExpectedCurrentMapVersion = checkpoint.Plan.ExpectedCurrentMapVersion,
+                OverwriteDestinationRows = true,
+                DeleteSourceAfterVerification = checkpoint.Plan.DeleteSourceAfterVerification,
+                Operator = checkpoint.Plan.Operator,
+                Comment = checkpoint.Plan.Comment,
+            }, ct).ConfigureAwait(false),
+            _ => throw new CSharpDbClientException(
+                $"Shard migration '{normalizedMigrationId}' has unsupported migration type '{checkpoint.Plan.MigrationType}'."),
+        };
+    }
+
     public async Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(
         CSharpDbShardExactKeyMigrationRequest request,
         CancellationToken ct = default)
@@ -487,11 +566,15 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         ArgumentNullException.ThrowIfNull(request.Manifest);
 
         DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
-        string migrationId = CreateMigrationId(startedUtc);
+        string migrationId = NormalizeMigrationId(request.MigrationId, startedUtc);
+        int attempt = Math.Max(1, request.Attempt ?? 1);
         string keyspace = string.Empty;
         string routeKey = string.Empty;
         string sourceShardId = string.Empty;
         string destinationShardId = string.Empty;
+        int totalSteps = CountMigrationSteps(request.Manifest);
+        int completedSteps = 0;
+        CSharpDbShardMigrationPlan? plan = null;
         var issues = new List<CSharpDbShardCatalogIssue>();
 
         try
@@ -552,6 +635,13 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             }
 
             ValidateMigrationManifest(request.Manifest, issues);
+            plan = CreateExactMigrationPlan(
+                migrationId,
+                keyspace,
+                routeKey,
+                sourceShardId,
+                destinationShardId,
+                request);
             if (HasErrors(issues))
             {
                 CSharpDbShardMigrationResult rejectedResult = CreateMigrationResult(
@@ -570,9 +660,33 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     [],
                     issues,
                     catalogApplyResult: null);
+                await TryRecordMigrationCheckpointAsync(
+                    rejectedResult,
+                    plan,
+                    completedSteps,
+                    totalSteps,
+                    attempt,
+                    "Rejected",
+                    ct).ConfigureAwait(false);
                 await TryRecordMigrationHistoryAsync(rejectedResult, request, ct).ConfigureAwait(false);
                 return rejectedResult;
             }
+
+            completedSteps = 1;
+            await TryRecordMigrationCheckpointAsync(
+                plan,
+                status: "Running",
+                phase: "Validated",
+                startedUtc,
+                completedSteps,
+                totalSteps,
+                attempt,
+                pendingMapVersion: null,
+                requiresRestart: false,
+                [],
+                [],
+                issues,
+                ct).ConfigureAwait(false);
 
             string fenceKey = BuildFenceKey(keyspace, routeKey);
             if (!_writeFences.TryAdd(fenceKey, 0))
@@ -596,6 +710,14 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     [],
                     issues,
                     catalogApplyResult: null);
+                await TryRecordMigrationCheckpointAsync(
+                    fencedResult,
+                    plan,
+                    completedSteps,
+                    totalSteps,
+                    attempt,
+                    "Rejected",
+                    ct).ConfigureAwait(false);
                 await TryRecordMigrationHistoryAsync(fencedResult, request, ct).ConfigureAwait(false);
                 return fencedResult;
             }
@@ -607,6 +729,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 ICSharpDbClient destinationClient = GetShardClient(destinationShardId);
 
                 var tableResults = new List<CSharpDbShardMigrationTableResult>();
+                var collectionResults = new List<CSharpDbShardMigrationCollectionResult>();
                 foreach (CSharpDbShardMigrationTableManifest table in request.Manifest.Tables)
                 {
                     CSharpDbShardMigrationTableResult tableResult = await MigrateTableAsync(
@@ -619,6 +742,21 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                         pageSize,
                         ct).ConfigureAwait(false);
                     tableResults.Add(tableResult);
+                    completedSteps++;
+                    await TryRecordMigrationCheckpointAsync(
+                        plan,
+                        status: "Running",
+                        phase: $"Copied table '{tableResult.TableName}'",
+                        startedUtc,
+                        completedSteps,
+                        totalSteps,
+                        attempt,
+                        pendingMapVersion: null,
+                        requiresRestart: false,
+                        tableResults,
+                        collectionResults,
+                        issues,
+                        ct).ConfigureAwait(false);
                     if (!tableResult.Verified)
                     {
                         issues.Add(CreateMigrationIssue(
@@ -627,7 +765,6 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     }
                 }
 
-                var collectionResults = new List<CSharpDbShardMigrationCollectionResult>();
                 foreach (CSharpDbShardMigrationCollectionManifest collection in request.Manifest.Collections)
                 {
                     CSharpDbShardMigrationCollectionResult collectionResult = await MigrateCollectionAsync(
@@ -639,6 +776,21 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                         pageSize,
                         ct).ConfigureAwait(false);
                     collectionResults.Add(collectionResult);
+                    completedSteps++;
+                    await TryRecordMigrationCheckpointAsync(
+                        plan,
+                        status: "Running",
+                        phase: $"Copied collection '{collectionResult.CollectionName}'",
+                        startedUtc,
+                        completedSteps,
+                        totalSteps,
+                        attempt,
+                        pendingMapVersion: null,
+                        requiresRestart: false,
+                        tableResults,
+                        collectionResults,
+                        issues,
+                        ct).ConfigureAwait(false);
                     if (!collectionResult.Verified)
                     {
                         issues.Add(CreateMigrationIssue(
@@ -665,9 +817,32 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                         collectionResults,
                         issues,
                         catalogApplyResult: null);
+                    await TryRecordMigrationCheckpointAsync(
+                        verificationFailedResult,
+                        plan,
+                        completedSteps,
+                        totalSteps,
+                        attempt,
+                        "VerificationFailed",
+                        ct).ConfigureAwait(false);
                     await TryRecordMigrationHistoryAsync(verificationFailedResult, request, ct).ConfigureAwait(false);
                     return verificationFailedResult;
                 }
+
+                await TryRecordMigrationCheckpointAsync(
+                    plan,
+                    status: "Running",
+                    phase: "ApplyingCatalog",
+                    startedUtc,
+                    completedSteps: Math.Max(completedSteps, totalSteps - 1),
+                    totalSteps,
+                    attempt,
+                    pendingMapVersion: null,
+                    requiresRestart: false,
+                    tableResults,
+                    collectionResults,
+                    issues,
+                    ct).ConfigureAwait(false);
 
                 CSharpDbShardingOptions proposedOptions = BuildExactRouteMigrationOptions(routeKey, destinationShardId);
                 CSharpDbShardCatalogApplyResult applyResult = await ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
@@ -700,6 +875,14 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     collectionResults,
                     issues,
                     applyResult);
+                await TryRecordMigrationCheckpointAsync(
+                    appliedResult,
+                    plan,
+                    applyResult.Applied ? totalSteps : Math.Max(completedSteps, totalSteps - 1),
+                    totalSteps,
+                    attempt,
+                    applyResult.Applied ? "Completed" : "CatalogApplyFailed",
+                    ct).ConfigureAwait(false);
                 await TryRecordMigrationHistoryAsync(appliedResult, request, ct).ConfigureAwait(false);
                 return appliedResult;
             }
@@ -708,7 +891,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 _writeFences.TryRemove(fenceKey, out _);
             }
         }
-        catch (Exception ex) when (ex is CSharpDbClientException or CSharpDbClientConfigurationException or ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is CSharpDbStorageException or CSharpDbClientException or CSharpDbClientConfigurationException or ArgumentException or InvalidOperationException)
         {
             issues.Add(CreateMigrationIssue("migration-failed", ex.Message));
             CSharpDbShardMigrationResult failedResult = CreateMigrationResult(
@@ -727,6 +910,17 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 [],
                 issues,
                 catalogApplyResult: null);
+            if (plan is not null)
+            {
+                await TryRecordMigrationCheckpointAsync(
+                    failedResult,
+                    plan,
+                    completedSteps,
+                    totalSteps,
+                    attempt,
+                    "Failed",
+                    ct).ConfigureAwait(false);
+            }
             await TryRecordMigrationHistoryAsync(failedResult, request, ct).ConfigureAwait(false);
             return failedResult;
         }
@@ -740,11 +934,15 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         ArgumentNullException.ThrowIfNull(request.Manifest);
 
         DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
-        string migrationId = CreateMigrationId(startedUtc);
+        string migrationId = NormalizeMigrationId(request.MigrationId, startedUtc);
+        int attempt = Math.Max(1, request.Attempt ?? 1);
         string keyspace = string.Empty;
         string routeKey = string.Empty;
         string sourceShardId = string.Empty;
         string destinationShardId = string.Empty;
+        int totalSteps = CountMigrationSteps(request.Manifest);
+        int completedSteps = 0;
+        CSharpDbShardMigrationPlan? plan = null;
         var issues = new List<CSharpDbShardCatalogIssue>();
 
         try
@@ -824,6 +1022,13 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             }
 
             ValidateMigrationManifest(request.Manifest, issues);
+            plan = CreateBucketRangeMigrationPlan(
+                migrationId,
+                keyspace,
+                routeKey,
+                sourceShardId,
+                destinationShardId,
+                request);
             if (HasErrors(issues))
             {
                 CSharpDbShardMigrationResult rejectedResult = CreateMigrationResult(
@@ -842,9 +1047,33 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     [],
                     issues,
                     catalogApplyResult: null);
+                await TryRecordMigrationCheckpointAsync(
+                    rejectedResult,
+                    plan,
+                    completedSteps,
+                    totalSteps,
+                    attempt,
+                    "Rejected",
+                    ct).ConfigureAwait(false);
                 await TryRecordMigrationHistoryAsync(rejectedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
                 return rejectedResult;
             }
+
+            completedSteps = 1;
+            await TryRecordMigrationCheckpointAsync(
+                plan,
+                status: "Running",
+                phase: "Validated",
+                startedUtc,
+                completedSteps,
+                totalSteps,
+                attempt,
+                pendingMapVersion: null,
+                requiresRestart: false,
+                [],
+                [],
+                issues,
+                ct).ConfigureAwait(false);
 
             string fenceKey = BuildBucketRangeFenceKey(keyspace, request.StartBucketInclusive, request.EndBucketExclusive);
             var fence = new BucketRangeFence(keyspace, request.StartBucketInclusive, request.EndBucketExclusive);
@@ -869,6 +1098,14 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     [],
                     issues,
                     catalogApplyResult: null);
+                await TryRecordMigrationCheckpointAsync(
+                    fencedResult,
+                    plan,
+                    completedSteps,
+                    totalSteps,
+                    attempt,
+                    "Rejected",
+                    ct).ConfigureAwait(false);
                 await TryRecordMigrationHistoryAsync(fencedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
                 return fencedResult;
             }
@@ -880,6 +1117,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 ICSharpDbClient destinationClient = GetShardClient(destinationShardId);
 
                 var tableResults = new List<CSharpDbShardMigrationTableResult>();
+                var collectionResults = new List<CSharpDbShardMigrationCollectionResult>();
                 foreach (CSharpDbShardMigrationTableManifest table in request.Manifest.Tables)
                 {
                     CSharpDbShardMigrationTableResult tableResult = await MigrateBucketRangeTableAsync(
@@ -893,6 +1131,21 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                         pageSize,
                         ct).ConfigureAwait(false);
                     tableResults.Add(tableResult);
+                    completedSteps++;
+                    await TryRecordMigrationCheckpointAsync(
+                        plan,
+                        status: "Running",
+                        phase: $"Copied table '{tableResult.TableName}'",
+                        startedUtc,
+                        completedSteps,
+                        totalSteps,
+                        attempt,
+                        pendingMapVersion: null,
+                        requiresRestart: false,
+                        tableResults,
+                        collectionResults,
+                        issues,
+                        ct).ConfigureAwait(false);
                     if (!tableResult.Verified)
                     {
                         issues.Add(CreateMigrationIssue(
@@ -901,7 +1154,6 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     }
                 }
 
-                var collectionResults = new List<CSharpDbShardMigrationCollectionResult>();
                 foreach (CSharpDbShardMigrationCollectionManifest collection in request.Manifest.Collections)
                 {
                     CSharpDbShardMigrationCollectionResult collectionResult = await MigrateBucketRangeCollectionAsync(
@@ -914,6 +1166,21 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                         pageSize,
                         ct).ConfigureAwait(false);
                     collectionResults.Add(collectionResult);
+                    completedSteps++;
+                    await TryRecordMigrationCheckpointAsync(
+                        plan,
+                        status: "Running",
+                        phase: $"Copied collection '{collectionResult.CollectionName}'",
+                        startedUtc,
+                        completedSteps,
+                        totalSteps,
+                        attempt,
+                        pendingMapVersion: null,
+                        requiresRestart: false,
+                        tableResults,
+                        collectionResults,
+                        issues,
+                        ct).ConfigureAwait(false);
                     if (!collectionResult.Verified)
                     {
                         issues.Add(CreateMigrationIssue(
@@ -940,9 +1207,32 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                         collectionResults,
                         issues,
                         catalogApplyResult: null);
+                    await TryRecordMigrationCheckpointAsync(
+                        verificationFailedResult,
+                        plan,
+                        completedSteps,
+                        totalSteps,
+                        attempt,
+                        "VerificationFailed",
+                        ct).ConfigureAwait(false);
                     await TryRecordMigrationHistoryAsync(verificationFailedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
                     return verificationFailedResult;
                 }
+
+                await TryRecordMigrationCheckpointAsync(
+                    plan,
+                    status: "Running",
+                    phase: "ApplyingCatalog",
+                    startedUtc,
+                    completedSteps: Math.Max(completedSteps, totalSteps - 1),
+                    totalSteps,
+                    attempt,
+                    pendingMapVersion: null,
+                    requiresRestart: false,
+                    tableResults,
+                    collectionResults,
+                    issues,
+                    ct).ConfigureAwait(false);
 
                 CSharpDbShardingOptions proposedOptions = BuildBucketRangeMigrationOptions(
                     request.StartBucketInclusive,
@@ -979,6 +1269,14 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                     collectionResults,
                     issues,
                     applyResult);
+                await TryRecordMigrationCheckpointAsync(
+                    appliedResult,
+                    plan,
+                    applyResult.Applied ? totalSteps : Math.Max(completedSteps, totalSteps - 1),
+                    totalSteps,
+                    attempt,
+                    applyResult.Applied ? "Completed" : "CatalogApplyFailed",
+                    ct).ConfigureAwait(false);
                 await TryRecordMigrationHistoryAsync(appliedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
                 return appliedResult;
             }
@@ -987,7 +1285,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 _bucketRangeFences.TryRemove(fenceKey, out _);
             }
         }
-        catch (Exception ex) when (ex is CSharpDbClientException or CSharpDbClientConfigurationException or ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is CSharpDbStorageException or CSharpDbClientException or CSharpDbClientConfigurationException or ArgumentException or InvalidOperationException)
         {
             issues.Add(CreateMigrationIssue("migration-failed", ex.Message));
             CSharpDbShardMigrationResult failedResult = CreateMigrationResult(
@@ -1006,6 +1304,17 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 [],
                 issues,
                 catalogApplyResult: null);
+            if (plan is not null)
+            {
+                await TryRecordMigrationCheckpointAsync(
+                    failedResult,
+                    plan,
+                    completedSteps,
+                    totalSteps,
+                    attempt,
+                    "Failed",
+                    ct).ConfigureAwait(false);
+            }
             await TryRecordMigrationHistoryAsync(failedResult, "BucketRange", request.Operator, request.Comment, ct).ConfigureAwait(false);
             return failedResult;
         }
@@ -1525,7 +1834,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 Error = verified ? null : "Destination route-key row set does not match source row set.",
             };
         }
-        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is CSharpDbStorageException or CSharpDbClientException or ArgumentException or InvalidOperationException)
         {
             return new CSharpDbShardMigrationTableResult
             {
@@ -1591,7 +1900,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 Error = verified ? null : "Destination route-key document set does not match source document set.",
             };
         }
-        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is CSharpDbStorageException or CSharpDbClientException or ArgumentException or InvalidOperationException)
         {
             return new CSharpDbShardMigrationCollectionResult
             {
@@ -1676,7 +1985,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 Error = verified ? null : "Destination bucket-range row set does not match source row set.",
             };
         }
-        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is CSharpDbStorageException or CSharpDbClientException or ArgumentException or InvalidOperationException)
         {
             return new CSharpDbShardMigrationTableResult
             {
@@ -1755,7 +2064,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 Error = verified ? null : "Destination bucket-range document set does not match source document set.",
             };
         }
-        catch (Exception ex) when (ex is CSharpDbClientException or ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is CSharpDbStorageException or CSharpDbClientException or ArgumentException or InvalidOperationException)
         {
             return new CSharpDbShardMigrationCollectionResult
             {
@@ -2013,6 +2322,207 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         return ranges.ToArray();
     }
 
+    private static int CountMigrationSteps(CSharpDbShardMigrationManifest manifest)
+        => Math.Max(2, 2 + (manifest.Tables?.Count ?? 0) + (manifest.Collections?.Count ?? 0));
+
+    private static string NormalizeMigrationId(string? migrationId, DateTimeOffset startedUtc)
+        => string.IsNullOrWhiteSpace(migrationId)
+            ? CreateMigrationId(startedUtc)
+            : NormalizeMigrationId(migrationId);
+
+    private static string NormalizeMigrationId(string migrationId)
+    {
+        if (string.IsNullOrWhiteSpace(migrationId))
+            throw new ArgumentException("Migration id is required.", nameof(migrationId));
+
+        return migrationId.Trim();
+    }
+
+    private static bool IsTerminalSuccessfulMigrationStatus(string status)
+        => status is "PendingActivation" or "Succeeded";
+
+    private static CSharpDbShardMigrationPlan CreateExactMigrationPlan(
+        string migrationId,
+        string keyspace,
+        string routeKey,
+        string sourceShardId,
+        string destinationShardId,
+        CSharpDbShardExactKeyMigrationRequest request)
+        => new()
+        {
+            MigrationId = migrationId,
+            MigrationType = "ExactRouteKey",
+            Keyspace = keyspace,
+            RouteKey = routeKey,
+            SourceShardId = sourceShardId,
+            DestinationShardId = destinationShardId,
+            Manifest = CloneMigrationManifest(request.Manifest),
+            ExpectedCurrentMapVersion = request.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = request.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = request.DeleteSourceAfterVerification,
+            Operator = request.Operator,
+            Comment = request.Comment,
+        };
+
+    private static CSharpDbShardMigrationPlan CreateBucketRangeMigrationPlan(
+        string migrationId,
+        string keyspace,
+        string routeKey,
+        string sourceShardId,
+        string destinationShardId,
+        CSharpDbShardBucketRangeMigrationRequest request)
+        => new()
+        {
+            MigrationId = migrationId,
+            MigrationType = "BucketRange",
+            Keyspace = keyspace,
+            RouteKey = routeKey,
+            SourceShardId = sourceShardId,
+            DestinationShardId = destinationShardId,
+            StartBucketInclusive = request.StartBucketInclusive,
+            EndBucketExclusive = request.EndBucketExclusive,
+            Manifest = CloneMigrationManifest(request.Manifest),
+            ExpectedCurrentMapVersion = request.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = request.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = request.DeleteSourceAfterVerification,
+            Operator = request.Operator,
+            Comment = request.Comment,
+        };
+
+    private async Task TryRecordMigrationCheckpointAsync(
+        CSharpDbShardMigrationPlan plan,
+        string status,
+        string phase,
+        DateTimeOffset startedUtc,
+        int completedSteps,
+        int totalSteps,
+        int attempt,
+        int? pendingMapVersion,
+        bool requiresRestart,
+        List<CSharpDbShardMigrationTableResult> tableResults,
+        List<CSharpDbShardMigrationCollectionResult> collectionResults,
+        List<CSharpDbShardCatalogIssue> issues,
+        CancellationToken ct)
+    {
+        if (_catalogStore is null || !_catalogStore.CanWrite)
+            return;
+
+        try
+        {
+            await _catalogStore.UpsertMigrationCheckpointAsync(
+                _effectiveOptions,
+                new CSharpDbShardMigrationCheckpoint
+                {
+                    MigrationId = plan.MigrationId,
+                    MigrationType = plan.MigrationType,
+                    Status = status,
+                    Phase = phase,
+                    StartedUtc = startedUtc,
+                    UpdatedUtc = DateTimeOffset.UtcNow,
+                    CompletedUtc = null,
+                    Plan = plan,
+                    CompletedSteps = Math.Clamp(completedSteps, 0, totalSteps),
+                    TotalSteps = totalSteps,
+                    Attempt = attempt,
+                    MapVersion = _map.MapVersion,
+                    PendingMapVersion = pendingMapVersion,
+                    RequiresRestart = requiresRestart,
+                    RequiresOperatorRecovery = false,
+                    RecoveryAction = null,
+                    Tables = tableResults.Select(CloneMigrationTableResult).ToList(),
+                    Collections = collectionResults.Select(CloneMigrationCollectionResult).ToList(),
+                    Issues = issues.Select(CloneIssue).ToList(),
+                },
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or CSharpDbClientException or CSharpDbClientConfigurationException)
+        {
+            issues.Add(new CSharpDbShardCatalogIssue
+            {
+                Severity = CSharpDbShardCatalogIssueSeverity.Warning,
+                Code = "migration-checkpoint-write-failed",
+                Message = $"Writing migration checkpoint '{plan.MigrationId}' failed: {ex.Message}",
+            });
+        }
+    }
+
+    private async Task TryRecordMigrationCheckpointAsync(
+        CSharpDbShardMigrationResult result,
+        CSharpDbShardMigrationPlan plan,
+        int completedSteps,
+        int totalSteps,
+        int attempt,
+        string phase,
+        CancellationToken ct)
+    {
+        if (_catalogStore is null || !_catalogStore.CanWrite)
+            return;
+
+        try
+        {
+            await _catalogStore.UpsertMigrationCheckpointAsync(
+                _effectiveOptions,
+                new CSharpDbShardMigrationCheckpoint
+                {
+                    MigrationId = result.MigrationId,
+                    MigrationType = plan.MigrationType,
+                    Status = result.Status,
+                    Phase = phase,
+                    StartedUtc = result.StartedUtc,
+                    UpdatedUtc = DateTimeOffset.UtcNow,
+                    CompletedUtc = result.CompletedUtc,
+                    Plan = plan,
+                    CompletedSteps = Math.Clamp(completedSteps, 0, totalSteps),
+                    TotalSteps = totalSteps,
+                    Attempt = attempt,
+                    MapVersion = result.MapVersion,
+                    PendingMapVersion = result.PendingMapVersion,
+                    RequiresRestart = result.RequiresRestart,
+                    RequiresOperatorRecovery = result.RequiresOperatorRecovery,
+                    RecoveryAction = result.RecoveryAction,
+                    Tables = result.Tables.Select(CloneMigrationTableResult).ToList(),
+                    Collections = result.Collections.Select(CloneMigrationCollectionResult).ToList(),
+                    Issues = result.Issues.Select(CloneIssue).ToList(),
+                },
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or CSharpDbClientException or CSharpDbClientConfigurationException)
+        {
+            result.Issues.Add(new CSharpDbShardCatalogIssue
+            {
+                Severity = CSharpDbShardCatalogIssueSeverity.Warning,
+                Code = "migration-checkpoint-write-failed",
+                Message = $"Migration completed with status '{result.Status}', but writing migration checkpoint failed: {ex.Message}",
+            });
+        }
+    }
+
+    private static CSharpDbShardMigrationResult CreateMigrationResultFromCheckpoint(
+        CSharpDbShardMigrationCheckpoint checkpoint,
+        string message)
+        => new()
+        {
+            MigrationId = checkpoint.MigrationId,
+            StartedUtc = checkpoint.StartedUtc,
+            CompletedUtc = checkpoint.CompletedUtc ?? checkpoint.UpdatedUtc,
+            Succeeded = IsTerminalSuccessfulMigrationStatus(checkpoint.Status),
+            Status = checkpoint.Status,
+            Message = message,
+            Keyspace = checkpoint.Plan.Keyspace,
+            RouteKey = checkpoint.Plan.RouteKey,
+            SourceShardId = checkpoint.Plan.SourceShardId,
+            DestinationShardId = checkpoint.Plan.DestinationShardId,
+            MapVersion = checkpoint.MapVersion,
+            PendingMapVersion = checkpoint.PendingMapVersion,
+            RequiresRestart = checkpoint.RequiresRestart,
+            RequiresOperatorRecovery = checkpoint.RequiresOperatorRecovery,
+            RecoveryAction = checkpoint.RecoveryAction,
+            Tables = checkpoint.Tables.Select(CloneMigrationTableResult).ToList(),
+            Collections = checkpoint.Collections.Select(CloneMigrationCollectionResult).ToList(),
+            Issues = checkpoint.Issues.Select(CloneIssue).ToList(),
+            CatalogApplyResult = null,
+        };
+
     private CSharpDbShardMigrationResult CreateMigrationResult(
         string migrationId,
         DateTimeOffset startedUtc,
@@ -2130,6 +2640,66 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             Tables = result.Tables.Select(CloneMigrationTableResult).ToList(),
             Collections = result.Collections.Select(CloneMigrationCollectionResult).ToList(),
             Issues = result.Issues.Select(CloneIssue).ToList(),
+        };
+
+    private static CSharpDbShardMigrationManifest CloneMigrationManifest(CSharpDbShardMigrationManifest value)
+        => new()
+        {
+            PageSize = value.PageSize,
+            Tables = value.Tables.Select(table => new CSharpDbShardMigrationTableManifest
+            {
+                TableName = table.TableName,
+                RouteKeyColumn = table.RouteKeyColumn,
+                PrimaryKeyColumn = table.PrimaryKeyColumn,
+            }).ToList(),
+            Collections = value.Collections.Select(collection => new CSharpDbShardMigrationCollectionManifest
+            {
+                CollectionName = collection.CollectionName,
+                RouteKeyPropertyName = collection.RouteKeyPropertyName,
+            }).ToList(),
+        };
+
+    private static CSharpDbShardMigrationPlan CloneMigrationPlan(CSharpDbShardMigrationPlan value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            Manifest = CloneMigrationManifest(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    private static CSharpDbShardMigrationCheckpoint CloneMigrationCheckpoint(CSharpDbShardMigrationCheckpoint value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            Status = value.Status,
+            Phase = value.Phase,
+            StartedUtc = value.StartedUtc,
+            UpdatedUtc = value.UpdatedUtc,
+            CompletedUtc = value.CompletedUtc,
+            Plan = CloneMigrationPlan(value.Plan),
+            CompletedSteps = value.CompletedSteps,
+            TotalSteps = value.TotalSteps,
+            Attempt = value.Attempt,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+            Tables = value.Tables.Select(CloneMigrationTableResult).ToList(),
+            Collections = value.Collections.Select(CloneMigrationCollectionResult).ToList(),
+            Issues = value.Issues.Select(CloneIssue).ToList(),
         };
 
     private static CSharpDbShardMigrationTableResult CloneMigrationTableResult(CSharpDbShardMigrationTableResult value)
@@ -3214,6 +3784,67 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 .ToList();
         }
 
+        public async Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetMigrationProgressAsync(CancellationToken ct)
+        {
+            if (!File.Exists(_path))
+                return [];
+
+            CSharpDbShardCatalogDocument document = await ReadDocumentAsync(_path, ct).ConfigureAwait(false);
+            return document.MigrationCheckpoints
+                .OrderByDescending(checkpoint => checkpoint.UpdatedUtc)
+                .Select(ToMigrationProgress)
+                .ToList();
+        }
+
+        public async Task<CSharpDbShardMigrationProgress?> GetMigrationProgressAsync(
+            string migrationId,
+            CancellationToken ct)
+        {
+            CSharpDbShardMigrationCheckpoint? checkpoint =
+                await GetMigrationCheckpointAsync(migrationId, ct).ConfigureAwait(false);
+            return checkpoint is null ? null : ToMigrationProgress(checkpoint);
+        }
+
+        public async Task<CSharpDbShardMigrationCheckpoint?> GetMigrationCheckpointAsync(
+            string migrationId,
+            CancellationToken ct)
+        {
+            string normalizedMigrationId = NormalizeMigrationId(migrationId);
+            if (!File.Exists(_path))
+                return null;
+
+            CSharpDbShardCatalogDocument document = await ReadDocumentAsync(_path, ct).ConfigureAwait(false);
+            CSharpDbShardMigrationCheckpoint? checkpoint = document.MigrationCheckpoints
+                .FirstOrDefault(item => string.Equals(item.MigrationId, normalizedMigrationId, StringComparison.Ordinal));
+            return checkpoint is null ? null : CloneMigrationCheckpoint(checkpoint);
+        }
+
+        public async Task UpsertMigrationCheckpointAsync(
+            CSharpDbShardingOptions activeOptions,
+            CSharpDbShardMigrationCheckpoint checkpoint,
+            CancellationToken ct)
+        {
+            if (!_options.AllowWrites)
+                throw new CSharpDbClientConfigurationException("Shard catalog writes are disabled by configuration.");
+
+            CSharpDbShardCatalogDocument document = File.Exists(_path)
+                ? await ReadDocumentAsync(_path, ct).ConfigureAwait(false)
+                : new CSharpDbShardCatalogDocument
+                {
+                    ActiveMap = CloneOptions(activeOptions, includeRuntimeOptions: false),
+                };
+
+            int existingIndex = document.MigrationCheckpoints.FindIndex(item =>
+                string.Equals(item.MigrationId, checkpoint.MigrationId, StringComparison.Ordinal));
+            CSharpDbShardMigrationCheckpoint clone = CloneMigrationCheckpoint(checkpoint);
+            if (existingIndex >= 0)
+                document.MigrationCheckpoints[existingIndex] = clone;
+            else
+                document.MigrationCheckpoints.Add(clone);
+
+            await WriteDocumentAsync(document, ct).ConfigureAwait(false);
+        }
+
         public async Task<CSharpDbShardingOptions> GetLatestOptionsAsync(
             CSharpDbShardingOptions runtimeOptions,
             CancellationToken ct)
@@ -3301,6 +3932,36 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 Message = "Shard catalog update was written. Restart or recreate the sharded client to activate the new map.",
                 Validation = validation,
                 PendingMap = validation.Preview,
+            };
+        }
+
+        private static CSharpDbShardMigrationProgress ToMigrationProgress(CSharpDbShardMigrationCheckpoint checkpoint)
+        {
+            int totalSteps = Math.Max(1, checkpoint.TotalSteps);
+            int completedSteps = Math.Clamp(checkpoint.CompletedSteps, 0, totalSteps);
+            return new CSharpDbShardMigrationProgress
+            {
+                MigrationId = checkpoint.MigrationId,
+                MigrationType = checkpoint.MigrationType,
+                Status = checkpoint.Status,
+                Phase = checkpoint.Phase,
+                StartedUtc = checkpoint.StartedUtc,
+                UpdatedUtc = checkpoint.UpdatedUtc,
+                CompletedUtc = checkpoint.CompletedUtc,
+                Keyspace = checkpoint.Plan.Keyspace,
+                RouteKey = checkpoint.Plan.RouteKey,
+                SourceShardId = checkpoint.Plan.SourceShardId,
+                DestinationShardId = checkpoint.Plan.DestinationShardId,
+                CompletedSteps = completedSteps,
+                TotalSteps = totalSteps,
+                PercentComplete = Math.Round(completedSteps * 100d / totalSteps, 2),
+                Attempt = checkpoint.Attempt,
+                MapVersion = checkpoint.MapVersion,
+                PendingMapVersion = checkpoint.PendingMapVersion,
+                RequiresRestart = checkpoint.RequiresRestart,
+                RequiresOperatorRecovery = checkpoint.RequiresOperatorRecovery,
+                RecoveryAction = checkpoint.RecoveryAction,
+                Issues = checkpoint.Issues.Select(CloneIssue).ToList(),
             };
         }
 
@@ -3461,6 +4122,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             };
             public List<CSharpDbShardCatalogHistoryEntry> History { get; set; } = [];
             public List<CSharpDbShardMigrationHistoryEntry> MigrationHistory { get; set; } = [];
+            public List<CSharpDbShardMigrationCheckpoint> MigrationCheckpoints { get; set; } = [];
         }
     }
 

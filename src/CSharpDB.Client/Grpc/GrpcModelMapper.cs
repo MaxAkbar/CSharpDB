@@ -1013,11 +1013,15 @@ public static class GrpcModelMapper
             DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
             Operator = value.Operator,
             Comment = value.Comment,
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
         };
 
     public static CSharpDbShardExactKeyMigrationRequest ToModel(ShardExactKeyMigrationRequestMessage value)
         => new()
         {
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
             Keyspace = value.Keyspace,
             RouteKey = value.RouteKey,
             DestinationShardId = value.DestinationShardId,
@@ -1043,11 +1047,15 @@ public static class GrpcModelMapper
             DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
             Operator = value.Operator,
             Comment = value.Comment,
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
         };
 
     public static CSharpDbShardBucketRangeMigrationRequest ToModel(ShardBucketRangeMigrationRequestMessage value)
         => new()
         {
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
             Keyspace = value.Keyspace,
             SourceShardId = value.SourceShardId,
             DestinationShardId = value.DestinationShardId,
@@ -1222,6 +1230,66 @@ public static class GrpcModelMapper
             Comment = value.Comment,
             Tables = value.Tables.Select(ToModel).ToList(),
             Collections = value.Collections.Select(ToModel).ToList(),
+            Issues = value.Issues.Select(ToModel).ToList(),
+        };
+
+    public static ShardMigrationIdRequestMessage ToMigrationIdRequest(string migrationId)
+        => new() { MigrationId = migrationId };
+
+    public static ShardMigrationProgressMessage ToMessage(CSharpDbShardMigrationProgress value)
+    {
+        var message = new ShardMigrationProgressMessage
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            Status = value.Status,
+            Phase = value.Phase,
+            StartedUtc = Timestamp.FromDateTimeOffset(value.StartedUtc),
+            UpdatedUtc = Timestamp.FromDateTimeOffset(value.UpdatedUtc),
+            CompletedUtc = value.CompletedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.CompletedUtc.Value)
+                : null,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            CompletedSteps = value.CompletedSteps,
+            TotalSteps = value.TotalSteps,
+            PercentComplete = value.PercentComplete,
+            Attempt = value.Attempt,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+        };
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationProgress ToModel(ShardMigrationProgressMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            Status = value.Status,
+            Phase = value.Phase,
+            StartedUtc = value.StartedUtc.ToDateTimeOffset(),
+            UpdatedUtc = value.UpdatedUtc.ToDateTimeOffset(),
+            CompletedUtc = value.CompletedUtc?.ToDateTimeOffset(),
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            CompletedSteps = value.CompletedSteps,
+            TotalSteps = value.TotalSteps,
+            PercentComplete = value.PercentComplete,
+            Attempt = value.Attempt,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
             Issues = value.Issues.Select(ToModel).ToList(),
         };
 

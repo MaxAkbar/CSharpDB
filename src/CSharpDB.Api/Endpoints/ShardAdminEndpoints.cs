@@ -16,6 +16,10 @@ public static class ShardAdminEndpoints
         group.MapPost("/sharding/catalog/validate", ValidateShardCatalogUpdate);
         group.MapPost("/sharding/catalog/apply", ApplyShardCatalogUpdate);
         group.MapGet("/sharding/migrations", GetShardMigrationHistory);
+        group.MapGet("/sharding/migrations/progress", GetShardMigrationProgress);
+        group.MapGet("/sharding/migrations/{migrationId}/progress", GetShardMigrationProgressById);
+        group.MapPost("/sharding/migrations/{migrationId}/resume", ResumeShardMigration);
+        group.MapPost("/sharding/migrations/{migrationId}/retry", RetryShardMigration);
         group.MapPost("/sharding/migrations/exact-route-key", MigrateExactRouteKey);
         group.MapPost("/sharding/migrations/bucket-range", MigrateBucketRange);
         group.MapPost("/sharding/directory/resolve", ResolveDirectoryEntry);
@@ -168,6 +172,54 @@ public static class ShardAdminEndpoints
             return Unsupported();
 
         return Results.Ok(await shardAdmin.GetShardMigrationHistoryAsync(ct));
+    }
+
+    private static async Task<IResult> GetShardMigrationProgress(ICSharpDbClient db, CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        return Results.Ok(await shardAdmin.GetShardMigrationProgressAsync(ct));
+    }
+
+    private static async Task<IResult> GetShardMigrationProgressById(
+        string migrationId,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        CSharpDbShardMigrationProgress? progress = await shardAdmin.GetShardMigrationProgressAsync(migrationId, ct);
+        return progress is null ? Results.NotFound(new { error = $"Shard migration '{migrationId}' was not found." }) : Results.Ok(progress);
+    }
+
+    private static async Task<IResult> ResumeShardMigration(
+        string migrationId,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        CSharpDbShardMigrationResult result = await shardAdmin.ResumeShardMigrationAsync(migrationId, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> RetryShardMigration(
+        string migrationId,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardAdminClient? shardAdmin = GetShardAdmin(db);
+        if (shardAdmin is null)
+            return Unsupported();
+
+        CSharpDbShardMigrationResult result = await shardAdmin.RetryShardMigrationAsync(migrationId, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
     }
 
     private static async Task<IResult> ResolveDirectoryEntry(

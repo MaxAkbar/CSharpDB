@@ -318,6 +318,8 @@ public sealed class CSharpDbShardMigrationCollectionManifest
 
 public sealed class CSharpDbShardExactKeyMigrationRequest
 {
+    public string? MigrationId { get; init; }
+    public int? Attempt { get; init; }
     public required string Keyspace { get; init; }
     public required string RouteKey { get; init; }
     public required string DestinationShardId { get; init; }
@@ -331,6 +333,8 @@ public sealed class CSharpDbShardExactKeyMigrationRequest
 
 public sealed class CSharpDbShardBucketRangeMigrationRequest
 {
+    public string? MigrationId { get; init; }
+    public int? Attempt { get; init; }
     public required string Keyspace { get; init; }
     public required string SourceShardId { get; init; }
     public required string DestinationShardId { get; init; }
@@ -393,6 +397,72 @@ public sealed class CSharpDbShardMigrationResult
     public CSharpDbShardCatalogApplyResult? CatalogApplyResult { get; init; }
 }
 
+public sealed class CSharpDbShardMigrationPlan
+{
+    public required string MigrationId { get; init; }
+    public required string MigrationType { get; init; }
+    public required string Keyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public required string SourceShardId { get; init; }
+    public required string DestinationShardId { get; init; }
+    public int? StartBucketInclusive { get; init; }
+    public int? EndBucketExclusive { get; init; }
+    public required CSharpDbShardMigrationManifest Manifest { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public bool OverwriteDestinationRows { get; init; } = true;
+    public bool DeleteSourceAfterVerification { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardMigrationCheckpoint
+{
+    public required string MigrationId { get; init; }
+    public required string MigrationType { get; init; }
+    public required string Status { get; init; }
+    public required string Phase { get; init; }
+    public DateTimeOffset StartedUtc { get; init; }
+    public DateTimeOffset UpdatedUtc { get; init; }
+    public DateTimeOffset? CompletedUtc { get; init; }
+    public required CSharpDbShardMigrationPlan Plan { get; init; }
+    public int CompletedSteps { get; init; }
+    public int TotalSteps { get; init; }
+    public int Attempt { get; init; } = 1;
+    public int MapVersion { get; init; }
+    public int? PendingMapVersion { get; init; }
+    public bool RequiresRestart { get; init; }
+    public bool RequiresOperatorRecovery { get; init; }
+    public string? RecoveryAction { get; init; }
+    public List<CSharpDbShardMigrationTableResult> Tables { get; init; } = [];
+    public List<CSharpDbShardMigrationCollectionResult> Collections { get; init; } = [];
+    public List<CSharpDbShardCatalogIssue> Issues { get; init; } = [];
+}
+
+public sealed class CSharpDbShardMigrationProgress
+{
+    public required string MigrationId { get; init; }
+    public required string MigrationType { get; init; }
+    public required string Status { get; init; }
+    public required string Phase { get; init; }
+    public DateTimeOffset StartedUtc { get; init; }
+    public DateTimeOffset UpdatedUtc { get; init; }
+    public DateTimeOffset? CompletedUtc { get; init; }
+    public required string Keyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public required string SourceShardId { get; init; }
+    public required string DestinationShardId { get; init; }
+    public int CompletedSteps { get; init; }
+    public int TotalSteps { get; init; }
+    public double PercentComplete { get; init; }
+    public int Attempt { get; init; }
+    public int MapVersion { get; init; }
+    public int? PendingMapVersion { get; init; }
+    public bool RequiresRestart { get; init; }
+    public bool RequiresOperatorRecovery { get; init; }
+    public string? RecoveryAction { get; init; }
+    public List<CSharpDbShardCatalogIssue> Issues { get; init; } = [];
+}
+
 public sealed class CSharpDbShardMigrationHistoryEntry
 {
     public required string MigrationId { get; init; }
@@ -434,6 +504,10 @@ public interface ICSharpDbShardAdminClient : IAsyncDisposable
     Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(CSharpDbShardExactKeyMigrationRequest request, CancellationToken ct = default);
     Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(CSharpDbShardBucketRangeMigrationRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default);
+    Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(string migrationId, CancellationToken ct = default);
+    Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(string migrationId, CancellationToken ct = default);
+    Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(string migrationId, CancellationToken ct = default);
 }
 
 public interface ICSharpDbShardDirectoryClient : IAsyncDisposable

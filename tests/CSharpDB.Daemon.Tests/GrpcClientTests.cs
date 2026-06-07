@@ -835,6 +835,27 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal(2, pending.PendingMap!.MapVersion);
                 Assert.Equal("s1", pending.PendingMap.ExactKeyPins["tenant-a"]);
 
+                CSharpDbShardMigrationProgress restProgress =
+                    Assert.Single(await restAdmin.GetShardMigrationProgressAsync(Ct));
+                Assert.Equal(migration.MigrationId, restProgress.MigrationId);
+                Assert.Equal("ExactRouteKey", restProgress.MigrationType);
+                Assert.Equal("PendingActivation", restProgress.Status);
+                Assert.Equal("Completed", restProgress.Phase);
+                Assert.Equal(100d, restProgress.PercentComplete);
+                Assert.Equal(2, restProgress.PendingMapVersion);
+
+                CSharpDbShardMigrationProgress? grpcProgress =
+                    await grpcAdmin.GetShardMigrationProgressAsync(migration.MigrationId, Ct);
+                Assert.NotNull(grpcProgress);
+                Assert.Equal(restProgress.MigrationId, grpcProgress.MigrationId);
+                Assert.Equal(restProgress.Status, grpcProgress.Status);
+
+                CSharpDbShardMigrationResult resumed =
+                    await restAdmin.ResumeShardMigrationAsync(migration.MigrationId, Ct);
+                Assert.True(resumed.Succeeded);
+                Assert.Equal("PendingActivation", resumed.Status);
+                Assert.Equal(migration.MigrationId, resumed.MigrationId);
+
                 CSharpDbShardMigrationHistoryEntry restHistory = Assert.Single(await restAdmin.GetShardMigrationHistoryAsync(Ct));
                 Assert.Equal(migration.MigrationId, restHistory.MigrationId);
                 Assert.Equal("ExactRouteKey", restHistory.MigrationType);
@@ -961,6 +982,21 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal(2, pending.PendingMap!.MapVersion);
                 Assert.Equal("s1", GetOwnerForBucket(pending.PendingMap, 0));
                 Assert.Equal("s0", GetOwnerForBucket(pending.PendingMap, 1));
+
+                CSharpDbShardMigrationProgress restProgress =
+                    Assert.Single(await restAdmin.GetShardMigrationProgressAsync(Ct));
+                Assert.Equal(migration.MigrationId, restProgress.MigrationId);
+                Assert.Equal("BucketRange", restProgress.MigrationType);
+                Assert.Equal("PendingActivation", restProgress.Status);
+                Assert.Equal("Completed", restProgress.Phase);
+                Assert.Equal(100d, restProgress.PercentComplete);
+                Assert.Equal(2, restProgress.PendingMapVersion);
+
+                CSharpDbShardMigrationProgress? grpcProgress =
+                    await grpcAdmin.GetShardMigrationProgressAsync(migration.MigrationId, Ct);
+                Assert.NotNull(grpcProgress);
+                Assert.Equal(restProgress.MigrationId, grpcProgress.MigrationId);
+                Assert.Equal(restProgress.Status, grpcProgress.Status);
 
                 CSharpDbShardMigrationHistoryEntry history = Assert.Single(await grpcAdmin.GetShardMigrationHistoryAsync(Ct));
                 Assert.Equal(migration.MigrationId, history.MigrationId);

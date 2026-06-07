@@ -23,6 +23,10 @@ service CSharpDbRpc {
   rpc MigrateExactRouteKey (ShardExactKeyMigrationRequestMessage) returns (ShardMigrationResultMessage);
   rpc MigrateBucketRange (ShardBucketRangeMigrationRequestMessage) returns (ShardMigrationResultMessage);
   rpc GetShardMigrationHistory (google.protobuf.Empty) returns (ShardMigrationHistoryListResponse);
+  rpc GetShardMigrationProgress (google.protobuf.Empty) returns (ShardMigrationProgressListResponse);
+  rpc GetShardMigrationProgressById (ShardMigrationIdRequestMessage) returns (OptionalShardMigrationProgressResponse);
+  rpc ResumeShardMigration (ShardMigrationIdRequestMessage) returns (ShardMigrationResultMessage);
+  rpc RetryShardMigration (ShardMigrationIdRequestMessage) returns (ShardMigrationResultMessage);
   rpc ResolveShardDirectoryEntry (ShardDirectoryResolveRequestMessage) returns (ShardDirectoryResolutionMessage);
   rpc ReserveShardDirectoryEntry (ShardDirectoryReserveRequestMessage) returns (ShardDirectoryMutationResultMessage);
   rpc ActivateShardDirectoryEntry (ShardDirectoryActivateRequestMessage) returns (ShardDirectoryMutationResultMessage);
@@ -362,6 +366,8 @@ message ShardExactKeyMigrationRequestMessage {
   bool delete_source_after_verification = 7;
   google.protobuf.StringValue operator = 8;
   google.protobuf.StringValue comment = 9;
+  google.protobuf.StringValue migration_id = 10;
+  google.protobuf.Int32Value attempt = 11;
 }
 
 message ShardBucketRangeMigrationRequestMessage {
@@ -376,6 +382,8 @@ message ShardBucketRangeMigrationRequestMessage {
   bool delete_source_after_verification = 9;
   google.protobuf.StringValue operator = 10;
   google.protobuf.StringValue comment = 11;
+  google.protobuf.StringValue migration_id = 12;
+  google.protobuf.Int32Value attempt = 13;
 }
 
 message ShardMigrationTableResultMessage {
@@ -451,6 +459,42 @@ message ShardMigrationHistoryEntryMessage {
 
 message ShardMigrationHistoryListResponse {
   repeated ShardMigrationHistoryEntryMessage items = 1;
+}
+
+message ShardMigrationIdRequestMessage {
+  string migration_id = 1;
+}
+
+message ShardMigrationProgressMessage {
+  string migration_id = 1;
+  string migration_type = 2;
+  string status = 3;
+  string phase = 4;
+  google.protobuf.Timestamp started_utc = 5;
+  google.protobuf.Timestamp updated_utc = 6;
+  google.protobuf.Timestamp completed_utc = 7;
+  string keyspace = 8;
+  string route_key = 9;
+  string source_shard_id = 10;
+  string destination_shard_id = 11;
+  int32 completed_steps = 12;
+  int32 total_steps = 13;
+  double percent_complete = 14;
+  int32 attempt = 15;
+  int32 map_version = 16;
+  google.protobuf.Int32Value pending_map_version = 17;
+  bool requires_restart = 18;
+  bool requires_operator_recovery = 19;
+  google.protobuf.StringValue recovery_action = 20;
+  repeated ShardCatalogIssueMessage issues = 21;
+}
+
+message ShardMigrationProgressListResponse {
+  repeated ShardMigrationProgressMessage items = 1;
+}
+
+message OptionalShardMigrationProgressResponse {
+  ShardMigrationProgressMessage value = 1;
 }
 
 message ShardDirectoryResolveRequestMessage {

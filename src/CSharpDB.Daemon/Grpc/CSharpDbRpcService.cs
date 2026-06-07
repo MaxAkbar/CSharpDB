@@ -70,6 +70,33 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
             return response;
         });
 
+    public override Task<ShardMigrationProgressListResponse> GetShardMigrationProgress(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMigrationProgressAsync(ct), value =>
+        {
+            var response = new ShardMigrationProgressListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<OptionalShardMigrationProgressResponse> GetShardMigrationProgressById(
+        ShardMigrationIdRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMigrationProgressAsync(request.MigrationId, ct), value =>
+            new OptionalShardMigrationProgressResponse
+            {
+                Value = value is null ? null : GrpcModelMapper.ToMessage(value),
+            });
+
+    public override Task<ShardMigrationResultMessage> ResumeShardMigration(
+        ShardMigrationIdRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ResumeShardMigrationAsync(request.MigrationId, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardMigrationResultMessage> RetryShardMigration(
+        ShardMigrationIdRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().RetryShardMigrationAsync(request.MigrationId, ct), GrpcModelMapper.ToMessage);
+
     public override Task<ShardDirectoryResolutionMessage> ResolveShardDirectoryEntry(
         ShardDirectoryResolveRequestMessage request,
         ServerCallContext context)

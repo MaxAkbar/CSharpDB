@@ -851,6 +851,21 @@ public sealed class CSharpDbShardedClientTests
                 Assert.Equal("s1", pending.PendingMap!.ExactKeyPins["tenant-a"]);
                 Assert.Equal(1, Assert.Single(pending.PendingMap.Directories).EntryCount);
 
+                CSharpDbShardMigrationProgress progress = Assert.Single(await client.GetShardMigrationProgressAsync(Ct));
+                Assert.Equal(migration.MigrationId, progress.MigrationId);
+                Assert.Equal("ExactRouteKey", progress.MigrationType);
+                Assert.Equal("PendingActivation", progress.Status);
+                Assert.Equal("Completed", progress.Phase);
+                Assert.Equal(100d, progress.PercentComplete);
+                Assert.Equal(1, progress.Attempt);
+                Assert.Equal(2, progress.PendingMapVersion);
+                Assert.True(progress.RequiresRestart);
+
+                CSharpDbShardMigrationProgress? progressById =
+                    await client.GetShardMigrationProgressAsync(migration.MigrationId, Ct);
+                Assert.NotNull(progressById);
+                Assert.Equal(progress.Status, progressById.Status);
+
                 CSharpDbShardMigrationHistoryEntry history = Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
                 Assert.Equal(migration.MigrationId, history.MigrationId);
                 Assert.Equal("ExactRouteKey", history.MigrationType);
@@ -862,6 +877,12 @@ public sealed class CSharpDbShardedClientTests
                 Assert.Equal(2, history.PendingMapVersion);
                 Assert.Equal(2, Assert.Single(history.Tables).SourceRows);
                 Assert.Equal(1, Assert.Single(history.Collections).SourceDocuments);
+
+                CSharpDbShardMigrationResult resume = await client.ResumeShardMigrationAsync(migration.MigrationId, Ct);
+                Assert.True(resume.Succeeded);
+                Assert.Equal("PendingActivation", resume.Status);
+                Assert.Equal(migration.MigrationId, resume.MigrationId);
+                Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
             }
 
             await using (var reloaded = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
@@ -875,6 +896,17 @@ public sealed class CSharpDbShardedClientTests
                 Assert.Equal(2, resolution.MapVersion);
                 CSharpDbShardMapSnapshot reloadedMap = await reloaded.GetShardMapAsync(Ct);
                 Assert.Equal(1, Assert.Single(reloadedMap.Directories).EntryCount);
+
+                CSharpDbShardDirectoryResolution directoryResolution =
+                    await reloaded.ResolveDirectoryEntryAsync(new CSharpDbShardDirectoryResolveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-1",
+                    }, Ct);
+                Assert.Equal("s1", directoryResolution.Entry.ShardId);
+                Assert.Equal(2, directoryResolution.Entry.MapVersion);
+                Assert.Equal("s1", directoryResolution.RouteResolution.ShardId);
+                Assert.Equal(2, directoryResolution.RouteResolution.MapVersion);
 
                 ICSharpDbClient tenantA = reloaded.ForRoute(new CSharpDbRouteContext
                 {
@@ -982,6 +1014,14 @@ public sealed class CSharpDbShardedClientTests
                 Assert.Equal("s1", GetOwnerForBucket(pending.PendingMap, 0));
                 Assert.Equal("s0", GetOwnerForBucket(pending.PendingMap, 1));
 
+                CSharpDbShardMigrationProgress progress = Assert.Single(await client.GetShardMigrationProgressAsync(Ct));
+                Assert.Equal(migration.MigrationId, progress.MigrationId);
+                Assert.Equal("BucketRange", progress.MigrationType);
+                Assert.Equal("PendingActivation", progress.Status);
+                Assert.Equal("Completed", progress.Phase);
+                Assert.Equal(100d, progress.PercentComplete);
+                Assert.Equal(2, progress.PendingMapVersion);
+
                 CSharpDbShardMigrationHistoryEntry history = Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
                 Assert.Equal(migration.MigrationId, history.MigrationId);
                 Assert.Equal("BucketRange", history.MigrationType);
@@ -1049,6 +1089,12 @@ public sealed class CSharpDbShardedClientTests
             Assert.Equal("Rejected", history.Status);
             Assert.False(history.Succeeded);
             Assert.Contains(history.Issues, issue => issue.Code == "missing-manifest-items");
+
+            CSharpDbShardMigrationProgress progress = Assert.Single(await client.GetShardMigrationProgressAsync(Ct));
+            Assert.Equal(migration.MigrationId, progress.MigrationId);
+            Assert.Equal("Rejected", progress.Status);
+            Assert.Equal("Rejected", progress.Phase);
+            Assert.Equal(0, progress.CompletedSteps);
         }
         finally
         {
@@ -1103,6 +1149,119 @@ public sealed class CSharpDbShardedClientTests
             Assert.Equal(migration.MigrationId, history.MigrationId);
             Assert.True(history.RequiresOperatorRecovery);
             Assert.Equal(migration.RecoveryAction, history.RecoveryAction);
+
+            CSharpDbShardMigrationProgress progress = Assert.Single(await client.GetShardMigrationProgressAsync(Ct));
+            Assert.Equal(migration.MigrationId, progress.MigrationId);
+            Assert.Equal("VerificationFailed", progress.Status);
+            Assert.Equal("VerificationFailed", progress.Phase);
+            Assert.True(progress.RequiresOperatorRecovery);
+            Assert.Equal(migration.RecoveryAction, progress.RecoveryAction);
+            Assert.Contains(progress.Issues, issue => issue.Code == "table-verification-failed");
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task ExactKeyMigration_RetryUsesStoredPlanWithOverwrite()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = Path.Combine(directory, "catalog.json"),
+            };
+
+            await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
+            IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
+                await client.ExecuteSqlOnAllShardsAsync(
+                    "CREATE TABLE retry_orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER);",
+                    Ct);
+            Assert.All(schemaResults, result => Assert.Null(result.Error));
+
+            ICSharpDbClient tenantA = client.ForRoute(new CSharpDbRouteContext
+            {
+                Keyspace = "tenants",
+                Key = "tenant-a",
+            });
+            Assert.Equal(1, await tenantA.InsertRowAsync("retry_orders", new Dictionary<string, object?>
+            {
+                ["id"] = 40L,
+                ["tenant_id"] = "tenant-a",
+                ["total"] = 100L,
+            }, Ct));
+            Assert.Equal(1, await client.ForShardId("s1").InsertRowAsync("retry_orders", new Dictionary<string, object?>
+            {
+                ["id"] = 40L,
+                ["tenant_id"] = "tenant-a",
+                ["total"] = 1L,
+            }, Ct));
+
+            CSharpDbShardMigrationResult firstAttempt = await client.MigrateExactRouteKeyAsync(
+                new CSharpDbShardExactKeyMigrationRequest
+                {
+                    Keyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    DestinationShardId = "s1",
+                    ExpectedCurrentMapVersion = 1,
+                    OverwriteDestinationRows = false,
+                    Manifest = new CSharpDbShardMigrationManifest
+                    {
+                        Tables =
+                        [
+                            new CSharpDbShardMigrationTableManifest
+                            {
+                                TableName = "retry_orders",
+                                RouteKeyColumn = "tenant_id",
+                                PrimaryKeyColumn = "id",
+                            },
+                        ],
+                    },
+                },
+                Ct);
+
+            Assert.False(firstAttempt.Succeeded);
+            Assert.Equal("VerificationFailed", firstAttempt.Status);
+            Assert.True(firstAttempt.RequiresOperatorRecovery);
+            Assert.Null(firstAttempt.PendingMapVersion);
+
+            CSharpDbShardMigrationProgress failedProgress =
+                Assert.Single(await client.GetShardMigrationProgressAsync(Ct));
+            Assert.Equal(firstAttempt.MigrationId, failedProgress.MigrationId);
+            Assert.Equal(1, failedProgress.Attempt);
+            Assert.Equal("VerificationFailed", failedProgress.Status);
+            Assert.True(failedProgress.RequiresOperatorRecovery);
+
+            CSharpDbShardMigrationResult retry = await client.RetryShardMigrationAsync(firstAttempt.MigrationId, Ct);
+            Assert.True(retry.Succeeded, string.Join(Environment.NewLine, retry.Issues.Select(issue => issue.Message)));
+            Assert.Equal("PendingActivation", retry.Status);
+            Assert.Equal(firstAttempt.MigrationId, retry.MigrationId);
+            Assert.Equal(2, retry.PendingMapVersion);
+
+            CSharpDbShardMigrationProgress retryProgress =
+                Assert.Single(await client.GetShardMigrationProgressAsync(Ct));
+            Assert.Equal(firstAttempt.MigrationId, retryProgress.MigrationId);
+            Assert.Equal(2, retryProgress.Attempt);
+            Assert.Equal("PendingActivation", retryProgress.Status);
+            Assert.Equal("Completed", retryProgress.Phase);
+            Assert.Equal(100d, retryProgress.PercentComplete);
+
+            Dictionary<string, object?>? destination =
+                await client.ForShardId("s1").GetRowByPkAsync("retry_orders", "id", 40L, Ct);
+            Assert.NotNull(destination);
+            Assert.Equal(100L, Assert.IsType<long>(destination!["total"]));
+
+            IReadOnlyList<CSharpDbShardMigrationHistoryEntry> history =
+                await client.GetShardMigrationHistoryAsync(Ct);
+            Assert.Equal(2, history.Count);
+            Assert.All(history, entry => Assert.Equal(firstAttempt.MigrationId, entry.MigrationId));
+            Assert.Contains(history, entry => entry.Status == "VerificationFailed");
+            Assert.Contains(history, entry => entry.Status == "PendingActivation");
         }
         finally
         {

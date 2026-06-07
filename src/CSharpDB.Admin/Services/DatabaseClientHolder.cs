@@ -213,6 +213,18 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
         => RequireShardAdmin().GetShardMigrationHistoryAsync(ct);
 
+    public Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMigrationProgressAsync(ct);
+
+    public Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(string migrationId, CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMigrationProgressAsync(migrationId, ct);
+
+    public Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(string migrationId, CancellationToken ct = default)
+        => RequireShardAdmin().ResumeShardMigrationAsync(migrationId, ct);
+
+    public Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(string migrationId, CancellationToken ct = default)
+        => RequireShardAdmin().RetryShardMigrationAsync(migrationId, ct);
+
     public Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(CSharpDbShardDirectoryResolveRequest request, CancellationToken ct = default)
         => RequireShardDirectory().ResolveDirectoryEntryAsync(request, ct);
 
