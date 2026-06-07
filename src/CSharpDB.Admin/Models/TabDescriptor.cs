@@ -226,6 +226,19 @@ public sealed class TabDescriptor
         State.Remove("RouteToken");
     }
 
+    public void CopyRouteContextFrom(TabDescriptor? source)
+    {
+        if (source?.HasRouteContext != true)
+            return;
+
+        RouteKeyspace = source.RouteKeyspace;
+        RouteKey = source.RouteKey;
+        RouteShardId = source.RouteShardId;
+        RouteBucket = source.RouteBucket;
+        RouteMapVersion = source.RouteMapVersion;
+        RouteToken = source.RouteToken;
+    }
+
     private int? TryGetIntState(string key)
     {
         if (!State.TryGetValue(key, out var value))

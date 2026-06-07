@@ -257,6 +257,8 @@
     [Parameter] public EventCallback<string?> OnDraftChanged { get; set; }
     [Parameter] public EventCallback<ReportDefinition> OnReportSaved { get; set; }
     [Parameter] public EventCallback<string> OnOpenPreview { get; set; }
+    [Parameter] public IReportRepository? ReportRepositoryOverride { get; set; }
+    [Parameter] public IReportSourceProvider? SourceProviderOverride { get; set; }
 
     private ReportDefinition _report = CreateBlankReport();
     private ReportSourceDefinition? _currentSource;
@@ -286,6 +288,8 @@
     private double _resizeStartY;
     private Rect? _resizeOriginRect;
 
+    private IReportRepository ActiveReportRepository => ReportRepositoryOverride ?? ReportRepository;
+    private IReportSourceProvider ActiveSourceProvider => SourceProviderOverride ?? SourceProvider;
     private IReadOnlyList<ReportFieldDefinition> SourceFields => _currentSource?.Fields ?? [];
     private string SelectedSourceValue => string.IsNullOrWhiteSpace(_report.Source.Name) ? string.Empty : ToSourceValue(_report.Source.Kind, _report.Source.Name);
     private string DisplayPageSettings => $"{_report.PageSettings.PaperSize} / {_report.PageSettings.Orientation} / {_report.PageSettings.MarginLeftInches:0.0}\" margins";
@@ -298,7 +302,7 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _sourceOptions = await SourceProvider.ListSourceReferencesAsync();
+        _sourceOptions = await ActiveSourceProvider.ListSourceReferencesAsync();
         _canSave = false;
     }
 
@@ -338,7 +342,7 @@
     private async Task LoadExistingAsync(string reportId)
     {
         _error = null;
-        ReportDefinition? loaded = await ReportRepository.GetAsync(reportId);
+        ReportDefinition? loaded = await ActiveReportRepository.GetAsync(reportId);
         if (loaded is null)
         {
             _error = $"Report '{reportId}' was not found.";
@@ -367,7 +371,7 @@
             return;
         }
 
-        ReportSourceDefinition? source = await SourceProvider.GetSourceDefinitionAsync(new ReportSourceReference(InitialSourceKind.Value, InitialSourceName));
+        ReportSourceDefinition? source = await ActiveSourceProvider.GetSourceDefinitionAsync(new ReportSourceReference(InitialSourceKind.Value, InitialSourceName));
         if (source is null)
         {
             _report = CreateBlankReport();
@@ -409,7 +413,7 @@
     {
         _currentSource = string.IsNullOrWhiteSpace(_report.Source.Name)
             ? null
-            : await SourceProvider.GetSourceDefinitionAsync(_report.Source);
+            : await ActiveSourceProvider.GetSourceDefinitionAsync(_report.Source);
         _canSave = _currentSource is not null;
     }
 
@@ -440,11 +444,11 @@
             ReportDefinition saved;
             if (string.IsNullOrWhiteSpace(toSave.ReportId))
             {
-                saved = await ReportRepository.CreateAsync(toSave);
+                saved = await ActiveReportRepository.CreateAsync(toSave);
             }
             else
             {
-                ReportUpdateResult result = await ReportRepository.TryUpdateAsync(toSave.ReportId, toSave.DefinitionVersion, toSave);
+                ReportUpdateResult result = await ActiveReportRepository.TryUpdateAsync(toSave.ReportId, toSave.DefinitionVersion, toSave);
                 saved = result switch
                 {
                     ReportUpdateResult.Ok ok => ok.Doc,
@@ -493,7 +497,7 @@
         if (!TryParseSourceValue(raw, out ReportSourceReference sourceReference))
             return;
 
-        ReportSourceDefinition? source = await SourceProvider.GetSourceDefinitionAsync(sourceReference);
+        ReportSourceDefinition? source = await ActiveSourceProvider.GetSourceDefinitionAsync(sourceReference);
         if (source is null)
         {
             _error = $"Source '{sourceReference.Name}' could not be loaded.";

@@ -155,6 +155,8 @@
 
 @code {
     [Parameter] public string? InitialTableName { get; set; }
+    [Parameter] public ICSharpDbClient? ClientOverride { get; set; }
+    [Parameter] public ITableImportExportService? ImportExportServiceOverride { get; set; }
 
     private ImportExportMode _mode = ImportExportMode.ExportTable;
     private TableExportDestination _destination = TableExportDestination.Download;
@@ -178,6 +180,8 @@
         (_destination == TableExportDestination.Download || !string.IsNullOrWhiteSpace(_serverPath));
     private bool CanRegisterExternal => !_busy && !string.IsNullOrWhiteSpace(_externalTableName) && !string.IsNullOrWhiteSpace(_externalArchivePath);
     private bool CanRestore => !_busy && !string.IsNullOrWhiteSpace(_restoreArchivePath);
+    private ICSharpDbClient ActiveClient => ClientOverride ?? DbClient;
+    private ITableImportExportService ActiveImportExportService => ImportExportServiceOverride ?? ImportExportService;
 
     protected override async Task OnInitializedAsync()
     {
@@ -199,11 +203,11 @@
     {
         await RunAsync(async ct =>
         {
-            _tables = (await DbClient.GetTableNamesAsync(ct))
+            _tables = (await ActiveClient.GetTableNamesAsync(ct))
                 .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
                 .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            _externalTables = await ImportExportService.GetExternalTablesAsync(ct);
+            _externalTables = await ActiveImportExportService.GetExternalTablesAsync(ct);
             if (string.IsNullOrWhiteSpace(_selectedTable) || !_tables.Contains(_selectedTable, StringComparer.OrdinalIgnoreCase))
                 _selectedTable = _tables.FirstOrDefault() ?? string.Empty;
 
@@ -225,7 +229,7 @@
         if (string.IsNullOrWhiteSpace(_selectedTable))
             return;
 
-        _serverPath = await ImportExportService.GetDefaultServerExportPathAsync(_selectedTable, ct);
+        _serverPath = await ActiveImportExportService.GetDefaultServerExportPathAsync(_selectedTable, ct);
     }
 
     private async Task ExportAsync()
@@ -253,7 +257,7 @@
                 ServerPath = _destination == TableExportDestination.ServerPath ? _serverPath : null,
             };
             var result = await Task.Run(
-                () => ImportExportService.ExportTableAsync(request, progress, ct),
+                () => ActiveImportExportService.ExportTableAsync(request, progress, ct),
                 ct);
 
             _downloadUrl = result.DownloadUrl;
@@ -287,9 +291,9 @@
                 ArchivePath = _externalArchivePath,
             };
             await Task.Run(
-                () => ImportExportService.RegisterExternalTableAsync(request, progress, ct),
+                () => ActiveImportExportService.RegisterExternalTableAsync(request, progress, ct),
                 ct);
-            _externalTables = await ImportExportService.GetExternalTablesAsync(ct);
+            _externalTables = await ActiveImportExportService.GetExternalTablesAsync(ct);
             _message = $"Registered external table {_externalTableName}.";
         });
     }
@@ -307,9 +311,9 @@
             });
 
             await Task.Run(
-                () => ImportExportService.DropExternalTableAsync(tableName, ct),
+                () => ActiveImportExportService.DropExternalTableAsync(tableName, ct),
                 ct);
-            _externalTables = await ImportExportService.GetExternalTablesAsync(ct);
+            _externalTables = await ActiveImportExportService.GetExternalTablesAsync(ct);
             _message = $"Dropped external table {tableName}.";
         });
     }
@@ -332,10 +336,10 @@
                 TargetTableName = _restoreTableName,
             };
             var result = await Task.Run(
-                () => ImportExportService.RestoreTableAsync(request, ct),
+                () => ActiveImportExportService.RestoreTableAsync(request, ct),
                 ct);
             _message = $"Restored {result.RowsInserted} row(s) into {result.TableName}.";
-            _tables = await DbClient.GetTableNamesAsync(ct);
+            _tables = await ActiveClient.GetTableNamesAsync(ct);
         });
     }
 

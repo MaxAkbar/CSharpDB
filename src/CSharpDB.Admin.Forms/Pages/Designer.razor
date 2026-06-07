@@ -4,6 +4,8 @@
 @inject ISchemaProvider SchemaProvider
 @inject IFormGenerator FormGenerator
 
+<CascadingValue Value="ActiveFormRepository" Name="RouteFormRepository">
+<CascadingValue Value="ActiveSchemaProvider" Name="RouteFormSchemaProvider">
 <div class="designer-layout" @onkeydown="OnKeyDown" tabindex="0" @ref="_layoutRef">
     <div class="designer-toolbar">
         @if (_editingName)
@@ -116,12 +118,16 @@
         Saved!
     </div>
 }
+</CascadingValue>
+</CascadingValue>
 
 @code {
     [Parameter] public string? FormId { get; set; }
     [Parameter] public string? InitialTableName { get; set; }
     [Parameter] public EventCallback<FormDefinition> OnFormSaved { get; set; }
     [Parameter] public EventCallback<string> OnOpenEntry { get; set; }
+    [Parameter] public IFormRepository? FormRepositoryOverride { get; set; }
+    [Parameter] public ISchemaProvider? SchemaProviderOverride { get; set; }
 
     private readonly DesignerState _state = new();
     private ElementReference _layoutRef;
@@ -139,10 +145,13 @@
     private string? _loadedInitialTableName;
     private bool _initialized;
 
+    private IFormRepository ActiveFormRepository => FormRepositoryOverride ?? FormRepository;
+    private ISchemaProvider ActiveSchemaProvider => SchemaProviderOverride ?? SchemaProvider;
+
     protected override async Task OnInitializedAsync()
     {
         _state.OnChange += OnStateChanged;
-        _availableSources = await SchemaProvider.ListSourceNamesAsync();
+        _availableSources = await ActiveSchemaProvider.ListSourceNamesAsync();
         _initialized = true;
     }
 
@@ -193,7 +202,7 @@
 
         try
         {
-            var form = await FormRepository.GetAsync(formId);
+            var form = await ActiveFormRepository.GetAsync(formId);
             if (form is null)
             {
                 _error = $"Form '{formId}' not found.";
@@ -222,7 +231,7 @@
 
         try
         {
-            FormTableDefinition? source = await SchemaProvider.GetTableDefinitionAsync(InitialTableName);
+            FormTableDefinition? source = await ActiveSchemaProvider.GetTableDefinitionAsync(InitialTableName);
             if (source is null)
             {
                 _error = $"Source '{InitialTableName}' not found.";
@@ -269,7 +278,7 @@
 
         try
         {
-            FormTableDefinition? source = await SchemaProvider.GetTableDefinitionAsync(tableName);
+            FormTableDefinition? source = await ActiveSchemaProvider.GetTableDefinitionAsync(tableName);
             if (source is null)
             {
                 _error = $"Source '{tableName}' not found.";
@@ -305,11 +314,11 @@
             FormDefinition savedForm;
             if (string.IsNullOrWhiteSpace(form.FormId))
             {
-                savedForm = await FormRepository.CreateAsync(form);
+                savedForm = await ActiveFormRepository.CreateAsync(form);
             }
             else
             {
-                UpdateResult update = await FormRepository.TryUpdateAsync(form.FormId, form.DefinitionVersion, form);
+                UpdateResult update = await ActiveFormRepository.TryUpdateAsync(form.FormId, form.DefinitionVersion, form);
                 savedForm = update switch
                 {
                     UpdateResult.Ok ok => ok.Doc,
@@ -345,7 +354,7 @@
             return;
         }
 
-        FormTableDefinition? current = await SchemaProvider.GetTableDefinitionAsync(form.TableName);
+        FormTableDefinition? current = await ActiveSchemaProvider.GetTableDefinitionAsync(form.TableName);
         _currentSourceDefinition = current;
         _schemaWarning = current is not null && !string.Equals(current.SourceSchemaSignature, form.SourceSchemaSignature, StringComparison.Ordinal)
             ? "The source schema has changed since this form was last saved."

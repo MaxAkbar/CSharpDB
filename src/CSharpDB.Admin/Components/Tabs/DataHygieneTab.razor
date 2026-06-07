@@ -1,8 +1,10 @@
 @using System.Globalization
 @inject DataHygieneAdminService Hygiene
+@inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
 @inject ModalService Modal
+@implements IAsyncDisposable
 
 <div class="data-hygiene-tab">
     <div class="toolbar data-hygiene-toolbar">
@@ -22,6 +24,7 @@
         <button class="toolbar-btn" @onclick="RefreshMetadataAsync" disabled="@_loading">
             <i class="bi bi-arrow-clockwise"></i> Refresh
         </button>
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
         <div class="toolbar-spacer"></div>
         <div class="toolbar-info">
             @if (_loading)
@@ -40,7 +43,13 @@
         <div class="query-error"><i class="bi bi-exclamation-triangle"></i> @_error</div>
     }
 
-    @if (_mode == DataHygieneMode.Duplicates)
+    @if (RequiresRouteContext)
+    {
+        <div class="query-error">
+            <i class="bi bi-signpost-split"></i> Select a route before using data hygiene on a sharded database.
+        </div>
+    }
+    else if (_mode == DataHygieneMode.Duplicates)
     {
         <section class="data-hygiene-panel">
             <div class="data-hygiene-form-grid">
@@ -456,6 +465,8 @@
     private string? _error;
     private string? _status;
     private int _appliedSeedVersion = -1;
+    private AdminRouteClientLease? _routeLease;
+    private DataHygieneAdminService? _routeHygiene;
 
     private string _duplicateTable = string.Empty;
     private string _duplicateKeyExpression = string.Empty;
@@ -486,6 +497,10 @@
     private IReadOnlyList<ColumnDefinition> _explicitParentColumns = [];
 
     private readonly List<DataHygieneHistoryEntry> _history = [];
+
+    private AdminRouteClientLease RouteLease => _routeLease ??= new AdminRouteClientLease(DbHolder);
+    private DataHygieneAdminService ActiveHygiene => _routeHygiene ?? Hygiene;
+    private bool RequiresRouteContext => DbHolder.SupportsShardAdmin && DbHolder.SupportsRouteBoundClients && Tab?.HasRouteContext != true;
 
     private bool CanPreviewDuplicates =>
         !_loading
@@ -521,7 +536,11 @@
 
     protected override async Task OnInitializedAsync()
     {
-        await RefreshMetadataAsync();
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteServices();
+
+        if (!RequiresRouteContext)
+            await RefreshMetadataAsync();
     }
 
     protected override async Task OnParametersSetAsync()
@@ -531,14 +550,49 @@
 
         _appliedSeedVersion = Tab.DataHygieneSeedVersion;
         ApplySeed(Tab.InitialDataHygieneSeed);
-        await LoadSelectedMetadataAsync();
+        if (!RequiresRouteContext)
+            await LoadSelectedMetadataAsync();
+    }
+
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteServices();
+        ResetRouteScopedState();
+
+        if (!RequiresRouteContext)
+            await RefreshMetadataAsync();
+    }
+
+    private void RebuildRouteServices()
+    {
+        _routeHygiene = RouteLease.RouteClient is null
+            ? null
+            : new DataHygieneAdminService(RouteLease.RouteClient);
+    }
+
+    private void ResetRouteScopedState()
+    {
+        _tables = [];
+        _duplicateColumns = [];
+        _duplicatePreview = null;
+        _validationColumns = [];
+        _validationRules = [];
+        _validationViolations = null;
+        _declaredForeignKeys = [];
+        _orphanResult = null;
+        _explicitChildColumns = [];
+        _explicitParentColumns = [];
+        _history.Clear();
+        _error = null;
+        _status = null;
     }
 
     private async Task RefreshMetadataAsync()
     {
         await RunAsync("Refresh metadata", string.Empty, async () =>
         {
-            _tables = await Hygiene.GetUserTableNamesAsync();
+            _tables = await ActiveHygiene.GetUserTableNamesAsync();
             EnsureDefaultTables();
             await LoadSelectedMetadataAsync();
             await RefreshValidationRulesCoreAsync();
@@ -647,7 +701,7 @@
     {
         await RunAsync("Find duplicates", BuildDuplicateSignature(), async () =>
         {
-            _duplicatePreview = await Hygiene.FindDuplicatesAsync(_duplicateTable, _duplicateKeyExpression);
+            _duplicatePreview = await ActiveHygiene.FindDuplicatesAsync(_duplicateTable, _duplicateKeyExpression);
             _duplicatePreviewSignature = BuildDuplicateSignature();
             _duplicatePreviewCurrent = true;
             _status = $"{_duplicatePreview.Rows.Count} duplicate group{(_duplicatePreview.Rows.Count == 1 ? "" : "s")}";
@@ -666,7 +720,7 @@
 
         await RunAsync("Dedup", BuildDuplicateSignature(), async () =>
         {
-            DataHygieneResultSet<DataHygieneMutationSummary> result = await Hygiene.DedupAsync(_duplicateTable, _duplicateKeyExpression, _keepMode);
+            DataHygieneResultSet<DataHygieneMutationSummary> result = await ActiveHygiene.DedupAsync(_duplicateTable, _duplicateKeyExpression, _keepMode);
             DataHygieneMutationSummary summary = result.Rows.FirstOrDefault() ?? new("DEDUP", _duplicateTable, 0, 0, 0, 0, 0, null);
             string text = $"{summary.RowsDeleted} row(s) deleted across {summary.DuplicateGroupCount} group(s)";
             _status = text;
@@ -688,7 +742,7 @@
 
         await RunAsync("Merge duplicates", BuildDuplicateSignature(), async () =>
         {
-            DataHygieneResultSet<DataHygieneMutationSummary> result = await Hygiene.MergeDuplicatesAsync(_duplicateTable, _duplicateKeyExpression);
+            DataHygieneResultSet<DataHygieneMutationSummary> result = await ActiveHygiene.MergeDuplicatesAsync(_duplicateTable, _duplicateKeyExpression);
             DataHygieneMutationSummary summary = result.Rows.FirstOrDefault() ?? new("MERGE DUPLICATES", _duplicateTable, 0, 0, 0, 0, 0, null);
             string text = $"{summary.RowsUpdated} row(s) updated, {summary.RowsDeleted} row(s) deleted, {summary.MergeConflictCount} conflict(s)";
             _status = text;
@@ -735,7 +789,7 @@
 
     private async Task RefreshValidationRulesCoreAsync()
     {
-        DataHygieneResultSet<DataHygieneValidationRuleRow> result = await Hygiene.ListValidationRulesAsync();
+        DataHygieneResultSet<DataHygieneValidationRuleRow> result = await ActiveHygiene.ListValidationRulesAsync();
         _validationRules = result.Rows;
     }
 
@@ -743,7 +797,7 @@
     {
         await RunAsync("Create validation rule", _ruleName, async () =>
         {
-            DataHygieneResultSet<DataHygieneMutationSummary> result = await Hygiene.CreateValidationRuleAsync(
+            DataHygieneResultSet<DataHygieneMutationSummary> result = await ActiveHygiene.CreateValidationRuleAsync(
                 _ruleName,
                 _validationTable,
                 string.IsNullOrWhiteSpace(_ruleColumn) ? null : _ruleColumn,
@@ -766,7 +820,7 @@
     {
         await RunAsync("Validate table", _validationTable, async () =>
         {
-            _validationViolations = await Hygiene.ValidateTableAsync(_validationTable);
+            _validationViolations = await ActiveHygiene.ValidateTableAsync(_validationTable);
             _status = $"{_validationViolations.Rows.Count} violation{(_validationViolations.Rows.Count == 1 ? "" : "s")}";
             AddHistory("Validate table", _validationViolations.Sql, _status, _validationViolations.Elapsed);
         }, addSuccessHistory: false);
@@ -783,7 +837,7 @@
     {
         _declaredForeignKeys = string.IsNullOrWhiteSpace(_orphanTable)
             ? []
-            : await Hygiene.GetForeignKeyOptionsAsync(_orphanTable);
+            : await ActiveHygiene.GetForeignKeyOptionsAsync(_orphanTable);
 
         if (!string.IsNullOrWhiteSpace(_selectedForeignKey)
             && !_declaredForeignKeys.Any(fk => string.Equals(fk.ConstraintName, _selectedForeignKey, StringComparison.OrdinalIgnoreCase)))
@@ -796,7 +850,7 @@
     {
         await RunAsync("Find declared orphans", _orphanTable, async () =>
         {
-            _orphanResult = await Hygiene.FindOrphansInTableAsync(_orphanTable);
+            _orphanResult = await ActiveHygiene.FindOrphansInTableAsync(_orphanTable);
             _status = $"{_orphanResult.Rows.Count} orphan row{(_orphanResult.Rows.Count == 1 ? "" : "s")}";
             AddHistory("Find declared orphans", _orphanResult.Sql, _status, _orphanResult.Elapsed);
         }, addSuccessHistory: false);
@@ -844,7 +898,7 @@
     {
         await RunAsync("Find explicit orphans", FormatExplicitReference(), async () =>
         {
-            _orphanResult = await Hygiene.FindOrphansExplicitAsync(
+            _orphanResult = await ActiveHygiene.FindOrphansExplicitAsync(
                 _explicitChildTable,
                 _explicitChildColumn,
                 _explicitParentTable,
@@ -859,7 +913,7 @@
         if (string.IsNullOrWhiteSpace(tableName))
             return [];
 
-        TableSchema? schema = await Hygiene.GetTableSchemaAsync(tableName);
+        TableSchema? schema = await ActiveHygiene.GetTableSchemaAsync(tableName);
         return schema?.Columns ?? [];
     }
 
@@ -936,4 +990,10 @@
             DbType.Blob => "bi-file-binary",
             _ => "bi-fonts",
         };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_routeLease is not null)
+            await _routeLease.DisposeAsync();
+    }
 }

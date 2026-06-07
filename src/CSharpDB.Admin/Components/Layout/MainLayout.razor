@@ -90,8 +90,8 @@
                                                   Tab="tab" />
                                 break;
                             case TabKind.ImportExport:
-                                <ImportExport @key="tab.Id"
-                                              InitialTableName="@tab.InitialTableName" />
+                                <ImportExportTab @key="tab.Id"
+                                                 Tab="tab" />
                                 break;
                             case TabKind.DataModel:
                                 <DataModelTab @key="tab.Id"

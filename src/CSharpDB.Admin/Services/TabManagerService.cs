@@ -25,10 +25,15 @@ public sealed class TabManagerService
 
     public void OpenTab(TabDescriptor tab)
     {
+        ApplyInheritedRouteContext(tab);
+
         // Deduplicate: if a tab with this ID already exists, just activate it
         var existing = _tabs.FirstOrDefault(t => t.Id == tab.Id);
         if (existing is not null)
         {
+            if (CanInheritRouteContext(existing.Kind) && tab.HasRouteContext)
+                existing.CopyRouteContextFrom(tab);
+
             ActivateTab(existing.Id);
             return;
         }
@@ -37,6 +42,28 @@ public sealed class TabManagerService
         ActiveTab = tab;
         StateChanged?.Invoke();
     }
+
+    private void ApplyInheritedRouteContext(TabDescriptor tab)
+    {
+        if (!CanInheritRouteContext(tab.Kind))
+            return;
+
+        tab.CopyRouteContextFrom(ActiveTab);
+    }
+
+    private static bool CanInheritRouteContext(TabKind kind)
+        => kind is TabKind.Query
+            or TabKind.TableData
+            or TabKind.ViewData
+            or TabKind.CollectionData
+            or TabKind.Pipeline
+            or TabKind.FormDesigner
+            or TabKind.FormEntry
+            or TabKind.ReportDesigner
+            or TabKind.ReportPreview
+            or TabKind.ImportExport
+            or TabKind.DataModel
+            or TabKind.DataHygiene;
 
     public void ActivateTab(string tabId)
     {
@@ -253,6 +280,7 @@ public sealed class TabManagerService
         if (existing is not null)
         {
             ApplyDataHygieneSeed(existing, seed);
+            ApplyInheritedRouteContext(existing);
             ActivateTab(existing.Id);
             return existing;
         }
@@ -322,6 +350,7 @@ public sealed class TabManagerService
         if (existing is not null)
         {
             ApplyFormEntryInitialState(existing, initialRecordId, initialMode, initialFilterExpression, initialFilterParameters);
+            ApplyInheritedRouteContext(existing);
             ActivateTab(existing.Id);
             return existing;
         }

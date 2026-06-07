@@ -1,25 +1,28 @@
 @using CSharpDB.Admin.Models
+@using CSharpDB.Admin.Services
 @using CSharpDB.Client.Pipelines
 @using CSharpDB.Pipelines.Models
 @using CSharpDB.Pipelines.Serialization
 @inject ICSharpDbClient DbClient
+@inject DatabaseClientHolder DbHolder
 @inject ToastService Toast
 @inject DatabaseChangeService Changes
+@implements IAsyncDisposable
 
 <div class="pipeline-tab">
     <div class="toolbar">
-        <button class="toolbar-btn" @onclick="() => ExecuteAsync(PipelineExecutionMode.Validate)" disabled="@_running">
+        <button class="toolbar-btn" @onclick="() => ExecuteAsync(PipelineExecutionMode.Validate)" disabled="@(_running || RequiresRouteContext)">
             <i class="bi bi-shield-check"></i> Validate
         </button>
-        <button class="toolbar-btn" @onclick="() => ExecuteAsync(PipelineExecutionMode.DryRun)" disabled="@_running">
+        <button class="toolbar-btn" @onclick="() => ExecuteAsync(PipelineExecutionMode.DryRun)" disabled="@(_running || RequiresRouteContext)">
             <i class="bi bi-eye"></i> Dry Run
         </button>
-        <button class="toolbar-btn primary" @onclick="() => ExecuteAsync(PipelineExecutionMode.Run)" disabled="@_running">
+        <button class="toolbar-btn primary" @onclick="() => ExecuteAsync(PipelineExecutionMode.Run)" disabled="@(_running || RequiresRouteContext)">
             <i class="bi bi-play-fill"></i> Run
         </button>
         <div class="toolbar-separator"></div>
         <input class="schema-input" style="width:180px" @bind="_pipelineName" placeholder="Pipeline name" />
-        <button class="toolbar-btn" @onclick="SavePipelineAsync" disabled="@_running">
+        <button class="toolbar-btn" @onclick="SavePipelineAsync" disabled="@(_running || RequiresRouteContext)">
             <i class="bi bi-save"></i> Save
         </button>
         <div class="toolbar-separator"></div>
@@ -31,6 +34,7 @@
                 <i class="bi bi-braces"></i> JSON
             </button>
         </div>
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
         <div class="toolbar-spacer"></div>
         <div class="toolbar-info">@(_editorMode == PipelineEditorMode.Visual ? "Visual builder with raw JSON fallback" : "Raw JSON package editor")</div>
     </div>
@@ -49,6 +53,14 @@
         </div>
     }
 
+    @if (RequiresRouteContext)
+    {
+        <div class="query-error">
+            <i class="bi bi-signpost-split"></i> Select a route before using pipelines on a sharded database.
+        </div>
+    }
+    else
+    {
     <div class="pipeline-layout">
         <div class="schema-section">
             <div class="schema-section-header">
@@ -61,6 +73,7 @@
             {
                 <PipelineDesigner @ref="_designer"
                                   @key="_designerReloadVersion"
+                                  ClientOverride="ActiveClient"
                                   PackageJson="@_visualPackageJson"
                                   PackageJsonChanged="@OnPackageJsonChanged" />
             }
@@ -324,6 +337,7 @@
             }
         </div>
     </div>
+    }
 </div>
 
 @code {
@@ -349,9 +363,19 @@
     private PipelineEditorMode _editorMode = PipelineEditorMode.Visual;
     private PipelineDesigner? _designer;
     private int _designerReloadVersion;
+    private AdminRouteClientLease? _routeLease;
+
+    private AdminRouteClientLease RouteLease => _routeLease ??= new AdminRouteClientLease(DbHolder);
+    private ICSharpDbClient ActiveClient => RouteLease.GetActiveClient(DbClient);
+    private bool RequiresRouteContext => DbHolder.SupportsShardAdmin && DbHolder.SupportsRouteBoundClients && Tab?.HasRouteContext != true;
 
     protected override async Task OnParametersSetAsync()
     {
+        bool routeChanged = RouteLease.IsRouteChanged(Tab);
+        await RouteLease.UpdateAsync(Tab);
+        if (routeChanged)
+            ResetRouteScopedState();
+
         string? candidateJson = Tab?.PipelinePackageJson;
         if (!string.IsNullOrWhiteSpace(candidateJson) && !string.Equals(candidateJson, _packageJson, StringComparison.Ordinal))
         {
@@ -375,15 +399,41 @@
             _message = "No pipeline schema is loaded yet. Load a pipeline or enter a valid package JSON to use the visual designer.";
         }
 
-        if (_runs.Count == 0)
+        if (!RequiresRouteContext && _runs.Count == 0)
         {
             await LoadRunsAsync();
         }
 
-        if (_pipelines.Count == 0)
+        if (!RequiresRouteContext && _pipelines.Count == 0)
         {
             await LoadPipelinesAsync();
         }
+    }
+
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        await RouteLease.UpdateAsync(Tab);
+        ResetRouteScopedState();
+
+        if (!RequiresRouteContext)
+        {
+            await LoadRunsAsync();
+            await LoadPipelinesAsync();
+        }
+    }
+
+    private void ResetRouteScopedState()
+    {
+        _result = null;
+        _runs = [];
+        _pipelines = [];
+        _selectedPipelineName = null;
+        _selectedPipelineRevision = null;
+        _selectedPipelineRevisions = [];
+        _selectedRunId = null;
+        _selectedRunDetail = null;
+        _selectedRunRejects = [];
+        _designerReloadVersion++;
     }
 
     private async Task ExecuteAsync(PipelineExecutionMode mode)
@@ -396,7 +446,7 @@
         {
             PipelinePackageDefinition package = await GetCurrentPackageAsync();
             _pipelineName = string.IsNullOrWhiteSpace(_pipelineName) ? package.Name : _pipelineName;
-            var runner = new CSharpDbPipelineRunner(DbClient);
+            var runner = new CSharpDbPipelineRunner(ActiveClient);
             _result = await runner.RunPackageAsync(package, mode);
             Tab?.PipelinePackageJson = _packageJson;
 
@@ -483,7 +533,7 @@
     {
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             _runs = await catalog.ListRunsAsync(20);
             if (_runs.Count > 0 && (string.IsNullOrWhiteSpace(_selectedRunId) || _runs.All(r => !string.Equals(r.RunId, _selectedRunId, StringComparison.OrdinalIgnoreCase))))
             {
@@ -503,7 +553,7 @@
     {
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             _pipelines = await catalog.ListPipelinesAsync(50);
             if (_pipelines.Count > 0 && (string.IsNullOrWhiteSpace(_selectedPipelineName) || _pipelines.All(p => !string.Equals(p.Name, _selectedPipelineName, StringComparison.OrdinalIgnoreCase))))
             {
@@ -528,7 +578,7 @@
         try
         {
             PipelinePackageDefinition package = await GetCurrentPackageAsync();
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             var summary = await catalog.SavePipelineAsync(package, string.IsNullOrWhiteSpace(_pipelineName) ? package.Name : _pipelineName);
             _pipelineName = summary.Name;
             await LoadPipelinesAsync();
@@ -554,7 +604,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             var package = await catalog.GetPipelineAsync(name);
             if (package is null)
             {
@@ -584,7 +634,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             await catalog.DeletePipelineAsync(name);
             if (string.Equals(_pipelineName, name, StringComparison.OrdinalIgnoreCase))
                 _pipelineName = string.Empty;
@@ -610,7 +660,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             _result = await catalog.RunStoredPipelineAsync(name);
             _pipelineName = name;
             await LoadRunsAsync();
@@ -637,7 +687,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             _selectedPipelineRevisions = await catalog.ListPipelineRevisionsAsync(name);
             _selectedPipelineRevision = _selectedPipelineRevisions.Count > 0
                 ? _selectedPipelineRevisions[0].Revision
@@ -662,7 +712,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             var package = await catalog.GetPipelineRevisionAsync(name, revision);
             if (package is null)
             {
@@ -693,7 +743,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             _result = await catalog.ResumeAsync(runId);
             await LoadRunsAsync();
             await SelectRunAsync(_result.RunId);
@@ -726,7 +776,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             _selectedRunDetail = await catalog.GetRunAsync(runId);
             _selectedRunRejects = await catalog.GetRejectsAsync(runId);
         }
@@ -749,7 +799,7 @@
 
         try
         {
-            var catalog = new CSharpDbPipelineCatalogClient(DbClient);
+            var catalog = new CSharpDbPipelineCatalogClient(ActiveClient);
             var package = await catalog.GetRunPackageAsync(runId);
             if (package is null)
             {
@@ -888,5 +938,11 @@
     {
         Visual,
         Json,
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_routeLease is not null)
+            await _routeLease.DisposeAsync();
     }
 }

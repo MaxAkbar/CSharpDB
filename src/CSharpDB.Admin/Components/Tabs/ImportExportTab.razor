@@ -1,0 +1,67 @@
+@using CSharpDB.Admin.ImportExport.Pages
+@using CSharpDB.Admin.ImportExport.Services
+@inject DatabaseClientHolder DbHolder
+@inject ITableArchiveDownloadStore DownloadStore
+@implements IAsyncDisposable
+
+<div class="import-export-admin-shell">
+    <div class="toolbar">
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
+    </div>
+
+    @if (RequiresRouteContext)
+    {
+        <div class="query-error">
+            <i class="bi bi-signpost-split"></i> Select a route before using import/export on a sharded database.
+        </div>
+    }
+    else
+    {
+        <ImportExport @key="RenderKey"
+                      InitialTableName="@Tab?.InitialTableName"
+                      ClientOverride="@RouteLease.RouteClient"
+                      ImportExportServiceOverride="@_routeImportExportService" />
+    }
+</div>
+
+@code {
+    [Parameter] public TabDescriptor? Tab { get; set; }
+
+    private AdminRouteClientLease? _routeLease;
+    private ITableImportExportService? _routeImportExportService;
+    private int _renderVersion;
+
+    private AdminRouteClientLease RouteLease => _routeLease ??= new AdminRouteClientLease(DbHolder);
+    private bool RequiresRouteContext => DbHolder.SupportsShardAdmin && DbHolder.SupportsRouteBoundClients && Tab?.HasRouteContext != true;
+    private string RenderKey => $"{Tab?.Id}:{_renderVersion}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!RouteLease.IsRouteChanged(Tab))
+            return;
+
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteService();
+        _renderVersion++;
+    }
+
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteService();
+        _renderVersion++;
+    }
+
+    private void RebuildRouteService()
+    {
+        _routeImportExportService = RouteLease.RouteClient is null
+            ? null
+            : new TableImportExportService(RouteLease.RouteClient, DownloadStore);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_routeLease is not null)
+            await _routeLease.DisposeAsync();
+    }
+}

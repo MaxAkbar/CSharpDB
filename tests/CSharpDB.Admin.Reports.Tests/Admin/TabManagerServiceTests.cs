@@ -46,6 +46,36 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenReportTabs_InheritActiveRouteContext()
+    {
+        var manager = new TabManagerService();
+        TabDescriptor parent = manager.OpenTableTab("customers");
+        SetRoute(parent, "tenant", "customer-42", "shard-a");
+
+        TabDescriptor designer = manager.OpenReportDesignerTab(sourceKind: "Table", sourceName: "customers");
+        TabDescriptor preview = manager.OpenReportPreviewTab("report-1", "Customer Report");
+
+        AssertRoute(designer, "tenant", "customer-42", "shard-a");
+        AssertRoute(preview, "tenant", "customer-42", "shard-a");
+    }
+
+    [Fact]
+    public void OpenReportPreviewTab_ReopenedExistingTabUpdatesRouteContext()
+    {
+        var manager = new TabManagerService();
+        TabDescriptor firstParent = manager.OpenTableTab("customers");
+        SetRoute(firstParent, "tenant", "customer-1", "shard-a");
+        TabDescriptor preview = manager.OpenReportPreviewTab("report-1", "Customer Report");
+
+        TabDescriptor secondParent = manager.OpenCollectionTab("profiles");
+        SetRoute(secondParent, "tenant", "customer-2", "shard-b");
+        TabDescriptor reopened = manager.OpenReportPreviewTab("report-1", "Customer Report");
+
+        Assert.Same(preview, reopened);
+        AssertRoute(reopened, "tenant", "customer-2", "shard-b");
+    }
+
+    [Fact]
     public void CloseTabsForReport_ClosesDesignerAndPreviewTabs()
     {
         var manager = new TabManagerService();
@@ -57,5 +87,25 @@ public class TabManagerServiceTests
 
         Assert.Equal(["welcome", "report-designer:report-2"], manager.Tabs.Select(tab => tab.Id).ToArray());
         Assert.Equal("report-designer:report-2", manager.ActiveTab!.Id);
+    }
+
+    private static void SetRoute(TabDescriptor tab, string keyspace, string key, string shardId)
+    {
+        tab.RouteKeyspace = keyspace;
+        tab.RouteKey = key;
+        tab.RouteShardId = shardId;
+        tab.RouteBucket = 7;
+        tab.RouteMapVersion = 3;
+        tab.RouteToken = 123UL;
+    }
+
+    private static void AssertRoute(TabDescriptor tab, string keyspace, string key, string shardId)
+    {
+        Assert.Equal(keyspace, tab.RouteKeyspace);
+        Assert.Equal(key, tab.RouteKey);
+        Assert.Equal(shardId, tab.RouteShardId);
+        Assert.Equal(7, tab.RouteBucket);
+        Assert.Equal(3, tab.RouteMapVersion);
+        Assert.Equal(123UL, tab.RouteToken);
     }
 }

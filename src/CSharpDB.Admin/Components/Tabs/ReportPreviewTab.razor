@@ -1,32 +1,63 @@
-@implements IDisposable
+@using CSharpDB.Admin.Reports.Services
+@using CSharpDB.Primitives
+@implements IAsyncDisposable
 @inject DatabaseClientHolder DbHolder
 @inject TabManagerService TabManager
+@inject DbFunctionRegistry Functions
+@inject IReportEventDispatcher ReportEvents
+@inject DbExtensionPolicy CallbackPolicy
 
-@if (string.IsNullOrWhiteSpace(Tab.ReportId))
-{
-    <div class="empty-state">
-        <i class="bi bi-printer"></i>
-        <p>This report preview tab has no report bound to it.</p>
+<div class="report-preview-admin-shell">
+    <div class="toolbar">
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
     </div>
-}
-else
-{
-    <CSharpDB.Admin.Reports.Pages.Preview @key="_renderKey" ReportId="@Tab.ReportId" OnOpenDesigner="OpenDesigner" />
-}
+
+    @if (RequiresRouteContext)
+    {
+        <div class="query-error">
+            <i class="bi bi-signpost-split"></i> Select a route before previewing reports on a sharded database.
+        </div>
+    }
+    else if (string.IsNullOrWhiteSpace(Tab.ReportId))
+    {
+        <div class="empty-state">
+            <i class="bi bi-printer"></i>
+            <p>This report preview tab has no report bound to it.</p>
+        </div>
+    }
+    else
+    {
+        <CSharpDB.Admin.Reports.Pages.Preview @key="_renderKey"
+                                              ReportId="@Tab.ReportId"
+                                              ReportRepositoryOverride="@_routeReportRepository"
+                                              ReportPreviewServiceOverride="@_routePreviewService"
+                                              OnOpenDesigner="OpenDesigner" />
+    }
+</div>
 
 @code {
     [Parameter, EditorRequired] public TabDescriptor Tab { get; set; } = default!;
     private string _renderKey = string.Empty;
+    private AdminRouteClientLease? _routeLease;
+    private IReportRepository? _routeReportRepository;
+    private IReportPreviewService? _routePreviewService;
 
-    protected override void OnInitialized()
+    private AdminRouteClientLease RouteLease => _routeLease ??= new AdminRouteClientLease(DbHolder);
+    private bool RequiresRouteContext => DbHolder.SupportsShardAdmin && DbHolder.SupportsRouteBoundClients && Tab.HasRouteContext != true;
+
+    protected override async Task OnInitializedAsync()
     {
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteServices();
         _renderKey = BuildRenderKey();
         DbHolder.DatabaseChanged += OnDatabaseChanged;
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
         DbHolder.DatabaseChanged -= OnDatabaseChanged;
+        if (_routeLease is not null)
+            await _routeLease.DisposeAsync();
     }
 
     private Task OpenDesigner(string reportId)
@@ -37,9 +68,48 @@ else
 
     private void OnDatabaseChanged()
     {
-        _renderKey = BuildRenderKey();
-        _ = InvokeAsync(StateHasChanged);
+        _ = InvokeAsync(ResetAfterDatabaseChangedAsync);
     }
 
-    private string BuildRenderKey() => $"{Tab.Id}:{DbHolder.DataSource}";
+    private async Task ResetAfterDatabaseChangedAsync()
+    {
+        if (_routeLease is not null)
+        {
+            await _routeLease.DisposeAsync();
+            _routeLease = null;
+        }
+
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteServices();
+        _renderKey = BuildRenderKey();
+        StateHasChanged();
+    }
+
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteServices();
+        _renderKey = BuildRenderKey();
+    }
+
+    private void RebuildRouteServices()
+    {
+        if (RouteLease.RouteClient is null)
+        {
+            _routeReportRepository = null;
+            _routePreviewService = null;
+            return;
+        }
+
+        var sourceProvider = new DbReportSourceProvider(RouteLease.RouteClient);
+        _routeReportRepository = new DbReportRepository(RouteLease.RouteClient);
+        _routePreviewService = new DefaultReportPreviewService(
+            RouteLease.RouteClient,
+            sourceProvider,
+            Functions,
+            ReportEvents,
+            CallbackPolicy);
+    }
+
+    private string BuildRenderKey() => $"{Tab.Id}:{DbHolder.DataSource}:{Tab.RouteKeyspace}:{Tab.RouteKey}";
 }
