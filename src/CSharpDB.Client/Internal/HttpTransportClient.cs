@@ -7,7 +7,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient
+internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private static readonly JsonSerializerOptions s_jsonOptions = CreateJsonOptions();
 
@@ -137,6 +137,62 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
     {
         using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/migrations"), payload: null, ct);
         return await ReadRequiredAsync<List<CSharpDbShardMigrationHistoryEntry>>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(
+        CSharpDbShardDirectoryResolveRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/resolve"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryResolution>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(
+        CSharpDbShardDirectoryReserveRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/reserve"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(
+        CSharpDbShardDirectoryActivateRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/activate"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(
+        CSharpDbShardDirectoryUpsertRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/upsert"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(
+        CSharpDbShardDirectoryDisableRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/disable"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(
+        CSharpDbShardDirectoryDeleteRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/delete"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(
+        CSharpDbShardDirectoryMarkStaleRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/mark-stale"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
     }
 
     public async Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)

@@ -142,10 +142,99 @@ public sealed class CSharpDbShardDirectoryEntry
     public required string State { get; init; }
 }
 
+public static class CSharpDbShardDirectoryEntryStates
+{
+    public const string Reserved = "Reserved";
+    public const string Active = "Active";
+    public const string Moving = "Moving";
+    public const string Disabled = "Disabled";
+    public const string Deleted = "Deleted";
+    public const string Stale = "Stale";
+}
+
+public sealed class CSharpDbShardDirectoryResolveRequest
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public bool IncludeInactive { get; init; }
+}
+
 public sealed class CSharpDbShardDirectoryResolution
 {
     public required CSharpDbShardDirectoryEntry Entry { get; init; }
     public required CSharpDbShardResolution RouteResolution { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryReserveRequest
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public required string TargetKeyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryActivateRequest
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryUpsertRequest
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public required string TargetKeyspace { get; init; }
+    public required string RouteKey { get; init; }
+    public string State { get; init; } = CSharpDbShardDirectoryEntryStates.Active;
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryDisableRequest
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryDeleteRequest
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public bool RemoveEntry { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryMarkStaleRequest
+{
+    public required string DirectoryName { get; init; }
+    public required string LookupKey { get; init; }
+    public int? ExpectedCurrentMapVersion { get; init; }
+    public string? Operator { get; init; }
+    public string? Comment { get; init; }
+}
+
+public sealed class CSharpDbShardDirectoryMutationResult
+{
+    public bool Succeeded { get; init; }
+    public required string Status { get; init; }
+    public required string Message { get; init; }
+    public CSharpDbShardDirectoryEntry? Entry { get; init; }
+    public int? PendingMapVersion { get; init; }
+    public bool RequiresRestart { get; init; }
+    public CSharpDbShardCatalogApplyResult? CatalogApplyResult { get; init; }
+    public List<CSharpDbShardCatalogIssue> Issues { get; init; } = [];
 }
 
 public sealed class CSharpDbShardCatalogState
@@ -345,6 +434,19 @@ public interface ICSharpDbShardAdminClient : IAsyncDisposable
     Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(CSharpDbShardExactKeyMigrationRequest request, CancellationToken ct = default);
     Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(CSharpDbShardBucketRangeMigrationRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default);
+}
+
+public interface ICSharpDbShardDirectoryClient : IAsyncDisposable
+{
+    string DataSource { get; }
+
+    Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(CSharpDbShardDirectoryResolveRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(CSharpDbShardDirectoryReserveRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(CSharpDbShardDirectoryActivateRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(CSharpDbShardDirectoryUpsertRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(CSharpDbShardDirectoryDisableRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(CSharpDbShardDirectoryDeleteRequest request, CancellationToken ct = default);
+    Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(CSharpDbShardDirectoryMarkStaleRequest request, CancellationToken ct = default);
 }
 
 public interface ICSharpDbRouteContextAccessor

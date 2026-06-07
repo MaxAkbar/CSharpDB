@@ -12,7 +12,7 @@ namespace CSharpDB.Admin.Services;
 /// at runtime (e.g. when the user opens a different database file).
 /// Registered as a singleton; all Blazor circuits share the same instance.
 /// </summary>
-public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbShardAdminClient
+public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private ICSharpDbClient _inner;
     private ICSharpDbShardAdminClient? _shardAdmin;
@@ -213,9 +213,34 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
         => RequireShardAdmin().GetShardMigrationHistoryAsync(ct);
 
+    public Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(CSharpDbShardDirectoryResolveRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().ResolveDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(CSharpDbShardDirectoryReserveRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().ReserveDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(CSharpDbShardDirectoryActivateRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().ActivateDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(CSharpDbShardDirectoryUpsertRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().UpsertDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(CSharpDbShardDirectoryDisableRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().DisableDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(CSharpDbShardDirectoryDeleteRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().DeleteDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(CSharpDbShardDirectoryMarkStaleRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().MarkDirectoryEntryStaleAsync(request, ct);
+
     private ICSharpDbShardAdminClient RequireShardAdmin()
         => _shardAdmin
             ?? throw new CSharpDbClientConfigurationException("The current CSharpDB connection does not expose shard-admin APIs.");
+
+    private ICSharpDbShardDirectoryClient RequireShardDirectory()
+        => _shardAdmin as ICSharpDbShardDirectoryClient
+           ?? throw new CSharpDbClientConfigurationException("The current CSharpDB connection does not expose shard-directory APIs.");
 
     private static CSharpDbClientOptions CloneOptionsWithRoute(
         CSharpDbClientOptions options,

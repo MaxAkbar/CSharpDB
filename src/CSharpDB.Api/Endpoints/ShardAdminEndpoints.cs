@@ -18,6 +18,13 @@ public static class ShardAdminEndpoints
         group.MapGet("/sharding/migrations", GetShardMigrationHistory);
         group.MapPost("/sharding/migrations/exact-route-key", MigrateExactRouteKey);
         group.MapPost("/sharding/migrations/bucket-range", MigrateBucketRange);
+        group.MapPost("/sharding/directory/resolve", ResolveDirectoryEntry);
+        group.MapPost("/sharding/directory/reserve", ReserveDirectoryEntry);
+        group.MapPost("/sharding/directory/activate", ActivateDirectoryEntry);
+        group.MapPost("/sharding/directory/upsert", UpsertDirectoryEntry);
+        group.MapPost("/sharding/directory/disable", DisableDirectoryEntry);
+        group.MapPost("/sharding/directory/delete", DeleteDirectoryEntry);
+        group.MapPost("/sharding/directory/mark-stale", MarkDirectoryEntryStale);
         return group;
     }
 
@@ -163,12 +170,111 @@ public static class ShardAdminEndpoints
         return Results.Ok(await shardAdmin.GetShardMigrationHistoryAsync(ct));
     }
 
+    private static async Task<IResult> ResolveDirectoryEntry(
+        CSharpDbShardDirectoryResolveRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardDirectoryClient? directoryClient = GetShardDirectory(db);
+        if (directoryClient is null)
+            return UnsupportedDirectory();
+
+        return Results.Ok(await directoryClient.ResolveDirectoryEntryAsync(request, ct));
+    }
+
+    private static async Task<IResult> ReserveDirectoryEntry(
+        CSharpDbShardDirectoryReserveRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardDirectoryClient? directoryClient = GetShardDirectory(db);
+        if (directoryClient is null)
+            return UnsupportedDirectory();
+
+        CSharpDbShardDirectoryMutationResult result = await directoryClient.ReserveDirectoryEntryAsync(request, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> ActivateDirectoryEntry(
+        CSharpDbShardDirectoryActivateRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardDirectoryClient? directoryClient = GetShardDirectory(db);
+        if (directoryClient is null)
+            return UnsupportedDirectory();
+
+        CSharpDbShardDirectoryMutationResult result = await directoryClient.ActivateDirectoryEntryAsync(request, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> UpsertDirectoryEntry(
+        CSharpDbShardDirectoryUpsertRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardDirectoryClient? directoryClient = GetShardDirectory(db);
+        if (directoryClient is null)
+            return UnsupportedDirectory();
+
+        CSharpDbShardDirectoryMutationResult result = await directoryClient.UpsertDirectoryEntryAsync(request, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> DisableDirectoryEntry(
+        CSharpDbShardDirectoryDisableRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardDirectoryClient? directoryClient = GetShardDirectory(db);
+        if (directoryClient is null)
+            return UnsupportedDirectory();
+
+        CSharpDbShardDirectoryMutationResult result = await directoryClient.DisableDirectoryEntryAsync(request, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> DeleteDirectoryEntry(
+        CSharpDbShardDirectoryDeleteRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardDirectoryClient? directoryClient = GetShardDirectory(db);
+        if (directoryClient is null)
+            return UnsupportedDirectory();
+
+        CSharpDbShardDirectoryMutationResult result = await directoryClient.DeleteDirectoryEntryAsync(request, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
+    private static async Task<IResult> MarkDirectoryEntryStale(
+        CSharpDbShardDirectoryMarkStaleRequest request,
+        ICSharpDbClient db,
+        CancellationToken ct)
+    {
+        ICSharpDbShardDirectoryClient? directoryClient = GetShardDirectory(db);
+        if (directoryClient is null)
+            return UnsupportedDirectory();
+
+        CSharpDbShardDirectoryMutationResult result = await directoryClient.MarkDirectoryEntryStaleAsync(request, ct);
+        return result.Succeeded ? Results.Ok(result) : Results.BadRequest(result);
+    }
+
     private static ICSharpDbShardAdminClient? GetShardAdmin(ICSharpDbClient db)
         => db as ICSharpDbShardAdminClient;
+
+    private static ICSharpDbShardDirectoryClient? GetShardDirectory(ICSharpDbClient db)
+        => db as ICSharpDbShardDirectoryClient;
 
     private static IResult Unsupported()
         => Results.NotFound(new
         {
             error = "CSharpDB shard-admin APIs are available only when API-level sharding is enabled.",
+        });
+
+    private static IResult UnsupportedDirectory()
+        => Results.NotFound(new
+        {
+            error = "CSharpDB shard-directory APIs are available only when API-level sharding is enabled.",
         });
 }

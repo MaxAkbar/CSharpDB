@@ -52,6 +52,7 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
+builder.Services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddScoped<TabManagerService>();
 builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();

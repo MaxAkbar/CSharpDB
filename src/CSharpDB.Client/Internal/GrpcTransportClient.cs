@@ -12,7 +12,7 @@ using Empty = Google.Protobuf.WellKnownTypes.Empty;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient
+internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private static readonly Empty EmptyRequest = new();
 
@@ -130,6 +130,62 @@ internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdmin
         => CallAsync(
             _client.GetShardMigrationHistoryAsync(EmptyRequest, cancellationToken: ct),
             response => (IReadOnlyList<CSharpDbShardMigrationHistoryEntry>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(
+        CSharpDbShardDirectoryResolveRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ResolveShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(
+        CSharpDbShardDirectoryReserveRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ReserveShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(
+        CSharpDbShardDirectoryActivateRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ActivateShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(
+        CSharpDbShardDirectoryUpsertRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.UpsertShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(
+        CSharpDbShardDirectoryDisableRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.DisableShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(
+        CSharpDbShardDirectoryDeleteRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.DeleteShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(
+        CSharpDbShardDirectoryMarkStaleRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.MarkShardDirectoryEntryStaleAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
             ct);
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)

@@ -97,6 +97,369 @@ public sealed class CSharpDbShardedClientTests
     }
 
     [Fact]
+    public async Task ShardDirectory_ResolvesActiveEntriesAndRejectsStaleEntries()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Directories =
+            [
+                new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = "orders_by_id",
+                    TargetKeyspace = "tenants",
+                    Description = "order id lookup",
+                },
+            ];
+            options.DirectoryEntries =
+            [
+                new CSharpDbShardDirectoryEntry
+                {
+                    DirectoryName = "orders_by_id",
+                    LookupKey = "SO-1",
+                    TargetKeyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    ShardId = "s0",
+                    MapVersion = 1,
+                    State = CSharpDbShardDirectoryEntryStates.Active,
+                },
+                new CSharpDbShardDirectoryEntry
+                {
+                    DirectoryName = "orders_by_id",
+                    LookupKey = "SO-stale",
+                    TargetKeyspace = "tenants",
+                    RouteKey = "tenant-b",
+                    ShardId = "s1",
+                    MapVersion = 1,
+                    State = CSharpDbShardDirectoryEntryStates.Stale,
+                },
+            ];
+
+            await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
+
+            CSharpDbShardDirectoryResolution resolution = await client.ResolveDirectoryEntryAsync(
+                new CSharpDbShardDirectoryResolveRequest
+                {
+                    DirectoryName = "orders_by_id",
+                    LookupKey = "SO-1",
+                },
+                Ct);
+
+            Assert.Equal("tenant-a", resolution.Entry.RouteKey);
+            Assert.Equal("s0", resolution.RouteResolution.ShardId);
+
+            CSharpDbClientException staleError = await Assert.ThrowsAsync<CSharpDbClientException>(
+                () => client.ResolveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryResolveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-stale",
+                    },
+                    Ct));
+            Assert.Contains("not Active", staleError.Message);
+
+            CSharpDbShardDirectoryResolution inactiveResolution = await client.ResolveDirectoryEntryAsync(
+                new CSharpDbShardDirectoryResolveRequest
+                {
+                    DirectoryName = "orders_by_id",
+                    LookupKey = "SO-stale",
+                    IncludeInactive = true,
+                },
+                Ct);
+            Assert.Equal(CSharpDbShardDirectoryEntryStates.Stale, inactiveResolution.Entry.State);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task ShardDirectory_ReserveActivateAndRepairBuildOnPendingCatalog()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            string catalogPath = Path.Combine(directory, "catalog.json");
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = catalogPath,
+            };
+            options.Directories =
+            [
+                new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = "orders_by_id",
+                    TargetKeyspace = "tenants",
+                    Description = "order id lookup",
+                    ReadOnly = false,
+                },
+            ];
+
+            await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardDirectoryMutationResult reserved = await client.ReserveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryReserveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                        TargetKeyspace = "tenants",
+                        RouteKey = "tenant-a",
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "test",
+                    },
+                    Ct);
+
+                Assert.True(reserved.Succeeded, reserved.Message);
+                Assert.Equal("Reserved", reserved.Status);
+                Assert.Equal(2, reserved.PendingMapVersion);
+                Assert.Equal(CSharpDbShardDirectoryEntryStates.Reserved, reserved.Entry!.State);
+                Assert.True(reserved.RequiresRestart);
+
+                CSharpDbShardDirectoryMutationResult duplicateReserve = await client.ReserveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryReserveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                        TargetKeyspace = "tenants",
+                        RouteKey = "tenant-a",
+                        ExpectedCurrentMapVersion = 1,
+                    },
+                    Ct);
+                Assert.True(duplicateReserve.Succeeded, duplicateReserve.Message);
+                Assert.Equal("AlreadyReserved", duplicateReserve.Status);
+
+                CSharpDbShardDirectoryMutationResult activated = await client.ActivateDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryActivateRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "test",
+                    },
+                    Ct);
+
+                Assert.True(activated.Succeeded, activated.Message);
+                Assert.Equal("Activated", activated.Status);
+                Assert.Equal(3, activated.PendingMapVersion);
+                Assert.Equal(CSharpDbShardDirectoryEntryStates.Active, activated.Entry!.State);
+
+                CSharpDbShardCatalogState pending = await client.GetShardCatalogAsync(Ct);
+                Assert.Equal(1, pending.ActiveMap.MapVersion);
+                Assert.Equal(3, pending.PendingMap!.MapVersion);
+                Assert.Equal(1, Assert.Single(pending.PendingMap.Directories).EntryCount);
+            }
+
+            await using (var reloaded = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardDirectoryResolution resolution = await reloaded.ResolveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryResolveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                    },
+                    Ct);
+                Assert.Equal("tenant-a", resolution.Entry.RouteKey);
+                Assert.Equal("s0", resolution.RouteResolution.ShardId);
+
+                CSharpDbShardDirectoryMutationResult alreadyActive = await reloaded.ActivateDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryActivateRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                        ExpectedCurrentMapVersion = 3,
+                    },
+                    Ct);
+                Assert.True(alreadyActive.Succeeded, alreadyActive.Message);
+                Assert.Equal("AlreadyActive", alreadyActive.Status);
+
+                CSharpDbShardDirectoryMutationResult repaired = await reloaded.UpsertDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryUpsertRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                        TargetKeyspace = "tenants",
+                        RouteKey = "tenant-b",
+                        State = CSharpDbShardDirectoryEntryStates.Active,
+                        ExpectedCurrentMapVersion = 3,
+                        Operator = "test",
+                    },
+                    Ct);
+
+                Assert.True(repaired.Succeeded, repaired.Message);
+                Assert.Equal("Repaired", repaired.Status);
+                Assert.Equal(4, repaired.PendingMapVersion);
+                Assert.Equal("s1", repaired.Entry!.ShardId);
+            }
+
+            await using (var repairedReload = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardDirectoryResolution repairedResolution = await repairedReload.ResolveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryResolveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                    },
+                    Ct);
+
+                Assert.Equal("tenant-b", repairedResolution.Entry.RouteKey);
+                Assert.Equal("s1", repairedResolution.RouteResolution.ShardId);
+
+                CSharpDbShardDirectoryMutationResult stale = await repairedReload.MarkDirectoryEntryStaleAsync(
+                    new CSharpDbShardDirectoryMarkStaleRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-2",
+                        ExpectedCurrentMapVersion = 4,
+                        Operator = "test",
+                    },
+                    Ct);
+
+                Assert.True(stale.Succeeded, stale.Message);
+                Assert.Equal("MarkedStale", stale.Status);
+                Assert.Equal(CSharpDbShardDirectoryEntryStates.Stale, stale.Entry!.State);
+            }
+
+            await using (var staleReload = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                await Assert.ThrowsAsync<CSharpDbClientException>(
+                    () => staleReload.ResolveDirectoryEntryAsync(
+                        new CSharpDbShardDirectoryResolveRequest
+                        {
+                            DirectoryName = "orders_by_id",
+                            LookupKey = "SO-2",
+                        },
+                        Ct));
+            }
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task ShardDirectory_DisableAndDeleteUpdatePendingCatalog()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            string catalogPath = Path.Combine(directory, "catalog.json");
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                Enabled = true,
+                Path = catalogPath,
+            };
+            options.Directories =
+            [
+                new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = "orders_by_id",
+                    TargetKeyspace = "tenants",
+                    ReadOnly = false,
+                },
+            ];
+            options.DirectoryEntries =
+            [
+                new CSharpDbShardDirectoryEntry
+                {
+                    DirectoryName = "orders_by_id",
+                    LookupKey = "SO-3",
+                    TargetKeyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    ShardId = "s0",
+                    MapVersion = 1,
+                    State = CSharpDbShardDirectoryEntryStates.Active,
+                },
+            ];
+
+            await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardDirectoryMutationResult disabled = await client.DisableDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryDisableRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-3",
+                        ExpectedCurrentMapVersion = 1,
+                    },
+                    Ct);
+
+                Assert.True(disabled.Succeeded, disabled.Message);
+                Assert.Equal("Disabled", disabled.Status);
+                Assert.Equal(2, disabled.PendingMapVersion);
+                Assert.Equal(CSharpDbShardDirectoryEntryStates.Disabled, disabled.Entry!.State);
+            }
+
+            await using (var disabledReload = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardDirectoryResolution inactive = await disabledReload.ResolveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryResolveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-3",
+                        IncludeInactive = true,
+                    },
+                    Ct);
+                Assert.Equal(CSharpDbShardDirectoryEntryStates.Disabled, inactive.Entry.State);
+
+                CSharpDbShardDirectoryMutationResult deleted = await disabledReload.DeleteDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryDeleteRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-3",
+                        ExpectedCurrentMapVersion = 2,
+                    },
+                    Ct);
+
+                Assert.True(deleted.Succeeded, deleted.Message);
+                Assert.Equal("Deleted", deleted.Status);
+                Assert.Equal(3, deleted.PendingMapVersion);
+                Assert.Equal(CSharpDbShardDirectoryEntryStates.Deleted, deleted.Entry!.State);
+            }
+
+            await using (var deletedReload = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbShardDirectoryMutationResult removed = await deletedReload.DeleteDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryDeleteRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-3",
+                        RemoveEntry = true,
+                        ExpectedCurrentMapVersion = 3,
+                    },
+                    Ct);
+
+                Assert.True(removed.Succeeded, removed.Message);
+                Assert.Equal("Removed", removed.Status);
+                Assert.Equal(4, removed.PendingMapVersion);
+                Assert.Null(removed.Entry);
+            }
+
+            await using (var removedReload = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
+            {
+                CSharpDbClientException missing = await Assert.ThrowsAsync<CSharpDbClientException>(
+                    () => removedReload.ResolveDirectoryEntryAsync(
+                        new CSharpDbShardDirectoryResolveRequest
+                        {
+                            DirectoryName = "orders_by_id",
+                            LookupKey = "SO-3",
+                            IncludeInactive = true,
+                        },
+                        Ct));
+                Assert.Contains("was not found", missing.Message);
+            }
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task ReplicaMetadata_IsExposedAndCannotOwnRoutes()
     {
         string directory = CreateTempDirectory();

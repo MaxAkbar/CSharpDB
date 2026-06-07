@@ -11,7 +11,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client;
 
-public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient
+public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private const string TransactionPrefix = "csdbshard";
 
@@ -208,6 +208,270 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         }
 
         return _catalogStore.ApplyAsync(_map.ToSnapshot(), request, ct);
+    }
+
+    public Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(
+        CSharpDbShardDirectoryResolveRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return Task.FromResult(_map.ResolveDirectory(request));
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(
+        CSharpDbShardDirectoryReserveRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            (CSharpDbShardingOptions proposed, CSharpDbShardMap workingMap) =
+                await CreateDirectoryMutationBaseAsync(ct).ConfigureAwait(false);
+            string directoryName = NormalizeRequired(request.DirectoryName, nameof(request.DirectoryName));
+            string lookupKey = NormalizeRequired(request.LookupKey, nameof(request.LookupKey));
+            CSharpDbShardDirectoryEntry? existing = workingMap.FindDirectoryEntry(directoryName, lookupKey);
+            CSharpDbShardDirectoryEntry entry = CreateDirectoryEntry(
+                workingMap,
+                directoryName,
+                lookupKey,
+                request.TargetKeyspace,
+                request.RouteKey,
+                CSharpDbShardDirectoryEntryStates.Reserved,
+                nextMapVersion: proposed.MapVersion + 1);
+
+            if (existing is not null)
+            {
+                if (DirectoryEntryMatches(existing, entry) &&
+                    string.Equals(existing.State, CSharpDbShardDirectoryEntryStates.Reserved, StringComparison.Ordinal))
+                {
+                    return CreateDirectoryMutationNoOp(
+                        "AlreadyReserved",
+                        $"Shard-directory entry '{directoryName}:{lookupKey}' is already reserved.",
+                        existing);
+                }
+
+                return CreateDirectoryMutationRejected(
+                    "directory-entry-exists",
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' already exists and cannot be reserved again.",
+                    existing);
+            }
+
+            return await ApplyDirectoryEntryMutationAsync(
+                proposed,
+                entry,
+                removeEntry: false,
+                successStatus: "Reserved",
+                successMessage: $"Shard-directory entry '{directoryName}:{lookupKey}' was reserved in a pending shard map.",
+                expectedCurrentMapVersion: request.ExpectedCurrentMapVersion,
+                operatorName: request.Operator,
+                comment: request.Comment ?? $"Reserve shard-directory entry {directoryName}:{lookupKey}",
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsDirectoryMutationException(ex))
+        {
+            return CreateDirectoryMutationRejected("directory-mutation-rejected", ex.Message);
+        }
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(
+        CSharpDbShardDirectoryActivateRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            (CSharpDbShardingOptions proposed, CSharpDbShardMap workingMap) =
+                await CreateDirectoryMutationBaseAsync(ct).ConfigureAwait(false);
+            string directoryName = NormalizeRequired(request.DirectoryName, nameof(request.DirectoryName));
+            string lookupKey = NormalizeRequired(request.LookupKey, nameof(request.LookupKey));
+            CSharpDbShardDirectoryEntry existing = GetMutableDirectoryEntry(workingMap, directoryName, lookupKey);
+
+            if (string.Equals(existing.State, CSharpDbShardDirectoryEntryStates.Active, StringComparison.Ordinal))
+            {
+                return CreateDirectoryMutationNoOp(
+                    "AlreadyActive",
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' is already active.",
+                    existing);
+            }
+
+            if (!string.Equals(existing.State, CSharpDbShardDirectoryEntryStates.Reserved, StringComparison.Ordinal))
+            {
+                return CreateDirectoryMutationRejected(
+                    "directory-entry-not-reserved",
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' must be Reserved before it can be activated.",
+                    existing);
+            }
+
+            CSharpDbShardDirectoryEntry entry = WithDirectoryEntryState(
+                existing,
+                CSharpDbShardDirectoryEntryStates.Active,
+                nextMapVersion: proposed.MapVersion + 1);
+
+            return await ApplyDirectoryEntryMutationAsync(
+                proposed,
+                entry,
+                removeEntry: false,
+                successStatus: "Activated",
+                successMessage: $"Shard-directory entry '{directoryName}:{lookupKey}' was activated in a pending shard map.",
+                expectedCurrentMapVersion: request.ExpectedCurrentMapVersion,
+                operatorName: request.Operator,
+                comment: request.Comment ?? $"Activate shard-directory entry {directoryName}:{lookupKey}",
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsDirectoryMutationException(ex))
+        {
+            return CreateDirectoryMutationRejected("directory-mutation-rejected", ex.Message);
+        }
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(
+        CSharpDbShardDirectoryUpsertRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            (CSharpDbShardingOptions proposed, CSharpDbShardMap workingMap) =
+                await CreateDirectoryMutationBaseAsync(ct).ConfigureAwait(false);
+            string directoryName = NormalizeRequired(request.DirectoryName, nameof(request.DirectoryName));
+            string lookupKey = NormalizeRequired(request.LookupKey, nameof(request.LookupKey));
+            string state = NormalizeDirectoryEntryState(request.State);
+            CSharpDbShardDirectoryEntry entry = CreateDirectoryEntry(
+                workingMap,
+                directoryName,
+                lookupKey,
+                request.TargetKeyspace,
+                request.RouteKey,
+                state,
+                nextMapVersion: proposed.MapVersion + 1);
+            CSharpDbShardDirectoryEntry? existing = workingMap.FindDirectoryEntry(directoryName, lookupKey);
+
+            if (existing is not null &&
+                DirectoryEntryMatches(existing, entry) &&
+                string.Equals(existing.State, entry.State, StringComparison.Ordinal))
+            {
+                return CreateDirectoryMutationNoOp(
+                    "AlreadyUpToDate",
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' is already up to date.",
+                    existing);
+            }
+
+            return await ApplyDirectoryEntryMutationAsync(
+                proposed,
+                entry,
+                removeEntry: false,
+                successStatus: existing is null ? "Upserted" : "Repaired",
+                successMessage: existing is null
+                    ? $"Shard-directory entry '{directoryName}:{lookupKey}' was added in a pending shard map."
+                    : $"Shard-directory entry '{directoryName}:{lookupKey}' was repaired in a pending shard map.",
+                expectedCurrentMapVersion: request.ExpectedCurrentMapVersion,
+                operatorName: request.Operator,
+                comment: request.Comment ?? $"Upsert shard-directory entry {directoryName}:{lookupKey}",
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsDirectoryMutationException(ex))
+        {
+            return CreateDirectoryMutationRejected("directory-mutation-rejected", ex.Message);
+        }
+    }
+
+    public Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(
+        CSharpDbShardDirectoryDisableRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return UpdateDirectoryEntryStateAsync(
+            request.DirectoryName,
+            request.LookupKey,
+            CSharpDbShardDirectoryEntryStates.Disabled,
+            noOpStatus: "AlreadyDisabled",
+            successStatus: "Disabled",
+            expectedCurrentMapVersion: request.ExpectedCurrentMapVersion,
+            operatorName: request.Operator,
+            comment: request.Comment,
+            defaultCommentVerb: "Disable",
+            ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(
+        CSharpDbShardDirectoryDeleteRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            (CSharpDbShardingOptions proposed, CSharpDbShardMap workingMap) =
+                await CreateDirectoryMutationBaseAsync(ct).ConfigureAwait(false);
+            string directoryName = NormalizeRequired(request.DirectoryName, nameof(request.DirectoryName));
+            string lookupKey = NormalizeRequired(request.LookupKey, nameof(request.LookupKey));
+            CSharpDbShardDirectoryEntry? existing = workingMap.FindDirectoryEntry(directoryName, lookupKey);
+
+            if (existing is null)
+            {
+                return CreateDirectoryMutationNoOp(
+                    "AlreadyDeleted",
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' does not exist.",
+                    entry: null);
+            }
+
+            EnsureDirectoryWritable(workingMap, directoryName);
+            if (!request.RemoveEntry &&
+                string.Equals(existing.State, CSharpDbShardDirectoryEntryStates.Deleted, StringComparison.Ordinal))
+            {
+                return CreateDirectoryMutationNoOp(
+                    "AlreadyDeleted",
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' is already deleted.",
+                    existing);
+            }
+
+            CSharpDbShardDirectoryEntry? entry = request.RemoveEntry
+                ? null
+                : WithDirectoryEntryState(
+                    existing,
+                    CSharpDbShardDirectoryEntryStates.Deleted,
+                    nextMapVersion: proposed.MapVersion + 1);
+
+            return await ApplyDirectoryEntryMutationAsync(
+                proposed,
+                entry,
+                removeEntry: request.RemoveEntry,
+                successStatus: request.RemoveEntry ? "Removed" : "Deleted",
+                successMessage: request.RemoveEntry
+                    ? $"Shard-directory entry '{directoryName}:{lookupKey}' was removed in a pending shard map."
+                    : $"Shard-directory entry '{directoryName}:{lookupKey}' was marked deleted in a pending shard map.",
+                expectedCurrentMapVersion: request.ExpectedCurrentMapVersion,
+                operatorName: request.Operator,
+                comment: request.Comment ?? $"Delete shard-directory entry {directoryName}:{lookupKey}",
+                ct,
+                directoryName,
+                lookupKey).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsDirectoryMutationException(ex))
+        {
+            return CreateDirectoryMutationRejected("directory-mutation-rejected", ex.Message);
+        }
+    }
+
+    public Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(
+        CSharpDbShardDirectoryMarkStaleRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return UpdateDirectoryEntryStateAsync(
+            request.DirectoryName,
+            request.LookupKey,
+            CSharpDbShardDirectoryEntryStates.Stale,
+            noOpStatus: "AlreadyStale",
+            successStatus: "MarkedStale",
+            expectedCurrentMapVersion: request.ExpectedCurrentMapVersion,
+            operatorName: request.Operator,
+            comment: request.Comment,
+            defaultCommentVerb: "Mark stale",
+            ct);
     }
 
     public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
@@ -1989,6 +2253,290 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     private static int NormalizeMigrationPageSize(int pageSize)
         => Math.Clamp(pageSize, 1, 5000);
 
+    private async Task<(CSharpDbShardingOptions Options, CSharpDbShardMap WorkingMap)> CreateDirectoryMutationBaseAsync(
+        CancellationToken ct)
+    {
+        if (_catalogStore is null)
+        {
+            throw new CSharpDbClientException(
+                "Shard-directory writes require CSharpDB:Sharding:Catalog:Enabled=true.");
+        }
+
+        if (!_catalogStore.CanWrite)
+        {
+            throw new CSharpDbClientException(
+                "Shard-directory writes require writable shard catalog mode.");
+        }
+
+        CSharpDbShardingOptions options =
+            await _catalogStore.GetLatestOptionsAsync(_effectiveOptions, ct).ConfigureAwait(false);
+        return (options, CSharpDbShardMap.Create(options));
+    }
+
+    private static CSharpDbShardDirectoryEntry CreateDirectoryEntry(
+        CSharpDbShardMap map,
+        string directoryName,
+        string lookupKey,
+        string targetKeyspace,
+        string routeKey,
+        string state,
+        int nextMapVersion)
+    {
+        CSharpDbShardDirectoryDefinition directory = EnsureDirectoryWritable(map, directoryName);
+        var (normalizedTargetKeyspace, normalizedRouteKey) = CSharpDbShardMap.NormalizeRoute(new CSharpDbRouteContext
+        {
+            Keyspace = targetKeyspace,
+            Key = routeKey,
+        });
+
+        if (!string.Equals(directory.TargetKeyspace, normalizedTargetKeyspace, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CSharpDbClientException(
+                $"Shard-directory '{directory.DirectoryName}' targets keyspace '{directory.TargetKeyspace}', not '{normalizedTargetKeyspace}'.");
+        }
+
+        CSharpDbShardResolution routeResolution = map.Resolve(new CSharpDbRouteContext
+        {
+            Keyspace = normalizedTargetKeyspace,
+            Key = normalizedRouteKey,
+        });
+
+        return new CSharpDbShardDirectoryEntry
+        {
+            DirectoryName = directory.DirectoryName,
+            LookupKey = NormalizeRequired(lookupKey, nameof(lookupKey)),
+            TargetKeyspace = normalizedTargetKeyspace,
+            RouteKey = normalizedRouteKey,
+            ShardId = routeResolution.ShardId,
+            MapVersion = nextMapVersion,
+            State = NormalizeDirectoryEntryState(state),
+        };
+    }
+
+    private static CSharpDbShardDirectoryDefinition EnsureDirectoryWritable(
+        CSharpDbShardMap map,
+        string directoryName)
+    {
+        CSharpDbShardDirectoryDefinition directory = map.GetDirectory(directoryName);
+        if (directory.ReadOnly)
+        {
+            throw new CSharpDbClientException(
+                $"Shard-directory '{directory.DirectoryName}' is read-only.");
+        }
+
+        return directory;
+    }
+
+    private static CSharpDbShardDirectoryEntry GetMutableDirectoryEntry(
+        CSharpDbShardMap map,
+        string directoryName,
+        string lookupKey)
+    {
+        EnsureDirectoryWritable(map, directoryName);
+        return map.FindDirectoryEntry(directoryName, lookupKey)
+               ?? throw new CSharpDbClientException(
+                   $"Shard-directory entry '{NormalizeRequired(directoryName, nameof(directoryName))}:{NormalizeRequired(lookupKey, nameof(lookupKey))}' was not found.");
+    }
+
+    private async Task<CSharpDbShardDirectoryMutationResult> UpdateDirectoryEntryStateAsync(
+        string directoryName,
+        string lookupKey,
+        string state,
+        string noOpStatus,
+        string successStatus,
+        int? expectedCurrentMapVersion,
+        string? operatorName,
+        string? comment,
+        string defaultCommentVerb,
+        CancellationToken ct)
+    {
+        try
+        {
+            (CSharpDbShardingOptions proposed, CSharpDbShardMap workingMap) =
+                await CreateDirectoryMutationBaseAsync(ct).ConfigureAwait(false);
+            string normalizedDirectoryName = NormalizeRequired(directoryName, nameof(directoryName));
+            string normalizedLookupKey = NormalizeRequired(lookupKey, nameof(lookupKey));
+            CSharpDbShardDirectoryEntry existing = GetMutableDirectoryEntry(
+                workingMap,
+                normalizedDirectoryName,
+                normalizedLookupKey);
+
+            if (string.Equals(existing.State, state, StringComparison.Ordinal))
+            {
+                return CreateDirectoryMutationNoOp(
+                    noOpStatus,
+                    $"Shard-directory entry '{normalizedDirectoryName}:{normalizedLookupKey}' is already {state}.",
+                    existing);
+            }
+
+            CSharpDbShardDirectoryEntry entry = WithDirectoryEntryState(
+                existing,
+                state,
+                nextMapVersion: proposed.MapVersion + 1);
+
+            return await ApplyDirectoryEntryMutationAsync(
+                proposed,
+                entry,
+                removeEntry: false,
+                successStatus,
+                successMessage: $"Shard-directory entry '{normalizedDirectoryName}:{normalizedLookupKey}' was updated in a pending shard map.",
+                expectedCurrentMapVersion,
+                operatorName,
+                comment ?? $"{defaultCommentVerb} shard-directory entry {normalizedDirectoryName}:{normalizedLookupKey}",
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsDirectoryMutationException(ex))
+        {
+            return CreateDirectoryMutationRejected("directory-mutation-rejected", ex.Message);
+        }
+    }
+
+    private async Task<CSharpDbShardDirectoryMutationResult> ApplyDirectoryEntryMutationAsync(
+        CSharpDbShardingOptions proposed,
+        CSharpDbShardDirectoryEntry? entry,
+        bool removeEntry,
+        string successStatus,
+        string successMessage,
+        int? expectedCurrentMapVersion,
+        string? operatorName,
+        string? comment,
+        CancellationToken ct,
+        string? directoryName = null,
+        string? lookupKey = null)
+    {
+        string targetDirectoryName = entry?.DirectoryName ?? NormalizeRequired(directoryName!, nameof(directoryName));
+        string targetLookupKey = entry?.LookupKey ?? NormalizeRequired(lookupKey!, nameof(lookupKey));
+        int nextMapVersion = entry?.MapVersion ?? Math.Max(_map.MapVersion, proposed.MapVersion) + 1;
+        proposed.MapVersion = nextMapVersion;
+        proposed.Keyspace = _map.Keyspace;
+
+        var entries = new List<CSharpDbShardDirectoryEntry>();
+        bool matched = false;
+        foreach (CSharpDbShardDirectoryEntry current in proposed.DirectoryEntries ?? [])
+        {
+            if (DirectoryEntryKeyMatches(current, targetDirectoryName, targetLookupKey))
+            {
+                matched = true;
+                if (!removeEntry && entry is not null)
+                    entries.Add(entry);
+                continue;
+            }
+
+            entries.Add(current);
+        }
+
+        if (!matched && !removeEntry && entry is not null)
+            entries.Add(entry);
+
+        proposed.DirectoryEntries = entries.ToArray();
+
+        CSharpDbShardCatalogApplyResult applyResult = await ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+        {
+            Options = proposed,
+            ExpectedCurrentMapVersion = expectedCurrentMapVersion,
+            Operator = operatorName,
+            Comment = comment,
+        }, ct).ConfigureAwait(false);
+
+        return new CSharpDbShardDirectoryMutationResult
+        {
+            Succeeded = applyResult.Applied,
+            Status = applyResult.Applied ? successStatus : "Rejected",
+            Message = applyResult.Applied ? successMessage : applyResult.Message,
+            Entry = entry,
+            PendingMapVersion = applyResult.PendingMap?.MapVersion,
+            RequiresRestart = applyResult.RequiresRestart,
+            CatalogApplyResult = applyResult,
+            Issues = applyResult.Validation.Issues.ToList(),
+        };
+    }
+
+    private static CSharpDbShardDirectoryEntry WithDirectoryEntryState(
+        CSharpDbShardDirectoryEntry entry,
+        string state,
+        int nextMapVersion)
+        => new()
+        {
+            DirectoryName = entry.DirectoryName,
+            LookupKey = entry.LookupKey,
+            TargetKeyspace = entry.TargetKeyspace,
+            RouteKey = entry.RouteKey,
+            ShardId = entry.ShardId,
+            MapVersion = nextMapVersion,
+            State = NormalizeDirectoryEntryState(state),
+        };
+
+    private static bool DirectoryEntryMatches(
+        CSharpDbShardDirectoryEntry left,
+        CSharpDbShardDirectoryEntry right)
+        => string.Equals(left.DirectoryName, right.DirectoryName, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(left.LookupKey, right.LookupKey, StringComparison.Ordinal) &&
+           string.Equals(left.TargetKeyspace, right.TargetKeyspace, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(left.RouteKey, right.RouteKey, StringComparison.Ordinal) &&
+           string.Equals(left.ShardId, right.ShardId, StringComparison.OrdinalIgnoreCase);
+
+    private static bool DirectoryEntryKeyMatches(
+        CSharpDbShardDirectoryEntry entry,
+        string directoryName,
+        string lookupKey)
+        => string.Equals(entry.DirectoryName, directoryName, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(entry.LookupKey, lookupKey, StringComparison.Ordinal);
+
+    private static string NormalizeDirectoryEntryState(string state)
+    {
+        string normalized = NormalizeRequired(state, nameof(state));
+        return normalized switch
+        {
+            CSharpDbShardDirectoryEntryStates.Reserved => CSharpDbShardDirectoryEntryStates.Reserved,
+            CSharpDbShardDirectoryEntryStates.Active => CSharpDbShardDirectoryEntryStates.Active,
+            CSharpDbShardDirectoryEntryStates.Moving => CSharpDbShardDirectoryEntryStates.Moving,
+            CSharpDbShardDirectoryEntryStates.Disabled => CSharpDbShardDirectoryEntryStates.Disabled,
+            CSharpDbShardDirectoryEntryStates.Deleted => CSharpDbShardDirectoryEntryStates.Deleted,
+            CSharpDbShardDirectoryEntryStates.Stale => CSharpDbShardDirectoryEntryStates.Stale,
+            _ => throw new CSharpDbClientException($"Shard-directory entry state '{normalized}' is invalid."),
+        };
+    }
+
+    private static CSharpDbShardDirectoryMutationResult CreateDirectoryMutationNoOp(
+        string status,
+        string message,
+        CSharpDbShardDirectoryEntry? entry)
+        => new()
+        {
+            Succeeded = true,
+            Status = status,
+            Message = message,
+            Entry = entry,
+            PendingMapVersion = null,
+            RequiresRestart = false,
+        };
+
+    private static CSharpDbShardDirectoryMutationResult CreateDirectoryMutationRejected(
+        string code,
+        string message,
+        CSharpDbShardDirectoryEntry? entry = null)
+        => new()
+        {
+            Succeeded = false,
+            Status = "Rejected",
+            Message = message,
+            Entry = entry,
+            PendingMapVersion = null,
+            RequiresRestart = false,
+            Issues =
+            [
+                new CSharpDbShardCatalogIssue
+                {
+                    Severity = CSharpDbShardCatalogIssueSeverity.Error,
+                    Code = code,
+                    Message = message,
+                },
+            ],
+        };
+
+    private static bool IsDirectoryMutationException(Exception ex)
+        => ex is ArgumentException or CSharpDbClientException or CSharpDbClientConfigurationException;
+
     private static string NormalizeRequired(string value, string name)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -2666,6 +3214,22 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 .ToList();
         }
 
+        public async Task<CSharpDbShardingOptions> GetLatestOptionsAsync(
+            CSharpDbShardingOptions runtimeOptions,
+            CancellationToken ct)
+        {
+            if (!File.Exists(_path))
+                return CloneOptions(runtimeOptions, includeRuntimeOptions: true);
+
+            CSharpDbShardCatalogDocument document = await ReadDocumentAsync(_path, ct).ConfigureAwait(false);
+            CSharpDbShardingOptions latest = CloneOptions(document.ActiveMap, includeRuntimeOptions: false);
+            latest.Enabled = runtimeOptions.Enabled;
+            latest.Catalog = CloneCatalogOptions(runtimeOptions.Catalog);
+            latest.DirectDatabaseOptions = runtimeOptions.DirectDatabaseOptions;
+            latest.HybridDatabaseOptions = runtimeOptions.HybridDatabaseOptions;
+            return latest;
+        }
+
         public async Task AppendMigrationHistoryAsync(
             CSharpDbShardingOptions activeOptions,
             CSharpDbShardMigrationHistoryEntry entry,
@@ -3018,6 +3582,64 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 directoryEntries);
         }
 
+        public CSharpDbShardDirectoryDefinition GetDirectory(string directoryName)
+        {
+            string normalizedDirectoryName = NormalizeNonEmpty(directoryName, nameof(directoryName));
+            return _directories.FirstOrDefault(directory =>
+                       string.Equals(directory.DirectoryName, normalizedDirectoryName, StringComparison.OrdinalIgnoreCase))
+                   ?? throw new CSharpDbClientException($"Shard-directory '{normalizedDirectoryName}' is not configured.");
+        }
+
+        public CSharpDbShardDirectoryEntry? FindDirectoryEntry(string directoryName, string lookupKey)
+        {
+            string normalizedDirectoryName = NormalizeNonEmpty(directoryName, nameof(directoryName));
+            string normalizedLookupKey = NormalizeNonEmpty(lookupKey, nameof(lookupKey));
+            return _directoryEntries.FirstOrDefault(entry =>
+                string.Equals(entry.DirectoryName, normalizedDirectoryName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(entry.LookupKey, normalizedLookupKey, StringComparison.Ordinal));
+        }
+
+        public CSharpDbShardDirectoryResolution ResolveDirectory(CSharpDbShardDirectoryResolveRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+
+            string directoryName = NormalizeNonEmpty(request.DirectoryName, nameof(request.DirectoryName));
+            string lookupKey = NormalizeNonEmpty(request.LookupKey, nameof(request.LookupKey));
+            GetDirectory(directoryName);
+            CSharpDbShardDirectoryEntry entry = FindDirectoryEntry(directoryName, lookupKey)
+                ?? throw new CSharpDbClientException($"Shard-directory entry '{directoryName}:{lookupKey}' was not found.");
+
+            if (entry.MapVersion > MapVersion)
+            {
+                throw new CSharpDbClientException(
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' references future map version {entry.MapVersion}.");
+            }
+
+            if (!request.IncludeInactive &&
+                !string.Equals(entry.State, CSharpDbShardDirectoryEntryStates.Active, StringComparison.Ordinal))
+            {
+                throw new CSharpDbClientException(
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' is {entry.State}, not Active.");
+            }
+
+            CSharpDbShardResolution routeResolution = Resolve(new CSharpDbRouteContext
+            {
+                Keyspace = entry.TargetKeyspace,
+                Key = entry.RouteKey,
+            });
+            if (!string.Equals(routeResolution.ShardId, entry.ShardId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new CSharpDbClientException(
+                    $"Shard-directory entry '{directoryName}:{lookupKey}' points to shard '{entry.ShardId}', but route key '{entry.RouteKey}' resolves to shard '{routeResolution.ShardId}'.");
+            }
+
+            return new CSharpDbShardDirectoryResolution
+            {
+                Entry = entry,
+                RouteResolution = routeResolution,
+            };
+        }
+
         public CSharpDbShardResolution Resolve(CSharpDbRouteContext routeContext)
         {
             var (routeKeyspace, routeKey) = NormalizeRoute(routeContext);
@@ -3232,7 +3854,13 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         }
 
         private static bool IsValidDirectoryEntryState(string state)
-            => state is "Reserved" or "Active" or "Moving" or "Disabled" or "Deleted";
+            => state is
+                CSharpDbShardDirectoryEntryStates.Reserved or
+                CSharpDbShardDirectoryEntryStates.Active or
+                CSharpDbShardDirectoryEntryStates.Moving or
+                CSharpDbShardDirectoryEntryStates.Disabled or
+                CSharpDbShardDirectoryEntryStates.Deleted or
+                CSharpDbShardDirectoryEntryStates.Stale;
 
         private List<CSharpDbShardBucketRange> BuildBucketRangeSnapshot()
         {

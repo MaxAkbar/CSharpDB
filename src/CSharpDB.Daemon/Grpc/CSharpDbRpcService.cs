@@ -70,6 +70,41 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
             return response;
         });
 
+    public override Task<ShardDirectoryResolutionMessage> ResolveShardDirectoryEntry(
+        ShardDirectoryResolveRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().ResolveDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> ReserveShardDirectoryEntry(
+        ShardDirectoryReserveRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().ReserveDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> ActivateShardDirectoryEntry(
+        ShardDirectoryActivateRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().ActivateDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> UpsertShardDirectoryEntry(
+        ShardDirectoryUpsertRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().UpsertDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> DisableShardDirectoryEntry(
+        ShardDirectoryDisableRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().DisableDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> DeleteShardDirectoryEntry(
+        ShardDirectoryDeleteRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().DeleteDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> MarkShardDirectoryEntryStale(
+        ShardDirectoryMarkStaleRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().MarkDirectoryEntryStaleAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
     public override Task<StringList> GetTableNames(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetTableNamesAsync(ct), GrpcModelMapper.ToStringList);
 
@@ -431,6 +466,11 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
         => client as ICSharpDbShardAdminClient
            ?? throw new CSharpDbClientException(
                "CSharpDB shard-admin APIs are available only when API-level sharding is enabled.");
+
+    private ICSharpDbShardDirectoryClient GetShardDirectoryClient()
+        => client as ICSharpDbShardDirectoryClient
+           ?? throw new CSharpDbClientException(
+               "CSharpDB shard-directory APIs are available only when API-level sharding is enabled.");
 
     private static RpcException TranslateException(Exception ex)
     {

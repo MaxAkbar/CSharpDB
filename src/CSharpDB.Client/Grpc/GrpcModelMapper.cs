@@ -489,6 +489,197 @@ public static class GrpcModelMapper
             State = value.State,
         };
 
+    public static ShardDirectoryResolveRequestMessage ToMessage(CSharpDbShardDirectoryResolveRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            IncludeInactive = value.IncludeInactive,
+        };
+
+    public static CSharpDbShardDirectoryResolveRequest ToModel(ShardDirectoryResolveRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            IncludeInactive = value.IncludeInactive,
+        };
+
+    public static ShardDirectoryResolutionMessage ToMessage(CSharpDbShardDirectoryResolution value)
+        => new()
+        {
+            Entry = ToMessage(value.Entry),
+            RouteResolution = ToMessage(value.RouteResolution),
+        };
+
+    public static CSharpDbShardDirectoryResolution ToModel(ShardDirectoryResolutionMessage value)
+        => new()
+        {
+            Entry = ToModel(value.Entry),
+            RouteResolution = ToModel(value.RouteResolution),
+        };
+
+    public static ShardDirectoryReserveRequestMessage ToMessage(CSharpDbShardDirectoryReserveRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryReserveRequest ToModel(ShardDirectoryReserveRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryActivateRequestMessage ToMessage(CSharpDbShardDirectoryActivateRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryActivateRequest ToModel(ShardDirectoryActivateRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryUpsertRequestMessage ToMessage(CSharpDbShardDirectoryUpsertRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            State = value.State,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryUpsertRequest ToModel(ShardDirectoryUpsertRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            State = string.IsNullOrWhiteSpace(value.State) ? CSharpDbShardDirectoryEntryStates.Active : value.State,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryDisableRequestMessage ToMessage(CSharpDbShardDirectoryDisableRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryDisableRequest ToModel(ShardDirectoryDisableRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryDeleteRequestMessage ToMessage(CSharpDbShardDirectoryDeleteRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            RemoveEntry = value.RemoveEntry,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryDeleteRequest ToModel(ShardDirectoryDeleteRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            RemoveEntry = value.RemoveEntry,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryMarkStaleRequestMessage ToMessage(CSharpDbShardDirectoryMarkStaleRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryMarkStaleRequest ToModel(ShardDirectoryMarkStaleRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryMutationResultMessage ToMessage(CSharpDbShardDirectoryMutationResult value)
+    {
+        var message = new ShardDirectoryMutationResultMessage
+        {
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Entry = value.Entry is null ? null : ToMessage(value.Entry),
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToMessage(value.CatalogApplyResult),
+        };
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardDirectoryMutationResult ToModel(ShardDirectoryMutationResultMessage value)
+        => new()
+        {
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Entry = value.Entry is null ? null : ToModel(value.Entry),
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToModel(value.CatalogApplyResult),
+            Issues = value.Issues.Select(ToModel).ToList(),
+        };
+
     public static ShardMapSnapshotMessage ToMessage(CSharpDbShardMapSnapshot value)
     {
         var message = new ShardMapSnapshotMessage

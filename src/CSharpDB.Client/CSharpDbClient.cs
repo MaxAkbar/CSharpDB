@@ -33,6 +33,19 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSha
             $"Transport '{options.Transport}' does not expose CSharpDB shard-admin APIs.");
     }
 
+    public static ICSharpDbShardDirectoryClient CreateShardDirectoryClient(CSharpDbClientOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        ICSharpDbClient client = ClientTransportResolver.Create(options);
+        if (client is ICSharpDbShardDirectoryClient shardDirectoryClient)
+            return shardDirectoryClient;
+
+        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        throw new CSharpDbClientConfigurationException(
+            $"Transport '{options.Transport}' does not expose CSharpDB shard-directory APIs.");
+    }
+
     public string DataSource => _inner.DataSource;
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;

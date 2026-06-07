@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
             sp.GetService<ICSharpDbRouteContextAccessor>()));
         services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
         services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
+        services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
         return services;
     }
 
@@ -58,6 +59,7 @@ public static class ServiceCollectionExtensions
             sp.GetService<ICSharpDbRouteContextAccessor>()));
         services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
         services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
+        services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
         return services;
     }
 
@@ -81,6 +83,29 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(optionsFactory);
 
         services.AddSingleton<ICSharpDbShardAdminClient>(sp => CSharpDbClient.CreateShardAdmin(optionsFactory(sp)));
+        return services;
+    }
+
+    public static IServiceCollection AddCSharpDbShardDirectoryClient(
+        this IServiceCollection services,
+        CSharpDbClientOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+
+        services.AddSingleton(options);
+        services.AddSingleton<ICSharpDbShardDirectoryClient>(_ => CSharpDbClient.CreateShardDirectoryClient(options));
+        return services;
+    }
+
+    public static IServiceCollection AddCSharpDbShardDirectoryClient(
+        this IServiceCollection services,
+        Func<IServiceProvider, CSharpDbClientOptions> optionsFactory)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(optionsFactory);
+
+        services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => CSharpDbClient.CreateShardDirectoryClient(optionsFactory(sp)));
         return services;
     }
 }

@@ -666,6 +666,102 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Daemon_ShardDirectoryRestAndGrpcReserveActivateAndResolve()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shard_directory_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string catalogPath = Path.Combine(directory, "catalog", "shards.json");
+            Dictionary<string, string?> config = CreateShardingConfig(directory).ToDictionary();
+            config["CSharpDB:Sharding:Catalog:Enabled"] = "true";
+            config["CSharpDB:Sharding:Catalog:Path"] = catalogPath;
+            config["CSharpDB:Sharding:Directories:0:DirectoryName"] = "orders_by_id";
+            config["CSharpDB:Sharding:Directories:0:TargetKeyspace"] = "tenants";
+            config["CSharpDB:Sharding:Directories:0:Description"] = "remote order lookup";
+            config["CSharpDB:Sharding:Directories:0:ReadOnly"] = "false";
+
+            using (var factory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            {
+                using var grpcTransportClient = CreateGrpcHttpClient(factory);
+                using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("http://localhost"),
+                });
+
+                await using var restDirectory = CreateHttpShardDirectory(httpTransportClient);
+                await using var grpcDirectory = CreateGrpcShardDirectory(grpcTransportClient);
+
+                CSharpDbShardDirectoryMutationResult reserved = await restDirectory.ReserveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryReserveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-REMOTE-2",
+                        TargetKeyspace = "tenants",
+                        RouteKey = "tenant-a",
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "daemon-test",
+                    },
+                    Ct);
+
+                Assert.True(reserved.Succeeded, reserved.Message);
+                Assert.Equal("Reserved", reserved.Status);
+                Assert.Equal(2, reserved.PendingMapVersion);
+
+                CSharpDbShardDirectoryMutationResult activated = await grpcDirectory.ActivateDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryActivateRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-REMOTE-2",
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "daemon-test",
+                    },
+                    Ct);
+
+                Assert.True(activated.Succeeded, activated.Message);
+                Assert.Equal("Activated", activated.Status);
+                Assert.Equal(3, activated.PendingMapVersion);
+            }
+
+            using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            {
+                using var grpcTransportClient = CreateGrpcHttpClient(reloadedFactory);
+                await using var grpcDirectory = CreateGrpcShardDirectory(grpcTransportClient);
+
+                CSharpDbShardDirectoryResolution resolution = await grpcDirectory.ResolveDirectoryEntryAsync(
+                    new CSharpDbShardDirectoryResolveRequest
+                    {
+                        DirectoryName = "orders_by_id",
+                        LookupKey = "SO-REMOTE-2",
+                    },
+                    Ct);
+
+                Assert.Equal(CSharpDbShardDirectoryEntryStates.Active, resolution.Entry.State);
+                Assert.Equal("tenant-a", resolution.Entry.RouteKey);
+                Assert.Equal("s0", resolution.RouteResolution.ShardId);
+            }
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task Daemon_ShardExactKeyMigrationRestAndGrpcWritesPendingMap()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_daemon_shard_migration_{Guid.NewGuid():N}");
@@ -1326,6 +1422,22 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
     private static ICSharpDbShardAdminClient CreateGrpcShardAdmin(HttpClient transportClient)
         => CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Grpc,
+            Endpoint = "http://localhost",
+            HttpClient = transportClient,
+        });
+
+    private static ICSharpDbShardDirectoryClient CreateHttpShardDirectory(HttpClient transportClient)
+        => CSharpDbClient.CreateShardDirectoryClient(new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Http,
+            Endpoint = "http://localhost",
+            HttpClient = transportClient,
+        });
+
+    private static ICSharpDbShardDirectoryClient CreateGrpcShardDirectory(HttpClient transportClient)
+        => CSharpDbClient.CreateShardDirectoryClient(new CSharpDbClientOptions
         {
             Transport = CSharpDbTransport.Grpc,
             Endpoint = "http://localhost",
