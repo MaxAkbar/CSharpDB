@@ -1,5 +1,7 @@
 using System.Net;
+using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CSharpDB.Client;
 using CSharpDB.Client.Grpc;
 using CSharpDB.Client.Models;
@@ -314,9 +316,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Directory.CreateDirectory(directory);
         try
         {
-            using var factory = new TestDaemonFactory(
-                Path.Combine(directory, "unused.db"),
-                CreateShardingConfig(directory));
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
+            using var factory = new TestDaemonFactory(masterDbPath);
             using var grpcTransportClient = CreateGrpcHttpClient(factory);
             using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
             {
@@ -380,9 +382,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Directory.CreateDirectory(directory);
         try
         {
-            using var factory = new TestDaemonFactory(
-                Path.Combine(directory, "unused.db"),
-                CreateShardingConfig(directory));
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
+            using var factory = new TestDaemonFactory(masterDbPath);
             using var grpcTransportClient = CreateGrpcHttpClient(factory);
             using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
             {
@@ -491,9 +493,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Directory.CreateDirectory(directory);
         try
         {
-            using var factory = new TestDaemonFactory(
-                Path.Combine(directory, "unused.db"),
-                CreateShardingConfigWithReplica(directory));
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateShardingOptionsWithReplica(directory));
+            using var factory = new TestDaemonFactory(masterDbPath);
             using var grpcTransportClient = CreateGrpcHttpClient(factory);
             using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
             {
@@ -559,12 +561,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Directory.CreateDirectory(directory);
         try
         {
-            string catalogPath = Path.Combine(directory, "catalog", "shards.json");
-            Dictionary<string, string?> config = CreateShardingConfig(directory).ToDictionary();
-            config["CSharpDB:Sharding:Catalog:Enabled"] = "true";
-            config["CSharpDB:Sharding:Catalog:Path"] = catalogPath;
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
 
-            using (var factory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -581,7 +581,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal(1, initial.ActiveMap.MapVersion);
                 Assert.Null(initial.PendingMap);
 
-                CSharpDbShardingOptions proposed = CreateShardingOptions(directory, mapVersion: 2, catalogPath);
+                CSharpDbShardingOptions proposed = CreateShardingOptions(directory, mapVersion: 2);
                 proposed.Directories =
                 [
                     new CSharpDbShardDirectoryDefinition
@@ -626,7 +626,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                     }, Ct);
                 Assert.True(applied.Applied);
                 Assert.True(applied.RequiresRestart);
-                Assert.True(File.Exists(catalogPath));
+                Assert.True(File.Exists(masterDbPath));
 
                 CSharpDbShardCatalogState pending = await grpcAdmin.GetShardCatalogAsync(Ct);
                 Assert.Equal(1, pending.ActiveMap.MapVersion);
@@ -634,7 +634,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Single(pending.History);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(reloadedFactory);
                 await using var grpcAdmin = CreateGrpcShardAdmin(grpcTransportClient);
@@ -672,16 +672,21 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Directory.CreateDirectory(directory);
         try
         {
-            string catalogPath = Path.Combine(directory, "catalog", "shards.json");
-            Dictionary<string, string?> config = CreateShardingConfig(directory).ToDictionary();
-            config["CSharpDB:Sharding:Catalog:Enabled"] = "true";
-            config["CSharpDB:Sharding:Catalog:Path"] = catalogPath;
-            config["CSharpDB:Sharding:Directories:0:DirectoryName"] = "orders_by_id";
-            config["CSharpDB:Sharding:Directories:0:TargetKeyspace"] = "tenants";
-            config["CSharpDB:Sharding:Directories:0:Description"] = "remote order lookup";
-            config["CSharpDB:Sharding:Directories:0:ReadOnly"] = "false";
+            string masterDbPath = Path.Combine(directory, "master.db");
+            CSharpDbShardingOptions seedOptions = CreateSeedShardingOptions(directory);
+            seedOptions.Directories =
+            [
+                new CSharpDbShardDirectoryDefinition
+                {
+                    DirectoryName = "orders_by_id",
+                    TargetKeyspace = "tenants",
+                    Description = "remote order lookup",
+                    ReadOnly = false,
+                },
+            ];
+            await SeedMasterCatalogAsync(masterDbPath, seedOptions);
 
-            using (var factory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -723,7 +728,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal(3, activated.PendingMapVersion);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(reloadedFactory);
                 await using var grpcDirectory = CreateGrpcShardDirectory(grpcTransportClient);
@@ -768,12 +773,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Directory.CreateDirectory(directory);
         try
         {
-            string catalogPath = Path.Combine(directory, "catalog", "shards.json");
-            Dictionary<string, string?> config = CreateShardingConfig(directory).ToDictionary();
-            config["CSharpDB:Sharding:Catalog:Enabled"] = "true";
-            config["CSharpDB:Sharding:Catalog:Path"] = catalogPath;
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
 
-            using (var factory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -869,7 +872,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal("s1", grpcHistory.DestinationShardId);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var httpTransportClient = reloadedFactory.CreateClient(new WebApplicationFactoryClientOptions
                 {
@@ -913,12 +916,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
         try
         {
             string routeKey = FindRouteKeyForBucket("tenants", bucket: 0, virtualBucketCount: 4);
-            string catalogPath = Path.Combine(directory, "catalog", "shards.json");
-            Dictionary<string, string?> config = CreateShardingConfig(directory).ToDictionary();
-            config["CSharpDB:Sharding:Catalog:Enabled"] = "true";
-            config["CSharpDB:Sharding:Catalog:Path"] = catalogPath;
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
 
-            using (var factory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -1004,7 +1005,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal("bucket-range:[0,1)", history.RouteKey);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(Path.Combine(directory, "unused.db"), config))
+            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var httpTransportClient = reloadedFactory.CreateClient(new WebApplicationFactoryClientOptions
                 {
@@ -1480,38 +1481,73 @@ public sealed class GrpcClientTests : IAsyncLifetime
             HttpClient = transportClient,
         });
 
-    private static IReadOnlyDictionary<string, string?> CreateShardingConfig(string directory)
-        => new Dictionary<string, string?>
+    private static async Task SeedMasterCatalogAsync(string masterDbPath, CSharpDbShardingOptions options)
+    {
+        string? directory = Path.GetDirectoryName(masterDbPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        await CSharpDbShardedClient.SeedMasterCatalogAsync(
+            new CSharpDbClientOptions
+            {
+                DataSource = masterDbPath,
+                DirectDatabaseOptions = CreateSeedDirectDatabaseOptions(),
+                HybridDatabaseOptions = new HybridDatabaseOptions
+                {
+                    PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+                },
+            },
+            options,
+            Ct);
+    }
+
+    private static DatabaseOptions CreateSeedDirectDatabaseOptions()
+        => new DatabaseOptions
         {
-            ["CSharpDB:Sharding:Enabled"] = "true",
-            ["CSharpDB:Sharding:Keyspace"] = "tenants",
-            ["CSharpDB:Sharding:MapVersion"] = "1",
-            ["CSharpDB:Sharding:VirtualBucketCount"] = "4",
-            ["CSharpDB:Sharding:Shards:0:ShardId"] = "s0",
-            ["CSharpDB:Sharding:Shards:0:DataSource"] = Path.Combine(directory, "s0.db"),
-            ["CSharpDB:Sharding:Shards:1:ShardId"] = "s1",
-            ["CSharpDB:Sharding:Shards:1:DataSource"] = Path.Combine(directory, "s1.db"),
-            ["CSharpDB:Sharding:BucketRanges:0:StartBucketInclusive"] = "0",
-            ["CSharpDB:Sharding:BucketRanges:0:EndBucketExclusive"] = "2",
-            ["CSharpDB:Sharding:BucketRanges:0:ShardId"] = "s0",
-            ["CSharpDB:Sharding:BucketRanges:1:StartBucketInclusive"] = "2",
-            ["CSharpDB:Sharding:BucketRanges:1:EndBucketExclusive"] = "4",
-            ["CSharpDB:Sharding:BucketRanges:1:ShardId"] = "s1",
-            ["CSharpDB:Sharding:ExactKeyPins:tenant-a"] = "s0",
-            ["CSharpDB:Sharding:ExactKeyPins:tenant-b"] = "s1",
+            ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+        }.ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
+
+    private static CSharpDbShardingOptions CreateSeedShardingOptions(string directory)
+        => new()
+        {
+            Keyspace = "tenants",
+            MapVersion = 1,
+            VirtualBucketCount = 4,
+            Shards =
+            [
+                new CSharpDbShardDefinition { ShardId = "s0", DataSource = Path.Combine(directory, "s0.db") },
+                new CSharpDbShardDefinition { ShardId = "s1", DataSource = Path.Combine(directory, "s1.db") },
+            ],
+            BucketRanges =
+            [
+                new CSharpDbShardBucketRange { StartBucketInclusive = 0, EndBucketExclusive = 2, ShardId = "s0" },
+                new CSharpDbShardBucketRange { StartBucketInclusive = 2, EndBucketExclusive = 4, ShardId = "s1" },
+            ],
+            ExactKeyPins = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tenant-a"] = "s0",
+                ["tenant-b"] = "s1",
+            },
         };
 
-    private static IReadOnlyDictionary<string, string?> CreateShardingConfigWithReplica(string directory)
+    private static CSharpDbShardingOptions CreateShardingOptionsWithReplica(string directory)
     {
-        var config = CreateShardingConfig(directory).ToDictionary();
-        config["CSharpDB:Sharding:Shards:2:ShardId"] = "s1-replica";
-        config["CSharpDB:Sharding:Shards:2:DataSource"] = Path.Combine(directory, "s1-replica.db");
-        config["CSharpDB:Sharding:Shards:2:Role"] = CSharpDbShardRoles.Replica;
-        config["CSharpDB:Sharding:Shards:2:PrimaryShardId"] = "s1";
-        config["CSharpDB:Sharding:Shards:2:PromotionEligible"] = "true";
-        config["CSharpDB:Sharding:Shards:2:ReplicationLagBytes"] = "256";
-        config["CSharpDB:Sharding:Shards:2:LastReplicatedUtc"] = "2026-06-01T12:30:00+00:00";
-        return config;
+        CSharpDbShardingOptions options = CreateSeedShardingOptions(directory);
+        options.Shards =
+        [
+            .. options.Shards,
+            new CSharpDbShardDefinition
+            {
+                ShardId = "s1-replica",
+                DataSource = Path.Combine(directory, "s1-replica.db"),
+                Role = CSharpDbShardRoles.Replica,
+                PrimaryShardId = "s1",
+                PromotionEligible = true,
+                ReplicationLagBytes = 256,
+                LastReplicatedUtc = DateTimeOffset.Parse("2026-06-01T12:30:00+00:00", CultureInfo.InvariantCulture),
+            },
+        ];
+        return options;
     }
 
     private static string FindRouteKeyForBucket(string keyspace, int bucket, int virtualBucketCount)
@@ -1538,11 +1574,9 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
     private static CSharpDbShardingOptions CreateShardingOptions(
         string directory,
-        int mapVersion,
-        string? catalogPath = null)
+        int mapVersion)
         => new()
         {
-            Enabled = true,
             Keyspace = "tenants",
             MapVersion = mapVersion,
             VirtualBucketCount = 4,
@@ -1560,11 +1594,6 @@ public sealed class GrpcClientTests : IAsyncLifetime
             {
                 ["tenant-a"] = "s0",
                 ["tenant-b"] = "s1",
-            },
-            Catalog = new CSharpDbShardCatalogOptions
-            {
-                Enabled = catalogPath is not null,
-                Path = catalogPath,
             },
         };
 

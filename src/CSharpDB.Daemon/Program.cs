@@ -19,19 +19,14 @@ builder.Services.AddSingleton(sp =>
     DaemonClientOptionsBuilder.Build(
         sp.GetRequiredService<IConfiguration>(),
         sp.GetRequiredService<DaemonHostDatabaseOptions>()));
-builder.Services.AddSingleton(sp =>
-    DaemonClientOptionsBuilder.BindShardingOptions(
-        sp.GetRequiredService<IConfiguration>(),
-        sp.GetRequiredService<DaemonHostDatabaseOptions>()));
 builder.Services.AddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
 builder.Services.AddSingleton<ICSharpDbClient>(sp =>
 {
-    CSharpDbShardingOptions resolvedShardingOptions = sp.GetRequiredService<CSharpDbShardingOptions>();
-    return resolvedShardingOptions.Enabled
-        ? CSharpDbShardedClient.Create(
-            resolvedShardingOptions,
-            sp.GetRequiredService<ICSharpDbRouteContextAccessor>())
-        : CSharpDbClient.Create(sp.GetRequiredService<CSharpDbClientOptions>());
+    CSharpDbClientOptions options = sp.GetRequiredService<CSharpDbClientOptions>();
+    return CSharpDbShardedClient.TryCreateFromMasterCatalog(
+               options,
+               sp.GetRequiredService<ICSharpDbRouteContextAccessor>())
+           ?? CSharpDbClient.Create(options);
 });
 builder.Services.Configure<CSharpDbApiSecurityOptions>(
     builder.Configuration.GetSection("CSharpDB:Daemon:Security"));

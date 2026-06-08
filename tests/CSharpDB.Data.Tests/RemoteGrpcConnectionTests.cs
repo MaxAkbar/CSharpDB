@@ -1,5 +1,11 @@
 using System.Net;
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
 using CSharpDB.Data;
+using CSharpDB.Engine;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -148,9 +154,9 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         Directory.CreateDirectory(directory);
         try
         {
-            await using var factory = new TestDaemonFactory(
-                Path.Combine(directory, "unused.db"),
-                CreateShardingConfig(directory));
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateShardingOptions(directory));
+            await using var factory = new TestDaemonFactory(masterDbPath);
             using var transportClient = CreateGrpcHttpClient(factory);
 
             await using var tenantA = new CSharpDbConnection(
@@ -249,25 +255,49 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         }
     }
 
-    private static IReadOnlyDictionary<string, string?> CreateShardingConfig(string directory)
-        => new Dictionary<string, string?>
+    private static async Task SeedMasterCatalogAsync(string masterDbPath, CSharpDbShardingOptions options)
+    {
+        await CSharpDbShardedClient.SeedMasterCatalogAsync(
+            new CSharpDbClientOptions
+            {
+                DataSource = masterDbPath,
+                DirectDatabaseOptions = CreateSeedDirectDatabaseOptions(),
+                HybridDatabaseOptions = new HybridDatabaseOptions
+                {
+                    PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+                },
+            },
+            options,
+            Ct);
+    }
+
+    private static DatabaseOptions CreateSeedDirectDatabaseOptions()
+        => new DatabaseOptions
         {
-            ["CSharpDB:Sharding:Enabled"] = "true",
-            ["CSharpDB:Sharding:Keyspace"] = "tenants",
-            ["CSharpDB:Sharding:MapVersion"] = "1",
-            ["CSharpDB:Sharding:VirtualBucketCount"] = "4",
-            ["CSharpDB:Sharding:Shards:0:ShardId"] = "s0",
-            ["CSharpDB:Sharding:Shards:0:DataSource"] = Path.Combine(directory, "s0.db"),
-            ["CSharpDB:Sharding:Shards:1:ShardId"] = "s1",
-            ["CSharpDB:Sharding:Shards:1:DataSource"] = Path.Combine(directory, "s1.db"),
-            ["CSharpDB:Sharding:BucketRanges:0:StartBucketInclusive"] = "0",
-            ["CSharpDB:Sharding:BucketRanges:0:EndBucketExclusive"] = "2",
-            ["CSharpDB:Sharding:BucketRanges:0:ShardId"] = "s0",
-            ["CSharpDB:Sharding:BucketRanges:1:StartBucketInclusive"] = "2",
-            ["CSharpDB:Sharding:BucketRanges:1:EndBucketExclusive"] = "4",
-            ["CSharpDB:Sharding:BucketRanges:1:ShardId"] = "s1",
-            ["CSharpDB:Sharding:ExactKeyPins:tenant-a"] = "s0",
-            ["CSharpDB:Sharding:ExactKeyPins:tenant-b"] = "s1",
+            ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+        }.ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
+
+    private static CSharpDbShardingOptions CreateShardingOptions(string directory)
+        => new()
+        {
+            Keyspace = "tenants",
+            MapVersion = 1,
+            VirtualBucketCount = 4,
+            Shards =
+            [
+                new CSharpDbShardDefinition { ShardId = "s0", DataSource = Path.Combine(directory, "s0.db") },
+                new CSharpDbShardDefinition { ShardId = "s1", DataSource = Path.Combine(directory, "s1.db") },
+            ],
+            BucketRanges =
+            [
+                new CSharpDbShardBucketRange { StartBucketInclusive = 0, EndBucketExclusive = 2, ShardId = "s0" },
+                new CSharpDbShardBucketRange { StartBucketInclusive = 2, EndBucketExclusive = 4, ShardId = "s1" },
+            ],
+            ExactKeyPins = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tenant-a"] = "s0",
+                ["tenant-b"] = "s1",
+            },
         };
 
     private sealed class TestDaemonFactory(

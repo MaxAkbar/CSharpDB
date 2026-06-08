@@ -712,7 +712,6 @@ public static class GrpcModelMapper
     {
         var message = new ShardingOptionsMessage
         {
-            Enabled = value.Enabled,
             Keyspace = value.Keyspace,
             MapVersion = value.MapVersion,
             VirtualBucketCount = value.VirtualBucketCount,
@@ -729,7 +728,6 @@ public static class GrpcModelMapper
     public static CSharpDbShardingOptions ToModel(ShardingOptionsMessage value)
         => new()
         {
-            Enabled = value.Enabled,
             Keyspace = value.Keyspace,
             MapVersion = value.MapVersion,
             VirtualBucketCount = value.VirtualBucketCount,

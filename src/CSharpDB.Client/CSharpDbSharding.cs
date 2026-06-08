@@ -10,7 +10,6 @@ public sealed class CSharpDbRouteContext
 
 public sealed class CSharpDbShardingOptions
 {
-    public bool Enabled { get; set; }
     public string Keyspace { get; set; } = "default";
     public int MapVersion { get; set; } = 1;
     public int VirtualBucketCount { get; set; } = 4096;
@@ -19,15 +18,14 @@ public sealed class CSharpDbShardingOptions
     public Dictionary<string, string> ExactKeyPins { get; set; } = new(StringComparer.Ordinal);
     public CSharpDbShardDirectoryDefinition[] Directories { get; set; } = [];
     public CSharpDbShardDirectoryEntry[] DirectoryEntries { get; set; } = [];
-    public CSharpDbShardCatalogOptions Catalog { get; set; } = new();
-    public DatabaseOptions? DirectDatabaseOptions { get; set; }
-    public HybridDatabaseOptions? HybridDatabaseOptions { get; set; }
+    internal CSharpDbShardCatalogOptions Catalog { get; set; } = new();
+    internal DatabaseOptions? DirectDatabaseOptions { get; set; }
+    internal HybridDatabaseOptions? HybridDatabaseOptions { get; set; }
 }
 
-public sealed class CSharpDbShardCatalogOptions
+internal sealed class CSharpDbShardCatalogOptions
 {
-    public bool Enabled { get; set; }
-    public string? Path { get; set; }
+    public string? DataSource { get; set; }
     public bool AllowWrites { get; set; } = true;
 }
 

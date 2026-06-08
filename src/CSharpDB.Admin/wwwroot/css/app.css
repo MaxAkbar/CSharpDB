@@ -6771,6 +6771,72 @@ body {
     resize: vertical;
 }
 
+.sharding-sql-editor {
+    min-height: 150px;
+    margin-top: 10px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.45;
+    resize: vertical;
+}
+
+.sharding-catalog-field.compact {
+    min-width: 120px;
+    flex: 0 1 140px;
+}
+
+.sharding-result-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.sharding-result-card {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.sharding-result-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.sharding-result-head strong {
+    color: var(--text-primary);
+}
+
+.sharding-result-grid {
+    min-width: 560px;
+}
+
+.sharding-inline-note {
+    padding: 8px 10px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.sharding-action-buttons {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 68px;
+}
+
+.sharding-action-buttons .toolbar-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+}
+
 .sharding-catalog-validation,
 .sharding-catalog-message {
     margin-top: 10px;

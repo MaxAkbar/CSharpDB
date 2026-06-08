@@ -239,7 +239,6 @@ message ShardMapSnapshotMessage {
 }
 
 message ShardingOptionsMessage {
-  bool enabled = 1;
   string keyspace = 2;
   int32 map_version = 3;
   int32 virtual_bucket_count = 4;

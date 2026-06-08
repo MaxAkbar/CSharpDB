@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Data.Common;
+using System.Globalization;
 using CSharpDB.Admin.Configuration;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
@@ -40,7 +42,21 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     public async Task SwitchAsync(string databasePath)
     {
         CSharpDbClientOptions newOptions = AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions);
-        var newClient = CSharpDbClient.Create(newOptions);
+        ICSharpDbClient newClient;
+        ICSharpDbShardAdminClient? newShardAdmin;
+        CSharpDbClientOptions? newBaseClientOptions;
+        if (CSharpDbShardedClient.TryCreateFromMasterCatalog(newOptions) is { } shardedClient)
+        {
+            newClient = shardedClient;
+            newShardAdmin = shardedClient;
+            newBaseClientOptions = null;
+        }
+        else
+        {
+            newClient = CSharpDbClient.Create(newOptions);
+            newShardAdmin = null;
+            newBaseClientOptions = newOptions;
+        }
 
         // Verify the new database is accessible before swapping.
         await newClient.GetInfoAsync();
@@ -52,8 +68,8 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
             old = _inner;
             oldShardAdmin = _shardAdmin;
             _inner = newClient;
-            _shardAdmin = null;
-            _baseClientOptions = newOptions;
+            _shardAdmin = newShardAdmin;
+            _baseClientOptions = newBaseClientOptions;
         }
 
         if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
@@ -67,6 +83,24 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
 
     public string DataSource => _inner.DataSource;
     public bool SupportsShardAdmin => _shardAdmin is not null;
+    public bool SupportsMasterCatalogBootstrap
+    {
+        get
+        {
+            lock (_lock)
+                return TryResolveDirectDataSource(_baseClientOptions) is not null;
+        }
+    }
+
+    public string? MasterCatalogDataSource
+    {
+        get
+        {
+            lock (_lock)
+                return TryResolveDirectDataSource(_baseClientOptions);
+        }
+    }
+
     public bool SupportsRouteBoundClients
         => _inner is CSharpDbShardedClient || _baseClientOptions is not null;
     public bool SupportsTableArchiveExport
@@ -94,6 +128,51 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
         }
 
         return CSharpDbClient.Create(CloneOptionsWithRoute(baseClientOptions, routeContext));
+    }
+
+    public async Task CreateShardCatalogAndReloadAsync(
+        CSharpDbShardingOptions activeMap,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(activeMap);
+
+        CSharpDbClientOptions baseClientOptions;
+        lock (_lock)
+        {
+            if (TryResolveDirectDataSource(_baseClientOptions) is null)
+            {
+                throw new CSharpDbClientConfigurationException(
+                    "The current CSharpDB connection cannot create a master shard catalog. Open a local direct master database first.");
+            }
+
+            baseClientOptions = CloneOptions(_baseClientOptions!);
+        }
+
+        await CSharpDbShardedClient.SeedMasterCatalogAsync(baseClientOptions, activeMap, ct);
+
+        CSharpDbShardedClient shardedClient =
+            await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(baseClientOptions, ct: ct)
+            ?? throw new CSharpDbClientConfigurationException(
+                "The master database was seeded, but no active shard map could be loaded.");
+
+        await shardedClient.GetInfoAsync(ct);
+
+        ICSharpDbClient old;
+        ICSharpDbShardAdminClient? oldShardAdmin;
+        lock (_lock)
+        {
+            old = _inner;
+            oldShardAdmin = _shardAdmin;
+            _inner = shardedClient;
+            _shardAdmin = shardedClient;
+            _baseClientOptions = null;
+        }
+
+        if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
+            await oldShardAdmin.DisposeAsync();
+
+        await old.DisposeAsync();
+        DatabaseChanged?.Invoke();
     }
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
@@ -257,6 +336,15 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     private static CSharpDbClientOptions CloneOptionsWithRoute(
         CSharpDbClientOptions options,
         CSharpDbRouteContext routeContext)
+        => CloneOptions(options, routeContext);
+
+    private static CSharpDbClientOptions CloneOptions(
+        CSharpDbClientOptions options)
+        => CloneOptions(options, routeContext: null);
+
+    private static CSharpDbClientOptions CloneOptions(
+        CSharpDbClientOptions options,
+        CSharpDbRouteContext? routeContext)
     {
         return new CSharpDbClientOptions
         {
@@ -272,6 +360,54 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
             HybridDatabaseOptions = options.HybridDatabaseOptions,
         };
     }
+
+    private static string? TryResolveDirectDataSource(CSharpDbClientOptions? options)
+    {
+        if (options is null)
+            return null;
+        if (options.Transport is not null && options.Transport != CSharpDbTransport.Direct)
+            return null;
+
+        string? endpoint = NormalizeOptional(options.Endpoint);
+        if (endpoint is not null)
+        {
+            if (Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri))
+                return string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase)
+                    ? uri.LocalPath
+                    : null;
+
+            if (!endpoint.Contains("://", StringComparison.Ordinal))
+                return endpoint;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.DataSource))
+            return options.DataSource.Trim();
+
+        if (string.IsNullOrWhiteSpace(options.ConnectionString))
+            return null;
+
+        var builder = new DbConnectionStringBuilder
+        {
+            ConnectionString = options.ConnectionString.Trim(),
+        };
+
+        foreach (string key in builder.Keys.Cast<string>())
+        {
+            if (!key.Equals("Data Source", StringComparison.OrdinalIgnoreCase) &&
+                !key.Equals("DataSource", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string? value = Convert.ToString(builder[key], CultureInfo.InvariantCulture);
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeOptional(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public async ValueTask DisposeAsync()
     {

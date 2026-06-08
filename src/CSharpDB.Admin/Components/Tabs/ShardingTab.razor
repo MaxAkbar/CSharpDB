@@ -1,6 +1,8 @@
 @using System.Globalization
+@using System.IO
 @using System.Text.Json
 @using System.Text.Json.Serialization
+@using System.Text.RegularExpressions
 @inject ICSharpDbShardAdminClient ShardAdmin
 @inject DatabaseClientHolder DbHolder
 @inject ToastService Toast
@@ -36,10 +38,101 @@
     }
     else if (_map is null)
     {
-        <div class="sharding-empty">
-            <i class="bi bi-diagram-3"></i>
-            <strong>Shard admin unavailable</strong>
-            <span>@(_loadError ?? "The current connection does not expose shard-admin APIs.")</span>
+        <div class="sharding-content">
+            <section class="storage-card">
+                <h3>Create Sharding</h3>
+                @if (!DbHolder.SupportsMasterCatalogBootstrap)
+                {
+                    <div class="sharding-empty compact">
+                        <i class="bi bi-diagram-3"></i>
+                        <strong>Shard admin unavailable</strong>
+                        <span>@(_loadError ?? "Open a local direct master database to create sharding metadata.")</span>
+                    </div>
+                }
+                else
+                {
+                    <div class="heavy-summary-strip">
+                        <div><span>Master DB</span><strong class="mono-cell">@(DbHolder.MasterCatalogDataSource ?? DbHolder.DataSource)</strong></div>
+                        <div><span>Status</span><strong>Unsharded</strong></div>
+                        <div><span>Draft Shards</span><strong>@Math.Max(1, _bootstrapShardCount)</strong></div>
+                        <div><span>Virtual Buckets</span><strong>@Math.Max(1, _bootstrapVirtualBucketCount)</strong></div>
+                    </div>
+
+                    <div class="storage-action-row">
+                        <label class="schema-field sharding-catalog-field">
+                            <span>Keyspace</span>
+                            <input class="schema-input mono" @bind="_bootstrapKeyspace" @bind:event="oninput" />
+                        </label>
+                        <label class="schema-field sharding-catalog-field compact">
+                            <span>Shards</span>
+                            <input class="schema-input mono" type="number" min="1" @bind="_bootstrapShardCount" />
+                        </label>
+                        <label class="schema-field sharding-catalog-field compact">
+                            <span>Buckets</span>
+                            <input class="schema-input mono" type="number" min="1" @bind="_bootstrapVirtualBucketCount" />
+                        </label>
+                    </div>
+
+                    <div class="storage-action-row">
+                        <button class="toolbar-btn" @onclick="LoadBootstrapTemplate" disabled="@_creatingShardCatalog">
+                            <i class="bi bi-file-earmark-code"></i> Template
+                        </button>
+                        <button class="toolbar-btn" @onclick="PreviewBootstrapDraftAsync" disabled="@(!CanPreviewBootstrapDraft)">
+                            <i class="bi bi-eye"></i> Preview
+                        </button>
+                        <button class="toolbar-btn primary" @onclick="CreateShardCatalogAsync" disabled="@(!CanCreateShardCatalog)">
+                            <i class="bi bi-hdd-network"></i> Create Sharding
+                        </button>
+                    </div>
+
+                    <textarea class="schema-textarea sharding-catalog-editor"
+                              spellcheck="false"
+                              @bind="_bootstrapDraftJson"
+                              @bind:event="oninput"
+                              placeholder="Load a shard map template or paste CSharpDbShardingOptions JSON..."></textarea>
+
+                    @if (!string.IsNullOrWhiteSpace(_bootstrapError))
+                    {
+                        <div class="sharding-catalog-message error">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            <span>@_bootstrapError</span>
+                        </div>
+                    }
+
+                    @if (_bootstrapPreview is not null)
+                    {
+                        <div class="sharding-catalog-validation">
+                            <div class="sharding-catalog-validation-head">
+                                <span class="storage-badge storage-badge-info">Valid</span>
+                                <span>Map @_bootstrapPreview.MapVersion for @_bootstrapPreview.Keyspace</span>
+                                <span>@_bootstrapPreview.Shards.Count shard(s)</span>
+                                <span>@_bootstrapPreview.BucketRanges.Count range(s)</span>
+                            </div>
+                            <div class="sharding-table-wrap">
+                                <table class="schema-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Shard</th>
+                                            <th>Bucket Ownership</th>
+                                            <th>Data Source</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (CSharpDbShardDefinitionSnapshot shard in _bootstrapPreview.Shards.OrderBy(item => item.ShardId, StringComparer.OrdinalIgnoreCase))
+                                        {
+                                            <tr>
+                                                <td class="mono-cell">@shard.ShardId</td>
+                                                <td class="mono-cell">@FormatBootstrapBucketOwnership(_bootstrapPreview, shard.ShardId)</td>
+                                                <td class="mono-cell">@FormatShardLocation(shard)</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    }
+                }
+            </section>
         </div>
     }
     else
@@ -58,6 +151,9 @@
                     <div class="heavy-rail-label">Operations</div>
                     <a class="heavy-rail-item" href="#sharding-resolve"><i class="bi bi-signpost-split"></i><span>Resolve</span></a>
                     <a class="heavy-rail-item" href="#sharding-catalog"><i class="bi bi-journal-check"></i><span>Catalog</span></a>
+                    <a class="heavy-rail-item" href="#sharding-fanout"><i class="bi bi-table"></i><span>Fan-out SQL</span><span class="badge">@_fanOutResults.Count</span></a>
+                    <a class="heavy-rail-item" href="#sharding-migration-actions"><i class="bi bi-send"></i><span>Migration actions</span></a>
+                    <a class="heavy-rail-item" href="#sharding-migration-progress"><i class="bi bi-activity"></i><span>Progress</span><span class="badge @(_migrationProgress.Any(item => item.RequiresOperatorRecovery) ? "warn" : "")">@_migrationProgress.Count</span></a>
                     <a class="heavy-rail-item" href="#sharding-migrations"><i class="bi bi-arrow-left-right"></i><span>Migrations</span><span class="badge @(_migrationHistory.Any(item => item.RequiresOperatorRecovery) ? "warn" : "")">@_migrationHistory.Count</span></a>
                 </div>
             </aside>
@@ -100,7 +196,7 @@
                                     <tr><th>Healthy Shards</th><td>@_statuses.Count(item => item.Healthy) / @_statuses.Count</td></tr>
                                     <tr><th>Enabled Shards</th><td>@_map.Shards.Count(item => item.Enabled) / @_map.Shards.Count</td></tr>
                                     <tr><th>Replica Metadata</th><td>@_map.Shards.Count(item => string.Equals(item.Role, CSharpDbShardRoles.Replica, StringComparison.OrdinalIgnoreCase))</td></tr>
-                                    <tr><th>Catalog Source</th><td class="mono-cell">@(_catalog?.Source ?? "Static config")</td></tr>
+                                    <tr><th>Catalog Source</th><td class="mono-cell">@(_catalog?.Source ?? "Internal map")</td></tr>
                                 </tbody>
                             </table>
                         </section>
@@ -366,6 +462,291 @@
                         }
                     </section>
 
+                    <section class="storage-card" id="sharding-fanout">
+                        <h3>Read-Only Fan-Out SQL</h3>
+                        <div class="storage-action-row">
+                            <span class="storage-badge storage-badge-info">Diagnostic read-only</span>
+                            <button class="toolbar-btn primary" @onclick="RunFanOutAsync" disabled="@(!CanRunFanOut)">
+                                <i class="bi bi-play-fill"></i> Run
+                            </button>
+                            <button class="toolbar-btn" @onclick="ClearFanOutResults" disabled="@(_fanOutRunning || _fanOutResults.Count == 0)">
+                                <i class="bi bi-x-lg"></i> Clear
+                            </button>
+                        </div>
+                        <textarea class="schema-textarea sharding-sql-editor"
+                                  spellcheck="false"
+                                  @bind="_fanOutSql"
+                                  @bind:event="oninput"
+                                  placeholder="SELECT ..."></textarea>
+
+                        @if (!string.IsNullOrWhiteSpace(_fanOutError))
+                        {
+                            <div class="sharding-catalog-message error">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                <span>@_fanOutError</span>
+                            </div>
+                        }
+
+                        @if (_fanOutResults.Count > 0)
+                        {
+                            <div class="heavy-summary-strip">
+                                <div><span>Shards</span><strong>@_fanOutResults.Count</strong></div>
+                                <div><span>Succeeded</span><strong>@_fanOutResults.Count(item => string.IsNullOrWhiteSpace(item.Error))</strong></div>
+                                <div><span>Failed</span><strong>@_fanOutResults.Count(item => !string.IsNullOrWhiteSpace(item.Error))</strong></div>
+                                <div><span>Rows</span><strong>@_fanOutResults.Sum(GetFanOutRowCount)</strong></div>
+                            </div>
+
+                            <div class="sharding-result-list">
+                                @foreach (CSharpDbShardSqlExecutionResult shardResult in _fanOutResults.OrderBy(item => item.ShardId, StringComparer.OrdinalIgnoreCase))
+                                {
+                                    <div class="sharding-result-card">
+                                        <div class="sharding-result-head">
+                                            <strong class="mono-cell">@shardResult.ShardId</strong>
+                                            <span class="@GetFanOutBadgeClass(shardResult)">@GetFanOutStatusText(shardResult)</span>
+                                            <span>@FormatFanOutStats(shardResult)</span>
+                                        </div>
+
+                                        @if (!string.IsNullOrWhiteSpace(shardResult.Error))
+                                        {
+                                            <div class="sharding-catalog-message error">
+                                                <i class="bi bi-exclamation-triangle"></i>
+                                                <span>@shardResult.Error</span>
+                                            </div>
+                                        }
+                                        else if (shardResult.Result?.ColumnNames is { Length: > 0 } columns &&
+                                                 shardResult.Result.Rows is { Count: > 0 } rows)
+                                        {
+                                            <div class="sharding-table-wrap">
+                                                <table class="schema-table sharding-result-grid">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>#</th>
+                                                            @foreach (string column in columns)
+                                                            {
+                                                                <th>@column</th>
+                                                            }
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @for (int rowIndex = 0; rowIndex < Math.Min(rows.Count, MaxFanOutRows); rowIndex++)
+                                                        {
+                                                            <tr>
+                                                                <td>@(rowIndex + 1)</td>
+                                                                @foreach (object? value in rows[rowIndex])
+                                                                {
+                                                                    <td>@FormatCellValue(value)</td>
+                                                                }
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            @if (rows.Count > MaxFanOutRows)
+                                            {
+                                                <div class="sharding-inline-note">Showing @MaxFanOutRows of @rows.Count rows.</div>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            <div class="sharding-inline-note">@FormatFanOutStats(shardResult)</div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </section>
+
+                    <section class="storage-card" id="sharding-migration-actions">
+                        <h3>Migration Actions</h3>
+                        <div class="storage-action-row">
+                            <button class="@GetMigrationModeButtonClass(MigrationDraftMode.ExactRouteKey)"
+                                    @onclick="() => SetMigrationDraftMode(MigrationDraftMode.ExactRouteKey)"
+                                    disabled="@_runningMigration">
+                                <i class="bi bi-pin-map"></i> Exact Key
+                            </button>
+                            <button class="@GetMigrationModeButtonClass(MigrationDraftMode.BucketRange)"
+                                    @onclick="() => SetMigrationDraftMode(MigrationDraftMode.BucketRange)"
+                                    disabled="@_runningMigration">
+                                <i class="bi bi-grid-3x3-gap"></i> Bucket Range
+                            </button>
+                            <button class="toolbar-btn" @onclick="LoadDefaultMigrationManifest" disabled="@_runningMigration">
+                                <i class="bi bi-file-earmark-code"></i> Template
+                            </button>
+                        </div>
+
+                        <div class="storage-action-row">
+                            <label class="schema-field sharding-catalog-field">
+                                <span>Keyspace</span>
+                                <input class="schema-input mono" @bind="_migrationKeyspace" @bind:event="oninput" />
+                            </label>
+                            @if (_migrationDraftMode == MigrationDraftMode.ExactRouteKey)
+                            {
+                                <label class="schema-field sharding-catalog-field">
+                                    <span>Route Key</span>
+                                    <input class="schema-input mono" @bind="_migrationRouteKey" @bind:event="oninput" />
+                                </label>
+                            }
+                            else
+                            {
+                                <label class="schema-field sharding-catalog-field">
+                                    <span>Source Shard</span>
+                                    <input class="schema-input mono" @bind="_migrationSourceShardId" @bind:event="oninput" />
+                                </label>
+                                <label class="schema-field sharding-catalog-field compact">
+                                    <span>Start Bucket</span>
+                                    <input class="schema-input mono" type="number" @bind="_migrationStartBucketInclusive" />
+                                </label>
+                                <label class="schema-field sharding-catalog-field compact">
+                                    <span>End Bucket</span>
+                                    <input class="schema-input mono" type="number" @bind="_migrationEndBucketExclusive" />
+                                </label>
+                            }
+                            <label class="schema-field sharding-catalog-field">
+                                <span>Destination Shard</span>
+                                <input class="schema-input mono" @bind="_migrationDestinationShardId" @bind:event="oninput" />
+                            </label>
+                        </div>
+
+                        <div class="storage-action-row">
+                            <label class="schema-field sharding-catalog-field">
+                                <span>Operator</span>
+                                <input class="schema-input" @bind="_migrationOperator" @bind:event="oninput" />
+                            </label>
+                            <label class="schema-field sharding-catalog-field wide">
+                                <span>Comment</span>
+                                <input class="schema-input" @bind="_migrationComment" @bind:event="oninput" />
+                            </label>
+                            <label class="storage-check">
+                                <input type="checkbox" @bind="_migrationOverwriteDestinationRows" />
+                                <span>Overwrite destination rows</span>
+                            </label>
+                            <label class="storage-check">
+                                <input type="checkbox" @bind="_migrationDeleteSourceAfterVerification" />
+                                <span>Delete source after verification</span>
+                            </label>
+                        </div>
+
+                        <textarea class="schema-textarea sharding-catalog-editor"
+                                  spellcheck="false"
+                                  @bind="_migrationManifestJson"
+                                  @bind:event="oninput"
+                                  placeholder="Migration manifest JSON"></textarea>
+
+                        <div class="storage-action-row">
+                            <button class="toolbar-btn" @onclick="PreviewMigrationAsync" disabled="@(!CanPreviewMigration)">
+                                <i class="bi bi-search"></i> Preview
+                            </button>
+                            <label class="storage-check">
+                                <input type="checkbox" @bind="_migrationConfirmArmed" disabled="@(_migrationPreview is null || _runningMigration)" />
+                                <span>Confirm migration start</span>
+                            </label>
+                            <button class="toolbar-btn primary" @onclick="RunMigrationAsync" disabled="@(!CanStartMigration)">
+                                <i class="bi bi-play-fill"></i> Start
+                            </button>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(_migrationDraftError))
+                        {
+                            <div class="sharding-catalog-message error">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                <span>@_migrationDraftError</span>
+                            </div>
+                        }
+
+                        @if (_migrationPreview is not null)
+                        {
+                            <div class="sharding-catalog-validation">
+                                <div class="sharding-catalog-validation-head">
+                                    <span class="storage-badge storage-badge-info">@_migrationPreview.MigrationType</span>
+                                    <span class="mono-cell">@_migrationPreview.RouteSummary</span>
+                                    <span class="mono-cell">@_migrationPreview.SourceShardId -> @_migrationPreview.DestinationShardId</span>
+                                    <span>@FormatManifestImpact(_migrationPreview)</span>
+                                </div>
+                            </div>
+                        }
+
+                        @if (_migrationRunResult is not null)
+                        {
+                            <div class="sharding-catalog-validation">
+                                <div class="sharding-catalog-validation-head">
+                                    <span class="@GetMigrationResultBadgeClass(_migrationRunResult)">@_migrationRunResult.Status</span>
+                                    <span class="mono-cell">@_migrationRunResult.MigrationId</span>
+                                    <span>@_migrationRunResult.Message</span>
+                                </div>
+                                @if (_migrationRunResult.Issues.Count > 0)
+                                {
+                                    <ul class="sharding-catalog-issues">
+                                        @foreach (CSharpDbShardCatalogIssue issue in _migrationRunResult.Issues)
+                                        {
+                                            <li class="@GetCatalogIssueClass(issue)">
+                                                <strong>@issue.Code</strong>
+                                                <span>@issue.Message</span>
+                                            </li>
+                                        }
+                                    </ul>
+                                }
+                            </div>
+                        }
+                    </section>
+
+                    <section class="storage-card" id="sharding-migration-progress">
+                        <h3>Migration Progress</h3>
+                        <div class="storage-action-row">
+                            <button class="toolbar-btn" @onclick="RefreshMigrationProgressAsync" disabled="@_loadingMigrationProgress">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh Progress
+                            </button>
+                        </div>
+                        @if (_migrationProgress.Count == 0)
+                        {
+                            <p class="schema-empty">No migration checkpoints returned.</p>
+                        }
+                        else
+                        {
+                            <div class="sharding-table-wrap">
+                                <table class="schema-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Updated</th>
+                                            <th>Type</th>
+                                            <th>Status</th>
+                                            <th>Route</th>
+                                            <th>Movement</th>
+                                            <th>Steps</th>
+                                            <th>Attempt</th>
+                                            <th>Recovery</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (CSharpDbShardMigrationProgress progress in _migrationProgress.OrderByDescending(item => item.UpdatedUtc))
+                                        {
+                                            <tr>
+                                                <td>@FormatDate(progress.UpdatedUtc)</td>
+                                                <td>@progress.MigrationType</td>
+                                                <td><span class="@GetMigrationProgressBadgeClass(progress)">@progress.Status</span></td>
+                                                <td class="mono-cell">@progress.RouteKey</td>
+                                                <td class="mono-cell">@progress.SourceShardId -> @progress.DestinationShardId</td>
+                                                <td>@progress.CompletedSteps / @progress.TotalSteps (@progress.PercentComplete.ToString("F0", CultureInfo.InvariantCulture)%)</td>
+                                                <td>@progress.Attempt</td>
+                                                <td>@(progress.RequiresOperatorRecovery ? progress.RecoveryAction ?? "Operator recovery required." : "-")</td>
+                                                <td>
+                                                    <div class="sharding-action-buttons">
+                                                        <button class="toolbar-btn" title="Resume migration" @onclick="() => ResumeMigrationAsync(progress.MigrationId)" disabled="@(!CanResumeMigration(progress))">
+                                                            <i class="bi bi-play"></i>
+                                                        </button>
+                                                        <button class="toolbar-btn" title="Retry migration" @onclick="() => RetryMigrationAsync(progress.MigrationId)" disabled="@(!CanRetryMigration(progress))">
+                                                            <i class="bi bi-arrow-repeat"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </section>
+
                     <section class="storage-card" id="sharding-migrations">
                         <h3>Migration History</h3>
                         @if (_migrationHistory.Count == 0)
@@ -410,27 +791,71 @@
 </div>
 
 @code {
+    private enum MigrationDraftMode
+    {
+        ExactRouteKey,
+        BucketRange,
+    }
+
+    private const int MaxFanOutRows = 50;
+
     private CSharpDbShardMapSnapshot? _map;
     private CSharpDbShardCatalogState? _catalog;
     private IReadOnlyList<CSharpDbShardStatus> _statuses = [];
     private IReadOnlyList<CSharpDbShardMigrationHistoryEntry> _migrationHistory = [];
+    private IReadOnlyList<CSharpDbShardMigrationProgress> _migrationProgress = [];
+    private IReadOnlyList<CSharpDbShardSqlExecutionResult> _fanOutResults = [];
     private CSharpDbShardResolution? _resolution;
     private CSharpDbShardCatalogValidationResult? _catalogValidation;
     private CSharpDbShardCatalogApplyResult? _catalogApply;
+    private CSharpDbShardMigrationResult? _migrationRunResult;
+    private MigrationPreview? _migrationPreview;
     private string _routeKeyspace = string.Empty;
     private string _routeKey = string.Empty;
+    private string _fanOutSql = "SELECT * FROM sys.tables ORDER BY name;";
+    private string? _fanOutError;
     private string _catalogDraftJson = string.Empty;
     private string _catalogOperator = Environment.UserName;
     private string _catalogComment = string.Empty;
     private string? _catalogDraftError;
+    private string _migrationKeyspace = string.Empty;
+    private string _migrationRouteKey = string.Empty;
+    private string _migrationSourceShardId = string.Empty;
+    private string _migrationDestinationShardId = string.Empty;
+    private int _migrationStartBucketInclusive;
+    private int _migrationEndBucketExclusive = 1;
+    private string _migrationManifestJson = CreateDefaultMigrationManifestJson();
+    private string _migrationOperator = Environment.UserName;
+    private string _migrationComment = string.Empty;
+    private string? _migrationDraftError;
+    private string _bootstrapKeyspace = "default";
+    private string _bootstrapDraftJson = string.Empty;
+    private string? _bootstrapError;
     private string? _loadError;
+    private CSharpDbShardMapSnapshot? _bootstrapPreview;
+    private int _bootstrapVirtualBucketCount = 16;
+    private int _bootstrapShardCount = 2;
     private bool _loading;
     private bool _resolving;
+    private bool _fanOutRunning;
     private bool _validatingCatalog;
     private bool _applyingCatalog;
     private bool _catalogAllowMetadataOnlyOwnershipChange;
+    private bool _previewingMigration;
+    private bool _runningMigration;
+    private bool _loadingMigrationProgress;
+    private bool _migrationOverwriteDestinationRows = true;
+    private bool _migrationDeleteSourceAfterVerification;
+    private bool _migrationConfirmArmed;
+    private bool _creatingShardCatalog;
+    private bool _previewingBootstrap;
+    private MigrationDraftMode _migrationDraftMode = MigrationDraftMode.ExactRouteKey;
+    private string? _migrationActionId;
 
     private static readonly JsonSerializerOptions s_shardingJsonOptions = CreateShardingJsonOptions();
+    private static readonly Regex s_firstSqlKeywordRegex = new(
+        @"(?:/\*.*?\*/\s*|--[^\r\n]*(?:\r?\n|$)|\s)*(?<keyword>[A-Za-z_][A-Za-z0-9_]*)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Singleline);
 
     private bool CanValidateCatalogDraft
         => _catalog is not null
@@ -443,6 +868,42 @@
            && !_validatingCatalog
            && !_applyingCatalog
            && !string.IsNullOrWhiteSpace(_catalogDraftJson);
+
+    private bool CanRunFanOut
+        => _map is not null
+           && !_fanOutRunning
+           && !string.IsNullOrWhiteSpace(_fanOutSql);
+
+    private bool CanPreviewBootstrapDraft
+        => DbHolder.SupportsMasterCatalogBootstrap
+           && !_previewingBootstrap
+           && !_creatingShardCatalog
+           && !string.IsNullOrWhiteSpace(_bootstrapDraftJson);
+
+    private bool CanCreateShardCatalog
+        => DbHolder.SupportsMasterCatalogBootstrap
+           && !_previewingBootstrap
+           && !_creatingShardCatalog
+           && !string.IsNullOrWhiteSpace(_bootstrapDraftJson);
+
+    private bool CanPreviewMigration
+        => _map is not null
+           && !_previewingMigration
+           && !_runningMigration
+           && !string.IsNullOrWhiteSpace(_migrationKeyspace)
+           && !string.IsNullOrWhiteSpace(_migrationDestinationShardId)
+           && !string.IsNullOrWhiteSpace(_migrationManifestJson)
+           && (_migrationDraftMode == MigrationDraftMode.ExactRouteKey
+               ? !string.IsNullOrWhiteSpace(_migrationRouteKey)
+               : !string.IsNullOrWhiteSpace(_migrationSourceShardId) &&
+                 _migrationEndBucketExclusive > _migrationStartBucketInclusive);
+
+    private bool CanStartMigration
+        => _catalog?.IsWritable == true
+           && _migrationPreview is not null
+           && _migrationConfirmArmed
+           && !_previewingMigration
+           && !_runningMigration;
 
     protected override async Task OnInitializedAsync()
     {
@@ -460,6 +921,8 @@
             _map = await ShardAdmin.GetShardMapAsync();
             if (string.IsNullOrWhiteSpace(_routeKeyspace))
                 _routeKeyspace = _map.Keyspace;
+            if (string.IsNullOrWhiteSpace(_migrationKeyspace))
+                _migrationKeyspace = _map.Keyspace;
 
             await LoadOptionalAdminStateAsync();
         }
@@ -469,11 +932,99 @@
             _catalog = null;
             _statuses = [];
             _migrationHistory = [];
+            _migrationProgress = [];
             _loadError = ex.Message;
+            if (DbHolder.SupportsMasterCatalogBootstrap && string.IsNullOrWhiteSpace(_bootstrapDraftJson))
+                LoadBootstrapTemplate();
         }
         finally
         {
             _loading = false;
+        }
+    }
+
+    private void LoadBootstrapTemplate()
+    {
+        CSharpDbShardingOptions options = CreateBootstrapDraftOptions(
+            DbHolder.MasterCatalogDataSource,
+            _bootstrapKeyspace,
+            _bootstrapVirtualBucketCount,
+            _bootstrapShardCount);
+
+        _bootstrapDraftJson = JsonSerializer.Serialize(options, s_shardingJsonOptions);
+        _bootstrapPreview = null;
+        _bootstrapError = null;
+    }
+
+    private async Task PreviewBootstrapDraftAsync()
+    {
+        _previewingBootstrap = true;
+        _bootstrapPreview = null;
+        try
+        {
+            CSharpDbShardingOptions? options = ReadBootstrapDraftOptions();
+            if (options is null)
+                return;
+
+            _bootstrapPreview = CSharpDbShardedClient.CreateShardMapSnapshot(options);
+            Toast.Success("Shard map draft is valid.");
+        }
+        catch (Exception ex)
+        {
+            _bootstrapError = ex.Message;
+            Toast.Error($"Shard map preview failed: {ex.Message}");
+        }
+        finally
+        {
+            _previewingBootstrap = false;
+        }
+    }
+
+    private async Task CreateShardCatalogAsync()
+    {
+        CSharpDbShardingOptions? options = ReadBootstrapDraftOptions();
+        if (options is null)
+            return;
+
+        _creatingShardCatalog = true;
+        _bootstrapError = null;
+        try
+        {
+            _bootstrapPreview = CSharpDbShardedClient.CreateShardMapSnapshot(options);
+            await DbHolder.CreateShardCatalogAndReloadAsync(options);
+            Toast.Success("Sharding metadata was created in the opened master DB.");
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _bootstrapError = ex.Message;
+            Toast.Error($"Create sharding failed: {ex.Message}");
+        }
+        finally
+        {
+            _creatingShardCatalog = false;
+        }
+    }
+
+    private CSharpDbShardingOptions? ReadBootstrapDraftOptions()
+    {
+        _bootstrapError = null;
+        try
+        {
+            CSharpDbShardingOptions? options = JsonSerializer.Deserialize<CSharpDbShardingOptions>(_bootstrapDraftJson, s_shardingJsonOptions);
+            if (options is null)
+            {
+                _bootstrapError = "Shard map draft JSON was empty.";
+                return null;
+            }
+
+            return options;
+        }
+        catch (Exception ex)
+        {
+            _bootstrapError = $"Invalid shard map draft JSON: {ex.Message}";
+            _bootstrapPreview = null;
+            return null;
         }
     }
 
@@ -647,6 +1198,16 @@
             _migrationHistory = [];
             Toast.Warning($"Shard migration history failed: {ex.Message}");
         }
+
+        try
+        {
+            _migrationProgress = await ShardAdmin.GetShardMigrationProgressAsync();
+        }
+        catch (Exception ex)
+        {
+            _migrationProgress = [];
+            Toast.Warning($"Shard migration progress failed: {ex.Message}");
+        }
     }
 
     private async Task ResolveRouteAsync()
@@ -681,6 +1242,275 @@
         }
     }
 
+    private async Task RunFanOutAsync()
+    {
+        _fanOutError = null;
+        _fanOutResults = [];
+
+        if (!IsLikelyReadOnlyFanOutSql(_fanOutSql))
+        {
+            _fanOutError = "Fan-out SQL accepts SELECT, WITH, and EXPLAIN statements only.";
+            Toast.Warning(_fanOutError);
+            return;
+        }
+
+        _fanOutRunning = true;
+        try
+        {
+            _fanOutResults = await ShardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(_fanOutSql);
+            int failed = _fanOutResults.Count(item => !string.IsNullOrWhiteSpace(item.Error));
+            if (failed == 0)
+                Toast.Success($"Fan-out completed on {_fanOutResults.Count} shard(s).");
+            else
+                Toast.Warning($"Fan-out completed with {failed} shard error(s).");
+        }
+        catch (Exception ex)
+        {
+            _fanOutError = ex.Message;
+            Toast.Error($"Fan-out failed: {ex.Message}");
+        }
+        finally
+        {
+            _fanOutRunning = false;
+        }
+    }
+
+    private void ClearFanOutResults()
+    {
+        _fanOutResults = [];
+        _fanOutError = null;
+    }
+
+    private void SetMigrationDraftMode(MigrationDraftMode mode)
+    {
+        if (_migrationDraftMode == mode)
+            return;
+
+        _migrationDraftMode = mode;
+        _migrationPreview = null;
+        _migrationDraftError = null;
+        _migrationConfirmArmed = false;
+    }
+
+    private void LoadDefaultMigrationManifest()
+    {
+        _migrationManifestJson = CreateDefaultMigrationManifestJson();
+        _migrationPreview = null;
+        _migrationDraftError = null;
+        _migrationConfirmArmed = false;
+    }
+
+    private async Task PreviewMigrationAsync()
+    {
+        _migrationDraftError = null;
+        _migrationRunResult = null;
+        _migrationPreview = null;
+        _migrationConfirmArmed = false;
+
+        CSharpDbShardMigrationManifest? manifest = ReadMigrationManifest();
+        if (manifest is null)
+            return;
+
+        _previewingMigration = true;
+        try
+        {
+            string keyspace = _migrationKeyspace.Trim();
+            string destinationShardId = _migrationDestinationShardId.Trim();
+            if (_migrationDraftMode == MigrationDraftMode.ExactRouteKey)
+            {
+                string routeKey = _migrationRouteKey.Trim();
+                CSharpDbShardResolution resolution = await ShardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+                {
+                    Keyspace = keyspace,
+                    Key = routeKey,
+                });
+
+                _migrationPreview = new MigrationPreview(
+                    "ExactRouteKey",
+                    keyspace,
+                    routeKey,
+                    resolution.ShardId,
+                    destinationShardId,
+                    manifest.PageSize,
+                    manifest.Tables.Count,
+                    manifest.Collections.Count,
+                    _map?.MapVersion);
+            }
+            else
+            {
+                string sourceShardId = _migrationSourceShardId.Trim();
+                _migrationPreview = new MigrationPreview(
+                    "BucketRange",
+                    keyspace,
+                    $"bucket-range:[{_migrationStartBucketInclusive},{_migrationEndBucketExclusive})",
+                    sourceShardId,
+                    destinationShardId,
+                    manifest.PageSize,
+                    manifest.Tables.Count,
+                    manifest.Collections.Count,
+                    _map?.MapVersion);
+            }
+
+            Toast.Success("Migration preview is ready.");
+        }
+        catch (Exception ex)
+        {
+            _migrationDraftError = ex.Message;
+            Toast.Error($"Migration preview failed: {ex.Message}");
+        }
+        finally
+        {
+            _previewingMigration = false;
+        }
+    }
+
+    private async Task RunMigrationAsync()
+    {
+        if (_migrationPreview is null)
+            return;
+
+        CSharpDbShardMigrationManifest? manifest = ReadMigrationManifest();
+        if (manifest is null)
+            return;
+
+        _runningMigration = true;
+        _migrationDraftError = null;
+        _migrationRunResult = null;
+        try
+        {
+            if (_migrationDraftMode == MigrationDraftMode.ExactRouteKey)
+            {
+                _migrationRunResult = await ShardAdmin.MigrateExactRouteKeyAsync(new CSharpDbShardExactKeyMigrationRequest
+                {
+                    Keyspace = _migrationKeyspace.Trim(),
+                    RouteKey = _migrationRouteKey.Trim(),
+                    DestinationShardId = _migrationDestinationShardId.Trim(),
+                    Manifest = manifest,
+                    ExpectedCurrentMapVersion = _map?.MapVersion,
+                    OverwriteDestinationRows = _migrationOverwriteDestinationRows,
+                    DeleteSourceAfterVerification = _migrationDeleteSourceAfterVerification,
+                    Operator = NormalizeOptional(_migrationOperator),
+                    Comment = NormalizeOptional(_migrationComment),
+                });
+            }
+            else
+            {
+                _migrationRunResult = await ShardAdmin.MigrateBucketRangeAsync(new CSharpDbShardBucketRangeMigrationRequest
+                {
+                    Keyspace = _migrationKeyspace.Trim(),
+                    SourceShardId = _migrationSourceShardId.Trim(),
+                    DestinationShardId = _migrationDestinationShardId.Trim(),
+                    StartBucketInclusive = _migrationStartBucketInclusive,
+                    EndBucketExclusive = _migrationEndBucketExclusive,
+                    Manifest = manifest,
+                    ExpectedCurrentMapVersion = _map?.MapVersion,
+                    OverwriteDestinationRows = _migrationOverwriteDestinationRows,
+                    DeleteSourceAfterVerification = _migrationDeleteSourceAfterVerification,
+                    Operator = NormalizeOptional(_migrationOperator),
+                    Comment = NormalizeOptional(_migrationComment),
+                });
+            }
+
+            if (_migrationRunResult.Succeeded)
+                Toast.Success(_migrationRunResult.Message);
+            else
+                Toast.Warning(_migrationRunResult.Message);
+
+            _migrationConfirmArmed = false;
+            await LoadOptionalAdminStateAsync();
+        }
+        catch (Exception ex)
+        {
+            _migrationDraftError = ex.Message;
+            Toast.Error($"Migration failed: {ex.Message}");
+        }
+        finally
+        {
+            _runningMigration = false;
+        }
+    }
+
+    private CSharpDbShardMigrationManifest? ReadMigrationManifest()
+    {
+        try
+        {
+            CSharpDbShardMigrationManifest? manifest =
+                JsonSerializer.Deserialize<CSharpDbShardMigrationManifest>(_migrationManifestJson, s_shardingJsonOptions);
+            if (manifest is null)
+            {
+                _migrationDraftError = "Migration manifest JSON was empty.";
+                return null;
+            }
+
+            if (manifest.Tables.Count == 0 && manifest.Collections.Count == 0)
+            {
+                _migrationDraftError = "Migration manifest must include at least one table or collection.";
+                return null;
+            }
+
+            return manifest;
+        }
+        catch (Exception ex)
+        {
+            _migrationDraftError = $"Invalid migration manifest JSON: {ex.Message}";
+            return null;
+        }
+    }
+
+    private async Task RefreshMigrationProgressAsync()
+    {
+        _loadingMigrationProgress = true;
+        try
+        {
+            _migrationProgress = await ShardAdmin.GetShardMigrationProgressAsync();
+            Toast.Success("Migration progress refreshed.");
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Migration progress failed: {ex.Message}");
+        }
+        finally
+        {
+            _loadingMigrationProgress = false;
+        }
+    }
+
+    private async Task ResumeMigrationAsync(string migrationId)
+        => await RunMigrationProgressActionAsync(migrationId, retry: false);
+
+    private async Task RetryMigrationAsync(string migrationId)
+        => await RunMigrationProgressActionAsync(migrationId, retry: true);
+
+    private async Task RunMigrationProgressActionAsync(string migrationId, bool retry)
+    {
+        if (string.IsNullOrWhiteSpace(migrationId))
+            return;
+
+        _migrationActionId = migrationId;
+        _migrationRunResult = null;
+        try
+        {
+            _migrationRunResult = retry
+                ? await ShardAdmin.RetryShardMigrationAsync(migrationId)
+                : await ShardAdmin.ResumeShardMigrationAsync(migrationId);
+
+            if (_migrationRunResult.Succeeded)
+                Toast.Success(_migrationRunResult.Message);
+            else
+                Toast.Warning(_migrationRunResult.Message);
+
+            await LoadOptionalAdminStateAsync();
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"{(retry ? "Retry" : "Resume")} failed: {ex.Message}");
+        }
+        finally
+        {
+            _migrationActionId = null;
+        }
+    }
+
     private static string BoolText(bool value) => value ? "Yes" : "No";
 
     private static string FormatToken(ulong token)
@@ -702,6 +1532,17 @@
             return "(connection string)";
 
         return "-";
+    }
+
+    private static string FormatBootstrapBucketOwnership(CSharpDbShardMapSnapshot map, string shardId)
+    {
+        string[] ranges = map.BucketRanges
+            .Where(range => string.Equals(range.ShardId, shardId, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(range => range.StartBucketInclusive)
+            .Select(range => $"[{range.StartBucketInclusive},{range.EndBucketExclusive})")
+            .ToArray();
+
+        return ranges.Length == 0 ? "-" : string.Join(", ", ranges);
     }
 
     private static string FormatObjectCounts(DatabaseInfo? info)
@@ -733,6 +1574,77 @@
                 ? "storage-badge storage-badge-warning"
                 : "storage-badge storage-badge-error";
 
+    private static string GetMigrationProgressBadgeClass(CSharpDbShardMigrationProgress progress)
+        => IsSuccessfulMigrationStatus(progress.Status)
+            ? "storage-badge storage-badge-info"
+            : progress.RequiresOperatorRecovery
+                ? "storage-badge storage-badge-warning"
+                : string.Equals(progress.Status, "Running", StringComparison.OrdinalIgnoreCase)
+                    ? "storage-badge storage-badge-info"
+                    : "storage-badge storage-badge-error";
+
+    private static string GetMigrationResultBadgeClass(CSharpDbShardMigrationResult result)
+        => result.Succeeded
+            ? "storage-badge storage-badge-info"
+            : result.RequiresOperatorRecovery
+                ? "storage-badge storage-badge-warning"
+                : "storage-badge storage-badge-error";
+
+    private static string GetFanOutBadgeClass(CSharpDbShardSqlExecutionResult result)
+        => string.IsNullOrWhiteSpace(result.Error)
+            ? "storage-badge storage-badge-info"
+            : "storage-badge storage-badge-error";
+
+    private static string GetFanOutStatusText(CSharpDbShardSqlExecutionResult result)
+        => string.IsNullOrWhiteSpace(result.Error) ? "OK" : "Error";
+
+    private static int GetFanOutRowCount(CSharpDbShardSqlExecutionResult result)
+        => result.Result?.Rows?.Count ?? 0;
+
+    private static string FormatFanOutStats(CSharpDbShardSqlExecutionResult result)
+    {
+        if (result.Result is null)
+            return string.IsNullOrWhiteSpace(result.Error) ? "No result" : "No rows";
+
+        if (result.Result.IsQuery)
+            return $"{GetFanOutRowCount(result):n0} row(s), {result.Result.Elapsed.TotalMilliseconds:F1} ms";
+
+        return $"{result.Result.RowsAffected:n0} row(s) affected, {result.Result.Elapsed.TotalMilliseconds:F1} ms";
+    }
+
+    private static string FormatManifestImpact(MigrationPreview preview)
+        => $"{preview.TableCount:n0} table(s), {preview.CollectionCount:n0} collection(s), page size {preview.PageSize:n0}, map {preview.ExpectedCurrentMapVersion?.ToString(CultureInfo.InvariantCulture) ?? "-"}";
+
+    private static string FormatCellValue(object? value)
+        => value switch
+        {
+            null => "NULL",
+            byte[] bytes => $"[{bytes.Length:n0} bytes]",
+            DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("O", CultureInfo.InvariantCulture),
+            DateTime dateTime => dateTime.ToString("O", CultureInfo.InvariantCulture),
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
+            _ => value.ToString() ?? string.Empty,
+        };
+
+    private static bool CanResumeMigrationCore(CSharpDbShardMigrationProgress progress)
+        => !IsSuccessfulMigrationStatus(progress.Status) &&
+           !string.Equals(progress.Status, "Running", StringComparison.OrdinalIgnoreCase);
+
+    private bool CanRetryMigration(CSharpDbShardMigrationProgress progress)
+        => _migrationActionId is null &&
+           !string.Equals(progress.Status, "Running", StringComparison.OrdinalIgnoreCase) &&
+           !IsSuccessfulMigrationStatus(progress.Status);
+
+    private bool CanResumeMigration(CSharpDbShardMigrationProgress progress)
+        => _migrationActionId is null && CanResumeMigrationCore(progress);
+
+    private static bool IsSuccessfulMigrationStatus(string status)
+        => string.Equals(status, "PendingActivation", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(status, "Succeeded", StringComparison.OrdinalIgnoreCase);
+
+    private string GetMigrationModeButtonClass(MigrationDraftMode mode)
+        => _migrationDraftMode == mode ? "toolbar-btn primary" : "toolbar-btn";
+
     private static string GetCatalogIssueClass(CSharpDbShardCatalogIssue issue)
         => issue.Severity switch
         {
@@ -741,13 +1653,51 @@
             _ => "info",
         };
 
+    private static bool IsLikelyReadOnlyFanOutSql(string sql)
+    {
+        string? keyword = GetFirstSqlKeyword(sql);
+        return keyword is "SELECT" or "WITH" or "EXPLAIN";
+    }
+
+    private static string? GetFirstSqlKeyword(string sql)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+            return null;
+
+        Match match = s_firstSqlKeywordRegex.Match(sql);
+        if (!match.Success)
+            return null;
+
+        string keyword = match.Groups["keyword"].Value;
+        return string.IsNullOrWhiteSpace(keyword) ? null : keyword.ToUpperInvariant();
+    }
+
+    private static string CreateDefaultMigrationManifestJson()
+    {
+        var manifest = new CSharpDbShardMigrationManifest
+        {
+            PageSize = 500,
+            Tables =
+            [
+                new CSharpDbShardMigrationTableManifest
+                {
+                    TableName = "orders",
+                    RouteKeyColumn = "tenant_id",
+                    PrimaryKeyColumn = "id",
+                },
+            ],
+            Collections = [],
+        };
+
+        return JsonSerializer.Serialize(manifest, s_shardingJsonOptions);
+    }
+
     private static CSharpDbShardingOptions CreateDraftOptions(
         CSharpDbShardMapSnapshot map,
         int mapVersion)
     {
         return new CSharpDbShardingOptions
         {
-            Enabled = true,
             Keyspace = map.Keyspace,
             MapVersion = Math.Max(1, mapVersion),
             VirtualBucketCount = map.VirtualBucketCount,
@@ -769,6 +1719,98 @@
             }).ToArray(),
             DirectoryEntries = [],
         };
+    }
+
+    private static CSharpDbShardingOptions CreateBootstrapDraftOptions(
+        string? masterDataSource,
+        string keyspace,
+        int virtualBucketCount,
+        int shardCount)
+    {
+        int normalizedBucketCount = Math.Max(1, virtualBucketCount);
+        int normalizedShardCount = Math.Clamp(shardCount, 1, normalizedBucketCount);
+        string normalizedKeyspace = string.IsNullOrWhiteSpace(keyspace)
+            ? "default"
+            : keyspace.Trim();
+
+        return new CSharpDbShardingOptions
+        {
+            Keyspace = normalizedKeyspace,
+            MapVersion = 1,
+            VirtualBucketCount = normalizedBucketCount,
+            Shards = Enumerable.Range(0, normalizedShardCount)
+                .Select(index => new CSharpDbShardDefinition
+                {
+                    ShardId = $"shard-{index}",
+                    DataSource = CreateBootstrapShardDataSource(masterDataSource, index),
+                })
+                .ToArray(),
+            BucketRanges = CreateEvenBucketRanges(normalizedBucketCount, normalizedShardCount),
+            ExactKeyPins = new Dictionary<string, string>(StringComparer.Ordinal),
+            Directories = [],
+            DirectoryEntries = [],
+        };
+    }
+
+    private static CSharpDbShardBucketRange[] CreateEvenBucketRanges(
+        int virtualBucketCount,
+        int shardCount)
+    {
+        var ranges = new CSharpDbShardBucketRange[shardCount];
+        int start = 0;
+        for (int index = 0; index < shardCount; index++)
+        {
+            int end = index == shardCount - 1
+                ? virtualBucketCount
+                : Math.Max(start + 1, (index + 1) * virtualBucketCount / shardCount);
+
+            ranges[index] = new CSharpDbShardBucketRange
+            {
+                StartBucketInclusive = start,
+                EndBucketExclusive = end,
+                ShardId = $"shard-{index}",
+            };
+            start = end;
+        }
+
+        return ranges;
+    }
+
+    private static string CreateBootstrapShardDataSource(string? masterDataSource, int index)
+    {
+        string? directory = TryGetDataSourceDirectory(masterDataSource);
+        return string.IsNullOrWhiteSpace(directory)
+            ? $"shard-{index}.db"
+            : Path.Combine(directory, $"shard-{index}.db");
+    }
+
+    private static string? TryGetDataSourceDirectory(string? dataSource)
+    {
+        if (string.IsNullOrWhiteSpace(dataSource))
+            return null;
+
+        string value = dataSource.Trim();
+        if (Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
+        {
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            value = uri.LocalPath;
+        }
+        else if (value.Contains("://", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(value);
+            return Path.GetDirectoryName(fullPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
     }
 
     private static CSharpDbShardDefinition CreateDraftShard(CSharpDbShardDefinitionSnapshot shard)
@@ -802,4 +1844,15 @@
         options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
         return options;
     }
+
+    private sealed record MigrationPreview(
+        string MigrationType,
+        string Keyspace,
+        string RouteSummary,
+        string SourceShardId,
+        string DestinationShardId,
+        int PageSize,
+        int TableCount,
+        int CollectionCount,
+        int? ExpectedCurrentMapVersion);
 }

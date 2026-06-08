@@ -7,20 +7,20 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
 builder.Services.AddSingleton(sp =>
-    sp.GetRequiredService<IConfiguration>().GetSection("CSharpDB:Sharding").Get<CSharpDbShardingOptions>()
-    ?? new CSharpDbShardingOptions());
+{
+    return new CSharpDbClientOptions
+    {
+        ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
+            ?? "Data Source=csharpdb.db",
+    };
+});
 builder.Services.AddSingleton<ICSharpDbClient>(sp =>
 {
-    CSharpDbShardingOptions shardingOptions = sp.GetRequiredService<CSharpDbShardingOptions>();
-    return shardingOptions.Enabled
-        ? CSharpDbShardedClient.Create(
-            shardingOptions,
-            sp.GetRequiredService<ICSharpDbRouteContextAccessor>())
-        : CSharpDbClient.Create(new CSharpDbClientOptions
-        {
-            ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
-                ?? "Data Source=csharpdb.db",
-        });
+    CSharpDbClientOptions options = sp.GetRequiredService<CSharpDbClientOptions>();
+    return CSharpDbShardedClient.TryCreateFromMasterCatalog(
+               options,
+               sp.GetRequiredService<ICSharpDbRouteContextAccessor>())
+           ?? CSharpDbClient.Create(options);
 });
 
 builder.Services.AddCSharpDbRestApi(builder.Configuration.GetSection("CSharpDB:Api:Security"));

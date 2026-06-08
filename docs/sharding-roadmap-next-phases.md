@@ -19,7 +19,8 @@ Default product decisions:
 - Phase 2 introduces shard-admin APIs and a read-only catalog view.
 - Phase 3 introduces operator-managed catalog updates.
 - Controlled resharding comes before replication or cross-shard SQL.
-- Config-only sharding remains supported after catalog mode exists.
+- The opened master DB owns sharding metadata; app configuration only selects
+  which master DB to open.
 - A global shard index, also called a shard directory, is a catalog feature for
   resolving alternate lookup keys to route context. It is not a normal in-shard
   table index and should not imply automatic distributed SQL.
@@ -63,7 +64,7 @@ Key work:
 - Disable route-required tabs until a route is selected.
 - Label routed tabs clearly as operating on one route. (selector badge started)
 - Keep Desktop Admin default behavior unchanged: it still opens one local direct
-  database unless explicitly configured for sharding.
+  database unless that opened master DB contains an active shard map.
 - Add route-aware coverage for forms, reports, pipelines, query designer, import
   flows, and data-model/drilldown launches.
 
@@ -90,7 +91,8 @@ First implementation slice:
 - Exposed the shard-admin surface through direct sharded clients, REST endpoints,
   and gRPC RPCs.
 - Added read-only shard-directory model types as placeholders for future global
-  lookup indexes. Static config still returns an empty directory list.
+  lookup indexes. Master-catalog maps without directory entries return an empty
+  directory list.
 - Added an Admin Sharding workspace for read-only map, shard status, catalog
   state, migration history, and route simulation.
 
@@ -108,23 +110,24 @@ Key work:
   - map version; (first slice implemented)
   - status and errors; (first slice implemented)
   - route simulation. (first slice implemented)
-- Keep static config as the source of truth in this phase.
+- Use the opened master DB as the source of truth for sharding metadata.
 - Add a catalog abstraction so Phase 3 can introduce persistent catalog-backed
   management without rewriting Admin.
 - Add read-only shard-directory model types so Admin can preview future global
   lookup indexes such as `order_number -> order_month -> shard`.
-- Add route lookup simulation for alternate keys, but keep catalog data static
-  and read-only in this phase.
+- Add route lookup simulation for alternate keys, with catalog data read from
+  the opened master DB.
 
 ## Phase 3: Operator-Managed Catalog And Map Changes
 
-Goal: make shard maps inspectable and editable through an operator workflow
-while preserving config-only deployments.
+Goal: make shard maps inspectable and editable through an operator workflow with
+the opened master DB as the only production metadata source.
 
 First implementation slice:
 
-- Added catalog-backed mode with `CSharpDB:Sharding:Catalog`.
-- Added JSON catalog file loading at sharded-client startup.
+- Added master-catalog mode where the opened master DB owns sharding metadata.
+- Removed JSON catalog file startup as a supported path; the feature is
+  unreleased, so compatibility is not carried forward.
 - Added catalog state, validation, and apply models.
 - Added REST and gRPC APIs to inspect the live/pending catalog state, validate a
   proposed map, and persist an applied map.
@@ -137,17 +140,17 @@ First implementation slice:
   giving the future global shard-directory index a persisted metadata home.
 - Admin now shows catalog source, active map, pending map, and recent catalog
   history in the Sharding workspace.
-- Admin now has a JSON catalog draft editor in the Sharding workspace. Operators
-  can load a sanitized active or pending map template, validate it, and apply a
-  pending map through the catalog APIs with operator/comment metadata.
+- Admin now has a catalog draft editor in the Sharding workspace. Operators can
+  load a sanitized active or pending map template, validate it, and apply a
+  pending map through the master-catalog APIs with operator/comment metadata.
 
 Key work:
 
-- Add catalog-backed mode behind configuration. (started)
+- Add master-catalog mode from the opened master DB. (started)
 - Store keyspace, map versions, shard definitions, bucket ranges, exact-key
   pins, disabled/read-only flags, and change history. (started)
-- Let Admin draft, validate, preview, and apply catalog changes. (JSON draft
-  editor first slice implemented)
+- Let Admin draft, validate, preview, and apply catalog changes. (draft editor
+  first slice implemented)
 - Add operator-managed shard-directory entries for alternate lookup keys that
   must resolve to a route context before data can be queried.
 - Support directory entry states such as `Reserved`, `Active`, `Moving`,
@@ -442,7 +445,7 @@ Phase 2 shard-admin tests:
 
 Phase 3 catalog tests:
 
-- Config-backed catalog matches existing static configuration behavior.
+- Master-catalog discovery loads the active map from the opened DB.
 - Catalog validation rejects malformed maps.
 - Applied map versions are recorded in history.
 - Exact-key pin edits validate and apply.
@@ -487,7 +490,8 @@ Release verification:
 - Phase 1 has a first Admin route-aware slice for query/table/collection
   workflows; broader Admin feature coverage is still open.
 - Admin route context is per-tab.
-- Config-only sharding remains supported after catalog mode exists.
+- The opened master DB remains the only production source for sharding
+  metadata.
 - Global shard directory indexes are optional. They help locate a route from an
   alternate key, but applications that already know the route key should keep
   using direct route-key routing.

@@ -97,6 +97,92 @@ public sealed class CSharpDbShardedClientTests
     }
 
     [Fact]
+    public async Task CreateAsync_LoadsShardMapFromCSharpDbCatalogWithoutStaticMap()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            string catalogPath = Path.Combine(directory, "master-catalog.db");
+            CSharpDbShardingOptions seedOptions = CreateOptions(directory);
+            seedOptions.Catalog = new CSharpDbShardCatalogOptions
+            {
+                DataSource = catalogPath,
+            };
+
+            await using (var seeded = await CSharpDbShardedClient.CreateAsync(seedOptions, ct: Ct))
+            {
+                CSharpDbShardingOptions catalogMap = CreateOptions(directory);
+                catalogMap.MapVersion = 2;
+                CSharpDbShardCatalogApplyResult applied = await seeded.ApplyShardCatalogUpdateAsync(
+                    new CSharpDbShardCatalogUpdateRequest
+                    {
+                        Options = catalogMap,
+                        ExpectedCurrentMapVersion = 1,
+                        Operator = "test",
+                        Comment = "seed master catalog",
+                    },
+                    Ct);
+
+                Assert.True(applied.Applied, applied.Message);
+            }
+
+            CSharpDbShardedClient? discovered = await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(
+                new CSharpDbClientOptions
+                {
+                    DataSource = catalogPath,
+                },
+                ct: Ct);
+            Assert.NotNull(discovered);
+            await using CSharpDbShardedClient client = discovered;
+
+            CSharpDbShardMapSnapshot snapshot = await client.GetShardMapAsync(Ct);
+            Assert.Equal("tenants", snapshot.Keyspace);
+            Assert.Equal(2, snapshot.MapVersion);
+            Assert.Equal(["s0", "s1"], snapshot.Shards.Select(shard => shard.ShardId).ToArray());
+            Assert.Equal("s1", snapshot.ExactKeyPins["tenant-b"]);
+
+            CSharpDbShardCatalogState catalog = await client.GetShardCatalogAsync(Ct);
+            Assert.StartsWith("csharpdb:", catalog.Source, StringComparison.OrdinalIgnoreCase);
+            Assert.True(catalog.IsCatalogEnabled);
+            Assert.True(catalog.IsWritable);
+            Assert.Null(catalog.PendingMap);
+            Assert.Single(catalog.History);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task TryCreateFromMasterCatalog_ReturnsNullWhenMasterHasNoActiveShardMap()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            string masterPath = Path.Combine(directory, "master.db");
+            await using ICSharpDbClient seed = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = masterPath,
+            });
+            _ = await seed.GetInfoAsync(Ct);
+
+            CSharpDbShardedClient? discovered = await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(
+                new CSharpDbClientOptions
+                {
+                    DataSource = masterPath,
+                },
+                ct: Ct);
+
+            Assert.Null(discovered);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task ShardDirectory_ResolvesActiveEntriesAndRejectsStaleEntries()
     {
         string directory = CreateTempDirectory();
@@ -181,12 +267,11 @@ public sealed class CSharpDbShardedClientTests
         string directory = CreateTempDirectory();
         try
         {
-            string catalogPath = Path.Combine(directory, "catalog.json");
+            string catalogPath = Path.Combine(directory, "master-catalog.db");
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = catalogPath,
+                DataSource = catalogPath,
             };
             options.Directories =
             [
@@ -347,12 +432,11 @@ public sealed class CSharpDbShardedClientTests
         string directory = CreateTempDirectory();
         try
         {
-            string catalogPath = Path.Combine(directory, "catalog.json");
+            string catalogPath = Path.Combine(directory, "master-catalog.db");
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = catalogPath,
+                DataSource = catalogPath,
             };
             options.Directories =
             [
@@ -557,12 +641,11 @@ public sealed class CSharpDbShardedClientTests
         string directory = CreateTempDirectory();
         try
         {
-            string catalogPath = Path.Combine(directory, "shard-catalog.json");
+            string catalogPath = Path.Combine(directory, "master-catalog.db");
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = catalogPath,
+                DataSource = catalogPath,
             };
             options.Directories =
             [
@@ -677,8 +760,7 @@ public sealed class CSharpDbShardedClientTests
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = Path.Combine(directory, "catalog.json"),
+                DataSource = Path.Combine(directory, "master-catalog.db"),
             };
 
             await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
@@ -721,12 +803,11 @@ public sealed class CSharpDbShardedClientTests
         string directory = CreateTempDirectory();
         try
         {
-            string catalogPath = Path.Combine(directory, "catalog.json");
+            string catalogPath = Path.Combine(directory, "master-catalog.db");
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = catalogPath,
+                DataSource = catalogPath,
             };
             options.Directories =
             [
@@ -938,12 +1019,11 @@ public sealed class CSharpDbShardedClientTests
         try
         {
             string routeKey = FindRouteKeyForBucket("tenants", bucket: 0, virtualBucketCount: 4);
-            string catalogPath = Path.Combine(directory, "catalog.json");
+            string catalogPath = Path.Combine(directory, "master-catalog.db");
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = catalogPath,
+                DataSource = catalogPath,
             };
 
             await using (var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct))
@@ -1064,8 +1144,7 @@ public sealed class CSharpDbShardedClientTests
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = Path.Combine(directory, "catalog.json"),
+                DataSource = Path.Combine(directory, "master-catalog.db"),
             };
 
             await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
@@ -1103,6 +1182,48 @@ public sealed class CSharpDbShardedClientTests
     }
 
     [Fact]
+    public async Task ExactKeyMigration_RecordsProgressInCSharpDbCatalog()
+    {
+        string directory = CreateTempDirectory();
+        try
+        {
+            CSharpDbShardingOptions options = CreateOptions(directory);
+            options.Catalog = new CSharpDbShardCatalogOptions
+            {
+                DataSource = Path.Combine(directory, "master-catalog.db"),
+            };
+
+            await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
+            CSharpDbShardMigrationResult migration = await client.MigrateExactRouteKeyAsync(
+                new CSharpDbShardExactKeyMigrationRequest
+                {
+                    Keyspace = "tenants",
+                    RouteKey = "tenant-a",
+                    DestinationShardId = "s1",
+                    ExpectedCurrentMapVersion = 1,
+                    Manifest = new CSharpDbShardMigrationManifest(),
+                },
+                Ct);
+
+            Assert.False(migration.Succeeded);
+            Assert.Equal("Rejected", migration.Status);
+
+            CSharpDbShardMigrationHistoryEntry history = Assert.Single(await client.GetShardMigrationHistoryAsync(Ct));
+            Assert.Equal(migration.MigrationId, history.MigrationId);
+            Assert.Equal("Rejected", history.Status);
+
+            CSharpDbShardMigrationProgress progress = Assert.Single(await client.GetShardMigrationProgressAsync(Ct));
+            Assert.Equal(migration.MigrationId, progress.MigrationId);
+            Assert.Equal("Rejected", progress.Status);
+            Assert.Equal(0, progress.CompletedSteps);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task ExactKeyMigration_VerificationFailureRequiresOperatorRecovery()
     {
         string directory = CreateTempDirectory();
@@ -1111,8 +1232,7 @@ public sealed class CSharpDbShardedClientTests
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = Path.Combine(directory, "catalog.json"),
+                DataSource = Path.Combine(directory, "master-catalog.db"),
             };
 
             await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
@@ -1173,8 +1293,7 @@ public sealed class CSharpDbShardedClientTests
             CSharpDbShardingOptions options = CreateOptions(directory);
             options.Catalog = new CSharpDbShardCatalogOptions
             {
-                Enabled = true,
-                Path = Path.Combine(directory, "catalog.json"),
+                DataSource = Path.Combine(directory, "master-catalog.db"),
             };
 
             await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
@@ -1418,7 +1537,6 @@ public sealed class CSharpDbShardedClientTests
         {
             var options = new CSharpDbShardingOptions
             {
-                Enabled = true,
                 Keyspace = "tenants",
                 VirtualBucketCount = 1,
                 Shards =
@@ -1467,7 +1585,6 @@ public sealed class CSharpDbShardedClientTests
         {
             var options = new CSharpDbShardingOptions
             {
-                Enabled = true,
                 Keyspace = "tenants",
                 VirtualBucketCount = 4,
                 Shards =
@@ -1494,7 +1611,6 @@ public sealed class CSharpDbShardedClientTests
     private static CSharpDbShardingOptions CreateOptions(string directory)
         => new()
         {
-            Enabled = true,
             Keyspace = "tenants",
             MapVersion = 1,
             VirtualBucketCount = 4,

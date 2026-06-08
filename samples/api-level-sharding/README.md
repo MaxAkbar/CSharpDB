@@ -10,7 +10,77 @@ Run it from the repository root:
 dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj
 ```
 
-The program creates four local shard database files under the build output directory, applies the same `orders` schema to every shard through the shard-admin surface, pins several month route keys to specific shards for clear output, and shows how the app explicitly routes current and older order-history pages.
+The program creates a local master database plus four local shard database files under the build output directory, writes the active shard map into the master database, applies the same `orders` schema to every shard through the shard-admin surface, pins several month route keys to specific shards for clear output, and shows how the app explicitly routes current and older order-history pages.
+
+## Creating The Master Sharding DB
+
+The sample intentionally uses the same master-catalog pattern that Admin,
+daemon, and API hosts use. There is no sharding section in appsettings and no
+JSON catalog file. The normal database path points at the master database; the
+master database contains the active shard map.
+
+The sample creates the master DB under the generated shard directory:
+
+```csharp
+string dataDirectory = Path.Combine(AppContext.BaseDirectory, "shards");
+string masterDbPath = Path.Combine(dataDirectory, "master.db");
+```
+
+It then builds the shard map payload and writes it into `master.db`:
+
+```csharp
+CSharpDbShardingOptions activeMap = CreateShardingOptions(dataDirectory);
+
+await CSharpDbShardedClient.SeedMasterCatalogAsync(
+    new CSharpDbClientOptions
+    {
+        DataSource = masterDbPath,
+    },
+    activeMap);
+```
+
+After that, the application opens only the master database and lets CSharpDB
+discover whether sharding is active:
+
+```csharp
+await using CSharpDbShardedClient sharded =
+    await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(new CSharpDbClientOptions
+    {
+        DataSource = masterDbPath,
+    })
+    ?? throw new InvalidOperationException("The sample master database did not contain an active shard map.");
+```
+
+For a daemon or Admin host, the equivalent configuration is only the normal
+database locator:
+
+```json
+{
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=path/to/master.db"
+  }
+}
+```
+
+The master database is not a data shard and is not part of fan-out. It owns the
+shard map, directory metadata, catalog history, migration checkpoints, and
+future failover metadata. The sample recreates it on each run so the output is
+deterministic; a real deployment would create it once, then use catalog update
+and migration APIs to evolve the map.
+
+## Existing Large Databases
+
+This sample is a new sharded setup. It does not convert an existing monolithic
+database into shards.
+
+For an existing large DB, do not seed a shard map and assume the old rows are
+sharded. Routed queries read the shard DBs, not the original monolithic DB, and
+the master DB is not part of fan-out. The existing data must be copied into
+shard DBs by route key, verified, and cut over before the master catalog becomes
+the active entry point.
+
+The required flow is documented in
+[`docs/sharding-existing-database-migration.md`](../../docs/sharding-existing-database-migration.md).
 
 ## Scenario
 
@@ -37,7 +107,7 @@ The sample models these user flows:
 
 ## What It Demonstrates
 
-- `CSharpDbShardingOptions` with four direct/local shard files.
+- A master database that stores the active shard map for four direct/local shard files.
 - Stable virtual-bucket ownership through `BucketRanges`.
 - Month-based route keys for order-history partitioning.
 - `ExactKeyPins` for operator-controlled placement of hot or archival months.
@@ -59,6 +129,8 @@ Keyspace:        orders_by_month
 Route key shape: yyyy-MM order month
 Customer:        customer-1001
 Virtual buckets: 16
+Master DB:       ...
+Shard files:     ...
 
 Month route map
 ---------------
@@ -232,8 +304,10 @@ or presentation decision to the caller.
 
 ## Trying The Same Routes In Admin
 
-When CSharpDB Studio is configured with the same shard map, the Query, table
-data, and collection tabs show a route selector. Enter:
+Open the sample `master.db` in CSharpDB Studio. The sample prints the full
+`Master DB:` path in its output. When the master database contains the sample
+shard map, the Query, table data, and collection tabs show a route selector.
+Enter:
 
 ```text
 keyspace: orders_by_month

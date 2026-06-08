@@ -144,13 +144,6 @@ section:
 - `CSharpDB:HostDatabase:UseWriteOptimizedPreset`
 - `CSharpDB:HostDatabase:HotTableNames`
 - `CSharpDB:HostDatabase:HotCollectionNames`
-- `CSharpDB:Sharding:Enabled`
-- `CSharpDB:Sharding:Keyspace`
-- `CSharpDB:Sharding:MapVersion`
-- `CSharpDB:Sharding:VirtualBucketCount`
-- `CSharpDB:Sharding:Shards`
-- `CSharpDB:Sharding:BucketRanges`
-- `CSharpDB:Sharding:ExactKeyPins`
 - standard ASP.NET Core host settings such as `ASPNETCORE_URLS`
 - standard ASP.NET Core environment selection such as
   `ASPNETCORE_ENVIRONMENT`
@@ -235,55 +228,17 @@ without the REST `/api` surface.
 
 ### API-Level Sharding
 
-Set `CSharpDB:Sharding:Enabled=true` to have the daemon host multiple warm
-CSharpDB database files and route each request by route context. REST clients
-send `X-CSharpDB-Keyspace` and `X-CSharpDB-Shard-Key`; gRPC clients set
+The daemon treats `ConnectionStrings:CSharpDB` as the master database. If that
+opened database contains an active shard map in the master catalog tables, the
+daemon hosts the mapped shard files and routes each request by route context. If
+the master database has no active shard map, the daemon opens normally as a
+single unsharded database. REST clients send `X-CSharpDB-Keyspace` and
+`X-CSharpDB-Shard-Key`; gRPC clients set
 `CSharpDbClientOptions.RouteContext`, which is sent as metadata.
 
 For an e-commerce order-history workload, use a route key such as the order
 month (`yyyy-MM`). Recent orders can query the current month route, while older
 history is loaded by sending the selected month route.
-
-Example:
-
-```json
-{
-  "CSharpDB": {
-    "Sharding": {
-      "Enabled": true,
-      "Keyspace": "orders_by_month",
-      "MapVersion": 1,
-      "VirtualBucketCount": 4096,
-      "Shards": [
-        { "ShardId": "s0", "DataSource": "orders-s0.db" },
-        { "ShardId": "s1", "DataSource": "orders-s1.db" },
-        {
-          "ShardId": "s1-replica",
-          "DataSource": "orders-s1-replica.db",
-          "Role": "Replica",
-          "PrimaryShardId": "s1",
-          "PromotionEligible": true,
-          "ReplicationLagBytes": 256,
-          "LastReplicatedUtc": "2026-06-01T12:30:00+00:00"
-        }
-      ],
-      "BucketRanges": [
-        { "StartBucketInclusive": 0, "EndBucketExclusive": 2048, "ShardId": "s0" },
-        { "StartBucketInclusive": 2048, "EndBucketExclusive": 4096, "ShardId": "s1" }
-      ],
-      "ExactKeyPins": {
-        "2026-06": "s0",
-        "2026-05": "s1"
-      },
-      "Catalog": {
-        "Enabled": true,
-        "Path": "data/shard-catalog.json",
-        "AllowWrites": true
-      }
-    }
-  }
-}
-```
 
 All shard files use the daemon host database open-mode and storage tuning
 settings. V1 requires route context for single-shard operations and does not
@@ -300,11 +255,10 @@ Routing does not replace row filtering. Queries should still include the route
 column, such as `WHERE order_month = '2026-06'`, because multiple route keys can
 share one shard.
 
-When catalog mode is enabled, the daemon reads the catalog file at startup if it
-exists; otherwise it starts from the configured `CSharpDB:Sharding` map. Operator
-catalog updates validate a proposed map and write it to the catalog file as a
-pending map. The live daemon does not silently change routing. Restart the daemon
-after a successful apply to activate the new map.
+At startup, the daemon reads the active map from the opened master database.
+Operator catalog updates validate a proposed map and write it back to that same
+master database as a pending map. The live daemon does not silently change
+routing. Restart the daemon after a successful apply to activate the new map.
 
 Catalog update endpoints:
 

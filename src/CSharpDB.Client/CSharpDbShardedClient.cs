@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Buffers.Binary;
+using System.Data.Common;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -42,23 +43,77 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
 
     public string DataSource => $"sharded://{_map.Keyspace}?version={_map.MapVersion}";
 
-    public static CSharpDbShardedClient Create(
+    internal static CSharpDbShardedClient Create(
         CSharpDbShardingOptions options,
         ICSharpDbRouteContextAccessor? routeContextAccessor = null)
     {
-        var client = CreateCore(options, routeContextAccessor);
+        var client = CreateCoreAsync(options, routeContextAccessor, CancellationToken.None).GetAwaiter().GetResult();
         client.WarmAsync(CancellationToken.None).GetAwaiter().GetResult();
         return client;
     }
 
-    public static async Task<CSharpDbShardedClient> CreateAsync(
+    public static CSharpDbShardedClient? TryCreateFromMasterCatalog(
+        CSharpDbClientOptions masterDatabaseOptions,
+        ICSharpDbRouteContextAccessor? routeContextAccessor = null)
+    {
+        var client = TryCreateFromMasterCatalogAsync(
+                masterDatabaseOptions,
+                routeContextAccessor,
+                CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+        client?.WarmAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return client;
+    }
+
+    internal static async Task<CSharpDbShardedClient> CreateAsync(
         CSharpDbShardingOptions options,
         ICSharpDbRouteContextAccessor? routeContextAccessor = null,
         CancellationToken ct = default)
     {
-        var client = CreateCore(options, routeContextAccessor);
+        var client = await CreateCoreAsync(options, routeContextAccessor, ct).ConfigureAwait(false);
         await client.WarmAsync(ct).ConfigureAwait(false);
         return client;
+    }
+
+    public static async Task<CSharpDbShardedClient?> TryCreateFromMasterCatalogAsync(
+        CSharpDbClientOptions masterDatabaseOptions,
+        ICSharpDbRouteContextAccessor? routeContextAccessor = null,
+        CancellationToken ct = default)
+    {
+        CSharpDbShardingOptions? options = TryCreateMasterCatalogOptions(masterDatabaseOptions);
+        if (options is null)
+            return null;
+
+        CSharpDbShardedClient? client =
+            await TryCreateCoreAsync(options, routeContextAccessor, requireCatalogActiveMap: true, ct)
+                .ConfigureAwait(false);
+        if (client is not null)
+            await client.WarmAsync(ct).ConfigureAwait(false);
+
+        return client;
+    }
+
+    public static async Task SeedMasterCatalogAsync(
+        CSharpDbClientOptions masterDatabaseOptions,
+        CSharpDbShardingOptions activeMap,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(masterDatabaseOptions);
+        ArgumentNullException.ThrowIfNull(activeMap);
+
+        _ = CreateShardMapSnapshot(activeMap);
+        CSharpDbShardingOptions? catalogRuntimeOptions = TryCreateMasterCatalogOptions(masterDatabaseOptions);
+        if (catalogRuntimeOptions is null)
+        {
+            throw new CSharpDbClientConfigurationException(
+                "A direct master database DataSource or ConnectionString is required to seed the shard catalog.");
+        }
+
+        await CSharpDbShardCatalogStore.SeedMasterCatalogAsync(
+            catalogRuntimeOptions,
+            activeMap,
+            ct).ConfigureAwait(false);
     }
 
     public static string GetCanonicalRouteText(CSharpDbRouteContext routeContext)
@@ -170,7 +225,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         => _catalogStore is null
             ? Task.FromResult(new CSharpDbShardCatalogState
             {
-                Source = "runtime-config",
+                Source = "internal-shard-map",
                 IsCatalogEnabled = false,
                 IsWritable = false,
                 ActiveMap = _map.ToSnapshot(),
@@ -195,7 +250,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             {
                 Severity = CSharpDbShardCatalogIssueSeverity.Error,
                 Code = "catalog-not-enabled",
-                Message = "Shard catalog writes require CSharpDB:Sharding:Catalog:Enabled=true.",
+                Message = "Shard catalog writes require an opened CSharpDB master catalog.",
             });
 
             return Task.FromResult(new CSharpDbShardCatalogApplyResult
@@ -1445,6 +1500,18 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             }
         }
 
+        if (_catalogStore is not null)
+        {
+            try
+            {
+                await _catalogStore.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                (exceptions ??= []).Add(ex);
+            }
+        }
+
         if (exceptions is { Count: > 0 })
             throw new AggregateException(exceptions);
     }
@@ -1713,28 +1780,123 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         return true;
     }
 
-    private static CSharpDbShardedClient CreateCore(
+    private static async Task<CSharpDbShardedClient> CreateCoreAsync(
         CSharpDbShardingOptions options,
-        ICSharpDbRouteContextAccessor? routeContextAccessor)
+        ICSharpDbRouteContextAccessor? routeContextAccessor,
+        CancellationToken ct)
+        => await TryCreateCoreAsync(options, routeContextAccessor, requireCatalogActiveMap: false, ct)
+               .ConfigureAwait(false)
+           ?? throw new CSharpDbClientConfigurationException("CSharpDB master catalog does not contain an active shard map.");
+
+    private static async Task<CSharpDbShardedClient?> TryCreateCoreAsync(
+        CSharpDbShardingOptions options,
+        ICSharpDbRouteContextAccessor? routeContextAccessor,
+        bool requireCatalogActiveMap,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (!options.Enabled)
-            throw new CSharpDbClientConfigurationException("CSharpDB sharding options are disabled.");
 
-        CSharpDbShardingOptions effectiveOptions = CSharpDbShardCatalogStore.ResolveEffectiveOptions(options);
-        CSharpDbShardCatalogStore? catalogStore = CSharpDbShardCatalogStore.Create(options, effectiveOptions);
-        CSharpDbShardMap map = CSharpDbShardMap.Create(effectiveOptions);
+        CSharpDbShardCatalogResolution resolution =
+            await CSharpDbShardCatalogStore.ResolveAsync(options, ct).ConfigureAwait(false);
+        CSharpDbShardingOptions effectiveOptions = resolution.EffectiveOptions;
+        CSharpDbShardCatalogStore? catalogStore = resolution.Store;
+        if (requireCatalogActiveMap && !resolution.LoadedFromCatalog)
+        {
+            if (catalogStore is not null)
+                await catalogStore.DisposeAsync().ConfigureAwait(false);
+
+            return null;
+        }
+
         var clients = new Dictionary<string, ICSharpDbClient>(StringComparer.OrdinalIgnoreCase);
-        foreach (CSharpDbShardDefinition shard in map.Shards.Where(shard => shard.Enabled))
-            clients.Add(shard.ShardId, CSharpDbClient.Create(BuildShardClientOptions(shard, effectiveOptions)));
+        try
+        {
+            CSharpDbShardMap map = CSharpDbShardMap.Create(effectiveOptions);
+            foreach (CSharpDbShardDefinition shard in map.Shards.Where(shard => shard.Enabled))
+                clients.Add(shard.ShardId, CSharpDbClient.Create(BuildShardClientOptions(shard, effectiveOptions)));
 
-        return new CSharpDbShardedClient(
-            map,
-            clients,
-            routeContextAccessor,
-            catalogStore,
-            CSharpDbShardCatalogStore.CloneOptionsForRuntime(effectiveOptions));
+            return new CSharpDbShardedClient(
+                map,
+                clients,
+                routeContextAccessor,
+                catalogStore,
+                CSharpDbShardCatalogStore.CloneOptionsForRuntime(effectiveOptions));
+        }
+        catch
+        {
+            foreach (ICSharpDbClient client in clients.Values)
+                await client.DisposeAsync().ConfigureAwait(false);
+
+            if (catalogStore is not null)
+                await catalogStore.DisposeAsync().ConfigureAwait(false);
+
+            throw;
+        }
     }
+
+    private static CSharpDbShardingOptions? TryCreateMasterCatalogOptions(CSharpDbClientOptions masterDatabaseOptions)
+    {
+        ArgumentNullException.ThrowIfNull(masterDatabaseOptions);
+
+        string? dataSource = TryResolveDirectDataSource(masterDatabaseOptions);
+        if (string.IsNullOrWhiteSpace(dataSource))
+            return null;
+
+        return new CSharpDbShardingOptions
+        {
+            Catalog = new CSharpDbShardCatalogOptions
+            {
+                DataSource = dataSource,
+            },
+            DirectDatabaseOptions = masterDatabaseOptions.DirectDatabaseOptions,
+            HybridDatabaseOptions = masterDatabaseOptions.HybridDatabaseOptions,
+        };
+    }
+
+    private static string? TryResolveDirectDataSource(CSharpDbClientOptions options)
+    {
+        if (options.Transport is not null && options.Transport != CSharpDbTransport.Direct)
+            return null;
+
+        string? endpoint = NormalizeOptionalValue(options.Endpoint);
+        if (endpoint is not null)
+        {
+            if (Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri))
+                return string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase)
+                    ? uri.LocalPath
+                    : null;
+
+            if (!endpoint.Contains("://", StringComparison.Ordinal))
+                return endpoint;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.DataSource))
+            return options.DataSource.Trim();
+
+        if (string.IsNullOrWhiteSpace(options.ConnectionString))
+            return null;
+
+        var builder = new DbConnectionStringBuilder
+        {
+            ConnectionString = options.ConnectionString.Trim(),
+        };
+
+        foreach (string key in builder.Keys.Cast<string>())
+        {
+            if (!key.Equals("Data Source", StringComparison.OrdinalIgnoreCase) &&
+                !key.Equals("DataSource", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return Convert.ToString(builder[key], CultureInfo.InvariantCulture)?.Trim();
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeOptionalValue(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private async Task WarmAsync(CancellationToken ct)
     {
@@ -2829,7 +2991,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         if (_catalogStore is null)
         {
             throw new CSharpDbClientException(
-                "Shard-directory writes require CSharpDB:Sharding:Catalog:Enabled=true.");
+                "Shard-directory writes require an opened CSharpDB master catalog.");
         }
 
         if (!_catalogStore.CanWrite)
@@ -3693,17 +3855,33 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                other.StartBucketInclusive < EndBucketExclusive;
     }
 
-    private sealed class CSharpDbShardCatalogStore
+    private sealed record CSharpDbShardCatalogResolution(
+        CSharpDbShardingOptions EffectiveOptions,
+        CSharpDbShardCatalogStore? Store,
+        bool LoadedFromCatalog);
+
+    private sealed class CSharpDbShardCatalogStore : IAsyncDisposable
     {
         private static readonly JsonSerializerOptions s_jsonOptions = CreateJsonOptions();
+        private const string ActiveMapsTableName = "_shard_catalog_active_maps";
+        private const string CatalogHistoryTableName = "_shard_catalog_history";
+        private const string MigrationHistoryTableName = "_shard_migration_history";
+        private const string MigrationCheckpointsTableName = "_shard_migration_checkpoints";
 
         private readonly CSharpDbShardCatalogOptions _options;
-        private readonly string _path;
+        private readonly ICSharpDbClient? _catalogClient;
+        private readonly SemaphoreSlim _schemaInitLock = new(1, 1);
+        private bool _schemaInitialized;
+        private string _preferredKeyspace;
 
-        private CSharpDbShardCatalogStore(CSharpDbShardCatalogOptions options, string path)
+        private CSharpDbShardCatalogStore(
+            CSharpDbShardCatalogOptions options,
+            ICSharpDbClient? catalogClient,
+            string preferredKeyspace)
         {
             _options = options;
-            _path = path;
+            _catalogClient = catalogClient;
+            _preferredKeyspace = preferredKeyspace;
         }
 
         public bool CanWrite => _options.AllowWrites;
@@ -3711,90 +3889,84 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         public static CSharpDbShardingOptions CloneOptionsForRuntime(CSharpDbShardingOptions options)
             => CloneOptions(options, includeRuntimeOptions: true);
 
-        public static CSharpDbShardingOptions ResolveEffectiveOptions(CSharpDbShardingOptions configuredOptions)
+        public static async Task SeedMasterCatalogAsync(
+            CSharpDbShardingOptions catalogRuntimeOptions,
+            CSharpDbShardingOptions activeMap,
+            CancellationToken ct)
         {
-            ArgumentNullException.ThrowIfNull(configuredOptions);
-
-            if (configuredOptions.Catalog?.Enabled != true)
-                return CloneOptions(configuredOptions, includeRuntimeOptions: true);
-
-            string path = NormalizeCatalogPath(configuredOptions.Catalog);
-            if (!File.Exists(path))
-                return CloneOptions(configuredOptions, includeRuntimeOptions: true);
-
-            CSharpDbShardCatalogDocument document = ReadDocument(path);
-            CSharpDbShardingOptions effective = CloneOptions(document.ActiveMap, includeRuntimeOptions: false);
-            effective.Enabled = configuredOptions.Enabled;
-            effective.Catalog = CloneCatalogOptions(configuredOptions.Catalog);
-            effective.DirectDatabaseOptions = configuredOptions.DirectDatabaseOptions;
-            effective.HybridDatabaseOptions = configuredOptions.HybridDatabaseOptions;
-            return effective;
+            CSharpDbShardCatalogOptions catalogOptions = CloneCatalogOptions(catalogRuntimeOptions.Catalog);
+            ICSharpDbClient catalogClient = CSharpDbClient.Create(BuildCatalogClientOptions(catalogRuntimeOptions, catalogOptions));
+            await using var store = new CSharpDbShardCatalogStore(
+                catalogOptions,
+                catalogClient,
+                activeMap.Keyspace);
+            await store.SeedActiveMapAsync(activeMap, ct).ConfigureAwait(false);
         }
 
-        public static CSharpDbShardCatalogStore? Create(
+        public static async Task<CSharpDbShardCatalogResolution> ResolveAsync(
             CSharpDbShardingOptions configuredOptions,
-            CSharpDbShardingOptions effectiveOptions)
+            CancellationToken ct)
         {
             ArgumentNullException.ThrowIfNull(configuredOptions);
-            ArgumentNullException.ThrowIfNull(effectiveOptions);
 
-            if (configuredOptions.Catalog?.Enabled != true)
-                return null;
+            CSharpDbShardCatalogOptions catalogOptions = CloneCatalogOptions(configuredOptions.Catalog);
+            if (string.IsNullOrWhiteSpace(catalogOptions.DataSource))
+            {
+                CSharpDbShardingOptions effectiveOptions = CloneOptions(configuredOptions, includeRuntimeOptions: true);
+                return new CSharpDbShardCatalogResolution(
+                    effectiveOptions,
+                    Store: null,
+                    LoadedFromCatalog: false);
+            }
 
-            string path = NormalizeCatalogPath(configuredOptions.Catalog);
-            return new CSharpDbShardCatalogStore(CloneCatalogOptions(configuredOptions.Catalog), path);
+            ICSharpDbClient catalogClient = CSharpDbClient.Create(BuildCatalogClientOptions(configuredOptions, catalogOptions));
+            var csharpDbStore = new CSharpDbShardCatalogStore(
+                catalogOptions,
+                catalogClient,
+                configuredOptions.Keyspace);
+            CSharpDbShardingOptions? activeMap =
+                await csharpDbStore.ReadCSharpDbActiveMapAsync(configuredOptions.Keyspace, ct).ConfigureAwait(false);
+            CSharpDbShardingOptions effective = activeMap is null
+                ? CloneOptions(configuredOptions, includeRuntimeOptions: true)
+                : HydrateRuntimeOptions(activeMap, configuredOptions);
+            csharpDbStore._preferredKeyspace = effective.Keyspace;
+            return new CSharpDbShardCatalogResolution(
+                effective,
+                csharpDbStore,
+                LoadedFromCatalog: activeMap is not null);
         }
 
         public async Task<CSharpDbShardCatalogState> GetStateAsync(
             CSharpDbShardMapSnapshot activeMap,
             CancellationToken ct)
         {
-            CSharpDbShardCatalogDocument? document = File.Exists(_path)
-                ? await ReadDocumentAsync(_path, ct).ConfigureAwait(false)
-                : null;
+            CSharpDbShardingOptions? catalogOptions =
+                await ReadCSharpDbActiveMapAsync(activeMap.Keyspace, ct).ConfigureAwait(false);
 
             CSharpDbShardMapSnapshot? pendingMap = null;
-            if (document?.ActiveMap is not null)
+            if (catalogOptions is not null)
             {
-                CSharpDbShardMapSnapshot catalogMap = CreateShardMapSnapshot(document.ActiveMap);
+                CSharpDbShardMapSnapshot catalogMap = CreateShardMapSnapshot(catalogOptions);
                 if (catalogMap.MapVersion != activeMap.MapVersion)
                     pendingMap = catalogMap;
             }
 
             return new CSharpDbShardCatalogState
             {
-                Source = _path,
+                Source = Source,
                 IsCatalogEnabled = true,
                 IsWritable = _options.AllowWrites,
                 ActiveMap = activeMap,
                 PendingMap = pendingMap,
-                History = document?.History ?? [],
+                History = await ReadCSharpDbCatalogHistoryAsync(activeMap.Keyspace, ct).ConfigureAwait(false),
             };
         }
 
         public async Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetMigrationHistoryAsync(CancellationToken ct)
-        {
-            if (!File.Exists(_path))
-                return [];
-
-            CSharpDbShardCatalogDocument document = await ReadDocumentAsync(_path, ct).ConfigureAwait(false);
-            return document.MigrationHistory
-                .OrderByDescending(entry => entry.CompletedUtc)
-                .Select(CloneMigrationHistoryEntry)
-                .ToList();
-        }
+            => await ReadCSharpDbMigrationHistoryAsync(ct).ConfigureAwait(false);
 
         public async Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetMigrationProgressAsync(CancellationToken ct)
-        {
-            if (!File.Exists(_path))
-                return [];
-
-            CSharpDbShardCatalogDocument document = await ReadDocumentAsync(_path, ct).ConfigureAwait(false);
-            return document.MigrationCheckpoints
-                .OrderByDescending(checkpoint => checkpoint.UpdatedUtc)
-                .Select(ToMigrationProgress)
-                .ToList();
-        }
+            => await ReadCSharpDbMigrationProgressAsync(ct).ConfigureAwait(false);
 
         public async Task<CSharpDbShardMigrationProgress?> GetMigrationProgressAsync(
             string migrationId,
@@ -3810,13 +3982,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             CancellationToken ct)
         {
             string normalizedMigrationId = NormalizeMigrationId(migrationId);
-            if (!File.Exists(_path))
-                return null;
-
-            CSharpDbShardCatalogDocument document = await ReadDocumentAsync(_path, ct).ConfigureAwait(false);
-            CSharpDbShardMigrationCheckpoint? checkpoint = document.MigrationCheckpoints
-                .FirstOrDefault(item => string.Equals(item.MigrationId, normalizedMigrationId, StringComparison.Ordinal));
-            return checkpoint is null ? null : CloneMigrationCheckpoint(checkpoint);
+            return await ReadCSharpDbMigrationCheckpointAsync(normalizedMigrationId, ct).ConfigureAwait(false);
         }
 
         public async Task UpsertMigrationCheckpointAsync(
@@ -3825,40 +3991,20 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             CancellationToken ct)
         {
             if (!_options.AllowWrites)
-                throw new CSharpDbClientConfigurationException("Shard catalog writes are disabled by configuration.");
+                throw new CSharpDbClientConfigurationException("Shard catalog writes are disabled.");
 
-            CSharpDbShardCatalogDocument document = File.Exists(_path)
-                ? await ReadDocumentAsync(_path, ct).ConfigureAwait(false)
-                : new CSharpDbShardCatalogDocument
-                {
-                    ActiveMap = CloneOptions(activeOptions, includeRuntimeOptions: false),
-                };
-
-            int existingIndex = document.MigrationCheckpoints.FindIndex(item =>
-                string.Equals(item.MigrationId, checkpoint.MigrationId, StringComparison.Ordinal));
-            CSharpDbShardMigrationCheckpoint clone = CloneMigrationCheckpoint(checkpoint);
-            if (existingIndex >= 0)
-                document.MigrationCheckpoints[existingIndex] = clone;
-            else
-                document.MigrationCheckpoints.Add(clone);
-
-            await WriteDocumentAsync(document, ct).ConfigureAwait(false);
+            await UpsertCSharpDbMigrationCheckpointAsync(checkpoint, ct).ConfigureAwait(false);
         }
 
         public async Task<CSharpDbShardingOptions> GetLatestOptionsAsync(
             CSharpDbShardingOptions runtimeOptions,
             CancellationToken ct)
         {
-            if (!File.Exists(_path))
-                return CloneOptions(runtimeOptions, includeRuntimeOptions: true);
-
-            CSharpDbShardCatalogDocument document = await ReadDocumentAsync(_path, ct).ConfigureAwait(false);
-            CSharpDbShardingOptions latest = CloneOptions(document.ActiveMap, includeRuntimeOptions: false);
-            latest.Enabled = runtimeOptions.Enabled;
-            latest.Catalog = CloneCatalogOptions(runtimeOptions.Catalog);
-            latest.DirectDatabaseOptions = runtimeOptions.DirectDatabaseOptions;
-            latest.HybridDatabaseOptions = runtimeOptions.HybridDatabaseOptions;
-            return latest;
+            CSharpDbShardingOptions? activeMap =
+                await ReadCSharpDbActiveMapAsync(runtimeOptions.Keyspace, ct).ConfigureAwait(false);
+            return activeMap is null
+                ? CloneOptions(runtimeOptions, includeRuntimeOptions: true)
+                : HydrateRuntimeOptions(activeMap, runtimeOptions);
         }
 
         public async Task AppendMigrationHistoryAsync(
@@ -3867,17 +4013,21 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             CancellationToken ct)
         {
             if (!_options.AllowWrites)
-                throw new CSharpDbClientConfigurationException("Shard catalog writes are disabled by configuration.");
+                throw new CSharpDbClientConfigurationException("Shard catalog writes are disabled.");
 
-            CSharpDbShardCatalogDocument document = File.Exists(_path)
-                ? await ReadDocumentAsync(_path, ct).ConfigureAwait(false)
-                : new CSharpDbShardCatalogDocument
-                {
-                    ActiveMap = CloneOptions(activeOptions, includeRuntimeOptions: false),
-                };
+            await AppendCSharpDbMigrationHistoryAsync(entry, ct).ConfigureAwait(false);
+        }
 
-            document.MigrationHistory.Add(CloneMigrationHistoryEntry(entry));
-            await WriteDocumentAsync(document, ct).ConfigureAwait(false);
+        private async Task SeedActiveMapAsync(
+            CSharpDbShardingOptions activeMap,
+            CancellationToken ct)
+        {
+            if (!_options.AllowWrites)
+                throw new CSharpDbClientConfigurationException("Shard catalog writes are disabled.");
+
+            await UpsertCSharpDbActiveMapAsync(
+                CloneOptions(activeMap, includeRuntimeOptions: false),
+                ct).ConfigureAwait(false);
         }
 
         public async Task<CSharpDbShardCatalogApplyResult> ApplyAsync(
@@ -3892,7 +4042,7 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 {
                     Severity = CSharpDbShardCatalogIssueSeverity.Error,
                     Code = "catalog-read-only",
-                    Message = "Shard catalog writes are disabled by configuration.",
+                    Message = "Shard catalog writes are disabled.",
                 });
                 validation = CreateValidationResult(validation.Issues, validation.Preview, validation.RequiresDataMigration);
             }
@@ -3909,21 +4059,18 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
                 };
             }
 
-            CSharpDbShardCatalogDocument document = File.Exists(_path)
-                ? await ReadDocumentAsync(_path, ct).ConfigureAwait(false)
-                : new CSharpDbShardCatalogDocument();
-
-            document.ActiveMap = CloneOptions(request.Options, includeRuntimeOptions: false);
-            document.History.Add(new CSharpDbShardCatalogHistoryEntry
+            CSharpDbShardingOptions activeMap = CloneOptions(request.Options, includeRuntimeOptions: false);
+            var historyEntry = new CSharpDbShardCatalogHistoryEntry
             {
                 AppliedUtc = DateTimeOffset.UtcNow,
                 MapVersion = validation.Preview.MapVersion,
                 Operator = request.Operator,
                 Comment = request.Comment,
                 MetadataOnlyOwnershipChange = validation.RequiresDataMigration && request.AllowMetadataOnlyOwnershipChange,
-            });
+            };
 
-            await WriteDocumentAsync(document, ct).ConfigureAwait(false);
+            await UpsertCSharpDbActiveMapAsync(activeMap, ct).ConfigureAwait(false);
+            await AppendCSharpDbCatalogHistoryAsync(activeMap.Keyspace, historyEntry, ct).ConfigureAwait(false);
 
             return new CSharpDbShardCatalogApplyResult
             {
@@ -3965,44 +4112,427 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             };
         }
 
-        private static string NormalizeCatalogPath(CSharpDbShardCatalogOptions options)
-        {
-            if (string.IsNullOrWhiteSpace(options.Path))
-                throw new CSharpDbClientConfigurationException("CSharpDB shard catalog mode requires Catalog:Path.");
+        private string Source
+            => $"csharpdb:{NormalizeCatalogDataSource(_options)}";
 
-            return Path.GetFullPath(options.Path.Trim());
+        private async Task<CSharpDbShardingOptions?> ReadCSharpDbActiveMapAsync(
+            string preferredKeyspace,
+            CancellationToken ct,
+            bool initializeIfWritable = false)
+        {
+            if (initializeIfWritable && _options.AllowWrites)
+                await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+            else if (!await CSharpDbCatalogTableExistsAsync(ActiveMapsTableName, ct).ConfigureAwait(false))
+                return null;
+
+            SqlExecutionResult result = await ExecuteCSharpDbQueryAsync(
+                $"SELECT keyspace, options_json FROM {ActiveMapsTableName} ORDER BY map_version DESC;",
+                ct).ConfigureAwait(false);
+
+            var maps = new List<(string Keyspace, string Json)>();
+            foreach (object?[] row in result.Rows ?? [])
+            {
+                if (row.Length < 2 || row[0] is null || row[1] is null)
+                    continue;
+
+                maps.Add((Convert.ToString(row[0], CultureInfo.InvariantCulture)!, Convert.ToString(row[1], CultureInfo.InvariantCulture)!));
+            }
+
+            if (maps.Count == 0)
+                return null;
+
+            string normalizedPreferred = NormalizePreferredKeyspace(preferredKeyspace);
+            (string Keyspace, string Json)? selected = maps
+                .FirstOrDefault(item => string.Equals(item.Keyspace, normalizedPreferred, StringComparison.OrdinalIgnoreCase));
+
+            if (selected is not { Json: not null } && maps.Count == 1)
+                selected = maps[0];
+
+            if (selected is not { Json: not null })
+            {
+                throw new CSharpDbClientConfigurationException(
+                    "CSharpDB master catalog contains multiple active shard maps. Keep one active map in the opened master DB.");
+            }
+
+            return DeserializeCatalogJson<CSharpDbShardingOptions>(selected.Value.Json);
         }
 
-        private static CSharpDbShardCatalogDocument ReadDocument(string path)
+        private async Task<bool> CSharpDbCatalogTableExistsAsync(string tableName, CancellationToken ct)
         {
-            using FileStream stream = File.OpenRead(path);
-            return JsonSerializer.Deserialize<CSharpDbShardCatalogDocument>(stream, s_jsonOptions)
-                   ?? throw new CSharpDbClientConfigurationException($"Shard catalog file '{path}' is empty.");
+            ICSharpDbClient client = _catalogClient
+                ?? throw new CSharpDbClientConfigurationException("CSharpDB shard catalog provider requires a catalog client.");
+            IReadOnlyList<string> tableNames = await client.GetTableNamesAsync(ct).ConfigureAwait(false);
+            return tableNames.Any(name => string.Equals(name, tableName, StringComparison.OrdinalIgnoreCase));
         }
 
-        private static async Task<CSharpDbShardCatalogDocument> ReadDocumentAsync(string path, CancellationToken ct)
+        private async Task<List<CSharpDbShardCatalogHistoryEntry>> ReadCSharpDbCatalogHistoryAsync(
+            string preferredKeyspace,
+            CancellationToken ct)
         {
-            await using FileStream stream = File.OpenRead(path);
-            return await JsonSerializer.DeserializeAsync<CSharpDbShardCatalogDocument>(stream, s_jsonOptions, ct).ConfigureAwait(false)
-                   ?? throw new CSharpDbClientConfigurationException($"Shard catalog file '{path}' is empty.");
+            if (_options.AllowWrites)
+                await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+
+            SqlExecutionResult result = await ExecuteCSharpDbQueryAsync(
+                $"""
+                SELECT payload_json FROM {CatalogHistoryTableName}
+                WHERE keyspace = {SqlLiteral(NormalizePreferredKeyspace(preferredKeyspace))}
+                ORDER BY applied_utc DESC;
+                """,
+                ct).ConfigureAwait(false);
+
+            return (result.Rows ?? [])
+                .Where(row => row.Length > 0 && row[0] is not null)
+                .Select(row => DeserializeCatalogJson<CSharpDbShardCatalogHistoryEntry>(
+                    Convert.ToString(row[0], CultureInfo.InvariantCulture)!))
+                .ToList();
         }
 
-        private async Task WriteDocumentAsync(CSharpDbShardCatalogDocument document, CancellationToken ct)
+        private async Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> ReadCSharpDbMigrationHistoryAsync(
+            CancellationToken ct)
         {
-            string? directory = Path.GetDirectoryName(_path);
+            if (_options.AllowWrites)
+                await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+
+            SqlExecutionResult result = await ExecuteCSharpDbQueryAsync(
+                $"""
+                SELECT payload_json FROM {MigrationHistoryTableName}
+                WHERE keyspace = {SqlLiteral(NormalizePreferredKeyspace(_preferredKeyspace))}
+                ORDER BY completed_utc DESC;
+                """,
+                ct).ConfigureAwait(false);
+
+            return (result.Rows ?? [])
+                .Where(row => row.Length > 0 && row[0] is not null)
+                .Select(row => CloneMigrationHistoryEntry(DeserializeCatalogJson<CSharpDbShardMigrationHistoryEntry>(
+                    Convert.ToString(row[0], CultureInfo.InvariantCulture)!)))
+                .ToList();
+        }
+
+        private async Task<IReadOnlyList<CSharpDbShardMigrationProgress>> ReadCSharpDbMigrationProgressAsync(
+            CancellationToken ct)
+        {
+            if (_options.AllowWrites)
+                await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+
+            SqlExecutionResult result = await ExecuteCSharpDbQueryAsync(
+                $"""
+                SELECT payload_json FROM {MigrationCheckpointsTableName}
+                WHERE keyspace = {SqlLiteral(NormalizePreferredKeyspace(_preferredKeyspace))}
+                ORDER BY updated_utc DESC;
+                """,
+                ct).ConfigureAwait(false);
+
+            return (result.Rows ?? [])
+                .Where(row => row.Length > 0 && row[0] is not null)
+                .Select(row => ToMigrationProgress(DeserializeCatalogJson<CSharpDbShardMigrationCheckpoint>(
+                    Convert.ToString(row[0], CultureInfo.InvariantCulture)!)))
+                .ToList();
+        }
+
+        private async Task<CSharpDbShardMigrationCheckpoint?> ReadCSharpDbMigrationCheckpointAsync(
+            string migrationId,
+            CancellationToken ct)
+        {
+            if (_options.AllowWrites)
+                await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+
+            SqlExecutionResult result = await ExecuteCSharpDbQueryAsync(
+                $"""
+                SELECT payload_json FROM {MigrationCheckpointsTableName}
+                WHERE migration_id = {SqlLiteral(migrationId)};
+                """,
+                ct).ConfigureAwait(false);
+
+            object?[]? row = result.Rows?.FirstOrDefault();
+            return row is { Length: > 0 } && row[0] is not null
+                ? CloneMigrationCheckpoint(DeserializeCatalogJson<CSharpDbShardMigrationCheckpoint>(
+                    Convert.ToString(row[0], CultureInfo.InvariantCulture)!))
+                : null;
+        }
+
+        private async Task UpsertCSharpDbActiveMapAsync(
+            CSharpDbShardingOptions activeMap,
+            CancellationToken ct)
+        {
+            await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+
+            string keyspace = NormalizePreferredKeyspace(activeMap.Keyspace);
+            string mapJson = SerializeCatalogJson(activeMap);
+            int existing = await ReadCSharpDbCountAsync(
+                $"SELECT COUNT(*) FROM {ActiveMapsTableName} WHERE keyspace = {SqlLiteral(keyspace)};",
+                ct).ConfigureAwait(false);
+
+            if (existing > 0)
+            {
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    UPDATE {ActiveMapsTableName}
+                    SET map_version = {activeMap.MapVersion},
+                        options_json = {SqlLiteral(mapJson)},
+                        updated_utc = {SqlLiteral(DateTimeOffset.UtcNow)}
+                    WHERE keyspace = {SqlLiteral(keyspace)};
+                    """,
+                    ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    INSERT INTO {ActiveMapsTableName} (keyspace, map_version, options_json, updated_utc)
+                    VALUES ({SqlLiteral(keyspace)}, {activeMap.MapVersion}, {SqlLiteral(mapJson)}, {SqlLiteral(DateTimeOffset.UtcNow)});
+                    """,
+                    ct).ConfigureAwait(false);
+            }
+
+            _preferredKeyspace = keyspace;
+            await CheckpointCSharpDbCatalogAsync(ct).ConfigureAwait(false);
+        }
+
+        private async Task AppendCSharpDbCatalogHistoryAsync(
+            string keyspace,
+            CSharpDbShardCatalogHistoryEntry entry,
+            CancellationToken ct)
+        {
+            await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+            await ExecuteCSharpDbNonQueryAsync(
+                $"""
+                INSERT INTO {CatalogHistoryTableName} (entry_id, applied_utc, keyspace, map_version, payload_json)
+                VALUES (
+                    {SqlLiteral(Guid.NewGuid().ToString("N"))},
+                    {SqlLiteral(entry.AppliedUtc)},
+                    {SqlLiteral(NormalizePreferredKeyspace(keyspace))},
+                    {entry.MapVersion},
+                    {SqlLiteral(SerializeCatalogJson(entry))}
+                );
+                """,
+                ct).ConfigureAwait(false);
+            await CheckpointCSharpDbCatalogAsync(ct).ConfigureAwait(false);
+        }
+
+        private async Task AppendCSharpDbMigrationHistoryAsync(
+            CSharpDbShardMigrationHistoryEntry entry,
+            CancellationToken ct)
+        {
+            await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+            await ExecuteCSharpDbNonQueryAsync(
+                $"""
+                INSERT INTO {MigrationHistoryTableName} (entry_id, completed_utc, keyspace, migration_id, payload_json)
+                VALUES (
+                    {SqlLiteral(Guid.NewGuid().ToString("N"))},
+                    {SqlLiteral(entry.CompletedUtc)},
+                    {SqlLiteral(NormalizePreferredKeyspace(entry.Keyspace))},
+                    {SqlLiteral(entry.MigrationId)},
+                    {SqlLiteral(SerializeCatalogJson(CloneMigrationHistoryEntry(entry)))}
+                );
+                """,
+                ct).ConfigureAwait(false);
+            await CheckpointCSharpDbCatalogAsync(ct).ConfigureAwait(false);
+        }
+
+        private async Task UpsertCSharpDbMigrationCheckpointAsync(
+            CSharpDbShardMigrationCheckpoint checkpoint,
+            CancellationToken ct)
+        {
+            await EnsureCSharpDbCatalogInitializedAsync(ct).ConfigureAwait(false);
+            CSharpDbShardMigrationCheckpoint clone = CloneMigrationCheckpoint(checkpoint);
+            int existing = await ReadCSharpDbCountAsync(
+                $"SELECT COUNT(*) FROM {MigrationCheckpointsTableName} WHERE migration_id = {SqlLiteral(clone.MigrationId)};",
+                ct).ConfigureAwait(false);
+
+            if (existing > 0)
+            {
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    UPDATE {MigrationCheckpointsTableName}
+                    SET updated_utc = {SqlLiteral(clone.UpdatedUtc)},
+                        keyspace = {SqlLiteral(NormalizePreferredKeyspace(clone.Plan.Keyspace))},
+                        status = {SqlLiteral(clone.Status)},
+                        payload_json = {SqlLiteral(SerializeCatalogJson(clone))}
+                    WHERE migration_id = {SqlLiteral(clone.MigrationId)};
+                    """,
+                    ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    INSERT INTO {MigrationCheckpointsTableName} (migration_id, updated_utc, keyspace, status, payload_json)
+                    VALUES (
+                        {SqlLiteral(clone.MigrationId)},
+                        {SqlLiteral(clone.UpdatedUtc)},
+                        {SqlLiteral(NormalizePreferredKeyspace(clone.Plan.Keyspace))},
+                        {SqlLiteral(clone.Status)},
+                        {SqlLiteral(SerializeCatalogJson(clone))}
+                    );
+                    """,
+                    ct).ConfigureAwait(false);
+            }
+
+            await CheckpointCSharpDbCatalogAsync(ct).ConfigureAwait(false);
+        }
+
+        private async Task EnsureCSharpDbCatalogInitializedAsync(CancellationToken ct)
+        {
+            if (_schemaInitialized)
+                return;
+
+            await _schemaInitLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (_schemaInitialized)
+                    return;
+
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    CREATE TABLE IF NOT EXISTS {ActiveMapsTableName} (
+                        keyspace TEXT PRIMARY KEY,
+                        map_version INTEGER NOT NULL,
+                        options_json TEXT NOT NULL,
+                        updated_utc TEXT NOT NULL
+                    );
+                    """,
+                    ct).ConfigureAwait(false);
+
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    CREATE TABLE IF NOT EXISTS {CatalogHistoryTableName} (
+                        entry_id TEXT PRIMARY KEY,
+                        applied_utc TEXT NOT NULL,
+                        keyspace TEXT NOT NULL,
+                        map_version INTEGER NOT NULL,
+                        payload_json TEXT NOT NULL
+                    );
+                    """,
+                    ct).ConfigureAwait(false);
+
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    CREATE TABLE IF NOT EXISTS {MigrationHistoryTableName} (
+                        entry_id TEXT PRIMARY KEY,
+                        completed_utc TEXT NOT NULL,
+                        keyspace TEXT NOT NULL,
+                        migration_id TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    );
+                    """,
+                    ct).ConfigureAwait(false);
+
+                await ExecuteCSharpDbNonQueryAsync(
+                    $"""
+                    CREATE TABLE IF NOT EXISTS {MigrationCheckpointsTableName} (
+                        migration_id TEXT PRIMARY KEY,
+                        updated_utc TEXT NOT NULL,
+                        keyspace TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        payload_json TEXT NOT NULL
+                    );
+                    """,
+                    ct).ConfigureAwait(false);
+
+                _schemaInitialized = true;
+                await CheckpointCSharpDbCatalogAsync(ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                _schemaInitLock.Release();
+            }
+        }
+
+        private async Task<int> ReadCSharpDbCountAsync(string sql, CancellationToken ct)
+        {
+            SqlExecutionResult result = await ExecuteCSharpDbQueryAsync(sql, ct).ConfigureAwait(false);
+            object? value = result.Rows?.FirstOrDefault()?.FirstOrDefault();
+            return value is null ? 0 : Convert.ToInt32(value, CultureInfo.InvariantCulture);
+        }
+
+        private async Task<SqlExecutionResult> ExecuteCSharpDbQueryAsync(string sql, CancellationToken ct)
+        {
+            ICSharpDbClient client = _catalogClient
+                ?? throw new CSharpDbClientConfigurationException("CSharpDB shard catalog provider requires a catalog client.");
+            SqlExecutionResult result = await client.ExecuteSqlAsync(sql, ct).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(result.Error))
+                throw new CSharpDbClientException(result.Error);
+            return result;
+        }
+
+        private async Task ExecuteCSharpDbNonQueryAsync(string sql, CancellationToken ct)
+        {
+            _ = await ExecuteCSharpDbQueryAsync(sql, ct).ConfigureAwait(false);
+        }
+
+        private async Task CheckpointCSharpDbCatalogAsync(CancellationToken ct)
+        {
+            ICSharpDbClient client = _catalogClient
+                ?? throw new CSharpDbClientConfigurationException("CSharpDB shard catalog provider requires a catalog client.");
+            await client.CheckpointAsync(ct).ConfigureAwait(false);
+        }
+
+        private static CSharpDbClientOptions BuildCatalogClientOptions(
+            CSharpDbShardingOptions configuredOptions,
+            CSharpDbShardCatalogOptions catalogOptions)
+            => new()
+            {
+                Transport = CSharpDbTransport.Direct,
+                DataSource = PrepareCatalogDataSource(catalogOptions),
+                DirectDatabaseOptions = configuredOptions.DirectDatabaseOptions,
+                HybridDatabaseOptions = configuredOptions.HybridDatabaseOptions,
+            };
+
+        private static string PrepareCatalogDataSource(CSharpDbShardCatalogOptions options)
+        {
+            string dataSource = NormalizeCatalogDataSource(options);
+            string? directory = Path.GetDirectoryName(dataSource);
             if (!string.IsNullOrWhiteSpace(directory))
                 Directory.CreateDirectory(directory);
 
-            await using FileStream stream = File.Create(_path);
-            await JsonSerializer.SerializeAsync(stream, document, s_jsonOptions, ct).ConfigureAwait(false);
+            return dataSource;
         }
+
+        private static string NormalizeCatalogDataSource(CSharpDbShardCatalogOptions options)
+        {
+            if (string.IsNullOrWhiteSpace(options.DataSource))
+                throw new CSharpDbClientConfigurationException("CSharpDB shard catalog provider requires a master catalog DataSource.");
+
+            return options.DataSource.Trim();
+        }
+
+        private static string NormalizePreferredKeyspace(string? keyspace)
+            => string.IsNullOrWhiteSpace(keyspace) ? "default" : keyspace.Trim();
+
+        private static CSharpDbShardingOptions HydrateRuntimeOptions(
+            CSharpDbShardingOptions activeMap,
+            CSharpDbShardingOptions runtimeOptions)
+        {
+            CSharpDbShardingOptions hydrated = CloneOptions(activeMap, includeRuntimeOptions: false);
+            hydrated.Catalog = CloneCatalogOptions(runtimeOptions.Catalog);
+            hydrated.DirectDatabaseOptions = runtimeOptions.DirectDatabaseOptions;
+            hydrated.HybridDatabaseOptions = runtimeOptions.HybridDatabaseOptions;
+            return hydrated;
+        }
+
+        private static string SerializeCatalogJson<T>(T value)
+            => JsonSerializer.Serialize(value, s_jsonOptions);
+
+        private static T DeserializeCatalogJson<T>(string json)
+            => JsonSerializer.Deserialize<T>(json, s_jsonOptions)
+               ?? throw new CSharpDbClientConfigurationException("Shard catalog JSON payload is empty.");
+
+        private static string SqlLiteral(string? value)
+        {
+            if (value is null)
+                return "NULL";
+
+            return $"'{value.Replace("'", "''")}'";
+        }
+
+        private static string SqlLiteral(DateTimeOffset value)
+            => SqlLiteral(value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture));
 
         private static CSharpDbShardingOptions CloneOptions(
             CSharpDbShardingOptions options,
             bool includeRuntimeOptions)
             => new()
             {
-                Enabled = options.Enabled,
                 Keyspace = options.Keyspace,
                 MapVersion = options.MapVersion,
                 VirtualBucketCount = options.VirtualBucketCount,
@@ -4094,10 +4624,16 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
         private static CSharpDbShardCatalogOptions CloneCatalogOptions(CSharpDbShardCatalogOptions? options)
             => new()
             {
-                Enabled = options?.Enabled ?? false,
-                Path = options?.Path,
+                DataSource = options?.DataSource,
                 AllowWrites = options?.AllowWrites ?? true,
             };
+
+        public async ValueTask DisposeAsync()
+        {
+            _schemaInitLock.Dispose();
+            if (_catalogClient is not null)
+                await _catalogClient.DisposeAsync().ConfigureAwait(false);
+        }
 
         private static JsonSerializerOptions CreateJsonOptions()
         {
@@ -4111,19 +4647,6 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             return options;
         }
 
-        private sealed class CSharpDbShardCatalogDocument
-        {
-            public int FormatVersion { get; set; } = 1;
-            public CSharpDbShardingOptions ActiveMap { get; set; } = new()
-            {
-                Enabled = true,
-                Keyspace = "default",
-                Shards = [],
-            };
-            public List<CSharpDbShardCatalogHistoryEntry> History { get; set; } = [];
-            public List<CSharpDbShardMigrationHistoryEntry> MigrationHistory { get; set; } = [];
-            public List<CSharpDbShardMigrationCheckpoint> MigrationCheckpoints { get; set; } = [];
-        }
     }
 
     private sealed class CSharpDbShardMap

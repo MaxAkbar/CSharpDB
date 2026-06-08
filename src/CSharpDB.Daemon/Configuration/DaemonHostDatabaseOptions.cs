@@ -63,38 +63,6 @@ internal static class DaemonClientOptionsBuilder
         };
     }
 
-    public static CSharpDbShardingOptions BindShardingOptions(
-        IConfiguration configuration,
-        DaemonHostDatabaseOptions hostDatabaseOptions)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(hostDatabaseOptions);
-
-        var bound = configuration.GetSection("CSharpDB:Sharding").Get<CSharpDbShardingOptions>()
-            ?? new CSharpDbShardingOptions();
-
-        if (!bound.Enabled)
-            return new CSharpDbShardingOptions { Enabled = false };
-
-        return new CSharpDbShardingOptions
-        {
-            Enabled = true,
-            Keyspace = bound.Keyspace,
-            MapVersion = bound.MapVersion,
-            VirtualBucketCount = bound.VirtualBucketCount,
-            Shards = bound.Shards ?? [],
-            BucketRanges = bound.BucketRanges ?? [],
-            ExactKeyPins = bound.ExactKeyPins ?? new Dictionary<string, string>(StringComparer.Ordinal),
-            Directories = bound.Directories ?? [],
-            DirectoryEntries = bound.DirectoryEntries ?? [],
-            Catalog = bound.Catalog ?? new CSharpDbShardCatalogOptions(),
-            DirectDatabaseOptions = BuildDirectDatabaseOptions(hostDatabaseOptions),
-            HybridDatabaseOptions = hostDatabaseOptions.OpenMode == DaemonHostOpenMode.HybridIncrementalDurable
-                ? BuildHybridDatabaseOptions(hostDatabaseOptions)
-                : null,
-        };
-    }
-
     private static DatabaseOptions BuildDirectDatabaseOptions(DaemonHostDatabaseOptions hostDatabaseOptions)
     {
         var options = new DatabaseOptions

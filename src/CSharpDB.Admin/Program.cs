@@ -19,16 +19,10 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton(AdminHostCallbacks.CreateFunctionRegistry());
 builder.Services.AddSingleton(AdminHostCallbacks.CreateCommandRegistry());
 builder.Services.AddSingleton(AdminHostCallbacks.CreatePolicy());
-builder.Services.AddSingleton(sp =>
-    AdminClientOptionsBuilder.BindShardingOptions(
-        sp.GetRequiredService<IConfiguration>(),
-        sp.GetRequiredService<AdminHostDatabaseOptions>(),
-        sp.GetRequiredService<DbFunctionRegistry>()));
 builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     var hostDatabaseOptions = sp.GetRequiredService<AdminHostDatabaseOptions>();
-    var shardingOptions = sp.GetRequiredService<CSharpDbShardingOptions>();
     var functions = sp.GetRequiredService<DbFunctionRegistry>();
     string? endpoint = configuration["CSharpDB:Endpoint"];
     CSharpDbTransport? transport = ParseTransport(configuration["CSharpDB:Transport"]);
@@ -40,11 +34,8 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
         endpoint,
         functions);
 
-    if (shardingOptions.Enabled)
-    {
-        CSharpDbShardedClient shardedClient = CSharpDbShardedClient.Create(shardingOptions);
+    if (CSharpDbShardedClient.TryCreateFromMasterCatalog(options) is { } shardedClient)
         return new DatabaseClientHolder(shardedClient, shardedClient, null, hostDatabaseOptions, functions);
-    }
 
     ICSharpDbClient client = CSharpDbClient.Create(options);
     ICSharpDbShardAdminClient? shardAdmin = TryCreateShardAdmin(options);

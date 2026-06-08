@@ -128,9 +128,13 @@ V1 uses an explicit route context instead of SQL inference. For an e-commerce
 order-history workload, the route key could be the order month (`yyyy-MM`):
 
 ```csharp
-await using var sharded = await CSharpDbShardedClient.CreateAsync(new CSharpDbShardingOptions
+CSharpDbClientOptions masterOptions = new()
 {
-    Enabled = true,
+    ConnectionString = "Data Source=master.db",
+};
+
+await CSharpDbShardedClient.SeedMasterCatalogAsync(masterOptions, new CSharpDbShardingOptions
+{
     Keyspace = "orders_by_month",
     MapVersion = 1,
     VirtualBucketCount = 4096,
@@ -146,6 +150,10 @@ await using var sharded = await CSharpDbShardedClient.CreateAsync(new CSharpDbSh
     ],
 });
 
+await using CSharpDbShardedClient sharded =
+    await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(masterOptions)
+    ?? throw new InvalidOperationException("master.db is not sharded.");
+
 ICSharpDbClient juneOrders = sharded.ForRoute(new CSharpDbRouteContext
 {
     Keyspace = "orders_by_month",
@@ -160,6 +168,19 @@ await juneOrders.ExecuteSqlAsync("""
     LIMIT 25 OFFSET 0;
     """);
 ```
+
+### New Sharded Setup Versus Existing Databases
+
+`SeedMasterCatalogAsync(...)` creates sharding metadata. It does not split an
+existing monolithic database. Use it when you are creating a new sharded setup
+or when an external migration has already copied data into the shard DBs.
+
+For a large existing unsharded DB, the data must be split first: choose a route
+key, create shard DBs, copy schema, backfill rows/documents into the correct
+shards, verify counts and checksums, fence writes for cutover, copy the final
+delta, and only then seed the master catalog. See
+[`docs/sharding-existing-database-migration.md`](../../docs/sharding-existing-database-migration.md)
+for the internal migration checklist.
 
 Shard definitions can include Phase 6 replica metadata:
 
@@ -242,12 +263,27 @@ which shard produced each row set or error. Use
 `ExecuteSqlOnAllShardsAsync(...)` only for explicit operator actions such as
 schema setup.
 
-Phase 3 starts operator-managed catalog support. When
-`CSharpDbShardingOptions.Catalog.Enabled` is true, the sharded client can load a
-map from a catalog JSON file at startup. Catalog updates are validated and
-persisted as pending map changes; they do not mutate the live router in-process.
+Operator-managed catalog support stores the active shard map in a CSharpDB
+master catalog database. Hosts open only the normal master database and call
+`TryCreateFromMasterCatalogAsync(...)`; when the opened DB contains an active
+shard map, the sharded client loads that map from the master catalog.
+Catalog updates are validated and persisted as pending map changes; they do not
+mutate the live router in-process.
 
 ```csharp
+CSharpDbClientOptions masterOptions = new()
+{
+    ConnectionString = "Data Source=master.db",
+};
+
+CSharpDbShardedClient? shardAdmin =
+    await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(masterOptions);
+if (shardAdmin is null)
+{
+    // master.db is currently unsharded.
+    return;
+}
+
 CSharpDbShardCatalogState catalog = await shardAdmin.GetShardCatalogAsync();
 
 CSharpDbShardCatalogValidationResult validation =
@@ -269,7 +305,7 @@ CSharpDbShardCatalogApplyResult applied =
 ```
 
 `ApplyShardCatalogUpdateAsync(...)` returns `RequiresRestart = true` when it
-writes the catalog file. Recreate the sharded client or restart the daemon to
+writes the master catalog. Recreate the sharded client or restart the daemon to
 activate the new map. Bucket ownership or exact-key pin changes are rejected
 unless the operator explicitly acknowledges the metadata-only change.
 

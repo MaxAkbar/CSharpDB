@@ -17,11 +17,24 @@ internal static class ApiLevelShardingSampleProgram
     {
         string sampleDirectory = AppContext.BaseDirectory;
         string dataDirectory = Path.Combine(sampleDirectory, "shards");
+        string masterDbPath = Path.Combine(dataDirectory, "master.db");
 
         PrepareDirectory(dataDirectory);
 
-        var options = CreateShardingOptions(dataDirectory);
-        await using var sharded = await CSharpDbShardedClient.CreateAsync(options);
+        var activeMap = CreateShardingOptions(dataDirectory);
+        await CSharpDbShardedClient.SeedMasterCatalogAsync(
+            new CSharpDbClientOptions
+            {
+                DataSource = masterDbPath,
+            },
+            activeMap);
+
+        await using CSharpDbShardedClient sharded =
+            await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(new CSharpDbClientOptions
+            {
+                DataSource = masterDbPath,
+            })
+            ?? throw new InvalidOperationException("The sample master database did not contain an active shard map.");
         ICSharpDbShardAdminClient shardAdmin = sharded;
 
         await CreateSchemaOnEveryShardAsync(shardAdmin);
@@ -34,6 +47,7 @@ internal static class ApiLevelShardingSampleProgram
         Console.WriteLine($"Route key shape: yyyy-MM order month");
         Console.WriteLine($"Customer:        {CustomerId}");
         Console.WriteLine($"Virtual buckets: {VirtualBucketCount}");
+        Console.WriteLine($"Master DB:       {masterDbPath}");
         Console.WriteLine($"Shard files:     {dataDirectory}");
         Console.WriteLine();
 
@@ -43,7 +57,7 @@ internal static class ApiLevelShardingSampleProgram
         await PrintOlderMonthPageAsync(sharded, "2026-05");
         await PrintFilledHistoryPageAsync(sharded, ["2026-06", "2026-05", "2026-04", "2025-12"]);
         await PrintManualHistorySummaryAsync(sharded, ["2026-06", "2026-05", "2026-04", "2025-12"]);
-        await PrintShardCountsAsync(sharded, options.Shards);
+        await PrintShardCountsAsync(sharded, activeMap.Shards);
         await PrintMissingRouteFailureAsync(sharded);
 
         Console.WriteLine();
@@ -57,7 +71,6 @@ internal static class ApiLevelShardingSampleProgram
     private static CSharpDbShardingOptions CreateShardingOptions(string dataDirectory)
         => new()
         {
-            Enabled = true,
             Keyspace = Keyspace,
             MapVersion = 1,
             VirtualBucketCount = VirtualBucketCount,

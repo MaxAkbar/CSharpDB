@@ -28,38 +28,39 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    public static IServiceCollection AddCSharpDbShardedClient(
+    public static IServiceCollection AddCSharpDbClientFromMasterCatalog(
         this IServiceCollection services,
-        CSharpDbShardingOptions options)
+        CSharpDbClientOptions options)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
 
         services.TryAddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
         services.AddSingleton(options);
-        services.AddSingleton(sp => CSharpDbShardedClient.Create(
-            options,
-            sp.GetService<ICSharpDbRouteContextAccessor>()));
-        services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
-        services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
-        services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
+        services.AddSingleton<ICSharpDbClient>(sp =>
+            CSharpDbShardedClient.TryCreateFromMasterCatalog(
+                options,
+                sp.GetService<ICSharpDbRouteContextAccessor>())
+            ?? CSharpDbClient.Create(options));
         return services;
     }
 
-    public static IServiceCollection AddCSharpDbShardedClient(
+    public static IServiceCollection AddCSharpDbClientFromMasterCatalog(
         this IServiceCollection services,
-        Func<IServiceProvider, CSharpDbShardingOptions> optionsFactory)
+        Func<IServiceProvider, CSharpDbClientOptions> optionsFactory)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(optionsFactory);
 
         services.TryAddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
-        services.AddSingleton(sp => CSharpDbShardedClient.Create(
-            optionsFactory(sp),
-            sp.GetService<ICSharpDbRouteContextAccessor>()));
-        services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
-        services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
-        services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<CSharpDbShardedClient>());
+        services.AddSingleton<ICSharpDbClient>(sp =>
+        {
+            CSharpDbClientOptions options = optionsFactory(sp);
+            return CSharpDbShardedClient.TryCreateFromMasterCatalog(
+                       options,
+                       sp.GetService<ICSharpDbRouteContextAccessor>())
+                   ?? CSharpDbClient.Create(options);
+        });
         return services;
     }
 
