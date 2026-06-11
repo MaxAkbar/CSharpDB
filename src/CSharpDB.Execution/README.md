@@ -101,6 +101,7 @@ dotnet add package CSharpDB
 ## Dependencies
 
 - `CSharpDB.Primitives` - shared type system
+- `CSharpDB.ImportExport` - native table archive reader support for external tables
 - `CSharpDB.Sql` - SQL parser and AST
 - `CSharpDB.Storage` - B+tree storage engine
 
@@ -109,6 +110,7 @@ dotnet add package CSharpDB
 | Package | Description |
 |---------|-------------|
 | [CSharpDB.Engine](https://www.nuget.org/packages/CSharpDB.Engine) | Embedded database engine that wraps this execution layer |
+| [CSharpDB.ImportExport](https://www.nuget.org/packages/CSharpDB.ImportExport) | Native table archive import/export support used by external table operators |
 | [CSharpDB.Sql](https://www.nuget.org/packages/CSharpDB.Sql) | SQL parser producing the AST this package consumes |
 | [CSharpDB.Storage](https://www.nuget.org/packages/CSharpDB.Storage) | Storage layer for physical I/O |
 
