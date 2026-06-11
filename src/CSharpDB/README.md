@@ -329,10 +329,12 @@ The `CSharpDB` meta-package pulls in the full library set:
 | `CSharpDB.Primitives` | Core types — `DbType`, `DbValue`, `TableSchema`, `IndexSchema` |
 | `CSharpDB.Sql` | SQL lexer, parser, and AST |
 | `CSharpDB.Storage` | B+tree, pager, WAL, checkpointing, serialization |
+| `CSharpDB.ImportExport` | Native table archive import/export support |
 | `CSharpDB.Execution` | Query planner, operator pipeline |
 | `CSharpDB.Pipelines` | ETL pipeline contracts and runtime foundation |
 | `CSharpDB.Engine` | Top-level `Database` API — SQL, Collections, FTS, Pipelines |
 | `CSharpDB.Client` | Unified client SDK (Direct, HTTP, gRPC, Named Pipes) |
+| `CSharpDB.CodeModules` | Database-owned C# code modules and trusted form runtime contracts |
 | `CSharpDB.Data` | ADO.NET provider (`DbConnection`, `DbCommand`, `DbDataReader`) |
 | `CSharpDB.Storage.Diagnostics` | Storage inspection, WAL analysis, index validation |
 

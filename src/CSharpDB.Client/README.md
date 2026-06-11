@@ -181,7 +181,7 @@ The same request/response contract flows through the direct, HTTP, and gRPC tran
 
 ## Implementation Notes
 
-- The direct client depends on `CSharpDB.Engine`, `CSharpDB.Sql`, and `CSharpDB.Storage.Diagnostics`.
+- The direct client depends on `CSharpDB.Engine`, `CSharpDB.ImportExport`, `CSharpDB.Sql`, and `CSharpDB.Storage.Diagnostics`.
 - `CSharpDB.Client` does not reference `CSharpDB.Data`.
 - The HTTP transport runs against `CSharpDB.Api` and now covers the same public `ICSharpDbClient` surface as the direct client.
 - The gRPC transport uses generated protobuf RPC methods, not a generic JSON tunnel.
