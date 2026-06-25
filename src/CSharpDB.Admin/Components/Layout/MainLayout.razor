@@ -63,6 +63,9 @@
                                 <PipelineTab @key="tab.Id"
                                              Tab="tab" />
                                 break;
+                            case TabKind.Sharding:
+                                <ShardingTab @key="tab.Id" />
+                                break;
                             case TabKind.Storage:
                                 <StorageTab @key="tab.Id" />
                                 break;
@@ -87,8 +90,8 @@
                                                   Tab="tab" />
                                 break;
                             case TabKind.ImportExport:
-                                <ImportExport @key="tab.Id"
-                                              InitialTableName="@tab.InitialTableName" />
+                                <ImportExportTab @key="tab.Id"
+                                                 Tab="tab" />
                                 break;
                             case TabKind.DataModel:
                                 <DataModelTab @key="tab.Id"

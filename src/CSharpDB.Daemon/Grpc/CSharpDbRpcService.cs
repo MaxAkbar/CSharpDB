@@ -17,6 +17,121 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
     public override Task<DatabaseInfoMessage> GetInfo(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetInfoAsync(ct), GrpcModelMapper.ToMessage);
 
+    public override Task<ShardMapSnapshotMessage> GetShardMap(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMapAsync(ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardResolutionMessage> ResolveShardRoute(ShardRouteRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ResolveRouteAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardStatusListResponse> GetShardStatus(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardStatusAsync(ct), value =>
+        {
+            var response = new ShardStatusListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<ShardSqlExecutionResultListResponse> ExecuteSqlOnAllShards(SqlRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ExecuteSqlOnAllShardsAsync(request.Sql, ct), value =>
+        {
+            var response = new ShardSqlExecutionResultListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<ShardSqlExecutionResultListResponse> ExecuteReadOnlySqlOnAllShards(SqlRequest request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ExecuteReadOnlySqlOnAllShardsAsync(request.Sql, ct), value =>
+        {
+            var response = new ShardSqlExecutionResultListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<ShardCatalogStateMessage> GetShardCatalog(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardCatalogAsync(ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardCatalogValidationResultMessage> ValidateShardCatalogUpdate(ShardCatalogUpdateRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ValidateShardCatalogUpdateAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardCatalogApplyResultMessage> ApplyShardCatalogUpdate(ShardCatalogUpdateRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ApplyShardCatalogUpdateAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardMigrationResultMessage> MigrateExactRouteKey(ShardExactKeyMigrationRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().MigrateExactRouteKeyAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardMigrationResultMessage> MigrateBucketRange(ShardBucketRangeMigrationRequestMessage request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().MigrateBucketRangeAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardMigrationHistoryListResponse> GetShardMigrationHistory(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMigrationHistoryAsync(ct), value =>
+        {
+            var response = new ShardMigrationHistoryListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<ShardMigrationProgressListResponse> GetShardMigrationProgress(Empty request, ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMigrationProgressAsync(ct), value =>
+        {
+            var response = new ShardMigrationProgressListResponse();
+            response.Items.Add(value.Select(GrpcModelMapper.ToMessage));
+            return response;
+        });
+
+    public override Task<OptionalShardMigrationProgressResponse> GetShardMigrationProgressById(
+        ShardMigrationIdRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().GetShardMigrationProgressAsync(request.MigrationId, ct), value =>
+            new OptionalShardMigrationProgressResponse
+            {
+                Value = value is null ? null : GrpcModelMapper.ToMessage(value),
+            });
+
+    public override Task<ShardMigrationResultMessage> ResumeShardMigration(
+        ShardMigrationIdRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().ResumeShardMigrationAsync(request.MigrationId, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardMigrationResultMessage> RetryShardMigration(
+        ShardMigrationIdRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardAdminClient().RetryShardMigrationAsync(request.MigrationId, ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryResolutionMessage> ResolveShardDirectoryEntry(
+        ShardDirectoryResolveRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().ResolveDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> ReserveShardDirectoryEntry(
+        ShardDirectoryReserveRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().ReserveDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> ActivateShardDirectoryEntry(
+        ShardDirectoryActivateRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().ActivateDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> UpsertShardDirectoryEntry(
+        ShardDirectoryUpsertRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().UpsertDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> DisableShardDirectoryEntry(
+        ShardDirectoryDisableRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().DisableDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> DeleteShardDirectoryEntry(
+        ShardDirectoryDeleteRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().DeleteDirectoryEntryAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
+    public override Task<ShardDirectoryMutationResultMessage> MarkShardDirectoryEntryStale(
+        ShardDirectoryMarkStaleRequestMessage request,
+        ServerCallContext context)
+        => ExecuteAsync(context, ct => GetShardDirectoryClient().MarkDirectoryEntryStaleAsync(GrpcModelMapper.ToModel(request), ct), GrpcModelMapper.ToMessage);
+
     public override Task<StringList> GetTableNames(Empty request, ServerCallContext context)
         => ExecuteAsync(context, ct => client.GetTableNamesAsync(ct), GrpcModelMapper.ToStringList);
 
@@ -373,6 +488,16 @@ public sealed class CSharpDbRpcService(ICSharpDbClient client) : CSharpDbRpc.CSh
 
     private static string? NullIfEmpty(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private ICSharpDbShardAdminClient GetShardAdminClient()
+        => client as ICSharpDbShardAdminClient
+           ?? throw new CSharpDbClientException(
+               "CSharpDB shard-admin APIs are available only when API-level sharding is enabled.");
+
+    private ICSharpDbShardDirectoryClient GetShardDirectoryClient()
+        => client as ICSharpDbShardDirectoryClient
+           ?? throw new CSharpDbClientException(
+               "CSharpDB shard-directory APIs are available only when API-level sharding is enabled.");
 
     private static RpcException TranslateException(Exception ex)
     {

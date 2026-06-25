@@ -16,6 +16,7 @@ The SQL dataset samples use a conventional layout with `schema.sql` for setup, `
 | `platform-showcase/` | Broad relational feature tour + optional API demo | `schema.sql`, `procedures.json`, `queries.sql`, `.csproj`, `Program.cs` |
 | `fulfillment-hub/` | Full-stack operations showcase with forms, reports, pipelines, collections, and full-text search | `schema.sql`, `procedures.json`, `saved-queries.json`, `queries.sql`, `pipelines/`, `imports/`, `.csproj`, `Program.cs`, `README.md` |
 | `csv-bulk-import/` | Runnable CSV-to-table bulk ingest walkthrough | `.csproj`, `Program.cs`, `README.md`, `events.csv` |
+| `api-level-sharding/` | Runnable e-commerce order-history sharding walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `collection-indexing/` | Runnable `Collection<T>` indexing walkthrough | `.csproj`, `Program.cs`, `README.md` |
 | `compression-sdk/` | Runnable application-level payload compression helper and benchmark sample | `.csproj`, `Program.cs`, `PayloadCompression.cs`, `Benchmarks/`, `README.md` |
 | `generated-collections/` | Runnable source-generated collection fast-path walkthrough | `.csproj`, `Program.cs`, `README.md` |
@@ -103,6 +104,14 @@ Root-level helpers:
 - Docs: [CSV Bulk Import Tutorial](https://csharpdb.com/docs/tutorials/csv-bulk-import.html)
 - Domain: fixed-schema operational event rows loaded into a relational table
 - Good for: `UseWriteOptimizedPreset()`, `PrepareInsertBatch(...)`, explicit transaction batching, header validation, row conversion into `DbValue[]`, and post-load secondary-index creation
+
+### API-Level Sharding
+
+- Project: [ApiLevelShardingSample.csproj](api-level-sharding/ApiLevelShardingSample.csproj)
+- Code: [Program.cs](api-level-sharding/Program.cs)
+- Docs: [README.md](api-level-sharding/README.md)
+- Domain: e-commerce order history routed by `yyyy-MM` order month across four local shard files
+- Good for: `CSharpDbShardedClient`, `ICSharpDbShardAdminClient`, `CSharpDbRouteContext`, virtual bucket maps, month route keys, exact route-key pins, route-bound clients, shard-admin map/status/route preview, execute-on-all-shards schema setup, paged recent/older order history, precise page fill across route keys, bounded over-fetch alternatives, shard-prefixed transaction ids, and missing-route failure behavior
 
 ### Collection Indexing Walkthrough
 
@@ -236,7 +245,15 @@ dotnet run --project samples/csv-bulk-import/CsvBulkImportSample.csproj
 
 This sample demonstrates the current best-practice SQL bulk-ingest path on the public API: `UseWriteOptimizedPreset()`, `PrepareInsertBatch(...)`, explicit transaction batching, and index creation after the load. Inspect the generated database with `CSharpDB.Cli` after the import completes.
 
-### Option 7: Run the Platform Showcase Demo
+### Option 7: Run the API-Level Sharding Sample
+
+```bash
+dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj
+```
+
+This sample creates four shard database files, applies a shared order schema to every shard through the shard-admin surface, prints the shard-admin map/status snapshot, routes recent and older order-history pages by explicit month route key, demonstrates filling a 10-row page from two month routes, demonstrates exact-key month pins, and commits a transaction using only the shard-prefixed transaction id.
+
+### Option 8: Run the Platform Showcase Demo
 
 ```bash
 dotnet run --project samples/platform-showcase/PlatformShowcaseSample.csproj
@@ -244,7 +261,7 @@ dotnet run --project samples/platform-showcase/PlatformShowcaseSample.csproj
 
 This demo loads the broad SQL showcase schema, adds a full-text index over the knowledge-base articles, seeds a typed collection of dashboard filters, and prints a few representative queries.
 
-### Option 8: Run The EF Core Provider Sample
+### Option 9: Run The EF Core Provider Sample
 
 ```bash
 dotnet run --project samples/efcore-provider/EfCoreProviderSample.csproj
@@ -252,7 +269,7 @@ dotnet run --project samples/efcore-provider/EfCoreProviderSample.csproj
 
 This sample is the quickest way to validate the embedded EF Core provider, `UseCSharpDb(...)`, navigation loading, and the design-time context setup used by `dotnet ef`.
 
-### Option 9: Run The ASP.NET Core Identity Sample
+### Option 10: Run The ASP.NET Core Identity Sample
 
 ```bash
 dotnet run --project samples/aspnet-core-identity/AspNetCoreIdentitySample.csproj
@@ -260,7 +277,7 @@ dotnet run --project samples/aspnet-core-identity/AspNetCoreIdentitySample.cspro
 
 This sample brings up an ASP.NET Core 10 web app with a custom `CSharpDB.Data` user store. On first start it seeds an admin (`admin@example.com` / `ChangeMe!2026`) and exposes minimal-API endpoints for cookie login, JWT issuance, role-based authorization, and policy-based authorization. The companion `sample.http` file walks through the full flow.
 
-### Option 10: Run the Fulfillment Hub Sample
+### Option 11: Run the Fulfillment Hub Sample
 
 ```bash
 dotnet run --project samples/fulfillment-hub/FulfillmentHubSample.csproj

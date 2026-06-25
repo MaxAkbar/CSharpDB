@@ -68,12 +68,17 @@
 @code {
     [Parameter] public string ReportId { get; set; } = string.Empty;
     [Parameter] public EventCallback<string> OnOpenDesigner { get; set; }
+    [Parameter] public IReportRepository? ReportRepositoryOverride { get; set; }
+    [Parameter] public IReportPreviewService? ReportPreviewServiceOverride { get; set; }
 
     private ReportDefinition? _report;
     private ReportPreviewResult? _preview;
     private string? _error;
     private string? _loadedReportId;
     private ElementReference _pagesElement;
+
+    private IReportRepository ActiveReportRepository => ReportRepositoryOverride ?? ReportRepository;
+    private IReportPreviewService ActiveReportPreviewService => ReportPreviewServiceOverride ?? ReportPreviewService;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -92,14 +97,14 @@
 
         try
         {
-            _report = await ReportRepository.GetAsync(ReportId);
+            _report = await ActiveReportRepository.GetAsync(ReportId);
             if (_report is null)
             {
                 _error = $"Report '{ReportId}' was not found.";
                 return;
             }
 
-            _preview = await ReportPreviewService.BuildPreviewAsync(_report);
+            _preview = await ActiveReportPreviewService.BuildPreviewAsync(_report);
         }
         catch (Exception ex)
         {

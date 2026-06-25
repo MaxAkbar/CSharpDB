@@ -34,9 +34,16 @@ builder.Services.AddSingleton<DatabaseClientHolder>(sp =>
         endpoint,
         functions);
 
-    return new DatabaseClientHolder(CSharpDbClient.Create(options), hostDatabaseOptions, functions);
+    if (CSharpDbShardedClient.TryCreateFromMasterCatalog(options) is { } shardedClient)
+        return new DatabaseClientHolder(shardedClient, shardedClient, null, hostDatabaseOptions, functions);
+
+    ICSharpDbClient client = CSharpDbClient.Create(options);
+    ICSharpDbShardAdminClient? shardAdmin = TryCreateShardAdmin(options);
+    return new DatabaseClientHolder(client, shardAdmin, options, hostDatabaseOptions, functions);
 });
 builder.Services.AddSingleton<ICSharpDbClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
+builder.Services.AddSingleton<ICSharpDbShardAdminClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
+builder.Services.AddSingleton<ICSharpDbShardDirectoryClient>(sp => sp.GetRequiredService<DatabaseClientHolder>());
 builder.Services.AddScoped<TabManagerService>();
 builder.Services.AddScoped<ThemeService>();
 builder.Services.AddScoped<ToastService>();
@@ -101,6 +108,18 @@ static CSharpDbTransport? ParseTransport(string? value)
         "pipe" => CSharpDbTransport.NamedPipes,
         _ => throw new InvalidOperationException($"Unsupported transport '{value}'."),
     };
+}
+
+static ICSharpDbShardAdminClient? TryCreateShardAdmin(CSharpDbClientOptions options)
+{
+    try
+    {
+        return CSharpDbClient.CreateShardAdmin(options);
+    }
+    catch (CSharpDbClientConfigurationException)
+    {
+        return null;
+    }
 }
 
 public partial class Program;

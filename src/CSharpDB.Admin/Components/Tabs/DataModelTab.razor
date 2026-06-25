@@ -1,8 +1,10 @@
 @using CSharpDB.Admin.Models
 @inject IDataModelService DataModels
 @inject IDataModelDiagramService Diagrams
+@inject DatabaseClientHolder DbHolder
 @inject TabManagerService TabManager
 @inject ToastService Toast
+@implements IAsyncDisposable
 
 <div class="data-model-tab">
     <div class="toolbar data-model-toolbar">
@@ -136,6 +138,7 @@
                 title="Open current model as a visual query designer layout">
             <i class="bi bi-box-arrow-up-right"></i> Open in Query Designer
         </button>
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
         <div class="toolbar-spacer"></div>
         <div class="toolbar-info">
             <span>@_state.Nodes.Count source@(_state.Nodes.Count == 1 ? "" : "s")</span>
@@ -144,6 +147,14 @@
         </div>
     </div>
 
+    @if (RequiresRouteContext)
+    {
+        <div class="query-error">
+            <i class="bi bi-signpost-split"></i> Select a route before using the data model workspace on a sharded database.
+        </div>
+    }
+    else
+    {
     @if (_showNewTablePanel)
     {
         <div class="designer-join-dialog data-model-schema-dialog">
@@ -413,6 +424,7 @@
             </div>
         </aside>
     </div>
+    }
 </div>
 
 @code {
@@ -447,6 +459,8 @@
     private bool _showNewTablePanel;
     private bool _loading;
     private string? _error;
+    private AdminRouteClientLease? _routeLease;
+    private DataModelService? _routeDataModelService;
 
     private IEnumerable<DataModelSourceOption> AvailableSourceOptions =>
         _sourceOptions.Where(option => !_state.Nodes.Any(node => string.Equals(node.Name, option.Name, StringComparison.OrdinalIgnoreCase)));
@@ -479,7 +493,12 @@
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-    private string PendingPreviewSql => DataModels.BuildPendingOperationsPreview(_state);
+    private AdminRouteClientLease RouteLease => _routeLease ??= new AdminRouteClientLease(DbHolder);
+    private IDataModelService ActiveDataModels => _routeDataModelService ?? DataModels;
+    private IDataModelDiagramService ActiveDiagrams => _routeDataModelService ?? Diagrams;
+    private bool RequiresRouteContext => DbHolder.SupportsShardAdmin && DbHolder.SupportsRouteBoundClients && Tab?.HasRouteContext != true;
+
+    private string PendingPreviewSql => ActiveDataModels.BuildPendingOperationsPreview(_state);
 
     private double CurrentScale => NormalizeScale(_state.Scale);
 
@@ -545,7 +564,11 @@
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadInitialAsync();
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteServices();
+
+        if (!RequiresRouteContext)
+            await LoadInitialAsync();
     }
 
     protected override void OnParametersSet()
@@ -569,14 +592,45 @@
         }
     }
 
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        await RouteLease.UpdateAsync(Tab);
+        RebuildRouteServices();
+        ResetRouteScopedState();
+
+        if (!RequiresRouteContext)
+            await LoadInitialAsync();
+    }
+
+    private void RebuildRouteServices()
+    {
+        _routeDataModelService = RouteLease.RouteClient is null
+            ? null
+            : new DataModelService(RouteLease.RouteClient);
+    }
+
+    private void ResetRouteScopedState()
+    {
+        _state = new DataModelState();
+        _sourceOptions = [];
+        _savedDiagrams = [];
+        _selectedNodeName = null;
+        _selectedRelationshipId = null;
+        _diagramName = "";
+        _showAddSource = false;
+        _showLoadPanel = false;
+        _showNewTablePanel = false;
+        _error = null;
+    }
+
     private async Task LoadInitialAsync()
     {
         _loading = true;
         _error = null;
         try
         {
-            _sourceOptions = await DataModels.GetSourceOptionsAsync();
-            _savedDiagrams = await Diagrams.GetDiagramsAsync();
+            _sourceOptions = await ActiveDataModels.GetSourceOptionsAsync();
+            _savedDiagrams = await ActiveDiagrams.GetDiagramsAsync();
             if (Tab?.DataModelStateJson is not null)
             {
                 DataModelState? saved = DataModelGraphBuilder.DeserializeState(Tab.DataModelStateJson);
@@ -593,9 +647,9 @@
             else
             {
                 DataModelState? defaultDiagram = UsesDefaultDiagram
-                    ? await Diagrams.LoadDiagramAsync(DefaultDiagramName)
+                    ? await ActiveDiagrams.LoadDiagramAsync(DefaultDiagramName)
                     : null;
-                _state = defaultDiagram ?? await DataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+                _state = defaultDiagram ?? await ActiveDataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
                 NormalizeZoom();
                 EnsureDefaultDiagramName();
                 _diagramName = _state.DiagramName ?? "";
@@ -619,10 +673,10 @@
         _error = null;
         try
         {
-            _sourceOptions = await DataModels.GetSourceOptionsAsync();
+            _sourceOptions = await ActiveDataModels.GetSourceOptionsAsync();
             if (!string.IsNullOrWhiteSpace(_state.DiagramName))
             {
-                DataModelState? saved = await Diagrams.LoadDiagramAsync(_state.DiagramName);
+                DataModelState? saved = await ActiveDiagrams.LoadDiagramAsync(_state.DiagramName);
                 if (saved is not null)
                 {
                     _state = saved;
@@ -634,7 +688,7 @@
                 }
             }
 
-            DataModelState refreshed = await DataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
+            DataModelState refreshed = await ActiveDataModels.BuildModelAsync(Tab?.InitialDataModelSourceName);
             PreservePositions(refreshed);
             refreshed.DiagramName = _state.DiagramName;
             refreshed.SavedLayoutName = _state.SavedLayoutName;
@@ -661,7 +715,7 @@
         try
         {
             double currentScale = CurrentScale;
-            _state = await DataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
+            _state = await ActiveDataModels.BuildModelAsync(autoLayoutLimit: int.MaxValue);
             _state.Scale = currentScale;
             _state.DiagramName = UsesDefaultDiagram && string.IsNullOrWhiteSpace(_diagramName)
                 ? DefaultDiagramName
@@ -689,7 +743,7 @@
         _error = null;
         try
         {
-            DataModelState addition = await DataModels.BuildModelAsync(sourceName);
+            DataModelState addition = await ActiveDataModels.BuildModelAsync(sourceName);
             Merge(addition);
             _selectedNodeName = sourceName;
             _selectedRelationshipId = null;
@@ -855,7 +909,7 @@
     {
         try
         {
-            await Diagrams.SaveDiagramAsync(_diagramName, _state);
+            await ActiveDiagrams.SaveDiagramAsync(_diagramName, _state);
             _diagramName = _state.DiagramName ?? _diagramName.Trim();
             await RefreshSavedDiagramsAsync();
             SaveState();
@@ -872,7 +926,7 @@
         _showLoadPanel = false;
         try
         {
-            DataModelState? loaded = await Diagrams.LoadDiagramAsync(name);
+            DataModelState? loaded = await ActiveDiagrams.LoadDiagramAsync(name);
             if (loaded is null)
             {
                 Toast.Warning("Saved data model diagram was not found.");
@@ -901,7 +955,7 @@
         string name = _state.DiagramName;
         try
         {
-            await Diagrams.DeleteDiagramAsync(name);
+            await ActiveDiagrams.DeleteDiagramAsync(name);
             await RefreshSavedDiagramsAsync();
             _state.DiagramName = null;
             _state.SavedLayoutName = null;
@@ -917,13 +971,13 @@
 
     private async Task RefreshSavedDiagramsAsync()
     {
-        try { _savedDiagrams = await Diagrams.GetDiagramsAsync(); }
+        try { _savedDiagrams = await ActiveDiagrams.GetDiagramsAsync(); }
         catch { _savedDiagrams = []; }
     }
 
     private void OpenInQueryDesigner()
     {
-        QueryDesignerState designerState = DataModels.ToQueryDesignerState(_state);
+        QueryDesignerState designerState = ActiveDataModels.ToQueryDesignerState(_state);
         TabManager.OpenQueryDesignerTab(designerState);
     }
 
@@ -1205,7 +1259,7 @@
         _error = null;
         try
         {
-            DataModelApplyResult result = await Diagrams.ApplyPendingOperationsAsync(_state);
+            DataModelApplyResult result = await ActiveDiagrams.ApplyPendingOperationsAsync(_state);
             Toast.Success($"Applied {result.Messages.Count} diagram change{(result.Messages.Count == 1 ? "" : "s")}.");
             await RefreshAsync();
         }
@@ -1253,7 +1307,7 @@
 
         try
         {
-            await Diagrams.SaveDiagramAsync(_state.DiagramName, _state);
+            await ActiveDiagrams.SaveDiagramAsync(_state.DiagramName, _state);
             await RefreshSavedDiagramsAsync();
         }
         catch (Exception ex)
@@ -1285,5 +1339,11 @@
             return 1;
 
         return Math.Clamp(scale, MinZoom, MaxZoom);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_routeLease is not null)
+            await _routeLease.DisposeAsync();
     }
 }

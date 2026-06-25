@@ -1,5 +1,11 @@
 using System.Net;
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using CSharpDB.Client;
+using CSharpDB.Client.Models;
 using CSharpDB.Data;
+using CSharpDB.Engine;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -142,6 +148,70 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ShardRouteConnectionString_RoutesCommandsToOneShard()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"csharpdb_data_shards_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string masterDbPath = Path.Combine(directory, "master.db");
+            await SeedMasterCatalogAsync(masterDbPath, CreateShardingOptions(directory));
+            await using var factory = new TestDaemonFactory(masterDbPath);
+            using var transportClient = CreateGrpcHttpClient(factory);
+
+            await using var tenantA = new CSharpDbConnection(
+                "Transport=Grpc;Endpoint=http://localhost;Shard Keyspace=tenants;Shard Key=tenant-a",
+                transportClient);
+            await tenantA.OpenAsync(Ct);
+            using (var cmd = tenantA.CreateCommand())
+            {
+                cmd.CommandText = "CREATE TABLE routed_ado (id INTEGER PRIMARY KEY, name TEXT);";
+                await cmd.ExecuteNonQueryAsync(Ct);
+                cmd.CommandText = "INSERT INTO routed_ado VALUES (1, 'tenant-a');";
+                await cmd.ExecuteNonQueryAsync(Ct);
+            }
+
+            await using var tenantB = new CSharpDbConnection(
+                "Transport=Grpc;Endpoint=http://localhost;Shard Keyspace=tenants;Shard Key=tenant-b",
+                transportClient);
+            await tenantB.OpenAsync(Ct);
+            using (var cmd = tenantB.CreateCommand())
+            {
+                cmd.CommandText = "CREATE TABLE routed_ado (id INTEGER PRIMARY KEY, name TEXT);";
+                await cmd.ExecuteNonQueryAsync(Ct);
+                cmd.CommandText = "INSERT INTO routed_ado VALUES (1, 'tenant-b');";
+                await cmd.ExecuteNonQueryAsync(Ct);
+                cmd.CommandText = "SELECT name FROM routed_ado WHERE id = 1;";
+                Assert.Equal("tenant-b", await cmd.ExecuteScalarAsync(Ct));
+            }
+
+            using (var verify = tenantA.CreateCommand())
+            {
+                verify.CommandText = "SELECT name FROM routed_ado WHERE id = 1;";
+                Assert.Equal("tenant-a", await verify.ExecuteScalarAsync(Ct));
+            }
+        }
+        finally
+        {
+            TryDelete(Path.Combine(directory, "s0.db"));
+            TryDelete(Path.Combine(directory, "s0.db.wal"));
+            TryDelete(Path.Combine(directory, "s1.db"));
+            TryDelete(Path.Combine(directory, "s1.db.wal"));
+            TryDelete(Path.Combine(directory, "unused.db"));
+            TryDelete(Path.Combine(directory, "unused.db.wal"));
+            try
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Ignore transient test cleanup file locks.
+            }
+        }
+    }
+
+    [Fact]
     public async Task GetSchema_RemoteGrpcConnection_UsesDaemonMetadata()
     {
         await using var conn = CreateConnection();
@@ -185,17 +255,72 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         }
     }
 
-    private sealed class TestDaemonFactory(string dbPath) : WebApplicationFactory<Program>
+    private static async Task SeedMasterCatalogAsync(string masterDbPath, CSharpDbShardingOptions options)
+    {
+        await CSharpDbShardedClient.SeedMasterCatalogAsync(
+            new CSharpDbClientOptions
+            {
+                DataSource = masterDbPath,
+                DirectDatabaseOptions = CreateSeedDirectDatabaseOptions(),
+                HybridDatabaseOptions = new HybridDatabaseOptions
+                {
+                    PersistenceMode = HybridPersistenceMode.IncrementalDurable,
+                },
+            },
+            options,
+            Ct);
+    }
+
+    private static DatabaseOptions CreateSeedDirectDatabaseOptions()
+        => new DatabaseOptions
+        {
+            ImplicitInsertExecutionMode = ImplicitInsertExecutionMode.ConcurrentWriteTransactions,
+        }.ConfigureStorageEngine(builder => builder.UseWriteOptimizedPreset());
+
+    private static CSharpDbShardingOptions CreateShardingOptions(string directory)
+        => new()
+        {
+            Keyspace = "tenants",
+            MapVersion = 1,
+            VirtualBucketCount = 4,
+            Shards =
+            [
+                new CSharpDbShardDefinition { ShardId = "s0", DataSource = Path.Combine(directory, "s0.db") },
+                new CSharpDbShardDefinition { ShardId = "s1", DataSource = Path.Combine(directory, "s1.db") },
+            ],
+            BucketRanges =
+            [
+                new CSharpDbShardBucketRange { StartBucketInclusive = 0, EndBucketExclusive = 2, ShardId = "s0" },
+                new CSharpDbShardBucketRange { StartBucketInclusive = 2, EndBucketExclusive = 4, ShardId = "s1" },
+            ],
+            ExactKeyPins = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["tenant-a"] = "s0",
+                ["tenant-b"] = "s1",
+            },
+        };
+
+    private sealed class TestDaemonFactory(
+        string dbPath,
+        IReadOnlyDictionary<string, string?>? extraConfig = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
             builder.ConfigureAppConfiguration((_, config) =>
             {
-                config.AddInMemoryCollection(new Dictionary<string, string?>
+                var values = new Dictionary<string, string?>
                 {
                     ["ConnectionStrings:CSharpDB"] = $"Data Source={dbPath}",
-                });
+                };
+
+                if (extraConfig is not null)
+                {
+                    foreach (var pair in extraConfig)
+                        values[pair.Key] = pair.Value;
+                }
+
+                config.AddInMemoryCollection(values);
             });
         }
     }

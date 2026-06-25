@@ -14,6 +14,8 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     private const string StoragePresetKey = "Storage Preset";
     private const string EmbeddedOpenModeKey = "Embedded Open Mode";
     private const string AdaptiveQueryReoptimizationKey = "Adaptive Query Reoptimization";
+    private const string ShardKeyspaceKey = "Shard Keyspace";
+    private const string ShardKeyKey = "Shard Key";
 
     internal const bool DefaultPooling = false;
     internal const int DefaultMaxPoolSize = 32;
@@ -75,6 +77,18 @@ public sealed class CSharpDbConnectionStringBuilder : DbConnectionStringBuilder
     {
         get => GetBoolean(AdaptiveQueryReoptimizationKey, defaultValue: false);
         set => this[AdaptiveQueryReoptimizationKey] = value;
+    }
+
+    public string ShardKeyspace
+    {
+        get => TryGetValue(ShardKeyspaceKey, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? "" : "";
+        set => this[ShardKeyspaceKey] = value;
+    }
+
+    public string ShardKey
+    {
+        get => TryGetValue(ShardKeyKey, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? "" : "";
+        set => this[ShardKeyKey] = value;
     }
 
     public CSharpDbConnectionStringBuilder() { }

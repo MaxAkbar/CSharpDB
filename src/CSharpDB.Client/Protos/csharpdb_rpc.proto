@@ -12,6 +12,28 @@ import "google/protobuf/wrappers.proto";
 
 service CSharpDbRpc {
   rpc GetInfo (google.protobuf.Empty) returns (DatabaseInfoMessage);
+  rpc GetShardMap (google.protobuf.Empty) returns (ShardMapSnapshotMessage);
+  rpc ResolveShardRoute (ShardRouteRequest) returns (ShardResolutionMessage);
+  rpc GetShardStatus (google.protobuf.Empty) returns (ShardStatusListResponse);
+  rpc ExecuteSqlOnAllShards (SqlRequest) returns (ShardSqlExecutionResultListResponse);
+  rpc ExecuteReadOnlySqlOnAllShards (SqlRequest) returns (ShardSqlExecutionResultListResponse);
+  rpc GetShardCatalog (google.protobuf.Empty) returns (ShardCatalogStateMessage);
+  rpc ValidateShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogValidationResultMessage);
+  rpc ApplyShardCatalogUpdate (ShardCatalogUpdateRequestMessage) returns (ShardCatalogApplyResultMessage);
+  rpc MigrateExactRouteKey (ShardExactKeyMigrationRequestMessage) returns (ShardMigrationResultMessage);
+  rpc MigrateBucketRange (ShardBucketRangeMigrationRequestMessage) returns (ShardMigrationResultMessage);
+  rpc GetShardMigrationHistory (google.protobuf.Empty) returns (ShardMigrationHistoryListResponse);
+  rpc GetShardMigrationProgress (google.protobuf.Empty) returns (ShardMigrationProgressListResponse);
+  rpc GetShardMigrationProgressById (ShardMigrationIdRequestMessage) returns (OptionalShardMigrationProgressResponse);
+  rpc ResumeShardMigration (ShardMigrationIdRequestMessage) returns (ShardMigrationResultMessage);
+  rpc RetryShardMigration (ShardMigrationIdRequestMessage) returns (ShardMigrationResultMessage);
+  rpc ResolveShardDirectoryEntry (ShardDirectoryResolveRequestMessage) returns (ShardDirectoryResolutionMessage);
+  rpc ReserveShardDirectoryEntry (ShardDirectoryReserveRequestMessage) returns (ShardDirectoryMutationResultMessage);
+  rpc ActivateShardDirectoryEntry (ShardDirectoryActivateRequestMessage) returns (ShardDirectoryMutationResultMessage);
+  rpc UpsertShardDirectoryEntry (ShardDirectoryUpsertRequestMessage) returns (ShardDirectoryMutationResultMessage);
+  rpc DisableShardDirectoryEntry (ShardDirectoryDisableRequestMessage) returns (ShardDirectoryMutationResultMessage);
+  rpc DeleteShardDirectoryEntry (ShardDirectoryDeleteRequestMessage) returns (ShardDirectoryMutationResultMessage);
+  rpc MarkShardDirectoryEntryStale (ShardDirectoryMarkStaleRequestMessage) returns (ShardDirectoryMutationResultMessage);
   rpc GetTableNames (google.protobuf.Empty) returns (StringList);
   rpc GetTableSchema (TableNameRequest) returns (OptionalTableSchemaResponse);
   rpc GetRowCount (TableNameRequest) returns (google.protobuf.Int32Value);
@@ -148,6 +170,406 @@ message VariantArrayList {
 
 message StringList {
   repeated string values = 1;
+}
+
+message ShardDefinitionMessage {
+  string shard_id = 1;
+  bool enabled = 2;
+  google.protobuf.StringValue transport = 3;
+  google.protobuf.StringValue endpoint = 4;
+  google.protobuf.StringValue data_source = 5;
+  bool has_connection_string = 6;
+  bool has_api_key = 7;
+  google.protobuf.StringValue api_key_header_name = 8;
+  string role = 9;
+  google.protobuf.StringValue primary_shard_id = 10;
+  bool promotion_eligible = 11;
+  google.protobuf.Int64Value replication_lag_bytes = 12;
+  google.protobuf.Timestamp last_replicated_utc = 13;
+}
+
+message ShardTargetDefinitionMessage {
+  string shard_id = 1;
+  bool enabled = 2;
+  google.protobuf.StringValue transport = 3;
+  google.protobuf.StringValue endpoint = 4;
+  google.protobuf.StringValue connection_string = 5;
+  google.protobuf.StringValue data_source = 6;
+  google.protobuf.StringValue api_key = 7;
+  google.protobuf.StringValue api_key_header_name = 8;
+  string role = 9;
+  google.protobuf.StringValue primary_shard_id = 10;
+  bool promotion_eligible = 11;
+  google.protobuf.Int64Value replication_lag_bytes = 12;
+  google.protobuf.Timestamp last_replicated_utc = 13;
+}
+
+message ShardBucketRangeMessage {
+  int32 start_bucket_inclusive = 1;
+  int32 end_bucket_exclusive = 2;
+  string shard_id = 3;
+}
+
+message ShardDirectoryDefinitionMessage {
+  string directory_name = 1;
+  string target_keyspace = 2;
+  google.protobuf.StringValue description = 3;
+  bool read_only = 4;
+  int32 entry_count = 5;
+}
+
+message ShardDirectoryEntryMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  string target_keyspace = 3;
+  string route_key = 4;
+  string shard_id = 5;
+  int32 map_version = 6;
+  string state = 7;
+}
+
+message ShardMapSnapshotMessage {
+  string keyspace = 1;
+  int32 map_version = 2;
+  int32 virtual_bucket_count = 3;
+  repeated ShardDefinitionMessage shards = 4;
+  repeated ShardBucketRangeMessage bucket_ranges = 5;
+  map<string, string> exact_key_pins = 6;
+  repeated ShardDirectoryDefinitionMessage directories = 7;
+}
+
+message ShardingOptionsMessage {
+  string keyspace = 2;
+  int32 map_version = 3;
+  int32 virtual_bucket_count = 4;
+  repeated ShardTargetDefinitionMessage shards = 5;
+  repeated ShardBucketRangeMessage bucket_ranges = 6;
+  map<string, string> exact_key_pins = 7;
+  repeated ShardDirectoryDefinitionMessage directories = 8;
+  repeated ShardDirectoryEntryMessage directory_entries = 9;
+}
+
+message ShardRouteRequest {
+  string keyspace = 1;
+  string key = 2;
+}
+
+message ShardResolutionMessage {
+  string keyspace = 1;
+  string key = 2;
+  uint64 token = 3;
+  int32 bucket = 4;
+  string shard_id = 5;
+  int32 map_version = 6;
+}
+
+message ShardStatusMessage {
+  string shard_id = 1;
+  string data_source = 2;
+  bool enabled = 3;
+  bool healthy = 4;
+  google.protobuf.StringValue error = 5;
+  DatabaseInfoMessage info = 6;
+  string role = 7;
+  google.protobuf.StringValue primary_shard_id = 8;
+  bool promotion_eligible = 9;
+  bool can_promote = 10;
+  google.protobuf.Int64Value replication_lag_bytes = 11;
+  google.protobuf.Timestamp last_replicated_utc = 12;
+}
+
+message ShardStatusListResponse {
+  repeated ShardStatusMessage items = 1;
+}
+
+message ShardSqlExecutionResultMessage {
+  string shard_id = 1;
+  SqlExecutionResultMessage result = 2;
+  google.protobuf.StringValue error = 3;
+}
+
+message ShardSqlExecutionResultListResponse {
+  repeated ShardSqlExecutionResultMessage items = 1;
+}
+
+message ShardCatalogHistoryEntryMessage {
+  google.protobuf.Timestamp applied_utc = 1;
+  int32 map_version = 2;
+  google.protobuf.StringValue operator = 3;
+  google.protobuf.StringValue comment = 4;
+  bool metadata_only_ownership_change = 5;
+}
+
+message ShardCatalogStateMessage {
+  string source = 1;
+  bool is_catalog_enabled = 2;
+  bool is_writable = 3;
+  ShardMapSnapshotMessage active_map = 4;
+  ShardMapSnapshotMessage pending_map = 5;
+  repeated ShardCatalogHistoryEntryMessage history = 6;
+}
+
+message ShardCatalogIssueMessage {
+  string severity = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message ShardCatalogValidationResultMessage {
+  bool is_valid = 1;
+  bool requires_data_migration = 2;
+  ShardMapSnapshotMessage preview = 3;
+  repeated ShardCatalogIssueMessage issues = 4;
+}
+
+message ShardCatalogUpdateRequestMessage {
+  ShardingOptionsMessage options = 1;
+  google.protobuf.Int32Value expected_current_map_version = 2;
+  bool allow_metadata_only_ownership_change = 3;
+  google.protobuf.StringValue operator = 4;
+  google.protobuf.StringValue comment = 5;
+}
+
+message ShardCatalogApplyResultMessage {
+  bool applied = 1;
+  bool requires_restart = 2;
+  string message = 3;
+  ShardCatalogValidationResultMessage validation = 4;
+  ShardMapSnapshotMessage pending_map = 5;
+}
+
+message ShardMigrationTableManifestMessage {
+  string table_name = 1;
+  string route_key_column = 2;
+  string primary_key_column = 3;
+}
+
+message ShardMigrationCollectionManifestMessage {
+  string collection_name = 1;
+  string route_key_property_name = 2;
+}
+
+message ShardMigrationManifestMessage {
+  int32 page_size = 1;
+  repeated ShardMigrationTableManifestMessage tables = 2;
+  repeated ShardMigrationCollectionManifestMessage collections = 3;
+}
+
+message ShardExactKeyMigrationRequestMessage {
+  string keyspace = 1;
+  string route_key = 2;
+  string destination_shard_id = 3;
+  ShardMigrationManifestMessage manifest = 4;
+  google.protobuf.Int32Value expected_current_map_version = 5;
+  bool overwrite_destination_rows = 6;
+  bool delete_source_after_verification = 7;
+  google.protobuf.StringValue operator = 8;
+  google.protobuf.StringValue comment = 9;
+  google.protobuf.StringValue migration_id = 10;
+  google.protobuf.Int32Value attempt = 11;
+}
+
+message ShardBucketRangeMigrationRequestMessage {
+  string keyspace = 1;
+  string source_shard_id = 2;
+  string destination_shard_id = 3;
+  int32 start_bucket_inclusive = 4;
+  int32 end_bucket_exclusive = 5;
+  ShardMigrationManifestMessage manifest = 6;
+  google.protobuf.Int32Value expected_current_map_version = 7;
+  bool overwrite_destination_rows = 8;
+  bool delete_source_after_verification = 9;
+  google.protobuf.StringValue operator = 10;
+  google.protobuf.StringValue comment = 11;
+  google.protobuf.StringValue migration_id = 12;
+  google.protobuf.Int32Value attempt = 13;
+}
+
+message ShardMigrationTableResultMessage {
+  string table_name = 1;
+  int32 source_rows = 2;
+  int32 destination_rows = 3;
+  int32 rows_copied = 4;
+  int32 source_rows_deleted = 5;
+  bool verified = 6;
+  google.protobuf.StringValue source_checksum = 7;
+  google.protobuf.StringValue destination_checksum = 8;
+  google.protobuf.StringValue error = 9;
+}
+
+message ShardMigrationCollectionResultMessage {
+  string collection_name = 1;
+  int32 source_documents = 2;
+  int32 destination_documents = 3;
+  int32 documents_copied = 4;
+  int32 source_documents_deleted = 5;
+  bool verified = 6;
+  google.protobuf.StringValue source_checksum = 7;
+  google.protobuf.StringValue destination_checksum = 8;
+  google.protobuf.StringValue error = 9;
+}
+
+message ShardMigrationResultMessage {
+  string migration_id = 1;
+  google.protobuf.Timestamp started_utc = 2;
+  google.protobuf.Timestamp completed_utc = 3;
+  bool succeeded = 4;
+  string status = 5;
+  string message = 6;
+  string keyspace = 7;
+  string route_key = 8;
+  string source_shard_id = 9;
+  string destination_shard_id = 10;
+  int32 map_version = 11;
+  google.protobuf.Int32Value pending_map_version = 12;
+  bool requires_restart = 13;
+  repeated ShardMigrationTableResultMessage tables = 14;
+  repeated ShardMigrationCollectionResultMessage collections = 15;
+  repeated ShardCatalogIssueMessage issues = 16;
+  ShardCatalogApplyResultMessage catalog_apply_result = 17;
+  bool requires_operator_recovery = 18;
+  google.protobuf.StringValue recovery_action = 19;
+}
+
+message ShardMigrationHistoryEntryMessage {
+  string migration_id = 1;
+  string migration_type = 2;
+  google.protobuf.Timestamp started_utc = 3;
+  google.protobuf.Timestamp completed_utc = 4;
+  google.protobuf.Timestamp recorded_utc = 5;
+  bool succeeded = 6;
+  string status = 7;
+  string message = 8;
+  string keyspace = 9;
+  string route_key = 10;
+  string source_shard_id = 11;
+  string destination_shard_id = 12;
+  int32 map_version = 13;
+  google.protobuf.Int32Value pending_map_version = 14;
+  bool requires_restart = 15;
+  google.protobuf.StringValue operator = 16;
+  google.protobuf.StringValue comment = 17;
+  repeated ShardMigrationTableResultMessage tables = 18;
+  repeated ShardMigrationCollectionResultMessage collections = 19;
+  repeated ShardCatalogIssueMessage issues = 20;
+  bool requires_operator_recovery = 21;
+  google.protobuf.StringValue recovery_action = 22;
+}
+
+message ShardMigrationHistoryListResponse {
+  repeated ShardMigrationHistoryEntryMessage items = 1;
+}
+
+message ShardMigrationIdRequestMessage {
+  string migration_id = 1;
+}
+
+message ShardMigrationProgressMessage {
+  string migration_id = 1;
+  string migration_type = 2;
+  string status = 3;
+  string phase = 4;
+  google.protobuf.Timestamp started_utc = 5;
+  google.protobuf.Timestamp updated_utc = 6;
+  google.protobuf.Timestamp completed_utc = 7;
+  string keyspace = 8;
+  string route_key = 9;
+  string source_shard_id = 10;
+  string destination_shard_id = 11;
+  int32 completed_steps = 12;
+  int32 total_steps = 13;
+  double percent_complete = 14;
+  int32 attempt = 15;
+  int32 map_version = 16;
+  google.protobuf.Int32Value pending_map_version = 17;
+  bool requires_restart = 18;
+  bool requires_operator_recovery = 19;
+  google.protobuf.StringValue recovery_action = 20;
+  repeated ShardCatalogIssueMessage issues = 21;
+}
+
+message ShardMigrationProgressListResponse {
+  repeated ShardMigrationProgressMessage items = 1;
+}
+
+message OptionalShardMigrationProgressResponse {
+  ShardMigrationProgressMessage value = 1;
+}
+
+message ShardDirectoryResolveRequestMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  bool include_inactive = 3;
+}
+
+message ShardDirectoryResolutionMessage {
+  ShardDirectoryEntryMessage entry = 1;
+  ShardResolutionMessage route_resolution = 2;
+}
+
+message ShardDirectoryReserveRequestMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  string target_keyspace = 3;
+  string route_key = 4;
+  google.protobuf.Int32Value expected_current_map_version = 5;
+  google.protobuf.StringValue operator = 6;
+  google.protobuf.StringValue comment = 7;
+}
+
+message ShardDirectoryActivateRequestMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  google.protobuf.Int32Value expected_current_map_version = 3;
+  google.protobuf.StringValue operator = 4;
+  google.protobuf.StringValue comment = 5;
+}
+
+message ShardDirectoryUpsertRequestMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  string target_keyspace = 3;
+  string route_key = 4;
+  string state = 5;
+  google.protobuf.Int32Value expected_current_map_version = 6;
+  google.protobuf.StringValue operator = 7;
+  google.protobuf.StringValue comment = 8;
+}
+
+message ShardDirectoryDisableRequestMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  google.protobuf.Int32Value expected_current_map_version = 3;
+  google.protobuf.StringValue operator = 4;
+  google.protobuf.StringValue comment = 5;
+}
+
+message ShardDirectoryDeleteRequestMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  bool remove_entry = 3;
+  google.protobuf.Int32Value expected_current_map_version = 4;
+  google.protobuf.StringValue operator = 5;
+  google.protobuf.StringValue comment = 6;
+}
+
+message ShardDirectoryMarkStaleRequestMessage {
+  string directory_name = 1;
+  string lookup_key = 2;
+  google.protobuf.Int32Value expected_current_map_version = 3;
+  google.protobuf.StringValue operator = 4;
+  google.protobuf.StringValue comment = 5;
+}
+
+message ShardDirectoryMutationResultMessage {
+  bool succeeded = 1;
+  string status = 2;
+  string message = 3;
+  ShardDirectoryEntryMessage entry = 4;
+  google.protobuf.Int32Value pending_map_version = 5;
+  bool requires_restart = 6;
+  ShardCatalogApplyResultMessage catalog_apply_result = 7;
+  repeated ShardCatalogIssueMessage issues = 8;
 }
 
 message TableNameRequest {

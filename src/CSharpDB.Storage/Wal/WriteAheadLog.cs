@@ -308,11 +308,47 @@ public sealed class WriteAheadLog : IWriteAheadLog, IWalRuntimeDiagnosticsProvid
 
         if (File.Exists(_walPath))
         {
-            await RecoverAsync(cancellationToken);
+            await RecoverExistingWalOrCreateNewAsync(currentDbPageCount, cancellationToken);
         }
         else
         {
             await CreateNewAsync(currentDbPageCount, cancellationToken);
+        }
+    }
+
+    private async ValueTask RecoverExistingWalOrCreateNewAsync(
+        uint currentDbPageCount,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RecoverAsync(cancellationToken);
+        }
+        catch (CSharpDbException ex) when (IsWalMissingDuringRecovery(ex))
+        {
+            await CleanupFailedOpenAsync();
+            await CreateNewAsync(currentDbPageCount, cancellationToken);
+        }
+    }
+
+    private static bool IsWalMissingDuringRecovery(CSharpDbException ex)
+        => ex.Code == ErrorCode.WalError && ex.InnerException is FileNotFoundException;
+
+    private async ValueTask CleanupFailedOpenAsync()
+    {
+        try
+        {
+            CloseReadHandle();
+            CloseWriteHandle();
+            if (_stream != null)
+            {
+                await _stream.DisposeAsync();
+                _stream = null;
+            }
+        }
+        catch
+        {
+            // Best-effort cleanup before the caller creates a fresh WAL.
         }
     }
 

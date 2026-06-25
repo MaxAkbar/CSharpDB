@@ -12,7 +12,7 @@ using Empty = Google.Protobuf.WellKnownTypes.Empty;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed class GrpcTransportClient : ICSharpDbClient
+internal sealed class GrpcTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private static readonly Empty EmptyRequest = new();
 
@@ -24,7 +24,8 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         Uri endpoint,
         HttpClient? httpClient = null,
         string? apiKey = null,
-        string? apiKeyHeaderName = null)
+        string? apiKeyHeaderName = null,
+        CSharpDbRouteContext? routeContext = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -46,18 +47,176 @@ internal sealed class GrpcTransportClient : ICSharpDbClient
         }
 
         _channel = GrpcChannel.ForAddress(endpoint, channelOptions);
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            _client = new CSharpDbRpc.CSharpDbRpcClient(_channel);
-        }
-        else
-        {
-            var invoker = _channel.Intercept(new GrpcApiKeyClientInterceptor(apiKey, apiKeyHeaderName));
-            _client = new CSharpDbRpc.CSharpDbRpcClient(invoker);
-        }
+        CallInvoker invoker = _channel.CreateCallInvoker();
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            invoker = invoker.Intercept(new GrpcApiKeyClientInterceptor(apiKey, apiKeyHeaderName));
+        if (routeContext is not null)
+            invoker = invoker.Intercept(new GrpcRouteContextClientInterceptor(routeContext));
+
+        _client = new CSharpDbRpc.CSharpDbRpcClient(invoker);
     }
 
     public string DataSource => _endpoint;
+
+    public Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
+        => CallAsync(_client.GetShardMapAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+
+    public Task<CSharpDbShardResolution> ResolveRouteAsync(
+        CSharpDbRouteContext routeContext,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ResolveShardRouteAsync(GrpcModelMapper.ToMessage(routeContext), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardStatusAsync(EmptyRequest, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardStatus>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ExecuteSqlOnAllShardsAsync(new SqlRequest { Sql = sql }, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardSqlExecutionResult>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteReadOnlySqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ExecuteReadOnlySqlOnAllShardsAsync(new SqlRequest { Sql = sql }, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardSqlExecutionResult>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
+        => CallAsync(_client.GetShardCatalogAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);
+
+    public Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ValidateShardCatalogUpdateAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ApplyShardCatalogUpdateAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(
+        CSharpDbShardExactKeyMigrationRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.MigrateExactRouteKeyAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(
+        CSharpDbShardBucketRangeMigrationRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.MigrateBucketRangeAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardMigrationHistoryAsync(EmptyRequest, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardMigrationHistoryEntry>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardMigrationProgressAsync(EmptyRequest, cancellationToken: ct),
+            response => (IReadOnlyList<CSharpDbShardMigrationProgress>)response.Items.Select(GrpcModelMapper.ToModel).ToList(),
+            ct);
+
+    public Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.GetShardMigrationProgressByIdAsync(GrpcModelMapper.ToMigrationIdRequest(migrationId), cancellationToken: ct),
+            response => response.Value is null ? null : GrpcModelMapper.ToModel(response.Value),
+            ct);
+
+    public Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ResumeShardMigrationAsync(GrpcModelMapper.ToMigrationIdRequest(migrationId), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.RetryShardMigrationAsync(GrpcModelMapper.ToMigrationIdRequest(migrationId), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(
+        CSharpDbShardDirectoryResolveRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ResolveShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(
+        CSharpDbShardDirectoryReserveRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ReserveShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(
+        CSharpDbShardDirectoryActivateRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.ActivateShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(
+        CSharpDbShardDirectoryUpsertRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.UpsertShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(
+        CSharpDbShardDirectoryDisableRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.DisableShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(
+        CSharpDbShardDirectoryDeleteRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.DeleteShardDirectoryEntryAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(
+        CSharpDbShardDirectoryMarkStaleRequest request,
+        CancellationToken ct = default)
+        => CallAsync(
+            _client.MarkShardDirectoryEntryStaleAsync(GrpcModelMapper.ToMessage(request), cancellationToken: ct),
+            GrpcModelMapper.ToModel,
+            ct);
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
         => CallAsync(_client.GetInfoAsync(EmptyRequest, cancellationToken: ct), GrpcModelMapper.ToModel, ct);

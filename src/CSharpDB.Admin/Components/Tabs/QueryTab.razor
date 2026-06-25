@@ -8,11 +8,12 @@
 @using CSharpDB.Primitives
 @using CSharpDB.Sql
 @inject ICSharpDbClient DbClient
+@inject DatabaseClientHolder DbHolder
 @inject IJSRuntime JS
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
 @inject HostCallbackCatalogService CallbackCatalog
-@implements IDisposable
+@implements IAsyncDisposable
 
 <div class="query-tab" @ref="_queryTabRef" style="@($"--query-editor-height: {_editorHeightPx}px;")">
     <div class="toolbar">
@@ -57,6 +58,7 @@
                 <i class="bi bi-diagram-3"></i> Designer
             </button>
         </div>
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
         @if (_mode == QueryMode.Sql)
         {
             <div class="toolbar-spacer"></div>
@@ -176,6 +178,7 @@
                             @if (_activeQuerySql is not null && !_loading)
                             {
                                 <DataGrid QuerySql="@_activeQuerySql"
+                                          ClientOverride="@_routeClient"
                                           ReloadVersion="_queryReloadVersion"
                                           IsReadOnly="true"
                                           OnQueryStatusChanged="OnQueryResultsChanged" />
@@ -360,7 +363,7 @@
     }
     else
     {
-        <QueryDesignerPanel Tab="Tab" OnCopySql="OnDesignerCopySql" />
+        <QueryDesignerPanel Tab="Tab" ClientOverride="ActiveClient" OnCopySql="OnDesignerCopySql" />
     }
 </div>
 
@@ -431,6 +434,10 @@
     [Parameter] public TabDescriptor? Tab { get; set; }
 
     private SqlEditor? _editor;
+    private ICSharpDbClient? _routeClient;
+    private string? _routeClientKeyspace;
+    private string? _routeClientKey;
+    private ICSharpDbClient ActiveClient => _routeClient ?? DbClient;
     private string _sqlText = string.Empty;
     private bool _loading;
     private string? _error;
@@ -461,6 +468,7 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await EnsureRouteClientAsync();
         Changes.Changed += OnDatabaseObjectsChanged;
         await RefreshSavedQueriesAsync();
         await RefreshCompletionCatalogAsync();
@@ -480,6 +488,52 @@
 
         if (TryReadTabEditorHeight(out var persistedHeight))
             _editorHeightPx = NormalizeEditorHeight(persistedHeight);
+    }
+
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        if (_loading)
+            CancelRunningQuery();
+
+        await EnsureRouteClientAsync();
+        ResetResultState(resetActiveQuery: true);
+        await RefreshSavedQueriesAsync();
+        await RefreshCompletionCatalogAsync();
+        StateHasChanged();
+    }
+
+    private async Task EnsureRouteClientAsync()
+    {
+        CSharpDbRouteContext? route = Tab?.RouteContext;
+        if (route is null)
+        {
+            await DisposeRouteClientAsync();
+            return;
+        }
+
+        if (_routeClient is not null
+            && string.Equals(_routeClientKeyspace, route.Keyspace, StringComparison.Ordinal)
+            && string.Equals(_routeClientKey, route.Key, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await DisposeRouteClientAsync();
+        _routeClient = DbHolder.CreateRouteBoundClient(route);
+        _routeClientKeyspace = route.Keyspace;
+        _routeClientKey = route.Key;
+    }
+
+    private async ValueTask DisposeRouteClientAsync()
+    {
+        if (_routeClient is null)
+            return;
+
+        ICSharpDbClient routeClient = _routeClient;
+        _routeClient = null;
+        _routeClientKeyspace = null;
+        _routeClientKey = null;
+        await routeClient.DisposeAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -671,7 +725,7 @@
 
         try
         {
-            var saved = await DbClient.UpsertSavedQueryAsync(name, _sqlText);
+            var saved = await ActiveClient.UpsertSavedQueryAsync(name, _sqlText);
             _savedQueryName = saved.Name;
             _selectedSavedQueryName = saved.Name;
             if (Tab is not null)
@@ -696,7 +750,7 @@
 
         try
         {
-            var saved = await DbClient.GetSavedQueryAsync(_selectedSavedQueryName);
+            var saved = await ActiveClient.GetSavedQueryAsync(_selectedSavedQueryName);
             if (saved is null)
             {
                 Toast.Warning($"Saved query '{_selectedSavedQueryName}' was not found.");
@@ -726,7 +780,7 @@
 
         try
         {
-            _savedQueries = (await DbClient.GetSavedQueriesAsync())
+            _savedQueries = (await ActiveClient.GetSavedQueriesAsync())
                 .Where(q => !q.Name.StartsWith("__designer_layout:"))
                 .ToList();
             if (!string.IsNullOrWhiteSpace(keepSelection)
@@ -743,7 +797,9 @@
         }
         catch (Exception ex)
         {
-            Toast.Error($"Failed to refresh saved queries: {ex.Message}");
+            if (!IsMissingRouteContextException(ex))
+                Toast.Error($"Failed to refresh saved queries: {ex.Message}");
+
             _savedQueries = [];
             _selectedSavedQueryName = null;
         }
@@ -764,9 +820,9 @@
     {
         try
         {
-            var tableNamesTask = DbClient.GetTableNamesAsync();
-            var viewNamesTask = DbClient.GetViewNamesAsync();
-            var proceduresTask = DbClient.GetProceduresAsync(includeDisabled: false);
+            var tableNamesTask = ActiveClient.GetTableNamesAsync();
+            var viewNamesTask = ActiveClient.GetViewNamesAsync();
+            var proceduresTask = ActiveClient.GetProceduresAsync(includeDisabled: false);
             IReadOnlyList<DbHostCallbackDescriptor> callbacks = CallbackCatalog.GetCallbacks();
 
             await Task.WhenAll(tableNamesTask, viewNamesTask, proceduresTask);
@@ -784,7 +840,7 @@
             var columnsBySource = new Dictionary<string, IReadOnlyList<SqlCompletionColumn>>(StringComparer.OrdinalIgnoreCase);
             foreach (string tableName in tableNamesTask.Result)
             {
-                var schema = await DbClient.GetTableSchemaAsync(tableName);
+                var schema = await ActiveClient.GetTableSchemaAsync(tableName);
                 if (schema is null)
                     continue;
 
@@ -994,13 +1050,16 @@
     }
 
     private Task<SqlExecutionResult> ExecuteSqlAsync(string sql, CancellationToken ct)
-        => Task.Run(() => DbClient.ExecuteSqlAsync(sql, ct), ct);
+        => Task.Run(() => ActiveClient.ExecuteSqlAsync(sql, ct), ct);
 
     private Task<ProcedureExecutionResult> ExecuteProcedureAsync(
         string procedureName,
         IReadOnlyDictionary<string, object?> args,
         CancellationToken ct)
-        => Task.Run(() => DbClient.ExecuteProcedureAsync(procedureName, args, ct), ct);
+        => Task.Run(() => ActiveClient.ExecuteProcedureAsync(procedureName, args, ct), ct);
+
+    private static bool IsMissingRouteContextException(Exception ex)
+        => ex.Message.Contains("route context is required", StringComparison.OrdinalIgnoreCase);
 
     private async Task StartEditorResizeAsync(MouseEventArgs e)
     {
@@ -1424,11 +1483,12 @@
         return false;
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
         Changes.Changed -= OnDatabaseObjectsChanged;
         _queryCts?.Cancel();
         _queryCts?.Dispose();
         _dotNetRef?.Dispose();
+        await DisposeRouteClientAsync();
     }
 }

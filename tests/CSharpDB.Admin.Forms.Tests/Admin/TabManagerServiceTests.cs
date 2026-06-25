@@ -187,6 +187,18 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenDataHygieneTab_InheritsActiveRouteContext()
+    {
+        var manager = new TabManagerService();
+        TabDescriptor parent = manager.OpenTableTab("orders");
+        SetRoute(parent, "tenant", "customer-42", "shard-a");
+
+        TabDescriptor tab = manager.OpenDataHygieneTab(new DataHygieneSeed(DataHygieneMode.Orphans, TableName: "orders"));
+
+        AssertRoute(tab, "tenant", "customer-42", "shard-a");
+    }
+
+    [Fact]
     public void OpenCompareDeployTab_DeduplicatesAndUpdatesSeed()
     {
         var manager = new TabManagerService();
@@ -278,6 +290,22 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenShardingTab_Deduplicates()
+    {
+        var manager = new TabManagerService();
+
+        TabDescriptor first = manager.OpenShardingTab();
+        TabDescriptor second = manager.OpenShardingTab();
+
+        Assert.Same(first, second);
+        Assert.Equal("sharding:admin", second.Id);
+        Assert.Equal("Sharding", second.Title);
+        Assert.Equal(TabKind.Sharding, second.Kind);
+        Assert.Equal(2, manager.Tabs.Count);
+        Assert.Equal(second, manager.ActiveTab);
+    }
+
+    [Fact]
     public void CloseTabsForObject_ClosesCollectionTab()
     {
         var manager = new TabManagerService();
@@ -312,6 +340,36 @@ public class TabManagerServiceTests
     }
 
     [Fact]
+    public void OpenFormTabs_InheritActiveRouteContext()
+    {
+        var manager = new TabManagerService();
+        TabDescriptor parent = manager.OpenTableTab("customers");
+        SetRoute(parent, "tenant", "customer-42", "shard-a");
+
+        TabDescriptor designer = manager.OpenFormDesignerTab(initialTableName: "customers");
+        TabDescriptor entry = manager.OpenFormEntryTab("form-1", "Customer Form");
+
+        AssertRoute(designer, "tenant", "customer-42", "shard-a");
+        AssertRoute(entry, "tenant", "customer-42", "shard-a");
+    }
+
+    [Fact]
+    public void OpenFormEntryTab_ReopenedExistingTabUpdatesRouteContext()
+    {
+        var manager = new TabManagerService();
+        TabDescriptor firstParent = manager.OpenTableTab("customers");
+        SetRoute(firstParent, "tenant", "customer-1", "shard-a");
+        TabDescriptor entry = manager.OpenFormEntryTab("form-1", "Customer Form");
+
+        TabDescriptor secondParent = manager.OpenCollectionTab("profiles");
+        SetRoute(secondParent, "tenant", "customer-2", "shard-b");
+        TabDescriptor reopened = manager.OpenFormEntryTab("form-1", "Customer Form");
+
+        Assert.Same(entry, reopened);
+        AssertRoute(reopened, "tenant", "customer-2", "shard-b");
+    }
+
+    [Fact]
     public void CloseTabsForForm_ClosesDesignerAndEntryTabs()
     {
         var manager = new TabManagerService();
@@ -323,5 +381,25 @@ public class TabManagerServiceTests
 
         Assert.Equal(["welcome", "form-designer:form-2"], manager.Tabs.Select(tab => tab.Id).ToArray());
         Assert.Equal("form-designer:form-2", manager.ActiveTab!.Id);
+    }
+
+    private static void SetRoute(TabDescriptor tab, string keyspace, string key, string shardId)
+    {
+        tab.RouteKeyspace = keyspace;
+        tab.RouteKey = key;
+        tab.RouteShardId = shardId;
+        tab.RouteBucket = 7;
+        tab.RouteMapVersion = 3;
+        tab.RouteToken = 123UL;
+    }
+
+    private static void AssertRoute(TabDescriptor tab, string keyspace, string key, string shardId)
+    {
+        Assert.Equal(keyspace, tab.RouteKeyspace);
+        Assert.Equal(key, tab.RouteKey);
+        Assert.Equal(shardId, tab.RouteShardId);
+        Assert.Equal(7, tab.RouteBucket);
+        Assert.Equal(3, tab.RouteMapVersion);
+        Assert.Equal(123UL, tab.RouteToken);
     }
 }

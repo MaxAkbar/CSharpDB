@@ -226,6 +226,75 @@ without the lazy-resident hybrid cache. `HotTableNames` and
 `CSharpDB:Daemon:EnableRestApi=false` only when the daemon should expose gRPC
 without the REST `/api` surface.
 
+### API-Level Sharding
+
+The daemon treats `ConnectionStrings:CSharpDB` as the master database. If that
+opened database contains an active shard map in the master catalog tables, the
+daemon hosts the mapped shard files and routes each request by route context. If
+the master database has no active shard map, the daemon opens normally as a
+single unsharded database. REST clients send `X-CSharpDB-Keyspace` and
+`X-CSharpDB-Shard-Key`; gRPC clients set
+`CSharpDbClientOptions.RouteContext`, which is sent as metadata.
+
+For an e-commerce order-history workload, use a route key such as the order
+month (`yyyy-MM`). Recent orders can query the current month route, while older
+history is loaded by sending the selected month route.
+
+All shard files use the daemon host database open-mode and storage tuning
+settings. V1 requires route context for single-shard operations and does not
+perform cross-shard SQL, cross-shard transactions, replication, failover, or
+automatic data movement when bucket ownership changes.
+
+Replica metadata is informational in this slice. `Role = "Replica"` shards can
+name their `PrimaryShardId`, promotion eligibility, and operator-reported lag.
+Shard map snapshots and status responses expose those fields, but bucket ranges
+and exact route-key pins must still point to primary shards. The daemon does not
+copy data to replicas, promote replicas, or reroute traffic based on health yet.
+
+Routing does not replace row filtering. Queries should still include the route
+column, such as `WHERE order_month = '2026-06'`, because multiple route keys can
+share one shard.
+
+At startup, the daemon reads the active map from the opened master database.
+Operator catalog updates validate a proposed map and write it back to that same
+master database as a pending map. The live daemon does not silently change
+routing. Restart the daemon after a successful apply to activate the new map.
+
+Catalog update endpoints:
+
+- REST: `/api/sharding/catalog`, `/api/sharding/catalog/validate`, and
+  `/api/sharding/catalog/apply`
+- gRPC: `GetShardCatalog`, `ValidateShardCatalogUpdate`, and
+  `ApplyShardCatalogUpdate`
+
+Controlled resharding supports exact route-key migration and bucket-range
+movement. Operators call `POST /api/sharding/migrations/exact-route-key` or
+gRPC `MigrateExactRouteKey` for one route key, and
+`POST /api/sharding/migrations/bucket-range` or gRPC `MigrateBucketRange` for a
+virtual-bucket interval. Both paths use a manifest that names route-owned tables
+and collections. The daemon fences affected writes, copies matching manifest
+data to the destination shard, verifies counts and checksums, and then writes a
+pending exact-key pin or bucket map to the catalog. Restart the daemon after a
+successful migration to activate the new route map. Automatic SQL ownership
+inference is not part of this slice.
+
+Bucket-range movement requires the requested buckets to be wholly owned by the
+source shard. Exact route-key pins are left in place and are not moved by bucket
+ownership changes.
+
+Migration history is stored in the same catalog file when catalog writes are
+enabled. Query it with REST `GET /api/sharding/migrations` or gRPC
+`GetShardMigrationHistory`. Matching shard-directory entries are also moved to
+the destination shard in the pending catalog map. Failed, verification-failed,
+and catalog-apply-failed outcomes include `RequiresOperatorRecovery` and
+`RecoveryAction` so Admin can surface recoverable movement states.
+
+Read-only fan-out is available for diagnostics and Admin views through REST
+`POST /api/sharding/sql/read-all` or gRPC `ExecuteReadOnlySqlOnAllShards`. The
+daemon rejects DDL/DML before routing the request and returns one result per
+shard. Use `/api/sharding/sql/execute-all` only for explicit operator actions
+such as schema setup.
+
 ### API-Key Security
 
 Set `CSharpDB:Daemon:Security:Mode=ApiKey` to protect both REST `/api/*` and
@@ -304,6 +373,41 @@ await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
 
 var info = await client.GetInfoAsync();
 ```
+
+Shard-admin example for a sharded daemon:
+
+```csharp
+using CSharpDB.Client;
+
+await using var shardAdmin = CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+{
+    Transport = CSharpDbTransport.Grpc,
+    Endpoint = "http://localhost:5820",
+});
+
+var map = await shardAdmin.GetShardMapAsync();
+var status = await shardAdmin.GetShardStatusAsync();
+var preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+```
+
+The same surface is available through REST under `/api/sharding/map`,
+`/api/sharding/resolve`, `/api/sharding/status`, and
+`/api/sharding/sql/execute-all`. Read-only fan-out is available through REST
+`/api/sharding/sql/read-all` and gRPC `ExecuteReadOnlySqlOnAllShards`; it
+validates SQL before fan-out and returns per-shard results without combining
+them into one distributed query result. Catalog mode adds
+`/api/sharding/catalog`, `/api/sharding/catalog/validate`,
+`/api/sharding/catalog/apply`, and `/api/sharding/migrations`; exact-key
+movement uses `/api/sharding/migrations/exact-route-key`, and bucket-range
+movement uses `/api/sharding/migrations/bucket-range`. These
+endpoints are for topology, route simulation, health checks, explicit schema
+setup, read-only diagnostics, operator-managed catalog updates, and exact
+route-key or bucket-range movement; they do not enable automatic cross-shard
+SQL.
 
 Notes:
 

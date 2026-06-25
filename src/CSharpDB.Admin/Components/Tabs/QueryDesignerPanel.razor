@@ -369,6 +369,7 @@
             else if (_lastRunSql is not null)
             {
                 <DataGrid QuerySql="@_lastRunSql"
+                          ClientOverride="ActiveClient"
                           ReloadVersion="_runVersion"
                           IsReadOnly="true"
                           OnQueryStatusChanged="OnResultsStatusChanged" />
@@ -384,6 +385,7 @@
     private const int ColRowHeight = 28;
 
     [Parameter] public TabDescriptor? Tab { get; set; }
+    [Parameter] public ICSharpDbClient? ClientOverride { get; set; }
     [Parameter] public EventCallback<string> OnCopySql { get; set; }
 
     private QueryDesignerState _state = new();
@@ -426,10 +428,13 @@
     private DotNetObjectReference<QueryDesignerPanel>? _dotNetRef;
     private ElementReference _canvasRef;
     private ElementReference _sqlPreviewRef;
+    private ICSharpDbClient? _loadedClient;
+
+    private ICSharpDbClient ActiveClient => ClientOverride ?? DbClient;
 
     // ── Lifecycle ──────────────────────────────────────────────────
 
-    protected override void OnParametersSet()
+    protected override async Task OnParametersSetAsync()
     {
         if (Tab?.DesignerStateJson is string json)
         {
@@ -450,10 +455,20 @@
             else if (previewHeight is string stringValue && int.TryParse(stringValue, out var parsed))
                 _sqlPreviewHeightPx = NormalizeSqlPreviewHeight(parsed);
         }
+
+        if (!ReferenceEquals(_loadedClient, ActiveClient))
+        {
+            _loadedClient = ActiveClient;
+            _lastRunSql = null;
+            _resultStatus = new QueryResultsStatus();
+            await RefreshTableNamesAsync();
+            await RefreshSavedLayoutsAsync();
+        }
     }
 
     protected override async Task OnInitializedAsync()
     {
+        _loadedClient = ActiveClient;
         await RefreshTableNamesAsync();
         await RefreshSavedLayoutsAsync();
     }
@@ -500,7 +515,7 @@
 
         try
         {
-            var schema = await DbClient.GetTableSchemaAsync(tableName);
+            var schema = await ActiveClient.GetTableSchemaAsync(tableName);
             if (schema is null) return;
 
             double x = 20 + _state.Tables.Count * 230;
@@ -690,7 +705,7 @@
         try
         {
             string json = JsonSerializer.Serialize(_state);
-            await DbClient.UpsertSavedQueryAsync(LayoutPrefix + name, json);
+            await ActiveClient.UpsertSavedQueryAsync(LayoutPrefix + name, json);
             _state.SavedLayoutName = name;
             SaveState();
             await RefreshSavedLayoutsAsync();
@@ -713,7 +728,7 @@
         _showLoadPanel = false;
         try
         {
-            var saved = await DbClient.GetSavedQueryAsync(fullName);
+            var saved = await ActiveClient.GetSavedQueryAsync(fullName);
             if (saved is null) return;
             var loaded = JsonSerializer.Deserialize<QueryDesignerState>(saved.SqlText);
             if (loaded is null) return;
@@ -732,7 +747,7 @@
     {
         try
         {
-            var all = await DbClient.GetSavedQueriesAsync();
+            var all = await ActiveClient.GetSavedQueriesAsync();
             _savedLayouts = all.Where(q => q.Name.StartsWith(LayoutPrefix)).ToList();
         }
         catch { _savedLayouts = []; }
@@ -857,7 +872,7 @@
 
     private async Task RefreshTableNamesAsync()
     {
-        try { _tableNames = (await DbClient.GetTableNamesAsync()).Where(n => !n.StartsWith("_", StringComparison.Ordinal)).OrderBy(n => n).ToList(); }
+        try { _tableNames = (await ActiveClient.GetTableNamesAsync()).Where(n => !n.StartsWith("_", StringComparison.Ordinal)).OrderBy(n => n).ToList(); }
         catch { _tableNames = []; }
     }
 

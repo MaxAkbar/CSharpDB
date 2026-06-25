@@ -199,6 +199,7 @@
     [Parameter] public string? PrimaryKeyColumn { get; set; }
     [Parameter] public bool IsReadOnly { get; set; }
     [Parameter] public bool ShowFilters { get; set; } = true;
+    [Parameter] public ICSharpDbClient? ClientOverride { get; set; }
     [Parameter] public EventCallback<string> OnStatusMessage { get; set; }
     [Parameter] public EventCallback<int> OnSelectionChanged { get; set; }
     [Parameter] public EventCallback<QueryResultsStatus> OnQueryStatusChanged { get; set; }
@@ -224,6 +225,7 @@
     private string? _lastTableName;
     private string? _lastViewName;
     private string? _lastQuerySql;
+    private ICSharpDbClient? _lastClient;
     private int _lastReloadVersion;
     private bool _sourceInitialized;
     private QueryPagingPlan? _queryPagingPlan;
@@ -236,6 +238,7 @@
     private int _viewCursorNextPage;
     private bool _bypassViewCursorForNextLoad;
     private CancellationTokenSource? _loadCts;
+    private ICSharpDbClient ActiveClient => ClientOverride ?? DbClient;
 
     private int TotalPages => _hasExactTotal
         ? Math.Max(1, (int)Math.Ceiling(_totalRows / (double)_pageSize))
@@ -247,7 +250,8 @@
         bool sourceChanged = !_sourceInitialized
             || !string.Equals(_lastTableName, TableName, StringComparison.Ordinal)
             || !string.Equals(_lastViewName, ViewName, StringComparison.Ordinal)
-            || !string.Equals(_lastQuerySql, QuerySql, StringComparison.Ordinal);
+            || !string.Equals(_lastQuerySql, QuerySql, StringComparison.Ordinal)
+            || !ReferenceEquals(_lastClient, ActiveClient);
         bool queryReloadRequested = QuerySql is not null && _lastReloadVersion != ReloadVersion;
 
         if (!sourceChanged && !queryReloadRequested)
@@ -257,6 +261,7 @@
         _lastTableName = TableName;
         _lastViewName = ViewName;
         _lastQuerySql = QuerySql;
+        _lastClient = ActiveClient;
         _lastReloadVersion = ReloadVersion;
 
         if (sourceChanged)
@@ -360,13 +365,24 @@
     }
 
     private Task<CSharpDB.Client.Models.SqlExecutionResult> ExecuteSqlAsync(string sql, CancellationToken ct)
-        => Task.Run(() => DbClient.ExecuteSqlAsync(sql, ct), ct);
+        => Task.Run(() => ActiveClient.ExecuteSqlAsync(sql, ct), ct);
 
     private Task<TableSchema?> GetTableSchemaAsync(string tableName, CancellationToken ct)
-        => Task.Run(() => DbClient.GetTableSchemaAsync(tableName, ct), ct);
+        => Task.Run(() => ActiveClient.GetTableSchemaAsync(tableName, ct), ct);
 
     private Task<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct)
-        => Task.Run(async () => await DbHolder.TryOpenForwardOnlyQueryCursorAsync(sql, ct), ct);
+        => Task.Run(
+            async () =>
+            {
+                if (ClientOverride is CSharpDbClient client)
+                    return await client.TryOpenForwardOnlyQueryCursorAsync(sql, ct);
+
+                if (ClientOverride is null)
+                    return await DbHolder.TryOpenForwardOnlyQueryCursorAsync(sql, ct);
+
+                return null;
+            },
+            ct);
 
     // ─── Sorting ────────────────────
     private async Task SortColumn(int colIdx)
@@ -748,7 +764,7 @@
                         }
                             if (insertVals.Count > 0)
                             {
-                            await DbClient.InsertRowAsync(TableName, insertVals);
+                            await ActiveClient.InsertRowAsync(TableName, insertVals);
                             saved++;
                         }
                         break;
@@ -757,12 +773,12 @@
                         var updateVals = new Dictionary<string, object?>();
                         for (int c = 0; c < Columns!.Length; c++)
                             updateVals[Columns[c]] = row.CurrentValues[c];
-                        await DbClient.UpdateRowAsync(TableName, PrimaryKeyColumn, row.OriginalValues[pkColIdx]!, updateVals);
+                        await ActiveClient.UpdateRowAsync(TableName, PrimaryKeyColumn, row.OriginalValues[pkColIdx]!, updateVals);
                         saved++;
                         break;
 
                     case RowState.Deleted:
-                        await DbClient.DeleteRowAsync(TableName, PrimaryKeyColumn, row.OriginalValues[pkColIdx]!);
+                        await ActiveClient.DeleteRowAsync(TableName, PrimaryKeyColumn, row.OriginalValues[pkColIdx]!);
                         saved++;
                         break;
                 }

@@ -5,10 +5,22 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ─── Services ───────────────────────────────────────────────
 
-builder.Services.AddCSharpDbClient(sp => new CSharpDbClientOptions
+builder.Services.AddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
+builder.Services.AddSingleton(sp =>
 {
-    ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
-        ?? "Data Source=csharpdb.db",
+    return new CSharpDbClientOptions
+    {
+        ConnectionString = sp.GetRequiredService<IConfiguration>().GetConnectionString("CSharpDB")
+            ?? "Data Source=csharpdb.db",
+    };
+});
+builder.Services.AddSingleton<ICSharpDbClient>(sp =>
+{
+    CSharpDbClientOptions options = sp.GetRequiredService<CSharpDbClientOptions>();
+    return CSharpDbShardedClient.TryCreateFromMasterCatalog(
+               options,
+               sp.GetRequiredService<ICSharpDbRouteContextAccessor>())
+           ?? CSharpDbClient.Create(options);
 });
 
 builder.Services.AddCSharpDbRestApi(builder.Configuration.GetSection("CSharpDB:Api:Security"));

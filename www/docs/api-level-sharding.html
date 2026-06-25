@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>API-Level Sharding — CSharpDB</title>
+    <meta name="description" content="Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.">
+    <link rel="canonical" href="https://csharpdb.com/docs/api-level-sharding.html">
+    <meta property="og:title" content="API-Level Sharding — CSharpDB">
+    <meta property="og:description" content="Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.">
+    <meta property="og:url" content="https://csharpdb.com/docs/api-level-sharding.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "API-Level Sharding",
+        "description": "Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.",
+        "url": "https://csharpdb.com/docs/api-level-sharding.html",
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": "CSharpDB",
+            "url": "https://csharpdb.com"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'API-Level Sharding',
+            description: 'Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.',
+            keywords: 'CSharpDB sharding, master catalog, route key, virtual buckets, shard map, ecommerce order history, monthly shards',
+            canonicalPath: 'docs/api-level-sharding.html',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>API-Level Sharding</h1>
+                <p class="lead">API-level sharding uses a master catalog and explicit application-owned route keys to route each request to one normal CSharpDB database file.</p>
+
+                <div class="callout callout-info">
+                    <strong>Try it first:</strong> run <code>dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj</code> from the repository root. The sample creates a master database plus four shard files and walks through an e-commerce order-history flow where recent orders use the current month route and older history uses the selected month route.
+                </div>
+
+                <h2>Scenario: E-Commerce Order History</h2>
+                <p>Order history is a good V1 sharding shape because orders are usually write-once/read-many and users normally browse recent orders first. The application can route current orders by month, then route older history only when the user selects an older month.</p>
+
+                <p>In this scenario the route context is:</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06"
+}</code></pre>
+                </div>
+
+                <p>The route key is the order month in <code>yyyy-MM</code> form. Normal application code does not choose <code>shard-0</code> or <code>shard-1</code>; it chooses the business key, and CSharpDB resolves that key through the virtual-bucket map and exact pins.</p>
+
+                <h3>User Flow</h3>
+                <ul>
+                    <li>Customer opens order history: query page 1 with route key <code>2026-06</code>.</li>
+                    <li>Customer chooses May 2026: query page 1 with route key <code>2026-05</code>.</li>
+                    <li>Customer requests a 10-row page that spans months: read 6 rows from <code>2026-06</code>, then continue into <code>2026-05</code> for the remaining 4 rows.</li>
+                    <li>Customer requests a multi-month summary: the caller explicitly iterates the known month route keys and combines the results.</li>
+                </ul>
+
+                <h2>Routing Model</h2>
+                <p>Each shard stays a normal warm CSharpDB database with its own WAL, pager, cache, and commit path. The sharded client sits above those databases and resolves a <code>CSharpDbRouteContext</code> to exactly one shard.</p>
+
+                <ol>
+                    <li>The application supplies <code>Keyspace</code> and <code>Key</code>, such as <code>orders_by_month</code> and <code>2026-06</code>.</li>
+                    <li>CSharpDB canonicalizes the route text as <code>{keyspaceLength}:{keyspace}|{keyLength}:{key}</code>.</li>
+                    <li>The router hashes the canonical UTF-8 bytes with SHA-256 and reads the first 8 bytes as an unsigned token.</li>
+                    <li>The token maps to a virtual bucket.</li>
+                    <li>The bucket map resolves that bucket to a <code>ShardId</code>.</li>
+                    <li>An exact route-key pin can override bucket ownership for operator-controlled placement of hot or archival keys.</li>
+                </ol>
+
+                <div class="callout callout-warning">
+                    <strong>Do not use <code>hash(key) % shardCount</code> for persisted data.</strong> Changing the shard count would remap existing keys silently. CSharpDB V1 uses explicit virtual-bucket ownership so adding a shard becomes a controlled migration.
+                </div>
+
+                <div class="callout callout-info">
+                    <strong>Routing is not row filtering.</strong> The route key gets the request to the right database file. SQL should still filter on the route-key column, such as <code>WHERE order_month = '2026-05'</code>, because multiple route keys can live on the same physical shard.
+                </div>
+
+                <h2>Direct Local Client</h2>
+                <p>For embedded or service-internal use, seed the shard map into a master CSharpDB database, open the master database, and bind requests with <code>ForRoute(...)</code>. The master database owns sharding metadata; it is not a data shard.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>using CSharpDB.Client;
+
+CSharpDbClientOptions masterOptions = new()
+{
+    ConnectionString = "Data Source=data/master.db",
+};
+
+CSharpDbShardingOptions activeMap = new()
+{
+    Keyspace = "orders_by_month",
+    MapVersion = 1,
+    VirtualBucketCount = 16,
+    Shards =
+    [
+        new CSharpDbShardDefinition { ShardId = "shard-0", DataSource = "data/shard-0.db" },
+        new CSharpDbShardDefinition { ShardId = "shard-1", DataSource = "data/shard-1.db" },
+        new CSharpDbShardDefinition { ShardId = "shard-2", DataSource = "data/shard-2.db" },
+        new CSharpDbShardDefinition { ShardId = "shard-3", DataSource = "data/shard-3.db" },
+    ],
+    BucketRanges =
+    [
+        new CSharpDbShardBucketRange { StartBucketInclusive = 0, EndBucketExclusive = 4, ShardId = "shard-0" },
+        new CSharpDbShardBucketRange { StartBucketInclusive = 4, EndBucketExclusive = 8, ShardId = "shard-1" },
+        new CSharpDbShardBucketRange { StartBucketInclusive = 8, EndBucketExclusive = 12, ShardId = "shard-2" },
+        new CSharpDbShardBucketRange { StartBucketInclusive = 12, EndBucketExclusive = 16, ShardId = "shard-3" },
+    ],
+    ExactKeyPins = new Dictionary&lt;string, string&gt;(StringComparer.Ordinal)
+    {
+        ["2026-06"] = "shard-0",
+        ["2026-05"] = "shard-1",
+        ["2026-04"] = "shard-2",
+        ["2025-12"] = "shard-3",
+    },
+};
+
+await CSharpDbShardedClient.SeedMasterCatalogAsync(masterOptions, activeMap);
+
+await using CSharpDbShardedClient sharded =
+    await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(masterOptions)
+    ?? throw new InvalidOperationException("The master database does not contain an active shard map.");
+
+await sharded.ExecuteSqlOnAllShardsAsync("""
+    CREATE TABLE orders (
+        id INTEGER PRIMARY KEY,
+        order_month TEXT NOT NULL,
+        customer_id TEXT NOT NULL,
+        order_number TEXT NOT NULL,
+        order_date TEXT NOT NULL,
+        amount REAL NOT NULL,
+        status TEXT NOT NULL
+    );
+    """);
+
+var route = new CSharpDbRouteContext { Keyspace = "orders_by_month", Key = "2026-06" };
+ICSharpDbClient juneOrders = sharded.ForRoute(route);
+
+await juneOrders.InsertRowAsync("orders", new Dictionary&lt;string, object?&gt;
+{
+    ["id"] = 1L,
+    ["order_month"] = "2026-06",
+    ["customer_id"] = "customer-1001",
+    ["order_number"] = "SO-202606-1001",
+    ["order_date"] = "2026-06-01T10:15:00Z",
+    ["amount"] = 149.00,
+    ["status"] = "placed",
+});
+
+CSharpDbShardResolution resolution = sharded.ResolveRoute(route);
+Console.WriteLine($"{route.Key} =&gt; bucket {resolution.Bucket}, shard {resolution.ShardId}");</code></pre>
+                </div>
+
+                <h3>Replica Metadata</h3>
+                <p>Shard definitions can carry Phase 6 replica metadata for operational views. This is metadata only: CSharpDB exposes the role, primary shard, promotion eligibility, and operator-reported lag, but it does not copy data, promote replicas, or reroute traffic based on health in this slice.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>new CSharpDbShardDefinition
+{
+    ShardId = "shard-1-replica",
+    DataSource = "data/shard-1-replica.db",
+    Role = CSharpDbShardRoles.Replica,
+    PrimaryShardId = "shard-1",
+    PromotionEligible = true,
+    ReplicationLagBytes = 256,
+    LastReplicatedUtc = DateTimeOffset.UtcNow,
+}</code></pre>
+                </div>
+
+                <p>Bucket ranges and exact route-key pins must still point to primary shards. Replicas appear in map snapshots and shard status so Admin and operators can inspect the intended topology before replication and failover mechanics are added.</p>
+
+                <h2>Recent And Older Pages</h2>
+                <p>A recent order-history page uses the current route key. An older page uses the route key selected by the user. Both queries still filter on <code>order_month</code>.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>ICSharpDbClient currentMonth = sharded.ForRoute(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+
+await currentMonth.ExecuteSqlAsync("""
+    SELECT order_number, order_date, amount, status
+    FROM orders
+    WHERE order_month = '2026-06'
+      AND customer_id = 'customer-1001'
+    ORDER BY order_date DESC
+    LIMIT 25 OFFSET 0;
+    """);
+
+ICSharpDbClient olderMonth = sharded.ForRoute(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-05",
+});
+
+await olderMonth.ExecuteSqlAsync("""
+    SELECT order_number, order_date, amount, status
+    FROM orders
+    WHERE order_month = '2026-05'
+      AND customer_id = 'customer-1001'
+    ORDER BY order_date DESC
+    LIMIT 25 OFFSET 0;
+    """);</code></pre>
+                </div>
+
+                <h2>Page Fill Across Route Keys</h2>
+                <p>When a UI page can span more than one route key, the application owns the aggregation loop. For a descending order-history view, keep the route keys ordered newest-to-oldest and keep querying until the page is full.</p>
+
+                <div class="code-block" data-title="Example">
+                    <pre><code>remaining = 10
+
+query 2026-06 LIMIT 10 OFFSET 0
+  -&gt; 6 rows
+  -&gt; remaining = 4
+
+query 2026-05 LIMIT 4 OFFSET 0
+  -&gt; 4 rows
+  -&gt; page is full</code></pre>
+                </div>
+
+                <p>For later pages, convert the requested page into a global offset, skip whole route keys until that offset is consumed, then use a route-local <code>OFFSET</code> for the first route that contributes rows.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>int remainingToSkip = (pageNumber - 1) * pageSize;
+int remainingToTake = pageSize;
+var pageRows = new List&lt;OrderRow&gt;(pageSize);
+
+foreach (string month in orderedMonths)
+{
+    int routeCount = await CountOrdersForRouteAsync(month);
+    if (remainingToSkip &gt;= routeCount)
+    {
+        remainingToSkip -= routeCount;
+        continue;
+    }
+
+    int routeOffset = remainingToSkip;
+    remainingToSkip = 0;
+
+    int routeTake = Math.Min(remainingToTake, routeCount - routeOffset);
+    pageRows.AddRange(await LoadOrdersForRouteAsync(month, routeTake, routeOffset));
+
+    remainingToTake = pageSize - pageRows.Count;
+    if (remainingToTake == 0)
+        break;
+}</code></pre>
+                </div>
+
+                <h3>Alternative Aggregation Patterns</h3>
+                <p>The sample uses precise page fill because it reads only the rows needed for an arbitrary page. If the product experience only spans a small, known route window, simpler patterns can be acceptable.</p>
+
+                <h4>Bounded over-fetch, then merge and limit</h4>
+                <p>For a recent-orders page, the UI may only need the current month and previous month. Query both routes, accept a small amount of extra data, merge by the same sort order, and trim the result to the requested page size.</p>
+
+                <div class="code-block" data-title="Pseudocode">
+                    <pre><code>pageSize = 10
+candidateMonths = ["2026-06", "2026-05"]
+rows = []
+
+for month in candidateMonths:
+    rows += query route month
+        where customer_id = "customer-1001"
+        order by order_date desc, id desc
+        limit pageSize
+
+page = rows
+    order by order_date desc, id desc
+    take pageSize</code></pre>
+                </div>
+
+                <p>This avoids route counts and route-local offset math. The tradeoff is that it can read extra rows and only works well when the route window is intentionally small. Use a deterministic tie-breaker such as <code>id</code> with <code>order_date</code> so merged pages are stable.</p>
+
+                <h4>Date-range window reads</h4>
+                <p>For filters such as "last 90 days" or "orders from April through June", compute the month route keys from the date range and query each route with both the route key and the date predicate.</p>
+
+                <div class="code-block" data-title="Pseudocode">
+                    <pre><code>months = monthsBetween(startDate, endDate)
+rows = []
+
+for month in months newest-to-oldest:
+    rows += query route month
+        where order_month = month
+          and order_date &gt;= startDate
+          and order_date &lt; endDate
+        order by order_date desc, id desc
+        limit perRouteLimit
+
+page = merge rows by order_date desc, id desc
+page = page take pageSize</code></pre>
+                </div>
+
+                <p>This is useful for user-selected windows and reports. Keep <code>perRouteLimit</code> bounded so a broad date filter does not accidentally become an expensive fan-out.</p>
+
+                <h4>Cursor-based continuation</h4>
+                <p>Instead of counting every route for later pages, the API can return a continuation token that records where the next page should resume. For month-sharded order history, that token can contain the ordered route list plus either per-route offsets or the last <code>(order_date, id)</code> cursor returned from each route.</p>
+
+                <div class="code-block" data-title="Pseudocode">
+                    <pre><code>request:
+  pageSize = 10
+  token = previous response token, or empty
+
+state = decode token
+rows = []
+
+for month in state.remainingMonths:
+    rows += query route month
+        where row is after the month cursor
+        order by order_date desc, id desc
+        limit rows still needed
+
+    update month cursor
+    if rows has pageSize:
+        break
+
+return rows plus updated token</code></pre>
+                </div>
+
+                <p>This usually fits infinite scroll better than numbered pages. It avoids global counts, but the token must be treated as part of the API contract.</p>
+
+                <p>This is application-level aggregation. CSharpDB V1 does not infer the route list from <code>WHERE order_date BETWEEN ...</code> and does not run a distributed query plan.</p>
+
+                <h2>Daemon Configuration</h2>
+                <p>For the REST API and gRPC daemon, configure the normal CSharpDB connection string to point at the master database. At startup the daemon opens that database, discovers the active shard map from the master catalog, registers a sharded <code>ICSharpDbClient</code>, and routes existing endpoints through per-request route context.</p>
+
+                <div class="code-block" data-title="appsettings.json">
+                    <pre><code>{
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=data/master.db"
+  }
+}</code></pre>
+                </div>
+
+                <p>Seed the master catalog with <code>SeedMasterCatalogAsync(...)</code>, Admin's sharding setup flow, or the shard catalog update APIs before starting the daemon. The previous JSON file catalog shape is not part of the shipped v4 implementation.</p>
+
+                <h2>Remote Route Context</h2>
+                <p>HTTP clients send route context as headers. gRPC clients send the same names as lowercase metadata keys.</p>
+
+                <div class="code-block" data-title="HTTP">
+                    <pre><code>X-CSharpDB-Keyspace: orders_by_month
+X-CSharpDB-Shard-Key: 2026-06</code></pre>
+                </div>
+
+                <p>The .NET client sets those headers or metadata automatically when <code>RouteContext</code> is present.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using ICSharpDbClient client = CSharpDbClient.Create(new CSharpDbClientOptions
+{
+    Endpoint = "https://localhost:61818",
+    Transport = CSharpDbTransport.Http,
+    RouteContext = new CSharpDbRouteContext
+    {
+        Keyspace = "orders_by_month",
+        Key = "2026-06",
+    },
+});
+
+await client.ExecuteSqlAsync("SELECT COUNT(*) FROM orders WHERE order_month = '2026-06';");</code></pre>
+                </div>
+
+                <h2>Shard Admin APIs</h2>
+                <p>Shard-admin APIs expose topology and operational state without overloading normal data operations. They are available for direct sharded clients and through both REST and gRPC daemon transports.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>await using ICSharpDbShardAdminClient shardAdmin =
+    CSharpDbClient.CreateShardAdmin(new CSharpDbClientOptions
+    {
+        Transport = CSharpDbTransport.Grpc,
+        Endpoint = "https://localhost:61818",
+    });
+
+CSharpDbShardMapSnapshot map = await shardAdmin.GetShardMapAsync();
+CSharpDbShardResolution preview = await shardAdmin.ResolveRouteAsync(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+IReadOnlyList&lt;CSharpDbShardStatus&gt; status = await shardAdmin.GetShardStatusAsync();</code></pre>
+                </div>
+
+                <p>The REST endpoints are <code>GET /api/sharding/map</code>, <code>POST /api/sharding/resolve</code>, <code>GET /api/sharding/status</code>, <code>POST /api/sharding/sql/execute-all</code>, and <code>POST /api/sharding/sql/read-all</code>. The gRPC contract exposes matching calls named <code>GetShardMap</code>, <code>ResolveShardRoute</code>, <code>GetShardStatus</code>, <code>ExecuteSqlOnAllShards</code>, and <code>ExecuteReadOnlySqlOnAllShards</code>.</p>
+
+                <div class="callout callout-info">
+                    <strong>Admin operations are explicit.</strong> Execute-on-all-shards is intended for schema setup. Read-only fan-out is intended for diagnostics and Admin views. Both return one result per shard and do not create a distributed SQL planner.
+                </div>
+
+                <h3>Admin Sharding Workspace</h3>
+                <p>CSharpDB Studio includes a Sharding workspace for operator inspection. It shows shard definitions, bucket ranges, exact route-key pins, shard health, catalog state, migration history, and route resolution previews.</p>
+
+                <p>For local Admin hosting, open the master database that contains the active shard map. For remote HTTP or gRPC Admin connections, the workspace calls the daemon shard-admin endpoints.</p>
+
+                <h3>Route-Aware Admin Tabs</h3>
+                <p>Query, table/view data, and collection tabs include a route selector when shard-admin APIs are available. Enter the keyspace and application route key, such as <code>orders_by_month</code> and <code>2026-06</code>, then apply the route. The selector resolves and displays the target shard and bucket; the tab stores that route snapshot independently from other open tabs.</p>
+
+                <p>After a route is selected, SQL execution, procedure execution, table browsing, row edits, schema actions, collection browsing, document writes, and exact-key document lookup use a route-bound <code>ICSharpDbClient</code>. Direct sharded Admin uses <code>ForRoute(...)</code>. Remote HTTP and gRPC Admin clients send the selected route through normal route headers or metadata.</p>
+
+                <div class="callout callout-warning">
+                    <strong>Admin routing is still explicit.</strong> The selector does not infer a route from <code>WHERE order_month = ...</code>, a document key, or a table name. Choose the route key first, then run the normal single-shard Admin action. Broader forms, reports, pipelines, and query-designer route binding are planned as follow-up Admin coverage.
+                </div>
+
+                <h3>Read-Only Fan-Out</h3>
+                <p>Use read-only fan-out when an operator needs a per-shard diagnostic view, such as row counts or simple health queries. CSharpDB validates the SQL before routing and rejects DDL/DML statements.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>IReadOnlyList&lt;CSharpDbShardSqlExecutionResult&gt; counts =
+    await shardAdmin.ExecuteReadOnlySqlOnAllShardsAsync(
+        "SELECT COUNT(*) FROM orders;");</code></pre>
+                </div>
+
+                <p>The returned results stay grouped by shard. The caller decides whether to show each shard separately, merge rows for a report, or compute a small explicit rollup. Normal application paging should still use route-aware calls so the app controls the route keys and the amount of data read.</p>
+
+                <h3>Catalog-Backed Map Updates</h3>
+                <p>Operator-managed catalog mode stores the active shard map, pending map, catalog history, migration checkpoints, and migration history in the master database. Applying a catalog change writes a pending map into the master catalog; it does not silently change the live router.</p>
+
+                <div class="code-block" data-title="appsettings.json">
+                    <pre><code>{
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=data/master.db"
+  }
+}</code></pre>
+                </div>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>CSharpDbShardCatalogState catalog = await shardAdmin.GetShardCatalogAsync();
+
+CSharpDbShardCatalogValidationResult validation =
+    await shardAdmin.ValidateShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+    {
+        Options = proposedOptions,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+    });
+
+CSharpDbShardCatalogApplyResult applied =
+    await shardAdmin.ApplyShardCatalogUpdateAsync(new CSharpDbShardCatalogUpdateRequest
+    {
+        Options = proposedOptions,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        AllowMetadataOnlyOwnershipChange = true,
+        Operator = "ops",
+        Comment = "data was moved by migration job 2026-06-01",
+    });</code></pre>
+                </div>
+
+                <p>Catalog update endpoints are <code>GET /api/sharding/catalog</code>, <code>POST /api/sharding/catalog/validate</code>, and <code>POST /api/sharding/catalog/apply</code>. The gRPC contract exposes <code>GetShardCatalog</code>, <code>ValidateShardCatalogUpdate</code>, and <code>ApplyShardCatalogUpdate</code>. A successful apply returns <code>RequiresRestart = true</code>; restart the daemon or recreate the sharded client to activate the new map.</p>
+
+                <p>CSharpDB Studio's Sharding workspace includes a JSON shard-map draft editor for master-catalog-backed deployments. Operators can load a sanitized active or pending map template, edit the <code>CSharpDbShardingOptions</code> JSON, validate it, and apply a pending map with operator/comment metadata. Because the editor starts from read-only snapshots, hidden connection strings, API keys, and directory entries must be reviewed and supplied explicitly before applying a draft.</p>
+
+                <h3>Controlled Exact-Key Migration</h3>
+                <p>Phase 4 starts with exact route-key migration. The operator provides a manifest that identifies the route-owned tables and collections. CSharpDB fences writes for that route key, copies matching rows/documents to the destination shard, verifies counts and checksums, then writes a pending exact-key pin to the catalog.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>CSharpDbShardMigrationResult migrated =
+    await shardAdmin.MigrateExactRouteKeyAsync(new CSharpDbShardExactKeyMigrationRequest
+    {
+        Keyspace = "orders_by_month",
+        RouteKey = "2026-05",
+        DestinationShardId = "archive-1",
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        Operator = "ops",
+        Manifest = new CSharpDbShardMigrationManifest
+        {
+            Tables =
+            [
+                new CSharpDbShardMigrationTableManifest
+                {
+                    TableName = "orders",
+                    RouteKeyColumn = "order_month",
+                    PrimaryKeyColumn = "id",
+                },
+            ],
+            Collections =
+            [
+                new CSharpDbShardMigrationCollectionManifest
+                {
+                    CollectionName = "order_documents",
+                    RouteKeyPropertyName = "orderMonth",
+                },
+            ],
+        },
+    });</code></pre>
+                </div>
+
+                <p>The REST endpoint is <code>POST /api/sharding/migrations/exact-route-key</code>. The gRPC contract exposes <code>MigrateExactRouteKey</code>. A successful migration returns <code>Status = "PendingActivation"</code> and <code>RequiresRestart = true</code>; the live router keeps the old map until restart.</p>
+
+                <h3>Controlled Bucket-Range Movement</h3>
+                <p>Bucket-range movement uses the same manifest shape, but moves every unpinned route key whose hash bucket falls inside an operator-selected virtual-bucket interval. The requested buckets must be wholly owned by the source shard. Exact route-key pins are left in place because pins override bucket ownership.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>CSharpDbShardMigrationResult movedBuckets =
+    await shardAdmin.MigrateBucketRangeAsync(new CSharpDbShardBucketRangeMigrationRequest
+    {
+        Keyspace = "orders_by_month",
+        SourceShardId = "hot-1",
+        DestinationShardId = "archive-1",
+        StartBucketInclusive = 1024,
+        EndBucketExclusive = 1536,
+        ExpectedCurrentMapVersion = catalog.ActiveMap.MapVersion,
+        Operator = "ops",
+        Manifest = manifest,
+    });</code></pre>
+                </div>
+
+                <p>The REST endpoint is <code>POST /api/sharding/migrations/bucket-range</code>. The gRPC contract exposes <code>MigrateBucketRange</code>. A successful movement writes a pending bucket map and still requires a daemon restart or sharded-client recreation before live routing changes.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>IReadOnlyList&lt;CSharpDbShardMigrationHistoryEntry&gt; history =
+    await shardAdmin.GetShardMigrationHistoryAsync();</code></pre>
+                </div>
+
+                <p>If shard-directory entries point at moved routes, the pending catalog map updates those entries to the destination shard and pending map version where the movement can be determined safely. Writable catalog mode records rejected, failed, and pending-activation migration outcomes. Failed, verification-failed, and catalog-apply-failed outcomes include <code>RequiresOperatorRecovery</code> and <code>RecoveryAction</code> so Admin and operators can distinguish simple rejection from a recoverable partial movement state. Query history with <code>GET /api/sharding/migrations</code> or gRPC <code>GetShardMigrationHistory</code>. These APIs do not infer ownership from arbitrary SQL predicates.</p>
+
+                <h2>ADO.NET</h2>
+                <p>ADO.NET callers can bind a connection to one route with connection-string keys. Every command on that connection is sent to the same route.</p>
+
+                <div class="code-block" data-title="Connection string">
+                    <pre><code>Endpoint=https://localhost:61818;Transport=Grpc;Shard Keyspace=orders_by_month;Shard Key=2026-06</code></pre>
+                </div>
+
+                <h2>Transactions</h2>
+                <p><code>BeginTransactionAsync</code> requires a route context in sharded mode. The returned id is prefixed with the map version and shard id, so later execute, commit, and rollback calls can route from the transaction id alone.</p>
+
+                <div class="code-block" data-title="C#">
+                    <pre><code>ICSharpDbClient currentMonth = sharded.ForRoute(new CSharpDbRouteContext
+{
+    Keyspace = "orders_by_month",
+    Key = "2026-06",
+});
+
+TransactionSessionInfo tx = await currentMonth.BeginTransactionAsync();
+// Example: csdbshard:1:shard-0:...
+
+await sharded.ExecuteInTransactionAsync(tx.TransactionId, "INSERT INTO orders VALUES (2, '2026-06', 'customer-1001', 'SO-1002', '2026-06-01T12:00:00Z', 87.50, 'placed');");
+await sharded.CommitTransactionAsync(tx.TransactionId);</code></pre>
+                </div>
+
+                <p>If a conflicting route header is supplied with a sharded transaction id, CSharpDB rejects the operation instead of sending the transaction to the wrong shard.</p>
+
+                <h2>V1 Scope</h2>
+                <h3>Supported</h3>
+                <ul>
+                    <li>Single-shard SQL execution when a route key is provided.</li>
+                    <li>Single-shard row APIs, collection APIs, saved queries, procedures, and transaction sessions.</li>
+                    <li>Shard status checks, execute-on-all-shards schema setup helpers, and explicit read-only fan-out for diagnostics.</li>
+                    <li>Operator-controlled exact route-key and bucket-range movement with manifest-based copy and verification.</li>
+                    <li>Catalog-backed migration history for exact route-key migration outcomes.</li>
+                    <li>Replica role metadata in shard maps and status responses.</li>
+                    <li>Direct, HTTP, gRPC, and ADO.NET route context propagation.</li>
+                </ul>
+
+                <h3>Not Supported In V1</h3>
+                <ul>
+                    <li>Automatic cross-shard joins, aggregates, arbitrary queries, or transactions.</li>
+                    <li>Automatic resharding or data movement.</li>
+                    <li>Automatic SQL inference from arbitrary <code>WHERE</code> clauses.</li>
+                    <li>Data replication, replica promotion, failover, or shard health based rerouting.</li>
+                </ul>
+
+                <h2>Operator Checklist</h2>
+                <ul>
+                    <li>Keep schemas compatible across all shards in a keyspace.</li>
+                    <li>Version every bucket map change with <code>MapVersion</code>.</li>
+                    <li>Move data before changing bucket ownership for existing keys.</li>
+                    <li>Use <code>ExactKeyPins</code> sparingly for explicit hot-key, archival-key, or migration overrides.</li>
+                    <li>Treat route keys as application-owned and trusted, matching the existing trusted in-process API model.</li>
+                </ul>
+
+                <div class="next-steps-grid">
+                    <a href="samples.html" class="next-step-card">
+                        <h4>Runnable Sample</h4>
+                        <p>Run the four-shard local sample and inspect the generated shard files.</p>
+                    </a>
+                    <a href="configuration.html" class="next-step-card">
+                        <h4>Configuration</h4>
+                        <p>Review related daemon and connection-string configuration patterns.</p>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

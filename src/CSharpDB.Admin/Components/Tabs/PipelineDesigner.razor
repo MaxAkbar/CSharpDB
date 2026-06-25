@@ -664,6 +664,7 @@
 
     [Parameter] public string PackageJson { get; set; } = string.Empty;
     [Parameter] public EventCallback<string> PackageJsonChanged { get; set; }
+    [Parameter] public ICSharpDbClient? ClientOverride { get; set; }
 
     private readonly PipelineDesignerState _state = new();
     private readonly Dictionary<string, ClientModels.TableSchema> _tableSchemas = new(StringComparer.OrdinalIgnoreCase);
@@ -673,6 +674,7 @@
     private string? _sourcePreviewError;
     private string? _tableLoadError;
     private IReadOnlyList<string> _tableNames = [];
+    private ICSharpDbClient? _loadedClient;
     private PipelineDesignerPanel CurrentPanel { get; set; } = PipelineDesignerPanel.Source;
     private int? SelectedTransformIndex { get; set; }
 
@@ -693,14 +695,24 @@
             ? _state.Transforms[index]
             : null;
 
+    private ICSharpDbClient ActiveClient => ClientOverride ?? DbClient;
+
     protected override async Task OnInitializedAsync()
     {
+        _loadedClient = ActiveClient;
         await LoadTableNamesAsync();
         await RefreshSourceColumnsAsync();
     }
 
     protected override async Task OnParametersSetAsync()
     {
+        if (!ReferenceEquals(_loadedClient, ActiveClient))
+        {
+            _loadedClient = ActiveClient;
+            _tableSchemas.Clear();
+            await RefreshTablesAsync();
+        }
+
         if (string.Equals(PackageJson, _lastLoadedJson, StringComparison.Ordinal))
         {
             return;
@@ -1346,7 +1358,7 @@
     {
         try
         {
-            _tableNames = (await DbClient.GetTableNamesAsync())
+            _tableNames = (await ActiveClient.GetTableNamesAsync())
                 .Where(static name => !name.StartsWith("_", StringComparison.Ordinal))
                 .OrderBy(static name => name).ToArray();
             _tableLoadError = null;
@@ -1367,7 +1379,7 @@
 
         try
         {
-            var schema = await DbClient.GetTableSchemaAsync(tableName);
+            var schema = await ActiveClient.GetTableSchemaAsync(tableName);
             if (schema is not null)
             {
                 _tableSchemas[tableName] = schema;

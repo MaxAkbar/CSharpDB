@@ -145,11 +145,13 @@
     [Parameter] public string ParentTableName { get; set; } = "";
     [Parameter] public IReadOnlyList<string>? AvailableTables { get; set; }
     [Parameter] public int NestingLevel { get; set; }
+    [CascadingParameter(Name = "RouteFormSchemaProvider")] public ISchemaProvider? CascadedSchemaProvider { get; set; }
 
     private readonly HashSet<string> _expandedTabs = [];
     private readonly Dictionary<string, FormTableDefinition?> _tabTableDefs = [];
     private string? _loadedParentTableName;
     private FormTableDefinition? _parentTableDef;
+    private ISchemaProvider ActiveSchemaProvider => CascadedSchemaProvider ?? SchemaProvider;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -158,7 +160,7 @@
             _loadedParentTableName = ParentTableName;
             _parentTableDef = string.IsNullOrWhiteSpace(ParentTableName)
                 ? null
-                : await SchemaProvider.GetTableDefinitionAsync(ParentTableName);
+                : await ActiveSchemaProvider.GetTableDefinitionAsync(ParentTableName);
         }
 
         // Load table definitions for any tabs that have a child table set
@@ -166,7 +168,7 @@
         {
             if (!string.IsNullOrEmpty(tab.ChildTable) && !_tabTableDefs.ContainsKey(tab.Id))
             {
-                _tabTableDefs[tab.Id] = await SchemaProvider.GetTableDefinitionAsync(tab.ChildTable);
+                _tabTableDefs[tab.Id] = await ActiveSchemaProvider.GetTableDefinitionAsync(tab.ChildTable);
             }
         }
     }
@@ -221,7 +223,7 @@
         FormTableDefinition? def = null;
         if (!string.IsNullOrEmpty(tableName))
         {
-            def = await SchemaProvider.GetTableDefinitionAsync(tableName);
+            def = await ActiveSchemaProvider.GetTableDefinitionAsync(tableName);
         }
         _tabTableDefs[tab.Id] = def;
 

@@ -952,6 +952,8 @@
 </div>
 
 @code {
+    [CascadingParameter(Name = "RouteFormRepository")] public IFormRepository? CascadedFormRepository { get; set; }
+    [CascadingParameter(Name = "RouteFormSchemaProvider")] public ISchemaProvider? CascadedSchemaProvider { get; set; }
     [CascadingParameter] public DesignerState State { get; set; } = default!;
     [Inject] public IFormControlRegistry ControlRegistry { get; set; } = DefaultFormControlRegistry.Instance;
 
@@ -1048,13 +1050,15 @@
     private string _formulaFunctionQuery = string.Empty;
     private string _formulaFunctionCategory = string.Empty;
 
+    private IFormRepository ActiveFormRepository => CascadedFormRepository ?? FormRepository;
+    private ISchemaProvider ActiveSchemaProvider => CascadedSchemaProvider ?? SchemaProvider;
     private IReadOnlyList<DbCommandDefinition> RegisteredCommands => CommandRegistry.Commands.ToList();
 
     protected override async Task OnInitializedAsync()
     {
         State.OnChange += OnStateChanged;
-        _availableTables = await SchemaProvider.ListTableNamesAsync();
-        _availableForms = await FormRepository.ListAsync();
+        _availableTables = await ActiveSchemaProvider.ListTableNamesAsync();
+        _availableForms = await ActiveFormRepository.ListAsync();
         await RefreshSourceTableDefinitionAsync();
     }
 
@@ -1072,7 +1076,7 @@
             var childTable = GetProp(PropChildTable, "");
             if (!string.IsNullOrEmpty(childTable))
             {
-                _childTableDef = await SchemaProvider.GetTableDefinitionAsync(childTable);
+                _childTableDef = await ActiveSchemaProvider.GetTableDefinitionAsync(childTable);
                 await InvokeAsync(StateHasChanged);
             }
             else
@@ -1095,7 +1099,7 @@
             var lookupTable = GetProp(PropLookupTable, "");
             if (!string.IsNullOrEmpty(lookupTable))
             {
-                _lookupTableDef = await SchemaProvider.GetTableDefinitionAsync(lookupTable);
+                _lookupTableDef = await ActiveSchemaProvider.GetTableDefinitionAsync(lookupTable);
                 await InvokeAsync(StateHasChanged);
             }
             else
@@ -1552,7 +1556,7 @@
 
         if (!string.IsNullOrEmpty(tableName))
         {
-            _childTableDef = await SchemaProvider.GetTableDefinitionAsync(tableName);
+            _childTableDef = await ActiveSchemaProvider.GetTableDefinitionAsync(tableName);
 
             if (_childTableDef is not null)
             {
@@ -1653,7 +1657,7 @@
 
         if (!string.IsNullOrEmpty(tableName))
         {
-            _lookupTableDef = await SchemaProvider.GetTableDefinitionAsync(tableName);
+            _lookupTableDef = await ActiveSchemaProvider.GetTableDefinitionAsync(tableName);
 
             if (_lookupTableDef is not null)
             {
@@ -2028,7 +2032,7 @@
         if (string.IsNullOrWhiteSpace(tableName))
             return null;
 
-        return await SchemaProvider.GetTableDefinitionAsync(tableName);
+        return await ActiveSchemaProvider.GetTableDefinitionAsync(tableName);
     }
 
     private async Task RefreshSourceTableDefinitionAsync()

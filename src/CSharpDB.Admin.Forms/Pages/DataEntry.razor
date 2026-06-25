@@ -15,6 +15,9 @@
 @inject DbExtensionPolicy CallbackPolicy
 @inject IJSRuntime JS
 
+<CascadingValue Value="ActiveFormRepository" Name="RouteFormRepository">
+<CascadingValue Value="ActiveRecordService" Name="RouteFormRecordService">
+<CascadingValue Value="ActiveSchemaProvider" Name="RouteFormSchemaProvider">
 <div class="@GetDataEntryLayoutClass()" @ref="_layoutRef">
     @if (ShowToolbar)
     {
@@ -206,6 +209,9 @@
         </div>
     }
 </div>
+</CascadingValue>
+</CascadingValue>
+</CascadingValue>
 
 @code {
     [Parameter] public string FormId { get; set; } = string.Empty;
@@ -224,6 +230,13 @@
     [Parameter] public string? InitialMode { get; set; }
     [Parameter] public string? InitialFilterExpression { get; set; }
     [Parameter] public IReadOnlyDictionary<string, object?>? InitialFilterParameters { get; set; }
+    [Parameter] public IFormRepository? FormRepositoryOverride { get; set; }
+    [Parameter] public IFormRecordService? RecordServiceOverride { get; set; }
+    [Parameter] public ISchemaProvider? SchemaProviderOverride { get; set; }
+    [Parameter] public ICSharpDbClient? ClientOverride { get; set; }
+    [CascadingParameter(Name = "RouteFormRepository")] public IFormRepository? CascadedFormRepository { get; set; }
+    [CascadingParameter(Name = "RouteFormRecordService")] public IFormRecordService? CascadedRecordService { get; set; }
+    [CascadingParameter(Name = "RouteFormSchemaProvider")] public ISchemaProvider? CascadedSchemaProvider { get; set; }
     [Inject] public IFormEventDispatcher FormEvents { get; set; } = NullFormEventDispatcher.Instance;
     [Inject] public ICSharpDbClient? DbClient { get; set; }
     [Inject] public NavigationManager? Navigation { get; set; }
@@ -271,6 +284,11 @@
     private const int RecordPaneMinWidth = 320;
     private const int RecordPaneMaxWidth = 720;
     private const int FormulaDomainRowLimit = 5000;
+
+    private IFormRepository ActiveFormRepository => FormRepositoryOverride ?? CascadedFormRepository ?? FormRepository;
+    private IFormRecordService ActiveRecordService => RecordServiceOverride ?? CascadedRecordService ?? RecordService;
+    private ISchemaProvider ActiveSchemaProvider => SchemaProviderOverride ?? CascadedSchemaProvider ?? SchemaProvider;
+    private ICSharpDbClient? ActiveDbClient => ClientOverride ?? DbClient;
 
     private bool CanOpenDesigner => ShowDesignerButton && OnOpenDesigner.HasDelegate;
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalRecords / (double)_pageSize));
@@ -371,14 +389,14 @@
 
         try
         {
-            _form = await FormRepository.GetAsync(FormId);
+            _form = await ActiveFormRepository.GetAsync(FormId);
             if (_form is null)
             {
                 _error = $"Form '{FormId}' not found.";
                 return;
             }
 
-            _table = await SchemaProvider.GetTableDefinitionAsync(_form.TableName);
+            _table = await ActiveSchemaProvider.GetTableDefinitionAsync(_form.TableName);
             if (_table is null)
             {
                 _error = $"Source '{_form.TableName}' was not found.";
@@ -522,11 +540,11 @@
                 continue;
             }
 
-            FormTableDefinition? lookupTableDef = await SchemaProvider.GetTableDefinitionAsync(lookupTableName);
+            FormTableDefinition? lookupTableDef = await ActiveSchemaProvider.GetTableDefinitionAsync(lookupTableName);
             if (lookupTableDef is null)
                 continue;
 
-            FormRecordPage lookupPage = await RecordService.ListRecordPageAsync(lookupTableDef, 1, Math.Clamp(rowLimit, 1, 5000));
+            FormRecordPage lookupPage = await ActiveRecordService.ListRecordPageAsync(lookupTableDef, 1, Math.Clamp(rowLimit, 1, 5000));
             IReadOnlyList<EnumChoice> enumChoices = FormChoiceResolver.BuildLookupChoices(
                 lookupPage.Records,
                 valueField,
@@ -559,7 +577,7 @@
 
         foreach (var childTableName in childTableNames)
         {
-            FormTableDefinition? childTable = await SchemaProvider.GetTableDefinitionAsync(childTableName);
+            FormTableDefinition? childTable = await ActiveSchemaProvider.GetTableDefinitionAsync(childTableName);
             if (childTable is not null)
                 _childTableDefs[childTableName] = childTable;
         }
@@ -636,7 +654,7 @@
                 if (!await DispatchFormEventAsync(FormEventKind.BeforeInsert, recordToSave))
                     return;
 
-                Dictionary<string, object?> created = await RecordService.CreateRecordAsync(_table, recordToSave);
+                Dictionary<string, object?> created = await ActiveRecordService.CreateRecordAsync(_table, recordToSave);
                 await PersistAttachmentTableValuesAsync(recordToSave, created);
                 _currentRecord = CloneRecord(created);
                 _isNew = false;
@@ -657,7 +675,7 @@
                 if (!await DispatchFormEventAsync(FormEventKind.BeforeUpdate, _currentRecord))
                     return;
 
-                Dictionary<string, object?> updated = await RecordService.UpdateRecordAsync(_table, pkValue!, recordToSave);
+                Dictionary<string, object?> updated = await ActiveRecordService.UpdateRecordAsync(_table, pkValue!, recordToSave);
                 await PersistAttachmentTableValuesAsync(recordToSave, updated);
                 UpdateVisibleCurrentRecord(updated);
                 await DispatchFormEventAsync(FormEventKind.AfterUpdate, updated);
@@ -695,13 +713,13 @@
             FormAttachmentTableBinding binding = BuildAttachmentTableBinding(control);
             string parentKeyField = GetControlStringProp(control, "parentKeyField");
             if (string.IsNullOrWhiteSpace(parentKeyField))
-                parentKeyField = RecordService.GetPrimaryKeyColumn(_table);
+                parentKeyField = ActiveRecordService.GetPrimaryKeyColumn(_table);
 
             object? parentValue = ReadRecordValue(savedRecord, parentKeyField) ?? ReadRecordValue(pendingRecord, parentKeyField);
             if (parentValue is null || string.IsNullOrWhiteSpace(parentValue.ToString()))
                 throw new InvalidOperationException($"Attachment control '{control.ControlId}' requires parent key field '{parentKeyField}'.");
 
-            await RecordService.SaveAttachmentAsync(binding, parentValue, attachment);
+            await ActiveRecordService.SaveAttachmentAsync(binding, parentValue, attachment);
         }
     }
 
@@ -770,7 +788,7 @@
                 return;
 
             int preferredPageIndex = _recordPageIndex;
-            await RecordService.DeleteRecordAsync(_table, pkValue!);
+            await ActiveRecordService.DeleteRecordAsync(_table, pkValue!);
             await LoadRecordPageAsync(_page, preferredPageIndex: preferredPageIndex);
             await DispatchFormEventAsync(FormEventKind.AfterDelete, deletedRecord);
         }
@@ -1054,7 +1072,7 @@
         ct.ThrowIfCancellationRequested();
         if (!EnableSqlActions)
             return FormEventDispatchResult.Failure("RunSql action is disabled by host policy.");
-        if (DbClient is null)
+        if (ActiveDbClient is null)
             return FormEventDispatchResult.Failure("RunSql action requires a database client.");
 
         IReadOnlyDictionary<string, object?> resolvedArguments = BuildActionParameterDictionary(context, arguments);
@@ -1065,7 +1083,7 @@
         if (!TrySubstituteSqlParameters(sql, resolvedArguments, out string resolvedSql, out string? parameterError))
             return FormEventDispatchResult.Failure(parameterError ?? "RunSql action has invalid SQL parameters.");
 
-        SqlExecutionResult result = await DbClient.ExecuteSqlAsync(resolvedSql, ct);
+        SqlExecutionResult result = await ActiveDbClient.ExecuteSqlAsync(resolvedSql, ct);
         if (!string.IsNullOrWhiteSpace(result.Error))
             return FormEventDispatchResult.Failure($"RunSql action failed: {result.Error}");
 
@@ -1092,11 +1110,11 @@
         ct.ThrowIfCancellationRequested();
         if (!EnableProcedureActions)
             return FormEventDispatchResult.Failure("RunProcedure action is disabled by host policy.");
-        if (DbClient is null)
+        if (ActiveDbClient is null)
             return FormEventDispatchResult.Failure("RunProcedure action requires a database client.");
 
         IReadOnlyDictionary<string, object?> resolvedArguments = BuildExecutableArguments(BuildActionParameterDictionary(context, arguments));
-        ProcedureExecutionResult result = await DbClient.ExecuteProcedureAsync(procedureName, resolvedArguments, ct);
+        ProcedureExecutionResult result = await ActiveDbClient.ExecuteProcedureAsync(procedureName, resolvedArguments, ct);
         if (!result.Succeeded)
             return FormEventDispatchResult.Failure($"RunProcedure action failed: {result.Error ?? $"Procedure '{procedureName}' failed."}");
 
@@ -1176,13 +1194,13 @@
             return null;
 
         string trimmed = formName.Trim();
-        FormDefinition? direct = await FormRepository.GetAsync(trimmed);
+        FormDefinition? direct = await ActiveFormRepository.GetAsync(trimmed);
         if (direct is not null)
             return direct;
 
         try
         {
-            IReadOnlyList<FormDefinition> forms = await FormRepository.ListAsync();
+            IReadOnlyList<FormDefinition> forms = await ActiveFormRepository.ListAsync();
             return forms.FirstOrDefault(form =>
                 string.Equals(form.FormId, trimmed, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(form.Name, trimmed, StringComparison.OrdinalIgnoreCase));
@@ -1420,7 +1438,7 @@
         if (LooksLikeSql(trimmed))
             return trimmed;
 
-        SavedQueryDefinition? savedQuery = await DbClient!.GetSavedQueryAsync(trimmed, ct);
+        SavedQueryDefinition? savedQuery = await ActiveDbClient!.GetSavedQueryAsync(trimmed, ct);
         return savedQuery?.SqlText;
     }
 
@@ -1766,8 +1784,8 @@
             FormRecordPage page = HasActiveFilter
                 ? await LoadFilteredRecordPageAsync(pageNumber)
                 : HasActiveSearch
-                    ? await RecordService.SearchRecordPageAsync(_table, _activeSearchColumnName!, _activeSearchValue!, pageNumber, _pageSize)
-                    : await RecordService.ListRecordPageAsync(_table, pageNumber, _pageSize);
+                    ? await ActiveRecordService.SearchRecordPageAsync(_table, _activeSearchColumnName!, _activeSearchValue!, pageNumber, _pageSize)
+                    : await ActiveRecordService.ListRecordPageAsync(_table, pageNumber, _pageSize);
             _records = page.Records.Select(CloneRecord).ToList();
             _page = page.PageNumber;
             _pageSize = page.PageSize;
@@ -1820,7 +1838,7 @@
     {
         if (preferredPk is not null && _table is not null && _table.HasSinglePrimaryKey)
         {
-            string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
+            string pkColumn = ActiveRecordService.GetPrimaryKeyColumn(_table);
             for (int i = 0; i < _records.Count; i++)
             {
                 if (TryGetFieldValue(_records[i], pkColumn, out object? candidatePk) && AreValuesEqual(candidatePk, preferredPk))
@@ -1855,7 +1873,7 @@
         if (_table is null || _activeFilter is null)
             return [];
 
-        List<Dictionary<string, object?>> rows = await RecordService.ListRecordsAsync(_table);
+        List<Dictionary<string, object?>> rows = await ActiveRecordService.ListRecordsAsync(_table);
         return rows
             .Where(row => _activeFilter.Evaluate(row, _activeFilterParameters))
             .Select(CloneRecord)
@@ -1872,7 +1890,7 @@
 
         try
         {
-            FormRecordWindow? window = await RecordService.GetRecordWindowAsync(_table, pkValue, _pageSize);
+            FormRecordWindow? window = await ActiveRecordService.GetRecordWindowAsync(_table, pkValue, _pageSize);
             if (window is null || window.Records.Count == 0)
             {
                 _error = $"{GetPrimaryKeyLabel()} '{pkValue}' was not found.";
@@ -1923,7 +1941,7 @@
             return;
         }
 
-        Dictionary<string, object?>? adjacent = await RecordService.GetAdjacentRecordAsync(_table, pkValue, previous);
+        Dictionary<string, object?>? adjacent = await ActiveRecordService.GetAdjacentRecordAsync(_table, pkValue, previous);
         if (adjacent is null || !TryGetPrimaryKeyValue(adjacent, out object? adjacentPk) || adjacentPk is null)
         {
             if (previous)
@@ -1954,19 +1972,19 @@
         int? ordinal = HasActiveFilter
             ? await GetFilteredRecordOrdinalAsync(pkValue)
             : HasActiveSearch
-                ? await RecordService.GetRecordOrdinalAsync(_table, pkValue, _activeSearchColumnName!, _activeSearchValue!)
-                : await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+                ? await ActiveRecordService.GetRecordOrdinalAsync(_table, pkValue, _activeSearchColumnName!, _activeSearchValue!)
+                : await ActiveRecordService.GetRecordOrdinalAsync(_table, pkValue);
 
         if (ordinal is null && HasActiveFilter)
         {
             ClearFilterState();
-            ordinal = await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+            ordinal = await ActiveRecordService.GetRecordOrdinalAsync(_table, pkValue);
         }
 
         if (ordinal is null && HasActiveSearch)
         {
             ClearSearchState(clearPendingValue: false);
-            ordinal = await RecordService.GetRecordOrdinalAsync(_table, pkValue);
+            ordinal = await ActiveRecordService.GetRecordOrdinalAsync(_table, pkValue);
         }
 
         if (ordinal is null)
@@ -1984,7 +2002,7 @@
         if (_table is null || !_table.HasSinglePrimaryKey)
             return null;
 
-        string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
+        string pkColumn = ActiveRecordService.GetPrimaryKeyColumn(_table);
         List<Dictionary<string, object?>> filtered = await GetFilteredRecordsAsync();
         for (int i = 0; i < filtered.Count; i++)
         {
@@ -2116,7 +2134,7 @@
                     continue;
                 }
 
-                List<Dictionary<string, object?>> childRows = await RecordService.ListFilteredRecordsAsync(
+                List<Dictionary<string, object?>> childRows = await ActiveRecordService.ListFilteredRecordsAsync(
                     childTableDefinition,
                     childMapping.ForeignKeyField,
                     parentValue);
@@ -2148,11 +2166,11 @@
             if (_formulaDomainRows.ContainsKey(domain))
                 continue;
 
-            FormTableDefinition? domainTable = await SchemaProvider.GetTableDefinitionAsync(domain);
+            FormTableDefinition? domainTable = await ActiveSchemaProvider.GetTableDefinitionAsync(domain);
             if (domainTable is null)
                 continue;
 
-            FormRecordPage page = await RecordService.ListRecordPageAsync(domainTable, 1, FormulaDomainRowLimit);
+            FormRecordPage page = await ActiveRecordService.ListRecordPageAsync(domainTable, 1, FormulaDomainRowLimit);
             _formulaDomainTableDefs[domain] = domainTable;
             _formulaDomainRows[domain] = page.Records.Select(CloneRecord).ToList();
         }
@@ -2368,7 +2386,7 @@
         if (_table is null || !_table.HasSinglePrimaryKey)
             return false;
 
-        string pkColumn = RecordService.GetPrimaryKeyColumn(_table);
+        string pkColumn = ActiveRecordService.GetPrimaryKeyColumn(_table);
         return TryGetFieldValue(record, pkColumn, out pkValue) && pkValue is not null;
     }
 
@@ -2429,7 +2447,7 @@
         if (_table is null || !_table.HasSinglePrimaryKey)
             return null;
 
-        string primaryKeyColumn = RecordService.GetPrimaryKeyColumn(_table);
+        string primaryKeyColumn = ActiveRecordService.GetPrimaryKeyColumn(_table);
         return _table.Fields.FirstOrDefault(field => string.Equals(field.Name, primaryKeyColumn, StringComparison.OrdinalIgnoreCase));
     }
 

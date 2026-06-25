@@ -353,6 +353,944 @@ public static class GrpcModelMapper
             SavedQueryCount = value.SavedQueryCount,
         };
 
+    public static ShardDefinitionMessage ToMessage(CSharpDbShardDefinitionSnapshot value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Enabled = value.Enabled,
+            Transport = value.Transport?.ToString(),
+            Endpoint = value.Endpoint,
+            DataSource = value.DataSource,
+            HasConnectionString = value.HasConnectionString,
+            HasApiKey = value.HasApiKey,
+            ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.LastReplicatedUtc.Value)
+                : null,
+        };
+
+    public static ShardTargetDefinitionMessage ToMessage(CSharpDbShardDefinition value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Enabled = value.Enabled,
+            Transport = value.Transport?.ToString(),
+            Endpoint = value.Endpoint,
+            ConnectionString = value.ConnectionString,
+            DataSource = value.DataSource,
+            ApiKey = value.ApiKey,
+            ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.LastReplicatedUtc.Value)
+                : null,
+        };
+
+    public static CSharpDbShardDefinition ToModel(ShardTargetDefinitionMessage value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Enabled = value.Enabled,
+            Transport = TryParseTransport(value.Transport),
+            Endpoint = value.Endpoint,
+            ConnectionString = value.ConnectionString,
+            DataSource = value.DataSource,
+            ApiKey = value.ApiKey,
+            ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = string.IsNullOrWhiteSpace(value.Role) ? CSharpDbShardRoles.Primary : value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc?.ToDateTimeOffset(),
+        };
+
+    public static CSharpDbShardDefinitionSnapshot ToModel(ShardDefinitionMessage value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Enabled = value.Enabled,
+            Transport = TryParseTransport(value.Transport),
+            Endpoint = value.Endpoint,
+            DataSource = value.DataSource,
+            HasConnectionString = value.HasConnectionString,
+            HasApiKey = value.HasApiKey,
+            ApiKeyHeaderName = value.ApiKeyHeaderName,
+            Role = string.IsNullOrWhiteSpace(value.Role) ? CSharpDbShardRoles.Primary : value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc?.ToDateTimeOffset(),
+        };
+
+    public static ShardBucketRangeMessage ToMessage(CSharpDbShardBucketRange value)
+        => new()
+        {
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            ShardId = value.ShardId,
+        };
+
+    public static CSharpDbShardBucketRange ToModel(ShardBucketRangeMessage value)
+        => new()
+        {
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            ShardId = value.ShardId,
+        };
+
+    public static ShardDirectoryDefinitionMessage ToMessage(CSharpDbShardDirectoryDefinition value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            TargetKeyspace = value.TargetKeyspace,
+            Description = value.Description,
+            ReadOnly = value.ReadOnly,
+            EntryCount = value.EntryCount,
+        };
+
+    public static CSharpDbShardDirectoryDefinition ToModel(ShardDirectoryDefinitionMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            TargetKeyspace = value.TargetKeyspace,
+            Description = value.Description,
+            ReadOnly = value.ReadOnly,
+            EntryCount = value.EntryCount,
+        };
+
+    public static ShardDirectoryEntryMessage ToMessage(CSharpDbShardDirectoryEntry value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            ShardId = value.ShardId,
+            MapVersion = value.MapVersion,
+            State = value.State,
+        };
+
+    public static CSharpDbShardDirectoryEntry ToModel(ShardDirectoryEntryMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            ShardId = value.ShardId,
+            MapVersion = value.MapVersion,
+            State = value.State,
+        };
+
+    public static ShardDirectoryResolveRequestMessage ToMessage(CSharpDbShardDirectoryResolveRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            IncludeInactive = value.IncludeInactive,
+        };
+
+    public static CSharpDbShardDirectoryResolveRequest ToModel(ShardDirectoryResolveRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            IncludeInactive = value.IncludeInactive,
+        };
+
+    public static ShardDirectoryResolutionMessage ToMessage(CSharpDbShardDirectoryResolution value)
+        => new()
+        {
+            Entry = ToMessage(value.Entry),
+            RouteResolution = ToMessage(value.RouteResolution),
+        };
+
+    public static CSharpDbShardDirectoryResolution ToModel(ShardDirectoryResolutionMessage value)
+        => new()
+        {
+            Entry = ToModel(value.Entry),
+            RouteResolution = ToModel(value.RouteResolution),
+        };
+
+    public static ShardDirectoryReserveRequestMessage ToMessage(CSharpDbShardDirectoryReserveRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryReserveRequest ToModel(ShardDirectoryReserveRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryActivateRequestMessage ToMessage(CSharpDbShardDirectoryActivateRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryActivateRequest ToModel(ShardDirectoryActivateRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryUpsertRequestMessage ToMessage(CSharpDbShardDirectoryUpsertRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            State = value.State,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryUpsertRequest ToModel(ShardDirectoryUpsertRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            TargetKeyspace = value.TargetKeyspace,
+            RouteKey = value.RouteKey,
+            State = string.IsNullOrWhiteSpace(value.State) ? CSharpDbShardDirectoryEntryStates.Active : value.State,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryDisableRequestMessage ToMessage(CSharpDbShardDirectoryDisableRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryDisableRequest ToModel(ShardDirectoryDisableRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryDeleteRequestMessage ToMessage(CSharpDbShardDirectoryDeleteRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            RemoveEntry = value.RemoveEntry,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryDeleteRequest ToModel(ShardDirectoryDeleteRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            RemoveEntry = value.RemoveEntry,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryMarkStaleRequestMessage ToMessage(CSharpDbShardDirectoryMarkStaleRequest value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardDirectoryMarkStaleRequest ToModel(ShardDirectoryMarkStaleRequestMessage value)
+        => new()
+        {
+            DirectoryName = value.DirectoryName,
+            LookupKey = value.LookupKey,
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardDirectoryMutationResultMessage ToMessage(CSharpDbShardDirectoryMutationResult value)
+    {
+        var message = new ShardDirectoryMutationResultMessage
+        {
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Entry = value.Entry is null ? null : ToMessage(value.Entry),
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToMessage(value.CatalogApplyResult),
+        };
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardDirectoryMutationResult ToModel(ShardDirectoryMutationResultMessage value)
+        => new()
+        {
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Entry = value.Entry is null ? null : ToModel(value.Entry),
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToModel(value.CatalogApplyResult),
+            Issues = value.Issues.Select(ToModel).ToList(),
+        };
+
+    public static ShardMapSnapshotMessage ToMessage(CSharpDbShardMapSnapshot value)
+    {
+        var message = new ShardMapSnapshotMessage
+        {
+            Keyspace = value.Keyspace,
+            MapVersion = value.MapVersion,
+            VirtualBucketCount = value.VirtualBucketCount,
+        };
+
+        message.Shards.Add(value.Shards.Select(ToMessage));
+        message.BucketRanges.Add(value.BucketRanges.Select(ToMessage));
+        message.ExactKeyPins.Add(value.ExactKeyPins);
+        message.Directories.Add(value.Directories.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMapSnapshot ToModel(ShardMapSnapshotMessage value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            MapVersion = value.MapVersion,
+            VirtualBucketCount = value.VirtualBucketCount,
+            Shards = value.Shards.Select(ToModel).ToList(),
+            BucketRanges = value.BucketRanges.Select(ToModel).ToList(),
+            ExactKeyPins = new Dictionary<string, string>(value.ExactKeyPins, StringComparer.Ordinal),
+            Directories = value.Directories.Select(ToModel).ToList(),
+        };
+
+    public static ShardingOptionsMessage ToMessage(CSharpDbShardingOptions value)
+    {
+        var message = new ShardingOptionsMessage
+        {
+            Keyspace = value.Keyspace,
+            MapVersion = value.MapVersion,
+            VirtualBucketCount = value.VirtualBucketCount,
+        };
+
+        message.Shards.Add(value.Shards.Select(ToMessage));
+        message.BucketRanges.Add(value.BucketRanges.Select(ToMessage));
+        message.ExactKeyPins.Add(value.ExactKeyPins);
+        message.Directories.Add(value.Directories.Select(ToMessage));
+        message.DirectoryEntries.Add(value.DirectoryEntries.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardingOptions ToModel(ShardingOptionsMessage value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            MapVersion = value.MapVersion,
+            VirtualBucketCount = value.VirtualBucketCount,
+            Shards = value.Shards.Select(ToModel).ToArray(),
+            BucketRanges = value.BucketRanges.Select(ToModel).ToArray(),
+            ExactKeyPins = new Dictionary<string, string>(value.ExactKeyPins, StringComparer.Ordinal),
+            Directories = value.Directories.Select(ToModel).ToArray(),
+            DirectoryEntries = value.DirectoryEntries.Select(ToModel).ToArray(),
+        };
+
+    public static ShardRouteRequest ToMessage(CSharpDbRouteContext value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+        };
+
+    public static CSharpDbRouteContext ToModel(ShardRouteRequest value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+        };
+
+    public static ShardResolutionMessage ToMessage(CSharpDbShardResolution value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+            Token = value.Token,
+            Bucket = value.Bucket,
+            ShardId = value.ShardId,
+            MapVersion = value.MapVersion,
+        };
+
+    public static CSharpDbShardResolution ToModel(ShardResolutionMessage value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            Key = value.Key,
+            Token = value.Token,
+            Bucket = value.Bucket,
+            ShardId = value.ShardId,
+            MapVersion = value.MapVersion,
+        };
+
+    public static ShardStatusMessage ToMessage(CSharpDbShardStatus value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            DataSource = value.DataSource,
+            Enabled = value.Enabled,
+            Healthy = value.Healthy,
+            Error = value.Error,
+            Info = value.Info is null ? null : ToMessage(value.Info),
+            Role = value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            CanPromote = value.CanPromote,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.LastReplicatedUtc.Value)
+                : null,
+        };
+
+    public static CSharpDbShardStatus ToModel(ShardStatusMessage value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            DataSource = value.DataSource,
+            Enabled = value.Enabled,
+            Healthy = value.Healthy,
+            Error = value.Error,
+            Info = value.Info is null ? null : ToModel(value.Info),
+            Role = string.IsNullOrWhiteSpace(value.Role) ? CSharpDbShardRoles.Primary : value.Role,
+            PrimaryShardId = value.PrimaryShardId,
+            PromotionEligible = value.PromotionEligible,
+            CanPromote = value.CanPromote,
+            ReplicationLagBytes = value.ReplicationLagBytes,
+            LastReplicatedUtc = value.LastReplicatedUtc?.ToDateTimeOffset(),
+        };
+
+    public static ShardSqlExecutionResultMessage ToMessage(CSharpDbShardSqlExecutionResult value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Result = value.Result is null ? null : ToMessage(value.Result),
+            Error = value.Error,
+        };
+
+    public static CSharpDbShardSqlExecutionResult ToModel(ShardSqlExecutionResultMessage value)
+        => new()
+        {
+            ShardId = value.ShardId,
+            Result = value.Result is null ? null : ToModel(value.Result),
+            Error = value.Error,
+        };
+
+    public static ShardCatalogHistoryEntryMessage ToMessage(CSharpDbShardCatalogHistoryEntry value)
+        => new()
+        {
+            AppliedUtc = Timestamp.FromDateTimeOffset(value.AppliedUtc),
+            MapVersion = value.MapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+            MetadataOnlyOwnershipChange = value.MetadataOnlyOwnershipChange,
+        };
+
+    public static CSharpDbShardCatalogHistoryEntry ToModel(ShardCatalogHistoryEntryMessage value)
+        => new()
+        {
+            AppliedUtc = value.AppliedUtc.ToDateTimeOffset(),
+            MapVersion = value.MapVersion,
+            Operator = value.Operator,
+            Comment = value.Comment,
+            MetadataOnlyOwnershipChange = value.MetadataOnlyOwnershipChange,
+        };
+
+    public static ShardCatalogIssueMessage ToMessage(CSharpDbShardCatalogIssue value)
+        => new()
+        {
+            Severity = value.Severity.ToString(),
+            Code = value.Code,
+            Message = value.Message,
+        };
+
+    public static CSharpDbShardCatalogIssue ToModel(ShardCatalogIssueMessage value)
+        => new()
+        {
+            Severity = System.Enum.TryParse(value.Severity, ignoreCase: true, out CSharpDbShardCatalogIssueSeverity severity)
+                ? severity
+                : CSharpDbShardCatalogIssueSeverity.Error,
+            Code = value.Code,
+            Message = value.Message,
+        };
+
+    public static ShardCatalogValidationResultMessage ToMessage(CSharpDbShardCatalogValidationResult value)
+    {
+        var message = new ShardCatalogValidationResultMessage
+        {
+            IsValid = value.IsValid,
+            RequiresDataMigration = value.RequiresDataMigration,
+            Preview = value.Preview is null ? null : ToMessage(value.Preview),
+        };
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardCatalogValidationResult ToModel(ShardCatalogValidationResultMessage value)
+        => new()
+        {
+            IsValid = value.IsValid,
+            RequiresDataMigration = value.RequiresDataMigration,
+            Preview = value.Preview is null ? null : ToModel(value.Preview),
+            Issues = value.Issues.Select(ToModel).ToList(),
+        };
+
+    public static ShardCatalogStateMessage ToMessage(CSharpDbShardCatalogState value)
+    {
+        var message = new ShardCatalogStateMessage
+        {
+            Source = value.Source,
+            IsCatalogEnabled = value.IsCatalogEnabled,
+            IsWritable = value.IsWritable,
+            ActiveMap = ToMessage(value.ActiveMap),
+            PendingMap = value.PendingMap is null ? null : ToMessage(value.PendingMap),
+        };
+        message.History.Add(value.History.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardCatalogState ToModel(ShardCatalogStateMessage value)
+        => new()
+        {
+            Source = value.Source,
+            IsCatalogEnabled = value.IsCatalogEnabled,
+            IsWritable = value.IsWritable,
+            ActiveMap = ToModel(value.ActiveMap),
+            PendingMap = value.PendingMap is null ? null : ToModel(value.PendingMap),
+            History = value.History.Select(ToModel).ToList(),
+        };
+
+    public static ShardCatalogUpdateRequestMessage ToMessage(CSharpDbShardCatalogUpdateRequest value)
+        => new()
+        {
+            Options = ToMessage(value.Options),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            AllowMetadataOnlyOwnershipChange = value.AllowMetadataOnlyOwnershipChange,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static CSharpDbShardCatalogUpdateRequest ToModel(ShardCatalogUpdateRequestMessage value)
+        => new()
+        {
+            Options = ToModel(value.Options),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            AllowMetadataOnlyOwnershipChange = value.AllowMetadataOnlyOwnershipChange,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardCatalogApplyResultMessage ToMessage(CSharpDbShardCatalogApplyResult value)
+        => new()
+        {
+            Applied = value.Applied,
+            RequiresRestart = value.RequiresRestart,
+            Message = value.Message,
+            Validation = ToMessage(value.Validation),
+            PendingMap = value.PendingMap is null ? null : ToMessage(value.PendingMap),
+        };
+
+    public static CSharpDbShardCatalogApplyResult ToModel(ShardCatalogApplyResultMessage value)
+        => new()
+        {
+            Applied = value.Applied,
+            RequiresRestart = value.RequiresRestart,
+            Message = value.Message,
+            Validation = ToModel(value.Validation),
+            PendingMap = value.PendingMap is null ? null : ToModel(value.PendingMap),
+        };
+
+    public static ShardMigrationTableManifestMessage ToMessage(CSharpDbShardMigrationTableManifest value)
+        => new()
+        {
+            TableName = value.TableName,
+            RouteKeyColumn = value.RouteKeyColumn,
+            PrimaryKeyColumn = value.PrimaryKeyColumn,
+        };
+
+    public static CSharpDbShardMigrationTableManifest ToModel(ShardMigrationTableManifestMessage value)
+        => new()
+        {
+            TableName = value.TableName,
+            RouteKeyColumn = value.RouteKeyColumn,
+            PrimaryKeyColumn = value.PrimaryKeyColumn,
+        };
+
+    public static ShardMigrationCollectionManifestMessage ToMessage(CSharpDbShardMigrationCollectionManifest value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            RouteKeyPropertyName = value.RouteKeyPropertyName,
+        };
+
+    public static CSharpDbShardMigrationCollectionManifest ToModel(ShardMigrationCollectionManifestMessage value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            RouteKeyPropertyName = value.RouteKeyPropertyName,
+        };
+
+    public static ShardMigrationManifestMessage ToMessage(CSharpDbShardMigrationManifest value)
+    {
+        var message = new ShardMigrationManifestMessage
+        {
+            PageSize = value.PageSize,
+        };
+        message.Tables.Add(value.Tables.Select(ToMessage));
+        message.Collections.Add(value.Collections.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationManifest ToModel(ShardMigrationManifestMessage value)
+        => new()
+        {
+            PageSize = value.PageSize <= 0 ? 500 : value.PageSize,
+            Tables = value.Tables.Select(ToModel).ToList(),
+            Collections = value.Collections.Select(ToModel).ToList(),
+        };
+
+    public static ShardExactKeyMigrationRequestMessage ToMessage(CSharpDbShardExactKeyMigrationRequest value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            DestinationShardId = value.DestinationShardId,
+            Manifest = ToMessage(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
+        };
+
+    public static CSharpDbShardExactKeyMigrationRequest ToModel(ShardExactKeyMigrationRequestMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            DestinationShardId = value.DestinationShardId,
+            Manifest = value.Manifest is null ? new CSharpDbShardMigrationManifest() : ToModel(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardBucketRangeMigrationRequestMessage ToMessage(CSharpDbShardBucketRangeMigrationRequest value)
+        => new()
+        {
+            Keyspace = value.Keyspace,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            Manifest = ToMessage(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
+        };
+
+    public static CSharpDbShardBucketRangeMigrationRequest ToModel(ShardBucketRangeMigrationRequestMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            Attempt = value.Attempt,
+            Keyspace = value.Keyspace,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            StartBucketInclusive = value.StartBucketInclusive,
+            EndBucketExclusive = value.EndBucketExclusive,
+            Manifest = value.Manifest is null ? new CSharpDbShardMigrationManifest() : ToModel(value.Manifest),
+            ExpectedCurrentMapVersion = value.ExpectedCurrentMapVersion,
+            OverwriteDestinationRows = value.OverwriteDestinationRows,
+            DeleteSourceAfterVerification = value.DeleteSourceAfterVerification,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+
+    public static ShardMigrationTableResultMessage ToMessage(CSharpDbShardMigrationTableResult value)
+        => new()
+        {
+            TableName = value.TableName,
+            SourceRows = value.SourceRows,
+            DestinationRows = value.DestinationRows,
+            RowsCopied = value.RowsCopied,
+            SourceRowsDeleted = value.SourceRowsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static CSharpDbShardMigrationTableResult ToModel(ShardMigrationTableResultMessage value)
+        => new()
+        {
+            TableName = value.TableName,
+            SourceRows = value.SourceRows,
+            DestinationRows = value.DestinationRows,
+            RowsCopied = value.RowsCopied,
+            SourceRowsDeleted = value.SourceRowsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static ShardMigrationCollectionResultMessage ToMessage(CSharpDbShardMigrationCollectionResult value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            SourceDocuments = value.SourceDocuments,
+            DestinationDocuments = value.DestinationDocuments,
+            DocumentsCopied = value.DocumentsCopied,
+            SourceDocumentsDeleted = value.SourceDocumentsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static CSharpDbShardMigrationCollectionResult ToModel(ShardMigrationCollectionResultMessage value)
+        => new()
+        {
+            CollectionName = value.CollectionName,
+            SourceDocuments = value.SourceDocuments,
+            DestinationDocuments = value.DestinationDocuments,
+            DocumentsCopied = value.DocumentsCopied,
+            SourceDocumentsDeleted = value.SourceDocumentsDeleted,
+            Verified = value.Verified,
+            SourceChecksum = value.SourceChecksum,
+            DestinationChecksum = value.DestinationChecksum,
+            Error = value.Error,
+        };
+
+    public static ShardMigrationResultMessage ToMessage(CSharpDbShardMigrationResult value)
+    {
+        var message = new ShardMigrationResultMessage
+        {
+            MigrationId = value.MigrationId,
+            StartedUtc = Timestamp.FromDateTimeOffset(value.StartedUtc),
+            CompletedUtc = Timestamp.FromDateTimeOffset(value.CompletedUtc),
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToMessage(value.CatalogApplyResult),
+        };
+        message.Tables.Add(value.Tables.Select(ToMessage));
+        message.Collections.Add(value.Collections.Select(ToMessage));
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationResult ToModel(ShardMigrationResultMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            StartedUtc = value.StartedUtc.ToDateTimeOffset(),
+            CompletedUtc = value.CompletedUtc.ToDateTimeOffset(),
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+            Tables = value.Tables.Select(ToModel).ToList(),
+            Collections = value.Collections.Select(ToModel).ToList(),
+            Issues = value.Issues.Select(ToModel).ToList(),
+            CatalogApplyResult = value.CatalogApplyResult is null ? null : ToModel(value.CatalogApplyResult),
+        };
+
+    public static ShardMigrationHistoryEntryMessage ToMessage(CSharpDbShardMigrationHistoryEntry value)
+    {
+        var message = new ShardMigrationHistoryEntryMessage
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            StartedUtc = Timestamp.FromDateTimeOffset(value.StartedUtc),
+            CompletedUtc = Timestamp.FromDateTimeOffset(value.CompletedUtc),
+            RecordedUtc = Timestamp.FromDateTimeOffset(value.RecordedUtc),
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+            Operator = value.Operator,
+            Comment = value.Comment,
+        };
+        message.Tables.Add(value.Tables.Select(ToMessage));
+        message.Collections.Add(value.Collections.Select(ToMessage));
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationHistoryEntry ToModel(ShardMigrationHistoryEntryMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            StartedUtc = value.StartedUtc.ToDateTimeOffset(),
+            CompletedUtc = value.CompletedUtc.ToDateTimeOffset(),
+            RecordedUtc = value.RecordedUtc.ToDateTimeOffset(),
+            Succeeded = value.Succeeded,
+            Status = value.Status,
+            Message = value.Message,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+            Operator = value.Operator,
+            Comment = value.Comment,
+            Tables = value.Tables.Select(ToModel).ToList(),
+            Collections = value.Collections.Select(ToModel).ToList(),
+            Issues = value.Issues.Select(ToModel).ToList(),
+        };
+
+    public static ShardMigrationIdRequestMessage ToMigrationIdRequest(string migrationId)
+        => new() { MigrationId = migrationId };
+
+    public static ShardMigrationProgressMessage ToMessage(CSharpDbShardMigrationProgress value)
+    {
+        var message = new ShardMigrationProgressMessage
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            Status = value.Status,
+            Phase = value.Phase,
+            StartedUtc = Timestamp.FromDateTimeOffset(value.StartedUtc),
+            UpdatedUtc = Timestamp.FromDateTimeOffset(value.UpdatedUtc),
+            CompletedUtc = value.CompletedUtc.HasValue
+                ? Timestamp.FromDateTimeOffset(value.CompletedUtc.Value)
+                : null,
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            CompletedSteps = value.CompletedSteps,
+            TotalSteps = value.TotalSteps,
+            PercentComplete = value.PercentComplete,
+            Attempt = value.Attempt,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+        };
+        message.Issues.Add(value.Issues.Select(ToMessage));
+        return message;
+    }
+
+    public static CSharpDbShardMigrationProgress ToModel(ShardMigrationProgressMessage value)
+        => new()
+        {
+            MigrationId = value.MigrationId,
+            MigrationType = value.MigrationType,
+            Status = value.Status,
+            Phase = value.Phase,
+            StartedUtc = value.StartedUtc.ToDateTimeOffset(),
+            UpdatedUtc = value.UpdatedUtc.ToDateTimeOffset(),
+            CompletedUtc = value.CompletedUtc?.ToDateTimeOffset(),
+            Keyspace = value.Keyspace,
+            RouteKey = value.RouteKey,
+            SourceShardId = value.SourceShardId,
+            DestinationShardId = value.DestinationShardId,
+            CompletedSteps = value.CompletedSteps,
+            TotalSteps = value.TotalSteps,
+            PercentComplete = value.PercentComplete,
+            Attempt = value.Attempt,
+            MapVersion = value.MapVersion,
+            PendingMapVersion = value.PendingMapVersion,
+            RequiresRestart = value.RequiresRestart,
+            RequiresOperatorRecovery = value.RequiresOperatorRecovery,
+            RecoveryAction = value.RecoveryAction,
+            Issues = value.Issues.Select(ToModel).ToList(),
+        };
+
     public static ProcedureParameterDefinitionMessage ToMessage(ProcedureParameterDefinition value)
         => new()
         {
@@ -1160,6 +2098,13 @@ public static class GrpcModelMapper
             Salt2 = value.Salt2,
             Issues = value.Issues.Select(ToModel).ToList(),
         };
+
+    private static CSharpDbTransport? TryParseTransport(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? null
+            : System.Enum.TryParse(value, ignoreCase: true, out CSharpDbTransport transport)
+                ? transport
+                : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported transport enum.");
 
     private static Timestamp ToTimestamp(DateTime value)
     {

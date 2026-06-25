@@ -124,6 +124,7 @@
     [Parameter] public EventCallback OnRowsChanged { get; set; }
     [Parameter] public string? FilterExpression { get; set; }
     [Parameter] public IReadOnlyDictionary<string, object?>? FilterParameters { get; set; }
+    [CascadingParameter(Name = "RouteFormRecordService")] public IFormRecordService? CascadedRecordService { get; set; }
 
     private List<Dictionary<string, object?>> _rows = [];
     private bool _loading = true;
@@ -142,6 +143,8 @@
     private int _pageNumber = 1;
     private int _pageSize = 25;
     private int _totalCount;
+
+    private IFormRecordService ActiveRecordService => CascadedRecordService ?? RecordService;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_totalCount / (double)_pageSize));
     private bool HasActiveFilter => !string.IsNullOrWhiteSpace(FilterExpression);
@@ -198,7 +201,7 @@
                     if (standaloneFilterError is not null)
                         throw new InvalidOperationException(standaloneFilterError);
 
-                    List<Dictionary<string, object?>> filteredRows = (await RecordService.ListRecordsAsync(ChildFormTableDefinition))
+                    List<Dictionary<string, object?>> filteredRows = (await ActiveRecordService.ListRecordsAsync(ChildFormTableDefinition))
                         .Where(row => standaloneFilter!.Evaluate(row, standaloneParameters))
                         .ToList();
                     int totalPages = filteredRows.Count == 0 ? 1 : (int)Math.Ceiling(filteredRows.Count / (double)_pageSize);
@@ -211,7 +214,7 @@
                     return;
                 }
 
-                FormRecordPage page = await RecordService.ListRecordPageAsync(ChildFormTableDefinition, _pageNumber, _pageSize);
+                FormRecordPage page = await ActiveRecordService.ListRecordPageAsync(ChildFormTableDefinition, _pageNumber, _pageSize);
                 _pageNumber = page.PageNumber;
                 _pageSize = page.PageSize;
                 _totalCount = page.TotalCount;
@@ -222,7 +225,7 @@
             if (string.IsNullOrWhiteSpace(ForeignKeyField))
                 throw new InvalidOperationException("The related DataGrid foreign key field is not configured.");
 
-            _rows = await RecordService.ListFilteredRecordsAsync(ChildFormTableDefinition, ForeignKeyField, ParentKeyValue);
+            _rows = await ActiveRecordService.ListFilteredRecordsAsync(ChildFormTableDefinition, ForeignKeyField, ParentKeyValue);
             if (TryGetActiveFilter(out FormFilterExpression? relatedFilter, out IReadOnlyDictionary<string, object?> relatedParameters, out string? relatedFilterError))
             {
                 if (relatedFilterError is not null)
@@ -265,7 +268,7 @@
                 newRow[ForeignKeyField] = ParentKeyValue;
             }
 
-            var created = await RecordService.CreateRecordAsync(ChildFormTableDefinition, newRow);
+            var created = await ActiveRecordService.CreateRecordAsync(ChildFormTableDefinition, newRow);
             if (IsStandalone || HasActiveFilter)
             {
                 if (IsStandalone)
@@ -320,7 +323,7 @@
                 if (ChildFormTableDefinition is null)
                     throw new InvalidOperationException($"The child table '{ChildTableName}' is not available.");
 
-                var updated = await RecordService.UpdateRecordAsync(ChildFormTableDefinition, pk, row);
+                var updated = await ActiveRecordService.UpdateRecordAsync(ChildFormTableDefinition, pk, row);
                 _rows[rowIdx] = updated;
                 if (OnRowsChanged.HasDelegate)
                     await OnRowsChanged.InvokeAsync();
@@ -346,7 +349,7 @@
             if (ChildFormTableDefinition is null)
                 throw new InvalidOperationException($"The child table '{ChildTableName}' is not available.");
 
-            await RecordService.DeleteRecordAsync(ChildFormTableDefinition, pk);
+            await ActiveRecordService.DeleteRecordAsync(ChildFormTableDefinition, pk);
             if (IsStandalone)
             {
                 if (_rows.Count == 1 && _pageNumber > 1)

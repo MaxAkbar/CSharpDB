@@ -432,7 +432,7 @@
                 </tr>
                 <tr>
                 <td><strong>API-level sharding</strong></td>
-                <td>Route API/daemon requests across multiple warm CSharpDB database files so independent tenants or shard keys can use separate WAL and commit paths, with v1 focused on single-shard writes and point reads</td>
+                <td>Route-aware client, REST, gRPC, daemon, and ADO.NET surfaces target single-shard operations across multiple warm CSharpDB database files using explicit keyspace/shard-key context and stable virtual-bucket ownership</td>
                 <td>Research</td>
                 </tr>
                 <tr>
@@ -606,7 +606,7 @@
                 <li><a href="https://csharpdb.com/docs/internals.html">Internals &amp; Contributing</a> — How to extend the engine</li>
                 <li>Deployment &amp; Installation Plan — Cross-platform distribution via dotnet tool, Docker, Homebrew, winget, and install scripts</li>
                 <li>Multi-Writer Follow-Up Plan — Post-initial multi-writer roadmap, insert-path gaps, and release criteria for broader completion</li>
-                <li>API-Level Sharding Plan — API/daemon-level routing across multiple database files for write-throughput scaling</li>
+                <li>API-Level Sharding V1 — explicit keyspace/shard-key routing across multiple database files for tenant-style write-throughput scaling</li>
                 <li>Query And Durable Write Performance Plan — Combined optimizer phase-2 plus durable-write completion plan, shipped state, and remaining benchmark/future-work boundaries</li>
                 <li><a href="https://csharpdb.com/docs/collation-support.html">Multilingual Text Support Plan</a> — Build on existing Unicode text storage with case-insensitive matching, locale-aware sorting, and <code>COLLATE</code> clause support for queries and index definitions</li>
                 <li>Database Encryption Plan — Encrypted storage format, key management, migration, and managed-surface rollout</li>

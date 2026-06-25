@@ -1,9 +1,11 @@
 @inject ICSharpDbClient DbClient
+@inject DatabaseClientHolder DbHolder
 @inject DatabaseChangeService Changes
 @inject TabManagerService TabManager
 @inject ToastService Toast
 @inject ModalService Modal
 @inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <div class="data-tab">
     <div class="data-toolbar">
@@ -15,6 +17,8 @@
             <span>/</span>
             <strong><i class="bi @(IsView ? "bi-eye icon-view" : "bi-table icon-table")"></i>@ObjectName</strong>
         </div>
+
+        <AdminRouteSelector Tab="Tab" RouteChanged="OnRouteChangedAsync" />
 
         <div class="data-view-switcher">
             <button type="button" class="@GetDataViewClass()" @onclick="ShowDataView">
@@ -137,6 +141,7 @@
         <DataGrid @ref="_grid"
                   TableName="@(IsView ? null : ObjectName)"
                   ViewName="@(IsView ? ObjectName : null)"
+                  ClientOverride="@_routeClient"
                   IsReadOnly="@IsReadOnly"
                   ShowFilters="false"
                   OnSelectionChanged="OnGridSelectionChanged"
@@ -751,6 +756,10 @@
     [Parameter] public bool IsView { get; set; }
 
     private DataGrid? _grid;
+    private ICSharpDbClient? _routeClient;
+    private string? _routeClientKeyspace;
+    private string? _routeClientKey;
+    private ICSharpDbClient ActiveClient => _routeClient ?? DbClient;
     private bool _showData = true;
     private bool IsReadOnly => IsView;
     private int _selectedRowCount;
@@ -887,10 +896,15 @@
     private string? _confirmDrop;
     private string? _loadedObjectName;
     private bool? _loadedIsView;
+    private string? _loadedRouteKeyspace;
+    private string? _loadedRouteKey;
 
     // ─── Lifecycle ──────────────────────
     protected override async Task OnParametersSetAsync()
     {
+        bool routeChanged = IsTabRouteChanged();
+        await EnsureRouteClientAsync();
+
         if (Tab?.State.TryGetValue("ShowSchema", out var ss) == true && ss is true)
         {
             _showData = false;
@@ -898,16 +912,83 @@
         }
 
         if (!string.Equals(_loadedObjectName, ObjectName, StringComparison.Ordinal)
-            || _loadedIsView != IsView)
+            || _loadedIsView != IsView
+            || routeChanged)
         {
             _loadedObjectName = ObjectName;
             _loadedIsView = IsView;
+            _loadedRouteKeyspace = Tab?.RouteKeyspace;
+            _loadedRouteKey = Tab?.RouteKey;
             _schemaPanel = SchemaPanel.Columns;
             await LoadSchemaAsync();
         }
     }
 
     private void SetSchemaPanel(SchemaPanel panel) => _schemaPanel = panel;
+
+    private bool IsTabRouteChanged()
+        => !string.Equals(_loadedRouteKeyspace, Tab?.RouteKeyspace, StringComparison.Ordinal)
+           || !string.Equals(_loadedRouteKey, Tab?.RouteKey, StringComparison.Ordinal);
+
+    private async Task OnRouteChangedAsync(CSharpDbRouteContext? routeContext)
+    {
+        await EnsureRouteClientAsync();
+        _loadedRouteKeyspace = Tab?.RouteKeyspace;
+        _loadedRouteKey = Tab?.RouteKey;
+        ResetPageForRoute();
+        await LoadSchemaAsync();
+
+        if (_grid is not null)
+            await _grid.LoadDataAsync();
+
+        StateHasChanged();
+    }
+
+    private void ResetPageForRoute()
+    {
+        _activeFilters = Array.Empty<DataGridFilterSummary>();
+        _selectedRowCount = 0;
+        _gridStatus = new QueryResultsStatus
+        {
+            Page = 1,
+            PageSize = 25,
+            HasExactTotal = true,
+        };
+    }
+
+    private async Task EnsureRouteClientAsync()
+    {
+        CSharpDbRouteContext? route = Tab?.RouteContext;
+        if (route is null)
+        {
+            await DisposeRouteClientAsync();
+            return;
+        }
+
+        if (_routeClient is not null
+            && string.Equals(_routeClientKeyspace, route.Keyspace, StringComparison.Ordinal)
+            && string.Equals(_routeClientKey, route.Key, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await DisposeRouteClientAsync();
+        _routeClient = DbHolder.CreateRouteBoundClient(route);
+        _routeClientKeyspace = route.Keyspace;
+        _routeClientKey = route.Key;
+    }
+
+    private async ValueTask DisposeRouteClientAsync()
+    {
+        if (_routeClient is null)
+            return;
+
+        ICSharpDbClient routeClient = _routeClient;
+        _routeClient = null;
+        _routeClientKeyspace = null;
+        _routeClientKey = null;
+        await routeClient.DisposeAsync();
+    }
 
     private string GetSchemaPanelClass(SchemaPanel panel)
         => _schemaPanel == panel ? "active" : string.Empty;
@@ -929,10 +1010,10 @@
         {
             if (!IsView)
             {
-                _schema = await DbClient.GetTableSchemaAsync(ObjectName);
-                var allIndexes = await DbClient.GetIndexesAsync();
+                _schema = await ActiveClient.GetTableSchemaAsync(ObjectName);
+                var allIndexes = await ActiveClient.GetIndexesAsync();
                 _indexes = allIndexes.Where(i => i.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
-                var allTriggers = await DbClient.GetTriggersAsync();
+                var allTriggers = await ActiveClient.GetTriggersAsync();
                 _triggers = allTriggers.Where(t => t.TableName.Equals(ObjectName, StringComparison.OrdinalIgnoreCase)).ToList();
                 _referencingForeignKeys = await LoadReferencingForeignKeysAsync(ObjectName);
                 RebuildColumnDependencies();
@@ -958,7 +1039,7 @@
                 _triggers = null;
                 _referencingForeignKeys = Array.Empty<ColumnForeignKeyReference>();
                 _columnDependencies.Clear();
-                _viewSql = await DbClient.GetViewSqlAsync(ObjectName);
+                _viewSql = await ActiveClient.GetViewSqlAsync(ObjectName);
             }
         }
         catch (Exception ex)
@@ -971,7 +1052,7 @@
     {
         try
         {
-            var result = await DbClient.ExecuteSqlAsync($"""
+            var result = await ActiveClient.ExecuteSqlAsync($"""
                 SELECT table_name, column_name, referenced_column_name, constraint_name
                 FROM sys.foreign_keys
                 WHERE referenced_table_name = {FormatSqlValue(tableName)}
@@ -1673,22 +1754,22 @@
             switch (_tableOperation)
             {
                 case TableOp.AddColumn:
-                    await DbClient.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull, NormalizeCollation(_addColCollation));
+                    await ActiveClient.AddColumnAsync(ObjectName, _addColName, _addColType, _addColNotNull, NormalizeCollation(_addColCollation));
                     Toast.Success($"Added column '{_addColName}'.");
                     _addColName = string.Empty;
                     _addColCollation = string.Empty;
                     break;
                 case TableOp.DropColumn:
-                    await DbClient.DropColumnAsync(ObjectName, _dropColName);
+                    await ActiveClient.DropColumnAsync(ObjectName, _dropColName);
                     Toast.Success($"Dropped column '{_dropColName}'.");
                     break;
                 case TableOp.RenameColumn:
-                    await DbClient.RenameColumnAsync(ObjectName, _renameOldCol, _renameNewCol);
+                    await ActiveClient.RenameColumnAsync(ObjectName, _renameOldCol, _renameNewCol);
                     Toast.Success($"Renamed '{_renameOldCol}' → '{_renameNewCol}'.");
                     _renameNewCol = string.Empty;
                     break;
                 case TableOp.RenameTable:
-                    await DbClient.RenameTableAsync(ObjectName, _newTableName);
+                    await ActiveClient.RenameTableAsync(ObjectName, _newTableName);
                     Toast.Success($"Renamed table → '{_newTableName}'.");
                     _newTableName = string.Empty;
                     break;
@@ -1729,12 +1810,12 @@
         {
             if (_editingIdxName is null)
             {
-                await DbClient.CreateIndexAsync(_idxName, ObjectName, _idxColumn, _idxUnique, NormalizeIndexCollation());
+                await ActiveClient.CreateIndexAsync(_idxName, ObjectName, _idxColumn, _idxUnique, NormalizeIndexCollation());
                 Toast.Success($"Created index '{_idxName}'.");
             }
             else
             {
-                await DbClient.UpdateIndexAsync(_editingIdxName, _idxName, ObjectName, _idxColumn, _idxUnique, NormalizeIndexCollation());
+                await ActiveClient.UpdateIndexAsync(_editingIdxName, _idxName, ObjectName, _idxColumn, _idxUnique, NormalizeIndexCollation());
                 Toast.Success($"Updated index '{_editingIdxName}'.");
             }
             CancelIndexEdit();
@@ -1750,7 +1831,7 @@
         _confirmDrop = null;
         try
         {
-            await DbClient.DropIndexAsync(indexName);
+            await ActiveClient.DropIndexAsync(indexName);
             Toast.Success($"Dropped index '{indexName}'.");
             Changes.NotifyChanged();
             await LoadSchemaAsync();
@@ -1787,12 +1868,12 @@
         {
             if (_editingTrigName is null)
             {
-                await DbClient.CreateTriggerAsync(_trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
+                await ActiveClient.CreateTriggerAsync(_trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
                 Toast.Success($"Created trigger '{_trigName}'.");
             }
             else
             {
-                await DbClient.UpdateTriggerAsync(_editingTrigName, _trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
+                await ActiveClient.UpdateTriggerAsync(_editingTrigName, _trigName, ObjectName, _trigTiming, _trigEvent, _trigBody);
                 Toast.Success($"Updated trigger '{_editingTrigName}'.");
             }
             CancelTriggerEdit();
@@ -1808,7 +1889,7 @@
         _confirmDrop = null;
         try
         {
-            await DbClient.DropTriggerAsync(triggerName);
+            await ActiveClient.DropTriggerAsync(triggerName);
             Toast.Success($"Dropped trigger '{triggerName}'.");
             Changes.NotifyChanged();
             await LoadSchemaAsync();
@@ -1834,7 +1915,7 @@
         _submitting = true;
         try
         {
-            await DbClient.UpdateViewAsync(ObjectName, _editViewName, _editViewSql);
+            await ActiveClient.UpdateViewAsync(ObjectName, _editViewName, _editViewSql);
             Toast.Success($"Updated view '{ObjectName}'.");
             _editingView = false;
             Changes.NotifyChanged();
@@ -1851,7 +1932,7 @@
         {
             try
             {
-                await DbClient.DropViewAsync(ObjectName);
+                await ActiveClient.DropViewAsync(ObjectName);
                 Toast.Success($"Dropped view '{ObjectName}'.");
                 Changes.NotifyChanged();
             }
@@ -1871,7 +1952,7 @@
 
         try
         {
-            await DbClient.DropTableAsync(ObjectName);
+            await ActiveClient.DropTableAsync(ObjectName);
             Toast.Success($"Dropped table '{ObjectName}'.");
             Changes.NotifyChanged();
             TabManager.CloseTabsForObject(ObjectName);
@@ -1940,6 +2021,11 @@
 
     private static string? NormalizeCollation(string? collation)
         => string.IsNullOrWhiteSpace(collation) ? null : collation.Trim().ToUpperInvariant();
+
+    public async ValueTask DisposeAsync()
+    {
+        await DisposeRouteClientAsync();
+    }
 
     private sealed record ColumnForeignKeyReference(
         string TableName,

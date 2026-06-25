@@ -7,7 +7,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client.Internal;
 
-internal sealed partial class HttpTransportClient : ICSharpDbClient
+internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private static readonly JsonSerializerOptions s_jsonOptions = CreateJsonOptions();
 
@@ -16,12 +16,14 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     private readonly bool _disposeHttpClient;
     private readonly string? _apiKey;
     private readonly string _apiKeyHeaderName;
+    private readonly CSharpDbRouteContext? _routeContext;
 
     public HttpTransportClient(
         Uri endpoint,
         HttpClient? httpClient = null,
         string? apiKey = null,
-        string? apiKeyHeaderName = null)
+        string? apiKeyHeaderName = null,
+        CSharpDbRouteContext? routeContext = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
@@ -30,6 +32,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         _apiKeyHeaderName = string.IsNullOrWhiteSpace(apiKeyHeaderName)
             ? "X-CSharpDB-Api-Key"
             : apiKeyHeaderName.Trim();
+        _routeContext = routeContext;
 
         if (httpClient is null)
         {
@@ -43,6 +46,187 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     }
 
     public string DataSource => _endpoint.AbsoluteUri;
+
+    public async Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/map"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardMapSnapshot>(response, ct);
+    }
+
+    public async Task<CSharpDbShardResolution> ResolveRouteAsync(
+        CSharpDbRouteContext routeContext,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/resolve"), routeContext, ct);
+        return await ReadRequiredAsync<CSharpDbShardResolution>(response, ct);
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/status"), payload: null, ct);
+        return await ReadRequiredAsync<List<CSharpDbShardStatus>>(response, ct);
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/sql/execute-all"), new { Sql = sql }, ct);
+        var payload = await ReadRequiredAsync<List<ApiShardSqlExecutionResultResponse>>(response, ct);
+        return payload.Select(item => new CSharpDbShardSqlExecutionResult
+        {
+            ShardId = item.ShardId,
+            Result = item.Result is null ? null : MapSqlResult(item.Result),
+            Error = item.Error,
+        }).ToList();
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteReadOnlySqlOnAllShardsAsync(
+        string sql,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/sql/read-all"), new { Sql = sql }, ct);
+        var payload = await ReadRequiredAsync<List<ApiShardSqlExecutionResultResponse>>(response, ct);
+        return payload.Select(item => new CSharpDbShardSqlExecutionResult
+        {
+            ShardId = item.ShardId,
+            Result = item.Result is null ? null : MapSqlResult(item.Result),
+            Error = item.Error,
+        }).ToList();
+    }
+
+    public async Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/catalog"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardCatalogState>(response, ct);
+    }
+
+    public async Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/catalog/validate"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardCatalogValidationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(
+        CSharpDbShardCatalogUpdateRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/catalog/apply"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardCatalogApplyResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(
+        CSharpDbShardExactKeyMigrationRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/migrations/exact-route-key"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(
+        CSharpDbShardBucketRangeMigrationRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/migrations/bucket-range"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/migrations"), payload: null, ct);
+        return await ReadRequiredAsync<List<CSharpDbShardMigrationHistoryEntry>>(response, ct);
+    }
+
+    public async Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri("api/sharding/migrations/progress"), payload: null, ct);
+        return await ReadRequiredAsync<List<CSharpDbShardMigrationProgress>>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(
+        string migrationId,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Get, BuildUri($"api/sharding/migrations/{Escape(migrationId)}/progress"), payload: null, ct);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null;
+
+        return await ReadRequiredAsync<CSharpDbShardMigrationProgress>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri($"api/sharding/migrations/{Escape(migrationId)}/resume"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(
+        string migrationId,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri($"api/sharding/migrations/{Escape(migrationId)}/retry"), payload: null, ct);
+        return await ReadRequiredAsync<CSharpDbShardMigrationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(
+        CSharpDbShardDirectoryResolveRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/resolve"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryResolution>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(
+        CSharpDbShardDirectoryReserveRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/reserve"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(
+        CSharpDbShardDirectoryActivateRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/activate"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(
+        CSharpDbShardDirectoryUpsertRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/upsert"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(
+        CSharpDbShardDirectoryDisableRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/disable"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(
+        CSharpDbShardDirectoryDeleteRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/delete"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
+
+    public async Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(
+        CSharpDbShardDirectoryMarkStaleRequest request,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(HttpMethod.Post, BuildUri("api/sharding/directory/mark-stale"), request, ct);
+        return await ReadRequiredAsync<CSharpDbShardDirectoryMutationResult>(response, ct);
+    }
 
     public async Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default)
     {
@@ -669,6 +853,11 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
         using var request = new HttpRequestMessage(method, uri);
         if (_apiKey is not null)
             request.Headers.TryAddWithoutValidation(_apiKeyHeaderName, _apiKey);
+        if (_routeContext is not null)
+        {
+            request.Headers.TryAddWithoutValidation(CSharpDbRouteHeaderNames.Keyspace, _routeContext.Keyspace);
+            request.Headers.TryAddWithoutValidation(CSharpDbRouteHeaderNames.ShardKey, _routeContext.Key);
+        }
 
         if (payload is not null)
             request.Content = JsonContent.Create(payload, options: s_jsonOptions);
@@ -1020,6 +1209,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient
     private sealed record ApiViewResponse(string ViewName, string Sql);
     private sealed record ApiTriggerResponse(string TriggerName, string TableName, string Timing, string Event, string BodySql);
     private sealed record ApiSqlResultResponse(bool IsQuery, string[]? ColumnNames, string[]? ColumnTypes, IReadOnlyList<Dictionary<string, object?>>? Rows, int RowsAffected, string? Error, double ElapsedMs);
+    private sealed record ApiShardSqlExecutionResultResponse(string ShardId, ApiSqlResultResponse? Result, string? Error);
     private sealed record ApiProcedureDetailResponse(string Name, string BodySql, IReadOnlyList<ApiProcedureParameterResponse> Parameters, string? Description, bool IsEnabled, DateTime CreatedUtc, DateTime UpdatedUtc);
     private sealed record ApiProcedureParameterResponse(string Name, string Type, bool Required, object? Default, string? Description);
     private sealed record ApiProcedureExecutionResponse(string ProcedureName, bool Succeeded, IReadOnlyList<ApiProcedureStatementResultResponse> Statements, string? Error, int? FailedStatementIndex, double ElapsedMs);

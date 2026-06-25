@@ -55,6 +55,11 @@ public sealed record SqlResultResponse(
     string? Error,
     double ElapsedMs);
 
+public sealed record ShardSqlExecutionResultResponse(
+    string ShardId,
+    SqlResultResponse? Result,
+    string? Error);
+
 // ─── Database Info ──────────────────────────────────────────
 
 public sealed record DatabaseInfoResponse(

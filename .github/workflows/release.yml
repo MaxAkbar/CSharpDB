@@ -76,14 +76,14 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Fail when NUGET_API_KEY is missing
+      - name: Fail when NUGET_USER is missing
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_USER: ${{ secrets.NUGET_USER }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$NUGET_API_KEY" ]]; then
-            echo "Repository secret NUGET_API_KEY is not set." >&2
+          if [[ -z "$NUGET_USER" ]]; then
+            echo "Repository secret NUGET_USER is not set. Set it to the nuget.org username/profile name used by the Trusted Publishing policy." >&2
             exit 1
           fi
 
@@ -128,16 +128,19 @@ jobs:
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget -p:Version="$version"
+      - name: NuGet login through Trusted Publishing
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
 
       - name: Push packages to NuGet.org
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
           dotnet nuget push "artifacts/nuget/*.nupkg" \
             --source "https://api.nuget.org/v3/index.json" \
-            --api-key "$NUGET_API_KEY" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --skip-duplicate
 
       - name: Verify packages are visible on NuGet.org

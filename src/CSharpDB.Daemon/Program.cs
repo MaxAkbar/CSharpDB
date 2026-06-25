@@ -15,13 +15,19 @@ builder.Host.UseSystemd();
 
 builder.Services.AddSingleton(sp =>
     DaemonClientOptionsBuilder.BindHostDatabaseOptions(sp.GetRequiredService<IConfiguration>()));
-
 builder.Services.AddSingleton(sp =>
     DaemonClientOptionsBuilder.Build(
         sp.GetRequiredService<IConfiguration>(),
         sp.GetRequiredService<DaemonHostDatabaseOptions>()));
-
-builder.Services.AddCSharpDbClient(sp => sp.GetRequiredService<CSharpDbClientOptions>());
+builder.Services.AddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
+builder.Services.AddSingleton<ICSharpDbClient>(sp =>
+{
+    CSharpDbClientOptions options = sp.GetRequiredService<CSharpDbClientOptions>();
+    return CSharpDbShardedClient.TryCreateFromMasterCatalog(
+               options,
+               sp.GetRequiredService<ICSharpDbRouteContextAccessor>())
+           ?? CSharpDbClient.Create(options);
+});
 builder.Services.Configure<CSharpDbApiSecurityOptions>(
     builder.Configuration.GetSection("CSharpDB:Daemon:Security"));
 
@@ -33,6 +39,7 @@ if (enableRestApi)
 builder.Services.AddGrpc(options =>
 {
     options.Interceptors.Add<CSharpDbApiKeyGrpcInterceptor>();
+    options.Interceptors.Add<CSharpDbRouteContextGrpcInterceptor>();
 });
 
 var app = builder.Build();

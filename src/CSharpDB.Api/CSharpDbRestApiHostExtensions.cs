@@ -3,10 +3,12 @@ using System.Text.Json.Serialization;
 using CSharpDB.Api.Endpoints;
 using CSharpDB.Api.Middleware;
 using CSharpDB.Api.Security;
+using CSharpDB.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Scalar.AspNetCore;
 
 namespace CSharpDB.Api;
@@ -44,6 +46,7 @@ public static class CSharpDbRestApiHostExtensions
     {
         services.AddOpenApi();
         services.AddOptions<CSharpDbApiSecurityOptions>();
+        services.TryAddSingleton<ICSharpDbRouteContextAccessor, CSharpDbRouteContextAccessor>();
 
         if (configureSecurity is not null)
             services.Configure(configureSecurity);
@@ -90,6 +93,7 @@ public static class CSharpDbRestApiHostExtensions
                     branch.UseCors();
                     branch.UseMiddleware<ExceptionHandlingMiddleware>();
                     branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
+                    branch.UseMiddleware<RouteContextMiddleware>();
                 });
         }
         else
@@ -98,7 +102,11 @@ public static class CSharpDbRestApiHostExtensions
             app.UseMiddleware<ExceptionHandlingMiddleware>();
             app.UseWhen(
                 context => context.Request.Path.StartsWithSegments(apiPath),
-                branch => branch.UseMiddleware<ApiKeyAuthenticationMiddleware>());
+                branch =>
+                {
+                    branch.UseMiddleware<ApiKeyAuthenticationMiddleware>();
+                    branch.UseMiddleware<RouteContextMiddleware>();
+                });
         }
 
         if (options.MapDevelopmentOpenApi && app.Environment.IsDevelopment())
@@ -127,6 +135,7 @@ public static class CSharpDbRestApiHostExtensions
         api.MapSchemaEndpoints();
         api.MapInspectEndpoints();
         api.MapMaintenanceEndpoints();
+        api.MapShardAdminEndpoints();
 
         return app;
     }

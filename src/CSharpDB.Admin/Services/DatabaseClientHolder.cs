@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Data.Common;
+using System.Globalization;
 using CSharpDB.Admin.Configuration;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
@@ -12,9 +14,11 @@ namespace CSharpDB.Admin.Services;
 /// at runtime (e.g. when the user opens a different database file).
 /// Registered as a singleton; all Blazor circuits share the same instance.
 /// </summary>
-public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter
+public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private ICSharpDbClient _inner;
+    private ICSharpDbShardAdminClient? _shardAdmin;
+    private CSharpDbClientOptions? _baseClientOptions;
     private readonly AdminHostDatabaseOptions _hostDatabaseOptions;
     private readonly DbFunctionRegistry _functions;
     private readonly object _lock = new();
@@ -23,28 +27,53 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
 
     public DatabaseClientHolder(
         ICSharpDbClient initial,
+        ICSharpDbShardAdminClient? shardAdmin,
+        CSharpDbClientOptions? baseClientOptions,
         AdminHostDatabaseOptions hostDatabaseOptions,
         DbFunctionRegistry functions)
     {
         _inner = initial;
+        _shardAdmin = shardAdmin;
+        _baseClientOptions = baseClientOptions;
         _hostDatabaseOptions = hostDatabaseOptions;
         _functions = functions;
     }
 
     public async Task SwitchAsync(string databasePath)
     {
-        var newClient = CSharpDbClient.Create(
-            AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions));
+        CSharpDbClientOptions newOptions = AdminClientOptionsBuilder.BuildDirectDataSource(databasePath, _hostDatabaseOptions, _functions);
+        ICSharpDbClient newClient;
+        ICSharpDbShardAdminClient? newShardAdmin;
+        CSharpDbClientOptions? newBaseClientOptions;
+        if (CSharpDbShardedClient.TryCreateFromMasterCatalog(newOptions) is { } shardedClient)
+        {
+            newClient = shardedClient;
+            newShardAdmin = shardedClient;
+            newBaseClientOptions = null;
+        }
+        else
+        {
+            newClient = CSharpDbClient.Create(newOptions);
+            newShardAdmin = null;
+            newBaseClientOptions = newOptions;
+        }
 
         // Verify the new database is accessible before swapping.
         await newClient.GetInfoAsync();
 
         ICSharpDbClient old;
+        ICSharpDbShardAdminClient? oldShardAdmin;
         lock (_lock)
         {
             old = _inner;
+            oldShardAdmin = _shardAdmin;
             _inner = newClient;
+            _shardAdmin = newShardAdmin;
+            _baseClientOptions = newBaseClientOptions;
         }
+
+        if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
+            await oldShardAdmin.DisposeAsync();
 
         await old.DisposeAsync();
         DatabaseChanged?.Invoke();
@@ -53,8 +82,98 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     // ── Delegated members ──────────────────────────────────
 
     public string DataSource => _inner.DataSource;
+    public bool SupportsShardAdmin => _shardAdmin is not null;
+    public bool SupportsMasterCatalogBootstrap
+    {
+        get
+        {
+            lock (_lock)
+                return TryResolveDirectDataSource(_baseClientOptions) is not null;
+        }
+    }
+
+    public string? MasterCatalogDataSource
+    {
+        get
+        {
+            lock (_lock)
+                return TryResolveDirectDataSource(_baseClientOptions);
+        }
+    }
+
+    public bool SupportsRouteBoundClients
+        => _inner is CSharpDbShardedClient || _baseClientOptions is not null;
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
+
+    public ICSharpDbClient CreateRouteBoundClient(CSharpDbRouteContext routeContext)
+    {
+        ArgumentNullException.ThrowIfNull(routeContext);
+
+        ICSharpDbClient inner;
+        CSharpDbClientOptions? baseClientOptions;
+        lock (_lock)
+        {
+            inner = _inner;
+            baseClientOptions = _baseClientOptions;
+        }
+
+        if (inner is CSharpDbShardedClient shardedClient)
+            return shardedClient.ForRoute(routeContext);
+
+        if (baseClientOptions is null)
+        {
+            throw new CSharpDbClientConfigurationException(
+                "The current CSharpDB connection cannot create a route-bound Admin client.");
+        }
+
+        return CSharpDbClient.Create(CloneOptionsWithRoute(baseClientOptions, routeContext));
+    }
+
+    public async Task CreateShardCatalogAndReloadAsync(
+        CSharpDbShardingOptions activeMap,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(activeMap);
+
+        CSharpDbClientOptions baseClientOptions;
+        lock (_lock)
+        {
+            if (TryResolveDirectDataSource(_baseClientOptions) is null)
+            {
+                throw new CSharpDbClientConfigurationException(
+                    "The current CSharpDB connection cannot create a master shard catalog. Open a local direct master database first.");
+            }
+
+            baseClientOptions = CloneOptions(_baseClientOptions!);
+        }
+
+        await CSharpDbShardedClient.SeedMasterCatalogAsync(baseClientOptions, activeMap, ct);
+
+        CSharpDbShardedClient shardedClient =
+            await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(baseClientOptions, ct: ct)
+            ?? throw new CSharpDbClientConfigurationException(
+                "The master database was seeded, but no active shard map could be loaded.");
+
+        await shardedClient.GetInfoAsync(ct);
+
+        ICSharpDbClient old;
+        ICSharpDbShardAdminClient? oldShardAdmin;
+        lock (_lock)
+        {
+            old = _inner;
+            oldShardAdmin = _shardAdmin;
+            _inner = shardedClient;
+            _shardAdmin = shardedClient;
+            _baseClientOptions = null;
+        }
+
+        if (oldShardAdmin is not null && !ReferenceEquals(oldShardAdmin, old))
+            await oldShardAdmin.DisposeAsync();
+
+        await old.DisposeAsync();
+        DatabaseChanged?.Invoke();
+    }
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
     public Task<IReadOnlyList<string>> GetTableNamesAsync(CancellationToken ct = default) => _inner.GetTableNamesAsync(ct);
@@ -140,8 +259,163 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
             ? progressExporter.ExportTableArchiveAsync(tableName, path, progress, ct)
             : ExportTableArchiveAsync(tableName, path, ct);
 
+    public Task<CSharpDbShardMapSnapshot> GetShardMapAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMapAsync(ct);
+
+    public Task<CSharpDbShardResolution> ResolveRouteAsync(CSharpDbRouteContext routeContext, CancellationToken ct = default)
+        => RequireShardAdmin().ResolveRouteAsync(routeContext, ct);
+
+    public Task<IReadOnlyList<CSharpDbShardStatus>> GetShardStatusAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardStatusAsync(ct);
+
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteSqlOnAllShardsAsync(string sql, CancellationToken ct = default)
+        => RequireShardAdmin().ExecuteSqlOnAllShardsAsync(sql, ct);
+
+    public Task<IReadOnlyList<CSharpDbShardSqlExecutionResult>> ExecuteReadOnlySqlOnAllShardsAsync(string sql, CancellationToken ct = default)
+        => RequireShardAdmin().ExecuteReadOnlySqlOnAllShardsAsync(sql, ct);
+
+    public Task<CSharpDbShardCatalogState> GetShardCatalogAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardCatalogAsync(ct);
+
+    public Task<CSharpDbShardCatalogValidationResult> ValidateShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().ValidateShardCatalogUpdateAsync(request, ct);
+
+    public Task<CSharpDbShardCatalogApplyResult> ApplyShardCatalogUpdateAsync(CSharpDbShardCatalogUpdateRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().ApplyShardCatalogUpdateAsync(request, ct);
+
+    public Task<CSharpDbShardMigrationResult> MigrateExactRouteKeyAsync(CSharpDbShardExactKeyMigrationRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().MigrateExactRouteKeyAsync(request, ct);
+
+    public Task<CSharpDbShardMigrationResult> MigrateBucketRangeAsync(CSharpDbShardBucketRangeMigrationRequest request, CancellationToken ct = default)
+        => RequireShardAdmin().MigrateBucketRangeAsync(request, ct);
+
+    public Task<IReadOnlyList<CSharpDbShardMigrationHistoryEntry>> GetShardMigrationHistoryAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMigrationHistoryAsync(ct);
+
+    public Task<IReadOnlyList<CSharpDbShardMigrationProgress>> GetShardMigrationProgressAsync(CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMigrationProgressAsync(ct);
+
+    public Task<CSharpDbShardMigrationProgress?> GetShardMigrationProgressAsync(string migrationId, CancellationToken ct = default)
+        => RequireShardAdmin().GetShardMigrationProgressAsync(migrationId, ct);
+
+    public Task<CSharpDbShardMigrationResult> ResumeShardMigrationAsync(string migrationId, CancellationToken ct = default)
+        => RequireShardAdmin().ResumeShardMigrationAsync(migrationId, ct);
+
+    public Task<CSharpDbShardMigrationResult> RetryShardMigrationAsync(string migrationId, CancellationToken ct = default)
+        => RequireShardAdmin().RetryShardMigrationAsync(migrationId, ct);
+
+    public Task<CSharpDbShardDirectoryResolution> ResolveDirectoryEntryAsync(CSharpDbShardDirectoryResolveRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().ResolveDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ReserveDirectoryEntryAsync(CSharpDbShardDirectoryReserveRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().ReserveDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> ActivateDirectoryEntryAsync(CSharpDbShardDirectoryActivateRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().ActivateDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> UpsertDirectoryEntryAsync(CSharpDbShardDirectoryUpsertRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().UpsertDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DisableDirectoryEntryAsync(CSharpDbShardDirectoryDisableRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().DisableDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> DeleteDirectoryEntryAsync(CSharpDbShardDirectoryDeleteRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().DeleteDirectoryEntryAsync(request, ct);
+
+    public Task<CSharpDbShardDirectoryMutationResult> MarkDirectoryEntryStaleAsync(CSharpDbShardDirectoryMarkStaleRequest request, CancellationToken ct = default)
+        => RequireShardDirectory().MarkDirectoryEntryStaleAsync(request, ct);
+
+    private ICSharpDbShardAdminClient RequireShardAdmin()
+        => _shardAdmin
+            ?? throw new CSharpDbClientConfigurationException("The current CSharpDB connection does not expose shard-admin APIs.");
+
+    private ICSharpDbShardDirectoryClient RequireShardDirectory()
+        => _shardAdmin as ICSharpDbShardDirectoryClient
+           ?? throw new CSharpDbClientConfigurationException("The current CSharpDB connection does not expose shard-directory APIs.");
+
+    private static CSharpDbClientOptions CloneOptionsWithRoute(
+        CSharpDbClientOptions options,
+        CSharpDbRouteContext routeContext)
+        => CloneOptions(options, routeContext);
+
+    private static CSharpDbClientOptions CloneOptions(
+        CSharpDbClientOptions options)
+        => CloneOptions(options, routeContext: null);
+
+    private static CSharpDbClientOptions CloneOptions(
+        CSharpDbClientOptions options,
+        CSharpDbRouteContext? routeContext)
+    {
+        return new CSharpDbClientOptions
+        {
+            Transport = options.Transport,
+            Endpoint = options.Endpoint,
+            ConnectionString = options.ConnectionString,
+            DataSource = options.DataSource,
+            HttpClient = options.HttpClient,
+            ApiKey = options.ApiKey,
+            ApiKeyHeaderName = options.ApiKeyHeaderName,
+            RouteContext = routeContext,
+            DirectDatabaseOptions = options.DirectDatabaseOptions,
+            HybridDatabaseOptions = options.HybridDatabaseOptions,
+        };
+    }
+
+    private static string? TryResolveDirectDataSource(CSharpDbClientOptions? options)
+    {
+        if (options is null)
+            return null;
+        if (options.Transport is not null && options.Transport != CSharpDbTransport.Direct)
+            return null;
+
+        string? endpoint = NormalizeOptional(options.Endpoint);
+        if (endpoint is not null)
+        {
+            if (Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri))
+                return string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase)
+                    ? uri.LocalPath
+                    : null;
+
+            if (!endpoint.Contains("://", StringComparison.Ordinal))
+                return endpoint;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.DataSource))
+            return options.DataSource.Trim();
+
+        if (string.IsNullOrWhiteSpace(options.ConnectionString))
+            return null;
+
+        var builder = new DbConnectionStringBuilder
+        {
+            ConnectionString = options.ConnectionString.Trim(),
+        };
+
+        foreach (string key in builder.Keys.Cast<string>())
+        {
+            if (!key.Equals("Data Source", StringComparison.OrdinalIgnoreCase) &&
+                !key.Equals("DataSource", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string? value = Convert.ToString(builder[key], CultureInfo.InvariantCulture);
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeOptional(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
     public async ValueTask DisposeAsync()
     {
-        await _inner.DisposeAsync();
+        ICSharpDbClient inner = _inner;
+        ICSharpDbShardAdminClient? shardAdmin = _shardAdmin;
+        if (shardAdmin is not null && !ReferenceEquals(shardAdmin, inner))
+            await shardAdmin.DisposeAsync();
+
+        await inner.DisposeAsync();
     }
 }

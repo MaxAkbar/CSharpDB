@@ -20,6 +20,7 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/aspnet-core-identity/AspNetCoreIdentitySample.csproj" />
+    <Project Path="samples/api-level-sharding/ApiLevelShardingSample.csproj" />
     <Project Path="samples/collection-indexing/CollectionIndexingSample.csproj" />
     <Project Path="samples/compression-sdk/CompressionSdkSample.csproj" />
     <Project Path="samples/csv-bulk-import/CsvBulkImportSample.csproj" />
