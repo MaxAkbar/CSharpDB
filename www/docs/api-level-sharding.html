@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>API-Level Sharding — CSharpDB</title>
-    <meta name="description" content="Configure and use CSharpDB API-level sharding with scenario-based route keys, virtual bucket maps, daemon headers, gRPC metadata, ADO.NET route keys, and shard-prefixed transactions.">
+    <meta name="description" content="Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.">
     <link rel="canonical" href="https://csharpdb.com/docs/api-level-sharding.html">
     <meta property="og:title" content="API-Level Sharding — CSharpDB">
-    <meta property="og:description" content="Configure and use CSharpDB API-level sharding with scenario-based route keys, virtual bucket maps, daemon headers, gRPC metadata, ADO.NET route keys, and shard-prefixed transactions.">
+    <meta property="og:description" content="Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.">
     <meta property="og:url" content="https://csharpdb.com/docs/api-level-sharding.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "API-Level Sharding",
-        "description": "Configure and use CSharpDB API-level sharding with scenario-based route keys, virtual bucket maps, daemon headers, gRPC metadata, ADO.NET route keys, and shard-prefixed transactions.",
+        "description": "Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.",
         "url": "https://csharpdb.com/docs/api-level-sharding.html",
         "isPartOf": {
             "@type": "WebSite",
@@ -33,8 +33,8 @@
         window.currentPage = 'docs'; window.pagePathPrefix = '../';
         window.pageConfig = {
             title: 'API-Level Sharding',
-            description: 'Configure and use CSharpDB API-level sharding with scenario-based route keys, virtual bucket maps, daemon headers, gRPC metadata, ADO.NET route keys, and shard-prefixed transactions.',
-            keywords: 'CSharpDB sharding, route key, virtual buckets, shard map, ecommerce order history, monthly shards',
+            description: 'Configure and use CSharpDB API-level sharding with a master catalog, scenario-based route keys, virtual bucket maps, Admin routing, daemon headers, ADO.NET route keys, migrations, and shard-prefixed transactions.',
+            keywords: 'CSharpDB sharding, master catalog, route key, virtual buckets, shard map, ecommerce order history, monthly shards',
             canonicalPath: 'docs/api-level-sharding.html',
             ogType: 'article',
         };
@@ -45,10 +45,10 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>API-Level Sharding</h1>
-                <p class="lead">API-level sharding routes each request to one normal CSharpDB database file using an explicit application-owned route key.</p>
+                <p class="lead">API-level sharding uses a master catalog and explicit application-owned route keys to route each request to one normal CSharpDB database file.</p>
 
                 <div class="callout callout-info">
-                    <strong>Try it first:</strong> run <code>dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj</code> from the repository root. The sample creates four shard files and walks through an e-commerce order-history flow where recent orders use the current month route and older history uses the selected month route.
+                    <strong>Try it first:</strong> run <code>dotnet run --project samples/api-level-sharding/ApiLevelShardingSample.csproj</code> from the repository root. The sample creates a master database plus four shard files and walks through an e-commerce order-history flow where recent orders use the current month route and older history uses the selected month route.
                 </div>
 
                 <h2>Scenario: E-Commerce Order History</h2>
@@ -95,14 +95,18 @@
                 </div>
 
                 <h2>Direct Local Client</h2>
-                <p>For embedded or service-internal use, create a <code>CSharpDbShardedClient</code> with direct shard files and bind requests with <code>ForRoute(...)</code>.</p>
+                <p>For embedded or service-internal use, seed the shard map into a master CSharpDB database, open the master database, and bind requests with <code>ForRoute(...)</code>. The master database owns sharding metadata; it is not a data shard.</p>
 
                 <div class="code-block" data-title="C#">
                     <pre><code>using CSharpDB.Client;
 
-await using var sharded = await CSharpDbShardedClient.CreateAsync(new CSharpDbShardingOptions
+CSharpDbClientOptions masterOptions = new()
 {
-    Enabled = true,
+    ConnectionString = "Data Source=data/master.db",
+};
+
+CSharpDbShardingOptions activeMap = new()
+{
     Keyspace = "orders_by_month",
     MapVersion = 1,
     VirtualBucketCount = 16,
@@ -127,7 +131,13 @@ await using var sharded = await CSharpDbShardedClient.CreateAsync(new CSharpDbSh
         ["2026-04"] = "shard-2",
         ["2025-12"] = "shard-3",
     },
-});
+};
+
+await CSharpDbShardedClient.SeedMasterCatalogAsync(masterOptions, activeMap);
+
+await using CSharpDbShardedClient sharded =
+    await CSharpDbShardedClient.TryCreateFromMasterCatalogAsync(masterOptions)
+    ?? throw new InvalidOperationException("The master database does not contain an active shard map.");
 
 await sharded.ExecuteSqlOnAllShardsAsync("""
     CREATE TABLE orders (
@@ -329,38 +339,17 @@ return rows plus updated token</code></pre>
                 <p>This is application-level aggregation. CSharpDB V1 does not infer the route list from <code>WHERE order_date BETWEEN ...</code> and does not run a distributed query plan.</p>
 
                 <h2>Daemon Configuration</h2>
-                <p>For the REST API and gRPC daemon, configure the same shard map under <code>CSharpDB:Sharding</code>. The daemon registers a sharded <code>ICSharpDbClient</code> and routes existing endpoints through per-request route context.</p>
+                <p>For the REST API and gRPC daemon, configure the normal CSharpDB connection string to point at the master database. At startup the daemon opens that database, discovers the active shard map from the master catalog, registers a sharded <code>ICSharpDbClient</code>, and routes existing endpoints through per-request route context.</p>
 
                 <div class="code-block" data-title="appsettings.json">
                     <pre><code>{
-  "CSharpDB": {
-    "Sharding": {
-      "Enabled": true,
-      "Keyspace": "orders_by_month",
-      "MapVersion": 1,
-      "VirtualBucketCount": 16,
-      "Shards": [
-        { "ShardId": "shard-0", "DataSource": "data/shard-0.db" },
-        { "ShardId": "shard-1", "DataSource": "data/shard-1.db" },
-        { "ShardId": "shard-2", "DataSource": "data/shard-2.db" },
-        { "ShardId": "shard-3", "DataSource": "data/shard-3.db" }
-      ],
-      "BucketRanges": [
-        { "StartBucketInclusive": 0, "EndBucketExclusive": 4, "ShardId": "shard-0" },
-        { "StartBucketInclusive": 4, "EndBucketExclusive": 8, "ShardId": "shard-1" },
-        { "StartBucketInclusive": 8, "EndBucketExclusive": 12, "ShardId": "shard-2" },
-        { "StartBucketInclusive": 12, "EndBucketExclusive": 16, "ShardId": "shard-3" }
-      ],
-      "ExactKeyPins": {
-        "2026-06": "shard-0",
-        "2026-05": "shard-1",
-        "2026-04": "shard-2",
-        "2025-12": "shard-3"
-      }
-    }
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=data/master.db"
   }
 }</code></pre>
                 </div>
+
+                <p>Seed the master catalog with <code>SeedMasterCatalogAsync(...)</code>, Admin's sharding setup flow, or the shard catalog update APIs before starting the daemon. The previous JSON file catalog shape is not part of the shipped v4 implementation.</p>
 
                 <h2>Remote Route Context</h2>
                 <p>HTTP clients send route context as headers. gRPC clients send the same names as lowercase metadata keys.</p>
@@ -416,7 +405,7 @@ IReadOnlyList&lt;CSharpDbShardStatus&gt; status = await shardAdmin.GetShardStatu
                 <h3>Admin Sharding Workspace</h3>
                 <p>CSharpDB Studio includes a Sharding workspace for operator inspection. It shows shard definitions, bucket ranges, exact route-key pins, shard health, catalog state, migration history, and route resolution previews.</p>
 
-                <p>For local Admin hosting, set <code>CSharpDB:Sharding:Enabled=true</code> with the same shard map used by the daemon. For remote HTTP or gRPC Admin connections, the workspace calls the daemon shard-admin endpoints.</p>
+                <p>For local Admin hosting, open the master database that contains the active shard map. For remote HTTP or gRPC Admin connections, the workspace calls the daemon shard-admin endpoints.</p>
 
                 <h3>Route-Aware Admin Tabs</h3>
                 <p>Query, table/view data, and collection tabs include a route selector when shard-admin APIs are available. Enter the keyspace and application route key, such as <code>orders_by_month</code> and <code>2026-06</code>, then apply the route. The selector resolves and displays the target shard and bucket; the tab stores that route snapshot independently from other open tabs.</p>
@@ -439,19 +428,12 @@ IReadOnlyList&lt;CSharpDbShardStatus&gt; status = await shardAdmin.GetShardStatu
                 <p>The returned results stay grouped by shard. The caller decides whether to show each shard separately, merge rows for a report, or compute a small explicit rollup. Normal application paging should still use route-aware calls so the app controls the route keys and the amount of data read.</p>
 
                 <h3>Catalog-Backed Map Updates</h3>
-                <p>Operator-managed catalog mode lets a daemon load the shard map from a JSON catalog file at startup and persist proposed map changes through admin APIs. Applying a catalog change writes a pending map; it does not silently change the live router.</p>
+                <p>Operator-managed catalog mode stores the active shard map, pending map, catalog history, migration checkpoints, and migration history in the master database. Applying a catalog change writes a pending map into the master catalog; it does not silently change the live router.</p>
 
                 <div class="code-block" data-title="appsettings.json">
                     <pre><code>{
-  "CSharpDB": {
-    "Sharding": {
-      "Enabled": true,
-      "Catalog": {
-        "Enabled": true,
-        "Path": "data/shard-catalog.json",
-        "AllowWrites": true
-      }
-    }
+  "ConnectionStrings": {
+    "CSharpDB": "Data Source=data/master.db"
   }
 }</code></pre>
                 </div>
@@ -479,7 +461,7 @@ CSharpDbShardCatalogApplyResult applied =
 
                 <p>Catalog update endpoints are <code>GET /api/sharding/catalog</code>, <code>POST /api/sharding/catalog/validate</code>, and <code>POST /api/sharding/catalog/apply</code>. The gRPC contract exposes <code>GetShardCatalog</code>, <code>ValidateShardCatalogUpdate</code>, and <code>ApplyShardCatalogUpdate</code>. A successful apply returns <code>RequiresRestart = true</code>; restart the daemon or recreate the sharded client to activate the new map.</p>
 
-                <p>CSharpDB Studio's Sharding workspace includes a JSON catalog draft editor for catalog-backed deployments. Operators can load a sanitized active or pending map template, edit the <code>CSharpDbShardingOptions</code> JSON, validate it, and apply a pending map with operator/comment metadata. Because the editor starts from read-only snapshots, hidden connection strings, API keys, and directory entries must be reviewed and supplied explicitly before applying a draft.</p>
+                <p>CSharpDB Studio's Sharding workspace includes a JSON shard-map draft editor for master-catalog-backed deployments. Operators can load a sanitized active or pending map template, edit the <code>CSharpDbShardingOptions</code> JSON, validate it, and apply a pending map with operator/comment metadata. Because the editor starts from read-only snapshots, hidden connection strings, API keys, and directory entries must be reviewed and supplied explicitly before applying a draft.</p>
 
                 <h3>Controlled Exact-Key Migration</h3>
                 <p>Phase 4 starts with exact route-key migration. The operator provides a manifest that identifies the route-owned tables and collections. CSharpDB fences writes for that route key, copies matching rows/documents to the destination shard, verifies counts and checksums, then writes a pending exact-key pin to the catalog.</p>
