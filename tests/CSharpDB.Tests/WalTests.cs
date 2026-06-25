@@ -921,6 +921,40 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FileWriteAheadLog_OpenAsync_CreatesFreshWalWhenExistingWalDisappearsBeforeRecoveryOpen()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_wal_missing_recover_{Guid.NewGuid():N}.db");
+        string walPath = dbPath + ".wal";
+        WriteAheadLog? wal = null;
+
+        try
+        {
+            await using (var existing = new WriteAheadLog(dbPath, new WalIndex()))
+            {
+                await existing.OpenAsync(currentDbPageCount: 3, ct);
+            }
+
+            Assert.True(File.Exists(walPath));
+            File.Delete(walPath);
+
+            wal = new WriteAheadLog(dbPath, new WalIndex());
+            await InvokeRecoverExistingWalOrCreateNewAsync(wal, currentDbPageCount: 3, ct);
+
+            Assert.True(File.Exists(walPath));
+            Assert.Equal(PageConstants.WalHeaderSize, new FileInfo(walPath).Length);
+            Assert.Equal(0, wal.Index.FrameCount);
+        }
+        finally
+        {
+            if (wal is not null)
+                await wal.CloseAndDeleteAsync();
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+            if (File.Exists(walPath)) File.Delete(walPath);
+        }
+    }
+
+    [Fact]
     public async Task IncrementalCheckpoint_ReopenPreservesFramesCommittedAfterCheckpointStarts()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -2305,6 +2339,22 @@ public class WalTests : IAsyncLifetime
             ?? throw new InvalidOperationException("SchemaCatalog.GetTableTree(string) not found.");
         return (BTree)(getTableTreeMethod.Invoke(catalog, [tableName])
             ?? throw new InvalidOperationException("SchemaCatalog.GetTableTree returned null."));
+    }
+
+    private static async ValueTask InvokeRecoverExistingWalOrCreateNewAsync(
+        WriteAheadLog wal,
+        uint currentDbPageCount,
+        CancellationToken ct)
+    {
+        var method = typeof(WriteAheadLog).GetMethod(
+            "RecoverExistingWalOrCreateNewAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("RecoverExistingWalOrCreateNewAsync was not found.");
+
+        if (method.Invoke(wal, [currentDbPageCount, ct]) is not ValueTask task)
+            throw new InvalidOperationException("RecoverExistingWalOrCreateNewAsync returned an unexpected value.");
+
+        await task;
     }
 
     private static int CountLookupCacheHits(BTree tree, int rowCount, int probeCount)
