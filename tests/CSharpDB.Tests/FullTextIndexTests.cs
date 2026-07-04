@@ -152,6 +152,51 @@ public sealed class FullTextIndexTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task FullTextIndex_HotTermPostingsGrowPastOneLeafCell()
+    {
+        // Regression: a term shared by thousands of rows grows its postings
+        // blob past one 4 KB leaf cell. FullTextInternal stores must spill to
+        // overflow pages; without that the insert dies inside the B-tree with
+        // "Unable to split leaf page N: no byte-balanced redistribution fits
+        // within page capacity" (a single cell larger than a page can never
+        // be split). Positions storage makes the blob grow fastest.
+        await _db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", Ct);
+        await _db.EnsureFullTextIndexAsync(
+            "fts_docs",
+            "docs",
+            ["body"],
+            new FullTextIndexOptions { StorePositions = true },
+            Ct);
+
+        const int DocumentCount = 3000;
+        for (int i = 0; i < DocumentCount; i++)
+        {
+            await _db.ExecuteAsync(
+                FormattableString.Invariant($"INSERT INTO docs VALUES ({i}, 'needle_{i:D4} line')"),
+                Ct);
+        }
+
+        IReadOnlyList<FullTextSearchHit> hits = await _db.SearchAsync("fts_docs", "line", Ct);
+        Assert.Equal(DocumentCount, hits.Count);
+
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "needle_1500", Ct), 1500);
+
+        // Deleting a document must survive the overflow round-trip too.
+        await _db.ExecuteAsync("DELETE FROM docs WHERE id = 1500", Ct);
+        Assert.Empty(await _db.SearchAsync("fts_docs", "needle_1500", Ct));
+        hits = await _db.SearchAsync("fts_docs", "line", Ct);
+        Assert.Equal(DocumentCount - 1, hits.Count);
+
+        // Reopen: the spilled postings must be durable and readable.
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, Ct);
+
+        hits = await _db.SearchAsync("fts_docs", "line", Ct);
+        Assert.Equal(DocumentCount - 1, hits.Count);
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "needle_2999", Ct), 2999);
+    }
+
     private static void AssertHitRowIds(IReadOnlyList<FullTextSearchHit> hits, params long[] expectedRowIds)
     {
         Assert.Equal(expectedRowIds, hits.Select(static hit => hit.RowId).ToArray());

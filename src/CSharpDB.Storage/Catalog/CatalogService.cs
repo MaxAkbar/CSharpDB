@@ -1547,7 +1547,13 @@ internal sealed class CatalogService
 
     private static bool ShouldUseOverflowingIndexStore(IndexSchema schema)
     {
-        return schema.Kind is IndexKind.Collection or IndexKind.Sql;
+        // FullTextInternal stores keep one postings blob per term, and a hot
+        // term (one that appears in thousands of rows) grows that blob past a
+        // single leaf cell. A cell larger than a page can never be split
+        // ("Unable to split leaf page N: no byte-balanced redistribution fits
+        // within page capacity"), so these stores must spill to overflow
+        // pages like duplicate-heavy Collection/Sql buckets do.
+        return schema.Kind is IndexKind.Collection or IndexKind.Sql or IndexKind.FullTextInternal;
     }
 
     // ============ VIEW operations ============
