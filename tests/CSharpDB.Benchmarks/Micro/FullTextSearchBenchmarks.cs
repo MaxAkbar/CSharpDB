@@ -80,6 +80,112 @@ public class FullTextIndexBuildBenchmarks
     }
 }
 
+[MemoryDiagnoser]
+[SimpleJob(warmupCount: 1, iterationCount: 3)]
+public class FullTextHotTokenBuildBenchmarks
+{
+    [Params(20_000, 100_000, 500_000)]
+    public int PostingCount { get; set; }
+
+    [Benchmark(Description = "FTS hot-token incremental insert/index")]
+    public async Task<long> InsertAndIndexHotTokenRows()
+    {
+        await using var bench = await FullTextHotTokenBenchmarkData.CreateEmptyAsync();
+        await bench.Db.EnsureFullTextIndexAsync(
+            FullTextHotTokenBenchmarkData.IndexName,
+            FullTextHotTokenBenchmarkData.TableName,
+            [FullTextHotTokenBenchmarkData.BodyColumn]);
+
+        await FullTextHotTokenBenchmarkData.SeedHotTokenRowsAsync(bench, PostingCount);
+        var hits = await bench.Db.SearchAsync(FullTextHotTokenBenchmarkData.IndexName, FullTextHotTokenBenchmarkData.HotQuery);
+        if (hits.Count != PostingCount)
+            throw new InvalidOperationException($"Expected {PostingCount} hits; got {hits.Count}.");
+
+        return FullTextHotTokenBenchmarkData.GetDatabaseBytes(bench);
+    }
+}
+
+[MemoryDiagnoser]
+[SimpleJob(warmupCount: 3, iterationCount: 10)]
+public class FullTextHotTokenQueryBenchmarks
+{
+    [Params(20_000, 100_000, 500_000)]
+    public int PostingCount { get; set; }
+
+    private BenchmarkDatabase _bench = null!;
+    private int _sink;
+
+    [GlobalSetup]
+    public void GlobalSetup()
+        => _bench = FullTextHotTokenBenchmarkData.CreatePopulatedAsync(PostingCount).GetAwaiter().GetResult();
+
+    [GlobalCleanup]
+    public void GlobalCleanup()
+        => _bench.Dispose();
+
+    [Benchmark(Description = "FTS hot-token search")]
+    public async Task<int> SearchHotToken()
+    {
+        var hits = await _bench.Db.SearchAsync(FullTextHotTokenBenchmarkData.IndexName, FullTextHotTokenBenchmarkData.HotQuery);
+        _sink ^= hits.Count;
+        if (hits.Count > 0)
+            _sink ^= (int)hits[0].RowId;
+        return hits.Count;
+    }
+}
+
+[MemoryDiagnoser]
+[SimpleJob(warmupCount: 1, iterationCount: 5)]
+public class FullTextHotTokenDeleteBenchmarks
+{
+    [Params(20_000, 100_000, 500_000)]
+    public int PostingCount { get; set; }
+
+    private BenchmarkDatabase _bench = null!;
+
+    [IterationSetup]
+    public void IterationSetup()
+        => _bench = FullTextHotTokenBenchmarkData.CreatePopulatedAsync(PostingCount).GetAwaiter().GetResult();
+
+    [IterationCleanup]
+    public void IterationCleanup()
+        => _bench.Dispose();
+
+    [Benchmark(Description = "FTS hot-token indexed DELETE maintenance")]
+    public async Task<int> DeleteMiddleHotTokenRow()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            FormattableString.Invariant($"DELETE FROM {FullTextHotTokenBenchmarkData.TableName} WHERE id = {PostingCount / 2}"));
+        return result.RowsAffected;
+    }
+}
+
+[MemoryDiagnoser]
+[SimpleJob(warmupCount: 1, iterationCount: 5)]
+public class FullTextHotTokenUpdateBenchmarks
+{
+    [Params(20_000, 100_000, 500_000)]
+    public int PostingCount { get; set; }
+
+    private BenchmarkDatabase _bench = null!;
+
+    [IterationSetup]
+    public void IterationSetup()
+        => _bench = FullTextHotTokenBenchmarkData.CreatePopulatedAsync(PostingCount).GetAwaiter().GetResult();
+
+    [IterationCleanup]
+    public void IterationCleanup()
+        => _bench.Dispose();
+
+    [Benchmark(Description = "FTS hot-token indexed UPDATE maintenance")]
+    public async Task<int> UpdateMiddleHotTokenRow()
+    {
+        await using var result = await _bench.Db.ExecuteAsync(
+            FormattableString.Invariant($"UPDATE {FullTextHotTokenBenchmarkData.TableName} SET body = 'cool unique_{PostingCount}' WHERE id = {PostingCount / 2}"));
+        return result.RowsAffected;
+    }
+}
+
 internal static class FullTextBenchmarkData
 {
     public const string TableName = "bench_fts";
@@ -105,5 +211,42 @@ internal static class FullTextBenchmarkData
             string body = $"{cadence} signal {category} {segment} {rare} payload{id:D5}";
             return $"INSERT INTO {tableName} VALUES ({id}, '{title}', '{body}')";
         });
+    }
+}
+
+internal static class FullTextHotTokenBenchmarkData
+{
+    public const string TableName = "bench_hot_fts";
+    public const string IndexName = "fts_bench_hot_fts";
+    public const string BodyColumn = "body";
+    public const string HotQuery = "line";
+    public const string CreateTableSql =
+        "CREATE TABLE bench_hot_fts (id INTEGER PRIMARY KEY, body TEXT)";
+
+    public static Task<BenchmarkDatabase> CreateEmptyAsync()
+        => BenchmarkDatabase.CreateWithSchemaAsync(CreateTableSql);
+
+    public static async Task<BenchmarkDatabase> CreatePopulatedAsync(int rowCount)
+    {
+        BenchmarkDatabase bench = await CreateEmptyAsync();
+        await bench.Db.EnsureFullTextIndexAsync(IndexName, TableName, [BodyColumn]);
+        await SeedHotTokenRowsAsync(bench, rowCount);
+        return bench;
+    }
+
+    public static Task SeedHotTokenRowsAsync(BenchmarkDatabase bench, int rowCount)
+    {
+        return bench.SeedAsync(TableName, rowCount, id =>
+            $"INSERT INTO {TableName} VALUES ({id}, 'line hot token payload_{id:D8}')");
+    }
+
+    public static long GetDatabaseBytes(BenchmarkDatabase bench)
+    {
+        long total = 0;
+        if (File.Exists(bench.FilePath))
+            total += new FileInfo(bench.FilePath).Length;
+        if (File.Exists(bench.FilePath + ".wal"))
+            total += new FileInfo(bench.FilePath + ".wal").Length;
+        return total;
     }
 }

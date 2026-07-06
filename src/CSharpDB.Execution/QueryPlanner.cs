@@ -38,6 +38,10 @@ public sealed class QueryPlanner
         long UnsupportedFallbackCount,
         long ReoptimizationLimitFallbackCount);
 
+    internal readonly record struct MutationTargetCollectionDiagnosticsSnapshot(
+        long IndexedCollectionCount,
+        long ScannedCollectionCount);
+
     private sealed record PlannerEstimateDiagnostic(
         int NodeId,
         int? ParentNodeId,
@@ -521,6 +525,8 @@ public sealed class QueryPlanner
     private long _adaptiveMaxBufferedFallbackCount;
     private long _adaptiveUnsupportedFallbackCount;
     private long _adaptiveReoptimizationLimitFallbackCount;
+    private long _indexedMutationTargetCollectionCount;
+    private long _scannedMutationTargetCollectionCount;
 
     private readonly record struct CorrelationScope(DbValue[] Row, TableSchema Schema);
     private long _observedSchemaVersion;
@@ -928,6 +934,17 @@ public sealed class QueryPlanner
         Interlocked.Exchange(ref _adaptiveMaxBufferedFallbackCount, 0);
         Interlocked.Exchange(ref _adaptiveUnsupportedFallbackCount, 0);
         Interlocked.Exchange(ref _adaptiveReoptimizationLimitFallbackCount, 0);
+    }
+
+    internal MutationTargetCollectionDiagnosticsSnapshot GetMutationTargetCollectionDiagnosticsSnapshot()
+        => new(
+            Interlocked.Read(ref _indexedMutationTargetCollectionCount),
+            Interlocked.Read(ref _scannedMutationTargetCollectionCount));
+
+    internal void ResetMutationTargetCollectionDiagnostics()
+    {
+        Interlocked.Exchange(ref _indexedMutationTargetCollectionCount, 0);
+        Interlocked.Exchange(ref _scannedMutationTargetCollectionCount, 0);
     }
 
     private static AdaptiveQueryReoptimizationOptions NormalizeAdaptiveQueryReoptimizationOptions(
@@ -8258,29 +8275,13 @@ public sealed class QueryPlanner
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
 
         // Collect rows to delete (can't modify tree while iterating)
-        int? deleteCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
-        var rowsToDelete = deleteCapacityHint.HasValue
-            ? new List<(long rowId, DbValue[] row)>(deleteCapacityHint.Value)
-            : new List<(long rowId, DbValue[] row)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), deleteCapacityHint);
-        ApplyLogicalPredicateReadScope(stmt.TableName, stmt.Where, schema, scan);
-        await scan.OpenAsync(ct);
-        while (await scan.MoveNextAsync(ct))
-        {
-            if (stmt.Where != null)
-            {
-                var result = hasRemainingSubqueries && ContainsSubqueries(stmt.Where)
-                    ? await EvaluateExpressionWithSubqueriesAsync(
-                        stmt.Where,
-                        scan.Current,
-                        schema,
-                        Array.Empty<CorrelationScope>(),
-                        ct)
-                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema, _functions);
-                if (!result.IsTruthy) continue;
-            }
-            rowsToDelete.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
-        }
+        var rowsToDelete = await CollectMutationTargetRowsAsync(
+            stmt.TableName,
+            schema,
+            tree,
+            stmt.Where,
+            hasRemainingSubqueries,
+            ct);
 
         bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(stmt.TableName).Count > 0;
         if (!hasIncomingForeignKeys)
@@ -8351,30 +8352,20 @@ public sealed class QueryPlanner
         bool hasIncomingForeignKeys = _catalog.GetReferencingForeignKeys(stmt.TableName).Count > 0;
 
         // Collect rows to update
-        int? updateCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
-        var updates = updateCapacityHint.HasValue
-            ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(updateCapacityHint.Value)
+        var targetRows = await CollectMutationTargetRowsAsync(
+            stmt.TableName,
+            schema,
+            tree,
+            stmt.Where,
+            hasRemainingSubqueries,
+            ct);
+        var updates = targetRows.Count > 0
+            ? new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>(targetRows.Count)
             : new List<(long rowId, DbValue[] oldRow, DbValue[] newRow)>();
-        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), updateCapacityHint);
-        ApplyLogicalPredicateReadScope(stmt.TableName, stmt.Where, schema, scan);
-        await scan.OpenAsync(ct);
-        while (await scan.MoveNextAsync(ct))
+        foreach (var (rowId, row) in targetRows)
         {
-            if (stmt.Where != null)
-            {
-                var result = hasRemainingSubqueries && ContainsSubqueries(stmt.Where)
-                    ? await EvaluateExpressionWithSubqueriesAsync(
-                        stmt.Where,
-                        scan.Current,
-                        schema,
-                        Array.Empty<CorrelationScope>(),
-                        ct)
-                    : ExpressionEvaluator.Evaluate(stmt.Where, scan.Current, schema, _functions);
-                if (!result.IsTruthy) continue;
-            }
-
-            var oldRow = (DbValue[])scan.Current.Clone();
-            var newRow = (DbValue[])scan.Current.Clone();
+            var oldRow = row;
+            var newRow = (DbValue[])row.Clone();
             foreach (var set in stmt.SetClauses)
             {
                 int colIdx = schema.GetColumnIndex(set.ColumnName);
@@ -8383,13 +8374,13 @@ public sealed class QueryPlanner
                 newRow[colIdx] = hasRemainingSubqueries && ContainsSubqueries(set.Value)
                     ? await EvaluateExpressionWithSubqueriesAsync(
                         set.Value,
-                        scan.Current,
+                        row,
                         schema,
                         Array.Empty<CorrelationScope>(),
                         ct)
-                    : ExpressionEvaluator.Evaluate(set.Value, scan.Current, schema, _functions);
+                    : ExpressionEvaluator.Evaluate(set.Value, row, schema, _functions);
             }
-            updates.Add((scan.CurrentRowId, oldRow, newRow));
+            updates.Add((rowId, oldRow, newRow));
         }
 
         if (!hasOutgoingForeignKeys && !hasIncomingForeignKeys)
@@ -8473,6 +8464,127 @@ public sealed class QueryPlanner
         await PersistForeignKeyMutationContextAsync(mutationContext, stmt.TableName, updates.Count > 0, persistRootChanges: true, ct);
 
         return new QueryResult(updates.Count);
+    }
+
+    private async ValueTask<List<(long rowId, DbValue[] row)>> CollectMutationTargetRowsAsync(
+        string tableName,
+        TableSchema schema,
+        BTree tree,
+        Expression? where,
+        bool hasRemainingSubqueries,
+        CancellationToken ct)
+    {
+        IOperator? indexedSource = null;
+        Expression? remainingWhere = where;
+        if (where != null && !hasRemainingSubqueries)
+        {
+            indexedSource = TryBuildIndexScan(tableName, where, schema, out remainingWhere)
+                ?? TryBuildIntegerIndexRangeScan(tableName, where, schema, out remainingWhere)
+                ?? TryBuildOrderedTextIndexRangeScan(tableName, where, schema, out remainingWhere);
+        }
+
+        if (indexedSource != null)
+        {
+            Interlocked.Increment(ref _indexedMutationTargetCollectionCount);
+
+            int? capacityHint = indexedSource is IEstimatedRowCountProvider estimated &&
+                                estimated.EstimatedRowCount is int estimatedRowCount
+                ? ToCapacityHint(estimatedRowCount)
+                : null;
+            var indexedRows = capacityHint.HasValue
+                ? new List<(long rowId, DbValue[] row)>(capacityHint.Value)
+                : new List<(long rowId, DbValue[] row)>();
+
+            Action? logicalReadScope = TryCreateLogicalPredicateReadScope(tableName, where, schema);
+            logicalReadScope?.Invoke();
+
+            await indexedSource.OpenAsync(ct);
+            try
+            {
+                while (await indexedSource.MoveNextAsync(ct))
+                {
+                    if (remainingWhere != null)
+                    {
+                        var result = ExpressionEvaluator.Evaluate(remainingWhere, indexedSource.Current, schema, _functions);
+                        if (!result.IsTruthy)
+                            continue;
+                    }
+
+                    if (!TryGetCurrentRowId(indexedSource, out long rowId))
+                        throw new InvalidOperationException("Indexed mutation source did not expose a current row id.");
+
+                    indexedRows.Add((rowId, (DbValue[])indexedSource.Current.Clone()));
+                }
+            }
+            finally
+            {
+                await indexedSource.DisposeAsync();
+            }
+
+            return indexedRows;
+        }
+
+        Interlocked.Increment(ref _scannedMutationTargetCollectionCount);
+
+        int? scanCapacityHint = TryGetCachedTreeRowCountCapacityHint(tree);
+        var scannedRows = scanCapacityHint.HasValue
+            ? new List<(long rowId, DbValue[] row)>(scanCapacityHint.Value)
+            : new List<(long rowId, DbValue[] row)>();
+        var scan = new TableScanOperator(tree, schema, GetReadSerializer(schema), scanCapacityHint);
+        ApplyLogicalPredicateReadScope(tableName, where, schema, scan);
+        await scan.OpenAsync(ct);
+        try
+        {
+            while (await scan.MoveNextAsync(ct))
+            {
+                if (where != null)
+                {
+                    var result = hasRemainingSubqueries && ContainsSubqueries(where)
+                        ? await EvaluateExpressionWithSubqueriesAsync(
+                            where,
+                            scan.Current,
+                            schema,
+                            Array.Empty<CorrelationScope>(),
+                            ct)
+                        : ExpressionEvaluator.Evaluate(where, scan.Current, schema, _functions);
+                    if (!result.IsTruthy)
+                        continue;
+                }
+
+                scannedRows.Add((scan.CurrentRowId, (DbValue[])scan.Current.Clone()));
+            }
+        }
+        finally
+        {
+            await scan.DisposeAsync();
+        }
+
+        return scannedRows;
+    }
+
+    private static bool TryGetCurrentRowId(IOperator source, out long rowId)
+    {
+        switch (source)
+        {
+            case TableScanOperator tableScan:
+                rowId = tableScan.CurrentRowId;
+                return true;
+            case PrimaryKeyLookupOperator primaryKeyLookup:
+                rowId = primaryKeyLookup.CurrentRowId;
+                return true;
+            case IndexScanOperator indexScan:
+                rowId = indexScan.CurrentRowId;
+                return true;
+            case UniqueIndexLookupOperator uniqueIndexLookup:
+                rowId = uniqueIndexLookup.CurrentRowId;
+                return true;
+            case IndexOrderedScanOperator orderedScan:
+                rowId = orderedScan.CurrentRowId;
+                return true;
+            default:
+                rowId = 0;
+                return false;
+        }
     }
 
     private async ValueTask<QueryResult> ExecuteTemporaryDeleteAsync(DeleteStatement stmt, CancellationToken ct)

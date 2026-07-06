@@ -22,13 +22,29 @@ internal static class FullTextIndexReader
             return Array.Empty<FullTextSearchHit>();
 
         IIndexStore postingsStore = catalog.GetIndexStore(FullTextIndexNaming.GetPostingsIndexName(logicalIndex.IndexName));
+        IIndexStore? postingChunksStore = TryGetPostingChunksStore(catalog, logicalIndex);
         var postingsByTerm = new List<List<FullTextPosting>>(terms.Length);
         for (int i = 0; i < terms.Length; i++)
         {
             long key = FullTextTermKeyCodec.ComputeKey(terms[i]);
             byte[]? bucketPayload = await postingsStore.FindAsync(key, ct);
-            if (bucketPayload == null ||
-                !FullTextPostingsPayloadCodec.TryGetMatchingPostings(bucketPayload, terms[i], out byte[] postingsPayload) ||
+            if (bucketPayload == null)
+            {
+                return Array.Empty<FullTextSearchHit>();
+            }
+
+            if (postingChunksStore != null &&
+                FullTextPostingChunkManifestCodec.IsEncoded(bucketPayload))
+            {
+                var chunkedPostings = await TryReadChunkedPostingsAsync(postingChunksStore, bucketPayload, terms[i], ct);
+                if (chunkedPostings == null)
+                    return Array.Empty<FullTextSearchHit>();
+
+                postingsByTerm.Add(chunkedPostings);
+                continue;
+            }
+
+            if (!FullTextPostingsPayloadCodec.TryGetMatchingPostings(bucketPayload, terms[i], out byte[] postingsPayload) ||
                 !FullTextPostingsListCodec.TryDecode(postingsPayload, out var postings))
             {
                 return Array.Empty<FullTextSearchHit>();
@@ -60,5 +76,45 @@ internal static class FullTextIndexReader
             hits[i] = new FullTextSearchHit(ordered[i], terms.Length);
 
         return hits;
+    }
+
+    private static IIndexStore? TryGetPostingChunksStore(SchemaCatalog catalog, IndexSchema logicalIndex)
+    {
+        string chunkIndexName = FullTextIndexNaming.GetPostingChunksIndexName(logicalIndex.IndexName);
+        return catalog.GetIndex(chunkIndexName) == null
+            ? null
+            : catalog.GetIndexStore(chunkIndexName);
+    }
+
+    private static async ValueTask<List<FullTextPosting>?> TryReadChunkedPostingsAsync(
+        IIndexStore postingChunksStore,
+        byte[] manifestPayload,
+        string term,
+        CancellationToken ct)
+    {
+        if (!FullTextPostingChunkManifestCodec.TryGetChunks(manifestPayload, term, out var chunks))
+            return null;
+
+        int totalCount = 0;
+        for (int i = 0; i < chunks.Length; i++)
+            totalCount += chunks[i].PostingCount;
+
+        var postings = new List<FullTextPosting>(totalCount);
+        for (int i = 0; i < chunks.Length; i++)
+        {
+            FullTextPostingChunkDescriptor chunk = chunks[i];
+            long chunkKey = FullTextPostingChunkKeyCodec.ComputeKey(term, chunk.FirstDocId);
+            byte[]? chunkPayload = await postingChunksStore.FindAsync(chunkKey, ct);
+            if (chunkPayload == null ||
+                !FullTextPostingChunkPayloadCodec.TryGetPostings(chunkPayload, term, chunk.FirstDocId, out byte[] postingsPayload) ||
+                !FullTextPostingsListCodec.TryDecode(postingsPayload, out var chunkPostings))
+            {
+                return null;
+            }
+
+            postings.AddRange(chunkPostings);
+        }
+
+        return postings;
     }
 }

@@ -52,6 +52,7 @@ internal static class FullTextIndexCatalog
             CreateInternalSchema(logicalIndex, FullTextIndexNaming.GetMetaIndexName(logicalIndex.IndexName)),
             CreateInternalSchema(logicalIndex, FullTextIndexNaming.GetTermsIndexName(logicalIndex.IndexName)),
             CreateInternalSchema(logicalIndex, FullTextIndexNaming.GetPostingsIndexName(logicalIndex.IndexName)),
+            CreateInternalSchema(logicalIndex, FullTextIndexNaming.GetPostingChunksIndexName(logicalIndex.IndexName)),
             CreateInternalSchema(logicalIndex, FullTextIndexNaming.GetDocStatsIndexName(logicalIndex.IndexName)),
         };
 

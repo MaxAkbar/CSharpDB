@@ -1,11 +1,17 @@
 # What's New
 
-## version4.0.1
+## version4.0.2
 
-version4.0.1 fixes a full-text index storage failure for hot terms.
+version4.0.2 improves full-text indexing scalability for large corpora and makes indexed mutations avoid unnecessary full-table scans.
 
-### Fixed
+### Changed
 
-- Full-text internal index stores (postings, term stats, doc stats, meta) now spill oversized payloads into overflow-page chains, the same way duplicate-heavy Collection and SQL index buckets already did. Previously a term appearing in a few thousand indexed rows grew its postings blob past a single 4 KB B-tree leaf cell, and because a cell larger than a page can never be split, inserts failed with `Unable to split leaf page N: no byte-balanced redistribution fits within page capacity` and the document was left out of the index. Existing databases are read-compatible: inline payloads keep decoding as-is, and an oversized postings blob spills on its next write.
-- Added a full-text regression test that indexes 3,000 documents sharing a token with `StorePositions` enabled, covering search, delete, and reopen round-trips through the overflow chain.
+- Full-text postings are now stored in bounded posting chunks instead of rewriting one growing postings blob for every hot-token insert. This keeps repeated-token indexing scalable for large corpora.
+- Existing full-text posting blobs remain readable. Databases with the previous full-text storage layout get the new chunk store on open, and legacy posting blobs migrate to chunked postings on the next write for that term.
+- Full-text deletes and updates rewrite only the affected posting chunk while preserving existing search result ordering and transaction rollback behavior.
+- `DELETE` and `UPDATE` statements can now collect target row IDs through available secondary indexes instead of scanning the full table for indexed predicates.
 
+### Validation
+
+- Added focused hot-token before/after benchmark coverage for insert, query, delete, and update paths.
+- Added FileSearcher NuGet before/after benchmark automation that validates real package consumption against local baseline and patched CSharpDB packages.

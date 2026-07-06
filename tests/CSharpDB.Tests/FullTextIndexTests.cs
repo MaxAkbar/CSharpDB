@@ -1,6 +1,8 @@
 using CSharpDB.Engine;
 using CSharpDB.Primitives;
+using CSharpDB.Storage.Catalog;
 using CSharpDB.Storage.Indexing;
+using System.Reflection;
 
 namespace CSharpDB.Tests;
 
@@ -74,10 +76,10 @@ public sealed class FullTextIndexTests : IAsyncLifetime
             .OrderBy(static index => index.IndexName, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(5, indexes.Length);
+        Assert.Equal(6, indexes.Length);
         Assert.Contains(indexes, static index => index.IndexName == "fts_docs" && index.Kind == IndexKind.FullText);
         Assert.Equal(
-            4,
+            5,
             indexes.Count(static index => index.Kind == IndexKind.FullTextInternal && index.OwnerIndexName == "fts_docs"));
 
         await _db.ExecuteAsync("DROP INDEX fts_docs", Ct);
@@ -115,7 +117,7 @@ public sealed class FullTextIndexTests : IAsyncLifetime
         await _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["body"], ct: Ct);
         await _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["body"], ct: Ct);
 
-        Assert.Equal(5, _db.GetIndexes().Count(static index => index.IndexName.StartsWith("fts_docs", StringComparison.Ordinal)));
+        Assert.Equal(6, _db.GetIndexes().Count(static index => index.IndexName.StartsWith("fts_docs", StringComparison.Ordinal)));
 
         var differentColumns = await Assert.ThrowsAsync<CSharpDbException>(() =>
             _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["title"], ct: Ct).AsTask());
@@ -155,12 +157,9 @@ public sealed class FullTextIndexTests : IAsyncLifetime
     [Fact]
     public async Task FullTextIndex_HotTermPostingsGrowPastOneLeafCell()
     {
-        // Regression: a term shared by thousands of rows grows its postings
-        // blob past one 4 KB leaf cell. FullTextInternal stores must spill to
-        // overflow pages; without that the insert dies inside the B-tree with
-        // "Unable to split leaf page N: no byte-balanced redistribution fits
-        // within page capacity" (a single cell larger than a page can never
-        // be split). Positions storage makes the blob grow fastest.
+        // Regression: a term shared by thousands of rows must span multiple
+        // bounded posting chunks instead of rewriting one growing postings
+        // blob on every insert. Positions storage makes postings grow fastest.
         await _db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", Ct);
         await _db.EnsureFullTextIndexAsync(
             "fts_docs",
@@ -197,8 +196,176 @@ public sealed class FullTextIndexTests : IAsyncLifetime
         AssertHitRowIds(await _db.SearchAsync("fts_docs", "needle_2999", Ct), 2999);
     }
 
+    [Fact]
+    public async Task FullTextIndex_ChunkedPostingsHandleOutOfOrderRowIds()
+    {
+        await _db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", Ct);
+        await _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["body"], ct: Ct);
+
+        const int DocumentCount = 1100;
+        for (int i = 0; i < DocumentCount; i++)
+        {
+            int id = 1000 + i;
+            await _db.ExecuteAsync(
+                FormattableString.Invariant($"INSERT INTO docs VALUES ({id}, 'line high_{id}')"),
+                Ct);
+        }
+
+        await _db.ExecuteAsync("INSERT INTO docs VALUES (1, 'line low')", Ct);
+
+        IReadOnlyList<FullTextSearchHit> hits = await _db.SearchAsync("fts_docs", "line", Ct);
+        Assert.Equal(DocumentCount + 1, hits.Count);
+        Assert.Equal(1, hits[0].RowId);
+        Assert.Equal(1000, hits[1].RowId);
+
+        await _db.ExecuteAsync("DELETE FROM docs WHERE id = 1", Ct);
+        hits = await _db.SearchAsync("fts_docs", "line", Ct);
+        Assert.Equal(DocumentCount, hits.Count);
+        Assert.Equal(1000, hits[0].RowId);
+    }
+
+    [Fact]
+    public async Task FullTextIndex_ChunkedMutationRollbackRestoresPostings()
+    {
+        await _db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", Ct);
+        await _db.EnsureFullTextIndexAsync("fts_docs", "docs", ["body"], ct: Ct);
+
+        const int DocumentCount = 1100;
+        for (int i = 1; i <= DocumentCount; i++)
+        {
+            await _db.ExecuteAsync(
+                FormattableString.Invariant($"INSERT INTO docs VALUES ({i}, 'line token_{i}')"),
+                Ct);
+        }
+
+        Assert.Equal(DocumentCount, (await _db.SearchAsync("fts_docs", "line", Ct)).Count);
+
+        await _db.BeginTransactionAsync(Ct);
+        try
+        {
+            await _db.ExecuteAsync("DELETE FROM docs WHERE id = 10", Ct);
+            await _db.ExecuteAsync("UPDATE docs SET body = 'changed unique_20' WHERE id = 20", Ct);
+            await _db.ExecuteAsync("INSERT INTO docs VALUES (2000, 'line inserted')", Ct);
+
+            Assert.Equal(DocumentCount - 1, (await _db.SearchAsync("fts_docs", "line", Ct)).Count);
+            Assert.Empty(await _db.SearchAsync("fts_docs", "token_20", Ct));
+            AssertHitRowIds(await _db.SearchAsync("fts_docs", "unique_20", Ct), 20);
+
+            await _db.RollbackAsync(Ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        Assert.Equal(DocumentCount, (await _db.SearchAsync("fts_docs", "line", Ct)).Count);
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "token_10", Ct), 10);
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "token_20", Ct), 20);
+        Assert.Empty(await _db.SearchAsync("fts_docs", "unique_20", Ct));
+        Assert.Empty(await _db.SearchAsync("fts_docs", "inserted", Ct));
+    }
+
+    [Fact]
+    public async Task FullTextIndex_ExistingLegacyOwnedStoresAreUpgradedOnOpenAndMigratedOnWrite()
+    {
+        await _db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", Ct);
+        await CreateLegacyFullTextIndexAsync(_db, "fts_docs", "docs", ["body"]);
+
+        Assert.Equal(
+            5,
+            _db.GetIndexes().Count(static index => index.IndexName.StartsWith("fts_docs", StringComparison.Ordinal)));
+        Assert.DoesNotContain(
+            _db.GetIndexes(),
+            static index => index.IndexName == FullTextIndexNaming.GetPostingChunksIndexName("fts_docs"));
+
+        await _db.ExecuteAsync("INSERT INTO docs VALUES (1, 'line legacy_one')", Ct);
+        await _db.ExecuteAsync("INSERT INTO docs VALUES (2, 'line legacy_two')", Ct);
+
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "line", Ct), 1, 2);
+        AssertLegacyPostingsPayload("fts_docs", "line");
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, Ct);
+
+        Assert.Contains(
+            _db.GetIndexes(),
+            static index => index.IndexName == FullTextIndexNaming.GetPostingChunksIndexName("fts_docs"));
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "line", Ct), 1, 2);
+        AssertLegacyPostingsPayload("fts_docs", "line");
+
+        await _db.ExecuteAsync("INSERT INTO docs VALUES (3, 'line legacy_three')", Ct);
+
+        AssertHitRowIds(await _db.SearchAsync("fts_docs", "line", Ct), 1, 2, 3);
+        AssertChunkedPostingsPayload("fts_docs", "line");
+    }
+
     private static void AssertHitRowIds(IReadOnlyList<FullTextSearchHit> hits, params long[] expectedRowIds)
     {
         Assert.Equal(expectedRowIds, hits.Select(static hit => hit.RowId).ToArray());
+    }
+
+    private static async ValueTask CreateLegacyFullTextIndexAsync(
+        Database db,
+        string indexName,
+        string tableName,
+        IReadOnlyList<string> columns)
+    {
+        SchemaCatalog catalog = GetCatalog(db);
+        var logicalIndex = FullTextIndexCatalog.CreateLogicalSchema(
+            indexName,
+            tableName,
+            columns,
+            new FullTextIndexOptions());
+
+        await db.BeginTransactionAsync(Ct);
+        try
+        {
+            await catalog.CreateIndexAsync(logicalIndex, Ct);
+            foreach (IndexSchema internalIndex in FullTextIndexCatalog.CreateInternalSchemas(logicalIndex))
+            {
+                if (internalIndex.IndexName == FullTextIndexNaming.GetPostingChunksIndexName(indexName))
+                    continue;
+
+                await catalog.CreateIndexAsync(internalIndex, Ct);
+            }
+
+            await db.CommitAsync(Ct);
+        }
+        catch
+        {
+            await db.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private void AssertLegacyPostingsPayload(string indexName, string term)
+    {
+        byte[] payload = ReadPostingsPayload(indexName, term);
+        Assert.True(FullTextPostingsPayloadCodec.IsEncoded(payload));
+        Assert.False(FullTextPostingChunkManifestCodec.IsEncoded(payload));
+    }
+
+    private void AssertChunkedPostingsPayload(string indexName, string term)
+    {
+        byte[] payload = ReadPostingsPayload(indexName, term);
+        Assert.True(FullTextPostingChunkManifestCodec.IsEncoded(payload));
+        Assert.False(FullTextPostingsPayloadCodec.IsEncoded(payload));
+    }
+
+    private byte[] ReadPostingsPayload(string indexName, string term)
+    {
+        SchemaCatalog catalog = GetCatalog(_db);
+        var store = catalog.GetIndexStore(FullTextIndexNaming.GetPostingsIndexName(indexName));
+        byte[]? payload = store.FindAsync(FullTextTermKeyCodec.ComputeKey(term), Ct).AsTask().GetAwaiter().GetResult();
+        Assert.NotNull(payload);
+        return payload;
+    }
+
+    private static SchemaCatalog GetCatalog(Database db)
+    {
+        var field = typeof(Database).GetField("_catalog", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<SchemaCatalog>(field.GetValue(db));
     }
 }
