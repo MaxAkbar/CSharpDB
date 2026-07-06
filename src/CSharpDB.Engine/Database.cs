@@ -29,6 +29,10 @@ internal readonly record struct AdaptiveQueryReoptimizationDiagnosticsSnapshot(
     long UnsupportedFallbackCount,
     long ReoptimizationLimitFallbackCount);
 
+internal readonly record struct MutationTargetCollectionDiagnosticsSnapshot(
+    long IndexedCollectionCount,
+    long ScannedCollectionCount);
+
 /// <summary>
 /// Top-level entry point for the CSharpDB embedded database engine.
 /// </summary>
@@ -64,6 +68,8 @@ public sealed class Database : IAsyncDisposable
     private readonly SemaphoreSlim _sharedStateGate = new(1, 1);
     private long _rowIdReservationCount;
     private long _rowIdReservedRowCount;
+    private long _transactionIndexedMutationTargetCollectionCount;
+    private long _transactionScannedMutationTargetCollectionCount;
     private long _observedSchemaVersion;
     private ImplicitInsertExecutionMode _implicitInsertExecutionMode;
     private bool _inTransaction;
@@ -129,6 +135,29 @@ public sealed class Database : IAsyncDisposable
 
     internal void ResetAdaptiveQueryReoptimizationDiagnostics() =>
         _planner.ResetAdaptiveQueryReoptimizationDiagnostics();
+
+    internal MutationTargetCollectionDiagnosticsSnapshot GetMutationTargetCollectionDiagnosticsSnapshot()
+    {
+        var snapshot = _planner.GetMutationTargetCollectionDiagnosticsSnapshot();
+        return new MutationTargetCollectionDiagnosticsSnapshot(
+            snapshot.IndexedCollectionCount + Interlocked.Read(ref _transactionIndexedMutationTargetCollectionCount),
+            snapshot.ScannedCollectionCount + Interlocked.Read(ref _transactionScannedMutationTargetCollectionCount));
+    }
+
+    internal void ResetMutationTargetCollectionDiagnostics()
+    {
+        _planner.ResetMutationTargetCollectionDiagnostics();
+        Interlocked.Exchange(ref _transactionIndexedMutationTargetCollectionCount, 0);
+        Interlocked.Exchange(ref _transactionScannedMutationTargetCollectionCount, 0);
+    }
+
+    internal void RecordMutationTargetCollectionDiagnostics(MutationTargetCollectionDiagnosticsSnapshot snapshot)
+    {
+        if (snapshot.IndexedCollectionCount != 0)
+            Interlocked.Add(ref _transactionIndexedMutationTargetCollectionCount, snapshot.IndexedCollectionCount);
+        if (snapshot.ScannedCollectionCount != 0)
+            Interlocked.Add(ref _transactionScannedMutationTargetCollectionCount, snapshot.ScannedCollectionCount);
+    }
 
     private Database(
         Pager pager,
@@ -400,8 +429,11 @@ public sealed class Database : IAsyncDisposable
         IReadOnlyCollection<KeyValuePair<string, long>> committedTableRowCountDeltas,
         IReadOnlyCollection<TableStatistics> committedTableStatistics,
         IReadOnlyCollection<ColumnStatistics> committedColumnStatistics,
+        MutationTargetCollectionDiagnosticsSnapshot mutationTargetCollectionDiagnostics,
         CancellationToken ct)
     {
+        RecordMutationTargetCollectionDiagnostics(mutationTargetCollectionDiagnostics);
+
         bool applyAdvisoryStats = committedTableStatistics.Count > 0 || committedColumnStatistics.Count > 0;
         bool applyTableMetadata = committedNextRowIds.Count > 0;
         bool applyTableRowCountDeltas = committedTableRowCountDeltas.Count > 0;
@@ -546,7 +578,7 @@ public sealed class Database : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(options);
 
         var context = await InMemoryStorageEngineFactory.OpenAsync(options.StorageEngineOptions, ct: ct);
-        return new Database(
+        return await CompleteOpenAsync(new Database(
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
@@ -557,7 +589,8 @@ public sealed class Database : IAsyncDisposable
             options.ImplicitInsertExecutionMode,
             options.AdaptiveQueryReoptimization,
             options.Functions,
-            temporaryStorageOptions: options.StorageEngineOptions);
+            temporaryStorageOptions: options.StorageEngineOptions),
+            ct);
     }
 
     /// <summary>
@@ -625,7 +658,7 @@ public sealed class Database : IAsyncDisposable
                 new HybridDatabasePersistenceCoordinator(fullPath, hybridOptions.PersistenceTriggers),
                 fullPath,
                 temporaryStorageOptions: options.StorageEngineOptions);
-            return snapshotDatabase;
+            return await CompleteOpenAsync(snapshotDatabase, ct);
         }
 
         var context = await HybridStorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
@@ -644,6 +677,7 @@ public sealed class Database : IAsyncDisposable
             temporaryStorageOptions: options.StorageEngineOptions);
         try
         {
+            await database.EnsureFullTextInternalStoresOnOpenAsync(ct);
             await database.WarmHybridHotSetAsync(hybridOptions, ct);
             return database;
         }
@@ -691,7 +725,7 @@ public sealed class Database : IAsyncDisposable
             walBytes,
             ct);
 
-        return new Database(
+        return await CompleteOpenAsync(new Database(
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
@@ -703,7 +737,8 @@ public sealed class Database : IAsyncDisposable
             options.AdaptiveQueryReoptimization,
             options.Functions,
             databasePath: fullPath,
-            temporaryStorageOptions: options.StorageEngineOptions);
+            temporaryStorageOptions: options.StorageEngineOptions),
+            ct);
     }
 
     /// <summary>
@@ -718,7 +753,7 @@ public sealed class Database : IAsyncDisposable
 
         string fullPath = Path.GetFullPath(filePath);
         var context = await options.StorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
-        return new Database(
+        return await CompleteOpenAsync(new Database(
             context.Pager,
             context.Catalog,
             context.RecordSerializer,
@@ -730,7 +765,22 @@ public sealed class Database : IAsyncDisposable
             options.AdaptiveQueryReoptimization,
             options.Functions,
             databasePath: fullPath,
-            temporaryStorageOptions: options.StorageEngineOptions);
+            temporaryStorageOptions: options.StorageEngineOptions),
+            ct);
+    }
+
+    private static async ValueTask<Database> CompleteOpenAsync(Database database, CancellationToken ct)
+    {
+        try
+        {
+            await database.EnsureFullTextInternalStoresOnOpenAsync(ct);
+            return database;
+        }
+        catch
+        {
+            await database.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
@@ -1219,7 +1269,10 @@ public sealed class Database : IAsyncDisposable
             if (existing.Kind == IndexKind.FullText)
             {
                 if (FullTextIndexCatalog.MatchesDefinition(existing, tableName, normalizedColumns, resolvedOptions))
+                {
+                    await EnsureFullTextInternalStoresAsync(existing, ct);
                     return;
+                }
 
                 throw new CSharpDbException(
                     ErrorCode.TableAlreadyExists,
@@ -1288,6 +1341,81 @@ public sealed class Database : IAsyncDisposable
                 }
             }
 
+            try
+            {
+                await _pager.RollbackAsync(ct);
+                await _catalog.ReloadAsync(ct);
+            }
+            catch
+            {
+                // Preserve the original failure.
+            }
+
+            throw;
+        }
+    }
+
+    private async ValueTask EnsureFullTextInternalStoresAsync(IndexSchema logicalIndex, CancellationToken ct)
+    {
+        IndexSchema[] missingStores = FullTextIndexCatalog.CreateInternalSchemas(logicalIndex)
+            .Where(schema => _catalog.GetIndex(schema.IndexName) == null)
+            .ToArray();
+        if (missingStores.Length == 0)
+            return;
+
+        if (_inTransaction)
+        {
+            throw new InvalidOperationException(
+                "Full-text index storage cannot be upgraded while an explicit transaction is active.");
+        }
+
+        try
+        {
+            await _pager.BeginTransactionAsync(ct);
+            for (int i = 0; i < missingStores.Length; i++)
+                await _catalog.CreateIndexAsync(missingStores[i], ct);
+
+            PagerCommitResult commit = await BeginCommitForTableWithCatalogSyncAsync(logicalIndex.TableName, ct);
+            await commit.WaitAsync(ct);
+        }
+        catch
+        {
+            try
+            {
+                await _pager.RollbackAsync(ct);
+                await _catalog.ReloadAsync(ct);
+            }
+            catch
+            {
+                // Preserve the original failure.
+            }
+
+            throw;
+        }
+    }
+
+    private async ValueTask EnsureFullTextInternalStoresOnOpenAsync(CancellationToken ct)
+    {
+        IndexSchema[] missingStores = _catalog.GetIndexes()
+            .Where(static index => index.Kind == IndexKind.FullText)
+            .SelectMany(FullTextIndexCatalog.CreateInternalSchemas)
+            .Where(schema => _catalog.GetIndex(schema.IndexName) == null)
+            .ToArray();
+        if (missingStores.Length == 0)
+            return;
+
+        try
+        {
+            await _pager.BeginTransactionAsync(ct);
+            for (int i = 0; i < missingStores.Length; i++)
+                await _catalog.CreateIndexAsync(missingStores[i], ct);
+
+            PagerCommitResult commit = await BeginCommitWithCatalogSyncAsync(ct);
+            await commit.WaitAsync(ct);
+            _observedSchemaVersion = _catalog.SchemaVersion;
+        }
+        catch
+        {
             try
             {
                 await _pager.RollbackAsync(ct);

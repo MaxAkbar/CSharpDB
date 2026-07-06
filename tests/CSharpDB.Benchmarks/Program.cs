@@ -2,8 +2,11 @@ using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using CSharpDB.Benchmarks.Infrastructure;
 using CSharpDB.Benchmarks.Macro;
+using CSharpDB.Benchmarks.Micro;
 using CSharpDB.Benchmarks.Stress;
 using CSharpDB.Benchmarks.Scaling;
+using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 
@@ -61,6 +64,11 @@ public static class Program
 
             case "--filter":
                 RunMicroBenchmarks(StripCustomArgs(args));
+                return;
+
+            case "--fts-hot-token-smoke":
+                EnsureReproConfigured();
+                await RunFullTextHotTokenSmokeAsync(args);
                 return;
 
             case "--macro-batch-memory":
@@ -575,6 +583,73 @@ public static class Program
     {
         RunMicroBenchmarksWithoutPrGuardrails(["--filter", "*"]);
     }
+
+    private static async Task RunFullTextHotTokenSmokeAsync(string[] args)
+    {
+        int postingCount = HasFlag(args, "--postings")
+            ? ParsePositiveInt(GetRequiredOptionValue(args, "--postings"), "--postings")
+            : 20_000;
+
+        await using var bench = await FullTextHotTokenBenchmarkData.CreateEmptyAsync();
+
+        var build = Stopwatch.StartNew();
+        await bench.Db.EnsureFullTextIndexAsync(
+            FullTextHotTokenBenchmarkData.IndexName,
+            FullTextHotTokenBenchmarkData.TableName,
+            [FullTextHotTokenBenchmarkData.BodyColumn]);
+        await FullTextHotTokenBenchmarkData.SeedHotTokenRowsAsync(bench, postingCount);
+        build.Stop();
+
+        long bytesAfterBuild = FullTextHotTokenBenchmarkData.GetDatabaseBytes(bench);
+
+        var query = Stopwatch.StartNew();
+        var hits = await bench.Db.SearchAsync(
+            FullTextHotTokenBenchmarkData.IndexName,
+            FullTextHotTokenBenchmarkData.HotQuery);
+        query.Stop();
+        if (hits.Count != postingCount)
+            throw new InvalidOperationException($"Expected {postingCount} hot-token hits, got {hits.Count}.");
+
+        int updateId = Math.Max(1, postingCount / 2);
+        var update = Stopwatch.StartNew();
+        await bench.Db.ExecuteAsync(
+            FormattableString.Invariant($"UPDATE {FullTextHotTokenBenchmarkData.TableName} SET body = 'cool unique_{postingCount}' WHERE id = {updateId}"));
+        update.Stop();
+
+        var uniqueHits = await bench.Db.SearchAsync(
+            FullTextHotTokenBenchmarkData.IndexName,
+            FormattableString.Invariant($"unique_{postingCount}"));
+        if (uniqueHits.Count != 1 || uniqueHits[0].RowId != updateId)
+            throw new InvalidOperationException("Updated full-text token was not searchable.");
+
+        int deleteId = postingCount <= 1
+            ? updateId
+            : updateId == 1 ? 2 : updateId - 1;
+        var delete = Stopwatch.StartNew();
+        await bench.Db.ExecuteAsync(
+            FormattableString.Invariant($"DELETE FROM {FullTextHotTokenBenchmarkData.TableName} WHERE id = {deleteId}"));
+        delete.Stop();
+
+        var deletedHits = await bench.Db.SearchAsync(
+            FullTextHotTokenBenchmarkData.IndexName,
+            FormattableString.Invariant($"payload_{deleteId:D8}"));
+        if (deletedHits.Count != 0)
+            throw new InvalidOperationException("Deleted full-text token remained searchable.");
+
+        long finalBytes = FullTextHotTokenBenchmarkData.GetDatabaseBytes(bench);
+
+        Console.WriteLine("FullTextHotTokenSmoke");
+        Console.WriteLine($"posting_count={postingCount.ToString(CultureInfo.InvariantCulture)}");
+        Console.WriteLine($"build_insert_index_ms={FormatMilliseconds(build.Elapsed)}");
+        Console.WriteLine($"query_hot_token_ms={FormatMilliseconds(query.Elapsed)}");
+        Console.WriteLine($"update_single_row_ms={FormatMilliseconds(update.Elapsed)}");
+        Console.WriteLine($"delete_single_row_ms={FormatMilliseconds(delete.Elapsed)}");
+        Console.WriteLine($"db_bytes_after_build={bytesAfterBuild.ToString(CultureInfo.InvariantCulture)}");
+        Console.WriteLine($"db_bytes_final={finalBytes.ToString(CultureInfo.InvariantCulture)}");
+    }
+
+    private static string FormatMilliseconds(TimeSpan elapsed) =>
+        elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture);
 
     private static void RunMicroBenchmarksWithoutPrGuardrails(string[] args)
     {
@@ -1178,6 +1253,14 @@ public static class Program
         throw new ArgumentException($"Missing required option {option}.");
     }
 
+    private static int ParsePositiveInt(string value, string option)
+    {
+        if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) || parsed <= 0)
+            throw new ArgumentException($"Invalid {option} value. Use a positive integer.");
+
+        return parsed;
+    }
+
     private static bool ContainsExplicitFilter(string[] args)
     {
         return args.Any(static arg => arg.Equals("--filter", StringComparison.OrdinalIgnoreCase));
@@ -1228,6 +1311,7 @@ public static class Program
         Console.WriteLine("Usage:");
         Console.WriteLine("  dotnet run -- --micro              Run BenchmarkDotNet micro-benchmarks");
         Console.WriteLine("  dotnet run -- --micro --filter *Insert*   Filter micro-benchmarks");
+        Console.WriteLine("  dotnet run -- --fts-hot-token-smoke --postings 20000  Time one hot-token FTS build/query/update/delete smoke run");
         Console.WriteLine("  dotnet run -- --macro              Run macro-benchmarks (sustained workloads)");
         Console.WriteLine("  dotnet run -- --macro-batch-memory Run in-memory rotating batch throughput benchmark");
         Console.WriteLine("  dotnet run -- --write-diagnostics  Run focused pager/WAL durable-write diagnostics");

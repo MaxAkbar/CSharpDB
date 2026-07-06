@@ -5,6 +5,7 @@ internal static class FullTextIndexNaming
     internal const string MetaSuffix = "__meta";
     internal const string TermsSuffix = "__terms";
     internal const string PostingsSuffix = "__postings";
+    internal const string PostingChunksSuffix = "__postingchunks";
     internal const string DocStatsSuffix = "__docstats";
     internal const string KGramsSuffix = "__kgrams";
 
@@ -13,6 +14,8 @@ internal static class FullTextIndexNaming
     public static string GetTermsIndexName(string indexName) => indexName + TermsSuffix;
 
     public static string GetPostingsIndexName(string indexName) => indexName + PostingsSuffix;
+
+    public static string GetPostingChunksIndexName(string indexName) => indexName + PostingChunksSuffix;
 
     public static string GetDocStatsIndexName(string indexName) => indexName + DocStatsSuffix;
 
@@ -23,6 +26,7 @@ internal static class FullTextIndexNaming
         GetMetaIndexName(indexName),
         GetTermsIndexName(indexName),
         GetPostingsIndexName(indexName),
+        GetPostingChunksIndexName(indexName),
         GetDocStatsIndexName(indexName),
     ];
 }

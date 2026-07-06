@@ -115,6 +115,7 @@ public sealed class WriteTransaction : IAsyncDisposable
         KeyValuePair<string, long>[] committedTableRowCountDeltas;
         TableStatistics[] committedTableStatistics;
         ColumnStatistics[] committedColumnStatistics;
+        MutationTargetCollectionDiagnosticsSnapshot mutationTargetCollectionDiagnostics;
         bool schemaChanged;
         bool rootPagesChanged;
         bool advisoryCatalogContentChanged;
@@ -127,6 +128,10 @@ public sealed class WriteTransaction : IAsyncDisposable
             committedTableRowCountDeltas = _catalog.GetPendingTableRowCountDeltas().ToArray();
             committedTableStatistics = _catalog.GetDirtyTableStatistics().ToArray();
             committedColumnStatistics = _catalog.GetDirtyColumnStatistics().ToArray();
+            var plannerMutationDiagnostics = _planner.GetMutationTargetCollectionDiagnosticsSnapshot();
+            mutationTargetCollectionDiagnostics = new MutationTargetCollectionDiagnosticsSnapshot(
+                plannerMutationDiagnostics.IndexedCollectionCount,
+                plannerMutationDiagnostics.ScannedCollectionCount);
             if (advisoryCatalogContentChanged)
             {
                 committedColumnStatistics = [];
@@ -159,6 +164,7 @@ public sealed class WriteTransaction : IAsyncDisposable
             committedTableRowCountDeltas,
             committedTableStatistics,
             committedColumnStatistics,
+            mutationTargetCollectionDiagnostics,
             ct);
     }
 
