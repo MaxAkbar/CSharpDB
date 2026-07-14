@@ -7,7 +7,8 @@ public static class PageConstants
 
     // Magic bytes: "CSDB"
     public static readonly byte[] MagicBytes = "CSDB"u8.ToArray();
-    public const int FormatVersion = 1;
+    public const int MinimumSupportedFormatVersion = 1;
+    public const int FormatVersion = 2;
 
     // File header layout offsets (within page 0)
     public const int MagicOffset = 0;           // 4 bytes
@@ -27,6 +28,8 @@ public static class PageConstants
     public const int NextLeafOffset = 5;         // 4 bytes (uint32) — next leaf for leaf pages (reuses offset since interior uses RightChild)
     public const int SlottedPageHeaderSize = 9;  // total header before cell pointer array
     public const int CellPointerSize = 2;        // each cell pointer is 2 bytes (ushort offset within page)
+    public const ulong LeafCellOverflowFlag = 1UL << 63; // high bit of the encoded leaf payload size
+    public const ulong CellPayloadSizeMask = ~LeafCellOverflowFlag;
     public const int OverflowNextOffset = 1;     // 4 bytes (uint32) — next overflow page, 0 = end of chain
     public const int OverflowChunkLengthOffset = 5; // 2 bytes (ushort) — payload bytes stored on this overflow page
     public const int OverflowPageHeaderSize = 7; // total header before overflow payload bytes

@@ -39,8 +39,9 @@ internal readonly struct ReadOnlySlottedPage
     {
         ushort offset = GetCellOffset(index);
         var cellData = _data.Slice(offset).Span;
-        ulong cellSize = Varint.Read(cellData, out int headerBytes);
-        int totalSize = headerBytes + (int)cellSize;
+        ulong encodedCellSize = Varint.Read(cellData, out int headerBytes);
+        int cellSize = checked((int)(encodedCellSize & PageConstants.CellPayloadSizeMask));
+        int totalSize = headerBytes + cellSize;
         return _data.Slice(offset, totalSize);
     }
 }

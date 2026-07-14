@@ -181,6 +181,102 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task LargeText_SpansOverflowPages_AcrossCrudAndReopen()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string initialText = new('x', 10_000);
+        string updatedText = string.Concat(Enumerable.Repeat("é漢", 3_000));
+
+        await _db.ExecuteAsync(
+            "CREATE TABLE large_text_rows (id INTEGER PRIMARY KEY, body TEXT)",
+            ct);
+        await _db.ExecuteAsync(
+            $"INSERT INTO large_text_rows VALUES (1, '{initialText}')",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO large_text_rows VALUES (2, 'inline')",
+            ct);
+
+        // Primary-key lookup exercises the WAL snapshot point-read path.
+        await using (var lookup = await _db.ExecuteAsync(
+            "SELECT body FROM large_text_rows WHERE id = 1",
+            ct))
+        {
+            var rows = await lookup.ToListAsync(ct);
+            Assert.Single(rows);
+            Assert.Equal(initialText, rows[0][0].AsText);
+        }
+
+        // A table scan resolves the same external payload through BTreeCursor.
+        await using (var scan = await _db.ExecuteAsync(
+            "SELECT id, body FROM large_text_rows ORDER BY id",
+            ct))
+        {
+            var rows = await scan.ToListAsync(ct);
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(initialText, rows[0][1].AsText);
+            Assert.Equal("inline", rows[1][1].AsText);
+        }
+
+        string rolledBackText = new('r', 12_000);
+        await _db.BeginTransactionAsync(ct);
+        try
+        {
+            await _db.ExecuteAsync(
+                $"UPDATE large_text_rows SET body = '{rolledBackText}' WHERE id = 1",
+                ct);
+            await _db.ExecuteAsync(
+                $"INSERT INTO large_text_rows VALUES (3, '{rolledBackText}')",
+                ct);
+            await _db.ExecuteAsync("DELETE FROM large_text_rows WHERE id = 2", ct);
+            await _db.RollbackAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        await using (var afterRollback = await _db.ExecuteAsync(
+            "SELECT id, body FROM large_text_rows ORDER BY id",
+            ct))
+        {
+            var rows = await afterRollback.ToListAsync(ct);
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(initialText, rows[0][1].AsText);
+            Assert.Equal("inline", rows[1][1].AsText);
+        }
+
+        await _db.ExecuteAsync(
+            "UPDATE large_text_rows SET body = 'temporarily inline' WHERE id = 1",
+            ct);
+        await _db.ExecuteAsync(
+            $"UPDATE large_text_rows SET body = '{updatedText}' WHERE id = 1",
+            ct);
+        await _db.ExecuteAsync(
+            "UPDATE large_text_rows SET body = 'small again' WHERE id = 2",
+            ct);
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+
+        await using (var reopened = await _db.ExecuteAsync(
+            "SELECT body FROM large_text_rows WHERE id = 1",
+            ct))
+        {
+            var rows = await reopened.ToListAsync(ct);
+            Assert.Single(rows);
+            Assert.Equal(updatedText, rows[0][0].AsText);
+        }
+
+        await _db.ExecuteAsync("DELETE FROM large_text_rows WHERE id = 1", ct);
+        await using var deleted = await _db.ExecuteAsync(
+            "SELECT body FROM large_text_rows WHERE id = 1",
+            ct);
+        Assert.Empty(await deleted.ToListAsync(ct));
+    }
+
+    [Fact]
     public async Task Persistence_PrimaryKeyLookupManyRows_AcrossReopen()
     {
         await _db.ExecuteAsync("CREATE TABLE persist_big (id INTEGER PRIMARY KEY, val INTEGER)", TestContext.Current.CancellationToken);

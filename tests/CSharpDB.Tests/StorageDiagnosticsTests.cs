@@ -53,6 +53,101 @@ public sealed class StorageDiagnosticsTests
     }
 
     [Fact]
+    public async Task DatabaseInspector_InspectPageAsync_InteriorOverflowFlagReportsError()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            var databaseBytes = new byte[PageConstants.PageSize * 2];
+            int pageBase = PageConstants.PageSize;
+            ulong encodedPayloadSize = PageConstants.LeafCellOverflowFlag | 12UL;
+            int cellOffset = PageConstants.PageSize - Varint.SizeOf(encodedPayloadSize) - 12;
+
+            databaseBytes[pageBase + PageConstants.PageTypeOffset] = PageConstants.PageTypeInterior;
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                databaseBytes.AsSpan(pageBase + PageConstants.CellCountOffset, 2),
+                1);
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                databaseBytes.AsSpan(pageBase + PageConstants.FreeSpaceStartOffset, 2),
+                checked((ushort)cellOffset));
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                databaseBytes.AsSpan(pageBase + PageConstants.SlottedPageHeaderSize, 2),
+                checked((ushort)cellOffset));
+
+            int headerBytes = Varint.Write(
+                databaseBytes.AsSpan(pageBase + cellOffset),
+                encodedPayloadSize);
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                databaseBytes.AsSpan(pageBase + cellOffset + headerBytes, 4),
+                PageConstants.NullPageId);
+            BinaryPrimitives.WriteInt64LittleEndian(
+                databaseBytes.AsSpan(pageBase + cellOffset + headerBytes + 4, 8),
+                42);
+
+            await File.WriteAllBytesAsync(dbPath, databaseBytes, ct);
+
+            PageInspectReport report = await DatabaseInspector.InspectPageAsync(
+                dbPath,
+                pageId: 1,
+                includeHex: false,
+                ct);
+
+            Assert.Contains(
+                report.Issues,
+                issue => issue.Code == "INTERIOR_CELL_OVERFLOW_FLAG_INVALID" &&
+                         issue.Severity == InspectSeverity.Error);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DatabaseInspector_FormatVersionOne_RemainsSupported()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            var databaseBytes = new byte[PageConstants.PageSize];
+            PageConstants.MagicBytes.CopyTo(databaseBytes, PageConstants.MagicOffset);
+            BinaryPrimitives.WriteInt32LittleEndian(
+                databaseBytes.AsSpan(PageConstants.VersionOffset, 4),
+                PageConstants.MinimumSupportedFormatVersion);
+            BinaryPrimitives.WriteInt32LittleEndian(
+                databaseBytes.AsSpan(PageConstants.PageSizeOffset, 4),
+                PageConstants.PageSize);
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                databaseBytes.AsSpan(PageConstants.PageCountOffset, 4),
+                1);
+
+            int pageBase = PageConstants.FileHeaderSize;
+            databaseBytes[pageBase + PageConstants.PageTypeOffset] = PageConstants.PageTypeLeaf;
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                databaseBytes.AsSpan(pageBase + PageConstants.FreeSpaceStartOffset, 2),
+                PageConstants.PageSize);
+
+            await File.WriteAllBytesAsync(dbPath, databaseBytes, ct);
+
+            DatabaseInspectReport report = await DatabaseInspector.InspectAsync(dbPath, ct: ct);
+
+            Assert.Equal(PageConstants.MinimumSupportedFormatVersion, report.Header.Version);
+            Assert.True(report.Header.VersionValid);
+            Assert.DoesNotContain(report.Issues, issue => issue.Code == "DB_HEADER_BAD_VERSION");
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task StorageInspectors_EmptyDatabase_DoNotWarnOnStatsCatalogSentinels()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -69,6 +164,76 @@ public sealed class StorageDiagnosticsTests
 
             Assert.DoesNotContain(dbReport.Issues, i => i.Code == "CATALOG_TABLE_SCHEMA_DECODE_FAILED");
             Assert.DoesNotContain(indexReport.Issues, i => i.Code == "CATALOG_TABLE_SCHEMA_DECODE_FAILED");
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DatabaseInspector_LargeRowOverflowPages_AreParsedAsHealthy()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using (var db = await Database.OpenAsync(dbPath, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", ct);
+                await db.ExecuteAsync(
+                    $"INSERT INTO docs VALUES (1, '{new string('x', 10_000)}')",
+                    ct);
+            }
+
+            DatabaseInspectReport report = await DatabaseInspector.InspectAsync(dbPath, ct: ct);
+
+            Assert.True(report.PageTypeHistogram.TryGetValue("overflow", out int overflowPageCount));
+            Assert.True(overflowPageCount >= 3);
+            Assert.DoesNotContain(report.Issues, issue => issue.Severity == InspectSeverity.Error);
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task DatabaseInspector_OverflowChainOutsideDatabaseReportsError()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = NewTempDbPath();
+
+        try
+        {
+            await using (var db = await Database.OpenAsync(dbPath, ct))
+            {
+                await db.ExecuteAsync("CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT)", ct);
+                await db.ExecuteAsync(
+                    $"INSERT INTO docs VALUES (1, '{new string('x', 10_000)}')",
+                    ct);
+            }
+
+            byte[] databaseBytes = await File.ReadAllBytesAsync(dbPath, ct);
+            int physicalPageCount = databaseBytes.Length / PageConstants.PageSize;
+            int overflowPageId = Enumerable.Range(1, physicalPageCount - 1)
+                .First(pageId =>
+                    databaseBytes[pageId * PageConstants.PageSize + PageConstants.PageTypeOffset] ==
+                    PageConstants.PageTypeOverflow);
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                databaseBytes.AsSpan(
+                    overflowPageId * PageConstants.PageSize + PageConstants.OverflowNextOffset,
+                    sizeof(uint)),
+                uint.MaxValue);
+            await File.WriteAllBytesAsync(dbPath, databaseBytes, ct);
+
+            DatabaseInspectReport report = await DatabaseInspector.InspectAsync(dbPath, ct: ct);
+
+            Assert.Contains(report.Issues, issue => issue.Code == "OVERFLOW_NEXT_PAGE_OOB");
+            Assert.Contains(report.Issues, issue => issue.Code == "OVERFLOW_CHAIN_PAGE_OOB");
         }
         finally
         {

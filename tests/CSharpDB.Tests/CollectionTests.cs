@@ -39,6 +39,10 @@ public class CollectionTests : IAsyncLifetime
     // Test models
     private record User(string Name, int Age, string Email);
     private record Product(string Sku, string Title, decimal Price);
+    private sealed class FailingDocument
+    {
+        public string Value => throw new InvalidOperationException("Serialization failed as requested.");
+    }
 
     // ===== Tier 1: Basic CRUD =====
 
@@ -161,18 +165,41 @@ public class CollectionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Put_ModerateDocument()
+    public async Task Put_LargeDocumentSpansOverflowPages()
     {
-        var users = await _db.GetCollectionAsync<User>("users", TestContext.Current.CancellationToken);
-        // Keep within B+tree page size (4096 bytes). JSON overhead + RecordEncoder ~ 100 bytes.
-        string longEmail = new string('x', 500) + "@example.com";
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var users = await _db.GetCollectionAsync<User>("users", ct);
+        string longEmail = new string('x', 12_000) + "@example.com";
         var bigUser = new User("ModerateDoc", 99, longEmail);
 
-        await users.PutAsync("big:1", bigUser, TestContext.Current.CancellationToken);
-        var result = await users.GetAsync("big:1", TestContext.Current.CancellationToken);
+        await users.PutAsync("big:1", bigUser, ct);
+        var result = await users.GetAsync("big:1", ct);
 
         Assert.NotNull(result);
         Assert.Equal(longEmail, result!.Email);
+
+        var scanned = new List<KeyValuePair<string, User>>();
+        await foreach (var item in users.ScanAsync(ct))
+            scanned.Add(item);
+        Assert.Single(scanned);
+        Assert.Equal(longEmail, scanned[0].Value.Email);
+
+        string updatedEmail = string.Concat(Enumerable.Repeat("é漢", 2_500)) + "@example.com";
+        await users.PutAsync("big:1", new User("UpdatedDoc", 100, updatedEmail), ct);
+        await users.PutAsync("small:2", new User("SmallDoc", 1, "small@example.com"), ct);
+
+        var updated = await users.GetAsync("big:1", ct);
+        Assert.NotNull(updated);
+        Assert.Equal(updatedEmail, updated!.Email);
+        Assert.Equal(2, await users.CountAsync(ct));
+
+        await _db.DisposeAsync();
+        _db = await Database.OpenAsync(_dbPath, ct);
+        var reopenedUsers = await _db.GetCollectionAsync<User>("users", ct);
+        var reopened = await reopenedUsers.GetAsync("big:1", ct);
+        Assert.NotNull(reopened);
+        Assert.Equal(updatedEmail, reopened!.Email);
+        Assert.Equal(2, await reopenedUsers.CountAsync(ct));
     }
 
     [Fact]
@@ -397,6 +424,26 @@ public class CollectionTests : IAsyncLifetime
         var cachedAgain = await _db.GetCollectionAsync<User>("users", timeoutCts.Token);
         Assert.Same(cached, cachedAgain);
         Assert.Equal(1, await cachedAgain.CountAsync(timeoutCts.Token));
+    }
+
+    [Fact]
+    public async Task FailedImplicitPut_ReleasesWriteGate()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var failing = await _db.GetCollectionAsync<FailingDocument>("failing", ct);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await failing.PutAsync("bad:1", new FailingDocument(), ct));
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+        var users = await _db.GetCollectionAsync<User>("after_failure", timeoutCts.Token);
+        await users.PutAsync(
+            "u:1",
+            new User("Recovered", 1, "recovered@example.com"),
+            timeoutCts.Token);
+        Assert.NotNull(await users.GetAsync("u:1", timeoutCts.Token));
     }
 
     // ===== Persistence across reopen =====

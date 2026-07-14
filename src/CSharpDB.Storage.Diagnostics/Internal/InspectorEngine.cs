@@ -9,6 +9,8 @@ internal static class InspectorEngine
     internal const long TriggerCatalogSentinel = long.MaxValue - 2;
     internal const long TableStatsCatalogSentinel = long.MaxValue - 3;
     internal const long ColumnStatsCatalogSentinel = long.MaxValue - 4;
+    private const int BTreeOverflowReferenceLength = 16;
+    private static ReadOnlySpan<byte> BTreeOverflowReferenceMagic => "CSDBBOV1"u8;
 
     internal sealed class ParsedLeafCell
     {
@@ -16,6 +18,7 @@ internal static class InspectorEngine
         public ushort CellOffset { get; init; }
         public int HeaderBytes { get; init; }
         public int CellTotalBytes { get; init; }
+        public bool IsOverflowPayload { get; init; }
         public long? Key { get; init; }
         public byte[]? Payload { get; init; }
     }
@@ -39,6 +42,7 @@ internal static class InspectorEngine
         public required ushort CellContentStart { get; init; }
         public required uint RightChildOrNextLeaf { get; init; }
         public required int FreeSpaceBytes { get; init; }
+        public ushort? OverflowChunkLength { get; init; }
 
         public required List<ushort> CellOffsets { get; init; }
         public required List<ParsedLeafCell> LeafCells { get; init; }
@@ -238,6 +242,8 @@ internal static class InspectorEngine
             issues.AddRange(parsed.Issues);
         }
 
+        ValidateOverflowReferences(pages, physicalPageCount, issues);
+
         return new DatabaseSnapshot
         {
             DatabasePath = databasePath,
@@ -317,13 +323,67 @@ internal static class InspectorEngine
         }
 
         byte pageType = pageBytes[baseOffset + PageConstants.PageTypeOffset];
+        if (pageType == PageConstants.PageTypeOverflow)
+        {
+            int nextOffset = baseOffset + PageConstants.OverflowNextOffset;
+            int chunkLengthOffset = baseOffset + PageConstants.OverflowChunkLengthOffset;
+            uint nextPageId = BinaryPrimitives.ReadUInt32LittleEndian(
+                pageBytes.AsSpan(nextOffset, sizeof(uint)));
+            ushort chunkLength = BinaryPrimitives.ReadUInt16LittleEndian(
+                pageBytes.AsSpan(chunkLengthOffset, sizeof(ushort)));
+            int maxChunkLength = PageConstants.PageSize -
+                baseOffset -
+                PageConstants.OverflowPageHeaderSize;
+
+            if (chunkLength == 0 || chunkLength > maxChunkLength)
+            {
+                issues.Add(new IntegrityIssue
+                {
+                    Code = "OVERFLOW_CHUNK_LENGTH_INVALID",
+                    Severity = InspectSeverity.Error,
+                    Message = $"Overflow page {pageId} has invalid chunk length {chunkLength}.",
+                    PageId = pageId,
+                    Offset = chunkLengthOffset,
+                });
+            }
+
+            if (nextPageId == pageId)
+            {
+                issues.Add(new IntegrityIssue
+                {
+                    Code = "OVERFLOW_SELF_REFERENCE",
+                    Severity = InspectSeverity.Error,
+                    Message = $"Overflow page {pageId} points to itself.",
+                    PageId = pageId,
+                    Offset = nextOffset,
+                });
+            }
+
+            return new ParsePageResult(
+                new ParsedPage
+                {
+                    PageId = pageId,
+                    BaseOffset = baseOffset,
+                    PageType = pageType,
+                    CellCount = 0,
+                    CellContentStart = checked((ushort)(baseOffset + PageConstants.OverflowPageHeaderSize)),
+                    RightChildOrNextLeaf = nextPageId,
+                    FreeSpaceBytes = Math.Max(0, maxChunkLength - chunkLength),
+                    OverflowChunkLength = chunkLength,
+                    CellOffsets = [],
+                    LeafCells = [],
+                    InteriorCells = [],
+                    ChildPageReferences = nextPageId == PageConstants.NullPageId ? [] : [nextPageId],
+                },
+                issues);
+        }
+
         ushort cellCount = BinaryPrimitives.ReadUInt16LittleEndian(pageBytes.AsSpan(baseOffset + PageConstants.CellCountOffset, 2));
         ushort cellContentStart = BinaryPrimitives.ReadUInt16LittleEndian(pageBytes.AsSpan(baseOffset + PageConstants.FreeSpaceStartOffset, 2));
         uint rightChildOrNextLeaf = BinaryPrimitives.ReadUInt32LittleEndian(pageBytes.AsSpan(baseOffset + PageConstants.RightChildOffset, 4));
 
         if (pageType != PageConstants.PageTypeLeaf &&
-            pageType != PageConstants.PageTypeInterior &&
-            pageType != PageConstants.PageTypeOverflow)
+            pageType != PageConstants.PageTypeInterior)
         {
             if (pageType != PageConstants.PageTypeFreelist)
             {
@@ -439,11 +499,11 @@ internal static class InspectorEngine
             if (cellOffset < baseOffset || cellOffset >= PageConstants.PageSize)
                 continue;
 
-            ulong payloadSize;
+            ulong encodedPayloadSize;
             int headerBytes;
             try
             {
-                payloadSize = Varint.Read(pageBytes.AsSpan(cellOffset), out headerBytes);
+                encodedPayloadSize = Varint.Read(pageBytes.AsSpan(cellOffset), out headerBytes);
             }
             catch
             {
@@ -456,6 +516,22 @@ internal static class InspectorEngine
                     Offset = cellOffset,
                 });
                 continue;
+            }
+
+            bool isOverflowPayload =
+                (encodedPayloadSize & PageConstants.LeafCellOverflowFlag) != 0;
+            ulong payloadSize = encodedPayloadSize & PageConstants.CellPayloadSizeMask;
+
+            if (isOverflowPayload && pageType != PageConstants.PageTypeLeaf)
+            {
+                issues.Add(new IntegrityIssue
+                {
+                    Code = "INTERIOR_CELL_OVERFLOW_FLAG_INVALID",
+                    Severity = InspectSeverity.Error,
+                    Message = $"Interior cell {i} has the leaf overflow-payload flag set.",
+                    PageId = pageId,
+                    Offset = cellOffset,
+                });
             }
 
             long cellTotal = headerBytes + (long)payloadSize;
@@ -540,6 +616,7 @@ internal static class InspectorEngine
                     CellOffset = cellOffset,
                     HeaderBytes = headerBytes,
                     CellTotalBytes = checked((int)cellTotal),
+                    IsOverflowPayload = isOverflowPayload,
                     Key = key,
                     Payload = payload,
                 });
@@ -633,6 +710,154 @@ internal static class InspectorEngine
         };
 
         return new ParsePageResult(parsedPage, issues);
+    }
+
+    private static void ValidateOverflowReferences(
+        IReadOnlyDictionary<uint, ParsedPage> pages,
+        int physicalPageCount,
+        List<IntegrityIssue> issues)
+    {
+        foreach (ParsedPage overflowPage in pages.Values.Where(
+                     static page => page.PageType == PageConstants.PageTypeOverflow))
+        {
+            uint nextPageId = overflowPage.RightChildOrNextLeaf;
+            if (nextPageId != PageConstants.NullPageId && nextPageId >= physicalPageCount)
+            {
+                issues.Add(new IntegrityIssue
+                {
+                    Code = "OVERFLOW_NEXT_PAGE_OOB",
+                    Severity = InspectSeverity.Error,
+                    Message = $"Overflow page {overflowPage.PageId} points outside the database to page {nextPageId}.",
+                    PageId = overflowPage.PageId,
+                    Offset = (long)overflowPage.PageId * PageConstants.PageSize + PageConstants.OverflowNextOffset,
+                });
+            }
+        }
+
+        foreach (ParsedPage leafPage in pages.Values.Where(
+                     static page => page.PageType == PageConstants.PageTypeLeaf))
+        {
+            foreach (ParsedLeafCell cell in leafPage.LeafCells.Where(
+                         static cell => cell.IsOverflowPayload))
+            {
+                if (cell.Payload is null)
+                    continue;
+
+                ReadOnlySpan<byte> reference = cell.Payload;
+                if (reference.Length != BTreeOverflowReferenceLength ||
+                    !reference[..BTreeOverflowReferenceMagic.Length]
+                        .SequenceEqual(BTreeOverflowReferenceMagic))
+                {
+                    issues.Add(new IntegrityIssue
+                    {
+                        Code = "BTREE_OVERFLOW_REFERENCE_INVALID",
+                        Severity = InspectSeverity.Error,
+                        Message = $"Leaf page {leafPage.PageId} cell {cell.CellIndex} has an invalid overflow reference.",
+                        PageId = leafPage.PageId,
+                        Offset = cell.CellOffset,
+                    });
+                    continue;
+                }
+
+                uint firstPageId = BinaryPrimitives.ReadUInt32LittleEndian(reference.Slice(8, sizeof(uint)));
+                int expectedLength = BinaryPrimitives.ReadInt32LittleEndian(reference.Slice(12, sizeof(int)));
+                if (firstPageId == PageConstants.NullPageId || expectedLength <= 0)
+                {
+                    issues.Add(new IntegrityIssue
+                    {
+                        Code = "BTREE_OVERFLOW_REFERENCE_INVALID",
+                        Severity = InspectSeverity.Error,
+                        Message = $"Leaf page {leafPage.PageId} cell {cell.CellIndex} has an invalid overflow page or payload length.",
+                        PageId = leafPage.PageId,
+                        Offset = cell.CellOffset,
+                    });
+                    continue;
+                }
+
+                var visited = new HashSet<uint>();
+                uint pageId = firstPageId;
+                long actualLength = 0;
+                bool reachedEnd = false;
+
+                while (pageId != PageConstants.NullPageId)
+                {
+                    if (pageId >= physicalPageCount)
+                    {
+                        issues.Add(new IntegrityIssue
+                        {
+                            Code = "OVERFLOW_CHAIN_PAGE_OOB",
+                            Severity = InspectSeverity.Error,
+                            Message = $"Overflow reference on leaf page {leafPage.PageId} points outside the database to page {pageId}.",
+                            PageId = leafPage.PageId,
+                            Offset = cell.CellOffset,
+                        });
+                        break;
+                    }
+
+                    if (!visited.Add(pageId))
+                    {
+                        issues.Add(new IntegrityIssue
+                        {
+                            Code = "OVERFLOW_CHAIN_CYCLE",
+                            Severity = InspectSeverity.Error,
+                            Message = $"Overflow reference on leaf page {leafPage.PageId} contains a cycle at page {pageId}.",
+                            PageId = pageId,
+                        });
+                        break;
+                    }
+
+                    if (!pages.TryGetValue(pageId, out ParsedPage? overflowPage))
+                    {
+                        issues.Add(new IntegrityIssue
+                        {
+                            Code = "OVERFLOW_CHAIN_PAGE_MISSING",
+                            Severity = InspectSeverity.Error,
+                            Message = $"Overflow reference on leaf page {leafPage.PageId} is missing page {pageId}.",
+                            PageId = leafPage.PageId,
+                            Offset = cell.CellOffset,
+                        });
+                        break;
+                    }
+
+                    if (overflowPage.PageType != PageConstants.PageTypeOverflow ||
+                        overflowPage.OverflowChunkLength is not ushort chunkLength ||
+                        chunkLength == 0 ||
+                        chunkLength > PageConstants.PageSize - PageConstants.OverflowPageHeaderSize)
+                    {
+                        issues.Add(new IntegrityIssue
+                        {
+                            Code = "OVERFLOW_CHAIN_PAGE_INVALID",
+                            Severity = InspectSeverity.Error,
+                            Message = $"Overflow reference on leaf page {leafPage.PageId} reaches invalid page {pageId}.",
+                            PageId = pageId,
+                        });
+                        break;
+                    }
+
+                    actualLength += chunkLength;
+                    if (actualLength > expectedLength)
+                        break;
+
+                    pageId = overflowPage.RightChildOrNextLeaf;
+                    reachedEnd = pageId == PageConstants.NullPageId;
+                }
+
+                if (reachedEnd && actualLength == expectedLength)
+                    continue;
+
+                if (actualLength != expectedLength)
+                {
+                    issues.Add(new IntegrityIssue
+                    {
+                        Code = "OVERFLOW_CHAIN_LENGTH_MISMATCH",
+                        Severity = InspectSeverity.Error,
+                        Message = $"Overflow reference on leaf page {leafPage.PageId} resolves to {actualLength} bytes; expected {expectedLength}.",
+                        PageId = leafPage.PageId,
+                        Offset = cell.CellOffset,
+                    });
+                }
+            }
+        }
     }
 
     internal static HashSet<uint> WalkBTree(
@@ -795,7 +1020,8 @@ internal static class InspectorEngine
         int version = availableBytes >= 8
             ? BinaryPrimitives.ReadInt32LittleEndian(fileHeader.Slice(PageConstants.VersionOffset, 4))
             : 0;
-        bool versionValid = version == PageConstants.FormatVersion;
+        bool versionValid = version >= PageConstants.MinimumSupportedFormatVersion &&
+                            version <= PageConstants.FormatVersion;
 
         int pageSize = availableBytes >= 12
             ? BinaryPrimitives.ReadInt32LittleEndian(fileHeader.Slice(PageConstants.PageSizeOffset, 4))

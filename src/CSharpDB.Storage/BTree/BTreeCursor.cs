@@ -59,7 +59,7 @@ public sealed class BTreeCursor : IAsyncDisposable
             _initialized = true;
         }
 
-        _currentIndex++;
+        int candidateIndex = _currentIndex + 1;
 
         while (true)
         {
@@ -72,16 +72,23 @@ public sealed class BTreeCursor : IAsyncDisposable
 
             var sp = await GetCurrentLeafAsync(ct);
 
-            if (_currentIndex < sp.CellCount)
+            if (candidateIndex < sp.CellCount)
             {
-                CurrentKey = BTree.ReadLeafKey(sp, _currentIndex);
-                CurrentValue = BTree.ReadLeafPayloadMemory(sp, _currentIndex);
+                long key = BTree.ReadLeafKey(sp, candidateIndex);
+                ReadOnlyMemory<byte> value = await _tree.ResolveStoredPayloadAsync(
+                    BTree.ReadLeafPayloadMemory(sp, candidateIndex),
+                    BTree.IsLeafPayloadOverflow(sp, candidateIndex),
+                    ct);
+                _currentIndex = candidateIndex;
+                CurrentKey = key;
+                CurrentValue = value;
                 return true;
             }
 
             // Move to next leaf
             _currentPageId = sp.RightChildOrNextLeaf;
-            _currentIndex = 0;
+            _currentIndex = -1;
+            candidateIndex = 0;
             ResetCurrentLeaf(clearPrefetch: false);
         }
     }
@@ -94,8 +101,10 @@ public sealed class BTreeCursor : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        _initialized = true;
+        _initialized = false;
         _eof = false;
+        _currentPageId = PageConstants.NullPageId;
+        _currentIndex = -1;
         ResetCurrentLeaf(clearPrefetch: true);
 
         uint pageId = _tree.RootPageId;
@@ -111,28 +120,31 @@ public sealed class BTreeCursor : IAsyncDisposable
                 if (i < sp.CellCount)
                 {
                     long key = BTree.ReadLeafKey(sp, i);
+                    ReadOnlyMemory<byte> value = await _tree.ResolveStoredPayloadAsync(
+                        BTree.ReadLeafPayloadMemory(sp, i),
+                        BTree.IsLeafPayloadOverflow(sp, i),
+                        ct);
                     _currentPageId = pageId;
                     _currentIndex = i;
                     _currentLeafPage = page;
                     _currentLeaf = sp;
                     _currentLeafLoaded = true;
                     ScheduleLeafPrefetch(sp.RightChildOrNextLeaf);
+                    _initialized = true;
                     CurrentKey = key;
-                    CurrentValue = BTree.ReadLeafPayloadMemory(sp, i);
+                    CurrentValue = value;
                     return true;
                 }
 
                 uint nextLeaf = sp.RightChildOrNextLeaf;
                 if (nextLeaf == PageConstants.NullPageId)
                 {
+                    _initialized = true;
                     _eof = true;
                     return false;
                 }
 
-                _currentPageId = nextLeaf;
-                _currentIndex = -1;
-                ResetCurrentLeaf(clearPrefetch: true);
-                return await MoveNextAsync(ct);
+                pageId = nextLeaf;
             }
             else
             {
