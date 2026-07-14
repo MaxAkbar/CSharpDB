@@ -28,6 +28,7 @@ window.clipboardInterop = {
 window.desktopShellInterop = (() => {
     const requestType = 'desktop-shell-dialog-request';
     const resultType = 'desktop-shell-dialog-result';
+    const bridgeClassName = 'desktop-shell-bridge';
     const pending = new Map();
     let fallbackRequestId = 0;
     let subscribedBridge = null;
@@ -40,6 +41,14 @@ window.desktopShellInterop = (() => {
             ? bridge
             : null;
     };
+
+    const syncBridgeAvailability = () => {
+        const available = getBridge() !== null;
+        document.documentElement.classList.toggle(bridgeClassName, available);
+        return available;
+    };
+
+    syncBridgeAvailability();
 
     const onMessage = (event) => {
         const message = event?.data;
@@ -125,7 +134,7 @@ window.desktopShellInterop = (() => {
     };
 
     const pickPath = (options) => {
-        if (!getBridge()) return Promise.resolve(null);
+        if (!syncBridgeAvailability()) return Promise.resolve(null);
 
         const kind = options?.kind;
         const dialogs = {
@@ -144,9 +153,9 @@ window.desktopShellInterop = (() => {
     };
 
     return {
-        isAvailable: () => getBridge() !== null,
+        isAvailable: syncBridgeAvailability,
         openDatabase: () => {
-            if (!getBridge()) return false;
+            if (!syncBridgeAvailability()) return false;
 
             // Opening a database reloads the WebView after the host switches its
             // connection. Report bridge acceptance synchronously so that reload is

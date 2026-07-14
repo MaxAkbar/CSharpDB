@@ -16,6 +16,7 @@ version4.0.3 removes the single-page B-tree payload limit, allowing large SQL va
 
 - The Windows desktop shell now provides native Open, Save, and Select Folder dialogs for databases, code-module workspaces, compare/deploy sources and targets, pipeline inputs and outputs, backups, restores, migration backups, imports, exports, and table archives.
 - Open and Save dialogs apply the appropriate file filters, default extensions, existence checks, and overwrite prompts. Cancellation is handled safely, and manual path entry remains available for browser-hosted Admin sessions and relative paths.
+- Native Browse controls now appear only when the page is running inside the trusted Desktop WebView, avoiding inactive controls when the desktop child host is opened in a regular browser.
 - Desktop startup now locates the Admin host reliably in installed, development, and published layouts.
 
 ### Compatibility
@@ -30,4 +31,4 @@ version4.0.3 removes the single-page B-tree payload limit, allowing large SQL va
 - BenchmarkDotNet comparisons found no measurable steady-state regression for existing inline workloads.
 - A roughly 6 KB overflow value measured 2.365 ms per durable insert and 4.595 microseconds per hot primary-key read on the benchmark machine. The previous version cannot complete this workload.
 - Corrected the B-tree cursor benchmark to retain the final root page after splits so seek measurements exercise the intended tree path.
-- Final Release validation passed all 2,127 tests. Desktop Admin Debug/Release builds, JavaScript validation, isolated host launches, and unsigned Store package generation also completed successfully.
+- Final Release validation passed all 2,127 tests. Desktop Admin Debug/Release builds, JavaScript capability validation, isolated host launches, signed Store package generation, and a packaged Open/Save/Select Folder smoke test also completed successfully.

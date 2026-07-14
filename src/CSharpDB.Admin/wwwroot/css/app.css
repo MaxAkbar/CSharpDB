@@ -2768,10 +2768,18 @@ body {
 
 .native-path-picker {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     align-items: center;
     min-width: 0;
+}
+
+html.desktop-shell-bridge .native-path-picker {
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+
+html:not(.desktop-shell-bridge) .native-path-picker > button {
+    display: none;
 }
 
 .native-path-picker > .toolbar-btn.icon-only,
