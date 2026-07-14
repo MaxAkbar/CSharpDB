@@ -17,6 +17,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Admin\CSharpDB.Admin.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="..\..\docs\images\CSharpDB.ico" Link="Assets\CSharpDB.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\CSharpDB.Admin\wwwroot\icon2.png" Link="Assets\icon2.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

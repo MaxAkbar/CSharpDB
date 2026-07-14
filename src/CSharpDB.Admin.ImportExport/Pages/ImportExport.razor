@@ -1,6 +1,10 @@
 @namespace CSharpDB.Admin.ImportExport.Pages
+@using Microsoft.Extensions.Configuration
+@using Microsoft.JSInterop
 @inject ICSharpDbClient DbClient
 @inject ITableImportExportService ImportExportService
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
 
 <div class="import-export-tab">
     <div class="import-export-header">
@@ -61,10 +65,23 @@
 
                     @if (_destination == TableExportDestination.ServerPath)
                     {
-                        <label class="wide">
-                            <span>Path</span>
-                            <input value="@_serverPath" @oninput="e => _serverPath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
-                        </label>
+                        <div class="import-export-field wide">
+                            <span id="table-export-path-label">Path</span>
+                            <div class="native-path-picker">
+                                <input aria-labelledby="table-export-path-label" value="@_serverPath" @oninput="e => _serverPath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                                @if (UseDesktopPickers)
+                                {
+                                    <button type="button"
+                                            class="data-toolbar-btn icon-only"
+                                            title="Choose export destination"
+                                            aria-label="Choose export destination"
+                                            @onclick="PickServerExportPathAsync"
+                                            disabled="@_busy">
+                                        <i class="bi bi-folder2-open"></i>
+                                    </button>
+                                }
+                            </div>
+                        </div>
                     }
 
                     <div class="import-export-actions wide">
@@ -89,10 +106,23 @@
                         <span>External table</span>
                         <input value="@_externalTableName" @oninput="e => _externalTableName = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
                     </label>
-                    <label class="wide">
-                        <span>Archive path</span>
-                        <input value="@_externalArchivePath" @oninput="e => _externalArchivePath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
-                    </label>
+                    <div class="import-export-field wide">
+                        <span id="external-archive-path-label">Archive path</span>
+                        <div class="native-path-picker">
+                            <input aria-labelledby="external-archive-path-label" value="@_externalArchivePath" @oninput="e => _externalArchivePath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                            @if (UseDesktopPickers)
+                            {
+                                <button type="button"
+                                        class="data-toolbar-btn icon-only"
+                                        title="Choose table archive"
+                                        aria-label="Choose table archive"
+                                        @onclick="PickExternalArchivePathAsync"
+                                        disabled="@_busy">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
+                            }
+                        </div>
+                    </div>
                     <div class="import-export-actions wide">
                         <button type="button" class="data-toolbar-btn primary" @onclick="RegisterExternalTableAsync" disabled="@(!CanRegisterExternal)">
                             <i class="bi bi-link-45deg"></i> Register
@@ -134,10 +164,23 @@
 
             case ImportExportMode.RestoreTable:
                 <div class="import-export-grid">
-                    <label class="wide">
-                        <span>Archive path</span>
-                        <input value="@_restoreArchivePath" @oninput="e => _restoreArchivePath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
-                    </label>
+                    <div class="import-export-field wide">
+                        <span id="restore-archive-path-label">Archive path</span>
+                        <div class="native-path-picker">
+                            <input aria-labelledby="restore-archive-path-label" value="@_restoreArchivePath" @oninput="e => _restoreArchivePath = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
+                            @if (UseDesktopPickers)
+                            {
+                                <button type="button"
+                                        class="data-toolbar-btn icon-only"
+                                        title="Choose table archive"
+                                        aria-label="Choose table archive"
+                                        @onclick="PickRestoreArchivePathAsync"
+                                        disabled="@_busy">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
+                            }
+                        </div>
+                    </div>
                     <label>
                         <span>Target table</span>
                         <input value="@_restoreTableName" @oninput="e => _restoreTableName = e.Value?.ToString() ?? string.Empty" disabled="@_busy" />
@@ -182,6 +225,40 @@
     private bool CanRestore => !_busy && !string.IsNullOrWhiteSpace(_restoreArchivePath);
     private ICSharpDbClient ActiveClient => ClientOverride ?? DbClient;
     private ITableImportExportService ActiveImportExportService => ImportExportServiceOverride ?? ImportExportService;
+    private bool UseDesktopPickers => Configuration.GetValue<bool>("CSharpDB:DesktopShell");
+
+    private async Task PickServerExportPathAsync()
+    {
+        string? path = await PickTableArchivePathAsync("saveFile", "Choose Table Export Destination", _serverPath);
+        if (!string.IsNullOrWhiteSpace(path))
+            _serverPath = path;
+    }
+
+    private async Task PickExternalArchivePathAsync()
+    {
+        string? path = await PickTableArchivePathAsync("openFile", "Choose External Table Archive", _externalArchivePath);
+        if (!string.IsNullOrWhiteSpace(path))
+            _externalArchivePath = path;
+    }
+
+    private async Task PickRestoreArchivePathAsync()
+    {
+        string? path = await PickTableArchivePathAsync("openFile", "Choose Table Archive to Restore", _restoreArchivePath);
+        if (!string.IsNullOrWhiteSpace(path))
+            _restoreArchivePath = path;
+    }
+
+    private Task<string?> PickTableArchivePathAsync(string kind, string title, string path)
+        => JS.InvokeAsync<string?>("desktopShellInterop.pickPath", new
+        {
+            kind,
+            title,
+            filter = "CSharpDB table archives (*.csdbtable)|*.csdbtable|All files (*.*)|*.*",
+            defaultExt = ".csdbtable",
+            path,
+            checkFileExists = kind == "openFile",
+            overwritePrompt = kind == "saveFile",
+        }).AsTask();
 
     protected override async Task OnInitializedAsync()
     {

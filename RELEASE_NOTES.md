@@ -2,7 +2,7 @@
 
 ## version4.0.3
 
-version4.0.3 removes the single-page B-tree payload limit, allowing large SQL values and Collection documents to span multiple 4 KiB pages safely.
+version4.0.3 removes the single-page B-tree payload limit, allowing large SQL values and Collection documents to span multiple 4 KiB pages safely. It also improves the Windows Desktop Admin experience with native file and folder dialogs throughout local path workflows.
 
 ### Fixed
 
@@ -11,6 +11,12 @@ version4.0.3 removes the single-page B-tree payload limit, allowing large SQL va
 - Replaced and deleted overflow chains are reclaimed for reuse, while rejected duplicate inserts and missing-key replacements avoid allocating overflow pages.
 - Storage diagnostics recognize overflow pages and validate reference metadata, page types, bounds, lengths, and cycles so corrupt chains are reported clearly.
 - Failed implicit Collection writes now release the write gate correctly, allowing later writes to continue.
+
+### Desktop Admin
+
+- The Windows desktop shell now provides native Open, Save, and Select Folder dialogs for databases, code-module workspaces, compare/deploy sources and targets, pipeline inputs and outputs, backups, restores, migration backups, imports, exports, and table archives.
+- Open and Save dialogs apply the appropriate file filters, default extensions, existence checks, and overwrite prompts. Cancellation is handled safely, and manual path entry remains available for browser-hosted Admin sessions and relative paths.
+- Desktop startup now locates the Admin host reliably in installed, development, and published layouts.
 
 ### Compatibility
 
@@ -24,3 +30,4 @@ version4.0.3 removes the single-page B-tree payload limit, allowing large SQL va
 - BenchmarkDotNet comparisons found no measurable steady-state regression for existing inline workloads.
 - A roughly 6 KB overflow value measured 2.365 ms per durable insert and 4.595 microseconds per hot primary-key read on the benchmark machine. The previous version cannot complete this workload.
 - Corrected the B-tree cursor benchmark to retain the final root page after splits so seek measurements exercise the intended tree path.
+- Final Release validation passed all 2,127 tests. Desktop Admin Debug/Release builds, JavaScript validation, isolated host launches, and unsigned Store package generation also completed successfully.

@@ -1,6 +1,8 @@
 @using CSharpDB.CodeModules
 @inject CSharpDbCodeModuleClient CodeModules
 @inject ToastService Toast
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
 
 <div class="data-tab code-modules-tab">
     <div class="data-toolbar">
@@ -32,10 +34,22 @@
         </div>
 
         <div class="data-toolbar-group">
-            <input class="query-name-input"
-                   value="@_workspacePath"
-                   @onchange="e => _workspacePath = e.Value?.ToString() ?? string.Empty"
-                   placeholder="Workspace folder" />
+            <div class="native-path-picker">
+                <input class="query-name-input"
+                       value="@_workspacePath"
+                       @onchange="e => _workspacePath = e.Value?.ToString() ?? string.Empty"
+                       placeholder="Workspace folder" />
+                @if (UseDesktopPickers)
+                {
+                    <button type="button"
+                            class="data-toolbar-btn icon-only"
+                            title="Choose workspace folder"
+                            aria-label="Choose workspace folder"
+                            @onclick="PickWorkspaceFolderAsync">
+                        <i class="bi bi-folder2-open"></i>
+                    </button>
+                }
+            </div>
         </div>
 
         <div class="data-toolbar-group">
@@ -173,11 +187,25 @@
     private string _workspacePath = string.Empty;
 
     private bool CanTrust => _lastBuild?.Succeeded == true && _trustState?.IsTrusted != true;
+    private bool UseDesktopPickers => Configuration.GetValue<bool>("CSharpDB:DesktopShell");
 
     protected override async Task OnInitializedAsync()
     {
         _workspacePath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         await RefreshAsync();
+    }
+
+    private async Task PickWorkspaceFolderAsync()
+    {
+        string? path = await JS.InvokeAsync<string?>("desktopShellInterop.pickPath", new
+        {
+            kind = "folder",
+            title = "Choose Code Modules Workspace",
+            path = GetWorkspacePath(),
+        });
+
+        if (!string.IsNullOrWhiteSpace(path))
+            _workspacePath = path;
     }
 
     private async Task RefreshAsync()

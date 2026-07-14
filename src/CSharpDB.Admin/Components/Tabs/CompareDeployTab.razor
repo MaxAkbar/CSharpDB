@@ -4,6 +4,8 @@
 @inject DatabaseChangeService Changes
 @inject ToastService Toast
 @inject ModalService Modal
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
 
 <div class="compare-deploy-tab">
     <div class="toolbar compare-deploy-toolbar">
@@ -97,11 +99,24 @@
                 </div>
                 <div class="schema-field wide">
                     <label>@(_mode == CompareDeployMode.Drift ? "Baseline path" : "Source path")</label>
-                    <input class="schema-input mono"
-                           value="@_sourcePath"
-                           @oninput="OnSourcePathChanged"
-                           disabled="@(_sourceKind == CompareDeployEndpointKind.CurrentDatabase)"
-                           placeholder="@GetPathPlaceholder(_sourceKind)" />
+                    <div class="native-path-picker">
+                        <input class="schema-input mono"
+                               value="@_sourcePath"
+                               @oninput="OnSourcePathChanged"
+                               disabled="@(_sourceKind == CompareDeployEndpointKind.CurrentDatabase)"
+                               placeholder="@GetPathPlaceholder(_sourceKind)" />
+                        @if (UseDesktopPickers)
+                        {
+                            <button type="button"
+                                    class="toolbar-btn icon-only"
+                                    title="Choose source file"
+                                    aria-label="Choose source file"
+                                    disabled="@(_loading || _sourceKind == CompareDeployEndpointKind.CurrentDatabase)"
+                                    @onclick="() => PickEndpointPathAsync(source: true)">
+                                <i class="bi bi-folder2-open"></i>
+                            </button>
+                        }
+                    </div>
                 </div>
                 <div class="schema-field">
                     <label>@(_mode == CompareDeployMode.Drift ? "Current type" : "Target type")</label>
@@ -113,11 +128,24 @@
                 </div>
                 <div class="schema-field wide">
                     <label>@(_mode == CompareDeployMode.Drift ? "Current path" : "Target path")</label>
-                    <input class="schema-input mono"
-                           value="@_targetPath"
-                           @oninput="OnTargetPathChanged"
-                           disabled="@(_targetKind == CompareDeployEndpointKind.CurrentDatabase)"
-                           placeholder="@GetPathPlaceholder(_targetKind)" />
+                    <div class="native-path-picker">
+                        <input class="schema-input mono"
+                               value="@_targetPath"
+                               @oninput="OnTargetPathChanged"
+                               disabled="@(_targetKind == CompareDeployEndpointKind.CurrentDatabase)"
+                               placeholder="@GetPathPlaceholder(_targetKind)" />
+                        @if (UseDesktopPickers)
+                        {
+                            <button type="button"
+                                    class="toolbar-btn icon-only"
+                                    title="Choose target file"
+                                    aria-label="Choose target file"
+                                    disabled="@(_loading || _targetKind == CompareDeployEndpointKind.CurrentDatabase)"
+                                    @onclick="() => PickEndpointPathAsync(source: false)">
+                                <i class="bi bi-folder2-open"></i>
+                            </button>
+                        }
+                    </div>
                 </div>
             </div>
             <div class="compare-deploy-form-grid">
@@ -393,6 +421,8 @@
         _driftReport is not null
         && !string.Equals(_driftSignature, BuildDriftSignature(), StringComparison.Ordinal);
 
+    private bool UseDesktopPickers => Configuration.GetValue<bool>("CSharpDB:DesktopShell");
+
     private bool CanGenerateSchemaScript =>
         !_loading
         && _schemaReport is not null
@@ -578,6 +608,37 @@
         if (_schemaScriptEndpoint == CompareDeployScriptEndpoint.Target)
             ClearScriptObjects();
         InvalidateScript();
+    }
+
+    private async Task PickEndpointPathAsync(bool source)
+    {
+        CompareDeployEndpointKind kind = source ? _sourceKind : _targetKind;
+        if (kind == CompareDeployEndpointKind.CurrentDatabase)
+            return;
+
+        string filter = kind == CompareDeployEndpointKind.TableArchive
+            ? "CSharpDB table archives (*.csdbtable)|*.csdbtable|All files (*.*)|*.*"
+            : "CSharpDB databases (*.db;*.cdb;*.csdb)|*.db;*.cdb;*.csdb|All files (*.*)|*.*";
+        string defaultExt = kind == CompareDeployEndpointKind.TableArchive ? ".csdbtable" : ".db";
+        string currentPath = source ? _sourcePath : _targetPath;
+        string? path = await JS.InvokeAsync<string?>("desktopShellInterop.pickPath", new
+        {
+            kind = "openFile",
+            title = source ? "Choose Compare Source" : "Choose Compare Target",
+            filter,
+            defaultExt,
+            path = currentPath,
+            checkFileExists = true,
+        });
+
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        var args = new ChangeEventArgs { Value = path };
+        if (source)
+            OnSourcePathChanged(args);
+        else
+            OnTargetPathChanged(args);
     }
 
     private async Task OnTableChanged(ChangeEventArgs e)

@@ -2766,6 +2766,32 @@ body {
     gap: 8px;
 }
 
+.native-path-picker {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+}
+
+.native-path-picker > .toolbar-btn.icon-only,
+.native-path-picker > .data-toolbar-btn.icon-only {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    padding: 0;
+    justify-content: center;
+}
+
+.storage-native-path-picker {
+    flex: 1 1 400px;
+}
+
+.storage-native-path-picker > .storage-path-input {
+    width: 100%;
+    min-width: 0;
+}
+
 .pipeline-table-chip-row,
 .pipeline-schema-preview-columns {
     display: flex;
