@@ -4,6 +4,8 @@
 @using PrimitiveDbType = CSharpDB.Primitives.DbType
 @inject ICSharpDbClient DbClient
 @inject IWebHostEnvironment HostEnvironment
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
 
 <div class="pipeline-designer-shell">
     <aside class="pipeline-designer-toolbox">
@@ -224,10 +226,22 @@
                         {
                             <div class="schema-field">
                                 <label>Path</label>
-                                <input class="schema-input mono"
-                                       @bind="_state.Source.Path"
-                                       @bind:event="oninput"
-                                       @bind:after="OnSourcePathChangedAsync" />
+                                <div class="native-path-picker">
+                                    <input class="schema-input mono"
+                                           @bind="_state.Source.Path"
+                                           @bind:event="oninput"
+                                           @bind:after="OnSourcePathChangedAsync" />
+                                    @if (UseDesktopPickers)
+                                    {
+                                        <button type="button"
+                                                class="toolbar-btn icon-only"
+                                                title="Choose source file"
+                                                aria-label="Choose source file"
+                                                @onclick="PickSourcePathAsync">
+                                            <i class="bi bi-folder2-open"></i>
+                                        </button>
+                                    }
+                                </div>
                             </div>
                         }
                         @if (_state.Source.Kind is PipelineSourceKind.CSharpDbTable)
@@ -531,10 +545,22 @@
                         {
                             <div class="schema-field">
                                 <label>Path</label>
-                                <input class="schema-input mono"
-                                       @bind="_state.Destination.Path"
-                                       @bind:event="oninput"
-                                       @bind:after="PublishPackageAsync" />
+                                <div class="native-path-picker">
+                                    <input class="schema-input mono"
+                                           @bind="_state.Destination.Path"
+                                           @bind:event="oninput"
+                                           @bind:after="PublishPackageAsync" />
+                                    @if (UseDesktopPickers)
+                                    {
+                                        <button type="button"
+                                                class="toolbar-btn icon-only"
+                                                title="Choose destination file"
+                                                aria-label="Choose destination file"
+                                                @onclick="PickDestinationPathAsync">
+                                            <i class="bi bi-folder2-open"></i>
+                                        </button>
+                                    }
+                                </div>
                             </div>
                         }
                         @if (_state.Destination.Kind is PipelineDestinationKind.CSharpDbTable)
@@ -696,6 +722,7 @@
             : null;
 
     private ICSharpDbClient ActiveClient => ClientOverride ?? DbClient;
+    private bool UseDesktopPickers => Configuration.GetValue<bool>("CSharpDB:DesktopShell");
 
     protected override async Task OnInitializedAsync()
     {
@@ -913,6 +940,52 @@
         await RefreshSourceColumnsAsync();
         await PublishPackageAsync();
     }
+
+    private async Task PickSourcePathAsync()
+    {
+        (string filter, string defaultExt) = GetPipelineFilePickerConfig(_state.Source.Kind == PipelineSourceKind.CsvFile);
+        string? path = await JS.InvokeAsync<string?>("desktopShellInterop.pickPath", new
+        {
+            kind = "openFile",
+            title = "Choose Pipeline Source",
+            filter,
+            defaultExt,
+            path = _state.Source.Path,
+            checkFileExists = true,
+        });
+
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        _state.Source.Path = path;
+        await OnSourcePathChangedAsync();
+    }
+
+    private async Task PickDestinationPathAsync()
+    {
+        (string filter, string defaultExt) = GetPipelineFilePickerConfig(_state.Destination.Kind == PipelineDestinationKind.CsvFile);
+        string? path = await JS.InvokeAsync<string?>("desktopShellInterop.pickPath", new
+        {
+            kind = "saveFile",
+            title = "Choose Pipeline Destination",
+            filter,
+            defaultExt,
+            path = _state.Destination.Path,
+            checkFileExists = false,
+            overwritePrompt = true,
+        });
+
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        _state.Destination.Path = path;
+        await PublishPackageAsync();
+    }
+
+    private static (string Filter, string DefaultExt) GetPipelineFilePickerConfig(bool csv)
+        => csv
+            ? ("CSV files (*.csv)|*.csv|All files (*.*)|*.*", ".csv")
+            : ("JSON files (*.json)|*.json|All files (*.*)|*.*", ".json");
 
     private async Task OnCsvHeaderSettingsChangedAsync()
     {

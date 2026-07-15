@@ -10,7 +10,8 @@ namespace CSharpDB.Storage.BTrees;
 /// <summary>
 /// B+tree keyed by long rowid. Leaf pages store (key, payload). Interior pages store routing keys and child pointers.
 ///
-/// Leaf cell format:   [totalSize:varint] [key:8 bytes] [payload bytes...]
+/// Leaf cell format:   [totalSizeAndFlags:varint] [key:8 bytes] [payload bytes...]
+/// The high flag bit marks payloads that contain an overflow-page reference.
 /// Interior cell format: [totalSize:varint] [leftChild:4 bytes] [key:8 bytes]
 ///
 /// Interior pages also have a "rightmost child" stored in the page header.
@@ -160,7 +161,10 @@ public sealed class BTree
                     {
                         int idx = FindKeyInLeaf(hintSp, key);
                         if (idx < 0) return null;
-                        return ReadLeafPayloadMemory(hintSp, idx);
+                        return await ResolveStoredPayloadAsync(
+                            ReadLeafPayloadMemory(hintSp, idx),
+                            IsLeafPayloadOverflow(hintSp, idx),
+                            ct);
                     }
                 }
 
@@ -191,7 +195,10 @@ public sealed class BTree
 
                     int idx = FindKeyInLeaf(sp, key);
                     if (idx < 0) return null;
-                    return ReadLeafPayloadMemory(sp, idx);
+                    return await ResolveStoredPayloadAsync(
+                        ReadLeafPayloadMemory(sp, idx),
+                        IsLeafPayloadOverflow(sp, idx),
+                        ct);
                 }
 
                 if (populateReadRoutingCache)
@@ -214,7 +221,10 @@ public sealed class BTree
                 {
                     int idx = FindKeyInLeaf(hintSp, key);
                     if (idx < 0) return null;
-                    return ReadLeafPayloadMemory(hintSp, idx);
+                    return await ResolveStoredPayloadAsync(
+                        ReadLeafPayloadMemory(hintSp, idx),
+                        IsLeafPayloadOverflow(hintSp, idx),
+                        ct);
                 }
             }
             // Hint is stale, clear it and fall through to normal traversal
@@ -247,7 +257,10 @@ public sealed class BTree
 
                 int idx = FindKeyInLeaf(sp, key);
                 if (idx < 0) return null;
-                return ReadLeafPayloadMemory(sp, idx);
+                return await ResolveStoredPayloadAsync(
+                    ReadLeafPayloadMemory(sp, idx),
+                    IsLeafPayloadOverflow(sp, idx),
+                    ct);
             }
 
             if (populateReadRoutingCache)
@@ -276,7 +289,10 @@ public sealed class BTree
                     if (idx < 0)
                         return null;
 
-                    return ReadLeafPayloadMemory(sp, idx);
+                    return await ResolveStoredPayloadAsync(
+                        ReadLeafPayloadMemory(sp, idx),
+                        IsLeafPayloadOverflow(sp, idx),
+                        ct);
                 }
 
                 mutablePageId = FindChildPage(sp, key);
@@ -295,10 +311,39 @@ public sealed class BTree
                 if (idx < 0)
                     return null;
 
-                return ReadLeafPayloadMemory(sp, idx);
+                return await ResolveStoredPayloadAsync(
+                    ReadLeafPayloadMemory(sp, idx),
+                    IsLeafPayloadOverflow(sp, idx),
+                    ct);
             }
 
             pageId = FindChildPage(sp, key);
+        }
+    }
+
+    private async ValueTask<bool> ContainsKeyForWriteAsync(long key, CancellationToken ct)
+    {
+        uint pageId = _rootPageId;
+        while (true)
+        {
+            if (_pager.UsesReadOnlyPageViews)
+            {
+                var page = await _pager.GetPageReadAsync(pageId, ct);
+                var sp = new ReadOnlySlottedPage(page.Memory, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return FindKeyInLeaf(sp, key) >= 0;
+
+                pageId = FindChildPage(sp, key);
+            }
+            else
+            {
+                var page = await _pager.GetPageAsync(pageId, ct);
+                var sp = new SlottedPage(page, pageId);
+                if (sp.PageType == PageConstants.PageTypeLeaf)
+                    return FindKeyInLeaf(sp, key) >= 0;
+
+                pageId = FindChildPage(sp, key);
+            }
         }
     }
 
@@ -323,7 +368,13 @@ public sealed class BTree
             if (sp.PageType == PageConstants.PageTypeLeaf)
             {
                 int idx = FindKeyInLeaf(sp, key);
-                return idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : null;
+                return idx >= 0
+                    ? await ResolveStoredPayloadAsync(
+                        ReadLeafPayloadMemory(sp, idx),
+                        IsLeafPayloadOverflow(sp, idx),
+                        snapshot,
+                        ct)
+                    : null;
             }
 
             pageId = FindChildPage(sp, key);
@@ -372,6 +423,11 @@ public sealed class BTree
                     {
                         int idx = FindKeyInLeaf(hintSp, key);
                         payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
+                        if (idx >= 0 && IsLeafPayloadOverflow(hintSp, idx))
+                        {
+                            payload = null;
+                            return false;
+                        }
                         RecordLogicalPointRead(key);
                         return true;
                     }
@@ -406,6 +462,11 @@ public sealed class BTree
 
                     int idx = FindKeyInLeaf(sp, key);
                     payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
+                    if (idx >= 0 && IsLeafPayloadOverflow(sp, idx))
+                    {
+                        payload = null;
+                        return false;
+                    }
                     RecordLogicalPointRead(key);
                     return true;
                 }
@@ -430,6 +491,11 @@ public sealed class BTree
                 {
                     int idx = FindKeyInLeaf(hintSp, key);
                     payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
+                    if (idx >= 0 && IsLeafPayloadOverflow(hintSp, idx))
+                    {
+                        payload = null;
+                        return false;
+                    }
                     RecordLogicalPointRead(key);
                     return true; // cache hit, definitive answer
                 }
@@ -465,6 +531,11 @@ public sealed class BTree
 
                 int idx = FindKeyInLeaf(sp, key);
                 payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
+                if (idx >= 0 && IsLeafPayloadOverflow(sp, idx))
+                {
+                    payload = null;
+                    return false;
+                }
                 RecordLogicalPointRead(key);
                 return true; // cache hit, definitive answer
             }
@@ -498,6 +569,11 @@ public sealed class BTree
             {
                 int idx = FindKeyInLeaf(sp, key);
                 payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
+                if (idx >= 0 && IsLeafPayloadOverflow(sp, idx))
+                {
+                    payload = null;
+                    return false;
+                }
                 return true;
             }
 
@@ -527,39 +603,77 @@ public sealed class BTree
         ArgumentNullException.ThrowIfNull(traversalPath);
         ArgumentNullException.ThrowIfNull(traversalSet);
 
-        InvalidateReadRoutingCaches();
-        traversalPath.Clear();
-        traversalSet.Clear();
-
-        if (await TryInsertIntoRightEdgeLeafAsync(key, payload, traversalPath, traversalSet, ct))
+        byte[]? newOverflowReference = null;
+        OverflowInstallationState? overflowInstallation = null;
+        try
         {
+            ReadOnlyMemory<byte> storedPayload = payload;
+            bool storedPayloadIsOverflow = false;
+            if (RequiresOverflow(payload.Span))
+            {
+                if (await ContainsKeyForWriteAsync(key, ct))
+                    throw new CSharpDbException(ErrorCode.DuplicateKey, $"Duplicate key: {key}");
+
+                newOverflowReference = await WriteOverflowPayloadAsync(payload, ct);
+                storedPayload = newOverflowReference;
+                storedPayloadIsOverflow = true;
+                overflowInstallation = new OverflowInstallationState();
+            }
+
+            InvalidateReadRoutingCaches();
+            traversalPath.Clear();
+            traversalSet.Clear();
+
+            if (await TryInsertIntoRightEdgeLeafAsync(
+                key,
+                storedPayload,
+                storedPayloadIsOverflow,
+                overflowInstallation,
+                traversalPath,
+                traversalSet,
+                ct))
+            {
+                _cachedEntryCount = null;
+                return;
+            }
+
+            var result = await InsertRecursiveAsync(
+                _rootPageId,
+                key,
+                storedPayload,
+                storedPayloadIsOverflow,
+                overflowInstallation,
+                traversalPath,
+                traversalSet,
+                ct);
+            if (result.Split)
+            {
+                // Root was split — create a new root
+                uint newRootId = await _pager.AllocatePageAsync(ct);
+                var newRoot = await _pager.GetPageAsync(newRootId, ct);
+                var sp = new SlottedPage(newRoot, newRootId);
+                sp.Initialize(PageConstants.PageTypeInterior);
+                sp.RightChildOrNextLeaf = result.NewPageId;
+
+                // Insert single interior cell pointing to old root.
+                // Interior cells are fixed-size (13 bytes), so avoid heap allocation here.
+                Span<byte> rootCell = stackalloc byte[13];
+                WriteInteriorCell(rootCell, _rootPageId, result.SplitKey);
+                sp.InsertCell(0, rootCell);
+                await _pager.MarkDirtyAsync(newRootId, ct);
+
+                _rootPageId = newRootId;
+                _pager.RecordBTreeRootSplit(_logicalResourceName);
+            }
+
             _cachedEntryCount = null;
-            return;
         }
-
-        var result = await InsertRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
-
-        if (result.Split)
+        catch
         {
-            // Root was split — create a new root
-            uint newRootId = await _pager.AllocatePageAsync(ct);
-            var newRoot = await _pager.GetPageAsync(newRootId, ct);
-            var sp = new SlottedPage(newRoot, newRootId);
-            sp.Initialize(PageConstants.PageTypeInterior);
-            sp.RightChildOrNextLeaf = result.NewPageId;
-
-            // Insert single interior cell pointing to old root.
-            // Interior cells are fixed-size (13 bytes), so avoid heap allocation here.
-            Span<byte> rootCell = stackalloc byte[13];
-            WriteInteriorCell(rootCell, _rootPageId, result.SplitKey);
-            sp.InsertCell(0, rootCell);
-            await _pager.MarkDirtyAsync(newRootId, ct);
-
-            _rootPageId = newRootId;
-            _pager.RecordBTreeRootSplit(_logicalResourceName);
+            if (overflowInstallation?.PayloadInstalled != true && newOverflowReference != null)
+                await SafeReclaimOverflowAsync(newOverflowReference);
+            throw;
         }
-
-        _cachedEntryCount = null;
     }
 
     /// <summary>
@@ -583,31 +697,74 @@ public sealed class BTree
         ArgumentNullException.ThrowIfNull(traversalPath);
         ArgumentNullException.ThrowIfNull(traversalSet);
 
-        InvalidateReadRoutingCaches();
-        traversalPath.Clear();
-        traversalSet.Clear();
-        var result = await ReplaceRecursiveAsync(_rootPageId, key, payload, traversalPath, traversalSet, ct);
-        if (!result.Found)
-            return false;
-
-        if (result.InsertResult.Split)
+        byte[]? newOverflowReference = null;
+        OverflowInstallationState? overflowInstallation = null;
+        try
         {
-            uint newRootId = await _pager.AllocatePageAsync(ct);
-            var newRoot = await _pager.GetPageAsync(newRootId, ct);
-            var sp = new SlottedPage(newRoot, newRootId);
-            sp.Initialize(PageConstants.PageTypeInterior);
-            sp.RightChildOrNextLeaf = result.InsertResult.NewPageId;
+            ReadOnlyMemory<byte> storedPayload = payload;
+            bool storedPayloadIsOverflow = false;
+            if (RequiresOverflow(payload.Span))
+            {
+                if (!await ContainsKeyForWriteAsync(key, ct))
+                    return false;
 
-            Span<byte> rootCell = stackalloc byte[13];
-            WriteInteriorCell(rootCell, _rootPageId, result.InsertResult.SplitKey);
-            sp.InsertCell(0, rootCell);
-            await _pager.MarkDirtyAsync(newRootId, ct);
+                newOverflowReference = await WriteOverflowPayloadAsync(payload, ct);
+                storedPayload = newOverflowReference;
+                storedPayloadIsOverflow = true;
+                overflowInstallation = new OverflowInstallationState();
+            }
 
-            _rootPageId = newRootId;
-            _pager.RecordBTreeRootSplit(_logicalResourceName);
+            InvalidateReadRoutingCaches();
+            traversalPath.Clear();
+            traversalSet.Clear();
+            var result = await ReplaceRecursiveAsync(
+                _rootPageId,
+                key,
+                storedPayload,
+                storedPayloadIsOverflow,
+                overflowInstallation,
+                traversalPath,
+                traversalSet,
+                ct);
+            if (!result.Found)
+            {
+                if (newOverflowReference != null)
+                {
+                    await ReclaimOverflowAsync(newOverflowReference, CancellationToken.None);
+                    newOverflowReference = null;
+                }
+
+                return false;
+            }
+
+            if (result.InsertResult.Split)
+            {
+                uint newRootId = await _pager.AllocatePageAsync(ct);
+                var newRoot = await _pager.GetPageAsync(newRootId, ct);
+                var sp = new SlottedPage(newRoot, newRootId);
+                sp.Initialize(PageConstants.PageTypeInterior);
+                sp.RightChildOrNextLeaf = result.InsertResult.NewPageId;
+
+                Span<byte> rootCell = stackalloc byte[13];
+                WriteInteriorCell(rootCell, _rootPageId, result.InsertResult.SplitKey);
+                sp.InsertCell(0, rootCell);
+                await _pager.MarkDirtyAsync(newRootId, ct);
+
+                _rootPageId = newRootId;
+                _pager.RecordBTreeRootSplit(_logicalResourceName);
+            }
+
+            if (result.PreviousOverflowReference != null)
+                await ReclaimOverflowAsync(result.PreviousOverflowReference, ct);
+
+            return true;
         }
-
-        return true;
+        catch
+        {
+            if (overflowInstallation?.PayloadInstalled != true && newOverflowReference != null)
+                await SafeReclaimOverflowAsync(newOverflowReference);
+            throw;
+        }
     }
 
     /// <summary>
@@ -622,6 +779,8 @@ public sealed class BTree
         if (deleted)
         {
             await CollapseRootIfNeededAsync(ct);
+            if (result.DeletedOverflowReference != null)
+                await ReclaimOverflowAsync(result.DeletedOverflowReference, ct);
             _cachedEntryCount = null;
         }
         return deleted;
@@ -820,6 +979,8 @@ public sealed class BTree
     private async ValueTask<bool> TryInsertIntoRightEdgeLeafAsync(
         long key,
         ReadOnlyMemory<byte> payload,
+        bool payloadIsOverflow,
+        OverflowInstallationState? overflowInstallation,
         List<uint> traversalPath,
         HashSet<uint> traversalSet,
         CancellationToken ct)
@@ -844,7 +1005,15 @@ public sealed class BTree
                 return false;
         }
 
-        if (!await TryInsertIntoLeafWithoutSplitAsync(_rightEdgeLeafPageId, sp, sp.CellCount, key, payload, ct))
+        if (!await TryInsertIntoLeafWithoutSplitAsync(
+            _rightEdgeLeafPageId,
+            sp,
+            sp.CellCount,
+            key,
+            payload,
+            payloadIsOverflow,
+            overflowInstallation,
+            ct))
             return false;
 
         await RecordExplicitRightEdgeLeafInsertTraversalAsync(
@@ -909,17 +1078,20 @@ public sealed class BTree
         int insertIdx,
         long key,
         ReadOnlyMemory<byte> payload,
+        bool payloadIsOverflow,
+        OverflowInstallationState? overflowInstallation,
         CancellationToken ct)
     {
-        int leafCellLength = GetLeafCellLength(payload.Length);
+        int leafCellLength = GetLeafCellLength(payload.Length, payloadIsOverflow);
         if (leafCellLength <= MaxStackLeafCellBytes)
         {
             Span<byte> stackCell = stackalloc byte[leafCellLength];
-            WriteLeafCell(stackCell, key, payload.Span);
+            WriteLeafCell(stackCell, key, payload.Span, payloadIsOverflow);
 
             if (!sp.InsertCell(insertIdx, stackCell))
                 return false;
 
+            overflowInstallation?.MarkInstalled();
             await _pager.MarkDirtyAsync(pageId, ct);
             return true;
         }
@@ -928,10 +1100,11 @@ public sealed class BTree
         try
         {
             var pooledCellSpan = pooledCell.AsSpan(0, leafCellLength);
-            WriteLeafCell(pooledCellSpan, key, payload.Span);
+            WriteLeafCell(pooledCellSpan, key, payload.Span, payloadIsOverflow);
             if (!sp.InsertCell(insertIdx, pooledCellSpan))
                 return false;
 
+            overflowInstallation?.MarkInstalled();
             await _pager.MarkDirtyAsync(pageId, ct);
             return true;
         }
@@ -1006,22 +1179,36 @@ public sealed class BTree
         public uint NewPageId; // the new right sibling
     }
 
+    private sealed class OverflowInstallationState
+    {
+        public bool PayloadInstalled { get; private set; }
+
+        public void MarkInstalled() => PayloadInstalled = true;
+    }
+
     private readonly struct ReplaceResult
     {
-        public ReplaceResult(bool found, InsertResult insertResult)
+        public ReplaceResult(
+            bool found,
+            InsertResult insertResult,
+            byte[]? previousOverflowReference)
         {
             Found = found;
             InsertResult = insertResult;
+            PreviousOverflowReference = previousOverflowReference;
         }
 
         public bool Found { get; }
         public InsertResult InsertResult { get; }
+        public byte[]? PreviousOverflowReference { get; }
     }
 
     private async ValueTask<InsertResult> InsertRecursiveAsync(
         uint pageId,
         long key,
         ReadOnlyMemory<byte> payload,
+        bool payloadIsOverflow,
+        OverflowInstallationState? overflowInstallation,
         List<uint> traversalPath,
         HashSet<uint> traversalSet,
         CancellationToken ct)
@@ -1034,14 +1221,30 @@ public sealed class BTree
             if (sp.PageType == PageConstants.PageTypeLeaf)
             {
                 _pager.RecordExplicitLeafInsertTraversal(_rootPageId, traversalPath);
-                return await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
+                return await InsertIntoLeafAsync(
+                    pageId,
+                    page,
+                    sp,
+                    key,
+                    payload,
+                    payloadIsOverflow,
+                    overflowInstallation,
+                    ct);
             }
             else
             {
                 // Find child to descend into
                 uint childPageId = FindChildPageWithIndex(sp, key, out int childIdx);
 
-                var childResult = await InsertRecursiveAsync(childPageId, key, payload, traversalPath, traversalSet, ct);
+                var childResult = await InsertRecursiveAsync(
+                    childPageId,
+                    key,
+                    payload,
+                    payloadIsOverflow,
+                    overflowInstallation,
+                    traversalPath,
+                    traversalSet,
+                    ct);
                 if (!childResult.Split)
                     return childResult;
 
@@ -1059,6 +1262,8 @@ public sealed class BTree
         uint pageId,
         long key,
         ReadOnlyMemory<byte> payload,
+        bool payloadIsOverflow,
+        OverflowInstallationState? overflowInstallation,
         List<uint> traversalPath,
         HashSet<uint> traversalSet,
         CancellationToken ct)
@@ -1074,20 +1279,45 @@ public sealed class BTree
                 if (idx < 0)
                     return default;
 
-                if (TryReplaceLeafPayloadInPlace(sp, idx, payload.Span))
+                byte[]? previousOverflowReference = CopyOverflowReference(sp, idx);
+                if (TryReplaceLeafPayloadInPlace(
+                    sp,
+                    idx,
+                    payload.Span,
+                    payloadIsOverflow))
                 {
+                    overflowInstallation?.MarkInstalled();
                     await _pager.MarkDirtyAsync(pageId, ct);
-                    return new ReplaceResult(found: true, new InsertResult { Split = false });
+                    return new ReplaceResult(
+                        found: true,
+                        new InsertResult { Split = false },
+                        previousOverflowReference);
                 }
 
                 sp.DeleteCell(idx);
                 sp.Defragment();
-                var insertResult = await InsertIntoLeafAsync(pageId, page, sp, key, payload, ct);
-                return new ReplaceResult(found: true, insertResult);
+                var insertResult = await InsertIntoLeafAsync(
+                    pageId,
+                    page,
+                    sp,
+                    key,
+                    payload,
+                    payloadIsOverflow,
+                    overflowInstallation,
+                    ct);
+                return new ReplaceResult(found: true, insertResult, previousOverflowReference);
             }
 
             uint childPageId = FindChildPageWithIndex(sp, key, out int childIdx);
-            var childResult = await ReplaceRecursiveAsync(childPageId, key, payload, traversalPath, traversalSet, ct);
+            var childResult = await ReplaceRecursiveAsync(
+                childPageId,
+                key,
+                payload,
+                payloadIsOverflow,
+                overflowInstallation,
+                traversalPath,
+                traversalSet,
+                ct);
             if (!childResult.Found)
                 return default;
 
@@ -1102,7 +1332,10 @@ public sealed class BTree
                 childResult.InsertResult.NewPageId,
                 childIdx,
                 ct);
-            return new ReplaceResult(found: true, interiorInsertResult);
+            return new ReplaceResult(
+                found: true,
+                interiorInsertResult,
+                childResult.PreviousOverflowReference);
         }
         finally
         {
@@ -1110,7 +1343,15 @@ public sealed class BTree
         }
     }
 
-    private async ValueTask<InsertResult> InsertIntoLeafAsync(uint pageId, byte[] page, SlottedPage sp, long key, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    private async ValueTask<InsertResult> InsertIntoLeafAsync(
+        uint pageId,
+        byte[] page,
+        SlottedPage sp,
+        long key,
+        ReadOnlyMemory<byte> payload,
+        bool payloadIsOverflow,
+        OverflowInstallationState? overflowInstallation,
+        CancellationToken ct)
     {
         // Find insertion point (sorted order)
         int insertIdx = FindInsertPosition(sp, key);
@@ -1123,7 +1364,15 @@ public sealed class BTree
                 throw new CSharpDbException(ErrorCode.DuplicateKey, $"Duplicate key: {key}");
         }
 
-        if (await TryInsertIntoLeafWithoutSplitAsync(pageId, sp, insertIdx, key, payload, ct))
+        if (await TryInsertIntoLeafWithoutSplitAsync(
+            pageId,
+            sp,
+            insertIdx,
+            key,
+            payload,
+            payloadIsOverflow,
+            overflowInstallation,
+            ct))
         {
             if (sp.RightChildOrNextLeaf == PageConstants.NullPageId && insertIdx == sp.CellCount - 1)
                 UpdateRightEdgeLeafHint(pageId, sp);
@@ -1131,16 +1380,24 @@ public sealed class BTree
             return new InsertResult { Split = false };
         }
 
-        int leafCellLength = GetLeafCellLength(payload.Length);
+        int leafCellLength = GetLeafCellLength(payload.Length, payloadIsOverflow);
         if (leafCellLength <= MaxStackLeafCellBytes)
         {
             Span<byte> stackCell = stackalloc byte[leafCellLength];
-            WriteLeafCell(stackCell, key, payload.Span);
+            WriteLeafCell(stackCell, key, payload.Span, payloadIsOverflow);
 
             // Preserve the stack-built cell for split handling.
             byte[] splitCell = GC.AllocateUninitializedArray<byte>(leafCellLength);
             stackCell.CopyTo(splitCell);
-            return await SplitLeafAsync(pageId, page, sp, insertIdx, splitCell, splitCell.Length, ct);
+            return await SplitLeafAsync(
+                pageId,
+                page,
+                sp,
+                insertIdx,
+                splitCell,
+                splitCell.Length,
+                overflowInstallation,
+                ct);
         }
 
         // For larger payloads, rent a temporary buffer instead of allocating per insert.
@@ -1148,10 +1405,18 @@ public sealed class BTree
         try
         {
             var pooledCellSpan = pooledCell.AsSpan(0, leafCellLength);
-            WriteLeafCell(pooledCellSpan, key, payload.Span);
+            WriteLeafCell(pooledCellSpan, key, payload.Span, payloadIsOverflow);
 
             // Page is full — split
-            return await SplitLeafAsync(pageId, page, sp, insertIdx, pooledCell, leafCellLength, ct);
+            return await SplitLeafAsync(
+                pageId,
+                page,
+                sp,
+                insertIdx,
+                pooledCell,
+                leafCellLength,
+                overflowInstallation,
+                ct);
         }
         finally
         {
@@ -1166,6 +1431,7 @@ public sealed class BTree
         int insertIdx,
         byte[] newCell,
         int newCellLength,
+        OverflowInstallationState? overflowInstallation,
         CancellationToken ct)
     {
         int existingCellCount = sp.CellCount;
@@ -1186,6 +1452,7 @@ public sealed class BTree
 
                 if (appendSp.InsertCell(0, newCell.AsSpan(0, newCellLength)))
                 {
+                    overflowInstallation?.MarkInstalled();
                     sp.RightChildOrNextLeaf = appendPageId;
                     await _pager.MarkDirtyAsync(pageId, ct);
                     await _pager.MarkDirtyAsync(appendPageId, ct);
@@ -1237,6 +1504,9 @@ public sealed class BTree
                         ErrorCode.CorruptDatabase,
                         $"Leaf split redistribution overflowed left page {pageId} while inserting key {ReadLeafCellKey(splitCellBuffer.AsSpan(offset, length))}.");
                 }
+
+                if (i == insertIdx)
+                    overflowInstallation?.MarkInstalled();
             }
 
             for (int i = mid; i < totalCellCount; i++)
@@ -1249,6 +1519,9 @@ public sealed class BTree
                         ErrorCode.CorruptDatabase,
                         $"Leaf split redistribution overflowed right page {newPageId} while inserting key {ReadLeafCellKey(splitCellBuffer.AsSpan(offset, length))}.");
                 }
+
+                if (i == insertIdx)
+                    overflowInstallation?.MarkInstalled();
             }
 
             await _pager.MarkDirtyAsync(pageId, ct);
@@ -1473,14 +1746,16 @@ public sealed class BTree
 
     private readonly struct DeleteResult
     {
-        public DeleteResult(bool deleted, bool underflow)
+        public DeleteResult(bool deleted, bool underflow, byte[]? deletedOverflowReference)
         {
             Deleted = deleted;
             Underflow = underflow;
+            DeletedOverflowReference = deletedOverflowReference;
         }
 
         public bool Deleted { get; }
         public bool Underflow { get; }
+        public byte[]? DeletedOverflowReference { get; }
     }
 
     private async ValueTask<DeleteResult> DeleteRecursiveAsync(
@@ -1497,11 +1772,12 @@ public sealed class BTree
             if (idx < 0)
                 return default;
 
+            byte[]? deletedOverflowReference = CopyOverflowReference(sp, idx);
             sp.DeleteCell(idx);
             sp.Defragment();
             await _pager.MarkDirtyAsync(pageId, ct);
             bool underflow = !isRoot && sp.CellCount < MinLeafCells;
-            return new DeleteResult(deleted: true, underflow);
+            return new DeleteResult(deleted: true, underflow, deletedOverflowReference);
         }
 
         uint childPageId = FindChildPageWithIndex(sp, key, out int childIndex);
@@ -1513,7 +1789,10 @@ public sealed class BTree
             await RebalanceUnderflowedChildAsync(pageId, sp, childIndex, childPageId, ct);
 
         bool interiorUnderflow = !isRoot && sp.CellCount < MinInteriorCells;
-        return new DeleteResult(deleted: true, interiorUnderflow);
+        return new DeleteResult(
+            deleted: true,
+            interiorUnderflow,
+            childResult.DeletedOverflowReference);
     }
 
     private async ValueTask RebalanceUnderflowedChildAsync(
@@ -1718,47 +1997,126 @@ public sealed class BTree
 
     internal static byte[] BuildLeafCell(long key, ReadOnlySpan<byte> payload)
     {
-        byte[] cell = GC.AllocateUninitializedArray<byte>(GetLeafCellLength(payload.Length));
-        WriteLeafCell(cell, key, payload);
+        byte[] cell = GC.AllocateUninitializedArray<byte>(GetLeafCellLength(payload.Length, payloadIsOverflow: false));
+        WriteLeafCell(cell, key, payload, payloadIsOverflow: false);
         return cell;
     }
 
-    private static int GetLeafCellLength(int payloadLength)
+    private static int GetLeafCellLength(int payloadLength, bool payloadIsOverflow)
     {
         int payloadPart = 8 + payloadLength;
-        return checked(Varint.SizeOf((ulong)payloadPart) + payloadPart);
+        ulong encodedPayloadSize = (ulong)payloadPart;
+        if (payloadIsOverflow)
+            encodedPayloadSize |= PageConstants.LeafCellOverflowFlag;
+        return checked(Varint.SizeOf(encodedPayloadSize) + payloadPart);
     }
 
-    private static void WriteLeafCell(Span<byte> destination, long key, ReadOnlySpan<byte> payload)
+    private static void WriteLeafCell(
+        Span<byte> destination,
+        long key,
+        ReadOnlySpan<byte> payload,
+        bool payloadIsOverflow)
     {
         // Cell: [totalSize:varint] [key:8] [payload]
         int payloadPart = 8 + payload.Length;
         int pos;
-        if (payloadPart <= 0x7F)
+        if (!payloadIsOverflow && payloadPart <= 0x7F)
         {
             destination[0] = (byte)payloadPart;
             pos = 1;
         }
         else
         {
-            pos = Varint.Write(destination, (ulong)payloadPart);
+            ulong encodedPayloadSize = (ulong)payloadPart;
+            if (payloadIsOverflow)
+                encodedPayloadSize |= PageConstants.LeafCellOverflowFlag;
+            pos = Varint.Write(destination, encodedPayloadSize);
         }
 
         BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(pos, 8), key);
         payload.CopyTo(destination[(pos + 8)..]);
     }
 
-    private static bool TryReplaceLeafPayloadInPlace(SlottedPage sp, int index, ReadOnlySpan<byte> payload)
+    private static bool TryReplaceLeafPayloadInPlace(
+        SlottedPage sp,
+        int index,
+        ReadOnlySpan<byte> payload,
+        bool payloadIsOverflow)
     {
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
-        ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
-        int existingPayloadLength = checked((int)payloadSize - 8);
-        if (existingPayloadLength != payload.Length)
+        ulong encodedPayloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
+        bool existingPayloadIsOverflow =
+            (encodedPayloadSize & PageConstants.LeafCellOverflowFlag) != 0;
+        int existingPayloadLength = checked(
+            (int)(encodedPayloadSize & PageConstants.CellPayloadSizeMask) - 8);
+        if (existingPayloadLength != payload.Length ||
+            existingPayloadIsOverflow != payloadIsOverflow)
             return false;
 
         payload.CopyTo(page.AsSpan(offset + headerBytes + 8, existingPayloadLength));
         return true;
+    }
+
+    private static bool RequiresOverflow(ReadOnlySpan<byte> payload)
+        => payload.Length > OverflowPageStore.MaxInlineBTreePayloadLength;
+
+    private async ValueTask<byte[]> WriteOverflowPayloadAsync(
+        ReadOnlyMemory<byte> payload,
+        CancellationToken ct)
+    {
+        OverflowPageReference reference = await OverflowPageStore.WriteAsync(_pager, payload, ct);
+        return BTreeOverflowReferenceCodec.Encode(reference);
+    }
+
+    internal async ValueTask<ReadOnlyMemory<byte>> ResolveStoredPayloadAsync(
+        ReadOnlyMemory<byte> storedPayload,
+        bool storedPayloadIsOverflow,
+        CancellationToken ct)
+    {
+        if (!storedPayloadIsOverflow)
+            return storedPayload;
+
+        OverflowPageReference reference = BTreeOverflowReferenceCodec.Decode(storedPayload.Span);
+        return await OverflowPageStore.ReadAsync(_pager, reference, ct);
+    }
+
+    private async ValueTask<ReadOnlyMemory<byte>> ResolveStoredPayloadAsync(
+        ReadOnlyMemory<byte> storedPayload,
+        bool storedPayloadIsOverflow,
+        WalSnapshot snapshot,
+        CancellationToken ct)
+    {
+        if (!storedPayloadIsOverflow)
+            return storedPayload;
+
+        OverflowPageReference reference = BTreeOverflowReferenceCodec.Decode(storedPayload.Span);
+        return await OverflowPageStore.ReadAsync(_pager, reference, snapshot, ct);
+    }
+
+    private static byte[]? CopyOverflowReference(SlottedPage sp, int index)
+        => IsLeafPayloadOverflow(sp, index)
+            ? ReadLeafPayloadMemory(sp, index).ToArray()
+            : null;
+
+    private async ValueTask ReclaimOverflowAsync(
+        ReadOnlyMemory<byte> overflowReference,
+        CancellationToken ct)
+    {
+        OverflowPageReference reference = BTreeOverflowReferenceCodec.Decode(overflowReference.Span);
+        await OverflowPageStore.ReclaimAsync(_pager, reference, ct);
+    }
+
+    private async ValueTask SafeReclaimOverflowAsync(ReadOnlyMemory<byte> overflowReference)
+    {
+        try
+        {
+            await ReclaimOverflowAsync(overflowReference, CancellationToken.None);
+        }
+        catch
+        {
+            // Preserve the original storage failure.
+        }
     }
 
     internal static long ReadLeafKey(SlottedPage sp, int index)
@@ -1786,8 +2144,9 @@ public sealed class BTree
     {
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
-        ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
-        int payloadLength = (int)payloadSize - 8;
+        ulong encodedPayloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
+        int payloadLength = checked(
+            (int)(encodedPayloadSize & PageConstants.CellPayloadSizeMask) - 8);
         return page.AsMemory(offset + headerBytes + 8, payloadLength);
     }
 
@@ -1795,9 +2154,24 @@ public sealed class BTree
     {
         ReadOnlyMemory<byte> page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
-        ulong payloadSize = ReadVarintFast(page.Span[offset..], out int headerBytes);
-        int payloadLength = (int)payloadSize - 8;
+        ulong encodedPayloadSize = ReadVarintFast(page.Span[offset..], out int headerBytes);
+        int payloadLength = checked(
+            (int)(encodedPayloadSize & PageConstants.CellPayloadSizeMask) - 8);
         return page.Slice(offset + headerBytes + 8, payloadLength);
+    }
+
+    internal static bool IsLeafPayloadOverflow(SlottedPage sp, int index)
+    {
+        int offset = sp.GetCellOffset(index);
+        ulong encodedPayloadSize = ReadVarintFast(sp.Buffer.AsSpan(offset), out _);
+        return (encodedPayloadSize & PageConstants.LeafCellOverflowFlag) != 0;
+    }
+
+    internal static bool IsLeafPayloadOverflow(ReadOnlySlottedPage sp, int index)
+    {
+        int offset = sp.GetCellOffset(index);
+        ulong encodedPayloadSize = ReadVarintFast(sp.Buffer.Span[offset..], out _);
+        return (encodedPayloadSize & PageConstants.LeafCellOverflowFlag) != 0;
     }
 
     private static long ReadInteriorCellKey(ReadOnlySpan<byte> cell)
@@ -1855,8 +2229,10 @@ public sealed class BTree
 
     private static int GetCellTotalSize(byte[] page, ushort offset)
     {
-        ulong payloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
-        return checked(headerBytes + (int)payloadSize);
+        ulong encodedPayloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
+        int payloadSize = checked(
+            (int)(encodedPayloadSize & PageConstants.CellPayloadSizeMask));
+        return checked(headerBytes + payloadSize);
     }
 
     private void EnterTraversal(uint pageId, long key, List<uint> traversalPath, HashSet<uint> traversalSet)
@@ -2461,7 +2837,16 @@ public sealed class BTree
             foreach (uint childPageId in childPageIds)
                 await ReclaimPageAsync(childPageId, visited, ct);
         }
-        else if (sp.PageType != PageConstants.PageTypeLeaf)
+        else if (sp.PageType == PageConstants.PageTypeLeaf)
+        {
+            for (int i = 0; i < sp.CellCount; i++)
+            {
+                ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(sp, i);
+                if (IsLeafPayloadOverflow(sp, i))
+                    await ReclaimOverflowAsync(storedPayload, ct);
+            }
+        }
+        else
         {
             throw new CSharpDbException(
                 ErrorCode.CorruptDatabase,

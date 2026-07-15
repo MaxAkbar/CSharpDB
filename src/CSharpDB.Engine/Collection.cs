@@ -1457,22 +1457,13 @@ public sealed class Collection<
 
     private async ValueTask ExecuteImplicitAutoCommitCoreAsync(Func<ValueTask> action, CancellationToken ct)
     {
-        PagerCommitResult commit = PagerCommitResult.Completed;
         IDisposable? writeScope = null;
         try
         {
             writeScope = await _enterWriteScopeAsync(ct);
             await _pager.BeginTransactionAsync(ct);
             await action();
-            commit = await _beginImplicitCommitAsync(_catalogTableName, ct);
-        }
-        catch
-        {
-            await RecoverCatalogStateAfterFailedCommitAsync();
-            throw;
-        }
-        try
-        {
+            PagerCommitResult commit = await _beginImplicitCommitAsync(_catalogTableName, ct);
             await commit.WaitAsync();
         }
         catch

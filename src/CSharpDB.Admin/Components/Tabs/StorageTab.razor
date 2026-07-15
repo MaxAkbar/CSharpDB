@@ -6,6 +6,8 @@
 @inject ICSharpDbClient DbClient
 @inject ToastService Toast
 @inject DatabaseChangeService Changes
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
 
 <div class="storage-tab">
     <div class="toolbar">
@@ -207,11 +209,25 @@
                     <p class="schema-empty">Paths are resolved on the connected host. For HTTP or gRPC connections, choose server-local paths.</p>
 
                     <div class="storage-action-row">
-                        <input class="storage-input mono storage-path-input"
-                               type="text"
-                               @bind="_backupPath"
-                               placeholder="Backup destination path"
-                               disabled="@_maintenanceBusy" />
+                        <div class="native-path-picker storage-native-path-picker">
+                            <input class="storage-input mono storage-path-input"
+                                   type="text"
+                                   @bind="_backupPath"
+                                   placeholder="Backup destination path"
+                                   disabled="@_maintenanceBusy" />
+
+                            @if (UseDesktopPickers)
+                            {
+                                <button type="button"
+                                        class="toolbar-btn icon-only"
+                                        title="Choose backup destination"
+                                        aria-label="Choose backup destination"
+                                        @onclick="PickBackupPathAsync"
+                                        disabled="@_maintenanceBusy">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
+                            }
+                        </div>
 
                         <label class="storage-check">
                             <input type="checkbox" @bind="_backupWithManifest" disabled="@_maintenanceBusy" />
@@ -224,11 +240,25 @@
                     </div>
 
                     <div class="storage-action-row">
-                        <input class="storage-input mono storage-path-input"
-                               type="text"
-                               @bind="_restoreSourcePath"
-                               placeholder="Restore source path"
-                               disabled="@_maintenanceBusy" />
+                        <div class="native-path-picker storage-native-path-picker">
+                            <input class="storage-input mono storage-path-input"
+                                   type="text"
+                                   @bind="_restoreSourcePath"
+                                   placeholder="Restore source path"
+                                   disabled="@_maintenanceBusy" />
+
+                            @if (UseDesktopPickers)
+                            {
+                                <button type="button"
+                                        class="toolbar-btn icon-only"
+                                        title="Choose restore source"
+                                        aria-label="Choose restore source"
+                                        @onclick="PickRestorePathAsync"
+                                        disabled="@_maintenanceBusy">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
+                            }
+                        </div>
 
                         <button class="toolbar-btn" @onclick="ValidateRestoreAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_restoreSourcePath))">
                             <i class="bi bi-shield-check"></i> Validate
@@ -261,11 +291,25 @@
                               placeholder='{"validateOnly":true,"violationSampleLimit":100,"constraints":[{"tableName":"orders","columnName":"customer_id","referencedTableName":"customers","referencedColumnName":"id","onDelete":"Restrict"}]}'></textarea>
 
                     <div class="storage-action-row">
-                        <input class="storage-input mono storage-path-input"
-                               type="text"
-                               @bind="_foreignKeyMigrationBackupPath"
-                               placeholder="Optional backup destination path"
-                               disabled="@_maintenanceBusy" />
+                        <div class="native-path-picker storage-native-path-picker">
+                            <input class="storage-input mono storage-path-input"
+                                   type="text"
+                                   @bind="_foreignKeyMigrationBackupPath"
+                                   placeholder="Optional backup destination path"
+                                   disabled="@_maintenanceBusy" />
+
+                            @if (UseDesktopPickers)
+                            {
+                                <button type="button"
+                                        class="toolbar-btn icon-only"
+                                        title="Choose migration backup destination"
+                                        aria-label="Choose migration backup destination"
+                                        @onclick="PickForeignKeyMigrationBackupPathAsync"
+                                        disabled="@_maintenanceBusy">
+                                    <i class="bi bi-folder2-open"></i>
+                                </button>
+                            }
+                        </div>
 
                         <button class="toolbar-btn" @onclick="ValidateForeignKeyMigrationAsync" disabled="@(_maintenanceBusy || string.IsNullOrWhiteSpace(_foreignKeyMigrationSpecJson))">
                             <i class="bi bi-shield-check"></i> Validate
@@ -536,6 +580,7 @@
     private bool _loading;
     private bool _loadingPage;
     private bool _maintenanceBusy;
+    private bool UseDesktopPickers => Configuration.GetValue<bool>("CSharpDB:DesktopShell");
     private string _pageIdText = "0";
     private bool _includeHex;
     private ReindexScope _reindexScope = ReindexScope.All;
@@ -929,6 +974,78 @@
             ReindexScope.All => null,
             _ => _reindexName,
         };
+    }
+
+    private async Task PickBackupPathAsync()
+    {
+        string? path = await PickDatabasePathAsync(
+            "saveFile",
+            "Choose Database Backup Destination",
+            _backupPath,
+            checkFileExists: false,
+            overwritePrompt: true);
+        if (!string.IsNullOrWhiteSpace(path))
+            _backupPath = path;
+    }
+
+    private async Task PickRestorePathAsync()
+    {
+        string? currentDatabasePath = _dbReport?.DatabasePath ?? DbClient.DataSource;
+        string? path = await PickDatabasePathAsync(
+            "openFile",
+            "Choose Database Restore Source",
+            _restoreSourcePath,
+            checkFileExists: true,
+            overwritePrompt: false,
+            initialDirectory: TryGetDirectoryName(currentDatabasePath));
+        if (!string.IsNullOrWhiteSpace(path))
+            _restoreSourcePath = path;
+    }
+
+    private async Task PickForeignKeyMigrationBackupPathAsync()
+    {
+        string? path = await PickDatabasePathAsync(
+            "saveFile",
+            "Choose Migration Backup Destination",
+            _foreignKeyMigrationBackupPath ?? _backupPath,
+            checkFileExists: false,
+            overwritePrompt: true);
+        if (!string.IsNullOrWhiteSpace(path))
+            _foreignKeyMigrationBackupPath = path;
+    }
+
+    private Task<string?> PickDatabasePathAsync(
+        string kind,
+        string title,
+        string? path,
+        bool checkFileExists,
+        bool overwritePrompt,
+        string? initialDirectory = null)
+        => JS.InvokeAsync<string?>("desktopShellInterop.pickPath", new
+        {
+            kind,
+            title,
+            filter = "CSharpDB databases (*.db;*.cdb;*.csdb)|*.db;*.cdb;*.csdb|All files (*.*)|*.*",
+            defaultExt = ".db",
+            path,
+            initialDirectory,
+            checkFileExists,
+            overwritePrompt,
+        }).AsTask();
+
+    private static string? TryGetDirectoryName(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        try
+        {
+            return Path.GetDirectoryName(Path.GetFullPath(path));
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void EnsureBackupRestorePaths()

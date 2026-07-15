@@ -66,16 +66,18 @@ public struct SlottedPage
         ushort offset = GetCellOffset(index);
         // Read cell size from the cell header (first varint)
         var cellData = Span[offset..];
-        ulong cellSize = Varint.Read(cellData, out int headerBytes);
-        return Span[offset..(offset + headerBytes + (int)cellSize)];
+        ulong encodedCellSize = Varint.Read(cellData, out int headerBytes);
+        int cellSize = checked((int)(encodedCellSize & PageConstants.CellPayloadSizeMask));
+        return Span[offset..(offset + headerBytes + cellSize)];
     }
 
     public ReadOnlyMemory<byte> GetCellMemory(int index)
     {
         ushort offset = GetCellOffset(index);
         var cellData = _data.AsSpan(offset);
-        ulong cellSize = Varint.Read(cellData, out int headerBytes);
-        int totalSize = headerBytes + (int)cellSize;
+        ulong encodedCellSize = Varint.Read(cellData, out int headerBytes);
+        int cellSize = checked((int)(encodedCellSize & PageConstants.CellPayloadSizeMask));
+        int totalSize = headerBytes + cellSize;
         return _data.AsMemory(offset, totalSize);
     }
 
@@ -191,8 +193,9 @@ public struct SlottedPage
     private int GetCellTotalSize(ushort offset)
     {
         var cellData = Span[offset..];
-        ulong payloadSize = Varint.Read(cellData, out int headerBytes);
-        return headerBytes + (int)payloadSize;
+        ulong encodedPayloadSize = Varint.Read(cellData, out int headerBytes);
+        int payloadSize = checked((int)(encodedPayloadSize & PageConstants.CellPayloadSizeMask));
+        return headerBytes + payloadSize;
     }
 
     private static void SortByOffsetDescending(Span<CellMove> moves)

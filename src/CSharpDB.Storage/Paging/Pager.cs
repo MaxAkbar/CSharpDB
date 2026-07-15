@@ -130,6 +130,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private uint _schemaRootPage;
     private uint _freelistHead;
     private uint _changeCounter;
+    private int _baseFormatVersion;
 
     public uint PageCount
     {
@@ -543,6 +544,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         await _device.SetLengthAsync(PageConstants.PageSize, ct);
         await _device.WriteAsync(0, page0, ct);
         await _device.FlushAsync(ct);
+        Volatile.Write(ref _baseFormatVersion, PageConstants.FormatVersion);
         _buffers.SetCached(0, page0);
         RefreshPageReadProviderMapping();
         if (!_wal.IsOpen)
@@ -552,25 +554,27 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     private async ValueTask ReadFileHeaderAsync(CancellationToken ct = default)
     {
         var header = _fileHeaderBuffer;
-        await _device.ReadAsync(0, header, ct);
-
-        // Validate magic
-        if (header[0] != PageConstants.MagicBytes[0] ||
-            header[1] != PageConstants.MagicBytes[1] ||
-            header[2] != PageConstants.MagicBytes[2] ||
-            header[3] != PageConstants.MagicBytes[3])
+        int bytesRead = await _device.ReadAsync(0, header, ct);
+        if (bytesRead != header.Length)
         {
-            throw new CSharpDbException(ErrorCode.CorruptDatabase, "Invalid database file (bad magic bytes).");
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Database file header is truncated (expected {header.Length} bytes, read {bytesRead}).");
         }
 
-        int version = BitConverter.ToInt32(header, PageConstants.VersionOffset);
-        if (version != PageConstants.FormatVersion)
-            throw new CSharpDbException(ErrorCode.CorruptDatabase, $"Unsupported format version {version}.");
+        int version = ReadFileHeaderFrom(header);
+        Volatile.Write(ref _baseFormatVersion, version);
+    }
 
-        PageCount = BitConverter.ToUInt32(header, PageConstants.PageCountOffset);
-        SchemaRootPage = BitConverter.ToUInt32(header, PageConstants.SchemaRootPageOffset);
-        FreelistHead = BitConverter.ToUInt32(header, PageConstants.FreelistHeadOffset);
-        ChangeCounter = BitConverter.ToUInt32(header, PageConstants.ChangeCounterOffset);
+    private async ValueTask EnsureBaseHeaderUsesCurrentFormatAsync(CancellationToken ct)
+    {
+        if (Volatile.Read(ref _baseFormatVersion) == PageConstants.FormatVersion)
+            return;
+
+        byte[] versionBytes = BitConverter.GetBytes(PageConstants.FormatVersion);
+        await _device.WriteAsync(PageConstants.VersionOffset, versionBytes, ct);
+        await _device.FlushAsync(ct);
+        Volatile.Write(ref _baseFormatVersion, PageConstants.FormatVersion);
     }
 
     private void WriteFileHeaderTo(Span<byte> page0)
@@ -777,13 +781,35 @@ public sealed class Pager : IAsyncDisposable, IDisposable
 
             tx.CommitStarted = true;
             _ambientTransaction.Value = null;
-            return BeginExplicitCommitAsync(tx, ct);
+            ValueTask formatGate = EnsureBaseHeaderUsesCurrentFormatAsync(ct);
+            return formatGate.IsCompletedSuccessfully
+                ? BeginExplicitCommitAsync(tx, ct)
+                : CompleteFormatGateAndBeginExplicitCommitAsync(tx, formatGate, ct);
         }
 
         if (_transactions is null || !_transactions.InTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction to commit.");
 
         return BeginLegacyCommitAsync(ct);
+    }
+
+    private async ValueTask<PagerCommitResult> CompleteFormatGateAndBeginExplicitCommitAsync(
+        PagerTransactionState tx,
+        ValueTask formatGate,
+        CancellationToken ct)
+    {
+        try
+        {
+            await formatGate;
+        }
+        catch
+        {
+            tx.Completed = true;
+            tx.ReleaseSnapshot();
+            throw;
+        }
+
+        return await BeginExplicitCommitAsync(tx, ct);
     }
 
     public async ValueTask RollbackAsync(CancellationToken ct = default)
@@ -1430,6 +1456,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
     {
         try
         {
+            await EnsureBaseHeaderUsesCurrentFormatAsync(ct);
             ChangeCounter++;
 
             byte[] page0 = await GetPageAsync(0, ct);
@@ -1443,8 +1470,8 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
         catch
         {
-            await RollbackAsync(ct);
-            await ResetPagerStateFromCommittedStorageAsync(ct);
+            await RollbackAsync(CancellationToken.None);
+            await ResetPagerStateFromCommittedStorageAsync(CancellationToken.None);
             throw;
         }
     }
@@ -2229,12 +2256,41 @@ public sealed class Pager : IAsyncDisposable, IDisposable
         }
     }
 
-    private void ReadFileHeaderFrom(byte[] page0)
+    private int ReadFileHeaderFrom(ReadOnlySpan<byte> page0)
     {
-        PageCount = BitConverter.ToUInt32(page0, PageConstants.PageCountOffset);
-        SchemaRootPage = BitConverter.ToUInt32(page0, PageConstants.SchemaRootPageOffset);
-        FreelistHead = BitConverter.ToUInt32(page0, PageConstants.FreelistHeadOffset);
-        ChangeCounter = BitConverter.ToUInt32(page0, PageConstants.ChangeCounterOffset);
+        if (page0.Length < PageConstants.FileHeaderSize)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Database file header is truncated (expected at least {PageConstants.FileHeaderSize} bytes, read {page0.Length}).");
+        }
+
+        if (!page0.Slice(PageConstants.MagicOffset, PageConstants.MagicBytes.Length)
+            .SequenceEqual(PageConstants.MagicBytes))
+        {
+            throw new CSharpDbException(ErrorCode.CorruptDatabase, "Invalid database file (bad magic bytes).");
+        }
+
+        int version = BitConverter.ToInt32(page0.Slice(PageConstants.VersionOffset, sizeof(int)));
+        if (version < PageConstants.MinimumSupportedFormatVersion ||
+            version > PageConstants.FormatVersion)
+        {
+            throw new CSharpDbException(ErrorCode.CorruptDatabase, $"Unsupported format version {version}.");
+        }
+
+        int pageSize = BitConverter.ToInt32(page0.Slice(PageConstants.PageSizeOffset, sizeof(int)));
+        if (pageSize != PageConstants.PageSize)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Unsupported database page size {pageSize}; expected {PageConstants.PageSize}.");
+        }
+
+        PageCount = BitConverter.ToUInt32(page0.Slice(PageConstants.PageCountOffset, sizeof(uint)));
+        SchemaRootPage = BitConverter.ToUInt32(page0.Slice(PageConstants.SchemaRootPageOffset, sizeof(uint)));
+        FreelistHead = BitConverter.ToUInt32(page0.Slice(PageConstants.FreelistHeadOffset, sizeof(uint)));
+        ChangeCounter = BitConverter.ToUInt32(page0.Slice(PageConstants.ChangeCounterOffset, sizeof(uint)));
+        return version;
     }
 
     private async ValueTask ResetPagerStateFromCommittedStorageAsync(CancellationToken ct)
@@ -2296,6 +2352,7 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             }
 
             await CheckpointAsync(ct);
+            await ReadFileHeaderAsync(ct);
         }
     }
 

@@ -5,6 +5,8 @@
 @inject DatabaseChangeService Changes
 @inject ModalService Modal
 @inject ToastService Toast
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
 @implements IDisposable
 
 <div class="titlebar">
@@ -109,6 +111,9 @@
 
     private async Task OpenDatabase()
     {
+        if (await TryOpenDatabaseInDesktopShellAsync())
+            return;
+
         var path = await Modal.PromptAsync(
             "Open Database",
             "Enter the path to the database file:",
@@ -128,6 +133,23 @@
         catch (Exception ex)
         {
             Toast.Error($"Failed to open database: {ex.Message}");
+        }
+    }
+
+    private async Task<bool> TryOpenDatabaseInDesktopShellAsync()
+    {
+        if (!Configuration.GetValue<bool>("CSharpDB:DesktopShell"))
+            return false;
+
+        try
+        {
+            return await JS.InvokeAsync<bool>("desktopShellInterop.openDatabase");
+        }
+        catch (JSException)
+        {
+            // A desktop-configured Admin host may also be opened in a normal browser.
+            // In that case, keep the existing path prompt available as a fallback.
+            return false;
         }
     }
 

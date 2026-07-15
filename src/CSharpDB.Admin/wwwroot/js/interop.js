@@ -25,6 +25,150 @@ window.clipboardInterop = {
     writeText: (text) => navigator.clipboard.writeText(text || '')
 };
 
+window.desktopShellInterop = (() => {
+    const requestType = 'desktop-shell-dialog-request';
+    const resultType = 'desktop-shell-dialog-result';
+    const bridgeClassName = 'desktop-shell-bridge';
+    const pending = new Map();
+    let fallbackRequestId = 0;
+    let subscribedBridge = null;
+
+    const getBridge = () => {
+        const bridge = window.chrome?.webview;
+        return bridge &&
+            typeof bridge.postMessage === 'function' &&
+            typeof bridge.addEventListener === 'function'
+            ? bridge
+            : null;
+    };
+
+    const syncBridgeAvailability = () => {
+        const available = getBridge() !== null;
+        document.documentElement.classList.toggle(bridgeClassName, available);
+        return available;
+    };
+
+    syncBridgeAvailability();
+
+    const onMessage = (event) => {
+        const message = event?.data;
+        if (!message ||
+            typeof message !== 'object' ||
+            message.type !== resultType ||
+            typeof message.requestId !== 'string') {
+            return;
+        }
+
+        const request = pending.get(message.requestId);
+        if (!request) return;
+
+        pending.delete(message.requestId);
+        if (typeof message.error === 'string' && message.error.length > 0) {
+            request.reject(new Error(message.error));
+            return;
+        }
+
+        request.resolve(message);
+    };
+
+    const ensureBridge = () => {
+        const bridge = getBridge();
+        if (!bridge) return null;
+
+        if (subscribedBridge !== bridge) {
+            if (subscribedBridge && typeof subscribedBridge.removeEventListener === 'function') {
+                subscribedBridge.removeEventListener('message', onMessage);
+            }
+            bridge.addEventListener('message', onMessage);
+            subscribedBridge = bridge;
+        }
+
+        return bridge;
+    };
+
+    const createRequestId = () => {
+        if (typeof window.crypto?.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+
+        fallbackRequestId += 1;
+        return `${Date.now()}-${fallbackRequestId}`;
+    };
+
+    const requestDialog = (dialog, options) => new Promise((resolve, reject) => {
+        const bridge = ensureBridge();
+        if (!bridge) {
+            reject(new Error('The native desktop dialog bridge is not available.'));
+            return;
+        }
+
+        const requestId = createRequestId();
+        pending.set(requestId, { resolve, reject });
+
+        try {
+            bridge.postMessage({
+                type: requestType,
+                requestId,
+                dialog,
+                options: options && typeof options === 'object' && !Array.isArray(options)
+                    ? options
+                    : {}
+            });
+        } catch (error) {
+            pending.delete(requestId);
+            reject(error instanceof Error ? error : new Error(String(error)));
+        }
+    });
+
+    const selectPath = async (dialog, options) => {
+        try {
+            const result = await requestDialog(dialog, options);
+            return result.canceled === true ? null : (typeof result.path === 'string' ? result.path : null);
+        } catch (error) {
+            // Native picker failures should not escape a Blazor event callback and
+            // tear down the interactive circuit. Keep the editable path field as
+            // the fallback and leave a diagnostic in the WebView console.
+            console.error('Native path picker failed.', error);
+            return null;
+        }
+    };
+
+    const pickPath = (options) => {
+        if (!syncBridgeAvailability()) return Promise.resolve(null);
+
+        const kind = options?.kind;
+        const dialogs = {
+            openFile: 'open-file',
+            saveFile: 'save-file',
+            folder: 'open-folder'
+        };
+        const dialog = Object.prototype.hasOwnProperty.call(dialogs, kind)
+            ? dialogs[kind]
+            : null;
+        if (!dialog) {
+            return Promise.reject(new Error(`Unsupported native path picker kind '${kind ?? ''}'.`));
+        }
+
+        return selectPath(dialog, options);
+    };
+
+    return {
+        isAvailable: syncBridgeAvailability,
+        openDatabase: () => {
+            if (!syncBridgeAvailability()) return false;
+
+            // Opening a database reloads the WebView after the host switches its
+            // connection. Report bridge acceptance synchronously so that reload is
+            // not part of the JavaScript interop result.
+            requestDialog('open-database', {}).catch((error) => {
+                console.error('Native database dialog failed.', error);
+            });
+            return true;
+        },
+        pickPath
+    };
+})();
+
 window.contextMenuInterop = {
     position: (menu, requestedX, requestedY) => {
         if (!menu) return;

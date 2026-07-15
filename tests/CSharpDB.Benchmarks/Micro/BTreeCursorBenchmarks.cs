@@ -104,6 +104,7 @@ public class BTreeCursorBenchmarks
                 await buildTree.InsertAsync(key, payload);
             }
 
+            _rootPageId = buildTree.RootPageId;
             await buildPager.CommitAsync();
             await buildPager.CheckpointAsync();
         }
