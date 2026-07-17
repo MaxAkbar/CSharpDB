@@ -1,34 +1,32 @@
 # What's New
 
-## version4.0.3
+## version4.0.4
 
-version4.0.3 removes the single-page B-tree payload limit, allowing large SQL values and Collection documents to span multiple 4 KiB pages safely. It also improves the Windows Desktop Admin experience with native file and folder dialogs throughout local path workflows.
+version4.0.4 adds automatic numeric relationship join acceleration for eligible `INNER JOIN` queries, restores inline B-tree read performance after the 4.0.3 overflow-page work, reduces reader-session overhead, and resolves the outstanding NU1903 dependency advisories.
+
+### Performance
+
+- Broad key-only `INNER JOIN` queries over a declared `INTEGER` primary-key-to-foreign-key relationship can now automatically merge-scan the existing foreign-key support index with the parent primary-key tree.
+- The supported path is selected conservatively for sufficiently large, unfiltered base-table joins. Text keys, payload projections, predicates or residual conditions, outer and reversed joins, point shapes, and `LIMIT`/`OFFSET` retain the existing plan.
+- No separate join index or additional payload columns are stored. Inserts, updates, and deletes continue to maintain the existing primary-key and foreign-key indexes.
+- Focused SQL comparisons measured `1.84x`, `6.77x`, and `11.11x` faster reads at child fanouts of 1, 10, and 100, with allocations reduced by `53.2%` to `94.9%`.
+- Checkpoint reader tracking now maintains the minimum retained WAL offset incrementally, while no-WAL snapshots reuse an immutable empty page map. Per-query reader-session allocation dropped by 80 bytes in focused testing.
 
 ### Fixed
 
-- B-tree payloads larger than the 4,075-byte inline limit are now stored in linked overflow pages instead of failing when a leaf page cannot be split.
-- Overflow-backed values work across point and snapshot reads, cursor scans, inserts, replacements, deletes, rollback, leaf splits, checkpoints, and database reopen.
-- Replaced and deleted overflow chains are reclaimed for reuse, while rejected duplicate inserts and missing-key replacements avoid allocating overflow pages.
-- Storage diagnostics recognize overflow pages and validate reference metadata, page types, bounds, lengths, and cycles so corrupt chains are reported clearly.
-- Failed implicit Collection writes now release the write gate correctly, allowing later writes to continue.
+- Inline B-tree values now obtain their payload and overflow flag in one leaf-cell parse.
+- Point and cursor reads return inline values directly and invoke overflow resolution only for actual overflow references.
+- This removes the scan and point-read regression introduced with large-value overflow support while preserving overflow-backed value behavior.
 
-### Desktop Admin
+### Security and Dependencies
 
-- The Windows desktop shell now provides native Open, Save, and Select Folder dialogs for databases, code-module workspaces, compare/deploy sources and targets, pipeline inputs and outputs, backups, restores, migration backups, imports, exports, and table archives.
-- Open and Save dialogs apply the appropriate file filters, default extensions, existence checks, and overwrite prompts. Cancellation is handled safely, and manual path entry remains available for browser-hosted Admin sessions and relative paths.
-- Native Browse controls now appear only when the page is running inside the trusted Desktop WebView, avoiding inactive controls when the desktop child host is opened in a regular browser.
-- Desktop startup now locates the Admin host reliably in installed, development, and published layouts.
+- Pinned `Microsoft.OpenApi` to `2.7.5`.
+- Pinned the benchmark and comparative-test SQLite bundle to `SQLitePCLRaw.bundle_e_sqlite3` `2.1.12`.
+- The solution vulnerability audit now reports no vulnerable packages and Release builds complete without NU1903 warnings.
 
-### Compatibility
+### Compatibility and Validation
 
-- Existing format-v1 databases remain readable and are durably upgraded to format v2 before the next write is committed; read-only opens do not rewrite the file.
-- Once upgraded to format v2, a database requires a CSharpDB version that understands tagged overflow references. Back up the database before upgrading if rollback to an older binary may be required.
-- Explicitly tagged leaf cells keep ordinary inline values unambiguous, including values whose bytes resemble an overflow reference.
-
-### Performance and Validation
-
-- Added coverage for 10–20 KB SQL, Collection, and direct B-tree values across CRUD, rollback, cursor scans, page splits, checkpoint/reopen, page reuse, format migration, and corruption detection.
-- BenchmarkDotNet comparisons found no measurable steady-state regression for existing inline workloads.
-- A roughly 6 KB overflow value measured 2.365 ms per durable insert and 4.595 microseconds per hot primary-key read on the benchmark machine. The previous version cannot complete this workload.
-- Corrected the B-tree cursor benchmark to retain the final root page after splits so seek measurements exercise the intended tree path.
-- Final Release validation passed all 2,127 tests. Desktop Admin Debug/Release builds, JavaScript capability validation, isolated host launches, signed Store package generation, and a packaged Open/Save/Select Folder smoke test also completed successfully.
+- This release does not introduce a new database format. Existing format-v1 and format-v2 databases retain the compatibility behavior documented for 4.0.3.
+- Queries outside the numeric relationship eligibility gates continue through the existing join operators with unchanged SQL semantics.
+- Full solution validation passed 2,152 tests with zero failures.
+- Focused post-fix guardrails passed all 187 rows with zero warnings or failures.

@@ -9,7 +9,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>4.0.2</Version>
+    <Version>4.0.4</Version>
   </PropertyGroup>
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />

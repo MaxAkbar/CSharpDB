@@ -24,9 +24,9 @@ Current release health:
 
 | Item | Status |
 |---|---|
-| Latest release guardrail | `PASS` |
+| Latest release guardrail | `TARGETED CLOSE-OUT CLEAN / NOT PROMOTED` |
 | Latest compare | `PASS=187, WARN=0, SKIP=0, FAIL=0` |
-| Promotion state | Current published tables remain promoted from the May 6, 2026 release-core suite; the May 31, 2026 guardrail close-out is clean for current code after the temporary-table hot-path fix |
+| Promotion state | Current published tables remain promoted from the May 6, 2026 release-core suite; the July 16 full candidate initially produced seven warn-only threshold breaches, and focused post-fix reruns cleared all seven on the compatible non-authoritative runner, but no new full release-core snapshot has been promoted |
 | Durability default | CSharpDB values are durable unless a row explicitly says otherwise |
 
 ## Core Performance Scorecard
@@ -149,6 +149,80 @@ Each row is total successful commits/sec across one shared engine. The intended 
 | CSharpDB SQL point lookup | 1.48M ops/sec | 0.0005 ms | 0.0018 ms |
 | SQLite WAL+FULL point lookup | 93.91K ops/sec | 0.0088 ms | 0.0282 ms |
 <!-- BENCHMARK_RESULTS_END -->
+
+## July 15-16, 2026 Full-Sweep Candidate and Post-Fix Close-Out - Not Promoted
+
+The broad diagnostic sweep, balanced release-core run, and complete release guardrail collection all finished successfully on `codex/numeric-relationship-scan-ab`. The initial July guardrail found seven real read-path slowdowns despite their warn-only enforcement classification. A focused fix and close-out then cleared those rows and recovered the flagged master-table reads. The generated scorecard above remains on the May 6 promoted snapshot because the post-fix work did not rerun the complete release-core and guardrail suites on the canonical fingerprint. Full commands, artifacts, and row-level detail are recorded in [HISTORY.md](HISTORY.md#july-15-16-2026-numeric-relationship-join-ab-and-full-sweep-not-promoted).
+
+| Run | Result | Duration |
+|---|---|---:|
+| Broad `--all --repro` diagnostic | 705 BenchmarkDotNet cases in 74 reports, then 17 command-level suites; no failures | `3h39m` |
+| `--release-core --repeat 3 --repro` | All seven median artifacts produced | `1h07m39s` |
+| Initial release guardrails | `PASS=180, WARN=7, SKIP=0, FAIL=0`; compatible non-authoritative runner | `1h47m53s` |
+| Focused scalar + text close-out | All seven warned rows passed; composite compare `PASS=187, WARN=0, SKIP=0, FAIL=0` | `6m49s` |
+| Post-fix master table | Three-run median produced; every point/concurrent-read row improved versus the initial July median | `18m53s` |
+| Reader-session allocation check | Per-query `COUNT(*)` improved from about `296.32 ns / 792 B` to `281.34 ns / 712 B` | `2m02s` |
+| Full correctness suite | `1,400/1,400` tests passed | `1m27s` |
+
+Directional release-core changes versus the currently published May scorecard are shown below. Across all 125 original candidate rows using an absolute 8% throughput screen, 100 improved, six regressed, and 19 stayed within the band; the six initial material regressions were confined to master-table concurrent per-query reads and collection point gets. The post-fix master rerun recovered all six, but neither candidate is a promoted scorecard.
+
+| Headline row | Published May | July candidate | Direction |
+|---|---:|---:|---:|
+| Durable SQL single insert | 267.1 ops/sec | 451.9 ops/sec | `+69.2%` |
+| Durable SQL batch x100 | 25.56K rows/sec | 42.57K rows/sec | `+66.5%` |
+| SQL point lookup | 1.48M ops/sec | 1.39M ops/sec | `-6.1%` |
+| SQL concurrent read burst x32 | 9.68M ops/sec | 11.54M ops/sec | `+19.2%` |
+| Collection point get | 1.99M ops/sec | 1.85M ops/sec | `-7.0%` |
+| Durable `InsertBatch` B1000 | 211.99K rows/sec | 234.38K rows/sec | `+10.6%` |
+| Concurrent durable W8 / 250us | 890.1 commits/sec | 1,031.1 commits/sec | `+15.8%` |
+| Hybrid hot-set SQL burst | 383.87K ops/sec | 876.97K ops/sec | `+128.5%` |
+| SQLite WAL+FULL B1000 reference | 155.66K rows/sec | 212.46K rows/sec | `+36.5%` |
+
+The seven warnings came from overflow-page support making every ordinary inline B-tree cursor row parse its leaf header twice and enter an async payload resolver. The fix returns the overflow flag from the existing payload parse and resolves only actual overflow values. Snapshot churn was addressed separately by maintaining the retained-WAL minimum incrementally and sharing the immutable empty snapshot map; the focused reader-session rerun confirms that this removes `80 B` from each no-WAL per-query `COUNT(*)` session.
+
+| Initially flagged row | Initial July | Post-fix | Post-fix vs guardrail baseline |
+|---|---:|---:|---:|
+| Hash `SUM` via `GROUP BY 1`, 1K | 73.96 us | 52.94 us | `-0.79%` |
+| Scalar `AVG`, 10K | 708.98 us | 520.58 us | `-3.97%` |
+| Scalar `MAX`, 10K | 877.05 us | 582.96 us | `-1.72%` |
+| Scalar `MIN`, 10K | 843.04 us | 568.79 us | `-3.71%` |
+| Scalar `SUM`, 1K | 77.40 us | 52.27 us | `-10.62%` |
+| Scalar `SUM`, 10K | 753.72 us | 512.32 us | `-5.86%` |
+| Text equality without index, 10K | 812.83 us | 681.49 us | `+26.96%` (limit `40%`) |
+
+All 14 master-table point/concurrent-read rows improved by `+6.4%` to `+21.3%` versus the initial July median. The six initially material read regressions are now between `-4.2%` and `+4.1%` of the published May values:
+
+| Initially regressed row | Initial July | Post-fix | Post-fix vs published May |
+|---|---:|---:|---:|
+| Direct-client concurrent reads/query | 434.06K | 526.61K | `-1.0%` |
+| Hybrid concurrent reads/query | 1.023M | 1.147M | `-4.2%` |
+| File-backed concurrent reads/query | 989.81K | 1.171M | `+1.5%` |
+| In-memory concurrent reads/query | 1.001M | 1.171M | `+0.5%` |
+| In-memory collection point get | 1.845M | 2.105M | `+4.1%` |
+| Hybrid collection point get | 1.855M | 2.092M | `+3.8%` |
+
+The updated composite guardrail report is `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md`. It reuses the completed full collection for rows that were not targeted and replaces the scalar/text reports with focused post-fix measurements; it is a close-out artifact, not a second full two-hour wrapper run. All 40 existing general join guardrail rows remain passing.
+
+## Focused Numeric Relationship INNER JOIN Optimization Validation
+
+These diagnostic benchmark rows validate the supported, cost-gated numeric relationship plan selected automatically by default against the fallback join plan. The benchmark rows are not release-core or guardrail baseline rows yet.
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --micro --filter *NumericRelationship*
+```
+
+Source CSVs:
+
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.NumericRelationshipSqlJoinBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.NumericRelationshipJoinBenchmarks-report.csv`
+
+| Child fanout | Fallback plan | Cost-gated Auto | Read speedup | Allocation change |
+|---:|---:|---:|---:|---:|
+| 1 | 1.1128 ms | 0.6053 ms | `1.84x` | 604.76 KB to 282.88 KB (`-53.2%`) |
+| 10 | 6.1200 ms | 0.9037 ms | `6.77x` | 2,753.46 KB to 361.67 KB (`-86.9%`) |
+| 100 | 59.9609 ms | 5.3951 ms | `11.11x` | 24,317.84 KB to 1,249.61 KB (`-94.9%`) |
+
+This transparent optimization is enabled by default in 4.0.4. Its automatic path is deliberately narrow: a declared `INTEGER` primary-key-to-foreign-key relationship, an existing FK support index, key-only projection, and a broad `INNER JOIN`. Text keys, payload projections, predicates/residuals, outer or reversed joins, and `LIMIT`/`OFFSET` retain the existing plan. Payload fallback stayed within `1.4%` in time and `0.7%` in allocation. Direct point-lookup diagnostics were slower for the numeric relationship operator, which is why the planner gate excludes them. No separately maintained join index is added, so upserts keep the existing PK/FK index-maintenance path. These new benchmark classes measure reads; relationship upsert maintenance is covered for correctness, but there is not yet a relationship-specific upsert throughput row.
 
 ## Focused Insert Fan-In Validation
 
@@ -291,6 +365,7 @@ Interpretation: generated collections are worth using when collection payload CP
 | Adaptive query re-optimization | Default-disabled baseline, enabled wrapper overhead, eligible join shapes, synthetic switch counters | `--adaptive-reoptimization` |
 | Async I/O batching close-out | Save/backup/restore, vacuum/FK logical rewrites, inspector/WAL scans | `--async-io-closeout --repro` |
 | Generated collection fast path | Generated binary payload encode/decode, direct field reads, UTF-8 text field reads, key matching | `--micro --filter *GeneratedCollection*` |
+| Numeric relationship INNER joins | INTEGER PK-to-FK key-only broad scans, payload fallback, and point-lookup cost gating | `--micro --filter *NumericRelationship*` |
 | Storage mode tradeoffs | file-backed, hybrid incremental, in-memory hot steady-state | `--hybrid-storage-mode --repeat 3 --repro` |
 | Resident hot-set behavior | file-backed vs hybrid hot-set vs in-memory hot burst | `--hybrid-hot-set-read --repeat 3 --repro` |
 | Cold open / first read | startup cost and first lookup/get latency | `--hybrid-cold-open --repeat 3 --repro` |

@@ -26,7 +26,11 @@ internal sealed class CheckpointCoordinator : IDisposable
             WalSnapshot snapshot = index.TakeSnapshot(minimumWalOffset);
             _activeSnapshots[snapshot] = 0;
             Volatile.Write(ref _activeReaderCount, _activeSnapshots.Count);
-            RecomputeMinimumRetainedWalOffset_NoLock();
+            if (snapshot.HasWalFrames &&
+                snapshot.MinimumWalOffset < _minimumRetainedWalOffset)
+            {
+                Volatile.Write(ref _minimumRetainedWalOffset, snapshot.MinimumWalOffset);
+            }
             return snapshot;
         }
         finally
@@ -47,7 +51,11 @@ internal sealed class CheckpointCoordinator : IDisposable
 
             int activeCount = _activeSnapshots.Count;
             Volatile.Write(ref _activeReaderCount, activeCount);
-            RecomputeMinimumRetainedWalOffset_NoLock();
+            if (snapshot.HasWalFrames &&
+                snapshot.MinimumWalOffset == _minimumRetainedWalOffset)
+            {
+                RecomputeMinimumRetainedWalOffset_NoLock();
+            }
             return activeCount == 0;
         }
         finally

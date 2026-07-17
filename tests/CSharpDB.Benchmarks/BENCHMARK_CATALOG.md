@@ -102,6 +102,7 @@ Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurr
 | `InMemorySqlBatchBenchmarks` / `InMemoryCollectionBatchBenchmarks` | `diagnostic` |
 | `InMemoryPersistenceBenchmarks` | `diagnostic` |
 | `LayerComparisonLookupBenchmarks` / `LayerComparisonInsertBenchmarks` | `diagnostic` |
+| `NumericRelationshipJoinBenchmarks` / `NumericRelationshipSqlJoinBenchmarks` | `diagnostic` |
 | `OrderByIndexBenchmarks` | `diagnostic` |
 | `ParserBenchmarks` | `diagnostic` |
 | `PayloadRangeAggregateBenchmarks` | `diagnostic` |

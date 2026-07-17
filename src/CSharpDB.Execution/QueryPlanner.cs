@@ -11,6 +11,13 @@ using CSharpDB.Storage.Indexing;
 
 namespace CSharpDB.Execution;
 
+internal enum NumericRelationshipJoinMode
+{
+    Disabled,
+    Auto,
+    Force,
+}
+
 /// <summary>
 /// Takes a parsed AST statement and produces an executable QueryResult.
 /// Handles DDL (CREATE/DROP TABLE/INDEX/VIEW) and DML (INSERT/UPDATE/DELETE/SELECT).
@@ -26,6 +33,7 @@ public sealed class QueryPlanner
     private const int MaxJoinReorderDpLeafCount = 6;
     private const int MaxJoinOrderRowGoalRows = 4096;
     private const int MaxExplainEstimateRows = 500;
+    private const long MinimumNumericRelationshipJoinInputRows = 256;
 
     internal readonly record struct AdaptiveQueryReoptimizationDiagnosticsSnapshot(
         long EligibleQueryCount,
@@ -666,6 +674,14 @@ public sealed class QueryPlanner
     /// cache-only path first, bypassing the async operator pipeline. Falls back to async on cache miss.
     /// </summary>
     public bool PreferSyncPointLookups { get; set; } = true;
+
+    /// <summary>
+    /// Controls the supported numeric primary-key/foreign-key INNER JOIN optimization.
+    /// Auto is the production default. Disabled and Force are internal validation modes;
+    /// Force bypasses only the conservative cardinality gate, while semantic and
+    /// input-shape eligibility checks always apply.
+    /// </summary>
+    internal NumericRelationshipJoinMode RelationshipJoinMode { get; set; } = NumericRelationshipJoinMode.Auto;
 
     public AdaptiveQueryReoptimizationOptions AdaptiveQueryReoptimization { get; }
 
@@ -4669,7 +4685,8 @@ public sealed class QueryPlanner
         var (sourceOp, sourceSchema) = BuildFromOperator(
             stmt.From,
             stmt.Where,
-            pushDownOuterLocalPredicates: stmt.From is JoinTableRef);
+            pushDownOuterLocalPredicates: stmt.From is JoinTableRef,
+            hasLimitOrOffset: stmt.Limit.HasValue || stmt.Offset.HasValue);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
                              stmt.Columns.Any(c => c.Expression != null && ContainsAggregate(c.Expression));
@@ -5577,6 +5594,7 @@ public sealed class QueryPlanner
             allowJoinReorder: false,
             consumedOuterPredicates: consumedOuterPredicates,
             preserveJoinOrderForRowGoal: preserveJoinOrderForRowGoal,
+            hasLimitOrOffset: stmt.Limit.HasValue || stmt.Offset.HasValue,
             adaptiveLease: adaptiveLease);
         bool hasAggregates = stmt.GroupBy != null ||
                              stmt.Having != null ||
@@ -9578,6 +9596,7 @@ public sealed class QueryPlanner
         bool allowJoinReorder = true,
         HashSet<Expression>? consumedOuterPredicates = null,
         bool preserveJoinOrderForRowGoal = false,
+        bool hasLimitOrOffset = false,
         AdaptiveQueryExecutionLease? adaptiveLease = null)
     {
         if (tableRef is SingleRowTableRef)
@@ -9681,6 +9700,7 @@ public sealed class QueryPlanner
                         pushDownOuterLocalPredicates: pushedOuterViewPredicate != null,
                         allowJoinReorder: !viewStmt.Columns.Any(static c => c.IsStar),
                         preserveJoinOrderForRowGoal: preserveViewJoinOrderForRowGoal,
+                        hasLimitOrOffset: hasLimitOrOffset || viewStmt.Limit.HasValue || viewStmt.Offset.HasValue,
                         adaptiveLease: adaptiveLease);
 
                     bool hasAggregates = viewStmt.GroupBy != null ||
@@ -9852,6 +9872,7 @@ public sealed class QueryPlanner
                     allowJoinReorder: false,
                     consumedOuterPredicates,
                     preserveJoinOrderForRowGoal,
+                    hasLimitOrOffset,
                     adaptiveLease);
             }
 
@@ -9862,6 +9883,7 @@ public sealed class QueryPlanner
                 allowJoinReorder,
                 consumedOuterPredicates,
                 preserveJoinOrderForRowGoal,
+                hasLimitOrOffset,
                 adaptiveLease);
             var (rightOp, rightSchema) = BuildFromOperator(
                 join.Right,
@@ -9870,6 +9892,7 @@ public sealed class QueryPlanner
                 allowJoinReorder,
                 consumedOuterPredicates,
                 preserveJoinOrderForRowGoal,
+                hasLimitOrOffset,
                 adaptiveLease);
 
             // Build composite schema that inherits all qualified mappings
@@ -9970,6 +9993,28 @@ public sealed class QueryPlanner
                 return (externalIndexNestedJoinOp!, compositeSchema);
             }
 
+            Func<NumericRelationshipIndexJoinOperator>? deferredNumericRelationshipJoinFactory = null;
+            int[]? deferredNumericRelationshipCoveredColumns = null;
+            if (TryBuildNumericRelationshipIndexJoinOperator(
+                join,
+                leftOp,
+                rightOp,
+                leftSchema,
+                rightSchema,
+                compositeSchema,
+                outerWhere,
+                preserveJoinOrderForRowGoal,
+                hasLimitOrOffset,
+                out var numericRelationshipJoinFactory,
+                out var numericRelationshipCoveredColumns))
+            {
+                if (RelationshipJoinMode == NumericRelationshipJoinMode.Force)
+                    return (numericRelationshipJoinFactory!(), compositeSchema);
+
+                deferredNumericRelationshipJoinFactory = numericRelationshipJoinFactory;
+                deferredNumericRelationshipCoveredColumns = numericRelationshipCoveredColumns;
+            }
+
             if (TryBuildIndexNestedLoopJoinOperator(
                 join,
                 leftOp,
@@ -9981,7 +10026,12 @@ public sealed class QueryPlanner
                 adaptiveLease,
                 out var indexNestedJoinOp))
             {
-                return (indexNestedJoinOp!, compositeSchema);
+                return (
+                    WrapProjectionGatedNumericRelationshipJoin(
+                        indexNestedJoinOp!,
+                        deferredNumericRelationshipJoinFactory,
+                        deferredNumericRelationshipCoveredColumns),
+                    compositeSchema);
             }
 
             if (TryBuildHashJoinOperator(
@@ -9994,7 +10044,12 @@ public sealed class QueryPlanner
                 adaptiveLease,
                 out var hashJoinOp))
             {
-                return (hashJoinOp!, compositeSchema);
+                return (
+                    WrapProjectionGatedNumericRelationshipJoin(
+                        hashJoinOp!,
+                        deferredNumericRelationshipJoinFactory,
+                        deferredNumericRelationshipCoveredColumns),
+                    compositeSchema);
             }
 
             int? estimatedOutputRowCount = TryEstimateJoinOutputRowCount(join, leftSchema, rightSchema);
@@ -10004,7 +10059,12 @@ public sealed class QueryPlanner
                 compositeSchema, leftSchema.Columns.Count, rightSchema.Columns.Count,
                 estimatedOutputRowCount, rightRowCapacityHint, _functions);
 
-            return (joinOp, compositeSchema);
+            return (
+                WrapProjectionGatedNumericRelationshipJoin(
+                    joinOp,
+                    deferredNumericRelationshipJoinFactory,
+                    deferredNumericRelationshipCoveredColumns),
+                compositeSchema);
         }
 
         throw new CSharpDbException(ErrorCode.Unknown, $"Unknown table ref type: {tableRef.GetType().Name}");
@@ -11777,6 +11837,219 @@ public sealed class QueryPlanner
         }
 
         return true;
+    }
+
+    private bool TryBuildNumericRelationshipIndexJoinOperator(
+        JoinTableRef join,
+        IOperator leftOp,
+        IOperator rightOp,
+        TableSchema leftSchema,
+        TableSchema rightSchema,
+        TableSchema compositeSchema,
+        Expression? outerWhere,
+        bool preserveJoinOrderForRowGoal,
+        bool hasLimitOrOffset,
+        out Func<NumericRelationshipIndexJoinOperator>? createRelationshipJoin,
+        out int[]? coveredProjectionColumnIndices)
+    {
+        createRelationshipJoin = null;
+        coveredProjectionColumnIndices = null;
+
+        if (RelationshipJoinMode == NumericRelationshipJoinMode.Disabled ||
+            join.JoinType != JoinType.Inner ||
+            preserveJoinOrderForRowGoal ||
+            hasLimitOrOffset ||
+            outerWhere != null ||
+            join.Left is not SimpleTableRef leftSimple ||
+            join.Right is not SimpleTableRef rightSimple ||
+            leftOp is not TableScanOperator ||
+            rightOp is not TableScanOperator ||
+            join.Condition == null)
+        {
+            return false;
+        }
+
+        // The relationship operator reads the base trees directly. Keep it away from
+        // views, CTEs, temporary/system/external sources, or any source operator that
+        // may carry filtering semantics which a direct tree scan would bypass.
+        if (_catalog.IsView(leftSimple.TableName) ||
+            _catalog.IsView(rightSimple.TableName) ||
+            IsSystemCatalogTable(leftSimple.TableName) ||
+            IsSystemCatalogTable(rightSimple.TableName) ||
+            IsExternalTable(leftSimple.TableName) ||
+            IsExternalTable(rightSimple.TableName) ||
+            HasTemporaryTable(leftSimple.TableName) ||
+            HasTemporaryTable(rightSimple.TableName) ||
+            (_cteData != null &&
+             (_cteData.ContainsKey(leftSimple.TableName) || _cteData.ContainsKey(rightSimple.TableName))))
+        {
+            return false;
+        }
+
+        if (!TryAnalyzeHashJoinCondition(
+                join.Condition,
+                compositeSchema,
+                leftSchema.Columns.Count,
+                out var leftKeyIndices,
+                out var rightKeyIndices,
+                out var residualCondition) ||
+            leftKeyIndices.Length != 1 ||
+            rightKeyIndices.Length != 1 ||
+            residualCondition != null)
+        {
+            return false;
+        }
+
+        int leftPrimaryKeyIndex = leftSchema.PrimaryKeyColumnIndex;
+        int leftKeyIndex = leftKeyIndices[0];
+        int rightKeyIndex = rightKeyIndices[0];
+        if (leftPrimaryKeyIndex < 0 ||
+            leftKeyIndex != leftPrimaryKeyIndex ||
+            rightKeyIndex < 0 ||
+            rightKeyIndex >= rightSchema.Columns.Count ||
+            leftSchema.Columns[leftKeyIndex].Type != DbType.Integer ||
+            rightSchema.Columns[rightKeyIndex].Type != DbType.Integer)
+        {
+            return false;
+        }
+
+        string rightKeyColumnName = rightSchema.Columns[rightKeyIndex].Name;
+        IndexSchema? selectedIndex = null;
+        if (RelationshipJoinMode == NumericRelationshipJoinMode.Auto)
+        {
+            TableSchema? rightBaseSchema = _catalog.GetTable(rightSimple.TableName);
+            ForeignKeyDefinition? relationshipForeignKey = rightBaseSchema?.ForeignKeys.FirstOrDefault(foreignKey =>
+                string.Equals(foreignKey.ColumnName, rightKeyColumnName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(foreignKey.ReferencedTableName, leftSimple.TableName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    foreignKey.ReferencedColumnName,
+                    leftSchema.Columns[leftPrimaryKeyIndex].Name,
+                    StringComparison.OrdinalIgnoreCase));
+            if (relationshipForeignKey == null)
+                return false;
+
+            IndexSchema? supportingIndex = _catalog.GetIndex(relationshipForeignKey.SupportingIndexName);
+            if (supportingIndex == null ||
+                supportingIndex.State != IndexState.Ready ||
+                supportingIndex.Kind != IndexKind.ForeignKeyInternal ||
+                !string.Equals(supportingIndex.TableName, rightSimple.TableName, StringComparison.OrdinalIgnoreCase) ||
+                supportingIndex.Columns.Count != 1 ||
+                !string.Equals(supportingIndex.Columns[0], rightKeyColumnName, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    supportingIndex.OwnerIndexName,
+                    relationshipForeignKey.ConstraintName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            selectedIndex = supportingIndex;
+        }
+        else
+        {
+            IReadOnlyList<IndexSchema> rightIndexes = _catalog.GetIndexesForTable(rightSimple.TableName);
+            for (int i = 0; i < rightIndexes.Count; i++)
+            {
+                IndexSchema index = rightIndexes[i];
+                if (index.State != IndexState.Ready ||
+                    index.Kind is not (IndexKind.Sql or IndexKind.ForeignKeyInternal) ||
+                    index.Columns.Count != 1 ||
+                    !string.Equals(index.Columns[0], rightKeyColumnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // Force is an internal benchmark/test override and may use either storage source.
+                // Prefer the relationship-owned index when both formats are available.
+                if (selectedIndex == null ||
+                    (index.Kind == IndexKind.ForeignKeyInternal && selectedIndex.Kind != IndexKind.ForeignKeyInternal))
+                {
+                    selectedIndex = index;
+                }
+            }
+        }
+
+        if (selectedIndex == null)
+            return false;
+
+        // These sources are guaranteed to be unfiltered base-table scans, so use the
+        // table estimates directly. Operator capacity hints are capped and can make two
+        // differently sized large tables appear equal at this cost gate.
+        bool hasLeftEstimate = TryEstimateTableRefRowCount(join.Left, out long leftRows);
+        bool hasRightEstimate = TryEstimateTableRefRowCount(join.Right, out long rightRows);
+        if (RelationshipJoinMode == NumericRelationshipJoinMode.Auto &&
+            (!hasLeftEstimate ||
+             !hasRightEstimate ||
+             leftRows < MinimumNumericRelationshipJoinInputRows ||
+             rightRows < MinimumNumericRelationshipJoinInputRows ||
+             rightRows < leftRows))
+        {
+            return false;
+        }
+
+        int? estimatedOutputRowCount = TryEstimateJoinOutputRowCount(
+            join,
+            leftSchema,
+            rightSchema,
+            leftKeyIndices,
+            rightKeyIndices,
+            hasLeftEstimate,
+            leftRows,
+            hasRightEstimate,
+            rightRows);
+
+        string leftTableName = leftSimple.TableName;
+        string rightTableName = rightSimple.TableName;
+        string rightIndexName = selectedIndex.IndexName;
+        createRelationshipJoin = () => new NumericRelationshipIndexJoinOperator(
+            _catalog.GetTableTree(leftTableName, _pager),
+            _catalog.GetTableTree(rightTableName, _pager),
+            _catalog.GetIndexStore(rightIndexName, _pager),
+            leftSchema,
+            rightSchema,
+            rightKeyIndex,
+            IndexScanRange.All,
+            GetReadSerializer(rightSchema),
+            estimatedOutputRowCount);
+
+        int rightColumnOffset = leftSchema.Columns.Count;
+        int rightPrimaryKeyIndex = rightSchema.PrimaryKeyColumnIndex;
+        if (rightPrimaryKeyIndex >= 0 &&
+            rightPrimaryKeyIndex < rightSchema.Columns.Count &&
+            rightSchema.Columns[rightPrimaryKeyIndex].Type == DbType.Integer &&
+            rightPrimaryKeyIndex != rightKeyIndex)
+        {
+            coveredProjectionColumnIndices =
+            [
+                leftPrimaryKeyIndex,
+                rightColumnOffset + rightKeyIndex,
+                rightColumnOffset + rightPrimaryKeyIndex,
+            ];
+        }
+        else
+        {
+            coveredProjectionColumnIndices =
+            [
+                leftPrimaryKeyIndex,
+                rightColumnOffset + rightKeyIndex,
+            ];
+        }
+
+        return true;
+    }
+
+    private static IOperator WrapProjectionGatedNumericRelationshipJoin(
+        IOperator fallback,
+        Func<NumericRelationshipIndexJoinOperator>? createNumericJoin,
+        int[]? numericJoinCoveredColumnIndices)
+    {
+        if (createNumericJoin == null || numericJoinCoveredColumnIndices == null)
+            return fallback;
+
+        return new ProjectionGatedNumericRelationshipJoinOperator(
+            fallback,
+            createNumericJoin,
+            numericJoinCoveredColumnIndices);
     }
 
     private bool TryEstimateJoinInputRowCount(IOperator op, TableRef tableRef, out long count)
@@ -16815,6 +17088,8 @@ public sealed class QueryPlanner
             IndexOrderedScanOperator or
             HashJoinOperator or
             IndexNestedLoopJoinOperator or
+            NumericRelationshipIndexJoinOperator or
+            ProjectionGatedNumericRelationshipJoinOperator or
             HashedIndexNestedLoopJoinOperator or
             NestedLoopJoinOperator;
 

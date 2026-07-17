@@ -23,6 +23,7 @@ Query planner, operator tree, and expression evaluator for the [CSharpDB](https:
 - Trigger body caching with schema-sensitive invalidation
 - Sync point-lookup fast path for `SELECT ... WHERE pk = value`
 - Persisted row-count reuse for `COUNT(*)`, planner cardinality estimates, skew-aware equality/`IN` estimation from heavy hitters, histogram-backed numeric range estimates, composite-prefix correlation modeling for multi-column filters/joins, public `EXPLAIN ESTIMATE FOR <query>` diagnostics, and bounded small-chain inner-join reordering
+- Broad key-only `INNER JOIN`s over declared `INTEGER` primary-key/foreign-key relationships are automatically cost-gated onto the maintained foreign-key support index. Text keys, payload or opaque projections, predicates or residuals, outer or reversed joins, `LIMIT`/`OFFSET`, and point or small scans retain the general planner path.
 
 ### Operator Tree (Iterator Model)
 - `IOperator` interface: `OpenAsync`, `MoveNextAsync`, `Current`, `OutputSchema`

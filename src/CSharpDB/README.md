@@ -93,6 +93,7 @@ await using var result = await db.ExecuteAsync(@"
 - Column types: `INTEGER`, `REAL`, `TEXT`, `BLOB`
 - Constraints: `PRIMARY KEY`, `IDENTITY`, `NOT NULL`, `UNIQUE`
 - JOINs: `INNER`, `LEFT OUTER`, `RIGHT OUTER`, `CROSS`
+- Broad key-only `INNER JOIN`s over declared `INTEGER` primary-key/foreign-key relationships automatically reuse the maintained foreign-key support index when the planner's conservative cost and shape gates apply
 - Set operations: `UNION`, `INTERSECT`, `EXCEPT`
 - Expressions: `LIKE`, `IN`, `BETWEEN`, `IS NULL`, `EXISTS`
 - Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`

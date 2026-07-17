@@ -161,10 +161,13 @@ public sealed class BTree
                     {
                         int idx = FindKeyInLeaf(hintSp, key);
                         if (idx < 0) return null;
-                        return await ResolveStoredPayloadAsync(
-                            ReadLeafPayloadMemory(hintSp, idx),
-                            IsLeafPayloadOverflow(hintSp, idx),
-                            ct);
+                        ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(
+                            hintSp,
+                            idx,
+                            out bool storedPayloadIsOverflow);
+                        return storedPayloadIsOverflow
+                            ? await ResolveStoredPayloadAsync(storedPayload, storedPayloadIsOverflow: true, ct)
+                            : storedPayload;
                     }
                 }
 
@@ -195,10 +198,13 @@ public sealed class BTree
 
                     int idx = FindKeyInLeaf(sp, key);
                     if (idx < 0) return null;
-                    return await ResolveStoredPayloadAsync(
-                        ReadLeafPayloadMemory(sp, idx),
-                        IsLeafPayloadOverflow(sp, idx),
-                        ct);
+                    ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(
+                        sp,
+                        idx,
+                        out bool storedPayloadIsOverflow);
+                    return storedPayloadIsOverflow
+                        ? await ResolveStoredPayloadAsync(storedPayload, storedPayloadIsOverflow: true, ct)
+                        : storedPayload;
                 }
 
                 if (populateReadRoutingCache)
@@ -221,10 +227,13 @@ public sealed class BTree
                 {
                     int idx = FindKeyInLeaf(hintSp, key);
                     if (idx < 0) return null;
-                    return await ResolveStoredPayloadAsync(
-                        ReadLeafPayloadMemory(hintSp, idx),
-                        IsLeafPayloadOverflow(hintSp, idx),
-                        ct);
+                    ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(
+                        hintSp,
+                        idx,
+                        out bool storedPayloadIsOverflow);
+                    return storedPayloadIsOverflow
+                        ? await ResolveStoredPayloadAsync(storedPayload, storedPayloadIsOverflow: true, ct)
+                        : storedPayload;
                 }
             }
             // Hint is stale, clear it and fall through to normal traversal
@@ -257,10 +266,13 @@ public sealed class BTree
 
                 int idx = FindKeyInLeaf(sp, key);
                 if (idx < 0) return null;
-                return await ResolveStoredPayloadAsync(
-                    ReadLeafPayloadMemory(sp, idx),
-                    IsLeafPayloadOverflow(sp, idx),
-                    ct);
+                ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(
+                    sp,
+                    idx,
+                    out bool storedPayloadIsOverflow);
+                return storedPayloadIsOverflow
+                    ? await ResolveStoredPayloadAsync(storedPayload, storedPayloadIsOverflow: true, ct)
+                    : storedPayload;
             }
 
             if (populateReadRoutingCache)
@@ -289,10 +301,13 @@ public sealed class BTree
                     if (idx < 0)
                         return null;
 
-                    return await ResolveStoredPayloadAsync(
-                        ReadLeafPayloadMemory(sp, idx),
-                        IsLeafPayloadOverflow(sp, idx),
-                        ct);
+                    ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(
+                        sp,
+                        idx,
+                        out bool storedPayloadIsOverflow);
+                    return storedPayloadIsOverflow
+                        ? await ResolveStoredPayloadAsync(storedPayload, storedPayloadIsOverflow: true, ct)
+                        : storedPayload;
                 }
 
                 mutablePageId = FindChildPage(sp, key);
@@ -311,10 +326,13 @@ public sealed class BTree
                 if (idx < 0)
                     return null;
 
-                return await ResolveStoredPayloadAsync(
-                    ReadLeafPayloadMemory(sp, idx),
-                    IsLeafPayloadOverflow(sp, idx),
-                    ct);
+                ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(
+                    sp,
+                    idx,
+                    out bool storedPayloadIsOverflow);
+                return storedPayloadIsOverflow
+                    ? await ResolveStoredPayloadAsync(storedPayload, storedPayloadIsOverflow: true, ct)
+                    : storedPayload;
             }
 
             pageId = FindChildPage(sp, key);
@@ -368,13 +386,16 @@ public sealed class BTree
             if (sp.PageType == PageConstants.PageTypeLeaf)
             {
                 int idx = FindKeyInLeaf(sp, key);
-                return idx >= 0
-                    ? await ResolveStoredPayloadAsync(
-                        ReadLeafPayloadMemory(sp, idx),
-                        IsLeafPayloadOverflow(sp, idx),
-                        snapshot,
-                        ct)
-                    : null;
+                if (idx < 0)
+                    return null;
+
+                ReadOnlyMemory<byte> storedPayload = ReadLeafPayloadMemory(
+                    sp,
+                    idx,
+                    out bool storedPayloadIsOverflow);
+                return storedPayloadIsOverflow
+                    ? await ResolveStoredPayloadAsync(storedPayload, storedPayloadIsOverflow: true, snapshot, ct)
+                    : storedPayload;
             }
 
             pageId = FindChildPage(sp, key);
@@ -422,8 +443,11 @@ public sealed class BTree
                     if (key >= actualMin && key <= actualMax)
                     {
                         int idx = FindKeyInLeaf(hintSp, key);
-                        payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
-                        if (idx >= 0 && IsLeafPayloadOverflow(hintSp, idx))
+                        bool payloadIsOverflow = false;
+                        payload = idx >= 0
+                            ? ReadLeafPayloadMemory(hintSp, idx, out payloadIsOverflow)
+                            : (ReadOnlyMemory<byte>?)null;
+                        if (payloadIsOverflow)
                         {
                             payload = null;
                             return false;
@@ -461,8 +485,11 @@ public sealed class BTree
                     }
 
                     int idx = FindKeyInLeaf(sp, key);
-                    payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
-                    if (idx >= 0 && IsLeafPayloadOverflow(sp, idx))
+                    bool payloadIsOverflow = false;
+                    payload = idx >= 0
+                        ? ReadLeafPayloadMemory(sp, idx, out payloadIsOverflow)
+                        : (ReadOnlyMemory<byte>?)null;
+                    if (payloadIsOverflow)
                     {
                         payload = null;
                         return false;
@@ -490,8 +517,11 @@ public sealed class BTree
                 if (key >= actualMin && key <= actualMax)
                 {
                     int idx = FindKeyInLeaf(hintSp, key);
-                    payload = idx >= 0 ? ReadLeafPayloadMemory(hintSp, idx) : (ReadOnlyMemory<byte>?)null;
-                    if (idx >= 0 && IsLeafPayloadOverflow(hintSp, idx))
+                    bool payloadIsOverflow = false;
+                    payload = idx >= 0
+                        ? ReadLeafPayloadMemory(hintSp, idx, out payloadIsOverflow)
+                        : (ReadOnlyMemory<byte>?)null;
+                    if (payloadIsOverflow)
                     {
                         payload = null;
                         return false;
@@ -530,8 +560,11 @@ public sealed class BTree
                 }
 
                 int idx = FindKeyInLeaf(sp, key);
-                payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
-                if (idx >= 0 && IsLeafPayloadOverflow(sp, idx))
+                bool payloadIsOverflow = false;
+                payload = idx >= 0
+                    ? ReadLeafPayloadMemory(sp, idx, out payloadIsOverflow)
+                    : (ReadOnlyMemory<byte>?)null;
+                if (payloadIsOverflow)
                 {
                     payload = null;
                     return false;
@@ -568,8 +601,11 @@ public sealed class BTree
             if (sp.PageType == PageConstants.PageTypeLeaf)
             {
                 int idx = FindKeyInLeaf(sp, key);
-                payload = idx >= 0 ? ReadLeafPayloadMemory(sp, idx) : (ReadOnlyMemory<byte>?)null;
-                if (idx >= 0 && IsLeafPayloadOverflow(sp, idx))
+                bool payloadIsOverflow = false;
+                payload = idx >= 0
+                    ? ReadLeafPayloadMemory(sp, idx, out payloadIsOverflow)
+                    : (ReadOnlyMemory<byte>?)null;
+                if (payloadIsOverflow)
                 {
                     payload = null;
                     return false;
@@ -2141,20 +2177,34 @@ public sealed class BTree
     }
 
     internal static ReadOnlyMemory<byte> ReadLeafPayloadMemory(SlottedPage sp, int index)
+        => ReadLeafPayloadMemory(sp, index, out _);
+
+    internal static ReadOnlyMemory<byte> ReadLeafPayloadMemory(
+        SlottedPage sp,
+        int index,
+        out bool payloadIsOverflow)
     {
         byte[] page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
         ulong encodedPayloadSize = ReadVarintFast(page.AsSpan(offset), out int headerBytes);
+        payloadIsOverflow = (encodedPayloadSize & PageConstants.LeafCellOverflowFlag) != 0;
         int payloadLength = checked(
             (int)(encodedPayloadSize & PageConstants.CellPayloadSizeMask) - 8);
         return page.AsMemory(offset + headerBytes + 8, payloadLength);
     }
 
     internal static ReadOnlyMemory<byte> ReadLeafPayloadMemory(ReadOnlySlottedPage sp, int index)
+        => ReadLeafPayloadMemory(sp, index, out _);
+
+    internal static ReadOnlyMemory<byte> ReadLeafPayloadMemory(
+        ReadOnlySlottedPage sp,
+        int index,
+        out bool payloadIsOverflow)
     {
         ReadOnlyMemory<byte> page = sp.Buffer;
         int offset = sp.GetCellOffset(index);
         ulong encodedPayloadSize = ReadVarintFast(page.Span[offset..], out int headerBytes);
+        payloadIsOverflow = (encodedPayloadSize & PageConstants.LeafCellOverflowFlag) != 0;
         int payloadLength = checked(
             (int)(encodedPayloadSize & PageConstants.CellPayloadSizeMask) - 8);
         return page.Slice(offset + headerBytes + 8, payloadLength);
