@@ -75,10 +75,12 @@ public sealed class BTreeCursor : IAsyncDisposable
             if (candidateIndex < sp.CellCount)
             {
                 long key = BTree.ReadLeafKey(sp, candidateIndex);
-                ReadOnlyMemory<byte> value = await _tree.ResolveStoredPayloadAsync(
-                    BTree.ReadLeafPayloadMemory(sp, candidateIndex),
-                    BTree.IsLeafPayloadOverflow(sp, candidateIndex),
-                    ct);
+                ReadOnlyMemory<byte> value = BTree.ReadLeafPayloadMemory(
+                    sp,
+                    candidateIndex,
+                    out bool valueIsOverflow);
+                if (valueIsOverflow)
+                    value = await _tree.ResolveStoredPayloadAsync(value, storedPayloadIsOverflow: true, ct);
                 _currentIndex = candidateIndex;
                 CurrentKey = key;
                 CurrentValue = value;
@@ -120,10 +122,12 @@ public sealed class BTreeCursor : IAsyncDisposable
                 if (i < sp.CellCount)
                 {
                     long key = BTree.ReadLeafKey(sp, i);
-                    ReadOnlyMemory<byte> value = await _tree.ResolveStoredPayloadAsync(
-                        BTree.ReadLeafPayloadMemory(sp, i),
-                        BTree.IsLeafPayloadOverflow(sp, i),
-                        ct);
+                    ReadOnlyMemory<byte> value = BTree.ReadLeafPayloadMemory(
+                        sp,
+                        i,
+                        out bool valueIsOverflow);
+                    if (valueIsOverflow)
+                        value = await _tree.ResolveStoredPayloadAsync(value, storedPayloadIsOverflow: true, ct);
                     _currentPageId = pageId;
                     _currentIndex = i;
                     _currentLeafPage = page;

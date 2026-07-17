@@ -7,7 +7,290 @@ This file preserves the benchmark release logs, failed-run notes, investigation 
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current main README is promoted from the May 6, 2026 release-core run and guardrail compare. The latest May 31, 2026 guardrail close-out is clean for current code after the temporary-table hot-path fix. Failed and earlier release-prep runs are retained below as investigation history, not as the current published scorecard.
+The current main README remains promoted from the May 6, 2026 release-core run and May 31 guardrail close-out. The complete July 16-17 post-fix release-core and guardrail suites now provide current compatible-runner evidence: the core run produced all 125 rows, and the guardrail compared all 187 rows with 186 passes, one warn-only durable-flush row, and no failures. The new tables are not promoted because the runner's Windows fingerprint differs from the canonical baseline and the runner ID is unset.
+
+## July 16-17, 2026 Full Post-Fix Release Close-Out (Compatible Runner, Not Promoted)
+
+This close-out ran from commit `c3f0a442dfde6e41fcb0d8e6f32ac02f316949af` after the numeric relationship optimization was accepted as the supported automatic default, the inline B-tree read regressions were fixed, checkpoint reader tracking was tightened, dependency advisories were resolved, and version metadata moved to 4.0.4.
+
+```powershell
+dotnet test .\CSharpDB.slnx -c Release --no-restore --nologo
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tests\CSharpDB.Benchmarks\scripts\Run-Perf-Guardrails.ps1 -Mode release
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --write-diagnostics --repeat 3 --repro
+```
+
+The guardrail command intentionally omitted `-NoFailOnRegression`. It completed normally with exit code `0` because the only threshold breach was warn-only on the compatible, non-authoritative fingerprint.
+
+| Item | Result |
+|---|---|
+| Full Release correctness | `2,152/2,152` tests passed in `2m32.7s` |
+| Release-core | All seven median-of-three artifacts; `125/125` rows; `1h08m02s` |
+| Full release guardrail | All 14 micro filters and five command-level suites; `PASS=186, WARN=1, SKIP=0, FAIL=0`; `1h49m07.8s` |
+| Guardrail report timestamp | `2026-07-17 04:09:42Z` |
+| Focused write-diagnostics repeat | Reproduced the durable-flush slowdown; `8m56.6s` |
+| Same-session v4.0.3 control | Detached `0960c866b05a1609e72480091040a5d70e709051`; `9m15.8s` |
+| Runner | Intel i9-11900K, 16 logical cores, Windows `10.0.26200`, .NET SDK `10.0.203`; runner ID unset |
+| Promotion status | `NOT PROMOTED`; canonical baseline is Windows `10.0.26300`, and compatible hardware/runtime rows are warn-only |
+
+### Release-Core Versus Published May
+
+All seven post-fix artifacts match the published schemas. Using throughput deltas of at least `+8%` as improved and at most `-8%` as regressed:
+
+| Suite | Rows | Improved | Regressed | Within +/-8% |
+|---|---:|---:|---:|---:|
+| Master table | 28 | 7 | 0 | 21 |
+| Durable SQL batching | 28 | 4 | 0 | 24 |
+| Concurrent writes | 8 | 5 | 0 | 3 |
+| Storage modes | 30 | 27 | 0 | 3 |
+| Resident hot set | 8 | 6 | 2 | 0 |
+| Cold open | 16 | 16 | 0 | 0 |
+| SQLite reference | 7 | 6 | 0 | 1 |
+| **Total** | **125** | **71** | **2** | **52** |
+
+| Headline row | Published May | Initial July | July 17 post-fix | vs May | vs initial July |
+|---|---:|---:|---:|---:|---:|
+| Durable SQL single insert | 267.1 | 451.9 | 274.5 ops/sec | `+2.8%` | `-39.3%` |
+| Durable SQL batch x100 | 25,561.9 | 42,567.8 | 25,789.8 rows/sec | `+0.9%` | `-39.4%` |
+| SQL point lookup | 1,476,253.9 | 1,385,540.2 | 1,521,279.6 ops/sec | `+3.0%` | `+9.8%` |
+| Reused-snapshot concurrent reads | 9,683,654.4 | 11,543,078.4 | 12,503,004.4 ops/sec | `+29.1%` | `+8.3%` |
+| Collection point get | 1,990,692.1 | 1,851,623.0 | 2,084,446.4 ops/sec | `+4.7%` | `+12.6%` |
+| Durable `InsertBatch` B1000 | 211,991.1 | 234,380.7 | 214,132.8 rows/sec | `+1.0%` | `-8.6%` |
+| Concurrent durable W8 / 250us | 890.1 | 1,031.1 | 983.0 commits/sec | `+10.4%` | `-4.7%` |
+| Hybrid resident hot-set SQL | 383,865.6 | 876,972.6 | 640,106.7 ops/sec | `+66.8%` | `-27.0%` |
+| SQLite WAL+FULL B1000 | 155,664.4 | 212,456.5 | 194,858.5 rows/sec | `+25.2%` | `-8.3%` |
+
+The initial July candidate benefited from an unusually fast fsync/hot-set environment. Against that run, the post-fix set has 16 improved, 49 regressed, and 60 within-band rows, but it remains materially ahead of the published May snapshot overall. Durable-batching stability improved: only two of 28 rows now have a repetition spread above 20%, and none exceed 50%, compared with 14 and seven respectively in the initial July run.
+
+Only two rows regress materially versus May, both in the historically noisy in-memory resident-hot-set suite:
+
+| Row | Published May | July 17 | Delta | Repetition spread |
+|---|---:|---:|---:|---:|
+| In-memory SQL hot burst | 104,728.0 | 87,385.1 | `-16.6%` | `136.9%` |
+| In-memory Collection hot burst | 112,577.9 | 89,123.3 | `-20.8%` | `366.8%` |
+
+The Collection repetitions were approximately 89K, 81K, and 408K ops/sec, so neither row is stable enough to attribute to the code. The new master artifact is much stronger: all 28 rows are within `+/-8%` of `master-table-20260716-160832-median-of-3.csv`, all 14 read rows are within `-3.6%` to `+2.0%`, and the six master reads initially flagged in July remain recovered.
+
+Release-core artifacts:
+
+| Artifact | Path |
+|---|---|
+| Durable master comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260717-011220-median-of-3.csv` |
+| Durable SQL batching | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260717-013108-median-of-3.csv` |
+| Concurrent durable write | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260717-015344-median-of-3.csv` |
+| Hybrid storage mode | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260717-020013-median-of-3.csv` |
+| Hybrid hot-set read | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260717-021548-median-of-3.csv` |
+| Hybrid cold open | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260717-021619-median-of-3.csv` |
+| SQLite comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260717-021658-median-of-3.csv` |
+
+### Guardrail Warning And Same-Session Control
+
+The full guardrail's only warning was `WriteDiagnostics_SingleRow_Frame4096Background256Batch250us_10s`: mean latency was `4.2410 ms` versus the March baseline's `3.6721 ms`, a `+15.49%` change against a `15%` threshold. The focused repeat then put all three required rows at `+15.61%` to `+17.38%`.
+
+The slowdown is in durable flushes, not the changed code paths. Dirty work stayed at roughly `3.02` pages and `12.2 KiB` per flush, while durable-flush/WAL-append latency rose from about `3.5 ms` earlier in the day to roughly `4.1 ms`. The B-tree changes are read-only payload/cursor paths, checkpoint changes affect reader-snapshot bookkeeping, and the WAL-index change only removes empty snapshot allocation; none is on this insert/commit path.
+
+An identical same-session run from detached v4.0.3 commit `0960c866b05a1609e72480091040a5d70e709051` confirmed runner/storage drift:
+
+| Required row | v4.0.3 ops/sec | v4.0.4 ops/sec | v4.0.4 delta |
+|---|---:|---:|---:|
+| Frame4096 Background256 | 221.5 | 230.4 | `+4.0%` |
+| Frame4096 Background256 Batch250us | 226.0 | 233.3 | `+3.2%` |
+| Frame4096 Background256 Prealloc1MiB | 220.0 | 234.0 | `+6.4%` |
+
+The full `PASS=186, WARN=1` report is retained unchanged because it is the honest full-run result. The control demonstrates that the warning is not a 4.0.4 regression, but it does not convert compatible-runner evidence into a canonical promotion.
+
+## July 15-16, 2026 Numeric Relationship Join A/B and Full Sweep (Not Promoted)
+
+This run supplied pre-release comparison evidence for the now-supported, cost-gated numeric relationship `INNER JOIN` optimization and refreshed the broad diagnostic, balanced release-core, and release guardrail surfaces. It was captured from branch `codex/numeric-relationship-scan-ab` at Git HEAD `0960c866b05a1609e72480091040a5d70e709051` plus uncommitted numeric join implementation, test, and benchmark changes.
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --all --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Run-Perf-Guardrails.ps1 -Mode release -NoFailOnRegression
+```
+
+`-NoFailOnRegression` allowed the wrapper to finish and emit the complete comparison report. It does not turn threshold warnings into a clean promotion result.
+
+| Item | Result |
+|---|---|
+| Broad diagnostic status | Completed with no benchmark failures or timeouts |
+| Broad diagnostic duration | About `3h39m08s`, from July 15 11:27:23 PM to July 16 3:06:31 AM PT |
+| BenchmarkDotNet portion | `705` cases across `74` reports in `3h08m39s`; all benchmark child processes exited `0` |
+| Command-level `--all` portion | `17` CSV suites completed after BenchmarkDotNet |
+| Release-core status | Completed all seven suites and median artifacts in `1h07m39s` |
+| Release guardrail status | Completed all 14 micro filters and five diagnostic suites in `1h47m53s` |
+| Release compare | `PASS=180, WARN=7, SKIP=0, FAIL=0` across `187` rows |
+| Promotion status | `NOT PROMOTED`; the May 6 generated scorecard and `release-core-manifest.json` remain unchanged |
+| Runner | Intel i9-11900K, 16 logical cores, Windows `10.0.26200.8875`, .NET SDK `10.0.203`, .NET runtime `10.0.10` |
+| Repro mode | Non-micro suites used high priority and affinity `0xFF` |
+| Initial guardrail report path | `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md` (refreshed by the post-fix close-out below) |
+| Per-stage logs | `tests/CSharpDB.Benchmarks/results/perf-guardrails-run-logs` |
+
+The broad sweep is diagnostic-only and cannot populate the generated scorecard. Its longer runtime is explained primarily by the four full-text hot-token classes, which consumed about 52 minutes at up to 500,000 postings. The delete and update benchmarks rebuild the populated full-text database before each warmup and measured iteration. The two numeric relationship classes added 42 cases but only about 5.4 minutes. The broad run is also intentionally shallow per case: 218 of 705 rows had a 99.9% confidence-interval half-width above 10% of the mean, so its values are useful for discovery rather than promotion.
+
+### Numeric Relationship SQL A/B
+
+Source CSVs:
+
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.NumericRelationshipSqlJoinBenchmarks-report.csv`
+- `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.NumericRelationshipJoinBenchmarks-report.csv`
+
+| Child fanout | Fallback plan | Cost-gated Auto | Speedup | Fallback allocation | Auto allocation | Allocation change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1.1128 ms | 0.6053 ms | `1.84x` | 604.76 KB | 282.88 KB | `-53.2%` |
+| 10 | 6.1200 ms | 0.9037 ms | `6.77x` | 2,753.46 KB | 361.67 KB | `-86.9%` |
+| 100 | 59.9609 ms | 5.3951 ms | `11.11x` | 24,317.84 KB | 1,249.61 KB | `-94.9%` |
+
+The planner selects this path only for a declared `INTEGER` PK-to-FK relationship with an existing FK support index, a key-only projection, and a broad `INNER JOIN`. Payload projections, predicates/residuals, point lookups, text keys, outer or reversed joins, and `LIMIT`/`OFFSET` fall back to the existing plan. Payload fallback stayed within 1.4% in time and 0.7% in allocation. The forced numeric operator was 25.67x, 12.99x, and 1.63x slower for point shapes at fanout 1, 10, and 100, confirming that the cost gate is necessary. No separately maintained join index is introduced, so the write path retains existing PK/FK index maintenance. These new classes measure relationship reads; maintenance after insert/update/delete is covered by correctness tests, but this run does not contain a relationship-specific upsert throughput row.
+
+The focused numeric relationship rows are not present in `perf-thresholds.json` or the checked-in baseline. The existing general `JoinBenchmarks` guardrail still provides broad regression coverage: all 40 join rows passed, with timing deltas ranging from `-13.26%` to `-99.70%` on this compatible runner.
+
+### Release-Core Candidate Versus Published May Scorecard
+
+All 125 candidate rows matched the published artifact schemas. With an absolute 8% throughput screen, 100 rows improved, six regressed, and 19 stayed within the band. These comparisons cross runtime/OS snapshots, and the current branch is 65 commits beyond the published snapshot, so they are directional and must not be attributed solely to the numeric join optimization.
+
+| Suite | Rows | Improved | Regressed | Within +/-8% | Median delta |
+|---|---:|---:|---:|---:|---:|
+| Master table | 28 | 13 | 6 | 9 | `-0.2%` |
+| Durable SQL batching | 28 | 18 | 0 | 10 | `+9.6%` |
+| Concurrent writes | 8 | 8 | 0 | 0 | `+15.7%` |
+| Storage modes | 30 | 30 | 0 | 0 | `+45.3%` |
+| Resident hot set | 8 | 8 | 0 | 0 | `+111.4%` |
+| Cold open | 16 | 16 | 0 | 0 | `+75.0%` |
+| SQLite reference | 7 | 7 | 0 | 0 | `+68.3%` |
+
+| Headline row | Published May | July candidate | Delta |
+|---|---:|---:|---:|
+| Durable SQL single insert | 267.1 ops/sec | 451.9 ops/sec | `+69.2%` |
+| Durable SQL batch x100 | 25,561.9 rows/sec | 42,567.8 rows/sec | `+66.5%` |
+| SQL point lookup | 1,476,253.9 ops/sec | 1,385,540.2 ops/sec | `-6.1%` |
+| Reused-snapshot concurrent reads | 9,683,654.4 ops/sec | 11,543,078.4 ops/sec | `+19.2%` |
+| Collection point get | 1,990,692.1 ops/sec | 1,851,623.0 ops/sec | `-7.0%` |
+| Durable `InsertBatch` B1000 | 211,991.1 rows/sec | 234,380.7 rows/sec | `+10.6%` |
+| Concurrent durable W8 / 250us | 890.1 commits/sec | 1,031.1 commits/sec | `+15.8%` |
+| Hybrid resident hot-set SQL | 383,865.6 ops/sec | 876,972.6 ops/sec | `+128.5%` |
+| SQLite WAL+FULL B1000 | 155,664.4 rows/sec | 212,456.5 rows/sec | `+36.5%` |
+
+The six material candidate regressions were confined to master-table read rows and were stable across the three July repetitions:
+
+| Row | Published May | July candidate | Delta |
+|---|---:|---:|---:|
+| Direct-client concurrent reads/query | 532,055.7 | 434,057.3 | `-18.4%` |
+| Hybrid concurrent reads/query | 1,196,237.2 | 1,022,890.8 | `-14.5%` |
+| File-backed concurrent reads/query | 1,153,368.8 | 989,813.6 | `-14.2%` |
+| In-memory concurrent reads/query | 1,164,653.0 | 1,001,117.0 | `-14.0%` |
+| In-memory collection point get | 2,023,157.4 | 1,845,457.6 | `-8.8%` |
+| Hybrid collection point get | 2,016,141.4 | 1,854,799.3 | `-8.0%` |
+
+Some apparent release-core gains were noisy. Fourteen of 28 durable-batching rows varied by more than 20% across repetitions, seven varied by more than 50%, and five of eight resident hot-set rows varied by more than 20%. A same-day guardrail rerun also moved four durable-batching rows down by at least 8%. This is additional reason to keep the July core tables unpromoted.
+
+Release-core source artifacts:
+
+| Artifact | Path |
+|---|---|
+| Durable master comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260716-121826-median-of-3.csv` |
+| Durable SQL batching | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260716-123708-median-of-3.csv` |
+| Concurrent durable write | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260716-125944-median-of-3.csv` |
+| Hybrid storage mode | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260716-130612-median-of-3.csv` |
+| Hybrid hot-set read | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260716-132146-median-of-3.csv` |
+| Hybrid cold open | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260716-132215-median-of-3.csv` |
+| SQLite comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260716-132250-median-of-3.csv` |
+
+### Release Guardrail Warnings
+
+The baseline fingerprint was Windows `10.0.26300`; the current machine reported Windows `10.0.26200`. With no `CSHARPDB_PERF_RUNNER_ID`, `Compare-Baseline.ps1` classified 154 of 187 rows as warn-only compatible hardware/runtime rather than strict same-fingerprint measurements. The seven rows below exceeded their timing thresholds. Their allocation deltas stayed within the configured byte allowances.
+
+Across the complete comparison, 160 timing deltas improved, 25 regressed, and two were current-only floor checks. Eighteen of the 25 slower rows remained within threshold. General write health was positive: all 24 strict `InsertBenchmarks` rows passed and improved by 15.24% to 41.30%, while all insert fan-in checks passed with comparable timing deltas from `-69.52%` to `+1.20%`. Those are broad write checks, not a relationship-specific upsert measurement.
+
+| CSV | Row | Mean delta | Threshold | Status |
+|---|---|---:|---:|---|
+| `ScalarAggregateBenchmarks` | `Hash SUM(value) via GROUP BY 1`; `RowCount=1000` | `+38.61%` | `<=30%` | WARN |
+| `ScalarAggregateBenchmarks` | `Scalar AVG(value)`; `RowCount=10000` | `+30.79%` | `<=30%` | WARN |
+| `ScalarAggregateBenchmarks` | `Scalar MAX(value)`; `RowCount=10000` | `+47.87%` | `<=30%` | WARN |
+| `ScalarAggregateBenchmarks` | `Scalar MIN(value)`; `RowCount=10000` | `+42.72%` | `<=30%` | WARN |
+| `ScalarAggregateBenchmarks` | `Scalar SUM(value)`; `RowCount=1000` | `+32.35%` | `<=30%` | WARN |
+| `ScalarAggregateBenchmarks` | `Scalar SUM(value)`; `RowCount=10000` | `+38.49%` | `<=30%` | WARN |
+| `TextIndexBenchmarks` | `WHERE text eq (no index)`; `RowCount=10000` | `+51.43%` | `<=40%` | WARN |
+
+Under strict exact-runner enforcement these would be promotion blockers, so `PASS=180, WARN=7, FAIL=0` was not a clean release result. The focused close-out below clears all seven rows, but a future complete exact/canonical rerun is still required before July artifacts can replace the May paths in `release-core-manifest.json`.
+
+### July 16 Post-Fix Guardrail and Read Close-Out
+
+The warning pattern was uniform and repeatable rather than ordinary benchmark variance. Commit `877bb67` added large B-tree value support, but the inline cursor path then parsed the same leaf header once for the payload and again for its overflow flag, followed by an awaited resolver call for every row even when the value was inline. This added roughly 20-30 ns per scanned row and explained all six scalar warnings plus the unindexed text warning.
+
+The storage fix now obtains the payload and overflow flag from one parse, returns inline values directly, and resolves only actual overflow references. The same combined parse and inline branch is used by point lookups. A separate concurrent-reader fix avoids rescanning every active snapshot on each acquire/release when maintaining the minimum retained WAL offset, and reuses a never-mutated empty page map for no-WAL snapshots.
+
+```powershell
+dotnet test .\tests\CSharpDB.Tests\CSharpDB.Tests.csproj -c Release --no-restore `
+  --filter "FullyQualifiedName~CheckpointCoordinatorTests|FullyQualifiedName~BTreeOverflowTests|FullyQualifiedName~BTreeCursorTests|FullyQualifiedName~WalTests.Checkpoint_WithReaderHoldingNoWalFrames|FullyQualifiedName~WalTests.Checkpoint_WithActiveReaderHoldingWalFrames|FullyQualifiedName~WalTests.Checkpoint_NewReaderAfterCopyCompletion"
+
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- `
+  --micro --filter "*Micro.ScalarAggregateBenchmarks*" --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- `
+  --micro --filter "*Micro.TextIndexBenchmarks*" --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- `
+  --master-table --repeat 3 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- `
+  --micro --filter "*Micro.ReaderSessionBenchmarks*" --repro
+
+pwsh -NoProfile .\tests\CSharpDB.Benchmarks\scripts\Compare-Baseline.ps1 `
+  -ThresholdsPath .\tests\CSharpDB.Benchmarks\perf-thresholds.json `
+  -CurrentMicroResultsDir .\BenchmarkDotNet.Artifacts\results `
+  -NoFailOnRegression `
+  -ReportPath .\tests\CSharpDB.Benchmarks\results\perf-guardrails-last.md
+
+dotnet test .\tests\CSharpDB.Tests\CSharpDB.Tests.csproj -c Release --no-restore
+```
+
+| Validation | Result |
+|---|---|
+| Focused B-tree/WAL/checkpoint tests | `25/25` passed |
+| Full correctness suite | `1,400/1,400` passed in about `1m27s` |
+| Scalar aggregate rerun | `24/24` cases completed in about `5m00s` |
+| Text index rerun | `4/4` cases completed in about `1m49s` |
+| Master-table rerun | Three repetitions completed in about `18m53s` |
+| Reader-session rerun | `5/5` cases completed in about `2m02s` |
+| Composite guardrail close-out | `PASS=187, WARN=0, SKIP=0, FAIL=0` |
+| Enforcement | Compatible non-authoritative runner; clean targeted evidence, not a promotion run |
+
+The seven originally warned rows all moved back inside their configured timing limits without increasing their existing allocation footprint:
+
+| Row | Initial July | Post-fix | Post-fix baseline delta | Limit |
+|---|---:|---:|---:|---:|
+| Hash `SUM(value)` via `GROUP BY 1`, 1K | 73.96 us | 52.94 us | `-0.79%` | `30%` |
+| Scalar `AVG(value)`, 10K | 708.98 us | 520.58 us | `-3.97%` | `30%` |
+| Scalar `MAX(value)`, 10K | 877.05 us | 582.96 us | `-1.72%` | `30%` |
+| Scalar `MIN(value)`, 10K | 843.04 us | 568.79 us | `-3.71%` | `30%` |
+| Scalar `SUM(value)`, 1K | 77.40 us | 52.27 us | `-10.62%` | `30%` |
+| Scalar `SUM(value)`, 10K | 753.72 us | 512.32 us | `-5.86%` | `30%` |
+| Text equality without index, 10K | 812.83 us | 681.49 us | `+26.96%` | `40%` |
+
+The large-scan gains that predated the regression remain intact: the unindexed 100K text scan is now 5.915 ms versus the 30.184 ms guardrail baseline, and the 100K scalar rows remain about 5.83-7.21 ms with constant 928-byte allocation for non-distinct cases.
+
+The focused reader-session rerun also verifies the no-WAL snapshot allocation change directly: per-query `COUNT(*)` moved from about `296.32 ns / 792 B` in the initial July artifact to `281.34 ns / 712 B`, removing `80 B` per operation. The reused-session control measured `74.24 ns / 188 B`.
+
+All 14 master-table point and concurrent-read rows improved versus the initial July median by `+6.4%` to `+21.3%`. The six rows that had crossed the 8% investigation screen are all recovered to within 4.2% of the published May result:
+
+| Initially regressed row | Published May | Initial July | Post-fix | Post-fix vs initial | Post-fix vs May |
+|---|---:|---:|---:|---:|---:|
+| Direct-client concurrent reads/query | 532,055.7 | 434,057.3 | 526,609.3 | `+21.3%` | `-1.0%` |
+| Hybrid concurrent reads/query | 1,196,237.2 | 1,022,890.8 | 1,146,545.6 | `+12.1%` | `-4.2%` |
+| File-backed concurrent reads/query | 1,153,368.8 | 989,813.6 | 1,170,500.2 | `+18.3%` | `+1.5%` |
+| In-memory concurrent reads/query | 1,164,653.0 | 1,001,117.0 | 1,170,795.8 | `+16.9%` | `+0.5%` |
+| In-memory collection point get | 2,023,157.4 | 1,845,457.6 | 2,105,292.0 | `+14.1%` | `+4.1%` |
+| Hybrid collection point get | 2,016,141.4 | 1,854,799.3 | 2,092,335.3 | `+12.8%` | `+3.8%` |
+
+The master rerun is used here only for the read-path A/B. Durable write rows moved with the run's fsync environment and are not attributable to these read-only hot-path changes; they do not replace the original full candidate or the published scorecard.
+
+Post-fix artifacts:
+
+| Artifact | Path |
+|---|---|
+| Scalar aggregate CSV | `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ScalarAggregateBenchmarks-report.csv` |
+| Text index CSV | `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.TextIndexBenchmarks-report.csv` |
+| Reader-session CSV | `BenchmarkDotNet.Artifacts/results/CSharpDB.Benchmarks.Micro.ReaderSessionBenchmarks-report.csv` |
+| Master-table median | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260716-160832-median-of-3.csv` |
+| Composite guardrail report | `tests/CSharpDB.Benchmarks/results/perf-guardrails-last.md` |
 
 ## May 31, 2026 Guardrail Close-Out - Current Code Clean
 

@@ -6,6 +6,10 @@ namespace CSharpDB.Storage.Wal;
 /// </summary>
 public sealed class WalIndex
 {
+    // Shared only by snapshots with no retained frames. WalSnapshot must keep its
+    // empty-map guard before any in-place remapping so this dictionary stays immutable.
+    private static readonly Dictionary<uint, long> s_emptyPageMap = new();
+
     private readonly object _gate = new();
 
     // Maps pageId → WAL file offset of the latest committed frame for that page.
@@ -92,9 +96,11 @@ public sealed class WalIndex
     {
         lock (_gate)
         {
-            var snapshot = minimumWalOffset is long walOffsetFloor
-                ? FilterPageMap(_pageMap, walOffsetFloor)
-                : new Dictionary<uint, long>(_pageMap);
+            Dictionary<uint, long> snapshot = _pageMap.Count == 0
+                ? s_emptyPageMap
+                : minimumWalOffset is long walOffsetFloor
+                    ? FilterPageMap(_pageMap, walOffsetFloor)
+                    : new Dictionary<uint, long>(_pageMap);
             return new WalSnapshot(snapshot, _commitCounter);
         }
     }
@@ -199,16 +205,19 @@ public sealed class WalIndex
     private static Dictionary<uint, long> FilterPageMap(Dictionary<uint, long> pageMap, long minimumWalOffset)
     {
         if (pageMap.Count == 0)
-            return new Dictionary<uint, long>();
+            return s_emptyPageMap;
 
-        var filtered = new Dictionary<uint, long>(pageMap.Count);
+        Dictionary<uint, long>? filtered = null;
         foreach ((uint pageId, long walOffset) in pageMap)
         {
             if (walOffset >= minimumWalOffset)
+            {
+                filtered ??= new Dictionary<uint, long>(pageMap.Count);
                 filtered[pageId] = walOffset;
+            }
         }
 
-        return filtered;
+        return filtered ?? s_emptyPageMap;
     }
 }
 
