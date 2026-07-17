@@ -139,13 +139,39 @@ public class ConnectionTests : IDisposable
         await conn.OpenAsync(Ct);
 
         DataTable schema = conn.GetSchema();
-        Assert.Equal(6, schema.Rows.Count);
+        Assert.Equal(10, schema.Rows.Count);
         Assert.Equal(0, GetRequiredInt(schema, DbMetaDataCollectionNames.MetaDataCollections, "NumberOfRestrictions"));
+        Assert.Equal(0, GetRequiredInt(schema, DbMetaDataCollectionNames.Restrictions, "NumberOfRestrictions"));
         Assert.Equal(4, GetRequiredInt(schema, "Tables", "NumberOfRestrictions"));
         Assert.Equal(4, GetRequiredInt(schema, "Columns", "NumberOfRestrictions"));
         Assert.Equal(4, GetRequiredInt(schema, "Indexes", "NumberOfRestrictions"));
         Assert.Equal(4, GetRequiredInt(schema, "ForeignKeys", "NumberOfRestrictions"));
         Assert.Equal(3, GetRequiredInt(schema, "Views", "NumberOfRestrictions"));
+        Assert.Equal(4, GetRequiredInt(schema, "CheckConstraints", "NumberOfRestrictions"));
+        Assert.Equal(4, GetRequiredInt(schema, "KeyConstraints", "NumberOfRestrictions"));
+        Assert.Equal(4, GetRequiredInt(schema, "KeyColumns", "NumberOfRestrictions"));
+    }
+
+    [Fact]
+    public async Task GetSchema_Restrictions_DescribesSupportedFilters()
+    {
+        await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync(Ct);
+
+        DataTable restrictions = conn.GetSchema(DbMetaDataCollectionNames.Restrictions);
+        DataRow[] keyColumnRestrictions = restrictions.Rows.Cast<DataRow>()
+            .Where(row => string.Equals(
+                row[DbMetaDataColumnNames.CollectionName] as string,
+                "KeyColumns",
+                StringComparison.Ordinal))
+            .OrderBy(row => (int)row["RestrictionNumber"])
+            .ToArray();
+
+        Assert.Equal(["Catalog", "Schema", "Table", "Constraint"],
+            keyColumnRestrictions.Select(row => (string)row["RestrictionName"]));
+        Assert.Equal([1, 2, 3, 4],
+            keyColumnRestrictions.Select(row => (int)row["RestrictionNumber"]));
+        Assert.All(keyColumnRestrictions, row => Assert.Equal(DBNull.Value, row["RestrictionDefault"]));
     }
 
     [Fact]
@@ -225,6 +251,60 @@ public class ConnectionTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSchema_ConstraintCollections_ReturnDefaultsChecksAndOrderedLogicalKeys()
+    {
+        await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            CREATE TABLE metadata_items (
+                tenant_id INTEGER,
+                code TEXT DEFAULT 'new',
+                score INTEGER CONSTRAINT ck_metadata_items_score CHECK (score >= 0),
+                CONSTRAINT pk_metadata_items PRIMARY KEY (tenant_id, code),
+                CONSTRAINT uq_metadata_items_score UNIQUE (score)
+            );
+            """;
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        DataTable columns = conn.GetSchema("Columns", [null, null, "metadata_items", "code"]);
+        DataRow column = Assert.Single(columns.Rows.Cast<DataRow>());
+        Assert.Equal("'new'", column["COLUMN_DEFAULT"]);
+        Assert.Equal("NO", column["IS_NULLABLE"]);
+        Assert.True((bool)column["IS_PRIMARY_KEY"]);
+
+        DataTable checks = conn.GetSchema(
+            "CheckConstraints",
+            [null, null, "metadata_items", "ck_metadata_items_score"]);
+        DataRow check = Assert.Single(checks.Rows.Cast<DataRow>());
+        Assert.Equal("metadata_items", check["TABLE_NAME"]);
+        Assert.Equal("ck_metadata_items_score", check["CONSTRAINT_NAME"]);
+        Assert.Contains("\"score\"", (string)check["CHECK_CLAUSE"], StringComparison.Ordinal);
+        Assert.Contains(">= 0", (string)check["CHECK_CLAUSE"], StringComparison.Ordinal);
+        Assert.Equal("score", check["COLUMN_NAME"]);
+
+        DataTable keys = conn.GetSchema("KeyConstraints", [null, null, "metadata_items", null]);
+        Assert.Equal(2, keys.Rows.Count);
+        DataRow primaryKey = Assert.Single(
+            keys.Rows.Cast<DataRow>(),
+            row => string.Equals(row["CONSTRAINT_NAME"] as string, "pk_metadata_items", StringComparison.Ordinal));
+        Assert.Equal("PRIMARY KEY", primaryKey["CONSTRAINT_TYPE"]);
+        Assert.Equal(2, primaryKey["COLUMN_COUNT"]);
+        Assert.NotEqual(DBNull.Value, primaryKey["BACKING_INDEX_NAME"]);
+
+        DataTable keyColumns = conn.GetSchema(
+            "KeyColumns",
+            [null, null, "metadata_items", "pk_metadata_items"]);
+        DataRow[] orderedKeyColumns = keyColumns.Rows.Cast<DataRow>()
+            .OrderBy(row => (int)row["ORDINAL_POSITION"])
+            .ToArray();
+        Assert.Equal(["tenant_id", "code"], orderedKeyColumns.Select(row => (string)row["COLUMN_NAME"]));
+        Assert.Equal([1, 2], orderedKeyColumns.Select(row => (int)row["ORDINAL_POSITION"]));
+    }
+
+    [Fact]
     public async Task GetSchema_Indexes_ReturnsIndexMetadata()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
@@ -274,6 +354,50 @@ public class ConnectionTests : IDisposable
         Assert.Equal("id", row["REFERENCED_COLUMN_NAME"]);
         Assert.Equal("CASCADE", row["DELETE_RULE"]);
         Assert.NotEqual(DBNull.Value, row["SUPPORTING_INDEX_NAME"]);
+        Assert.Equal(1, row["ORDINAL_POSITION"]);
+    }
+
+    [Fact]
+    public async Task GetSchema_ForeignKeys_ReturnsOrderedCompositeColumnPairs()
+    {
+        await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            CREATE TABLE composite_parents (
+                tenant_id INTEGER,
+                code TEXT,
+                PRIMARY KEY (tenant_id, code)
+            );
+            """;
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText =
+            """
+            CREATE TABLE composite_children (
+                id INTEGER PRIMARY KEY,
+                tenant_id INTEGER,
+                parent_code TEXT,
+                CONSTRAINT fk_composite_parent
+                    FOREIGN KEY (tenant_id, parent_code)
+                    REFERENCES composite_parents (tenant_id, code)
+            );
+            """;
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        DataRow[] rows = conn.GetSchema(
+                "ForeignKeys",
+                [null, null, "composite_children", "fk_composite_parent"])
+            .Rows
+            .Cast<DataRow>()
+            .OrderBy(row => (int)row["ORDINAL_POSITION"])
+            .ToArray();
+
+        Assert.Equal(2, rows.Length);
+        Assert.Equal(["tenant_id", "parent_code"], rows.Select(row => (string)row["COLUMN_NAME"]));
+        Assert.Equal(["tenant_id", "code"], rows.Select(row => (string)row["REFERENCED_COLUMN_NAME"]));
+        Assert.Equal([1, 2], rows.Select(row => (int)row["ORDINAL_POSITION"]));
     }
 
     [Fact]
@@ -293,7 +417,7 @@ public class ConnectionTests : IDisposable
         Assert.Equal("adults", row["TABLE_NAME"]);
         Assert.Equal("NONE", row["CHECK_OPTION"]);
         Assert.Equal("NO", row["IS_UPDATABLE"]);
-        Assert.Contains("SELECT id FROM users", (string)row["VIEW_DEFINITION"], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SELECT \"id\" FROM \"users\"", (string)row["VIEW_DEFINITION"], StringComparison.OrdinalIgnoreCase);
 
         DataTable filtered = conn.GetSchema("Views", [null, null, "adults"]);
         DataRow filteredRow = Assert.Single(filtered.Rows.Cast<DataRow>());

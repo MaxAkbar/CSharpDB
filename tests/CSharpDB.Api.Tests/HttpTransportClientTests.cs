@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using CSharpDB.Client;
 using CSharpDB.Client.Models;
@@ -349,6 +350,86 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_MapsDefaultsChecksAndLogicalKeys()
+    {
+        var create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_schema_metadata (
+                id INTEGER PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                code TEXT DEFAULT 'new',
+                score INTEGER,
+                CONSTRAINT ck_http_schema_score CHECK (score >= 0),
+                CONSTRAINT uq_http_schema_tenant_code UNIQUE (tenant, code)
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema? schema = await _client.GetTableSchemaAsync("http_schema_metadata", Ct);
+        Assert.NotNull(schema);
+        Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+        CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+        Assert.Equal("ck_http_schema_score", check.ConstraintName);
+        Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
+        KeyConstraintDefinition unique = Assert.Single(
+            schema.KeyConstraints,
+            key => key.Kind == KeyConstraintKind.Unique);
+        Assert.Equal(["tenant", "code"], unique.Columns);
+    }
+
+    [Fact]
+    public async Task HttpTransport_OlderSchemaPayloadWithoutAdditiveLists_UsesSafeDefaults()
+    {
+        const string payload =
+            """
+            {
+              "tableName": "legacy_http",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "Integer",
+                  "nullable": false,
+                  "isPrimaryKey": true,
+                  "isIdentity": false,
+                  "collation": null
+                }
+              ],
+              "foreignKeys": [
+                {
+                  "constraintName": "fk_legacy_http_parent",
+                  "columnName": "id",
+                  "referencedTableName": "legacy_parent",
+                  "referencedColumnName": "id",
+                  "onDelete": "Restrict",
+                  "supportingIndexName": "__fk_legacy_http_parent"
+                }
+              ]
+            }
+            """;
+        using var httpClient = new HttpClient(new StaticJsonHandler(payload))
+        {
+            BaseAddress = new Uri("http://legacy-server/"),
+        };
+        await using ICSharpDbClient client = CSharpDbClient.Create(new CSharpDbClientOptions
+        {
+            Transport = CSharpDbTransport.Http,
+            Endpoint = httpClient.BaseAddress.ToString(),
+            HttpClient = httpClient,
+        });
+
+        TableSchema? schema = await client.GetTableSchemaAsync("legacy_http", Ct);
+
+        Assert.NotNull(schema);
+        Assert.Null(Assert.Single(schema!.Columns).DefaultSql);
+        Assert.Empty(schema.CheckConstraints);
+        Assert.Empty(schema.KeyConstraints);
+        ForeignKeyDefinition legacyForeignKey = Assert.Single(schema.ForeignKeys);
+        Assert.Equal(["id"], legacyForeignKey.ColumnNames);
+        Assert.Equal(["id"], legacyForeignKey.ReferencedColumnNames);
+    }
+
+    [Fact]
     public async Task HttpTransport_MapsForeignKeyMetadata()
     {
         var create = await _client.ExecuteSqlAsync(
@@ -370,6 +451,40 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
         Assert.Equal("id", foreignKey.ReferencedColumnName);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
         Assert.StartsWith("__fk_http_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HttpTransport_MapsOrderedCompositeForeignKeyMetadata()
+    {
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            """
+            CREATE TABLE http_composite_parents (
+                tenant_id INTEGER,
+                code TEXT,
+                PRIMARY KEY (tenant_id, code)
+            );
+            CREATE TABLE http_composite_children (
+                id INTEGER PRIMARY KEY,
+                tenant_id INTEGER,
+                parent_code TEXT,
+                CONSTRAINT fk_http_composite_parent
+                    FOREIGN KEY (tenant_id, parent_code)
+                    REFERENCES http_composite_parents (tenant_id, code)
+                    ON DELETE CASCADE
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await _client.GetTableSchemaAsync("http_composite_children", Ct));
+        ForeignKeyDefinition foreignKey = Assert.Single(schema.ForeignKeys);
+
+        Assert.Equal("tenant_id", foreignKey.ColumnName);
+        Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
+        Assert.Equal(["tenant_id", "parent_code"], foreignKey.ColumnNames);
+        Assert.Equal(["tenant_id", "code"], foreignKey.ReferencedColumnNames);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
     }
 
     [Fact]
@@ -529,6 +644,18 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
                 }
             });
         }
+    }
+
+    private sealed class StaticJsonHandler(string payload) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            });
     }
 
     private static async ValueTask DeleteIfExistsAsync(string path)

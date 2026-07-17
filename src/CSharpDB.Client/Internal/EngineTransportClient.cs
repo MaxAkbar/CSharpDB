@@ -8,10 +8,13 @@ using CSharpDB.Client.Models;
 using CSharpDB.Engine;
 using CSharpDB.ImportExport.TableArchives;
 using CoreColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
+using CoreCheckConstraintDefinition = CSharpDB.Primitives.CheckConstraintDefinition;
 using CoreDbType = CSharpDB.Primitives.DbType;
 using CoreForeignKeyDefinition = CSharpDB.Primitives.ForeignKeyDefinition;
 using CoreForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
 using CoreIndexSchema = CSharpDB.Primitives.IndexSchema;
+using CoreKeyConstraintDefinition = CSharpDB.Primitives.KeyConstraintDefinition;
+using CoreKeyConstraintKind = CSharpDB.Primitives.KeyConstraintKind;
 using CoreTableSchema = CSharpDB.Primitives.TableSchema;
 using CoreTriggerEvent = CSharpDB.Primitives.TriggerEvent;
 using CoreTriggerSchema = CSharpDB.Primitives.TriggerSchema;
@@ -306,7 +309,9 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
     {
         var db = await GetDatabaseAsync(ct);
         return db.GetIndexes()
-            .Where(index => index.Kind != CSharpDB.Primitives.IndexKind.ForeignKeyInternal)
+            .Where(index => index.Kind is not (
+                CSharpDB.Primitives.IndexKind.ForeignKeyInternal or
+                CSharpDB.Primitives.IndexKind.ConstraintInternal))
             .Select(MapIndexSchema)
             .OrderBy(index => index.IndexName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -785,6 +790,30 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             TableName = schema.TableName,
             Columns = schema.Columns.Select(MapColumnDefinition).ToArray(),
             ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
+            CheckConstraints = schema.CheckConstraints.Select(MapCheckConstraintDefinition).ToArray(),
+            KeyConstraints = schema.KeyConstraints.Select(MapKeyConstraintDefinition).ToArray(),
+        };
+
+    private static CheckConstraintDefinition MapCheckConstraintDefinition(CoreCheckConstraintDefinition check)
+        => new()
+        {
+            ConstraintName = check.ConstraintName,
+            ExpressionSql = check.ExpressionSql,
+            ColumnName = check.ColumnName,
+        };
+
+    private static KeyConstraintDefinition MapKeyConstraintDefinition(CoreKeyConstraintDefinition key)
+        => new()
+        {
+            ConstraintName = key.ConstraintName,
+            Kind = key.Kind switch
+            {
+                CoreKeyConstraintKind.PrimaryKey => KeyConstraintKind.PrimaryKey,
+                CoreKeyConstraintKind.Unique => KeyConstraintKind.Unique,
+                _ => throw new CSharpDbClientException($"Unsupported key constraint kind '{key.Kind}'."),
+            },
+            Columns = key.Columns.ToArray(),
+            BackingIndexName = key.BackingIndexName,
         };
 
     private static ForeignKeyDefinition MapForeignKeyDefinition(CoreForeignKeyDefinition foreignKey)
@@ -794,6 +823,8 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             ColumnName = foreignKey.ColumnName,
             ReferencedTableName = foreignKey.ReferencedTableName,
             ReferencedColumnName = foreignKey.ReferencedColumnName,
+            ColumnNames = foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames.ToArray() : [foreignKey.ColumnName],
+            ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0 ? foreignKey.ReferencedColumnNames.ToArray() : [foreignKey.ReferencedColumnName],
             OnDelete = foreignKey.OnDelete switch
             {
                 CoreForeignKeyOnDeleteAction.Restrict => ForeignKeyOnDeleteAction.Restrict,
@@ -819,6 +850,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
             Collation = column.Collation,
+            DefaultSql = column.DefaultSql,
         };
 
     private static IndexSchema MapIndexSchema(CoreIndexSchema index)

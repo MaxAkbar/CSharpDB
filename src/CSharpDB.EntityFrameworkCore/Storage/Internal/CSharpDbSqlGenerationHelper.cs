@@ -1,5 +1,5 @@
 using System.Text;
-using CSharpDB.EntityFrameworkCore.Infrastructure.Internal;
+using CSharpDB.Primitives;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace CSharpDB.EntityFrameworkCore.Storage.Internal;
@@ -12,10 +12,7 @@ public sealed class CSharpDbSqlGenerationHelper : RelationalSqlGenerationHelper
     }
 
     public override string DelimitIdentifier(string identifier)
-    {
-        CSharpDbProviderValidation.ValidateSimpleIdentifier(identifier, "Identifier");
-        return identifier;
-    }
+        => SqlIdentifierRules.Quote(identifier);
 
     public override void DelimitIdentifier(StringBuilder builder, string identifier)
         => builder.Append(DelimitIdentifier(identifier));
@@ -32,10 +29,7 @@ public sealed class CSharpDbSqlGenerationHelper : RelationalSqlGenerationHelper
         => builder.Append(DelimitIdentifier(name, schema));
 
     public override string EscapeIdentifier(string identifier)
-    {
-        CSharpDbProviderValidation.ValidateSimpleIdentifier(identifier, "Identifier");
-        return identifier;
-    }
+        => SqlIdentifierRules.Escape(identifier);
 
     public override void EscapeIdentifier(StringBuilder builder, string identifier)
         => builder.Append(EscapeIdentifier(identifier));

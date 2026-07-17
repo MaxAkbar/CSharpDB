@@ -1,5 +1,6 @@
 using System.Globalization;
 using CSharpDB.Admin.Models;
+using CSharpDB.Primitives;
 using CSharpDB.Sql;
 
 namespace CSharpDB.Admin.Helpers;
@@ -227,6 +228,7 @@ internal sealed class QueryPagingPlan
                 Left = compound.Left,
                 Right = compound.Right,
                 Operation = compound.Operation,
+                Quantifier = compound.Quantifier,
                 OrderBy = orderBy ?? compound.OrderBy,
                 Limit = ComputeEffectiveLimit(compound.Limit, pageSize, offset),
                 Offset = ComputeEffectiveOffset(compound.Offset, offset),
@@ -563,6 +565,7 @@ internal sealed class QueryPagingPlan
     private static bool ContainsAggregateFunction(Expression expression)
         => expression switch
         {
+            WindowFunctionExpression => false,
             FunctionCallExpression func when IsAggregateFunction(func.FunctionName) => true,
             FunctionCallExpression func => func.Arguments.Any(ContainsAggregateFunction),
             BinaryExpression binary => ContainsAggregateFunction(binary.Left) || ContainsAggregateFunction(binary.Right),
@@ -708,10 +711,10 @@ internal static class QueryAstSqlWriter
     private static string WriteCte(CteDefinition cte)
     {
         string columns = cte.ColumnNames is { Count: > 0 }
-            ? $"({string.Join(", ", cte.ColumnNames)})"
+            ? $"({string.Join(", ", cte.ColumnNames.Select(SqlIdentifierRules.Quote))})"
             : string.Empty;
 
-        return $"{cte.Name}{columns} AS ({WriteQuery(cte.Query)})";
+        return $"{SqlIdentifierRules.Quote(cte.Name)}{columns} AS ({WriteQuery(cte.Query)})";
     }
 
     private static string WriteQuery(QueryStatement query)
@@ -762,7 +765,7 @@ internal static class QueryAstSqlWriter
         var parts = new List<string>
         {
             WriteCompoundBranch(statement.Left),
-            WriteSetOperation(statement.Operation),
+            WriteSetOperation(statement.Operation, statement.Quantifier),
             WriteCompoundBranch(statement.Right),
         };
 
@@ -771,9 +774,17 @@ internal static class QueryAstSqlWriter
     }
 
     private static string WriteCompoundBranch(QueryStatement statement)
-        => statement is CompoundSelectStatement
+        => statement is CompoundSelectStatement || HasOrderingOrPagination(statement)
             ? $"({WriteQuery(statement)})"
             : WriteQuery(statement);
+
+    private static bool HasOrderingOrPagination(QueryStatement statement)
+        => statement switch
+        {
+            SelectStatement select => select.OrderBy is { Count: > 0 } || select.Limit.HasValue || select.Offset.HasValue,
+            CompoundSelectStatement compound => compound.OrderBy is { Count: > 0 } || compound.Limit.HasValue || compound.Offset.HasValue,
+            _ => false,
+        };
 
     private static string WriteSelectColumn(SelectColumn column)
     {
@@ -781,7 +792,7 @@ internal static class QueryAstSqlWriter
             return "*";
 
         string expression = WriteExpression(column.Expression!);
-        return column.Alias is null ? expression : $"{expression} AS {column.Alias}";
+        return column.Alias is null ? expression : $"{expression} AS {SqlIdentifierRules.Quote(column.Alias)}";
     }
 
     private static void AppendOrderingAndPagination(
@@ -809,8 +820,8 @@ internal static class QueryAstSqlWriter
         {
             SingleRowTableRef => string.Empty,
             SimpleTableRef simple => simple.Alias is null
-                ? simple.TableName
-                : $"{simple.TableName} AS {simple.Alias}",
+                ? SqlIdentifierRules.Quote(simple.TableName)
+                : $"{SqlIdentifierRules.Quote(simple.TableName)} AS {SqlIdentifierRules.Quote(simple.Alias)}",
             JoinTableRef join => $"{WriteTableRef(join.Left)} {WriteJoinType(join.JoinType)} {WriteTableRef(join.Right)}"
                 + (join.Condition is null ? string.Empty : $" ON {WriteExpression(join.Condition)}"),
             _ => throw new InvalidOperationException($"Cannot serialize table ref type: {tableRef.GetType().Name}"),
@@ -826,13 +837,14 @@ internal static class QueryAstSqlWriter
             _ => throw new InvalidOperationException($"Unknown join type: {joinType}"),
         };
 
-    private static string WriteSetOperation(SetOperationKind operation)
-        => operation switch
+    private static string WriteSetOperation(SetOperationKind operation, SetQuantifier quantifier)
+        => (operation, quantifier) switch
         {
-            SetOperationKind.Union => "UNION",
-            SetOperationKind.Intersect => "INTERSECT",
-            SetOperationKind.Except => "EXCEPT",
-            _ => throw new InvalidOperationException($"Unknown set operation: {operation}"),
+            (SetOperationKind.Union, SetQuantifier.Distinct) => "UNION",
+            (SetOperationKind.Union, SetQuantifier.All) => "UNION ALL",
+            (SetOperationKind.Intersect, SetQuantifier.Distinct) => "INTERSECT",
+            (SetOperationKind.Except, SetQuantifier.Distinct) => "EXCEPT",
+            _ => throw new InvalidOperationException($"Unsupported set operation: {operation} {quantifier}"),
         };
 
     private static string WriteExpression(Expression expression)
@@ -841,16 +853,17 @@ internal static class QueryAstSqlWriter
             LiteralExpression literal => WriteLiteral(literal),
             ParameterExpression parameter => $"@{parameter.Name}",
             ColumnRefExpression column => column.TableAlias is null
-                ? column.ColumnName
-                : $"{column.TableAlias}.{column.ColumnName}",
+                ? SqlIdentifierRules.Quote(column.ColumnName)
+                : $"{SqlIdentifierRules.Quote(column.TableAlias)}.{SqlIdentifierRules.Quote(column.ColumnName)}",
             BinaryExpression binary => $"({WriteExpression(binary.Left)} {WriteBinaryOperator(binary.Op)} {WriteExpression(binary.Right)})",
             UnaryExpression unary => unary.Op == TokenType.Not
                 ? $"NOT {WriteExpression(unary.Operand)}"
                 : $"-{WriteExpression(unary.Operand)}",
-            CollateExpression collate => $"{WriteExpression(collate.Operand)} COLLATE {collate.Collation}",
+            CollateExpression collate => $"{WriteExpression(collate.Operand)} COLLATE {SqlIdentifierRules.Quote(collate.Collation)}",
             FunctionCallExpression function => function.IsStarArg
                 ? $"{function.FunctionName}(*)"
                 : $"{function.FunctionName}({(function.IsDistinct ? "DISTINCT " : string.Empty)}{string.Join(", ", function.Arguments.Select(WriteExpression))})",
+            WindowFunctionExpression window => WriteWindowFunction(window),
             LikeExpression like => $"{WriteExpression(like.Operand)}{(like.Negated ? " NOT" : string.Empty)} LIKE {WriteExpression(like.Pattern)}"
                 + (like.EscapeChar is null ? string.Empty : $" ESCAPE {WriteExpression(like.EscapeChar)}"),
             InExpression inExpression => $"{WriteExpression(inExpression.Operand)}{(inExpression.Negated ? " NOT" : string.Empty)} IN ({string.Join(", ", inExpression.Values.Select(WriteExpression))})",
@@ -861,6 +874,30 @@ internal static class QueryAstSqlWriter
             IsNullExpression isNull => $"{WriteExpression(isNull.Operand)} IS{(isNull.Negated ? " NOT" : string.Empty)} NULL",
             _ => throw new InvalidOperationException($"Cannot serialize expression type: {expression.GetType().Name}"),
         };
+
+    private static string WriteWindowFunction(WindowFunctionExpression window)
+    {
+        var clauses = new List<string>(2);
+        if (window.Window.PartitionBy.Count > 0)
+        {
+            clauses.Add(
+                "PARTITION BY " +
+                string.Join(", ", window.Window.PartitionBy.Select(WriteExpression)));
+        }
+
+        if (window.Window.OrderBy.Count > 0)
+        {
+            clauses.Add(
+                "ORDER BY " +
+                string.Join(
+                    ", ",
+                    window.Window.OrderBy.Select(
+                        clause => WriteExpression(clause.Expression) +
+                            (clause.Descending ? " DESC" : string.Empty))));
+        }
+
+        return $"{WriteExpression(window.Function)} OVER ({string.Join(" ", clauses)})";
+    }
 
     private static string WriteLiteral(LiteralExpression literal)
     {

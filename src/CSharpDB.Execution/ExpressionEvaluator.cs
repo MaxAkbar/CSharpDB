@@ -25,6 +25,9 @@ public static class ExpressionEvaluator
             UnaryExpression un => EvalUnary(un, row, schema, functions),
             CollateExpression collate => Evaluate(collate.Operand, row, schema, functions),
             FunctionCallExpression func => EvalFunction(func, row, schema, functions),
+            WindowFunctionExpression => throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Window functions require window planning context and cannot be evaluated as scalar expressions."),
             LikeExpression like => EvalLike(like, row, schema, functions),
             InExpression inExpr => EvalIn(inExpr, row, schema, functions),
             BetweenExpression bet => EvalBetween(bet, row, schema, functions),
@@ -77,14 +80,14 @@ public static class ExpressionEvaluator
 
         return bin.Op switch
         {
-            BinaryOp.Equals => BoolToDb(CollationSupport.Compare(left, right, collation) == 0),
-            BinaryOp.NotEquals => BoolToDb(CollationSupport.Compare(left, right, collation) != 0),
-            BinaryOp.LessThan => BoolToDb(CollationSupport.Compare(left, right, collation) < 0),
-            BinaryOp.GreaterThan => BoolToDb(CollationSupport.Compare(left, right, collation) > 0),
-            BinaryOp.LessOrEqual => BoolToDb(CollationSupport.Compare(left, right, collation) <= 0),
-            BinaryOp.GreaterOrEqual => BoolToDb(CollationSupport.Compare(left, right, collation) >= 0),
-            BinaryOp.And => BoolToDb(left.IsTruthy && right.IsTruthy),
-            BinaryOp.Or => BoolToDb(left.IsTruthy || right.IsTruthy),
+            BinaryOp.Equals => CompareOrNull(left, right, collation, static comparison => comparison == 0),
+            BinaryOp.NotEquals => CompareOrNull(left, right, collation, static comparison => comparison != 0),
+            BinaryOp.LessThan => CompareOrNull(left, right, collation, static comparison => comparison < 0),
+            BinaryOp.GreaterThan => CompareOrNull(left, right, collation, static comparison => comparison > 0),
+            BinaryOp.LessOrEqual => CompareOrNull(left, right, collation, static comparison => comparison <= 0),
+            BinaryOp.GreaterOrEqual => CompareOrNull(left, right, collation, static comparison => comparison >= 0),
+            BinaryOp.And => SqlAnd(left, right),
+            BinaryOp.Or => SqlOr(left, right),
             BinaryOp.Plus => ArithmeticOp(left, right, (a, b) => a + b, (a, b) => a + b),
             BinaryOp.Minus => ArithmeticOp(left, right, (a, b) => a - b, (a, b) => a - b),
             BinaryOp.Multiply => ArithmeticOp(left, right, (a, b) => a * b, (a, b) => a * b),
@@ -98,7 +101,7 @@ public static class ExpressionEvaluator
         var operand = Evaluate(un.Operand, row, schema, functions);
         return un.Op switch
         {
-            TokenType.Not => BoolToDb(!operand.IsTruthy),
+            TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
             TokenType.Minus => operand.Type switch
             {
                 DbType.Integer => DbValue.FromInteger(-operand.AsInteger),
@@ -123,6 +126,40 @@ public static class ExpressionEvaluator
     }
 
     private static DbValue BoolToDb(bool value) => DbValue.FromInteger(value ? 1 : 0);
+
+    private static DbValue CompareOrNull(
+        DbValue left,
+        DbValue right,
+        string? collation,
+        Func<int, bool> predicate)
+    {
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(predicate(CollationSupport.Compare(left, right, collation)));
+    }
+
+    private static DbValue SqlAnd(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && !left.IsTruthy) || (!right.IsNull && !right.IsTruthy))
+            return BoolToDb(false);
+
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(true);
+    }
+
+    private static DbValue SqlOr(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && left.IsTruthy) || (!right.IsNull && right.IsTruthy))
+            return BoolToDb(true);
+
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(false);
+    }
 
     private static DbValue ArithmeticOp(DbValue left, DbValue right,
         Func<long, long, long> intOp, Func<double, double, double> realOp)

@@ -411,6 +411,12 @@ public sealed class TableImportExportService(
         ColumnName = foreignKey.ColumnName,
         ReferencedTableName = foreignKey.ReferencedTableName,
         ReferencedColumnName = foreignKey.ReferencedColumnName,
+        ColumnNames = foreignKey.ColumnNames.Count > 0
+            ? foreignKey.ColumnNames.ToArray()
+            : [foreignKey.ColumnName],
+        ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+            ? foreignKey.ReferencedColumnNames.ToArray()
+            : [foreignKey.ReferencedColumnName],
         OnDelete = foreignKey.OnDelete == ClientForeignKeyOnDeleteAction.Cascade
             ? PrimitiveForeignKeyOnDeleteAction.Cascade
             : PrimitiveForeignKeyOnDeleteAction.Restrict,

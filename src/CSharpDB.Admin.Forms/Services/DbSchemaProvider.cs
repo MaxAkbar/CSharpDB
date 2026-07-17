@@ -78,8 +78,14 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
             {
                 foreignKey.ConstraintName,
                 foreignKey.ColumnName,
+                ColumnNames = foreignKey.ColumnNames.Count > 0
+                    ? foreignKey.ColumnNames
+                    : [foreignKey.ColumnName],
                 foreignKey.ReferencedTableName,
                 foreignKey.ReferencedColumnName,
+                ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                    ? foreignKey.ReferencedColumnNames
+                    : [foreignKey.ReferencedColumnName],
                 OnDelete = foreignKey.OnDelete.ToString(),
                 foreignKey.SupportingIndexName,
             }),
@@ -139,9 +145,13 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
     {
         return new FormForeignKeyDefinition(
             foreignKey.ConstraintName,
-            [foreignKey.ColumnName],
+            foreignKey.ColumnNames.Count > 0
+                ? foreignKey.ColumnNames
+                : [foreignKey.ColumnName],
             foreignKey.ReferencedTableName,
-            [foreignKey.ReferencedColumnName]);
+            foreignKey.ReferencedColumnNames.Count > 0
+                ? foreignKey.ReferencedColumnNames
+                : [foreignKey.ReferencedColumnName]);
     }
 
     private async Task<FormTableDefinition> MapViewAsync(ViewDefinition view)

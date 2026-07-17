@@ -5,8 +5,13 @@ using CSharpDB.Engine;
 using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Primitives;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
+using ClientCheckConstraintDefinition = CSharpDB.Client.Models.CheckConstraintDefinition;
 using ClientDbType = CSharpDB.Client.Models.DbType;
+using ClientForeignKeyDefinition = CSharpDB.Client.Models.ForeignKeyDefinition;
+using ClientForeignKeyOnDeleteAction = CSharpDB.Client.Models.ForeignKeyOnDeleteAction;
 using ClientIndexSchema = CSharpDB.Client.Models.IndexSchema;
+using ClientKeyConstraintDefinition = CSharpDB.Client.Models.KeyConstraintDefinition;
+using ClientKeyConstraintKind = CSharpDB.Client.Models.KeyConstraintKind;
 using ClientTableSchema = CSharpDB.Client.Models.TableSchema;
 using PrimitiveColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
 using PrimitiveDbType = CSharpDB.Primitives.DbType;
@@ -102,6 +107,46 @@ public sealed class SchemaComparisonServiceTests
                         Type = PrimitiveDbType.Text,
                         Nullable = false,
                         Collation = "NOCASE",
+                        DefaultSql = "'anonymous'",
+                    },
+                ],
+                CheckConstraints =
+                [
+                    new CSharpDB.Primitives.CheckConstraintDefinition
+                    {
+                        ConstraintName = "ck_archive_customers_name",
+                        ExpressionSql = "name <> ''",
+                        ColumnName = "name",
+                    },
+                ],
+                ForeignKeys =
+                [
+                    new CSharpDB.Primitives.ForeignKeyDefinition
+                    {
+                        ConstraintName = "fk_archive_customers_tenant",
+                        ColumnName = "id",
+                        ReferencedTableName = "archive_tenants",
+                        ReferencedColumnName = "tenant_id",
+                        ColumnNames = ["id", "name"],
+                        ReferencedColumnNames = ["tenant_id", "customer_name"],
+                        OnDelete = CSharpDB.Primitives.ForeignKeyOnDeleteAction.Cascade,
+                        SupportingIndexName = "__fk_archive_customers_tenant",
+                    },
+                ],
+                KeyConstraints =
+                [
+                    new CSharpDB.Primitives.KeyConstraintDefinition
+                    {
+                        ConstraintName = "pk_archive_customers",
+                        Kind = CSharpDB.Primitives.KeyConstraintKind.PrimaryKey,
+                        Columns = ["id"],
+                    },
+                    new CSharpDB.Primitives.KeyConstraintDefinition
+                    {
+                        ConstraintName = "uq_archive_customers_name",
+                        Kind = CSharpDB.Primitives.KeyConstraintKind.Unique,
+                        Columns = ["name"],
+                        BackingIndexName = "__constraint_archive_customers_name",
                     },
                 ],
             };
@@ -114,6 +159,25 @@ public sealed class SchemaComparisonServiceTests
             ClientTableSchema table = Assert.Single(snapshot.Tables);
             Assert.Equal("archive_customers", table.TableName);
             Assert.Equal("NOCASE", table.Columns[1].Collation);
+            Assert.Equal("'anonymous'", table.Columns[1].DefaultSql);
+            Assert.Equal("ck_archive_customers_name", Assert.Single(table.CheckConstraints).ConstraintName);
+            ClientForeignKeyDefinition tableForeignKey = Assert.Single(table.ForeignKeys);
+            Assert.Equal(["id", "name"], tableForeignKey.ColumnNames);
+            Assert.Equal(["tenant_id", "customer_name"], tableForeignKey.ReferencedColumnNames);
+            Assert.Collection(
+                table.KeyConstraints,
+                primary => Assert.Equal(ClientKeyConstraintKind.PrimaryKey, primary.Kind),
+                unique => Assert.Equal(ClientKeyConstraintKind.Unique, unique.Kind));
+
+            var dataTarget = new TableArchiveDataCompareTarget(path);
+            ClientTableSchema? dataSchema = await dataTarget.GetTableSchemaAsync("archive_customers", ct);
+            Assert.NotNull(dataSchema);
+            Assert.Equal("'anonymous'", dataSchema!.Columns[1].DefaultSql);
+            Assert.Single(dataSchema.CheckConstraints);
+            Assert.Equal(2, dataSchema.KeyConstraints.Count);
+            ClientForeignKeyDefinition dataForeignKey = Assert.Single(dataSchema.ForeignKeys);
+            Assert.Equal(["id", "name"], dataForeignKey.ColumnNames);
+            Assert.Equal(["tenant_id", "customer_name"], dataForeignKey.ReferencedColumnNames);
 
             var empty = new StaticSchemaCompareTarget("empty", []);
             SchemaDiffReport report = await new SchemaComparisonService().CompareAsync(archive, empty, ct);
@@ -122,11 +186,260 @@ public sealed class SchemaComparisonServiceTests
             Assert.Equal(SchemaObjectKind.Table, change.ObjectKind);
             Assert.Equal(SchemaChangeKind.Added, change.ChangeKind);
             Assert.Equal("archive_customers", change.Name);
+            Assert.Contains("DEFAULT 'anonymous'", change.SourceDefinition, StringComparison.Ordinal);
+            Assert.Contains("CONSTRAINT ck_archive_customers_name CHECK (name <> '')", change.SourceDefinition, StringComparison.Ordinal);
+            Assert.Contains("CONSTRAINT uq_archive_customers_name UNIQUE (name)", change.SourceDefinition, StringComparison.Ordinal);
+            Assert.Contains(
+                "CONSTRAINT fk_archive_customers_tenant FOREIGN KEY (id, name) REFERENCES archive_tenants (tenant_id, customer_name) ON DELETE CASCADE",
+                change.SourceDefinition,
+                StringComparison.Ordinal);
         }
         finally
         {
             if (File.Exists(path))
                 File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Compare_ReportsDefaultCheckAndLogicalKeyDifferences()
+    {
+        var sourceTable = new ClientTableSchema
+        {
+            TableName = "orders",
+            Columns =
+            [
+                Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true, isIdentity: true),
+                Column("tenant", ClientDbType.Text, nullable: false),
+                Column("code", ClientDbType.Text, defaultSql: "'new'"),
+                Column("score", ClientDbType.Integer),
+            ],
+            KeyConstraints =
+            [
+                new ClientKeyConstraintDefinition
+                {
+                    ConstraintName = "pk_orders",
+                    Kind = ClientKeyConstraintKind.PrimaryKey,
+                    Columns = ["id"],
+                },
+                new ClientKeyConstraintDefinition
+                {
+                    ConstraintName = "uq_orders_tenant_code",
+                    Kind = ClientKeyConstraintKind.Unique,
+                    Columns = ["tenant", "code"],
+                },
+            ],
+            CheckConstraints =
+            [
+                new ClientCheckConstraintDefinition
+                {
+                    ConstraintName = "ck_orders_score",
+                    ExpressionSql = "score >= 0",
+                    ColumnName = "score",
+                },
+            ],
+        };
+        var targetTable = new ClientTableSchema
+        {
+            TableName = "orders",
+            Columns =
+            [
+                Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true, isIdentity: true),
+                Column("tenant", ClientDbType.Text, nullable: false),
+                Column("code", ClientDbType.Text),
+                Column("score", ClientDbType.Integer),
+            ],
+        };
+
+        SchemaDiffReport report = new SchemaComparisonService().Compare(
+            new SchemaSnapshot { Target = Target("source"), Tables = [sourceTable] },
+            new SchemaSnapshot { Target = Target("target"), Tables = [targetTable] });
+
+        SchemaDiffChange defaultChange = Assert.Single(
+            report.Changes,
+            change => change.ObjectKind == SchemaObjectKind.Column && change.Name == "orders.code");
+        Assert.Equal("'new'", defaultChange.Details["defaultSql"].Split(" -> ", StringSplitOptions.None)[1]);
+
+        SchemaDiffChange constraintChange = Assert.Single(
+            report.Changes,
+            change => change.ObjectKind == SchemaObjectKind.Table && change.Name == "orders");
+        Assert.Contains("id INTEGER NOT NULL", constraintChange.SourceDefinition, StringComparison.Ordinal);
+        Assert.DoesNotContain("id INTEGER IDENTITY", constraintChange.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains("code TEXT DEFAULT 'new'", constraintChange.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains("CONSTRAINT pk_orders PRIMARY KEY (id)", constraintChange.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains("CONSTRAINT uq_orders_tenant_code UNIQUE (tenant, code)", constraintChange.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains("CONSTRAINT ck_orders_score CHECK (score >= 0)", constraintChange.SourceDefinition, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CompareAndRender_PreserveOrderedCompositeForeignKeyColumns()
+    {
+        var source = new ClientTableSchema
+        {
+            TableName = "children",
+            Columns =
+            [
+                Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true),
+                Column("tenant_id", ClientDbType.Integer),
+                Column("parent_code", ClientDbType.Text),
+            ],
+            ForeignKeys =
+            [
+                new ClientForeignKeyDefinition
+                {
+                    ConstraintName = "fk_children_parent",
+                    ColumnName = "tenant_id",
+                    ReferencedTableName = "parents",
+                    ReferencedColumnName = "tenant_id",
+                    ColumnNames = ["tenant_id", "parent_code"],
+                    ReferencedColumnNames = ["tenant_id", "code"],
+                    OnDelete = ClientForeignKeyOnDeleteAction.Cascade,
+                    SupportingIndexName = "__fk_children_parent",
+                },
+            ],
+        };
+        var target = new ClientTableSchema
+        {
+            TableName = "children",
+            Columns = source.Columns,
+            ForeignKeys =
+            [
+                new ClientForeignKeyDefinition
+                {
+                    ConstraintName = "fk_children_parent",
+                    ColumnName = "tenant_id",
+                    ReferencedTableName = "parents",
+                    ReferencedColumnName = "tenant_id",
+                    ColumnNames = ["tenant_id", "legacy_code"],
+                    ReferencedColumnNames = ["tenant_id", "legacy_code"],
+                    OnDelete = ClientForeignKeyOnDeleteAction.Cascade,
+                    SupportingIndexName = "__fk_children_parent",
+                },
+            ],
+        };
+
+        SchemaDiffReport report = new SchemaComparisonService().Compare(
+            new SchemaSnapshot { Target = Target("source"), Tables = [source] },
+            new SchemaSnapshot { Target = Target("target"), Tables = [target] });
+
+        SchemaDiffChange change = Assert.Single(report.Changes);
+        Assert.Equal(SchemaObjectKind.ForeignKey, change.ObjectKind);
+        Assert.Equal(SchemaChangeKind.Changed, change.ChangeKind);
+        Assert.Contains(
+            "(tenant_id, parent_code) -> parents.(tenant_id, code)",
+            change.SourceDefinition,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "FOREIGN KEY (tenant_id, parent_code) REFERENCES parents (tenant_id, code) ON DELETE CASCADE",
+            SchemaScriptRenderer.RenderCreateTable(source),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RenderCreateTable_RoundTripsDefaultsChecksLogicalKeysAndIdentity()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string sourcePath = Path.Combine(Path.GetTempPath(), $"csharpdb_devops_script_source_{Guid.NewGuid():N}.db");
+        string targetPath = Path.Combine(Path.GetTempPath(), $"csharpdb_devops_script_target_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var source = CSharpDbClient.Create(new CSharpDbClientOptions { DataSource = sourcePath });
+            SqlExecutionResult sourceCreate = await source.ExecuteSqlAsync(
+                """
+                CREATE TABLE scripted_orders (
+                    id INTEGER PRIMARY KEY IDENTITY,
+                    tenant TEXT NOT NULL,
+                    code TEXT DEFAULT 'new',
+                    score INTEGER CONSTRAINT ck_scripted_orders_score CHECK (score >= 0),
+                    CONSTRAINT uq_scripted_orders_tenant_code UNIQUE (tenant, code)
+                );
+                """,
+                ct);
+            Assert.Null(sourceCreate.Error);
+
+            ClientTableSchema sourceSchema = Assert.IsType<ClientTableSchema>(
+                await source.GetTableSchemaAsync("scripted_orders", ct));
+            string script = SchemaScriptRenderer.RenderCreateTable(sourceSchema);
+
+            await using var target = CSharpDbClient.Create(new CSharpDbClientOptions { DataSource = targetPath });
+            SqlExecutionResult targetCreate = await target.ExecuteSqlAsync(script, ct);
+            Assert.Null(targetCreate.Error);
+
+            ClientTableSchema targetSchema = Assert.IsType<ClientTableSchema>(
+                await target.GetTableSchemaAsync("scripted_orders", ct));
+            Assert.True(Assert.Single(targetSchema.Columns, column => column.Name == "id").IsIdentity);
+            Assert.Equal("'new'", Assert.Single(targetSchema.Columns, column => column.Name == "code").DefaultSql);
+            Assert.Equal("ck_scripted_orders_score", Assert.Single(targetSchema.CheckConstraints).ConstraintName);
+            Assert.Collection(
+                targetSchema.KeyConstraints,
+                primary => Assert.Equal(ClientKeyConstraintKind.PrimaryKey, primary.Kind),
+                unique =>
+                {
+                    Assert.Equal(ClientKeyConstraintKind.Unique, unique.Kind);
+                    Assert.Equal(["tenant", "code"], unique.Columns);
+                });
+        }
+        finally
+        {
+            foreach (string path in new[] { sourcePath, sourcePath + ".wal", targetPath, targetPath + ".wal" })
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RenderCreateTable_LogicalIntegerPrimaryKey_RoundTripsWithoutDuplicatePrimaryKey()
+    {
+        var schema = new ClientTableSchema
+        {
+            TableName = "orders",
+            Columns =
+            [
+                Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true, isIdentity: true),
+                Column("tenant", ClientDbType.Text, nullable: false),
+            ],
+            KeyConstraints =
+            [
+                new ClientKeyConstraintDefinition
+                {
+                    ConstraintName = "pk_orders",
+                    Kind = ClientKeyConstraintKind.PrimaryKey,
+                    Columns = ["id"],
+                },
+                new ClientKeyConstraintDefinition
+                {
+                    ConstraintName = "uq_orders_tenant",
+                    Kind = ClientKeyConstraintKind.Unique,
+                    Columns = ["tenant"],
+                },
+            ],
+        };
+
+        string sql = SchemaScriptRenderer.RenderCreateTable(schema);
+        Assert.DoesNotContain("IDENTITY", sql, StringComparison.Ordinal);
+
+        string path = Path.Combine(Path.GetTempPath(), $"csharpdb_devops_keys_{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var db = await Database.OpenAsync(path, TestContext.Current.CancellationToken);
+            await db.ExecuteAsync(sql, TestContext.Current.CancellationToken);
+
+            PrimitiveTableSchema restored = db.GetTableSchema("orders")!;
+            Assert.True(restored.Columns[0].IsIdentity);
+            Assert.Collection(
+                restored.KeyConstraints,
+                primary => Assert.Equal(CSharpDB.Primitives.KeyConstraintKind.PrimaryKey, primary.Kind),
+                unique => Assert.Equal(CSharpDB.Primitives.KeyConstraintKind.Unique, unique.Kind));
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+            if (File.Exists(path + ".wal"))
+                File.Delete(path + ".wal");
         }
     }
 
@@ -401,7 +714,8 @@ public sealed class SchemaComparisonServiceTests
         bool nullable = true,
         bool isPrimaryKey = false,
         bool isIdentity = false,
-        string? collation = null)
+        string? collation = null,
+        string? defaultSql = null)
         => new()
         {
             Name = name,
@@ -410,6 +724,7 @@ public sealed class SchemaComparisonServiceTests
             IsPrimaryKey = isPrimaryKey,
             IsIdentity = isIdentity,
             Collation = collation,
+            DefaultSql = defaultSql,
         };
 
     private sealed class StaticSchemaCompareTarget : ISchemaCompareTarget

@@ -73,6 +73,7 @@ public sealed class SchemaComparisonService
 
             CompareColumns(source, target, changes);
             CompareForeignKeys(source, target, changes);
+            CompareLogicalConstraints(source, target, changes);
         }
 
         foreach (TableSchema target in targetTables.OrderBy(table => table.TableName, StringComparer.OrdinalIgnoreCase))
@@ -203,6 +204,40 @@ public sealed class SchemaComparisonService
                 Warning = $"Target foreign key '{targetForeignKey.ConstraintName}' would be removed to match the source.",
             });
         }
+    }
+
+    private static void CompareLogicalConstraints(
+        TableSchema sourceTable,
+        TableSchema targetTable,
+        List<SchemaDiffChange> changes)
+    {
+        bool keysEqual = ConstraintSignatures(sourceTable.KeyConstraints, KeyConstraintSignature)
+            .SequenceEqual(
+                ConstraintSignatures(targetTable.KeyConstraints, KeyConstraintSignature),
+                StringComparer.Ordinal);
+        bool checksEqual = ConstraintSignatures(sourceTable.CheckConstraints, CheckConstraintSignature)
+            .SequenceEqual(
+                ConstraintSignatures(targetTable.CheckConstraints, CheckConstraintSignature),
+                StringComparer.Ordinal);
+        if (keysEqual && checksEqual)
+            return;
+
+        var details = new Dictionary<string, string>();
+        if (!keysEqual)
+            details["keyConstraints"] = $"{targetTable.KeyConstraints.Count} -> {sourceTable.KeyConstraints.Count}";
+        if (!checksEqual)
+            details["checkConstraints"] = $"{targetTable.CheckConstraints.Count} -> {sourceTable.CheckConstraints.Count}";
+
+        changes.Add(new SchemaDiffChange
+        {
+            ObjectKind = SchemaObjectKind.Table,
+            ChangeKind = SchemaChangeKind.Changed,
+            Name = sourceTable.TableName,
+            SourceDefinition = SchemaScriptRenderer.RenderCreateTable(sourceTable),
+            TargetDefinition = SchemaScriptRenderer.RenderCreateTable(targetTable),
+            Warning = $"Table '{sourceTable.TableName}' has logical key or check constraint differences that require migration review.",
+            Details = details,
+        });
     }
 
     private static void CompareIndexes(
@@ -381,7 +416,11 @@ public sealed class SchemaComparisonService
            && left.Nullable == right.Nullable
            && left.IsPrimaryKey == right.IsPrimaryKey
            && left.IsIdentity == right.IsIdentity
-           && string.Equals(left.Collation ?? string.Empty, right.Collation ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+           && string.Equals(left.Collation ?? string.Empty, right.Collation ?? string.Empty, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(
+               NormalizeOptionalSql(left.DefaultSql),
+               NormalizeOptionalSql(right.DefaultSql),
+               StringComparison.Ordinal);
 
     private static bool IsColumnChangeDestructive(ClientColumnDefinition source, ClientColumnDefinition target)
         => source.Type != target.Type
@@ -397,6 +436,12 @@ public sealed class SchemaComparisonService
         AddIfDifferent(details, "primaryKey", source.IsPrimaryKey.ToString(), target.IsPrimaryKey.ToString(), StringComparison.Ordinal);
         AddIfDifferent(details, "identity", source.IsIdentity.ToString(), target.IsIdentity.ToString(), StringComparison.Ordinal);
         AddIfDifferent(details, "collation", source.Collation ?? string.Empty, target.Collation ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        AddIfDifferent(
+            details,
+            "defaultSql",
+            NormalizeOptionalSql(source.DefaultSql),
+            NormalizeOptionalSql(target.DefaultSql),
+            StringComparison.Ordinal);
         return details;
     }
 
@@ -412,10 +457,24 @@ public sealed class SchemaComparisonService
     }
 
     private static bool ForeignKeyEquals(ClientForeignKeyDefinition left, ClientForeignKeyDefinition right)
-        => string.Equals(left.ColumnName, right.ColumnName, StringComparison.OrdinalIgnoreCase)
+        => ResolveChildColumns(left).SequenceEqual(
+               ResolveChildColumns(right),
+               StringComparer.OrdinalIgnoreCase)
            && string.Equals(left.ReferencedTableName, right.ReferencedTableName, StringComparison.OrdinalIgnoreCase)
-           && string.Equals(left.ReferencedColumnName, right.ReferencedColumnName, StringComparison.OrdinalIgnoreCase)
+           && ResolveReferencedColumns(left).SequenceEqual(
+               ResolveReferencedColumns(right),
+               StringComparer.OrdinalIgnoreCase)
            && left.OnDelete == right.OnDelete;
+
+    private static IReadOnlyList<string> ResolveChildColumns(ClientForeignKeyDefinition foreignKey)
+        => foreignKey.ColumnNames.Count > 0
+            ? foreignKey.ColumnNames
+            : [foreignKey.ColumnName];
+
+    private static IReadOnlyList<string> ResolveReferencedColumns(ClientForeignKeyDefinition foreignKey)
+        => foreignKey.ReferencedColumnNames.Count > 0
+            ? foreignKey.ReferencedColumnNames
+            : [foreignKey.ReferencedColumnName];
 
     private static bool IndexEquals(IndexSchema left, IndexSchema right)
         => string.Equals(left.TableName, right.TableName, StringComparison.OrdinalIgnoreCase)
@@ -425,6 +484,32 @@ public sealed class SchemaComparisonService
 
     private static IEnumerable<string> NormalizeCollations(IReadOnlyList<string?> collations)
         => collations.Select(collation => collation ?? string.Empty);
+
+    private static IEnumerable<string> ConstraintSignatures<T>(
+        IReadOnlyList<T> constraints,
+        Func<T, string> signature)
+        => constraints.Select(signature).OrderBy(value => value, StringComparer.Ordinal);
+
+    private static string KeyConstraintSignature(KeyConstraintDefinition key)
+        => string.Join(
+            '\u001f',
+            key.Kind.ToString(),
+            NormalizeIdentifier(key.ConstraintName),
+            string.Join('\u001e', key.Columns.Select(NormalizeIdentifier)),
+            NormalizeIdentifier(key.BackingIndexName));
+
+    private static string CheckConstraintSignature(CheckConstraintDefinition check)
+        => string.Join(
+            '\u001f',
+            NormalizeIdentifier(check.ConstraintName),
+            NormalizeIdentifier(check.ColumnName),
+            NormalizeSql(check.ExpressionSql));
+
+    private static string NormalizeIdentifier(string? value)
+        => (value ?? string.Empty).Trim().ToUpperInvariant();
+
+    private static string NormalizeOptionalSql(string? sql)
+        => string.IsNullOrWhiteSpace(sql) ? string.Empty : NormalizeSql(sql);
 
     private static bool ViewEquals(ViewDefinition left, ViewDefinition right)
         => string.Equals(NormalizeSql(left.Sql), NormalizeSql(right.Sql), StringComparison.Ordinal);
@@ -446,7 +531,9 @@ public sealed class SchemaComparisonService
         => sql.Trim().TrimEnd(';').Trim();
 
     private static string RenderForeignKey(ClientForeignKeyDefinition foreignKey)
-        => $"{foreignKey.ConstraintName}: {foreignKey.ColumnName} -> {foreignKey.ReferencedTableName}.{foreignKey.ReferencedColumnName} ON DELETE {foreignKey.OnDelete}";
+        => $"{foreignKey.ConstraintName}: ({string.Join(", ", ResolveChildColumns(foreignKey))}) -> " +
+           $"{foreignKey.ReferencedTableName}.({string.Join(", ", ResolveReferencedColumns(foreignKey))}) " +
+           $"ON DELETE {foreignKey.OnDelete}";
 
     private static string RenderProcedure(ProcedureDefinition procedure)
         => JsonSerializer.Serialize(procedure, SchemaDevOpsJson.Options);

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>SQL Compatibility Roadmap — CSharpDB</title>
+    <meta name="description" content="Implementation roadmap for the CSharpDB SQL dialect: constraints, keys, ALTER TABLE, compound queries, windows, functions, generated SQL, metadata, EXPLAIN, and release qualification.">
+    <link rel="canonical" href="https://csharpdb.com/docs/sql-compatibility-roadmap.html">
+    <meta property="og:title" content="SQL Compatibility Roadmap — CSharpDB">
+    <meta property="og:description" content="Staged implementation roadmap and current development status for the CSharpDB SQL dialect.">
+    <meta property="og:url" content="https://csharpdb.com/docs/sql-compatibility-roadmap.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "name": "SQL Compatibility Roadmap",
+        "description": "Staged implementation roadmap and current development status for the CSharpDB SQL dialect.",
+        "url": "https://csharpdb.com/docs/sql-compatibility-roadmap.html",
+        "isPartOf": {"@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com"}
+    }
+    </script>
+</head>
+<body>
+    <script>
+        window.currentPage = 'roadmap'; window.pagePathPrefix = '../';
+        window.pageConfig = {
+            title: 'SQL Compatibility Roadmap',
+            description: 'Staged implementation roadmap and current development status for the CSharpDB SQL dialect.',
+            keywords: 'CSharpDB SQL roadmap, SQL compatibility, DEFAULT, CHECK, UNION ALL, window functions, EF Core, metadata, EXPLAIN',
+            canonicalPath: 'docs/sql-compatibility-roadmap.html',
+            ogType: 'article',
+        };
+    </script>
+    <div id="site-nav"></div>
+
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>SQL Compatibility Roadmap</h1>
+                <p class="lead">The staged engineering plan for making the CSharpDB SQL dialect broader, safer, measurable, and predictable across direct, remote, ADO.NET, and EF Core surfaces.</p>
+
+                <div class="callout callout-info">
+                    <strong>Roadmap is not availability.</strong>
+                    This page describes sequencing and current development progress. Use the
+                    <a href="sql-compatibility.html">SQL Compatibility Matrix</a> for the tested status,
+                    limitations, applicable surfaces, and proof IDs of a specific feature.
+                </div>
+
+                <p><strong>Development snapshot:</strong> July 17, 2026. A milestone is complete only when its required behavior, persistence, metadata, negative cases, and applicable surface tests pass. A partial milestone can contain useful supported rows while adjacent rows remain unsupported.</p>
+
+                <h2 id="status">Milestone Status</h2>
+                <table class="doc-table">
+                    <thead>
+                    <tr><th>#</th><th>Milestone</th><th>Status</th><th>Current boundary</th></tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td>1</td>
+                        <td>Dialect contract and public compatibility matrix</td>
+                        <td><strong>Implemented</strong></td>
+                        <td>Machine-readable manifest, generated page, schema/proof validation, documentation checks, navigation, and CI/Pages gates are present as a development preview. Immutable release snapshots remain release work.</td>
+                    </tr>
+                    <tr>
+                        <td>2</td>
+                        <td>Persistent constraints, <code>DEFAULT</code>, and <code>CHECK</code></td>
+                        <td><strong>Partial</strong></td>
+                        <td>Literal/NULL defaults, <code>DEFAULT</code> markers, <code>DEFAULT VALUES</code>, named/unnamed row-local checks, NOT NULL enforcement, SQL three-valued logic, serializer/reopen coverage, rename preservation, and core catalogs are implemented. Additive metadata now round-trips through direct, HTTP, gRPC, DevOps scripting, and table archives. Stable ids, statement-time defaults, and every mutation/import path remain.</td>
+                    </tr>
+                    <tr>
+                        <td>3</td>
+                        <td>Generalized keys and foreign keys</td>
+                        <td><strong>Core constraints implemented</strong></td>
+                        <td>Persisted named/unnamed logical primary and unique keys, including composite tuples, preserve legacy single INTEGER identity behavior. Column/table scalar and composite foreign keys now provide ordered candidate-key/type/collation validation, MATCH SIMPLE, immediate RESTRICT/CASCADE, reopen, dependency repair, ordered catalogs, ADO.NET, direct/REST/gRPC, archives, and schema tooling. Additional actions, deferrability, stable ids, concurrency/cycle qualification, and EF composite-FK generation remain.</td>
+                    </tr>
+                    <tr>
+                        <td>4</td>
+                        <td>Practical <code>ALTER TABLE</code></td>
+                        <td><strong>Core rewrite implemented</strong></td>
+                        <td>Direct metadata operations cover SET/DROP DEFAULT, validated SET/DROP NOT NULL, and validated ADD/DROP named CHECK. Unconstrained DROP COLUMN now streams rows into a shadow B+tree and swaps the catalog root transactionally. Populated ADD COLUMN with a typed literal default uses the same path, preserves row ids and indexes, and failed rewrites make explicit transactions rollback-only. Type/collation/key-shape changes, complete dependency rewriting, fault injection, and crash-recovery qualification remain.</td>
+                    </tr>
+                    <tr>
+                        <td>5</td>
+                        <td><code>UNION ALL</code> and compound-query semantics</td>
+                        <td><strong>Core implemented</strong></td>
+                        <td>Duplicate/NULL preservation, branch naming and type checks, nested operands, view serialization, global ordering/pagination, lazy right-branch execution, cancellation, and collation-aware distinct behavior have focused core coverage. Dedicated transport and EF corpus rows remain partial.</td>
+                    </tr>
+                    <tr>
+                        <td>6</td>
+                        <td>Window functions in functional tiers</td>
+                        <td><strong>Experimental core implemented</strong></td>
+                        <td>A bounded in-memory Tier-1 slice implements ranking and aggregate windows with partitioning, ordering, peer-aware default frames, prepared execution, cancellation, and explicit rejection tests. Explicit frames, advanced functions, incompatible stages, spill, and large-partition production claims are not yet available.</td>
+                    </tr>
+                    <tr>
+                        <td>7</td>
+                        <td>Function catalog and coverage</td>
+                        <td><strong>Core metadata implemented</strong></td>
+                        <td>A central built-in registry now records canonical names, aliases, kind, arity, accepted/return types, null behavior, volatility, default/check eligibility, collation behavior, and semantics. <code>sys.functions</code> exposes built-ins, aliases, and registered callbacks. Binder diagnostics, scalar/batch/folded parity, generated reference tables, and broader workload qualification remain.</td>
+                    </tr>
+                    <tr>
+                        <td>8</td>
+                        <td>Generated SQL and ORM compatibility</td>
+                        <td><strong>In progress</strong></td>
+                        <td>Identifier quoting is centralized. The EF provider emits and executes <code>DEFAULT VALUES</code>, typed literal defaults, create-table checks, composite primary keys, and composite unique/non-unique indexes; composite-key CRUD and duplicate enforcement are covered, and write failures use the expected EF update exception. Composite foreign keys, standalone key changes, a broader executable EF/ADO corpus, structured generated values, migration rewrites, and remote replay remain.</td>
+                    </tr>
+                    <tr>
+                        <td>9</td>
+                        <td>Metadata catalogs and introspection</td>
+                        <td><strong>Partial</strong></td>
+                        <td><code>sys.columns.column_default</code>, <code>sys.check_constraints</code>, <code>sys.key_constraints</code>, <code>sys.functions</code>, and ordered scalar/composite pairs in <code>sys.foreign_keys</code> are present. ADO.NET exposes restrictions, defaults, checks, ordered logical keys/key columns, ordered foreign-key pairs, and richer accurate reader metadata; constraint metadata also round-trips through schema scripting and direct/HTTP/gRPC/archive models. Binder-produced result lineage, stable schema ids, and fully normalized constraint/FK catalogs remain.</td>
+                    </tr>
+                    <tr>
+                        <td>10</td>
+                        <td>Physical <code>EXPLAIN</code> and <code>EXPLAIN ANALYZE</code></td>
+                        <td><strong>Planned</strong></td>
+                        <td>The existing <code>EXPLAIN ESTIMATE FOR</code> contract remains unchanged. A shared physical plan descriptor, per-node counters, redaction, read-only profiling, and transport/Admin presentation are separate future rows.</td>
+                    </tr>
+                    <tr>
+                        <td>11</td>
+                        <td>Compatibility release qualification</td>
+                        <td><strong>Planned</strong></td>
+                        <td>Full solution tests, legacy fixtures, transport/provider replay, performance budgets, release-version checks, immutable manifest snapshotting, and rollback/upgrade qualification are required before a compatibility release.</td>
+                    </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="implemented-slice">Current Development Slice</h2>
+                <ul>
+                    <li>A frozen 128-character identifier contract with double-quoted identifiers and doubled-quote escaping.</li>
+                    <li>SQL comparison and Boolean three-valued logic, including CHECK semantics where only false rejects.</li>
+                    <li>Persisted typed-literal/NULL defaults and explicit omission versus NULL versus DEFAULT behavior.</li>
+                    <li>Named/unnamed column/table checks, update prevalidation, reopen persistence, dependency-aware rename/drop behavior, and core catalogs.</li>
+                    <li>Logical composite primary/unique keys plus scalar/composite foreign keys with MATCH SIMPLE, immediate RESTRICT/CASCADE, persistence, ordered metadata, and transport/archive/tooling preservation.</li>
+                    <li><code>UNION ALL</code> bag semantics with lazy branch concatenation, type checks, collations, outer pagination, and cancellation cleanup.</li>
+                    <li>EF Core identifier quoting plus literal-default, create-table CHECK, zero-writable-column <code>DEFAULT VALUES</code>, and composite-key/index support.</li>
+                </ul>
+
+                <div class="callout callout-warning">
+                    <strong>Qualification boundary.</strong>
+                    Literal defaults do not include <code>CURRENT_TIMESTAMP</code> or arbitrary expressions.
+                    CHECK expressions reject parameters, functions, subqueries, and qualified references.
+                    Window execution is not production-qualified for large partitions until bounded memory and spill cleanup exist.
+                    Composite foreign keys are implemented for MATCH SIMPLE plus immediate RESTRICT/CASCADE; additional actions, deferrability, deep cascade/cycle qualification, and EF composite-FK generation remain.
+                </div>
+
+                <h2 id="principles">Compatibility Rules</h2>
+                <ul>
+                    <li>Every manifest row describes one narrow behavior and separates availability from roadmap state.</li>
+                    <li>Supported rows need positive execution evidence. Partial rows also need an explicit limitation or rejection proof.</li>
+                    <li>Persistent DDL needs parser, execution, reopen, and catalog evidence.</li>
+                    <li>Direct, ADO.NET, REST, gRPC, EF query, and EF migration facets are qualified independently.</li>
+                    <li>Unsupported syntax must fail clearly; the engine and provider must not silently omit schema semantics.</li>
+                    <li>No aggregate compatibility percentage is published because it would conceal feature and surface weighting.</li>
+                </ul>
+
+                <h2 id="verification">Verification Gates</h2>
+                <div class="code-block" data-title="PowerShell"><pre><code>dotnet build CSharpDB.slnx -c Release
+dotnet test tests\CSharpDB.Tests\CSharpDB.Tests.csproj -c Release
+dotnet test tests\CSharpDB.Data.Tests\CSharpDB.Data.Tests.csproj -c Release
+dotnet test tests\CSharpDB.EntityFrameworkCore.Tests\CSharpDB.EntityFrameworkCore.Tests.csproj -c Release
+dotnet test tests\CSharpDB.Api.Tests\CSharpDB.Api.Tests.csproj -c Release
+dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
+pwsh -File scripts\Build-SqlCompatibilityMatrix.ps1 -Check
+pwsh -File scripts\Test-Documentation.ps1</code></pre></div>
+
+                <div class="next-steps">
+                    <h2>Related Documentation</h2>
+                    <div class="next-steps-grid">
+                        <a href="sql-compatibility.html" class="next-step-card"><h4>Compatibility Matrix</h4><p>Feature-level status, facets, limitations, and proof IDs</p></a>
+                        <a href="sql-reference.html" class="next-step-card"><h4>SQL Source Reference</h4><p>Current syntax and behavior of the CSharpDB dialect</p></a>
+                        <a href="../roadmap.html" class="next-step-card"><h4>Product Roadmap</h4><p>Broader product direction beyond SQL compatibility</p></a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="site-footer"></div>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

@@ -222,6 +222,9 @@ dotnet ef migrations script</code></pre>
                         <tr><td><code>dotnet ef migrations script</code></td><td>Yes</td><td>Non-idempotent scripts only</td></tr>
                         <tr><td>CRUD + change tracking</td><td>Yes</td><td>Includes affected-row concurrency checks</td></tr>
                         <tr><td>Integer identity propagation</td><td>Yes</td><td>Single-column integer primary keys</td></tr>
+                        <tr><td>Composite primary keys and indexes</td><td>Yes</td><td>Composite primary keys are emitted as table constraints; composite unique and non-unique indexes preserve declared column order</td></tr>
+                        <tr><td>Literal column defaults</td><td>Partial</td><td><code>HasDefaultValue(...)</code> values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported</td></tr>
+                        <tr><td>Create-table check constraints</td><td>Partial</td><td>Deterministic row-local expressions accepted by the engine; standalone add/drop operations remain unsupported</td></tr>
                         <tr><td>Basic LINQ/query subset</td><td>Yes</td><td><code>Where</code>, ordering, pagination, scalar projections, <code>First</code>/<code>Single</code>, <code>Any</code>, <code>Count</code>, null checks, <code>Contains</code>, and simple navigation-loading joins</td></tr>
                         <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>byte[]</code></td></tr>
                     </tbody>
@@ -231,7 +234,9 @@ dotnet ef migrations script</code></pre>
                 <ul>
                     <li><code>decimal</code> requires an explicit value converter.</li>
                     <li>Schemas are unsupported in runtime and migrations.</li>
-                    <li>Defaults, computed columns, check constraints, and rowversion are unsupported.</li>
+                    <li>Computed columns, <code>DefaultValueSql</code>, and rowversion are unsupported.</li>
+                    <li>Standalone add/drop check-constraint migrations are unsupported.</li>
+                    <li>Composite foreign keys and standalone add/drop primary or unique key operations are unsupported and rejected explicitly.</li>
                     <li>Pooled connections are rejected by the EF Core provider.</li>
                     <li>Named shared-memory databases (<code>:memory:&lt;name&gt;</code>) are rejected.</li>
                     <li>Endpoint, daemon, and non-direct transports are rejected.</li>
@@ -241,7 +246,7 @@ dotnet ef migrations script</code></pre>
                 </ul>
 
                 <h2 id="ddl-surface">DDL Surface</h2>
-                <p>The migrations SQL generator currently supports <code>CreateTable</code>, <code>DropTable</code>, <code>RenameTable</code>, <code>AddColumn</code>, <code>RenameColumn</code>, <code>DropColumn</code>, <code>CreateIndex</code>, and <code>DropIndex</code>. Foreign keys are supported only when emitted inline during <code>CreateTable</code>, and only for the current single-column shape supported by the engine.</p>
+                <p>The migrations SQL generator currently supports <code>CreateTable</code> (including literal defaults, deterministic row-local checks, and composite primary keys), <code>DropTable</code>, <code>RenameTable</code>, <code>AddColumn</code>, <code>RenameColumn</code>, <code>DropColumn</code>, composite <code>CreateIndex</code>, and <code>DropIndex</code>. Foreign keys are supported only when emitted inline during <code>CreateTable</code>, and the provider deliberately rejects composite foreign keys even though the core SQL engine supports them.</p>
 
                 <div class="next-steps">
                     <h2>Next Steps</h2>

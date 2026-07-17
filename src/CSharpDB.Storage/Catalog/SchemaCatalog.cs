@@ -162,6 +162,14 @@ public sealed class SchemaCatalog
     public ValueTask UpdateTableSchemaAsync(string oldTableName, TableSchema newSchema, CancellationToken ct = default) =>
         _service.UpdateTableSchemaAsync(oldTableName, newSchema, ct);
 
+    public ValueTask<uint> ReplaceTableStorageAsync(
+        string tableName,
+        TableSchema newSchema,
+        uint replacementRootPage,
+        long exactRowCount,
+        CancellationToken ct = default) =>
+        _service.ReplaceTableStorageAsync(tableName, newSchema, replacementRootPage, exactRowCount, ct);
+
     public ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default) =>
         _service.SetTableRowCountAsync(tableName, rowCount, ct);
 
@@ -230,6 +238,9 @@ public sealed class SchemaCatalog
 
     public ValueTask DropForeignKeyOwnedIndexAsync(string indexName, CancellationToken ct = default) =>
         _service.DropForeignKeyOwnedIndexAsync(indexName, ct);
+
+    public ValueTask DropConstraintOwnedIndexAsync(string indexName, CancellationToken ct = default) =>
+        _service.DropConstraintOwnedIndexAsync(indexName, ct);
 
     public string? GetViewSql(string viewName) => _service.GetViewSql(viewName);
 

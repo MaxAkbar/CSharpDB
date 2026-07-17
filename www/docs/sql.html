@@ -45,9 +45,9 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>SQL Reference</h1>
-                <p class="lead">CSharpDB includes a full SQL engine with tokenizer, parser, query planner, and expression evaluator.</p>
+                <p class="lead">CSharpDB implements its own documented SQL dialect with a tokenizer, parser, query planner, and expression evaluator.</p>
                 <div class="callout callout-info">
-                    <strong>Need the full source guide?</strong> The original long-form markdown version is preserved as <a href="sql-reference.html">SQL Source Reference</a>.
+                    <strong>Check compatibility first.</strong> Use the <a href="sql-compatibility.html">SQL Compatibility Matrix</a> for feature-level availability, limitations, roadmap state, and test evidence. Follow staged work in the <a href="sql-compatibility-roadmap.html">SQL Compatibility Roadmap</a>. The long-form guide is preserved as <a href="sql-reference.html">SQL Source Reference</a>.
                 </div>
 
                 <h2>Data Definition (DDL)</h2>
@@ -218,9 +218,9 @@
                     <tbody>
                         <tr><td><code>ABS(value)</code></td><td>Absolute value</td></tr>
                         <tr><td><code>ROUND(value, digits)</code></td><td>Round to N decimal places</td></tr>
-                        <tr><td><code>SIGN(value)</code></td><td>Sign of a number (-1, 0, 1)</td></tr>
-                        <tr><td><code>CEIL(value)</code></td><td>Round up to nearest integer</td></tr>
-                        <tr><td><code>FLOOR(value)</code></td><td>Round down to nearest integer</td></tr>
+                        <tr><td><code>SGN(value)</code></td><td>Sign of a number (-1, 0, 1)</td></tr>
+                        <tr><td><code>INT(value)</code></td><td>Floor a numeric value</td></tr>
+                        <tr><td><code>FIX(value)</code></td><td>Truncate a numeric value toward zero</td></tr>
                     </tbody>
                 </table>
 
@@ -228,7 +228,8 @@
                 <table class="doc-table">
                     <thead><tr><th>Function</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>TYPEOF(value)</code></td><td>Returns the type name as text</td></tr>
+                        <tr><td><code>TEXT(value)</code></td><td>Convert a value to CSharpDB display text</td></tr>
+                        <tr><td><code>NZ(value [, fallback])</code></td><td>Replace NULL/empty input using Access-style semantics</td></tr>
                         <tr><td><code>COALESCE(a, b, ...)</code></td><td>First non-null value</td></tr>
                         <tr><td><code>NULLIF(a, b)</code></td><td>NULL if a equals b</td></tr>
                         <tr><td><code>IFNULL(a, b)</code></td><td>b if a is null</td></tr>
@@ -256,7 +257,10 @@
                         <tr><td><code>sys.tables</code></td><td>All tables and their root page numbers</td></tr>
                         <tr><td><code>sys.columns</code></td><td>Column definitions for all tables</td></tr>
                         <tr><td><code>sys.indexes</code></td><td>Index definitions and backing B+tree info</td></tr>
-                        <tr><td><code>sys.foreign_keys</code></td><td>Foreign key constraints, referenced targets, delete actions, and support-index ownership</td></tr>
+                        <tr><td><code>sys.check_constraints</code></td><td>Named and unnamed CHECK expressions and original column/table scope</td></tr>
+                        <tr><td><code>sys.key_constraints</code></td><td>Ordered logical primary/unique key columns and backing-index ownership</td></tr>
+                        <tr><td><code>sys.foreign_keys</code></td><td>Ordered child/parent column pairs, delete actions, and support-index ownership for scalar and composite foreign keys</td></tr>
+                        <tr><td><code>sys.functions</code></td><td>Built-in aliases/signatures/semantics plus registered scalar callback metadata</td></tr>
                         <tr><td><code>sys.views</code></td><td>View definitions and SQL</td></tr>
                         <tr><td><code>sys.triggers</code></td><td>Trigger metadata</td></tr>
                         <tr><td><code>sys.validation_rules</code></td><td>Database-owned audit validation rules and their SQL expressions</td></tr>

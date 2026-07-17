@@ -17,30 +17,39 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     {
         ValidateNoSchema(operation.Schema, operation.Name);
 
-        if (operation.PrimaryKey?.Columns is { Length: > 1 })
-            throw Unsupported("composite primary keys");
         if (operation.UniqueConstraints.Count > 0)
             throw Unsupported("unique constraints");
-        if (operation.CheckConstraints.Count > 0)
-            throw Unsupported("check constraints");
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Table name");
+        foreach (AddForeignKeyOperation foreignKey in operation.ForeignKeys)
+            ValidateForeignKey(foreignKey);
+
+        var definitions = new List<string>(operation.Columns.Count + operation.CheckConstraints.Count);
+        foreach (AddColumnOperation column in operation.Columns)
+        {
+            AddForeignKeyOperation? foreignKey = operation.ForeignKeys.SingleOrDefault(fk =>
+                fk.Columns.Length == 1
+                && string.Equals(fk.Columns[0], column.Name, StringComparison.OrdinalIgnoreCase));
+
+            definitions.Add(BuildColumnDefinition(operation, column, foreignKey));
+        }
+
+        foreach (AddCheckConstraintOperation checkConstraint in operation.CheckConstraints)
+            definitions.Add(BuildCheckConstraintDefinition(checkConstraint));
+
+        if (operation.PrimaryKey is { Columns.Length: > 1 } primaryKey)
+            definitions.Add(BuildCompositePrimaryKeyDefinition(primaryKey));
 
         builder.Append("CREATE TABLE ")
-            .Append(operation.Name)
+            .Append(QuoteIdentifier(operation.Name))
             .AppendLine(" (");
 
         using (builder.Indent())
         {
-            for (int i = 0; i < operation.Columns.Count; i++)
+            for (int i = 0; i < definitions.Count; i++)
             {
-                AddColumnOperation column = operation.Columns[i];
-                AddForeignKeyOperation? foreignKey = operation.ForeignKeys.SingleOrDefault(fk =>
-                    fk.Columns.Length == 1
-                    && string.Equals(fk.Columns[0], column.Name, StringComparison.OrdinalIgnoreCase));
-
-                builder.Append(BuildColumnDefinition(operation, column, foreignKey));
-                builder.AppendLine(i == operation.Columns.Count - 1 ? string.Empty : ",");
+                builder.Append(definitions[i]);
+                builder.AppendLine(i == definitions.Count - 1 ? string.Empty : ",");
             }
         }
 
@@ -54,7 +63,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Table name");
 
         builder.Append("DROP TABLE ")
-            .Append(operation.Name);
+            .Append(QuoteIdentifier(operation.Name));
 
         EndCommand(builder, terminate);
     }
@@ -70,9 +79,9 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(newTableName, "Table name");
 
         builder.Append("ALTER TABLE ")
-            .Append(operation.Name)
+            .Append(QuoteIdentifier(operation.Name))
             .Append(" RENAME TO ")
-            .Append(newTableName);
+            .Append(QuoteIdentifier(newTableName));
 
         EndCommand(builder, terminate: true);
     }
@@ -82,7 +91,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         ValidateColumnOperation(operation);
 
         builder.Append("ALTER TABLE ")
-            .Append(operation.Table)
+            .Append(QuoteIdentifier(operation.Table))
             .Append(" ADD COLUMN ")
             .Append(BuildColumnDefinition(createTable: null, operation, foreignKey: null));
 
@@ -97,11 +106,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.NewName, "Column name");
 
         builder.Append("ALTER TABLE ")
-            .Append(operation.Table)
+            .Append(QuoteIdentifier(operation.Table))
             .Append(" RENAME COLUMN ")
-            .Append(operation.Name)
+            .Append(QuoteIdentifier(operation.Name))
             .Append(" TO ")
-            .Append(operation.NewName);
+            .Append(QuoteIdentifier(operation.NewName));
 
         EndCommand(builder, terminate: true);
     }
@@ -113,9 +122,9 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Column name");
 
         builder.Append("ALTER TABLE ")
-            .Append(operation.Table)
+            .Append(QuoteIdentifier(operation.Table))
             .Append(" DROP COLUMN ")
-            .Append(operation.Name);
+            .Append(QuoteIdentifier(operation.Name));
 
         EndCommand(builder, terminate);
     }
@@ -126,8 +135,8 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Index name");
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
 
-        if (operation.Columns.Length != 1)
-            throw Unsupported("multi-column indexes");
+        if (operation.Columns.Length == 0)
+            throw new InvalidOperationException("CreateIndex operations require at least one column.");
         if (operation.Filter is not null)
             throw Unsupported("filtered indexes");
         if (operation.IsDescending?.Any(static descending => descending) == true)
@@ -138,11 +147,11 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             builder.Append("UNIQUE ");
 
         builder.Append("INDEX ")
-            .Append(operation.Name)
+            .Append(QuoteIdentifier(operation.Name))
             .Append(" ON ")
-            .Append(operation.Table)
+            .Append(QuoteIdentifier(operation.Table))
             .Append(" (")
-            .Append(operation.Columns[0])
+            .Append(string.Join(", ", operation.Columns.Select(QuoteIdentifier)))
             .Append(")");
 
         EndCommand(builder, terminate);
@@ -154,7 +163,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Index name");
 
         builder.Append("DROP INDEX ")
-            .Append(operation.Name);
+            .Append(QuoteIdentifier(operation.Name));
 
         EndCommand(builder, terminate);
     }
@@ -233,7 +242,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         bool isIdentityColumn = isPrimaryKeyColumn && string.Equals(storeType, "INTEGER", StringComparison.OrdinalIgnoreCase);
 
         var builder = new StringBuilder();
-        builder.Append(operation.Name)
+        builder.Append(QuoteIdentifier(operation.Name))
             .Append(' ')
             .Append(storeType);
 
@@ -248,6 +257,12 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             builder.Append(" NOT NULL");
         }
 
+        if (operation.DefaultValue is not null)
+        {
+            builder.Append(" DEFAULT ")
+                .Append(GenerateLiteral(operation.DefaultValue));
+        }
+
         if (foreignKey is not null)
         {
             ValidateForeignKey(foreignKey);
@@ -256,9 +271,9 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             string principalColumn = foreignKey.PrincipalColumns![0];
 
             builder.Append(" REFERENCES ")
-                .Append(principalTable)
+                .Append(QuoteIdentifier(principalTable))
                 .Append(" (")
-                .Append(principalColumn)
+                .Append(QuoteIdentifier(principalColumn))
                 .Append(")");
 
             if (foreignKey.OnDelete == ReferentialAction.Cascade)
@@ -266,6 +281,42 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         }
 
         return builder.ToString();
+    }
+
+    private string BuildCheckConstraintDefinition(AddCheckConstraintOperation operation)
+    {
+        ValidateNoSchema(operation.Schema, operation.Table);
+        CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
+        CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Constraint name");
+
+        if (string.IsNullOrWhiteSpace(operation.Sql))
+            throw new InvalidOperationException($"Check constraint '{operation.Name}' requires a SQL expression.");
+
+        return $"CONSTRAINT {QuoteIdentifier(operation.Name)} CHECK ({operation.Sql})";
+    }
+
+    private string BuildCompositePrimaryKeyDefinition(AddPrimaryKeyOperation operation)
+    {
+        ValidateNoSchema(operation.Schema, operation.Table);
+        CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
+        CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Primary key name");
+
+        if (operation.Columns.Length < 2)
+            throw new InvalidOperationException("Composite primary-key definitions require at least two columns.");
+
+        foreach (string column in operation.Columns)
+            CSharpDbProviderValidation.ValidateSimpleIdentifier(column, "Column name");
+
+        return $"CONSTRAINT {QuoteIdentifier(operation.Name)} PRIMARY KEY ({string.Join(", ", operation.Columns.Select(QuoteIdentifier))})";
+    }
+
+    private string GenerateLiteral(object value)
+    {
+        var mapping = Dependencies.TypeMappingSource.FindMapping(value.GetType())
+            ?? throw new NotSupportedException(
+                $"The CSharpDB EF Core provider cannot generate a literal DEFAULT for CLR type '{value.GetType().Name}'.");
+
+        return mapping.GenerateSqlLiteral(value);
     }
 
     private static void ValidateForeignKey(AddForeignKeyOperation operation)
@@ -295,8 +346,6 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     {
         ValidateNoSchema(operation.Schema, operation.Table);
 
-        if (operation.DefaultValue is not null)
-            throw Unsupported("default values");
         if (operation.DefaultValueSql is not null)
             throw Unsupported("DefaultValueSql");
         if (operation.ComputedColumnSql is not null)
@@ -316,6 +365,9 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
     private static NotSupportedException Unsupported(string feature)
         => new($"The CSharpDB EF Core provider does not support {feature} in v1.");
+
+    private string QuoteIdentifier(string identifier)
+        => Dependencies.SqlGenerationHelper.DelimitIdentifier(identifier);
 
     private static void EndCommand(MigrationCommandListBuilder builder, bool terminate, bool suppressTransaction = false)
     {

@@ -5,41 +5,20 @@ namespace CSharpDB.Primitives;
 public static class DbBuiltInScalarFunctions
 {
     public static bool IsBuiltInFunctionName(string functionName)
-        => functionName.ToUpperInvariant() switch
-        {
-            "TEXT" or
-            "NZ" or "ISNULL" or "ISEMPTY" or "IIF" or "SWITCH" or "CHOOSE" or
-            "COALESCE" or "IFNULL" or "NULLIF" or
-            "LEN" or "LENGTH" or "LEFT" or "RIGHT" or "MID" or "SUBSTR" or "SUBSTRING" or
-            "TRIM" or "LTRIM" or "RTRIM" or "UCASE" or "LCASE" or "UPPER" or "LOWER" or
-            "INSTR" or "REPLACE" or "STRCOMP" or "VAL" or
-            "DATE" or "TIME" or "NOW" or "DATETIME" or
-            "YEAR" or "MONTH" or "DAY" or "HOUR" or "MINUTE" or "SECOND" or
-            "DATEADD" or "DATEDIFF" or "DATEPART" or "DATESERIAL" or "TIMESERIAL" or
-            "WEEKDAY" or "MONTHNAME" or
-            "ABS" or "ROUND" or "INT" or "FIX" or "SGN" or
-            "CSTR" or "CINT" or "CLNG" or "CDBL" or "CBOOL" or "CDATE" or "FORMAT" => true,
-            _ => false,
-        };
+        => DbBuiltInFunctionRegistry.TryGet(functionName, out DbBuiltInFunctionDescriptor descriptor) &&
+           descriptor.Kind == DbBuiltInFunctionKind.Scalar;
 
     public static bool TryGetReturnType(string functionName, out DbType type)
     {
-        type = functionName.ToUpperInvariant() switch
+        if (DbBuiltInFunctionRegistry.TryGet(functionName, out DbBuiltInFunctionDescriptor descriptor) &&
+            descriptor.Kind == DbBuiltInFunctionKind.Scalar && descriptor.ReturnType.HasValue)
         {
-            "TEXT" or "CSTR" or
-            "LEFT" or "RIGHT" or "MID" or "SUBSTR" or "SUBSTRING" or
-            "TRIM" or "LTRIM" or "RTRIM" or "UCASE" or "LCASE" or "UPPER" or "LOWER" or "REPLACE" or
-            "DATE" or "TIME" or "NOW" or "DATETIME" or "DATEADD" or "DATESERIAL" or "TIMESERIAL" or
-            "MONTHNAME" or "CDATE" or "FORMAT" => DbType.Text,
-            "ISNULL" or "ISEMPTY" or "CBOOL" or
-            "LEN" or "LENGTH" or "INSTR" or "STRCOMP" or
-            "YEAR" or "MONTH" or "DAY" or "HOUR" or "MINUTE" or "SECOND" or
-            "DATEDIFF" or "DATEPART" or "WEEKDAY" or "SGN" or "CINT" or "CLNG" => DbType.Integer,
-            "ABS" or "ROUND" or "INT" or "FIX" or "CDBL" or "VAL" => DbType.Real,
-            _ => DbType.Null,
-        };
+            type = descriptor.ReturnType.Value;
+            return true;
+        }
 
-        return type != DbType.Null;
+        type = DbType.Null;
+        return false;
     }
 
     public static bool TryEvaluate(string functionName, IReadOnlyList<DbValue> args, out DbValue value)

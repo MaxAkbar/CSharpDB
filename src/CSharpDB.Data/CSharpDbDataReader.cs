@@ -190,20 +190,57 @@ public sealed class CSharpDbDataReader : DbDataReader
         var table = new DataTable("SchemaTable");
         table.Columns.Add("ColumnName", typeof(string));
         table.Columns.Add("ColumnOrdinal", typeof(int));
+        table.Columns.Add("ColumnSize", typeof(int));
+        table.Columns.Add("NumericPrecision", typeof(short));
+        table.Columns.Add("NumericScale", typeof(short));
         table.Columns.Add("DataType", typeof(Type));
+        table.Columns.Add("ProviderType", typeof(int));
+        table.Columns.Add("DataTypeName", typeof(string));
         table.Columns.Add("AllowDBNull", typeof(bool));
+        table.Columns.Add("IsKey", typeof(bool));
+        table.Columns.Add("IsIdentity", typeof(bool));
+        table.Columns.Add("IsAutoIncrement", typeof(bool));
+        table.Columns.Add("CollationName", typeof(string));
 
         for (int i = 0; i < _schema.Length; i++)
         {
+            ColumnDefinition column = _schema[i];
             table.Rows.Add(
-                _schema[i].Name,
+                column.Name,
                 i,
-                TypeMapper.ToClrType(_schema[i].Type),
-                _schema[i].Nullable);
+                GetColumnSize(column.Type),
+                GetNumericPrecision(column.Type),
+                GetNumericScale(column.Type),
+                TypeMapper.ToClrType(column.Type),
+                (int)column.Type,
+                TypeMapper.ToDataTypeName(column.Type),
+                column.Nullable,
+                column.IsPrimaryKey,
+                column.IsIdentity,
+                column.IsIdentity,
+                column.Collation is null ? DBNull.Value : column.Collation);
         }
 
         return table;
     }
+
+    private static object GetColumnSize(CoreDbType type)
+        => type switch
+        {
+            CoreDbType.Integer or CoreDbType.Real => 8,
+            _ => DBNull.Value,
+        };
+
+    private static object GetNumericPrecision(CoreDbType type)
+        => type switch
+        {
+            CoreDbType.Integer => (short)19,
+            CoreDbType.Real => (short)15,
+            _ => DBNull.Value,
+        };
+
+    private static object GetNumericScale(CoreDbType type)
+        => type == CoreDbType.Integer ? (short)0 : DBNull.Value;
 
     // ─── Lifecycle ───────────────────────────────────────────────────
 

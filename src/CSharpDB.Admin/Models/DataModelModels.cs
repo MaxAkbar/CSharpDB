@@ -156,8 +156,10 @@ public sealed class DataModelForeignKeyMetadata
 {
     public required string ConstraintName { get; init; }
     public required string ColumnName { get; init; }
+    public IReadOnlyList<string> ColumnNames { get; init; } = [];
     public required string ReferencedTableName { get; init; }
     public required string ReferencedColumnName { get; init; }
+    public IReadOnlyList<string> ReferencedColumnNames { get; init; } = [];
     public string? OnDelete { get; init; }
 }
 

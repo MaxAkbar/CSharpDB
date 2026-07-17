@@ -229,6 +229,34 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal(4, schemaTable.Rows.Count);
         Assert.Equal("id", schemaTable.Rows[0]["ColumnName"]);
         Assert.Equal(0, schemaTable.Rows[0]["ColumnOrdinal"]);
+        Assert.Equal(8, schemaTable.Rows[0]["ColumnSize"]);
+        Assert.Equal((short)19, schemaTable.Rows[0]["NumericPrecision"]);
+        Assert.Equal((short)0, schemaTable.Rows[0]["NumericScale"]);
+        Assert.Equal((int)CSharpDB.Primitives.DbType.Integer, schemaTable.Rows[0]["ProviderType"]);
+        Assert.Equal("INTEGER", schemaTable.Rows[0]["DataTypeName"]);
+        Assert.False((bool)schemaTable.Rows[0]["AllowDBNull"]);
+        Assert.True((bool)schemaTable.Rows[0]["IsKey"]);
+        Assert.True((bool)schemaTable.Rows[0]["IsIdentity"]);
+        Assert.True((bool)schemaTable.Rows[0]["IsAutoIncrement"]);
+        Assert.Equal(DBNull.Value, schemaTable.Rows[0]["CollationName"]);
+
+        Assert.Equal((short)15, schemaTable.Rows[2]["NumericPrecision"]);
+        Assert.Equal(DBNull.Value, schemaTable.Rows[2]["NumericScale"]);
+    }
+
+    [Fact]
+    public async Task GetSchemaTable_DoesNotInventUnavailableBaseLineage()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT score + 1 AS adjusted_score FROM t;";
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+
+        DataTable schemaTable = Assert.IsType<DataTable>(reader.GetSchemaTable());
+
+        Assert.False(schemaTable.Columns.Contains("BaseCatalogName"));
+        Assert.False(schemaTable.Columns.Contains("BaseSchemaName"));
+        Assert.False(schemaTable.Columns.Contains("BaseTableName"));
+        Assert.False(schemaTable.Columns.Contains("BaseColumnName"));
     }
 
     [Fact]

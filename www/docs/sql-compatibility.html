@@ -1,0 +1,1729 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>CSharpDB SQL Compatibility</title>
+    <meta name="description" content="Feature-level compatibility matrix for the CSharpDB SQL dialect, including parser, execution, persistence, transport, ADO.NET, and EF Core facets.">
+    <link rel="canonical" href="https://csharpdb.com/docs/sql-compatibility.html">
+    <meta property="og:title" content="CSharpDB SQL Compatibility">
+    <meta property="og:description" content="Evidence-backed feature compatibility for the CSharpDB SQL dialect.">
+    <meta property="og:url" content="https://csharpdb.com/docs/sql-compatibility.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <style>
+        .compat-toolbar { display: grid; grid-template-columns: minmax(220px, 2fr) minmax(160px, 1fr) minmax(160px, 1fr); gap: 12px; margin: 24px 0; }
+        .compat-toolbar input, .compat-toolbar select { width: 100%; padding: 10px 12px; color: var(--text-primary); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+        .compat-card { margin: 18px 0; padding: 22px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
+        .compat-card[hidden] { display: none; }
+        .compat-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+        .compat-card h3 { margin: 0 0 5px; }
+        .compat-id { color: var(--text-muted); font-family: var(--font-mono); font-size: .78rem; }
+        .compat-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+        .compat-badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+        .compat-badge-supported { color: #22c55e; background: rgba(34, 197, 94, .13); }
+        .compat-badge-partial { color: #f59e0b; background: rgba(245, 158, 11, .13); }
+        .compat-badge-unsupported { color: #ef4444; background: rgba(239, 68, 68, .13); }
+        .compat-badge-roadmap { color: var(--info); background: rgba(59, 130, 246, .13); }
+        .compat-syntax { margin: 16px 0; overflow-x: auto; }
+        .compat-syntax code { white-space: pre-wrap; }
+        .facet-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 8px; margin: 16px 0; }
+        .facet { padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+        .facet-name { display: block; color: var(--text-secondary); font-size: .73rem; }
+        .facet-status { font-size: .76rem; font-weight: 700; text-transform: uppercase; }
+        .facet-supported .facet-status { color: #22c55e; }
+        .facet-partial .facet-status { color: #f59e0b; }
+        .facet-unsupported .facet-status { color: #ef4444; }
+        .facet-not_applicable { opacity: .55; }
+        .compat-list { margin-top: 6px; }
+        .compat-proof { font-family: var(--font-mono); font-size: .76rem; }
+        .compat-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 10px; margin: 18px 0; }
+        .compat-meta > div { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+        .compat-meta span { display: block; color: var(--text-muted); font-size: .74rem; }
+        @media (max-width: 720px) { .compat-toolbar { grid-template-columns: 1fr; } .compat-card-head { display: block; } .compat-badges { justify-content: flex-start; margin-top: 12px; } }
+    </style>
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = { title: 'CSharpDB SQL Compatibility', description: 'Feature-level compatibility for the CSharpDB SQL dialect.', keywords: 'CSharpDB SQL compatibility, SQL dialect, feature matrix', canonicalPath: 'docs/sql-compatibility.html', ogType: 'article' };
+    </script>
+    <div id="site-nav"></div>
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>CSharpDB SQL Compatibility</h1>
+                <p class="lead">Feature-level compatibility for the CSharpDB SQL dialect. This development snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.</p>
+                <div class="callout callout-warning">
+                    <strong>Development preview.</strong> This page describes the audited main-branch snapshot below, not the latest released package. No released compatibility snapshot has been published yet.
+                </div>
+                <p>Availability and roadmap intent are independent. A planned row may still be unavailable today. Partial rows state their exact limitations. No aggregate compatibility percentage is published.</p>
+                <div class="compat-meta">
+                    <div><span>Snapshot</span>Development preview</div>
+                    <div><span>Package</span>4.0.4</div>
+                    <div><span>Commit</span><code>522f98d</code></div>
+                    <div><span>Generated</span>07/17/2026 15:20:19</div>
+                </div>
+                <p>Machine-readable sources: <a href="sql-compatibility.json">manifest JSON</a> and <a href="sql-compatibility.schema.json">JSON Schema</a>. Follow implementation sequencing in the <a href="sql-compatibility-roadmap.html">SQL Compatibility Roadmap</a>.</p>
+                <div class="compat-toolbar" aria-label="Compatibility filters">
+                    <label><span class="sr-only">Search features</span><input id="compat-search" type="search" placeholder="Search feature, syntax, or id"></label>
+                    <label><span class="sr-only">Filter availability</span><select id="compat-status"><option value="">All availability</option><option value="supported">Supported</option><option value="partial">Partial</option><option value="unsupported">Unsupported</option></select></label>
+                    <label><span class="sr-only">Filter category</span><select id="compat-category"><option value="">All categories</option>
+                        <option value="alter-table">ALTER TABLE</option>
+                        <option value="data-definition">Data definition</option>
+                        <option value="defaults-and-constraints">Defaults and constraints</option>
+                        <option value="dialect-foundation">Dialect foundation</option>
+                        <option value="expressions">Expressions</option>
+                        <option value="foreign-keys">Foreign keys</option>
+                        <option value="generated-sql">Generated SQL</option>
+                        <option value="metadata">Metadata</option>
+                        <option value="queries">Queries</option>
+                        <option value="query-diagnostics">Query diagnostics</option>
+                        <option value="set-operations">Set operations</option>
+                        <option value="window-functions">Window functions</option>
+                    </select></label>
+                </div>
+                <p id="compat-visible-count" aria-live="polite">Showing 43 feature rows.</p>
+                <article class="compat-card" id="feature-alter.add_column.defaulted" data-status="supported" data-category="alter-table" data-search="alter.add_column.defaulted alter table add a column with a literal default and backfill existing rows alter table users add column status text not null default &#39;new&#39; the default must be one of the supported typed literal or null forms. adding a required column without a value for existing rows is rejected. existing rows are streamed through a shadow table root and receive the persisted default before the catalog root is swapped.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Add a column with a literal default and backfill existing rows</h3>
+                            <div class="compat-id">alter.add_column.defaulted · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT &#39;new&#39;</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The default must be one of the supported typed literal or NULL forms. Adding a required column without a value for existing rows is rejected.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Existing rows are streamed through a shadow table root and receive the persisted default before the catalog root is swapped.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.add, engine.alter.add_default_backfill, engine.alter.rewrite_rollback, engine.alter.add.reopen, catalog.default_check, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.add_column.nullable" data-status="supported" data-category="alter-table" data-search="alter.add_column.nullable alter table add a nullable column without a default alter table users add column nickname text computed values are not supported. literal-default backfill and selected alter column metadata actions are qualified in separate rows. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Add a nullable column without a default</h3>
+                            <div class="compat-id">alter.add_column.nullable · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users ADD COLUMN nickname TEXT</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Computed values are not supported. Literal-default backfill and selected ALTER COLUMN metadata actions are qualified in separate rows.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.add, engine.create_and_query, engine.alter.add.reopen, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session, ef.migration.basic</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.constraint.check" data-status="supported" data-category="alter-table" data-search="alter.constraint.check alter table add or drop a named check constraint alter table orders add constraint ck_total check (total &gt;= 0) only named row-local deterministic check expressions are accepted. adding a constraint validates every existing row before the catalog is changed. a check expression that evaluates to unknown passes, matching create table check behavior.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Add or drop a named CHECK constraint</h3>
+                            <div class="compat-id">alter.constraint.check · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE orders ADD CONSTRAINT ck_total CHECK (total &gt;= 0)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Only named row-local deterministic CHECK expressions are accepted. Adding a constraint validates every existing row before the catalog is changed.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>A CHECK expression that evaluates to UNKNOWN passes, matching CREATE TABLE CHECK behavior.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_metadata, engine.alter.named_check, schema.default_check.serialization, catalog.default_check, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.drop_constraint.foreign_key" data-status="partial" data-category="alter-table" data-search="alter.drop_constraint.foreign_key alter table drop a foreign-key constraint by name alter table children drop constraint fk_children_parent only existing foreign-key constraints are handled. other constraint kinds do not yet exist, and the ef provider rejects standalone foreign-key changes. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Drop a foreign-key constraint by name</h3>
+                            <div class="compat-id">alter.drop_constraint.foreign_key · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE children DROP CONSTRAINT fk_children_parent</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">EF migration</span><span class="facet-status">unsupported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Only existing foreign-key constraints are handled. Other constraint kinds do not yet exist, and the EF provider rejects standalone foreign-key changes.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.drop, engine.fk.drop_constraint, catalog.fk, ado.schema.fk, rest.sql, rest.session, grpc.fk.metadata, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.fk.drop_missing.rejected, ef.fk.standalone.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.drop_column.unconstrained" data-status="supported" data-category="alter-table" data-search="alter.drop_column.unconstrained alter table drop an unconstrained, non-indexed column alter table users drop column obsolete_value indexed, constrained, trigger- or validation-rule-dependent, primary-key, and last-column drops are rejected. view dependency discovery and fault-injection coverage for process interruption remain follow-on work. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Drop an unconstrained, non-indexed column</h3>
+                            <div class="compat-id">alter.drop_column.unconstrained · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users DROP COLUMN obsolete_value</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Indexed, constrained, trigger- or validation-rule-dependent, primary-key, and last-column drops are rejected. View dependency discovery and fault-injection coverage for process interruption remain follow-on work.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.drop, engine.alter.drop, engine.alter.rewrite_drop, engine.alter.rewrite_rollback, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session, ef.migration.basic</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.alter.drop_indexed.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.rename_column" data-status="partial" data-category="alter-table" data-search="alter.rename_column alter table rename a column alter table users rename column old_name to new_name dependency repair is implemented for current indexes and foreign keys, but a dedicated reopen proof is not yet linked in this development snapshot. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Rename a column</h3>
+                            <div class="compat-id">alter.rename_column · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users RENAME COLUMN old_name TO new_name</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Dependency repair is implemented for current indexes and foreign keys, but a dedicated reopen proof is not yet linked in this development snapshot.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.rename_column, engine.alter.rename_column, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session, ef.migration.basic</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.alter.rename_old.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.rename_table.standalone" data-status="supported" data-category="alter-table" data-search="alter.rename_table.standalone alter table rename a durable table alter table users rename to customers this row does not claim arbitrary vendor-specific rename syntax. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Rename a durable table</h3>
+                            <div class="compat-id">alter.rename_table.standalone · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users RENAME TO customers</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>This row does not claim arbitrary vendor-specific rename syntax.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.rename_table, engine.create_and_query, engine.alter.rename_table.reopen, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session, ef.migration.basic</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.column.default" data-status="supported" data-category="alter-table" data-search="alter.column.default alter table set or drop a literal column default alter table users alter column status set default &#39;new&#39; set default accepts only the literal default forms supported by create table; it changes future writes and does not rewrite existing values. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Set or drop a literal column default</h3>
+                            <div class="compat-id">alter.column.default · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users ALTER COLUMN status SET DEFAULT &#39;new&#39;</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>SET DEFAULT accepts only the literal default forms supported by CREATE TABLE; it changes future writes and does not rewrite existing values.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_metadata, engine.alter.column_default, engine.alter.column_default_runtime, catalog.default_check, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.column.not_null" data-status="supported" data-category="alter-table" data-search="alter.column.not_null alter table set or drop column not null metadata alter table users alter column email set not null set not null scans existing rows and refuses the metadata change if any value is null. type and collation changes are not part of this feature. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Set or drop column NOT NULL metadata</h3>
+                            <div class="compat-id">alter.column.not_null · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users ALTER COLUMN email SET NOT NULL</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>SET NOT NULL scans existing rows and refuses the metadata change if any value is NULL. Type and collation changes are not part of this feature.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_metadata, engine.alter.column_not_null, engine.alter.add.reopen, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-ddl.create_table.basic" data-status="supported" data-category="data-definition" data-search="ddl.create_table.basic data definition create a basic durable table create table users (id integer primary key, name text not null) this row covers primitive columns, nullability, and a single-column primary key; defaults, checks, and composite primary keys are separate rows. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Create a basic durable table</h3>
+                            <div class="compat-id">ddl.create_table.basic · Data definition</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>This row covers primitive columns, nullability, and a single-column primary key; defaults, checks, and composite primary keys are separate rows.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.create_table.basic, engine.create_and_query, engine.persistence.reopen, catalog.core, ado.crud, rest.sql, rest.session, grpc.sql, grpc.session, ef.migration.basic</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.check.column" data-status="partial" data-category="defaults-and-constraints" data-search="schema.check.column defaults and constraints column check constraint amount integer constraint ck_amount check (amount &gt;= 0) a column-scoped check may reference only its own column and otherwise follows the deterministic row-local expression limits of table check. core sql covers enforcement, persistence, catalog exposure, column/table rename repair, ado.net metadata, direct/rest/grpc schema transport, archive round trips, and ef create-table checks. a false result rejects the write, while null/unknown passes. dropping a column with a check dependency is rejected.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Column CHECK constraint</h3>
+                            <div class="compat-id">schema.check.column · Defaults and constraints</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>amount INTEGER CONSTRAINT ck_amount CHECK (amount &gt;= 0)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>A column-scoped CHECK may reference only its own column and otherwise follows the deterministic row-local expression limits of table CHECK. Core SQL covers enforcement, persistence, catalog exposure, column/table rename repair, ADO.NET metadata, direct/REST/gRPC schema transport, archive round trips, and EF create-table checks.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>A false result rejects the write, while NULL/UNKNOWN passes. Dropping a column with a CHECK dependency is rejected.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.default_check.create, schema.default_check.serialization, engine.check.enforcement, engine.check.update_atomic, engine.default_check.reopen, catalog.default_check, engine.default_check.rename, engine.three_valued.truth_tables, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, ef.schema.literal_defaults_checks</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.key.composite_primary" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_primary defaults and constraints composite table-level primary key constraint pk_order_lines primary key (order_id, line_no) this row covers primary key declarations inside create table. a composite key is a logical constraint and does not infer integer identity behavior; standalone add/drop primary key remains outside this feature. one primary key is allowed per table and every participating value must be non-null.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Composite table-level primary key</h3>
+                            <div class="compat-id">schema.key.composite_primary · Defaults and constraints</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>CONSTRAINT pk_order_lines PRIMARY KEY (order_id, line_no)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF query</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>This row covers PRIMARY KEY declarations inside CREATE TABLE. A composite key is a logical constraint and does not infer integer identity behavior; standalone ADD/DROP PRIMARY KEY remains outside this feature.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>One primary key is allowed per table and every participating value must be non-NULL.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.key.composite, schema.key.serialization, engine.key.composite_primary, catalog.key_constraints, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints, ef.schema.composite_keys, ef.runtime.composite_keys</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.key.composite_unique" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_unique defaults and constraints composite table-level unique key constraint uq_tenant_email unique (tenant_id, email) this row covers unique declarations inside create table. standalone add unique remains outside this feature; named unique constraints can be removed with drop constraint when no foreign key depends on them. rows containing null in any participating column do not collide with one another.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Composite table-level unique key</h3>
+                            <div class="compat-id">schema.key.composite_unique · Defaults and constraints</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>CONSTRAINT uq_tenant_email UNIQUE (tenant_id, email)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>This row covers UNIQUE declarations inside CREATE TABLE. Standalone ADD UNIQUE remains outside this feature; named UNIQUE constraints can be removed with DROP CONSTRAINT when no foreign key depends on them.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Rows containing NULL in any participating column do not collide with one another.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.key.composite, schema.key.serialization, engine.key.composite_unique, catalog.key_constraints, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-dml.insert.default_keyword" data-status="partial" data-category="defaults-and-constraints" data-search="dml.insert.default_keyword defaults and constraints default markers and default values in insert insert into orders (status) values (default) core sql covers insert default values and default markers in value tuples against literal column defaults. feature-specific ado.net, rest, grpc, and ef query paths are not yet linked, and the available default expression shapes are limited by the literal-only column default row. an explicit null does not request a default; it remains null.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>DEFAULT markers and DEFAULT VALUES in INSERT</h3>
+                            <div class="compat-id">dml.insert.default_keyword · Defaults and constraints</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>INSERT INTO orders (status) VALUES (DEFAULT)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF query</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Core SQL covers INSERT DEFAULT VALUES and DEFAULT markers in value tuples against literal column defaults. Feature-specific ADO.NET, REST, gRPC, and EF query paths are not yet linked, and the available default expression shapes are limited by the literal-only column DEFAULT row.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>An explicit NULL does not request a default; it remains NULL.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.insert.default_values, parser.insert.default_markers, engine.default.apply, ef.insert.default_values</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#insert">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.not_null.enforcement" data-status="partial" data-category="defaults-and-constraints" data-search="schema.not_null.enforcement defaults and constraints not null write enforcement name text not null core tests cover sql insert rejection, shared direct insertbatch validation, and sys.columns nullability. a narrow reopen proof and feature-specific ado.net, rest, and grpc write tests are not yet linked. not null is enforced independently from check; check may accept unknown while not null still rejects null.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>NOT NULL write enforcement</h3>
+                            <div class="compat-id">schema.not_null.enforcement · Defaults and constraints</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>name TEXT NOT NULL</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Core tests cover SQL INSERT rejection, shared direct InsertBatch validation, and sys.columns nullability. A narrow reopen proof and feature-specific ADO.NET, REST, and gRPC write tests are not yet linked.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>NOT NULL is enforced independently from CHECK; CHECK may accept UNKNOWN while NOT NULL still rejects NULL.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.create_table.basic, engine.check.enforcement, engine.not_null.direct_batch, catalog.core, ef.migration.basic</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.not_null.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.default.column" data-status="partial" data-category="defaults-and-constraints" data-search="schema.default.column defaults and constraints persisted literal column default status text default &#39;new&#39; the first slice accepts typed literal and null defaults only. column references, parameters, functions including current_timestamp, subqueries, computed expressions, and ef defaultvaluesql remain rejected. core sql, ado.net metadata, direct/rest/grpc schema transport, archive round trips, and ef create-table literal defaults have focused coverage. omitted columns and explicit default apply the persisted literal; explicit null remains null and is checked independently against nullability.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Persisted literal column DEFAULT</h3>
+                            <div class="compat-id">schema.default.column · Defaults and constraints</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>status TEXT DEFAULT &#39;new&#39;</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The first slice accepts typed literal and NULL defaults only. Column references, parameters, functions including CURRENT_TIMESTAMP, subqueries, computed expressions, and EF DefaultValueSql remain rejected. Core SQL, ADO.NET metadata, direct/REST/gRPC schema transport, archive round trips, and EF create-table literal defaults have focused coverage.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Omitted columns and explicit DEFAULT apply the persisted literal; explicit NULL remains NULL and is checked independently against nullability.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.default_check.create, schema.default_check.serialization, engine.default.apply, engine.default_check.reopen, catalog.default_check, engine.default_check.rename, ado.schema.defaults_checks_keys, grpc.ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints, ef.schema.literal_defaults_checks</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.check.table" data-status="partial" data-category="defaults-and-constraints" data-search="schema.check.table defaults and constraints table check constraint constraint ck_total check (total &gt;= 0) checks must be deterministic and row-local. parameters, functions, subqueries, and qualified references are rejected. core sql covers enforcement, persistence, catalog exposure, rename dependency repair, named alter add/drop, ado.net metadata, direct/rest/grpc schema transport, archive round trips, and ef create-table checks. a false result rejects the write, while null/unknown passes in accordance with sql check semantics. enforcement is immediate.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Table CHECK constraint</h3>
+                            <div class="compat-id">schema.check.table · Defaults and constraints</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>CONSTRAINT ck_total CHECK (total &gt;= 0)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Checks must be deterministic and row-local. Parameters, functions, subqueries, and qualified references are rejected. Core SQL covers enforcement, persistence, catalog exposure, rename dependency repair, named ALTER add/drop, ADO.NET metadata, direct/REST/gRPC schema transport, archive round trips, and EF create-table checks.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>A false result rejects the write, while NULL/UNKNOWN passes in accordance with SQL CHECK semantics. Enforcement is immediate.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.default_check.create, schema.default_check.serialization, engine.check.enforcement, engine.check.update_atomic, engine.default_check.reopen, catalog.default_check, engine.default_check.rename, engine.alter.named_check, engine.three_valued.truth_tables, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, ef.schema.literal_defaults_checks</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-identifiers.quoted" data-status="partial" data-category="dialect-foundation" data-search="identifiers.quoted dialect foundation double-quoted identifiers create table &quot;order details&quot; (&quot;order id&quot; integer) core sql tests cover reserved words, whitespace, and doubled-quote escapes through create, insert, and select. names are limited to 128 characters and cannot contain nul. a dedicated reopen/catalog proof and feature-specific ado.net, rest, grpc, and ef query/migration round trips are not yet linked; the ef proof covers identifier generation only. double quotes delimit identifiers and a doubled double quote escapes a quote. name resolution remains ordinal case-insensitive rather than introducing case-sensitive quoted names.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Double-quoted identifiers</h3>
+                            <div class="compat-id">identifiers.quoted · Dialect foundation</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>CREATE TABLE &quot;order details&quot; (&quot;order id&quot; INTEGER)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Catalog</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF query</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Core SQL tests cover reserved words, whitespace, and doubled-quote escapes through CREATE, INSERT, and SELECT. Names are limited to 128 characters and cannot contain NUL. A dedicated reopen/catalog proof and feature-specific ADO.NET, REST, gRPC, and EF query/migration round trips are not yet linked; the EF proof covers identifier generation only.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Double quotes delimit identifiers and a doubled double quote escapes a quote. Name resolution remains ordinal case-insensitive rather than introducing case-sensitive quoted names.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.identifier.quoted, engine.identifier.quoted_reserved, engine.identifier.quoted_escape, ef.identifier.quoted_helper</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.identifier.quoted_unterminated</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#identifiers">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-identifiers.unquoted_simple" data-status="supported" data-category="dialect-foundation" data-search="identifiers.unquoted_simple dialect foundation unquoted simple identifiers create table customer_orders (order_id integer primary key) an unquoted name must begin with a letter recognized by .net or underscore and continue with letters, decimal digits, or underscores. reserved keywords require quoting, nul is rejected, and the maximum length is 128 characters. name resolution is ordinal case-insensitive on current catalog paths.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Unquoted simple identifiers</h3>
+                            <div class="compat-id">identifiers.unquoted_simple · Dialect foundation</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>CREATE TABLE customer_orders (order_id INTEGER PRIMARY KEY)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF query</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>An unquoted name must begin with a letter recognized by .NET or underscore and continue with letters, decimal digits, or underscores. Reserved keywords require quoting, NUL is rejected, and the maximum length is 128 characters.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Name resolution is ordinal case-insensitive on current catalog paths.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.create_table.basic, engine.create_and_query, engine.persistence.reopen, catalog.core, ado.crud, rest.sql, rest.session, grpc.sql, grpc.session, ef.crud, ef.migration.basic</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.identifier.max_length</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#identifiers">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-expressions.three_valued_logic" data-status="partial" data-category="expressions" data-search="expressions.three_valued_logic expressions sql three-valued comparison and logical semantics null = 1; 1 and null; 0 or null direct evaluator tests cover null comparisons, not null, and the and/or truth-table cases exercised by check enforcement. this row does not yet qualify every where, join, in/not in, aggregate, transport, ado.net, or ef-generated expression shape. unknown is represented as null; logical operators short-circuit to false or true where sql truth tables permit a determinate result.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>SQL three-valued comparison and logical semantics</h3>
+                            <div class="compat-id">expressions.three_valued_logic · Expressions</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>NULL = 1; 1 AND NULL; 0 OR NULL</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF query</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Direct evaluator tests cover NULL comparisons, NOT NULL, and the AND/OR truth-table cases exercised by CHECK enforcement. This row does not yet qualify every WHERE, JOIN, IN/NOT IN, aggregate, transport, ADO.NET, or EF-generated expression shape.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>UNKNOWN is represented as NULL; logical operators short-circuit to FALSE or TRUE where SQL truth tables permit a determinate result.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.three_valued.expressions, engine.three_valued.truth_tables</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.three_valued.unknown_cases</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#logical">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.foreign_key.composite" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.composite foreign keys composite foreign key foreign key (order_id, line_no) references lines(order_id, line_no) the referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. match full, match partial, deferred validation, on update actions, and ef composite-fk generation are not supported. match simple is used: any null child component suppresses the parent lookup.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Composite foreign key</h3>
+                            <div class="compat-id">schema.foreign_key.composite · Foreign keys</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>FOREIGN KEY (order_id, line_no) REFERENCES lines(order_id, line_no)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">EF migration</span><span class="facet-status">unsupported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. MATCH FULL, MATCH PARTIAL, deferred validation, ON UPDATE actions, and EF composite-FK generation are not supported.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>MATCH SIMPLE is used: any NULL child component suppresses the parent lookup.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, schema.fk.composite_vacuum, catalog.fk.composite_pairs, engine.fk.composite_dependencies, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata, archive.schema.constraints, devops.fk.composite_metadata</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.fk.composite_validation, ef.composite_fk.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.foreign_key.on_delete_cascade" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.on_delete_cascade foreign keys immediate on delete cascade behavior parent_id integer references parents(id) on delete cascade cascade is immediate for scalar and composite keys. deferred constraints and standalone ef foreign-key changes are not supported. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Immediate ON DELETE CASCADE behavior</h3>
+                            <div class="compat-id">schema.foreign_key.on_delete_cascade · Foreign keys</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>CASCADE is immediate for scalar and composite keys. Deferred constraints and standalone EF foreign-key changes are not supported.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, parser.fk.table_composite, engine.fk.cascade, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, rest.fk.composite_metadata, rest.session, grpc.fk.composite_metadata, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.fk.standalone.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.foreign_key.on_delete_restrict" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.on_delete_restrict foreign keys immediate on delete restrict behavior parent_id integer references parents(id) restrict is immediate for scalar and composite keys. deferred constraints and standalone ef foreign-key changes are not supported. omitting on delete selects immediate restrict.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Immediate ON DELETE RESTRICT behavior</h3>
+                            <div class="compat-id">schema.foreign_key.on_delete_restrict · Foreign keys</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>parent_id INTEGER REFERENCES parents(id)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>RESTRICT is immediate for scalar and composite keys. Deferred constraints and standalone EF foreign-key changes are not supported.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Omitting ON DELETE selects immediate RESTRICT.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, parser.fk.table_composite, engine.fk.restrict, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, rest.sql, rest.session, grpc.fk.composite_metadata, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.fk.standalone.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.foreign_key.on_update_cascade" data-status="unsupported" data-category="foreign-keys" data-search="schema.foreign_key.on_update_cascade foreign keys on update cascade references parents(id) on update cascade every on update action is rejected. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>ON UPDATE CASCADE</h3>
+                            <div class="compat-id">schema.foreign_key.on_update_cascade · Foreign keys</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-unsupported">unsupported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>REFERENCES parents(id) ON UPDATE CASCADE</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-unsupported"><span class="facet-name">Parser</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Execution</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Persistence</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Catalog</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST stateless</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC unary</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">EF migration</span><span class="facet-status">unsupported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Every ON UPDATE action is rejected.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.fk.on_update.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> not supported · <a href="sql-reference.html#limitations">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.foreign_key.column_single" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.column_single foreign keys single-column column-level foreign key parent_id integer references parents(id) the referenced column must be an ordered primary or unique candidate key with a compatible type and collation. ef supports inline single-column create-table relationships but rejects standalone foreign-key changes. enforcement is immediate; deferred validation is not supported.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Single-column column-level foreign key</h3>
+                            <div class="compat-id">schema.foreign_key.column_single · Foreign keys</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>parent_id INTEGER REFERENCES parents(id)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The referenced column must be an ordered primary or unique candidate key with a compatible type and collation. EF supports inline single-column create-table relationships but rejects standalone foreign-key changes.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Enforcement is immediate; deferred validation is not supported.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, engine.fk.enforcement, schema.fk.serialization, catalog.fk, ado.schema.fk, direct.fk.composite_metadata, rest.sql, rest.session, grpc.fk.metadata, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.fk.standalone.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-schema.foreign_key.table_level" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.table_level foreign keys table-level foreign key clause foreign key (parent_id) references parents(id) sql supports table-level scalar and composite declarations. the ef provider generates inline scalar relationships but still rejects composite and standalone foreign-key operations. constraint validation is immediate and uses match simple for nullable composite child keys.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Table-level FOREIGN KEY clause</h3>
+                            <div class="compat-id">schema.foreign_key.table_level · Foreign keys</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>FOREIGN KEY (parent_id) REFERENCES parents(id)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>SQL supports table-level scalar and composite declarations. The EF provider generates inline scalar relationships but still rejects composite and standalone foreign-key operations.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Constraint validation is immediate and uses MATCH SIMPLE for nullable composite child keys.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.composite_fk.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-provider.ef_migration.basic" data-status="supported" data-category="generated-sql" data-search="provider.ef_migration.basic generated sql basic ef core migrations dotnet ef database update the supported operation set is create/drop table, add/drop/rename column, rename table, and create/drop index within the provider&#39;s schema restrictions. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Basic EF Core migrations</h3>
+                            <div class="compat-id">provider.ef_migration.basic · Generated SQL</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>dotnet ef database update</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-not_applicable"><span class="facet-name">Parser</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Execution</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST stateless</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC unary</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The supported operation set is create/drop table, add/drop/rename column, rename table, and create/drop index within the provider&#39;s schema restrictions.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ef.migration.basic</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="entity-framework-core.html#migrations">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-provider.ef_query.crud" data-status="supported" data-category="generated-sql" data-search="provider.ef_query.crud generated sql ef core embedded crud and basic query translation db.users.where(u =&gt; u.id == id).tolistasync() the first-party provider is embedded/direct only and supports a deliberately bounded ef core 10 relational subset. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>EF Core embedded CRUD and basic query translation</h3>
+                            <div class="compat-id">provider.ef_query.crud · Generated SQL</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>db.Users.Where(u =&gt; u.Id == id).ToListAsync()</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-not_applicable"><span class="facet-name">Parser</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Execution</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST stateless</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC unary</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF query</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The first-party provider is embedded/direct only and supports a deliberately bounded EF Core 10 relational subset.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ef.crud</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="entity-framework-core.html#supported-surface">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-provider.ef_migration.idempotent" data-status="unsupported" data-category="generated-sql" data-search="provider.ef_migration.idempotent generated sql idempotent ef migration scripts imigrator.generatescript(options: idempotent) the provider throws a clear notsupportedexception for idempotent scripts; a migration-history and locking design is not part of the first compatibility release. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Idempotent EF migration scripts</h3>
+                            <div class="compat-id">provider.ef_migration.idempotent · Generated SQL</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-unsupported">unsupported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: out of scope</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>IMigrator.GenerateScript(options: Idempotent)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-not_applicable"><span class="facet-name">Parser</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Execution</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST stateless</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC unary</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">EF migration</span><span class="facet-status">unsupported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The provider throws a clear NotSupportedException for idempotent scripts; a migration-history and locking design is not part of the first compatibility release.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.migration.idempotent.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> not supported · <a href="entity-framework-core.html#limitations">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-metadata.ado_getschema.core" data-status="supported" data-category="metadata" data-search="metadata.ado_getschema.core metadata ado.net getschema core collections connection.getschema(&quot;columns&quot;) supported collections are metadatacollections, restrictions, datasourceinformation, datatypes, reservedwords, tables, columns, indexes, indexcolumns, views, viewcolumns, foreignkeys, defaults, checkconstraints, keyconstraints, and keycolumns. collection-specific restrictions are documented by the restrictions collection. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>ADO.NET GetSchema core collections</h3>
+                            <div class="compat-id">metadata.ado_getschema.core · Metadata</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>connection.GetSchema(&quot;Columns&quot;)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-not_applicable"><span class="facet-name">Parser</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Execution</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST stateless</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Supported collections are MetaDataCollections, Restrictions, DataSourceInformation, DataTypes, ReservedWords, Tables, Columns, Indexes, IndexColumns, Views, ViewColumns, ForeignKeys, Defaults, CheckConstraints, KeyConstraints, and KeyColumns. Collection-specific restrictions are documented by the Restrictions collection.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ado.schema.core, ado.schema.fk, ado.schema.defaults_checks_keys, ado.schema.restrictions, grpc.ado.schema.defaults_checks_keys</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="api-reference.html">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-metadata.catalog.core" data-status="supported" data-category="metadata" data-search="metadata.catalog.core metadata core sys tables, columns, indexes, views, and triggers catalogs select * from sys.columns this row covers the existing core catalogs, not information_schema or future generalized constraint catalogs. csharpdb uses sys.* virtual catalogs and selected underscored aliases.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Core sys tables, columns, indexes, views, and triggers catalogs</h3>
+                            <div class="compat-id">metadata.catalog.core · Metadata</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>SELECT * FROM sys.columns</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>This row covers the existing core catalogs, not information_schema or future generalized constraint catalogs.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>CSharpDB uses sys.* virtual catalogs and selected underscored aliases.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.select.basic, engine.catalog.core, catalog.core, ado.crud, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql.html">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-metadata.reader.schema_provenance" data-status="partial" data-category="metadata" data-search="metadata.reader.schema_provenance metadata dbdatareader.getschematable provenance and constraint detail reader.getschematable() the schema table reports intrinsic result metadata including ordinal, clr/provider types, nullability, sizes, key/unique/identity flags when known, and expression shape. the current binder does not carry reliable source lineage for every projected expression, so unavailable base catalog, table, and column names are deliberately returned as null instead of being invented. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>DbDataReader.GetSchemaTable provenance and constraint detail</h3>
+                            <div class="compat-id">metadata.reader.schema_provenance · Metadata</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>reader.GetSchemaTable()</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-not_applicable"><span class="facet-name">Parser</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Execution</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST stateless</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC unary</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The schema table reports intrinsic result metadata including ordinal, CLR/provider types, nullability, sizes, key/unique/identity flags when known, and expression shape. The current binder does not carry reliable source lineage for every projected expression, so unavailable base catalog, table, and column names are deliberately returned as NULL instead of being invented.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ado.reader.schema.basic</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ado.reader.schema.lineage_limited</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="api-reference.html">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-metadata.catalog.functions" data-status="supported" data-category="metadata" data-search="metadata.catalog.functions metadata normalized built-in and callback function catalog select * from sys.functions the registry centralizes names, aliases, kinds, arity, return metadata, determinism, and registered callbacks. rich binder type signatures, generated documentation tables, and a broader conformance corpus remain follow-on work. csharpdb exposes this metadata through sys.functions and the sys_functions alias.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Normalized built-in and callback function catalog</h3>
+                            <div class="compat-id">metadata.catalog.functions · Metadata</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>SELECT * FROM sys.functions</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The registry centralizes names, aliases, kinds, arity, return metadata, determinism, and registered callbacks. Rich binder type signatures, generated documentation tables, and a broader conformance corpus remain follow-on work.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>CSharpDB exposes this metadata through sys.functions and the sys_functions alias.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">catalog.functions, engine.functions.catalog_query, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql.html">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-query.select.basic" data-status="supported" data-category="queries" data-search="query.select.basic queries basic select with projection and filter select id, name from users where id = @id advanced expressions and generated provider shapes are qualified separately. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Basic SELECT with projection and filter</h3>
+                            <div class="compat-id">query.select.basic · Queries</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>SELECT id, name FROM users WHERE id = @id</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF query</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Advanced expressions and generated provider shapes are qualified separately.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.select.basic, engine.create_and_query, ado.crud, rest.sql, rest.session, grpc.sql, grpc.session, ef.crud</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#select">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-query.join.inner_handwritten" data-status="supported" data-category="queries" data-search="query.join.inner_handwritten queries hand-written inner join with an equality predicate select o.id, c.name from orders o join customers c on o.customer_id = c.id this row does not qualify every join type, predicate shape, or ef-generated join. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Hand-written INNER JOIN with an equality predicate</h3>
+                            <div class="compat-id">query.join.inner_handwritten · Queries</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>SELECT o.id, c.name FROM orders o JOIN customers c ON o.customer_id = c.id</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>This row does not qualify every join type, predicate shape, or EF-generated join.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.join.inner, engine.join.inner, ado.crud, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#select">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-query.cte.non_recursive_handwritten" data-status="supported" data-category="queries" data-search="query.cte.non_recursive_handwritten queries hand-written non-recursive common table expression with active as (select id from users where enabled = 1) select * from active recursive evaluation is not claimed by this row. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Hand-written non-recursive common table expression</h3>
+                            <div class="compat-id">query.cte.non_recursive_handwritten · Queries</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>WITH active AS (SELECT id FROM users WHERE enabled = 1) SELECT * FROM active</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Recursive evaluation is not claimed by this row.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.cte.non_recursive, engine.cte.non_recursive, ado.crud, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#common-table-expressions-ctes">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-diagnostics.analyze.statistics" data-status="supported" data-category="query-diagnostics" data-search="diagnostics.analyze.statistics query diagnostics analyze statistics collection analyze orders temporary tables are excluded in the current version. analyze collects planner statistics; it does not show or execute a query plan.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>ANALYZE statistics collection</h3>
+                            <div class="compat-id">diagnostics.analyze.statistics · Query diagnostics</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ANALYZE orders</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Temporary tables are excluded in the current version.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>ANALYZE collects planner statistics; it does not show or execute a query plan.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.analyze, engine.analyze.execution, catalog.analyze.results, catalog.analyze.reopen, ado.crud, direct.explain.estimate, rest.explain, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#analyze">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-diagnostics.explain.estimate" data-status="supported" data-category="query-diagnostics" data-search="diagnostics.explain.estimate query diagnostics estimate-input diagnostics explain estimate for select * from orders where customer_id = 42 output describes estimate inputs and planner decisions. it is not a complete physical operator tree and reports no actual execution metrics. the target query is not executed; mutation targets are rejected.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Estimate-input diagnostics</h3>
+                            <div class="compat-id">diagnostics.explain.estimate · Query diagnostics</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>EXPLAIN ESTIMATE FOR SELECT * FROM orders WHERE customer_id = 42</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Output describes estimate inputs and planner decisions. It is not a complete physical operator tree and reports no actual execution metrics.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>The target query is not executed; mutation targets are rejected.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.explain.estimate, engine.explain.estimate, direct.explain.estimate, ado.crud, rest.explain, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.explain.mutation.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="query-execution-pipeline.html#cardinality-estimation">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-diagnostics.explain.analyze_read_only" data-status="unsupported" data-category="query-diagnostics" data-search="diagnostics.explain.analyze_read_only query diagnostics explain analyze for read-only queries explain analyze select * from orders per-operator actual rows, loops, timings, memory, and stop states are not instrumented or exposed. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>EXPLAIN ANALYZE for read-only queries</h3>
+                            <div class="compat-id">diagnostics.explain.analyze_read_only · Query diagnostics</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-unsupported">unsupported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>EXPLAIN ANALYZE SELECT * FROM orders</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-unsupported"><span class="facet-name">Parser</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Execution</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST stateless</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC unary</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Per-operator actual rows, loops, timings, memory, and stop states are not instrumented or exposed.</li>
+                        </ul>
+                    <p><strong>First supported version:</strong> not supported · <a href="query-execution-pipeline.html#query-execution-pipeline">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-diagnostics.explain.physical" data-status="unsupported" data-category="query-diagnostics" data-search="diagnostics.explain.physical query diagnostics physical explain plan explain select * from orders where customer_id = 42 the runtime does not yet expose one shared physical-plan descriptor for every execution path. ">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Physical EXPLAIN plan</h3>
+                            <div class="compat-id">diagnostics.explain.physical · Query diagnostics</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-unsupported">unsupported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>EXPLAIN SELECT * FROM orders WHERE customer_id = 42</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-unsupported"><span class="facet-name">Parser</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Execution</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST stateless</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC unary</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>The runtime does not yet expose one shared physical-plan descriptor for every execution path.</li>
+                        </ul>
+                    <p><strong>First supported version:</strong> not supported · <a href="query-execution-pipeline.html#query-execution-pipeline">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-query.set.union_distinct_handwritten" data-status="supported" data-category="set-operations" data-search="query.set.union_distinct_handwritten set operations hand-written union with distinct semantics select id from current_users union select id from archived_users current execution materializes both inputs before duplicate elimination. union removes duplicates; duplicate-preserving union all is qualified separately.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Hand-written UNION with distinct semantics</h3>
+                            <div class="compat-id">query.set.union_distinct_handwritten · Set operations</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>SELECT id FROM current_users UNION SELECT id FROM archived_users</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Current execution materializes both inputs before duplicate elimination.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>UNION removes duplicates; duplicate-preserving UNION ALL is qualified separately.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.union.distinct, engine.union.distinct, ado.crud, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#set-operations">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-query.set.union_all" data-status="partial" data-category="set-operations" data-search="query.set.union_all set operations union all duplicate-preserving append select id from current_users union all select id from archived_users core tests cover duplicate and null preservation, first-branch column names, numeric promotion, incompatible-type rejection, parenthesized operands, view serialization, outer limit short-circuiting, and cancellation cleanup. feature-specific ado.net, rest, grpc, and ef query proofs are not yet linked; intersect all and except all remain unsupported. branch types must match or have a supported numeric common type; incompatible branches fail before enumeration.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>UNION ALL duplicate-preserving append</h3>
+                            <div class="compat-id">query.set.union_all · Set operations</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>SELECT id FROM current_users UNION ALL SELECT id FROM archived_users</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF query</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Core tests cover duplicate and NULL preservation, first-branch column names, numeric promotion, incompatible-type rejection, parenthesized operands, view serialization, outer LIMIT short-circuiting, and cancellation cleanup. Feature-specific ADO.NET, REST, gRPC, and EF query proofs are not yet linked; INTERSECT ALL and EXCEPT ALL remain unsupported.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Branch types must match or have a supported numeric common type; incompatible branches fail before enumeration.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.union.all, parser.union.all.contextual, engine.union_all.duplicates, engine.union_all.numeric_promotion, engine.union_all.parenthesized, engine.union_all.view, operator.union_all.outer_limit, operator.union_all.cancellation, admin.union_all.paging</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.union.all.non_union_rejected, engine.union_all.incompatible_types</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#set-operations">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-query.window.row_number" data-status="partial" data-category="window-functions" data-search="query.window.row_number window functions experimental ranking and aggregate window slice row_number() over (partition by customer_id order by created_at) experimental in-memory slice only: one compatible window specification per select; row_number, rank, dense_rank, and non-distinct count, sum, avg, min, and max over direct source rows. explicit frames, named windows, nested windows, mixed ordinary aggregation/grouping, incompatible specifications, navigation functions, and spill-to-disk are rejected. large inputs remain bounded only by available process memory. default frames are sql-consistent: an unordered window covers the whole partition, while an ordered aggregate window uses peer-aware unbounded-preceding through current-row semantics.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Experimental ranking and aggregate window slice</h3>
+                            <div class="compat-id">query.window.row_number · Window functions</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Execution</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST stateless</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">REST session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC unary</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">gRPC session</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-unsupported"><span class="facet-name">EF query</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Experimental in-memory slice only: one compatible window specification per SELECT; ROW_NUMBER, RANK, DENSE_RANK, and non-DISTINCT COUNT, SUM, AVG, MIN, and MAX over direct source rows. Explicit frames, named windows, nested windows, mixed ordinary aggregation/grouping, incompatible specifications, navigation functions, and spill-to-disk are rejected. Large inputs remain bounded only by available process memory.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Default frames are SQL-consistent: an unordered window covers the whole partition, while an ordered aggregate window uses peer-aware unbounded-preceding through current-row semantics.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.window.experimental, engine.window.ranking, engine.window.aggregate_default_frames</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.window.experimental_rejections</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#limitations">Related documentation</a></p>
+                </article>
+            </div>
+        </div>
+    </main>
+    <div id="site-footer"></div>
+    <script>
+        (() => {
+            const cards = [...document.querySelectorAll('.compat-card')];
+            const search = document.getElementById('compat-search');
+            const status = document.getElementById('compat-status');
+            const category = document.getElementById('compat-category');
+            const count = document.getElementById('compat-visible-count');
+            const apply = () => {
+                const query = search.value.trim().toLowerCase();
+                let visible = 0;
+                for (const card of cards) {
+                    const show = (!query || card.dataset.search.includes(query)) && (!status.value || card.dataset.status === status.value) && (!category.value || card.dataset.category === category.value);
+                    card.hidden = !show;
+                    if (show) visible++;
+                }
+                count.textContent = `Showing ${visible} feature row${visible === 1 ? '' : 's'}.`;
+            };
+            search.addEventListener('input', apply);
+            status.addEventListener('change', apply);
+            category.addEventListener('change', apply);
+        })();
+    </script>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

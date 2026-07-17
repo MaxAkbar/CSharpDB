@@ -109,7 +109,14 @@ public static class DatabaseMaintenanceCoordinator
                         ? await context.Catalog.DropIndexAllowCorruptReclaimAsync(indexSchema.IndexName, ct)
                         : false;
                     if (!request.AllowCorruptIndexRecovery)
-                        await context.Catalog.DropIndexAsync(indexSchema.IndexName, ct);
+                    {
+                        if (indexSchema.Kind == IndexKind.ForeignKeyInternal)
+                            await context.Catalog.DropForeignKeyOwnedIndexAsync(indexSchema.IndexName, ct);
+                        else if (indexSchema.Kind == IndexKind.ConstraintInternal)
+                            await context.Catalog.DropConstraintOwnedIndexAsync(indexSchema.IndexName, ct);
+                        else
+                            await context.Catalog.DropIndexAsync(indexSchema.IndexName, ct);
+                    }
 
                     await CreateAndBackfillIndexWithOrderedTextFallbackAsync(context, indexSchema, ct);
 
@@ -725,6 +732,7 @@ public static class DatabaseMaintenanceCoordinator
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
                 Collation = column.Collation,
+                DefaultSql = column.DefaultSql,
             }).ToArray(),
             ForeignKeys = schema.ForeignKeys.Select(foreignKey => new ForeignKeyDefinition
             {
@@ -732,8 +740,27 @@ public static class DatabaseMaintenanceCoordinator
                 ColumnName = foreignKey.ColumnName,
                 ReferencedTableName = foreignKey.ReferencedTableName,
                 ReferencedColumnName = foreignKey.ReferencedColumnName,
+                ColumnNames = foreignKey.ColumnNames.Count > 0
+                    ? foreignKey.ColumnNames.ToArray()
+                    : [foreignKey.ColumnName],
+                ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                    ? foreignKey.ReferencedColumnNames.ToArray()
+                    : [foreignKey.ReferencedColumnName],
                 OnDelete = foreignKey.OnDelete,
                 SupportingIndexName = foreignKey.SupportingIndexName,
+            }).ToArray(),
+            CheckConstraints = schema.CheckConstraints.Select(check => new CheckConstraintDefinition
+            {
+                ConstraintName = check.ConstraintName,
+                ExpressionSql = check.ExpressionSql,
+                ColumnName = check.ColumnName,
+            }).ToArray(),
+            KeyConstraints = schema.KeyConstraints.Select(key => new KeyConstraintDefinition
+            {
+                ConstraintName = key.ConstraintName,
+                Kind = key.Kind,
+                Columns = key.Columns.ToArray(),
+                BackingIndexName = key.BackingIndexName,
             }).ToArray(),
             QualifiedMappings = schema.QualifiedMappings is null
                 ? null

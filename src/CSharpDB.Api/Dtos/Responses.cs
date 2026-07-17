@@ -2,19 +2,39 @@ namespace CSharpDB.Api.Dtos;
 
 // ─── Column / Schema ────────────────────────────────────────
 
-public sealed record ColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity, string? Collation);
+public sealed record ColumnResponse(
+    string Name,
+    string Type,
+    bool Nullable,
+    bool IsPrimaryKey,
+    bool IsIdentity,
+    string? Collation,
+    string? DefaultSql);
 public sealed record ForeignKeyResponse(
     string ConstraintName,
     string ColumnName,
     string ReferencedTableName,
     string ReferencedColumnName,
     string OnDelete,
-    string SupportingIndexName);
+    string SupportingIndexName,
+    IReadOnlyList<string>? ColumnNames = null,
+    IReadOnlyList<string>? ReferencedColumnNames = null);
+public sealed record KeyConstraintResponse(
+    string? ConstraintName,
+    string Kind,
+    IReadOnlyList<string> Columns,
+    string? BackingIndexName);
+public sealed record CheckConstraintResponse(
+    string? ConstraintName,
+    string ExpressionSql,
+    string? ColumnName);
 
 public sealed record TableSchemaResponse(
     string TableName,
     IReadOnlyList<ColumnResponse> Columns,
-    IReadOnlyList<ForeignKeyResponse> ForeignKeys);
+    IReadOnlyList<ForeignKeyResponse> ForeignKeys,
+    IReadOnlyList<KeyConstraintResponse> KeyConstraints,
+    IReadOnlyList<CheckConstraintResponse> CheckConstraints);
 
 // ─── Browse ─────────────────────────────────────────────────
 

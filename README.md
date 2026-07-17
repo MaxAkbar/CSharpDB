@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>The embedded database engine built for .NET</strong><br>
-  Zero dependencies. Full SQL. ACID storage. Single file. One NuGet package.
+  Zero dependencies. CSharpDB SQL. ACID storage. Single file. One NuGet package.
 </p>
 
 <p align="center">
@@ -138,7 +138,7 @@ await foreach (var row in result.GetRowsAsync())
 ## Why CSharpDB?
 
 - **No moving parts** — single `.db` file, no server process, no native binaries, no external dependencies
-- **SQL + NoSQL in one engine** — full SQL with JOINs, CTEs, subqueries, views, and triggers *plus* a typed `Collection<T>` API that bypasses SQL entirely for sub-microsecond reads
+- **SQL + NoSQL in one engine** — the documented CSharpDB SQL subset includes JOINs, CTEs, subqueries, views, and triggers, alongside a typed `Collection<T>` API that bypasses SQL entirely for sub-microsecond reads
 - **ACID by default** — WAL-based crash recovery with fsync-on-commit and concurrent snapshot-isolated readers
 - **Ships with tooling** — Admin UI, VS Code extension, CLI REPL, REST API, gRPC daemon, pipeline tooling, integrated forms and reports designers, and MCP server for AI agents
 - **Use from any language** — NativeAOT compiles to a standalone C library; call from Python, Node.js, Go, Rust, Swift, Kotlin, Dart, Android, and iOS
@@ -209,7 +209,7 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | Feature | CSharpDB | SQLite | LiteDB | RocksDB | Microsoft Access |
 |---------|:--------:|:------:|:------:|:-------:|:----------------:|
 | Pure .NET / no native binaries | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Full SQL (JOINs, CTEs, subqueries) | ✅ | ✅ | ❌ | ❌ | Partial |
+| SQL JOINs, CTEs, and subqueries | ✅ | ✅ | ❌ | ❌ | Partial |
 | NoSQL Collection API | ✅ | ❌ | ✅ | ❌ | ❌ |
 | ACID transactions | ✅ | ✅ | ✅ | ✅ | ✅ |
 | REST API / gRPC | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -266,6 +266,8 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
+| [SQL Compatibility Matrix](https://csharpdb.com/docs/sql-compatibility.html) | Feature-level availability, limitations, roadmap state, and test evidence |
+| [SQL Compatibility Roadmap](https://csharpdb.com/docs/sql-compatibility-roadmap.html) | The 11 staged SQL implementation and qualification milestones |
 | [Internals & Contributing](https://csharpdb.com/docs/internals.html) | Project structure and concurrency model |
 | [FAQ](https://csharpdb.com/docs/faq.html) | Common questions |
 | [Roadmap](https://csharpdb.com/roadmap.html) | Project goals |

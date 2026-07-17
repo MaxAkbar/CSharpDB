@@ -13,8 +13,12 @@ public static class SchemaSerializer
     private const byte NullableFlag = 0x01;
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
-    private const ulong TableMetadataVersion = 2;
+    private const ulong TableMetadataVersion = 5;
     private const ulong TableMetadataVersionWithCollations = 1;
+    private const ulong TableMetadataVersionWithForeignKeys = 2;
+    private const ulong TableMetadataVersionWithDefaultsAndChecks = 3;
+    private const ulong TableMetadataVersionWithLogicalKeys = 4;
+    private const ulong TableMetadataVersionWithOrderedForeignKeys = 5;
     private const ulong IndexMetadataVersion = 1;
 
     public static byte[] Serialize(TableSchema schema)
@@ -56,6 +60,42 @@ public static class SchemaSerializer
             WriteVarint(ms, (ulong)foreignKey.OnDelete);
             WriteString(ms, foreignKey.SupportingIndexName);
         }
+        WriteVarint(ms, (ulong)schema.Columns.Count);
+        foreach (var column in schema.Columns)
+            WriteNullableString(ms, column.DefaultSql);
+        WriteVarint(ms, (ulong)schema.CheckConstraints.Count);
+        foreach (var checkConstraint in schema.CheckConstraints)
+        {
+            WriteNullableString(ms, checkConstraint.ConstraintName);
+            WriteString(ms, checkConstraint.ExpressionSql);
+            WriteNullableString(ms, checkConstraint.ColumnName);
+        }
+        WriteVarint(ms, (ulong)schema.KeyConstraints.Count);
+        foreach (var keyConstraint in schema.KeyConstraints)
+        {
+            WriteNullableString(ms, keyConstraint.ConstraintName);
+            WriteVarint(ms, (ulong)keyConstraint.Kind);
+            WriteVarint(ms, (ulong)keyConstraint.Columns.Count);
+            foreach (string columnName in keyConstraint.Columns)
+                WriteString(ms, columnName);
+            WriteNullableString(ms, keyConstraint.BackingIndexName);
+        }
+        WriteVarint(ms, (ulong)schema.ForeignKeys.Count);
+        foreach (ForeignKeyDefinition foreignKey in schema.ForeignKeys)
+        {
+            IReadOnlyList<string> columnNames = foreignKey.ColumnNames.Count > 0
+                ? foreignKey.ColumnNames
+                : [foreignKey.ColumnName];
+            IReadOnlyList<string> referencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                ? foreignKey.ReferencedColumnNames
+                : [foreignKey.ReferencedColumnName];
+            WriteVarint(ms, (ulong)columnNames.Count);
+            foreach (string columnName in columnNames)
+                WriteString(ms, columnName);
+            WriteVarint(ms, (ulong)referencedColumnNames.Count);
+            foreach (string columnName in referencedColumnNames)
+                WriteString(ms, columnName);
+        }
 
         return ms.ToArray();
     }
@@ -86,7 +126,11 @@ public static class SchemaSerializer
 
         long nextRowId = 0;
         var columnCollations = new string?[colCount];
+        var columnDefaults = new string?[colCount];
         ForeignKeyDefinition[] foreignKeys = Array.Empty<ForeignKeyDefinition>();
+        CheckConstraintDefinition[] checkConstraints = Array.Empty<CheckConstraintDefinition>();
+        KeyConstraintDefinition[] keyConstraints = Array.Empty<KeyConstraintDefinition>();
+        ulong metadataVersion = 0;
         if (pos < data.Length)
         {
             ulong storedNextRowId = Varint.Read(data[pos..], out int nextRowIdBytesRead);
@@ -97,10 +141,15 @@ public static class SchemaSerializer
 
         if (pos < data.Length)
         {
-            ulong metadataVersion = Varint.Read(data[pos..], out int metadataBytesRead);
+            metadataVersion = Varint.Read(data[pos..], out int metadataBytesRead);
             pos += metadataBytesRead;
 
-            if (metadataVersion is not (TableMetadataVersionWithCollations or TableMetadataVersion))
+            if (metadataVersion is not (
+                    TableMetadataVersionWithCollations or
+                    TableMetadataVersionWithForeignKeys or
+                    TableMetadataVersionWithDefaultsAndChecks or
+                    TableMetadataVersionWithLogicalKeys or
+                    TableMetadataVersion))
                 throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
 
             int metadataColumnCount = (int)Varint.Read(data[pos..], out int metadataCountBytesRead);
@@ -111,7 +160,7 @@ public static class SchemaSerializer
             for (int i = 0; i < metadataColumnCount; i++)
                 columnCollations[i] = ReadNullableString(data, ref pos);
 
-            if (metadataVersion >= TableMetadataVersion && pos < data.Length)
+            if (metadataVersion >= TableMetadataVersionWithForeignKeys && pos < data.Length)
             {
                 int foreignKeyCount = (int)Varint.Read(data[pos..], out int foreignKeyCountBytesRead);
                 pos += foreignKeyCountBytesRead;
@@ -136,8 +185,132 @@ public static class SchemaSerializer
                         ColumnName = columnName,
                         ReferencedTableName = referencedTableName,
                         ReferencedColumnName = referencedColumnName,
+                        ColumnNames = [columnName],
+                        ReferencedColumnNames = [referencedColumnName],
                         OnDelete = (ForeignKeyOnDeleteAction)onDeleteRaw,
                         SupportingIndexName = supportingIndexName,
+                    };
+                }
+            }
+
+            if (metadataVersion >= TableMetadataVersionWithDefaultsAndChecks && pos < data.Length)
+            {
+                int defaultColumnCount = checked((int)Varint.Read(data[pos..], out int defaultCountBytesRead));
+                pos += defaultCountBytesRead;
+                if (defaultColumnCount != colCount)
+                {
+                    throw new InvalidDataException(
+                        $"Table schema default metadata column count '{defaultColumnCount}' does not match schema column count '{colCount}'.");
+                }
+
+                for (int i = 0; i < defaultColumnCount; i++)
+                    columnDefaults[i] = ReadNullableString(data, ref pos);
+
+                int checkConstraintCount = checked((int)Varint.Read(data[pos..], out int checkCountBytesRead));
+                pos += checkCountBytesRead;
+                checkConstraints = new CheckConstraintDefinition[checkConstraintCount];
+                for (int i = 0; i < checkConstraintCount; i++)
+                {
+                    checkConstraints[i] = new CheckConstraintDefinition
+                    {
+                        ConstraintName = ReadNullableString(data, ref pos),
+                        ExpressionSql = ReadString(data, ref pos),
+                        ColumnName = ReadNullableString(data, ref pos),
+                    };
+                }
+            }
+
+            if (metadataVersion >= TableMetadataVersionWithLogicalKeys && pos < data.Length)
+            {
+                int keyConstraintCount = checked((int)Varint.Read(data[pos..], out int keyCountBytesRead));
+                pos += keyCountBytesRead;
+                keyConstraints = new KeyConstraintDefinition[keyConstraintCount];
+                for (int i = 0; i < keyConstraintCount; i++)
+                {
+                    string? constraintName = ReadNullableString(data, ref pos);
+                    ulong kindRaw = Varint.Read(data[pos..], out int kindBytesRead);
+                    pos += kindBytesRead;
+                    if (!Enum.IsDefined(typeof(KeyConstraintKind), (int)kindRaw))
+                        throw new InvalidDataException($"Unsupported key constraint kind '{kindRaw}'.");
+
+                    int keyColumnCount = checked((int)Varint.Read(data[pos..], out int keyColumnCountBytesRead));
+                    pos += keyColumnCountBytesRead;
+                    if (keyColumnCount == 0)
+                        throw new InvalidDataException("Persisted key constraint must contain at least one column.");
+
+                    var keyColumns = new string[keyColumnCount];
+                    for (int columnIndex = 0; columnIndex < keyColumnCount; columnIndex++)
+                        keyColumns[columnIndex] = ReadString(data, ref pos);
+
+                    keyConstraints[i] = new KeyConstraintDefinition
+                    {
+                        ConstraintName = constraintName,
+                        Kind = (KeyConstraintKind)kindRaw,
+                        Columns = keyColumns,
+                        BackingIndexName = ReadNullableString(data, ref pos),
+                    };
+                }
+            }
+
+            if (metadataVersion >= TableMetadataVersionWithOrderedForeignKeys && pos < data.Length)
+            {
+                int orderedForeignKeyCount = checked((int)Varint.Read(
+                    data[pos..],
+                    out int orderedForeignKeyCountBytesRead));
+                pos += orderedForeignKeyCountBytesRead;
+                if (orderedForeignKeyCount != foreignKeys.Length)
+                {
+                    throw new InvalidDataException(
+                        $"Ordered foreign key metadata count '{orderedForeignKeyCount}' does not match foreign key count '{foreignKeys.Length}'.");
+                }
+
+                for (int i = 0; i < orderedForeignKeyCount; i++)
+                {
+                    int columnCount = checked((int)Varint.Read(data[pos..], out int columnCountBytesRead));
+                    pos += columnCountBytesRead;
+                    if (columnCount == 0)
+                        throw new InvalidDataException("Persisted foreign key must contain at least one child column.");
+                    var orderedChildColumnNames = new string[columnCount];
+                    for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+                        orderedChildColumnNames[columnIndex] = ReadString(data, ref pos);
+
+                    int referencedColumnCount = checked((int)Varint.Read(
+                        data[pos..],
+                        out int referencedColumnCountBytesRead));
+                    pos += referencedColumnCountBytesRead;
+                    if (referencedColumnCount != columnCount)
+                    {
+                        throw new InvalidDataException(
+                            "Persisted foreign key child and referenced column counts must match.");
+                    }
+                    var referencedColumnNames = new string[referencedColumnCount];
+                    for (int columnIndex = 0; columnIndex < referencedColumnCount; columnIndex++)
+                        referencedColumnNames[columnIndex] = ReadString(data, ref pos);
+
+                    ForeignKeyDefinition scalar = foreignKeys[i];
+                    if (!string.Equals(
+                            scalar.ColumnName,
+                            orderedChildColumnNames[0],
+                            StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(
+                            scalar.ReferencedColumnName,
+                            referencedColumnNames[0],
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidDataException(
+                            "Ordered foreign key metadata does not match its scalar compatibility fields.");
+                    }
+
+                    foreignKeys[i] = new ForeignKeyDefinition
+                    {
+                        ConstraintName = scalar.ConstraintName,
+                        ColumnName = scalar.ColumnName,
+                        ReferencedTableName = scalar.ReferencedTableName,
+                        ReferencedColumnName = scalar.ReferencedColumnName,
+                        ColumnNames = orderedChildColumnNames,
+                        ReferencedColumnNames = referencedColumnNames,
+                        OnDelete = scalar.OnDelete,
+                        SupportingIndexName = scalar.SupportingIndexName,
                     };
                 }
             }
@@ -157,9 +330,14 @@ public static class SchemaSerializer
                 Nullable = (flags & NullableFlag) != 0,
                 IsPrimaryKey = isPrimaryKey,
                 // Backward compatibility: historical INTEGER PRIMARY KEY behavior auto-generated rowid.
-                // Legacy payloads lack the identity bit, so infer identity for INTEGER PK columns.
-                IsIdentity = hasIdentityFlag || (isPrimaryKey && type == DbType.Integer),
+                // Logical-key metadata makes an explicit distinction between a physical
+                // single INTEGER key and composite INTEGER key components.
+                IsIdentity = hasIdentityFlag ||
+                    (metadataVersion < TableMetadataVersionWithLogicalKeys &&
+                     isPrimaryKey &&
+                     type == DbType.Integer),
                 Collation = columnCollations[i],
+                DefaultSql = columnDefaults[i],
             };
         }
 
@@ -169,6 +347,8 @@ public static class SchemaSerializer
             Columns = columns,
             NextRowId = nextRowId,
             ForeignKeys = foreignKeys,
+            CheckConstraints = checkConstraints,
+            KeyConstraints = keyConstraints,
         };
     }
 

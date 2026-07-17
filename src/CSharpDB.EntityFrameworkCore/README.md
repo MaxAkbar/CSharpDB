@@ -200,6 +200,9 @@ to serialize concurrent migration runs across processes.
 | `dotnet ef migrations script` | Yes | Non-idempotent scripts only |
 | CRUD + change tracking | Yes | Includes affected-row concurrency checks |
 | Integer identity propagation | Yes | Single-column integer primary keys |
+| Composite primary keys and indexes | Yes | Composite primary keys are emitted as table constraints; composite unique and non-unique indexes preserve declared column order |
+| Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
+| Create-table check constraints | Partial | Deterministic row-local expressions accepted by the CSharpDB engine; standalone add/drop operations remain unsupported |
 | Basic LINQ/query subset | Yes | `Where`, ordering, pagination, scalar projections, `First`/`Single`, `Any`, `Count`, null checks, `Contains`, and simple navigation-loading joins |
 | Supported CLR types | Yes | `bool`, integral types, enums, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
 
@@ -207,7 +210,9 @@ to serialize concurrent migration runs across processes.
 
 - `decimal` requires an explicit value converter
 - schemas are unsupported in runtime and migrations
-- defaults, computed columns, check constraints, and rowversion are unsupported
+- computed columns, `DefaultValueSql`, and rowversion are unsupported
+- standalone add/drop check-constraint migrations are unsupported
+- composite foreign keys and standalone add/drop primary or unique key operations are rejected explicitly
 - pooled connections are rejected
 - named shared-memory databases (`:memory:<name>`) are rejected
 - standalone foreign-key alteration migrations are unsupported

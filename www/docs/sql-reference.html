@@ -52,6 +52,7 @@
                     <h4>On This Page</h4>
                     <ul>
                         <li><a href="#data-types">Data Types</a></li>
+                        <li><a href="#identifiers">Identifiers</a></li>
                         <li><a href="#statements">Statements</a></li>
                         <li class="toc-child"><a href="#create-table">CREATE TABLE</a></li>
                         <li class="toc-child"><a href="#temporary-tables">Temporary Tables</a></li>
@@ -94,7 +95,7 @@
             </aside>
 
             <div class="doc-content source-ref-body">
-                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/sql-reference.md</code>. For the shorter curated page, see <a href="sql.html">SQL Reference</a>.</div>
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/sql-reference.md</code>. For the shorter curated page, see <a href="sql.html">SQL Reference</a>. For feature-level support and limitations, see the <a href="sql-compatibility.html">SQL Compatibility Matrix</a>.</div>
                 <h1 id="sql-reference">SQL Reference</h1>
                 <p class="lead">Complete reference for the SQL dialect supported by CSharpDB.</p>
                 <hr/>
@@ -138,13 +139,51 @@
                 <p>CSharpDB uses a flexible type system. Arithmetic operators perform implicit coercion
                 between numeric types where needed.</p>
                 <hr/>
+                <h2 id="identifiers">Identifiers</h2>
+                <p>SQL identifiers are limited to 128 characters and cannot contain NUL.</p>
+                <table class="doc-table">
+                <thead>
+                <tr>
+                <th>Form</th>
+                <th>Rules</th>
+                <th>Example</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr>
+                <td>Unquoted</td>
+                <td>Starts with a letter recognized by .NET or underscore; remaining characters are letters, decimal digits, or underscores. Reserved keywords must be quoted.</td>
+                <td><code>customer_orders</code>, <code>_staging2</code></td>
+                </tr>
+                <tr>
+                <td>Double-quoted</td>
+                <td>May contain reserved words, whitespace, and other characters. Escape an embedded double quote by doubling it.</td>
+                <td><code>"select"</code>, <code>"display name"</code>, <code>"say ""hello"""</code></td>
+                </tr>
+                </tbody>
+                </table>
+                <p>Catalog lookup is ordinal case-insensitive for quoted and unquoted identifiers. Quoting preserves the identifier text but does not create case-sensitive lookup semantics.</p>
+                <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TABLE "order details" (
+                    "order id" INTEGER PRIMARY KEY,
+                    "display ""name""" TEXT
+                );
+                </code></pre></div>
+                <hr/>
                 <h2 id="statements">Statements</h2>
                 <h3 id="create-table">CREATE TABLE</h3>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">CREATE TABLE [IF NOT EXISTS] table_name (
                     column_name type [PRIMARY KEY] [IDENTITY | AUTOINCREMENT] [NOT NULL]
                                      [COLLATE collation_name]
+                                     [DEFAULT literal]
+                                     [[CONSTRAINT name] CHECK (row_local_expression)]
                                      [REFERENCES other_table(column) [ON DELETE CASCADE | RESTRICT]],
-                    ...
+                    ...,
+                    [[CONSTRAINT name] CHECK (row_local_expression)],
+                    [[CONSTRAINT name] PRIMARY KEY (column1 [, column2, ...])],
+                    [[CONSTRAINT name] UNIQUE (column1 [, column2, ...])],
+                    [[CONSTRAINT name] FOREIGN KEY (column1 [, column2, ...])
+                        REFERENCES other_table(column1 [, column2, ...])
+                        [ON DELETE CASCADE | RESTRICT]]
                 );
                 </code></pre></div>
                 <p><strong>Constraints:</strong></p>
@@ -159,8 +198,13 @@
                 <tbody>
                 <tr>
                 <td><code>PRIMARY KEY</code></td>
-                <td>Column</td>
-                <td>Designates the row identity column (integer)</td>
+                <td>Column or table</td>
+                <td>A single INTEGER primary key retains row-identity generation. Table-level and composite logical primary keys enforce ordered uniqueness and NOT NULL without implicitly generating integer components.</td>
+                </tr>
+                <tr>
+                <td><code>UNIQUE</code></td>
+                <td>Table</td>
+                <td>Enforces an ordered logical candidate key, including composite keys. Tuples containing NULL follow the current SQL-style nullable-unique behavior.</td>
                 </tr>
                 <tr>
                 <td><code>IDENTITY</code> / <code>AUTOINCREMENT</code></td>
@@ -173,14 +217,24 @@
                 <td>Rejects NULL values on insert/update</td>
                 </tr>
                 <tr>
+                <td><code>DEFAULT</code></td>
+                <td>Column</td>
+                <td>Applies a persisted literal when the column is omitted or explicitly uses <code>DEFAULT</code></td>
+                </tr>
+                <tr>
+                <td><code>CHECK</code></td>
+                <td>Column or table</td>
+                <td>Rejects writes when a deterministic row-local expression is false; NULL/UNKNOWN passes</td>
+                </tr>
+                <tr>
                 <td><code>COLLATE</code></td>
                 <td>Column</td>
                 <td>Sets collation for TEXT comparisons (see <a href="#collations">Collations</a>)</td>
                 </tr>
                 <tr>
-                <td><code>REFERENCES</code></td>
-                <td>Column</td>
-                <td>Foreign key referencing another table's column</td>
+                <td><code>REFERENCES</code> / <code>FOREIGN KEY</code></td>
+                <td>Column or table</td>
+                <td>Declares a scalar or ordered composite foreign key. The referenced tuple must be an enforced primary or unique candidate key with matching types and collations. Nullable composite children use MATCH SIMPLE semantics.</td>
                 </tr>
                 <tr>
                 <td><code>ON DELETE CASCADE</code></td>
@@ -212,11 +266,17 @@
                 <p>For embedded and ADO.NET connections, temporary tables live for the connection or database handle lifetime and are cleared when the session is disposed. Stateless HTTP/gRPC <code>ExecuteSqlAsync</code> rejects temporary table commands; use <code>BeginTransaction</code> plus <code>ExecuteInTransaction</code> for remote temporary workflows.</p>
                 <h3 id="alter-table">ALTER TABLE</h3>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">ALTER TABLE table_name ADD COLUMN column_name type [constraints];
+                ALTER TABLE table_name ADD CONSTRAINT constraint_name CHECK (expression);
                 ALTER TABLE table_name DROP COLUMN column_name;
                 ALTER TABLE table_name DROP CONSTRAINT constraint_name;
+                ALTER TABLE table_name ALTER [COLUMN] column_name SET DEFAULT literal;
+                ALTER TABLE table_name ALTER [COLUMN] column_name DROP DEFAULT;
+                ALTER TABLE table_name ALTER [COLUMN] column_name SET NOT NULL;
+                ALTER TABLE table_name ALTER [COLUMN] column_name DROP NOT NULL;
                 ALTER TABLE table_name RENAME TO new_name;
                 ALTER TABLE table_name RENAME COLUMN old_name TO new_name;
                 </code></pre></div>
+                <p>Default changes affect future writes; <code>SET NOT NULL</code> and <code>ADD CONSTRAINT ... CHECK</code> validate all existing rows before changing metadata. Unconstrained <code>DROP COLUMN</code> uses a transactional shadow B+tree rewrite and preserves row ids and unaffected indexes. Adding a column with a typed literal default backfills populated tables through the same rewrite path. Indexed/key/FK/check-dependent columns and trigger/validation-rule dependencies are rejected rather than weakened. Type, collation, and key-shape alterations are not yet supported.</p>
                 <h3 id="drop-table">DROP TABLE</h3>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">DROP TABLE [IF EXISTS] table_name;
                 </code></pre></div>
@@ -265,9 +325,11 @@
                 <h2 id="data-manipulation">Data Manipulation</h2>
                 <h3 id="insert">INSERT</h3>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">INSERT INTO table_name [(column1, column2, ...)]
-                VALUES (value1, value2, ...);
+                VALUES (value_or_DEFAULT1, value_or_DEFAULT2, ...);
+
+                INSERT INTO table_name DEFAULT VALUES;
                 </code></pre></div>
-                <p>Column list is optional when providing values for all columns in declaration order.</p>
+                <p>Column list is optional when providing values for all columns in declaration order. Omitted columns and explicit <code>DEFAULT</code> markers use their literal column defaults; explicit <code>NULL</code> remains NULL.</p>
                 <h3 id="update">UPDATE</h3>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">UPDATE table_name
                 SET column1 = expression1 [, column2 = expression2, ...]
@@ -432,11 +494,11 @@
                 <hr/>
                 <h2 id="set-operations">Set Operations</h2>
                 <div class="code-block" data-title="SQL"><pre><code class="language-sql">select_statement UNION     select_statement
+                select_statement UNION ALL select_statement
                 select_statement INTERSECT select_statement
                 select_statement EXCEPT    select_statement
                 </code></pre></div>
-                <p>Compound queries support trailing <code>ORDER BY</code>, <code>LIMIT</code>, and <code>OFFSET</code> applied to the
-                combined result.</p>
+                <p><code>UNION</code> removes duplicates while <code>UNION ALL</code> preserves duplicates and NULL rows. Compound queries support trailing <code>ORDER BY</code>, <code>LIMIT</code>, and <code>OFFSET</code> applied to the combined result. See the compatibility matrix for branch-type and transport qualifications.</p>
                 <hr/>
                 <h2 id="expressions-and-operators">Expressions and Operators</h2>
                 <h3 id="arithmetic">Arithmetic</h3>
@@ -502,6 +564,7 @@
                 </tbody>
                 </table>
                 <h3 id="logical">Logical</h3>
+                <p>Comparisons with NULL produce UNKNOWN (represented as NULL). <code>AND</code>, <code>OR</code>, and <code>NOT</code> apply SQL three-valued truth tables.</p>
                 <table class="doc-table">
                 <thead>
                 <tr>
@@ -697,22 +760,21 @@
                 </code></pre></div>
                 <hr/>
                 <h2 id="limitations">Limitations</h2>
+                <p>Window functions are available as an <strong>experimental in-memory slice</strong>: one compatible specification per SELECT with <code>ROW_NUMBER</code>, <code>RANK</code>, <code>DENSE_RANK</code>, and non-distinct <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, or <code>MAX</code>. Named windows, explicit frames, navigation functions, mixed grouping, incompatible specifications, and disk spill are not yet supported.</p>
+                <p>Built-in scalar and aggregate metadata is queryable through <code>sys.functions</code> (also <code>sys_functions</code>). Logical primary/unique key columns are exposed through <code>sys.key_constraints</code>. The <a href="sql.html">SQL overview</a> lists the currently registered built-in families.</p>
                 <p>The following SQL features are <strong>not currently supported</strong>:</p>
                 <ul>
                 <li><code>CASE</code> / <code>WHEN</code> expressions</li>
                 <li><code>CAST</code> expressions (implicit coercion only)</li>
-                <li><code>DEFAULT</code> column values</li>
-                <li><code>CHECK</code> constraints</li>
                 <li><code>RETURNING</code> clause on INSERT/UPDATE/DELETE</li>
                 <li><code>UPSERT</code> / <code>ON CONFLICT</code> / <code>INSERT OR REPLACE</code></li>
                 <li>Recursive CTE execution (<code>WITH RECURSIVE</code> is parsed but not evaluated)</li>
-                <li>String functions (<code>UPPER</code>, <code>LOWER</code>, <code>LENGTH</code>, <code>SUBSTR</code>, <code>TRIM</code>)</li>
-                <li>Date/time functions (<code>DATE</code>, <code>TIME</code>, <code>DATETIME</code>, <code>STRFTIME</code>)</li>
-                <li>Math functions (<code>ABS</code>, <code>ROUND</code>, <code>CEIL</code>, <code>FLOOR</code>)</li>
-                <li>Window functions (<code>OVER</code>, <code>PARTITION BY</code>, <code>ROW_NUMBER</code>, etc.)</li>
+                <li>Unregistered vendor-specific functions such as <code>STRFTIME</code>, <code>CEIL</code>, and <code>FLOOR</code></li>
+                <li>Advanced window forms (<code>LAG</code>, <code>LEAD</code>, named windows, and explicit frames)</li>
                 <li>Stored procedures</li>
-                <li>Composite primary keys / composite foreign keys</li>
+                <li><code>ON UPDATE</code> foreign-key actions, deferred constraints, and <code>MATCH FULL</code>/<code>MATCH PARTIAL</code></li>
                 </ul>
+                <p>Current <code>DEFAULT</code> support is limited to typed literals and NULL. <code>CHECK</code> expressions must be deterministic and row-local; parameters, functions, subqueries, qualified references, and cross-column references from a column-scoped CHECK are rejected. See the <a href="sql-compatibility.html">SQL Compatibility Matrix</a> for the tested surfaces.</p>
             </div>
         </div>
     </main>

@@ -9,7 +9,7 @@ Lightweight embedded SQL database engine for .NET with single-file storage, WAL 
 
 ## Overview
 
-`CSharpDB.Engine` is the main entry point for embedding CSharpDB in your .NET application. It combines the SQL parser, query planner, and B+tree storage engine into a single `Database` class with two access paths: a full SQL engine and a zero-SQL `Collection<T>` document API. You can run against a normal on-disk database file, open the engine fully in memory and explicitly save/load snapshots when needed, or use the hybrid lazy-resident mode that warms pages into memory on demand and keeps committed state durable on disk.
+`CSharpDB.Engine` is the main entry point for embedding CSharpDB in your .NET application. It combines the CSharpDB SQL parser, query planner, and B+tree storage engine into a single `Database` class with two access paths: the documented SQL subset and a zero-SQL `Collection<T>` document API. You can run against a normal on-disk database file, open the engine fully in memory and explicitly save/load snapshots when needed, or use the hybrid lazy-resident mode that warms pages into memory on demand and keeps committed state durable on disk.
 
 ## Features
 

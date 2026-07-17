@@ -60,6 +60,40 @@ public class TokenizerTests
         Assert.Equal(TokenType.Eof, tokens[2].Type);
     }
 
+    [Fact]
+    public void Tokenize_QuotedIdentifier_PreservesReservedWordsAndEscapedQuotes()
+    {
+        var tokens = new Tokenizer("\"select\".\"display \"\"name\"\"\"").Tokenize();
+
+        Assert.Equal(TokenType.Identifier, tokens[0].Type);
+        Assert.Equal("select", tokens[0].Value);
+        Assert.Equal(TokenType.Dot, tokens[1].Type);
+        Assert.Equal(TokenType.Identifier, tokens[2].Type);
+        Assert.Equal("display \"name\"", tokens[2].Value);
+    }
+
+    [Fact]
+    public void Tokenize_QuotedIdentifier_RejectsUnterminatedInput()
+    {
+        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
+            () => new Tokenizer("\"unfinished").Tokenize());
+
+        Assert.Equal(CSharpDB.Primitives.ErrorCode.SyntaxError, error.Code);
+        Assert.Contains("Unterminated quoted identifier", error.Message);
+    }
+
+    [Fact]
+    public void Tokenize_Identifier_EnforcesMaximumLength()
+    {
+        string identifier = new('a', CSharpDB.Primitives.SqlIdentifierRules.MaxLength + 1);
+
+        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
+            () => new Tokenizer(identifier).Tokenize());
+
+        Assert.Equal(CSharpDB.Primitives.ErrorCode.SyntaxError, error.Code);
+        Assert.Contains("maximum length", error.Message);
+    }
+
     [Theory]
     [InlineData("LIKE", TokenType.Like)]
     [InlineData("IN", TokenType.In)]

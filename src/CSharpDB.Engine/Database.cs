@@ -73,6 +73,7 @@ public sealed class Database : IAsyncDisposable
     private long _observedSchemaVersion;
     private ImplicitInsertExecutionMode _implicitInsertExecutionMode;
     private bool _inTransaction;
+    private bool _explicitTransactionFailed;
 
     /// <summary>
     /// When true, simple PK equality lookups (SELECT * WHERE pk = N) use a synchronous
@@ -897,15 +898,11 @@ public sealed class Database : IAsyncDisposable
 
         if (_inTransaction)
         {
-            if (stmt is InsertStatement explicitInsert)
-            {
-                return await _planner.ExecuteInsertAsync(
-                    explicitInsert,
-                    persistRootChanges: false,
-                    ct);
-            }
-
-            return await _planner.ExecuteAsync(stmt, ct);
+            return await ExecuteExplicitWriteAsync(
+                token => stmt is InsertStatement explicitInsert
+                    ? _planner.ExecuteInsertAsync(explicitInsert, persistRootChanges: false, token)
+                    : _planner.ExecuteAsync(stmt, token),
+                ct);
         }
 
         if (stmt is InsertStatement insert)
@@ -927,6 +924,28 @@ public sealed class Database : IAsyncDisposable
         }
 
         return await ExecuteImplicitWriteStatementCoreAsync(stmt, ct);
+    }
+
+    private async ValueTask<QueryResult> ExecuteExplicitWriteAsync(
+        Func<CancellationToken, ValueTask<QueryResult>> action,
+        CancellationToken ct)
+    {
+        if (_explicitTransactionFailed)
+        {
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                "The transaction is aborted because an earlier write failed; roll it back before issuing another write.");
+        }
+
+        try
+        {
+            return await action(ct);
+        }
+        catch
+        {
+            _explicitTransactionFailed = true;
+            throw;
+        }
     }
 
     private ValueTask<QueryResult> ExecuteImplicitWriteStatementCoreAsync(Statement stmt, CancellationToken ct) =>
@@ -991,9 +1010,11 @@ public sealed class Database : IAsyncDisposable
 
         if (_inTransaction)
         {
-            return await _planner.ExecuteSimpleInsertAsync(
-                insert,
-                persistRootChanges: false,
+            return await ExecuteExplicitWriteAsync(
+                token => _planner.ExecuteSimpleInsertAsync(
+                    insert,
+                    persistRootChanges: false,
+                    token),
                 ct);
         }
 
@@ -1080,6 +1101,7 @@ public sealed class Database : IAsyncDisposable
         }
 
         _inTransaction = true;
+        _explicitTransactionFailed = false;
     }
 
     /// <summary>
@@ -1089,6 +1111,13 @@ public sealed class Database : IAsyncDisposable
     {
         if (!_inTransaction)
             throw new CSharpDbException(ErrorCode.Unknown, "No active transaction.");
+        if (_explicitTransactionFailed)
+        {
+            await RollbackAsync(CancellationToken.None);
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                "The transaction was rolled back because an earlier write failed.");
+        }
 
         PagerCommitResult commit;
         try
@@ -1101,11 +1130,13 @@ public sealed class Database : IAsyncDisposable
             ClearPendingCollectionCatalogMutations();
             await RecoverCatalogStateAfterFailedCommitAsync();
             _inTransaction = false;
+            _explicitTransactionFailed = false;
             ReleaseExplicitTransactionWriteGate();
             throw;
         }
 
         _inTransaction = false;
+        _explicitTransactionFailed = false;
         ReleaseExplicitTransactionWriteGate();
         await WaitForCommitOrRecoverAsync(commit);
         await PersistHybridStateAsync(HybridPersistenceTriggers.Commit, ct);
@@ -1134,6 +1165,7 @@ public sealed class Database : IAsyncDisposable
         {
             ClearPendingCollectionCatalogMutations();
             _inTransaction = false;
+            _explicitTransactionFailed = false;
             ReleaseExplicitTransactionWriteGate();
         }
     }
@@ -2628,6 +2660,8 @@ public sealed class Database : IAsyncDisposable
             string.Equals(tableName, "sys_columns", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys.indexes", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys_indexes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys.functions", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tableName, "sys_functions", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys.views", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys_views", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys.triggers", StringComparison.OrdinalIgnoreCase) ||

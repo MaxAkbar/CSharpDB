@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace CSharpDB.EntityFrameworkCore.Tests;
 
@@ -67,9 +68,21 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
 
         string script = migrator.GenerateScript();
 
-        Assert.Contains("CREATE TABLE Blogs", script, StringComparison.Ordinal);
-        Assert.Contains("ALTER TABLE Blogs ADD COLUMN Slug TEXT", script, StringComparison.Ordinal);
-        Assert.Contains("CREATE INDEX IX_Blogs_Slug ON Blogs (Slug)", script, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE \"Blogs\"", script, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE \"Blogs\" ADD COLUMN \"Slug\" TEXT", script, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX \"IX_Blogs_Slug\" ON \"Blogs\" (\"Slug\")", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SqlGenerationHelper_QuotesAndEscapesIdentifiers()
+    {
+        string dbPath = Path.Combine(_workspace, "identifier-generation.db");
+
+        using var db = new MigrationRuntimeContext($"Data Source={dbPath}");
+        ISqlGenerationHelper helper = db.GetService<ISqlGenerationHelper>();
+
+        Assert.Equal("\"select\"", helper.DelimitIdentifier("select"));
+        Assert.Equal("\"display \"\"name\"\"\"", helper.DelimitIdentifier("display \"name\""));
     }
 
     [Fact]
@@ -112,6 +125,189 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
 
         Assert.Contains("standalone foreign key changes", addError.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("standalone foreign key changes", dropError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MigrationsSqlGenerator_KeepsCompositeForeignKeysAndStandaloneKeyChangesRejected()
+    {
+        string dbPath = Path.Combine(_workspace, "key-limit-generator.db");
+
+        using var db = new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
+
+        var createTable = new CreateTableOperation { Name = "child" };
+        createTable.Columns.Add(new AddColumnOperation
+        {
+            Name = "TenantId",
+            Table = createTable.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+        });
+        createTable.Columns.Add(new AddColumnOperation
+        {
+            Name = "OrderId",
+            Table = createTable.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+        });
+        createTable.ForeignKeys.Add(new AddForeignKeyOperation
+        {
+            Name = "FK_child_parent",
+            Table = createTable.Name,
+            Columns = ["TenantId", "OrderId"],
+            PrincipalTable = "parent",
+            PrincipalColumns = ["TenantId", "OrderId"],
+        });
+
+        var compositeForeignKeyError = Assert.Throws<NotSupportedException>(
+            () => generator.Generate([createTable], model: null));
+        Assert.Contains("composite foreign keys", compositeForeignKeyError.Message, StringComparison.OrdinalIgnoreCase);
+
+        var addPrimaryKey = new AddPrimaryKeyOperation
+        {
+            Name = "PK_child",
+            Table = "child",
+            Columns = ["TenantId", "OrderId"],
+        };
+        var addUnique = new AddUniqueConstraintOperation
+        {
+            Name = "AK_child_tenant_order",
+            Table = "child",
+            Columns = ["TenantId", "OrderId"],
+        };
+
+        Assert.Contains(
+            "standalone primary key changes",
+            Assert.Throws<NotSupportedException>(() => generator.Generate([addPrimaryKey], model: null)).Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "unique constraints",
+            Assert.Throws<NotSupportedException>(() => generator.Generate([addUnique], model: null)).Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MigrationsSqlGenerator_EmitsLiteralDefaultAndCreateTableCheck()
+    {
+        string dbPath = Path.Combine(_workspace, "default-check-generator.db");
+
+        using var db = new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
+
+        var createTable = new CreateTableOperation { Name = "order details" };
+        createTable.Columns.Add(new AddColumnOperation
+        {
+            Name = "Id",
+            Table = createTable.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+        });
+        createTable.Columns.Add(new AddColumnOperation
+        {
+            Name = "Status",
+            Table = createTable.Name,
+            ClrType = typeof(string),
+            ColumnType = "TEXT",
+            IsNullable = true,
+            DefaultValue = "new",
+        });
+        createTable.PrimaryKey = new AddPrimaryKeyOperation
+        {
+            Name = "PK_order_details",
+            Table = createTable.Name,
+            Columns = ["Id"],
+        };
+        createTable.CheckConstraints.Add(new AddCheckConstraintOperation
+        {
+            Name = "CK_order_details_status",
+            Table = createTable.Name,
+            Sql = "\"Status\" <> ''",
+        });
+
+        string sql = Assert.Single(generator.Generate([createTable], model: null)).CommandText;
+
+        Assert.Contains("\"Status\" TEXT DEFAULT 'new'", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "CONSTRAINT \"CK_order_details_status\" CHECK (\"Status\" <> '')",
+            sql,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MigrationsSqlGenerator_EmitsCompositePrimaryKeyAndIndexes()
+    {
+        string dbPath = Path.Combine(_workspace, "composite-key-generator.db");
+
+        using var db = new MigrationRuntimeContext($"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator = db.GetService<IMigrationsSqlGenerator>();
+
+        var createTable = new CreateTableOperation { Name = "order lines" };
+        createTable.Columns.Add(new AddColumnOperation
+        {
+            Name = "Order Id",
+            Table = createTable.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+        });
+        createTable.Columns.Add(new AddColumnOperation
+        {
+            Name = "Line No",
+            Table = createTable.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+        });
+        createTable.Columns.Add(new AddColumnOperation
+        {
+            Name = "Sku",
+            Table = createTable.Name,
+            ClrType = typeof(string),
+            ColumnType = "TEXT",
+            IsNullable = false,
+        });
+        createTable.PrimaryKey = new AddPrimaryKeyOperation
+        {
+            Name = "PK_order_lines",
+            Table = createTable.Name,
+            Columns = ["Order Id", "Line No"],
+        };
+
+        var uniqueIndex = new CreateIndexOperation
+        {
+            Name = "IX_order_lines_order_sku",
+            Table = createTable.Name,
+            Columns = ["Order Id", "Sku"],
+            IsUnique = true,
+        };
+        var nonUniqueIndex = new CreateIndexOperation
+        {
+            Name = "IX_order_lines_sku_line",
+            Table = createTable.Name,
+            Columns = ["Sku", "Line No"],
+        };
+
+        IReadOnlyList<MigrationCommand> commands = generator.Generate(
+            [createTable, uniqueIndex, nonUniqueIndex],
+            model: null);
+        string sql = string.Concat(commands.Select(command => command.CommandText));
+
+        Assert.Contains(
+            "CONSTRAINT \"PK_order_lines\" PRIMARY KEY (\"Order Id\", \"Line No\")",
+            sql,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Order Id\" INTEGER PRIMARY KEY", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "CREATE UNIQUE INDEX \"IX_order_lines_order_sku\" ON \"order lines\" (\"Order Id\", \"Sku\")",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CREATE INDEX \"IX_order_lines_sku_line\" ON \"order lines\" (\"Sku\", \"Line No\")",
+            sql,
+            StringComparison.Ordinal);
     }
 
     private sealed class MigrationRuntimeContext(string connectionString) : DbContext

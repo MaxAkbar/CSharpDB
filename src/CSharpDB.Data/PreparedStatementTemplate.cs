@@ -66,7 +66,7 @@ internal sealed class PreparedStatementTemplate
     {
         simpleInsertTemplate = null;
 
-        if (statement is not InsertStatement insert)
+        if (statement is not InsertStatement insert || insert.IsDefaultValues)
             return false;
 
         var valueRows = insert.ValueRows;
@@ -124,6 +124,7 @@ internal sealed class PreparedStatementTemplate
                     TableName = insert.TableName,
                     ColumnNames = insert.ColumnNames,
                     ValueRows = valueRows,
+                    IsDefaultValues = insert.IsDefaultValues,
                 };
             }
 
@@ -167,6 +168,7 @@ internal sealed class PreparedStatementTemplate
                     Left = left,
                     Right = right,
                     Operation = compound.Operation,
+                    Quantifier = compound.Quantifier,
                     OrderBy = orderBy,
                     Limit = compound.Limit,
                     Offset = compound.Offset,
@@ -328,6 +330,7 @@ internal sealed class PreparedStatementTemplate
             case ParameterExpression parameter:
                 changed = true;
                 return BindParameter(parameter, parameters);
+            case DefaultExpression:
             case LiteralExpression:
             case ColumnRefExpression:
                 changed = false;
@@ -520,6 +523,37 @@ internal sealed class PreparedStatementTemplate
                     IsDistinct = functionCall.IsDistinct,
                     IsStarArg = functionCall.IsStarArg,
                     Arguments = args,
+                };
+            }
+            case WindowFunctionExpression window:
+            {
+                var function = (FunctionCallExpression)BindExpression(
+                    window.Function,
+                    parameters,
+                    out bool functionChanged);
+                var partitionBy = BindExpressionList(
+                    window.Window.PartitionBy,
+                    parameters,
+                    out bool partitionChanged);
+                var orderBy = BindOrderByClauses(
+                    window.Window.OrderBy,
+                    parameters,
+                    out bool orderChanged)!;
+                if (!functionChanged && !partitionChanged && !orderChanged)
+                {
+                    changed = false;
+                    return window;
+                }
+
+                changed = true;
+                return new WindowFunctionExpression
+                {
+                    Function = function,
+                    Window = new WindowSpecification
+                    {
+                        PartitionBy = partitionBy,
+                        OrderBy = orderBy,
+                    },
                 };
             }
             default:
@@ -966,6 +1000,13 @@ internal sealed class PreparedStatementTemplate
             case FunctionCallExpression functionCall:
                 for (int i = 0; i < functionCall.Arguments.Count; i++)
                     CollectParameterNames(functionCall.Arguments[i], names, seen);
+                return;
+            case WindowFunctionExpression window:
+                CollectParameterNames(window.Function, names, seen);
+                for (int i = 0; i < window.Window.PartitionBy.Count; i++)
+                    CollectParameterNames(window.Window.PartitionBy[i], names, seen);
+                for (int i = 0; i < window.Window.OrderBy.Count; i++)
+                    CollectParameterNames(window.Window.OrderBy[i].Expression, names, seen);
                 return;
         }
     }

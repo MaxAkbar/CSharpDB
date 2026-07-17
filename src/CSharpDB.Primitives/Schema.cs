@@ -8,6 +8,11 @@ public sealed class ColumnDefinition
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
     public string? Collation { get; init; }
+    /// <summary>
+    /// Canonical SQL for the column default expression, or null when no default
+    /// is defined. Defaults are evaluated for omitted/DEFAULT insert inputs.
+    /// </summary>
+    public string? DefaultSql { get; init; }
 }
 
 public enum ForeignKeyOnDeleteAction
@@ -19,9 +24,26 @@ public enum ForeignKeyOnDeleteAction
 public sealed class ForeignKeyDefinition
 {
     public required string ConstraintName { get; init; }
+    /// <summary>
+    /// Compatibility view of the first child column.
+    /// </summary>
     public required string ColumnName { get; init; }
     public required string ReferencedTableName { get; init; }
+    /// <summary>
+    /// Compatibility view of the first referenced column.
+    /// </summary>
     public required string ReferencedColumnName { get; init; }
+    /// <summary>
+    /// Ordered child columns. Empty only for metadata read from a pre-composite
+    /// schema payload; consumers should then use <see cref="ColumnName"/>.
+    /// </summary>
+    public IReadOnlyList<string> ColumnNames { get; init; } = Array.Empty<string>();
+    /// <summary>
+    /// Ordered referenced columns. Empty only for metadata read from a
+    /// pre-composite schema payload; consumers should then use
+    /// <see cref="ReferencedColumnName"/>.
+    /// </summary>
+    public IReadOnlyList<string> ReferencedColumnNames { get; init; } = Array.Empty<string>();
     public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
     public required string SupportingIndexName { get; init; }
 }
@@ -32,11 +54,47 @@ public sealed class TableForeignKeyReference
     public required ForeignKeyDefinition ForeignKey { get; init; }
 }
 
+public sealed class CheckConstraintDefinition
+{
+    /// <summary>
+    /// User-supplied constraint name. Null preserves an unnamed CHECK.
+    /// </summary>
+    public string? ConstraintName { get; init; }
+    public required string ExpressionSql { get; init; }
+    /// <summary>
+    /// Original column scope, or null for a table-level CHECK.
+    /// </summary>
+    public string? ColumnName { get; init; }
+}
+
+public enum KeyConstraintKind
+{
+    PrimaryKey = 0,
+    Unique = 1,
+}
+
+public sealed class KeyConstraintDefinition
+{
+    /// <summary>
+    /// User-supplied constraint name. Null preserves an unnamed key.
+    /// </summary>
+    public string? ConstraintName { get; init; }
+    public KeyConstraintKind Kind { get; init; }
+    public required IReadOnlyList<string> Columns { get; init; }
+    /// <summary>
+    /// Owned unique index used to enforce the logical key, or null when a
+    /// single INTEGER PRIMARY KEY is enforced by the table's physical row key.
+    /// </summary>
+    public string? BackingIndexName { get; init; }
+}
+
 public sealed class TableSchema
 {
     public required string TableName { get; init; }
     public required IReadOnlyList<ColumnDefinition> Columns { get; init; }
     public IReadOnlyList<ForeignKeyDefinition> ForeignKeys { get; init; } = Array.Empty<ForeignKeyDefinition>();
+    public IReadOnlyList<CheckConstraintDefinition> CheckConstraints { get; init; } = Array.Empty<CheckConstraintDefinition>();
+    public IReadOnlyList<KeyConstraintDefinition> KeyConstraints { get; init; } = Array.Empty<KeyConstraintDefinition>();
     
     /// <summary>
     /// Persisted next auto rowid high-water mark for INSERT allocation.
@@ -56,9 +114,19 @@ public sealed class TableSchema
     {
         get
         {
+            int primaryKeyColumnIndex = -1;
             for (int i = 0; i < Columns.Count; i++)
-                if (Columns[i].IsPrimaryKey) return i;
-            return -1;
+            {
+                if (!Columns[i].IsPrimaryKey)
+                    continue;
+
+                if (primaryKeyColumnIndex >= 0)
+                    return -1;
+
+                primaryKeyColumnIndex = i;
+            }
+
+            return primaryKeyColumnIndex;
         }
     }
 
@@ -207,6 +275,7 @@ public enum IndexKind
     FullText = 2,
     FullTextInternal = 3,
     ForeignKeyInternal = 4,
+    ConstraintInternal = 5,
 }
 
 public enum IndexState

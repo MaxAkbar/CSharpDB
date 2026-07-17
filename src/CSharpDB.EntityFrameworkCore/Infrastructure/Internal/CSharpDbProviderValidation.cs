@@ -1,10 +1,10 @@
 using System.Data.Common;
-using System.Text.RegularExpressions;
 using CSharpDB.Data;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.EntityFrameworkCore.Infrastructure.Internal;
 
-internal static partial class CSharpDbProviderValidation
+internal static class CSharpDbProviderValidation
 {
     private const string PrivateMemoryDataSource = ":memory:";
 
@@ -64,17 +64,17 @@ internal static partial class CSharpDbProviderValidation
 
     public static void ValidateSimpleIdentifier(string identifier, string description)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(identifier);
-
-        if (!SimpleIdentifierRegex().IsMatch(identifier))
+        try
+        {
+            SqlIdentifierRules.Validate(identifier, description);
+        }
+        catch (CSharpDbException exception)
         {
             throw new NotSupportedException(
-                $"{description} '{identifier}' requires quoted identifier support, which the CSharpDB EF Core provider does not support in v1.");
+                $"{description} '{identifier}' is not a valid CSharpDB SQL identifier: {exception.Message}",
+                exception);
         }
     }
-
-    [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant)]
-    private static partial Regex SimpleIdentifierRegex();
 
     private static void ValidateEmbeddedTuningSupport(
         CSharpDbConnectionStringBuilder builder,

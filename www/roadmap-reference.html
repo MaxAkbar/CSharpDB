@@ -62,9 +62,9 @@
             </aside>
 
             <div class="doc-content source-ref-body">
-                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/roadmap.md</code>. For the shorter curated page, see <a href="roadmap.html">Roadmap</a>.</div>
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/roadmap.md</code>. For the shorter curated page, see <a href="roadmap.html">Roadmap</a>. Current SQL availability is tracked independently in the <a href="docs/sql-compatibility.html">SQL Compatibility Matrix</a>.</div>
                 <h1 id="csharpdb-roadmap">CSharpDB Roadmap</h1>
-                <p class="lead">This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier, and statuses are intended to reflect the current <code>v3.8.0</code> state of the repo.</p>
+                <p class="lead">This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier; current SQL behavior is qualified independently in the compatibility matrix.</p>
                 <hr/>
                 <h2 id="near-term">Near-Term</h2>
                 <p>Recently completed improvements to query performance, storage/runtime behavior, maintenance workflows, and developer ergonomics.</p>
@@ -212,6 +212,11 @@
                 </thead>
                 <tbody>
                 <tr>
+                <td><strong>SQL compatibility program</strong></td>
+                <td>The public dialect contract and proof-backed compatibility matrix are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, table-level/composite foreign keys, Tier-1 windows, a transactional table-rewrite foundation, constraint metadata transport, EF-generated defaults/checks/composite keys, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers additional referential actions, broader ALTER operations, deeper generated-SQL qualification, normalized metadata, physical explain/profile output, and release qualification. See the <a href="docs/sql-compatibility-roadmap.html">implementation roadmap</a>.</td>
+                <td>In Progress</td>
+                </tr>
+                <tr>
                 <td><strong>User-defined functions and commands</strong></td>
                 <td>Done for the trusted in-process model: host-registered C# scalar functions, common SQL/Admin built-ins, trusted commands, Admin Forms/Reports/pipeline hooks, declarative Admin Forms action sequences, and local Admin Forms C# code modules are implemented across the supported surfaces. Untrusted sandboxed UDF execution is intentionally out of scope</td>
                 <td>Done</td>
@@ -228,28 +233,28 @@
                 </tr>
                 <tr>
                 <td><strong><code>UNION</code> / <code>INTERSECT</code> / <code>EXCEPT</code></strong></td>
-                <td>Set operations across SELECT results, including use in top-level queries, views, and CTE query bodies</td>
+                <td><code>UNION</code>, duplicate-preserving <code>UNION ALL</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> across SELECT results, including top-level queries, views, and CTE bodies. <code>INTERSECT ALL</code> and <code>EXCEPT ALL</code> remain unsupported.</td>
                 <td>Done</td>
                 </tr>
                 <tr>
                 <td><strong>Window functions</strong></td>
-                <td><code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, <code>LEAD()</code>, <code>LAG()</code></td>
-                <td>Planned</td>
+                <td>A bounded in-memory Tier-1 implementation covers <code>ROW_NUMBER()</code>, <code>RANK()</code>, <code>DENSE_RANK()</code>, and common aggregate windows with partitioning, ordering, peer-aware defaults, cancellation, and explicit rejection coverage. Explicit frames, advanced functions, incompatible window groups, and spill-backed large partitions remain later tiers.</td>
+                <td>In Progress</td>
                 </tr>
                 <tr>
                 <td><strong><code>DEFAULT</code> column values</strong></td>
-                <td>Allow default expressions in column definitions</td>
-                <td>Planned</td>
+                <td>Persisted typed-literal and NULL defaults, omitted-value application, explicit <code>DEFAULT</code> markers, <code>INSERT ... DEFAULT VALUES</code>, EF create-table generation, and direct/HTTP/gRPC/archive/DevOps metadata round trips are implemented. Statement-time functions such as <code>CURRENT_TIMESTAMP</code> remain.</td>
+                <td>Partial</td>
                 </tr>
                 <tr>
                 <td><strong><code>CHECK</code> constraints</strong></td>
-                <td>Arbitrary expression-based constraints per column or per table</td>
-                <td>Planned</td>
+                <td>Named/unnamed column and table checks support deterministic row-local expressions, SQL three-valued semantics, persistence/reopen, rename preservation, and core catalogs. Functions, parameters, subqueries, stable-id binding, and every transport/import path remain.</td>
+                <td>Partial</td>
                 </tr>
                 <tr>
                 <td><strong>Foreign key constraints</strong></td>
-                <td>v1 support for single-column, column-level <code>REFERENCES</code> with optional <code>ON DELETE CASCADE</code>, plus <code>sys.foreign_keys</code> and metadata/tooling surfaces</td>
-                <td>Done</td>
+                <td>Column/table scalar and composite constraints with MATCH SIMPLE, immediate RESTRICT/CASCADE, candidate-key/type/collation validation, persistence, dependency repair, ordered catalogs, ADO.NET, direct/REST/gRPC, archive, and schema-tooling coverage. Additional actions, deferrability, stable ids, and EF composite-FK generation remain.</td>
+                <td>Partial</td>
                 </tr>
                 <tr>
                 <td><strong>Remote host consolidation</strong></td>
@@ -463,15 +468,15 @@
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td><code>UNION</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are supported; <code>UNION ALL</code> is not implemented yet</td>
+                <td><code>UNION</code>, <code>UNION ALL</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are implemented in the core engine; feature-specific ADO.NET, REST, gRPC, and EF qualification is still being expanded, and <code>INTERSECT ALL</code>/<code>EXCEPT ALL</code> are unsupported</td>
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td>No window functions</td>
+                <td>Tier-1 windows have parser, logical-phase, peer/default-frame, prepared execution, rejection, and cancellation coverage, but remain a bounded in-memory development preview. Advanced functions, explicit frames, incompatible window groups, and spill-backed large partitions are not yet qualified</td>
                 </tr>
                 <tr>
                 <td><strong>Schema</strong></td>
-                <td>No SQL <code>DEFAULT</code> column values or <code>CHECK</code> constraints yet. Foreign keys are currently v1 only: single-column, column-level <code>REFERENCES</code> with optional <code>ON DELETE CASCADE</code>; table-level/composite/deferred foreign keys and <code>ON UPDATE</code> actions are not implemented</td>
+                <td>Literal SQL <code>DEFAULT</code> values, deterministic row-local <code>CHECK</code> constraints, logical composite primary/unique keys, table-level/composite foreign keys with MATCH SIMPLE and immediate RESTRICT/CASCADE, additive transport/archive and ADO.NET constraint metadata, SET/DROP DEFAULT, validated SET/DROP NOT NULL and named CHECK changes, plus the first transactional shadow-root ALTER rewrite are implemented. Statement-time/function defaults, arbitrary functions/subqueries in checks, stable schema ids, type/collation/key-shape ALTER operations, additional referential actions, deferred constraints, and fault-injected rewrite recovery remain</td>
                 </tr>
                 <tr>
                 <td><strong>Indexes</strong></td>
@@ -547,7 +552,7 @@
                 <li>B+tree-backed tables and secondary indexes</li>
                 <li>Write-Ahead Log with crash recovery and auto-checkpoint</li>
                 <li>Concurrent snapshot-isolated readers via WAL-based MVCC</li>
-                <li>Full SQL pipeline: tokenizer, parser, query planner, operator tree</li>
+                <li>SQL pipeline for the supported CSharpDB SQL subset: tokenizer, parser, query planner, operator tree</li>
                 <li>JOINs (INNER, LEFT, RIGHT, CROSS), aggregates, GROUP BY, HAVING, CTEs</li>
                 <li>Set operations: <code>UNION</code>, <code>INTERSECT</code>, <code>EXCEPT</code></li>
                 <li><code>SELECT DISTINCT</code> and DISTINCT aggregates</li>
@@ -563,10 +568,10 @@
                 <li>First-class <code>IDENTITY</code> / <code>AUTOINCREMENT</code> support for <code>INTEGER PRIMARY KEY</code> columns</li>
                 <li>Persisted table <code>NextRowId</code> high-water mark with compatibility fallback for legacy metadata</li>
                 <li>Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)</li>
-                <li>Foreign key constraints: single-column, column-level <code>REFERENCES</code> with optional <code>ON DELETE CASCADE</code></li>
+                <li>Foreign key constraints: scalar/composite, column/table syntax, MATCH SIMPLE, immediate RESTRICT/CASCADE, ordered catalogs, and transport/archive preservation</li>
                 <li>Older-database foreign-key retrofit migration across direct, HTTP, gRPC, CLI, and Admin</li>
                 <li>ADO.NET provider (DbConnection, DbCommand, DbDataReader, DbTransaction)</li>
-                <li>ADO.NET <code>GetSchema()</code> metadata collections for <code>MetaDataCollections</code>, <code>Tables</code>, <code>Columns</code>, <code>Indexes</code>, <code>Views</code>, and <code>ForeignKeys</code></li>
+                <li>ADO.NET <code>GetSchema()</code> metadata collections for core objects, restrictions, defaults, checks, ordered key columns, and ordered scalar/composite foreign-key pairs</li>
                 <li>ADO.NET connection pooling with <code>ClearPool</code> / <code>ClearAllPools</code></li>
                 <li>In-memory database mode with explicit load-from-disk and save-to-disk APIs</li>
                 <li>Shared/private in-memory ADO.NET connections with named shared-memory hosts</li>
