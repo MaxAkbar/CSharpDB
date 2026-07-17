@@ -7,7 +7,97 @@ This file preserves the benchmark release logs, failed-run notes, investigation 
 
 Performance benchmarks for the CSharpDB embedded database engine.
 
-The current main README remains promoted from the May 6, 2026 release-core run and May 31 guardrail close-out. A newer July 15-16 working-tree candidate completed every benchmark stage and initially produced seven threshold warnings on a compatible non-authoritative runner. Focused fixes and reruns subsequently cleared those warnings and recovered the flagged master-table reads, but the July artifacts remain investigation history because the complete release-core and guardrail suites were not rerun for promotion after the fixes.
+The current main README remains promoted from the May 6, 2026 release-core run and May 31 guardrail close-out. The complete July 16-17 post-fix release-core and guardrail suites now provide current compatible-runner evidence: the core run produced all 125 rows, and the guardrail compared all 187 rows with 186 passes, one warn-only durable-flush row, and no failures. The new tables are not promoted because the runner's Windows fingerprint differs from the canonical baseline and the runner ID is unset.
+
+## July 16-17, 2026 Full Post-Fix Release Close-Out (Compatible Runner, Not Promoted)
+
+This close-out ran from commit `c3f0a442dfde6e41fcb0d8e6f32ac02f316949af` after the numeric relationship optimization was accepted as the supported automatic default, the inline B-tree read regressions were fixed, checkpoint reader tracking was tightened, dependency advisories were resolved, and version metadata moved to 4.0.4.
+
+```powershell
+dotnet test .\CSharpDB.slnx -c Release --no-restore --nologo
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --release-core --repeat 3 --repro
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tests\CSharpDB.Benchmarks\scripts\Run-Perf-Guardrails.ps1 -Mode release
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --write-diagnostics --repeat 3 --repro
+```
+
+The guardrail command intentionally omitted `-NoFailOnRegression`. It completed normally with exit code `0` because the only threshold breach was warn-only on the compatible, non-authoritative fingerprint.
+
+| Item | Result |
+|---|---|
+| Full Release correctness | `2,152/2,152` tests passed in `2m32.7s` |
+| Release-core | All seven median-of-three artifacts; `125/125` rows; `1h08m02s` |
+| Full release guardrail | All 14 micro filters and five command-level suites; `PASS=186, WARN=1, SKIP=0, FAIL=0`; `1h49m07.8s` |
+| Guardrail report timestamp | `2026-07-17 04:09:42Z` |
+| Focused write-diagnostics repeat | Reproduced the durable-flush slowdown; `8m56.6s` |
+| Same-session v4.0.3 control | Detached `0960c866b05a1609e72480091040a5d70e709051`; `9m15.8s` |
+| Runner | Intel i9-11900K, 16 logical cores, Windows `10.0.26200`, .NET SDK `10.0.203`; runner ID unset |
+| Promotion status | `NOT PROMOTED`; canonical baseline is Windows `10.0.26300`, and compatible hardware/runtime rows are warn-only |
+
+### Release-Core Versus Published May
+
+All seven post-fix artifacts match the published schemas. Using throughput deltas of at least `+8%` as improved and at most `-8%` as regressed:
+
+| Suite | Rows | Improved | Regressed | Within +/-8% |
+|---|---:|---:|---:|---:|
+| Master table | 28 | 7 | 0 | 21 |
+| Durable SQL batching | 28 | 4 | 0 | 24 |
+| Concurrent writes | 8 | 5 | 0 | 3 |
+| Storage modes | 30 | 27 | 0 | 3 |
+| Resident hot set | 8 | 6 | 2 | 0 |
+| Cold open | 16 | 16 | 0 | 0 |
+| SQLite reference | 7 | 6 | 0 | 1 |
+| **Total** | **125** | **71** | **2** | **52** |
+
+| Headline row | Published May | Initial July | July 17 post-fix | vs May | vs initial July |
+|---|---:|---:|---:|---:|---:|
+| Durable SQL single insert | 267.1 | 451.9 | 274.5 ops/sec | `+2.8%` | `-39.3%` |
+| Durable SQL batch x100 | 25,561.9 | 42,567.8 | 25,789.8 rows/sec | `+0.9%` | `-39.4%` |
+| SQL point lookup | 1,476,253.9 | 1,385,540.2 | 1,521,279.6 ops/sec | `+3.0%` | `+9.8%` |
+| Reused-snapshot concurrent reads | 9,683,654.4 | 11,543,078.4 | 12,503,004.4 ops/sec | `+29.1%` | `+8.3%` |
+| Collection point get | 1,990,692.1 | 1,851,623.0 | 2,084,446.4 ops/sec | `+4.7%` | `+12.6%` |
+| Durable `InsertBatch` B1000 | 211,991.1 | 234,380.7 | 214,132.8 rows/sec | `+1.0%` | `-8.6%` |
+| Concurrent durable W8 / 250us | 890.1 | 1,031.1 | 983.0 commits/sec | `+10.4%` | `-4.7%` |
+| Hybrid resident hot-set SQL | 383,865.6 | 876,972.6 | 640,106.7 ops/sec | `+66.8%` | `-27.0%` |
+| SQLite WAL+FULL B1000 | 155,664.4 | 212,456.5 | 194,858.5 rows/sec | `+25.2%` | `-8.3%` |
+
+The initial July candidate benefited from an unusually fast fsync/hot-set environment. Against that run, the post-fix set has 16 improved, 49 regressed, and 60 within-band rows, but it remains materially ahead of the published May snapshot overall. Durable-batching stability improved: only two of 28 rows now have a repetition spread above 20%, and none exceed 50%, compared with 14 and seven respectively in the initial July run.
+
+Only two rows regress materially versus May, both in the historically noisy in-memory resident-hot-set suite:
+
+| Row | Published May | July 17 | Delta | Repetition spread |
+|---|---:|---:|---:|---:|
+| In-memory SQL hot burst | 104,728.0 | 87,385.1 | `-16.6%` | `136.9%` |
+| In-memory Collection hot burst | 112,577.9 | 89,123.3 | `-20.8%` | `366.8%` |
+
+The Collection repetitions were approximately 89K, 81K, and 408K ops/sec, so neither row is stable enough to attribute to the code. The new master artifact is much stronger: all 28 rows are within `+/-8%` of `master-table-20260716-160832-median-of-3.csv`, all 14 read rows are within `-3.6%` to `+2.0%`, and the six master reads initially flagged in July remain recovered.
+
+Release-core artifacts:
+
+| Artifact | Path |
+|---|---|
+| Durable master comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/master-table-20260717-011220-median-of-3.csv` |
+| Durable SQL batching | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/durable-sql-batching-20260717-013108-median-of-3.csv` |
+| Concurrent durable write | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/concurrent-write-diagnostics-20260717-015344-median-of-3.csv` |
+| Hybrid storage mode | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-storage-mode-20260717-020013-median-of-3.csv` |
+| Hybrid hot-set read | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-hot-set-read-20260717-021548-median-of-3.csv` |
+| Hybrid cold open | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/hybrid-cold-open-20260717-021619-median-of-3.csv` |
+| SQLite comparison | `tests/CSharpDB.Benchmarks/bin/Release/net10.0/results/sqlite-compare-20260717-021658-median-of-3.csv` |
+
+### Guardrail Warning And Same-Session Control
+
+The full guardrail's only warning was `WriteDiagnostics_SingleRow_Frame4096Background256Batch250us_10s`: mean latency was `4.2410 ms` versus the March baseline's `3.6721 ms`, a `+15.49%` change against a `15%` threshold. The focused repeat then put all three required rows at `+15.61%` to `+17.38%`.
+
+The slowdown is in durable flushes, not the changed code paths. Dirty work stayed at roughly `3.02` pages and `12.2 KiB` per flush, while durable-flush/WAL-append latency rose from about `3.5 ms` earlier in the day to roughly `4.1 ms`. The B-tree changes are read-only payload/cursor paths, checkpoint changes affect reader-snapshot bookkeeping, and the WAL-index change only removes empty snapshot allocation; none is on this insert/commit path.
+
+An identical same-session run from detached v4.0.3 commit `0960c866b05a1609e72480091040a5d70e709051` confirmed runner/storage drift:
+
+| Required row | v4.0.3 ops/sec | v4.0.4 ops/sec | v4.0.4 delta |
+|---|---:|---:|---:|
+| Frame4096 Background256 | 221.5 | 230.4 | `+4.0%` |
+| Frame4096 Background256 Batch250us | 226.0 | 233.3 | `+3.2%` |
+| Frame4096 Background256 Prealloc1MiB | 220.0 | 234.0 | `+6.4%` |
+
+The full `PASS=186, WARN=1` report is retained unchanged because it is the honest full-run result. The control demonstrates that the warning is not a 4.0.4 regression, but it does not convert compatible-runner evidence into a canonical promotion.
 
 ## July 15-16, 2026 Numeric Relationship Join A/B and Full Sweep (Not Promoted)
 

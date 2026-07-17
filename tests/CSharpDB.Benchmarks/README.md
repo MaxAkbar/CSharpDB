@@ -24,9 +24,9 @@ Current release health:
 
 | Item | Status |
 |---|---|
-| Latest release guardrail | `TARGETED CLOSE-OUT CLEAN / NOT PROMOTED` |
-| Latest compare | `PASS=187, WARN=0, SKIP=0, FAIL=0` |
-| Promotion state | Current published tables remain promoted from the May 6, 2026 release-core suite; the July 16 full candidate initially produced seven warn-only threshold breaches, and focused post-fix reruns cleared all seven on the compatible non-authoritative runner, but no new full release-core snapshot has been promoted |
+| Latest release guardrail | `FULL POST-FIX COMPLETE / 1 COMPATIBLE-RUNNER WARNING / NOT PROMOTED` |
+| Latest compare | `PASS=186, WARN=1, SKIP=0, FAIL=0`; the single durable-flush warning reproduced on v4.0.3 and was slower there, isolating it to runner/storage drift |
+| Promotion state | Current published tables remain promoted from the May 6, 2026 release-core suite. The July 16-17 post-fix release-core and guardrail suites completed, but Windows `10.0.26200` does not match the canonical `10.0.26300` fingerprint and the runner ID is unset, so the new results are retained as compatible-runner evidence rather than promoted tables |
 | Durability default | CSharpDB values are durable unless a row explicitly says otherwise |
 
 ## Core Performance Scorecard
@@ -149,6 +149,34 @@ Each row is total successful commits/sec across one shared engine. The intended 
 | CSharpDB SQL point lookup | 1.48M ops/sec | 0.0005 ms | 0.0018 ms |
 | SQLite WAL+FULL point lookup | 93.91K ops/sec | 0.0088 ms | 0.0282 ms |
 <!-- BENCHMARK_RESULTS_END -->
+
+## July 16-17, 2026 Full Post-Fix Release Close-Out - Compatible Runner, Not Promoted
+
+The complete post-fix release-core and release guardrail suites ran from commit `c3f0a442dfde6e41fcb0d8e6f32ac02f316949af`. All seven release-core medians and all 187 guardrail rows were produced. The generated scorecard above remains on the May 6 snapshot because this runner does not match the canonical OS fingerprint. Full commands, artifacts, row-level comparisons, and the durable-flush A/B are recorded in [HISTORY.md](HISTORY.md#july-16-17-2026-full-post-fix-release-close-out-compatible-runner-not-promoted).
+
+| Run | Result | Duration |
+|---|---|---:|
+| `--release-core --repeat 3 --repro` | Seven medians, `125/125` expected rows, no schema/name mismatches | `1h08m02s` |
+| Full release guardrails | `PASS=186, WARN=1, SKIP=0, FAIL=0`; compatible non-authoritative runner | `1h49m08s` |
+| Focused write diagnostics | Reproduced the three durable rows at `+15.61%` to `+17.38%` versus the March baseline | `8m57s` |
+| Same-session v4.0.3 control | v4.0.3 measured `220.0-226.0 ops/sec`; v4.0.4 measured `230.4-234.0 ops/sec` on the same rows (`+3.2%` to `+6.4%`) | `9m16s` |
+| Full Release correctness | `2,152/2,152` tests passed | `2m33s` |
+
+Using an absolute `8%` throughput screen against the published May artifacts, `71` of `125` rows improved, `2` regressed, and `52` stayed within the band. Both regressions are in the historically noisy in-memory resident-hot-set suite: SQL was `-16.6%` with a `136.9%` repetition spread, and Collection was `-20.8%` with a `366.8%` spread. All 28 master rows are within `+/-8%` of the focused post-fix July master artifact, and all 14 master read rows are within `-3.6%` to `+2.0%`; the six initially flagged master reads remain recovered.
+
+| Headline row | Published May | July 17 post-fix | Delta |
+|---|---:|---:|---:|
+| Durable SQL single insert | 267.1 ops/sec | 274.5 ops/sec | `+2.8%` |
+| Durable SQL batch x100 | 25.56K rows/sec | 25.79K rows/sec | `+0.9%` |
+| SQL point lookup | 1.48M ops/sec | 1.52M ops/sec | `+3.0%` |
+| SQL concurrent read burst x32 | 9.68M ops/sec | 12.50M ops/sec | `+29.1%` |
+| Collection point get | 1.99M ops/sec | 2.08M ops/sec | `+4.7%` |
+| Durable `InsertBatch` B1000 | 211.99K rows/sec | 214.13K rows/sec | `+1.0%` |
+| Concurrent durable W8 / 250us | 890.1 commits/sec | 983.0 commits/sec | `+10.4%` |
+| Hybrid hot-set SQL burst | 383.87K ops/sec | 640.11K ops/sec | `+66.8%` |
+| SQLite WAL+FULL B1000 reference | 155.66K rows/sec | 194.86K rows/sec | `+25.2%` |
+
+The one guardrail warning was `WriteDiagnostics_SingleRow_Frame4096Background256Batch250us_10s` at `+15.49%` against a `15%` limit. A focused repeat put all three required write-diagnostic rows just above that limit, but the identical detached v4.0.3 control was slower than v4.0.4. Work per commit remained about `3.02` dirty pages and `12.2 KiB` per flush; the slowdown tracked durable-flush latency. This is recorded as runner/storage drift, not a 4.0.4 regression or a clean canonical promotion.
 
 ## July 15-16, 2026 Full-Sweep Candidate and Post-Fix Close-Out - Not Promoted
 

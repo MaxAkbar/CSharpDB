@@ -29,4 +29,5 @@ version4.0.4 adds automatic numeric relationship join acceleration for eligible 
 - This release does not introduce a new database format. Existing format-v1 and format-v2 databases retain the compatibility behavior documented for 4.0.3.
 - Queries outside the numeric relationship eligibility gates continue through the existing join operators with unchanged SQL semantics.
 - Full solution validation passed 2,152 tests with zero failures.
-- Focused post-fix guardrails passed all 187 rows with zero warnings or failures.
+- The complete post-fix release-core run produced all 125 expected rows. Against the published May artifacts, 71 improved by at least 8%, two noisy in-memory hot-set rows regressed by at least 8%, and 52 stayed within the band.
+- The full compatible-runner guardrail reported `PASS=186, WARN=1, SKIP=0, FAIL=0`. A same-session v4.0.3 control reproduced the warned durable-flush slowdown and was 3.2% to 6.4% slower than 4.0.4, isolating the warning to runner/storage drift rather than this release's code.
