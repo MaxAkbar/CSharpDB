@@ -2225,31 +2225,30 @@ public sealed class Parser
         bool isDistinct = TryConsume(TokenType.Distinct);
 
         var columns = new List<SelectColumn>();
-        if (Peek().Type == TokenType.Star)
+        do
         {
-            Advance();
-            columns.Add(new SelectColumn { IsStar = true });
-        }
-        else
-        {
-            do
+            if (Peek().Type == TokenType.Star)
             {
-                var expr = ParseExpression();
-                string? alias = null;
-                if (Peek().Type == TokenType.As)
-                {
-                    Advance();
-                    alias = ExpectIdentifier();
-                }
-                else if (Peek().Type == TokenType.Identifier)
-                {
-                    // Implicit alias: SELECT expr alias (no AS keyword)
-                    alias = Peek().Value;
-                    Advance();
-                }
-                columns.Add(new SelectColumn { Expression = expr, Alias = alias });
-            } while (TryConsume(TokenType.Comma));
-        }
+                Advance();
+                columns.Add(new SelectColumn { IsStar = true });
+                continue;
+            }
+
+            var expr = ParseExpression();
+            string? alias = null;
+            if (Peek().Type == TokenType.As)
+            {
+                Advance();
+                alias = ExpectIdentifier();
+            }
+            else if (Peek().Type == TokenType.Identifier)
+            {
+                // Implicit alias: SELECT expr alias (no AS keyword)
+                alias = Peek().Value;
+                Advance();
+            }
+            columns.Add(new SelectColumn { Expression = expr, Alias = alias });
+        } while (TryConsume(TokenType.Comma));
 
         TableRef from = TryConsume(TokenType.From)
             ? ParseTableRef()

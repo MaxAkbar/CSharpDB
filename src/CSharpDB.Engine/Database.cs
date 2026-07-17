@@ -885,7 +885,7 @@ public sealed class Database : IAsyncDisposable
 
     private ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
     {
-        if (stmt is QueryStatement or WithStatement)
+        if (SqlStatementClassifier.IsReadOnly(stmt))
             return _planner.ExecuteAsync(stmt, ct);
 
         return ExecuteWriteStatementAsync(stmt, ct);
@@ -2252,8 +2252,7 @@ public sealed class Database : IAsyncDisposable
         }
 
         /// <summary>
-        /// Execute a read-only SQL query against the snapshot.
-        /// Only SELECT statements are allowed.
+        /// Execute a read-only SQL statement against the snapshot.
         /// </summary>
         public ValueTask<QueryResult> ExecuteReadAsync(string sql,
             CancellationToken ct = default)
@@ -2277,15 +2276,14 @@ public sealed class Database : IAsyncDisposable
 
         /// <summary>
         /// Execute a read-only prepared statement against the snapshot.
-        /// Only SELECT statements are allowed.
         /// </summary>
         public ValueTask<QueryResult> ExecuteReadAsync(Statement stmt, CancellationToken ct = default)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            if (stmt is not QueryStatement && stmt is not WithStatement)
+            if (!SqlStatementClassifier.IsReadOnly(stmt))
                 throw new CSharpDbException(ErrorCode.Unknown,
-                    "Reader sessions only support SELECT statements.");
+                    "Reader sessions only support read-only statements.");
 
             if (Interlocked.CompareExchange(ref _activeQuery, 1, 0) != 0)
             {
@@ -2797,7 +2795,7 @@ public sealed class Database : IAsyncDisposable
                     _map[sql] = parsed;
                     _insertionOrder.Enqueue(sql);
                 }
-                else if ((parsed is QueryStatement or WithStatement) && ShouldPromoteQueryAtCapacity(sql))
+                else if (SqlStatementClassifier.IsReadOnly(parsed) && ShouldPromoteQueryAtCapacity(sql))
                 {
                     // Only promote read-only query statements that show short-term reuse.
                     // This avoids steady eviction churn on one-off/high-cardinality SQL.

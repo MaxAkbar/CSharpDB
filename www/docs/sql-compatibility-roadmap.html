@@ -62,7 +62,7 @@
                         <td>1</td>
                         <td>Dialect contract and public compatibility matrix</td>
                         <td><strong>Implemented</strong></td>
-                        <td>Machine-readable manifest, generated page, schema/proof validation, documentation checks, navigation, and CI/Pages gates are present as a development preview. Immutable release snapshots remain release work.</td>
+                        <td>Machine-readable manifest, generated page, schema/proof validation, documentation checks, navigation, and CI/Pages gates are present as a development preview. Snapshot creation and tagged-release validation tooling is now present, but no immutable release snapshot has been published yet and the public page does not yet default to a latest-release snapshot.</td>
                     </tr>
                     <tr>
                         <td>2</td>
@@ -80,7 +80,7 @@
                         <td>4</td>
                         <td>Practical <code>ALTER TABLE</code></td>
                         <td><strong>Core rewrite implemented</strong></td>
-                        <td>Direct metadata operations cover SET/DROP DEFAULT, validated SET/DROP NOT NULL, and validated ADD/DROP named CHECK. Unconstrained DROP COLUMN now streams rows into a shadow B+tree and swaps the catalog root transactionally. Populated ADD COLUMN with a typed literal default uses the same path, preserves row ids and indexes, and failed rewrites make explicit transactions rollback-only. Type/collation/key-shape changes, complete dependency rewriting, fault injection, and crash-recovery qualification remain.</td>
+                        <td>Direct metadata operations cover SET/DROP DEFAULT, validated SET/DROP NOT NULL, and validated ADD/DROP named CHECK. Unconstrained DROP COLUMN now streams rows into a shadow B+tree and swaps the catalog root transactionally. Populated ADD COLUMN with a typed literal default uses the same path and preserves row ids and indexes. Structural changes reject direct/transitive stored-view, cross-trigger-body, and applicable validation-rule expression dependencies before mutation. Failed writes make both explicit transaction APIs rollback-only. Type/collation/key-shape changes, dependency rewriting, deterministic fault injection, and crash-recovery qualification remain.</td>
                     </tr>
                     <tr>
                         <td>5</td>
@@ -92,7 +92,7 @@
                         <td>6</td>
                         <td>Window functions in functional tiers</td>
                         <td><strong>Experimental core implemented</strong></td>
-                        <td>A bounded in-memory Tier-1 slice implements ranking and aggregate windows with partitioning, ordering, peer-aware default frames, prepared execution, cancellation, and explicit rejection tests. Explicit frames, advanced functions, incompatible stages, spill, and large-partition production claims are not yet available.</td>
+                        <td>A bounded in-memory Tier-1 slice implements ranking and aggregate windows with partitioning, ordering, peer-aware default frames, prepared execution, cancellation, and explicit rejection tests. Star and mixed-expression projections preserve SELECT-list order without exposing hidden window slots, and long evaluation/sort loops poll cancellation. Explicit frames, advanced functions, incompatible stages, an external-sort spill substrate, and large-partition production claims are not yet available.</td>
                     </tr>
                     <tr>
                         <td>7</td>
@@ -115,14 +115,14 @@
                     <tr>
                         <td>10</td>
                         <td>Physical <code>EXPLAIN</code> and <code>EXPLAIN ANALYZE</code></td>
-                        <td><strong>Planned</strong></td>
-                        <td>The existing <code>EXPLAIN ESTIMATE FOR</code> contract remains unchanged. A shared physical plan descriptor, per-node counters, redaction, read-only profiling, and transport/Admin presentation are separate future rows.</td>
+                        <td><strong>Prerequisites in progress</strong></td>
+                        <td>The existing <code>EXPLAIN ESTIMATE FOR</code> rowset contract remains unchanged, now follows centralized read-only transaction routing, and discovers/rebinds prepared target parameters. The plan-only/runtime split, immutable shared physical-plan descriptor, per-node counters, redaction, read-only profiling, and transport/Admin presentation remain.</td>
                     </tr>
                     <tr>
                         <td>11</td>
                         <td>Compatibility release qualification</td>
-                        <td><strong>Planned</strong></td>
-                        <td>Full solution tests, legacy fixtures, transport/provider replay, performance budgets, release-version checks, immutable manifest snapshotting, and rollback/upgrade qualification are required before a compatibility release.</td>
+                        <td><strong>In progress</strong></td>
+                        <td>Snapshot tooling and a tagged-release gate now require a clean version-aligned tag, strict SemVer progression, and a schema-valid, newly tracked immutable manifest snapshot; the gate also checks canonical proof/feature parity, verified-commit ancestry, and protects prior release snapshots from modification. Full legacy-fixture, transport/provider replay, performance-budget, rollback/upgrade, and crash-recovery qualification remain.</td>
                     </tr>
                     </tbody>
                 </table>
@@ -135,6 +135,9 @@
                     <li>Named/unnamed column/table checks, update prevalidation, reopen persistence, dependency-aware rename/drop behavior, and core catalogs.</li>
                     <li>Logical composite primary/unique keys plus scalar/composite foreign keys with MATCH SIMPLE, immediate RESTRICT/CASCADE, persistence, ordered metadata, and transport/archive/tooling preservation.</li>
                     <li><code>UNION ALL</code> bag semantics with lazy branch concatenation, type checks, collations, outer pagination, and cancellation cleanup.</li>
+                    <li>ALTER dependency preflight for stored views, triggers, and validation rules, plus rollback-only parity for both explicit transaction APIs.</li>
+                    <li>Window star/mixed projections that preserve public column shape, and read-only/prepared-parameter prerequisites for future physical EXPLAIN work.</li>
+                    <li>Immutable compatibility snapshot creation and tagged-release validation scripts wired into the release workflow.</li>
                     <li>EF Core identifier quoting plus literal-default, create-table CHECK, zero-writable-column <code>DEFAULT VALUES</code>, and composite-key/index support.</li>
                 </ul>
 
@@ -164,7 +167,11 @@ dotnet test tests\CSharpDB.EntityFrameworkCore.Tests\CSharpDB.EntityFrameworkCor
 dotnet test tests\CSharpDB.Api.Tests\CSharpDB.Api.Tests.csproj -c Release
 dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
 pwsh -File scripts\Build-SqlCompatibilityMatrix.ps1 -Check
-pwsh -File scripts\Test-Documentation.ps1</code></pre></div>
+pwsh -File scripts\Test-Documentation.ps1
+
+# Release preparation and tag gate
+pwsh -File scripts\New-SqlCompatibilityReleaseSnapshot.ps1 -Version &lt;version&gt; -VerifiedCommit &lt;sha&gt;
+pwsh -File scripts\Test-SqlCompatibilityRelease.ps1 -Version &lt;version&gt; -TagCommit &lt;sha&gt;</code></pre></div>
 
                 <div class="next-steps">
                     <h2>Related Documentation</h2>

@@ -910,6 +910,7 @@ public sealed class QueryPlanner
         bool suppressAdaptiveReoptimization = false)
     {
         WindowExpressionSupport.ValidateQuery(stmt);
+        ValidateStarAggregateProjection(stmt);
 
         if (ContainsSubqueries(stmt))
             return ExecuteQueryWithSubqueriesAsync(stmt, ct, suppressAdaptiveReoptimization);
@@ -920,6 +921,31 @@ public sealed class QueryPlanner
             CompoundSelectStatement compound => ExecuteCompoundSelectAsync(compound, ct),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown query type: {stmt.GetType().Name}"),
         };
+    }
+
+    private static void ValidateStarAggregateProjection(QueryStatement query)
+    {
+        switch (query)
+        {
+            case SelectStatement select:
+                if (select.Columns.Any(static column => column.IsStar) &&
+                    (select.GroupBy != null ||
+                     select.Having != null ||
+                     select.Columns.Any(column =>
+                         column.Expression != null &&
+                         ContainsAggregate(column.Expression))))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        "Mixing '*' with aggregate or GROUP BY projections is not supported.");
+                }
+
+                break;
+            case CompoundSelectStatement compound:
+                ValidateStarAggregateProjection(compound.Left);
+                ValidateStarAggregateProjection(compound.Right);
+                break;
+        }
     }
 
     private async ValueTask<QueryResult> ExecuteQueryWithSubqueriesAsync(
@@ -1569,6 +1595,10 @@ public sealed class QueryPlanner
                 if (colIdx < 0)
                     throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{drop.ColumnName}' not found in table '{stmt.TableName}'.");
 
+                EnsureNoDependentView(
+                    stmt.TableName,
+                    $"drop column '{drop.ColumnName}' from table '{stmt.TableName}'");
+
                 if (schema.Columns[colIdx].IsPrimaryKey)
                     throw new CSharpDbException(ErrorCode.SyntaxError, "Cannot drop primary key column.");
 
@@ -1620,19 +1650,21 @@ public sealed class QueryPlanner
                         $"Cannot drop column '{drop.ColumnName}' because index '{dependentIndex.IndexName}' depends on it.");
                 }
 
-                TriggerSchema? dependentTrigger = _catalog.GetTriggersForTable(stmt.TableName).FirstOrDefault();
+                TriggerSchema? dependentTrigger = FindTriggerDependingOnColumn(
+                    stmt.TableName,
+                    drop.ColumnName,
+                    includePositionalInsertShapeDependency: true);
                 if (dependentTrigger is not null)
                 {
                     throw new CSharpDbException(
                         ErrorCode.ConstraintViolation,
-                        $"Cannot drop column '{drop.ColumnName}' while trigger '{dependentTrigger.TriggerName}' depends on table '{stmt.TableName}'. Drop or rewrite the trigger first.");
+                        $"Cannot drop column '{drop.ColumnName}' while trigger '{dependentTrigger.TriggerName}' depends on it. Drop or rewrite the trigger first.");
                 }
 
                 ValidationRule? dependentValidationRule = (await LoadValidationRulesAsync(ct))
                     .FirstOrDefault(rule =>
                         string.Equals(rule.TableName, stmt.TableName, StringComparison.OrdinalIgnoreCase) &&
-                        (rule.ColumnName is null ||
-                         string.Equals(rule.ColumnName, drop.ColumnName, StringComparison.OrdinalIgnoreCase)));
+                        ValidationRuleReferencesColumn(rule, drop.ColumnName));
                 if (dependentValidationRule is not null)
                 {
                     throw new CSharpDbException(
@@ -1816,6 +1848,13 @@ public sealed class QueryPlanner
                 if (_catalog.GetTable(rename.NewTableName) != null)
                     throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table '{rename.NewTableName}' already exists.");
 
+                EnsureNoDependentView(
+                    stmt.TableName,
+                    $"rename table '{stmt.TableName}'");
+                await EnsureNoRenameTableTriggerOrValidationRuleAsync(
+                    stmt.TableName,
+                    ct);
+
                 await RenameTableWithDependenciesAsync(stmt.TableName, rename.NewTableName, schema, ct);
                 if (_nextRowIdCache.Remove(stmt.TableName, out long nextRowId))
                     _nextRowIdCache[rename.NewTableName] = nextRowId;
@@ -1835,6 +1874,14 @@ public sealed class QueryPlanner
                 // Check new column name doesn't already exist
                 if (schema.GetColumnIndex(renameCol.NewColumnName) >= 0)
                     throw new CSharpDbException(ErrorCode.SyntaxError, $"Column '{renameCol.NewColumnName}' already exists in table '{stmt.TableName}'.");
+
+                EnsureNoDependentView(
+                    stmt.TableName,
+                    $"rename column '{renameCol.OldColumnName}' on table '{stmt.TableName}'");
+                await EnsureNoRenameColumnTriggerOrValidationRuleAsync(
+                    stmt.TableName,
+                    renameCol.OldColumnName,
+                    ct);
 
                 await RenameColumnWithDependenciesAsync(stmt.TableName, renameCol.OldColumnName, renameCol.NewColumnName, schema, ct);
                 break;
@@ -1999,6 +2046,8 @@ public sealed class QueryPlanner
             throw new CSharpDbException(ErrorCode.TableAlreadyExists, $"Table or view '{stmt.ViewName}' already exists.");
         }
 
+        WindowExpressionSupport.ValidateQuery(stmt.Query);
+        ValidateStarAggregateProjection(stmt.Query);
         string viewSql = QueryToSql(stmt.Query);
 
         await _catalog.CreateViewAsync(stmt.ViewName, viewSql, ct);
@@ -2967,6 +3016,8 @@ public sealed class QueryPlanner
 
     private ColumnDefinition[] ResolveCorrelationQueryOutputSchema(QueryStatement query)
     {
+        ValidateStarAggregateProjection(query);
+
         if (_correlationQueryOutputSchemaCache.TryGetValue(query, out var cached))
             return cached;
 
@@ -2985,7 +3036,12 @@ public sealed class QueryPlanner
                 }
                 else if (select.Columns.Any(column => column.IsStar))
                 {
-                    output = GetSchemaColumnsArray(sourceSchema);
+                    output = IsLoneStarProjection(select)
+                        ? GetSchemaColumnsArray(sourceSchema)
+                        : BuildExpandedStarOutputColumns(
+                            select.Columns,
+                            sourceSchema,
+                            sourceSchema);
                 }
                 else if (TryBuildColumnProjection(select.Columns, sourceSchema, out _, out var projectedColumns))
                 {
@@ -5172,7 +5228,42 @@ public sealed class QueryPlanner
         {
             op = ApplyOrdering(op, stmt.OrderBy, sourceSchema, orderByTopN);
 
-            if (!stmt.Columns.Any(c => c.IsStar))
+            if (stmt.Columns.Any(c => c.IsStar))
+            {
+                if (!IsLoneStarProjection(stmt))
+                {
+                    var outputCols = BuildExpandedStarOutputColumns(
+                        stmt.Columns,
+                        sourceSchema,
+                        sourceSchema);
+                    if (stmt.Columns.Any(column =>
+                            column.Expression != null &&
+                            ContainsSubqueries(column.Expression)))
+                    {
+                        List<DbValue[]> projectedRows;
+                        await using (op)
+                        {
+                            projectedRows = await MaterializeExpandedProjectionRowsAsync(
+                                op,
+                                stmt.Columns,
+                                sourceSchema,
+                                outerScopes,
+                                ct);
+                        }
+
+                        op = new MaterializedOperator(projectedRows, outputCols);
+                    }
+                    else
+                    {
+                        op = BuildExpandedStarProjection(
+                            op,
+                            stmt.Columns,
+                            sourceSchema,
+                            sourceSchema);
+                    }
+                }
+            }
+            else
             {
                 if (TryBuildColumnProjection(stmt.Columns, sourceSchema, out var columnIndices, out var outputCols))
                 {
@@ -5354,6 +5445,57 @@ public sealed class QueryPlanner
             {
                 projectedRow[i] = await EvaluateExpressionWithSubqueriesAsync(
                     expressions[i],
+                    row,
+                    schema,
+                    outerScopes,
+                    ct);
+            }
+
+            rows.Add(projectedRow);
+        }
+
+        return rows;
+    }
+
+    private async ValueTask<List<DbValue[]>> MaterializeExpandedProjectionRowsAsync(
+        IOperator source,
+        IReadOnlyList<SelectColumn> columns,
+        TableSchema schema,
+        IReadOnlyList<CorrelationScope> outerScopes,
+        CancellationToken ct)
+    {
+        int initialCapacity = source is IEstimatedRowCountProvider estimated &&
+                              estimated.EstimatedRowCount is int rowCount &&
+                              rowCount > 0
+            ? rowCount
+            : 0;
+        var rows = initialCapacity > 0
+            ? new List<DbValue[]>(initialCapacity)
+            : new List<DbValue[]>();
+        int starCount = columns.Count(static column => column.IsStar);
+        int outputCount = columns.Count + starCount * (schema.Columns.Count - 1);
+
+        await source.OpenAsync(ct);
+        while (await source.MoveNextAsync(ct))
+        {
+            DbValue[] row = source.Current;
+            var projectedRow = new DbValue[outputCount];
+            int outputIndex = 0;
+            foreach (SelectColumn column in columns)
+            {
+                if (column.IsStar)
+                {
+                    row.AsSpan(0, schema.Columns.Count).CopyTo(projectedRow.AsSpan(outputIndex));
+                    outputIndex += schema.Columns.Count;
+                    continue;
+                }
+
+                Expression expression = column.Expression
+                    ?? throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        "A non-star SELECT item requires an expression.");
+                projectedRow[outputIndex++] = await EvaluateExpressionWithSubqueriesAsync(
+                    expression,
                     row,
                     schema,
                     outerScopes,
@@ -6211,8 +6353,14 @@ public sealed class QueryPlanner
             if (!sourceProvidesRequestedOrder)
                 op = ApplyOrdering(op, stmt.OrderBy, schema, orderByTopN);
 
-            // Projection (if not SELECT *)
-            if (!stmt.Columns.Any(c => c.IsStar))
+            // Projection (if not a lone SELECT *). Mixed star/expression lists
+            // expand each star in place so SELECT item order is preserved.
+            if (stmt.Columns.Any(c => c.IsStar))
+            {
+                if (stmt.Columns.Count > 1)
+                    op = BuildExpandedStarProjection(op, stmt.Columns, schema, schema);
+            }
+            else
             {
                 if (TryBuildColumnProjection(stmt.Columns, schema, out var columnIndices, out var outputCols))
                 {
@@ -6343,6 +6491,9 @@ public sealed class QueryPlanner
 
         return op;
     }
+
+    private static bool IsLoneStarProjection(SelectStatement stmt)
+        => stmt.Columns.Count == 1 && stmt.Columns[0].IsStar;
 
     private static QueryResult CreateQueryResult(IOperator op)
         => op is IBatchOperator batchOperator && ShouldUseBatchResultBoundary(op)
@@ -6492,7 +6643,18 @@ public sealed class QueryPlanner
 
         op = ApplyOrdering(op, rewrittenOrderBy, augmentedSchema, orderByTopN);
 
-        if (!rewrittenColumns.Any(column => column.IsStar))
+        if (rewrittenColumns.Any(column => column.IsStar))
+        {
+            // The window stage appends hidden slots to each source row. Always
+            // project an explicit star expansion here, even for a lone SELECT *,
+            // so those implementation-only slots can never escape to callers.
+            op = BuildExpandedStarProjection(
+                op,
+                rewrittenColumns,
+                sourceSchema,
+                augmentedSchema);
+        }
+        else
         {
             if (TryBuildColumnProjection(rewrittenColumns, augmentedSchema, out int[] columnIndices, out ColumnDefinition[] outputColumns))
             {
@@ -6525,6 +6687,76 @@ public sealed class QueryPlanner
             op = new DistinctOperator(op);
 
         return op;
+    }
+
+    private IOperator BuildExpandedStarProjection(
+        IOperator source,
+        IReadOnlyList<SelectColumn> columns,
+        TableSchema starExpansionSchema,
+        TableSchema evaluationSchema)
+    {
+        int starCount = columns.Count(static column => column.IsStar);
+        int outputCount = columns.Count + starCount * (starExpansionSchema.Columns.Count - 1);
+        var evaluators = new List<SpanExpressionEvaluator>(outputCount);
+
+        foreach (SelectColumn column in columns)
+        {
+            if (column.IsStar)
+            {
+                for (int sourceIndex = 0; sourceIndex < starExpansionSchema.Columns.Count; sourceIndex++)
+                {
+                    int capturedIndex = sourceIndex;
+                    evaluators.Add(row => row[capturedIndex]);
+                }
+
+                continue;
+            }
+
+            Expression expression = column.Expression
+                ?? throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    "A non-star SELECT item requires an expression.");
+            evaluators.Add(GetOrCompileSpanExpression(expression, evaluationSchema));
+        }
+
+        return new ProjectionOperator(
+            source,
+            Array.Empty<int>(),
+            BuildExpandedStarOutputColumns(columns, starExpansionSchema, evaluationSchema),
+            evaluators.ToArray(),
+            batchPlan: null,
+            useSpanEvaluators: true);
+    }
+
+    private static ColumnDefinition[] BuildExpandedStarOutputColumns(
+        IReadOnlyList<SelectColumn> columns,
+        TableSchema starExpansionSchema,
+        TableSchema evaluationSchema)
+    {
+        int starCount = columns.Count(static column => column.IsStar);
+        int outputCount = columns.Count + starCount * (starExpansionSchema.Columns.Count - 1);
+        var outputColumns = new List<ColumnDefinition>(outputCount);
+
+        foreach (SelectColumn column in columns)
+        {
+            if (column.IsStar)
+            {
+                outputColumns.AddRange(starExpansionSchema.Columns);
+                continue;
+            }
+
+            Expression expression = column.Expression
+                ?? throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    "A non-star SELECT item requires an expression.");
+            outputColumns.Add(InferColumnDef(
+                expression,
+                column.Alias,
+                evaluationSchema,
+                outputColumns.Count));
+        }
+
+        return outputColumns.ToArray();
     }
 
     private static ColumnDefinition InferWindowOutputColumn(
@@ -7513,7 +7745,7 @@ public sealed class QueryPlanner
             return false;
 
         var tableTree = _catalog.GetTableTree(simpleRef.TableName, _pager);
-        bool selectStar = stmt.Columns.Any(c => c.IsStar);
+        bool selectStar = IsLoneStarProjection(stmt);
 
         // Sync fast path: try cache-only lookup to bypass the async operator pipeline
         if (PreferSyncPointLookups && residualWhere == null && selectStar)
@@ -10465,11 +10697,14 @@ public sealed class QueryPlanner
             {
                 var viewQuery = Parser.Parse(viewSql) as QueryStatement
                     ?? throw new CSharpDbException(ErrorCode.SyntaxError, $"View '{simple.TableName}' does not contain a query definition.");
+                ValidateStarAggregateProjection(viewQuery);
 
                 IOperator viewOp;
                 TableSchema viewSchema;
 
-                if (viewQuery is SelectStatement viewStmt && !ContainsSubqueries(viewStmt))
+                if (viewQuery is SelectStatement viewStmt &&
+                    !ContainsSubqueries(viewStmt) &&
+                    !WindowExpressionSupport.ContainsWindowFunctions(viewStmt))
                 {
                     Expression? pushedOuterViewPredicate = TryRewriteOuterPredicateForSimpleView(simple, viewStmt, outerWhere);
                     bool preserveViewJoinOrderForRowGoal =
@@ -10530,7 +10765,35 @@ public sealed class QueryPlanner
                             Columns = outputCols,
                         };
                     }
-                    else if (!viewStmt.Columns.Any(c => c.IsStar))
+                    else if (viewStmt.Columns.Any(c => c.IsStar))
+                    {
+                        if (!IsLoneStarProjection(viewStmt))
+                        {
+                            var outputCols = BuildExpandedStarOutputColumns(
+                                viewStmt.Columns,
+                                viewSchema,
+                                viewSchema);
+                            viewOp = BuildExpandedStarProjection(
+                                viewOp,
+                                viewStmt.Columns,
+                                viewSchema,
+                                viewSchema);
+                            viewSchema = new TableSchema
+                            {
+                                TableName = simple.TableName,
+                                Columns = outputCols,
+                            };
+                        }
+                        else
+                        {
+                            viewSchema = new TableSchema
+                            {
+                                TableName = simple.TableName,
+                                Columns = viewSchema.Columns,
+                            };
+                        }
+                    }
+                    else
                     {
                         var expressions = viewStmt.Columns.Select(c => c.Expression!).ToArray();
                         var outputCols = new ColumnDefinition[expressions.Length];
@@ -10548,14 +10811,6 @@ public sealed class QueryPlanner
                         {
                             TableName = simple.TableName,
                             Columns = outputCols,
-                        };
-                    }
-                    else
-                    {
-                        viewSchema = new TableSchema
-                        {
-                            TableName = simple.TableName,
-                            Columns = viewSchema.Columns,
                         };
                     }
                 }
@@ -14412,7 +14667,7 @@ public sealed class QueryPlanner
                 ApplyPushdownPredicates(preDecodeFilterTarget, pushedPredicates);
         }
 
-        if (stmt.Columns.Any(c => c.IsStar))
+        if (IsLoneStarProjection(stmt))
         {
             if (remainingWhere == null && pushedPredicates is not { Count: > 0 })
             {
@@ -14993,7 +15248,7 @@ public sealed class QueryPlanner
         int? estimatedRowCount = TryGetCachedTreeRowCountCapacityHint(tableTree);
         var remainingWhere = stmt.Where;
 
-        if (stmt.Columns.Any(c => c.IsStar))
+        if (IsLoneStarProjection(stmt))
         {
             if (hasRowWindow)
             {
@@ -20052,7 +20307,7 @@ public sealed class QueryPlanner
         BTree sourceTree = _catalog.GetTableTree(plan.SourceSchema.TableName, _pager);
         uint shadowRootPage = await BTree.CreateNewAsync(_pager, ct);
         var shadowTree = new BTree(_pager, shadowRootPage);
-        bool catalogSwapStarted = false;
+        bool catalogSwapCompleted = false;
         long rowCount = 0;
 
         try
@@ -20088,13 +20343,13 @@ public sealed class QueryPlanner
             }
 
             ct.ThrowIfCancellationRequested();
-            catalogSwapStarted = true;
             uint previousRootPage = await _catalog.ReplaceTableStorageAsync(
                 plan.SourceSchema.TableName,
                 plan.TargetSchema,
                 shadowTree.RootPageId,
                 rowCount,
                 ct);
+            catalogSwapCompleted = true;
 
             // Reclamation is intentionally non-cancellable after the catalog
             // swap. Cancellation is honored while copying, where the original
@@ -20103,7 +20358,7 @@ public sealed class QueryPlanner
         }
         catch
         {
-            if (!catalogSwapStarted)
+            if (!catalogSwapCompleted)
             {
                 try
                 {
@@ -20152,6 +20407,410 @@ public sealed class QueryPlanner
                 window.Window.PartitionBy.Any(value => ExpressionReferencesColumn(value, columnName)) ||
                 window.Window.OrderBy.Any(clause =>
                     ExpressionReferencesColumn(clause.Expression, columnName)),
+            _ => false,
+        };
+
+    private static bool ValidationRuleReferencesColumn(
+        ValidationRule rule,
+        string columnName)
+    {
+        if (rule.ColumnName is null ||
+            string.Equals(rule.ColumnName, columnName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        try
+        {
+            return ExpressionReferencesColumn(
+                Parser.ParseExpressionSql(rule.ExpressionSql),
+                columnName);
+        }
+        catch (CSharpDbException ex)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Validation rule '{rule.RuleName}' cannot be analyzed before altering table '{rule.TableName}'.",
+                ex);
+        }
+    }
+
+    private TriggerSchema? FindTriggerDependingOnTable(string tableName)
+    {
+        foreach (TriggerSchema trigger in _catalog.GetTriggers().OrderBy(
+                     static item => item.TriggerName,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.Equals(trigger.TableName, tableName, StringComparison.OrdinalIgnoreCase))
+                return trigger;
+
+            if (ParseTriggerBodyForDependencyAnalysis(trigger, tableName)
+                .Any(statement => TriggerBodyStatementReferencesTable(statement, tableName)))
+            {
+                return trigger;
+            }
+        }
+
+        return null;
+    }
+
+    private TriggerSchema? FindTriggerDependingOnColumn(
+        string tableName,
+        string columnName,
+        bool includePositionalInsertShapeDependency)
+    {
+        foreach (TriggerSchema trigger in _catalog.GetTriggers().OrderBy(
+                     static item => item.TriggerName,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.Equals(trigger.TableName, tableName, StringComparison.OrdinalIgnoreCase))
+                return trigger;
+
+            if (ParseTriggerBodyForDependencyAnalysis(trigger, tableName)
+                .Any(statement => TriggerBodyStatementReferencesColumn(
+                    statement,
+                    tableName,
+                    columnName,
+                    includePositionalInsertShapeDependency)))
+            {
+                return trigger;
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<Statement> ParseTriggerBodyForDependencyAnalysis(
+        TriggerSchema trigger,
+        string alteredTableName)
+    {
+        try
+        {
+            return ParseTriggerBody(trigger.BodySql);
+        }
+        catch (CSharpDbException ex)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Trigger '{trigger.TriggerName}' cannot be analyzed before altering table '{alteredTableName}'.",
+                ex);
+        }
+    }
+
+    private bool TriggerBodyStatementReferencesTable(
+        Statement statement,
+        string tableName) =>
+        statement switch
+        {
+            InsertStatement insert =>
+                string.Equals(insert.TableName, tableName, StringComparison.OrdinalIgnoreCase) ||
+                insert.ValueRows.Any(row =>
+                    row.Any(expression =>
+                        ExpressionReferencesTable(
+                            expression,
+                            tableName,
+                            new HashSet<string>(StringComparer.OrdinalIgnoreCase)))),
+            UpdateStatement update =>
+                string.Equals(update.TableName, tableName, StringComparison.OrdinalIgnoreCase) ||
+                update.SetClauses.Any(set =>
+                    ExpressionReferencesTable(
+                        set.Value,
+                        tableName,
+                        new HashSet<string>(StringComparer.OrdinalIgnoreCase))) ||
+                (update.Where is not null &&
+                 ExpressionReferencesTable(
+                     update.Where,
+                     tableName,
+                     new HashSet<string>(StringComparer.OrdinalIgnoreCase))),
+            DeleteStatement delete =>
+                string.Equals(delete.TableName, tableName, StringComparison.OrdinalIgnoreCase) ||
+                (delete.Where is not null &&
+                 ExpressionReferencesTable(
+                     delete.Where,
+                     tableName,
+                     new HashSet<string>(StringComparer.OrdinalIgnoreCase))),
+            QueryStatement query =>
+                QueryReferencesTable(
+                    query,
+                    tableName,
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase)),
+            _ => false,
+        };
+
+    private bool TriggerBodyStatementReferencesColumn(
+        Statement statement,
+        string tableName,
+        string columnName,
+        bool includePositionalInsertShapeDependency)
+    {
+        bool ExpressionReferencesTargetTable(Expression expression) =>
+            ExpressionReferencesTable(
+                expression,
+                tableName,
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+        switch (statement)
+        {
+            case InsertStatement insert:
+            {
+                bool targetsAlteredTable = string.Equals(
+                    insert.TableName,
+                    tableName,
+                    StringComparison.OrdinalIgnoreCase);
+                if (targetsAlteredTable &&
+                    ((includePositionalInsertShapeDependency && insert.ColumnNames is null) ||
+                     (insert.ColumnNames?.Any(column =>
+                         string.Equals(column, columnName, StringComparison.OrdinalIgnoreCase)) ?? false)))
+                {
+                    return true;
+                }
+
+                return insert.ValueRows.Any(row =>
+                    row.Any(ExpressionReferencesTargetTable));
+            }
+            case UpdateStatement update:
+            {
+                bool targetsAlteredTable = string.Equals(
+                    update.TableName,
+                    tableName,
+                    StringComparison.OrdinalIgnoreCase);
+                if (targetsAlteredTable &&
+                    (update.SetClauses.Any(set =>
+                         string.Equals(set.ColumnName, columnName, StringComparison.OrdinalIgnoreCase) ||
+                         ExpressionReferencesColumn(set.Value, columnName)) ||
+                     (update.Where is not null &&
+                      ExpressionReferencesColumn(update.Where, columnName))))
+                {
+                    return true;
+                }
+
+                return update.SetClauses.Any(set =>
+                           ExpressionReferencesTargetTable(set.Value)) ||
+                       (update.Where is not null &&
+                        ExpressionReferencesTargetTable(update.Where));
+            }
+            case DeleteStatement delete:
+            {
+                bool targetsAlteredTable = string.Equals(
+                    delete.TableName,
+                    tableName,
+                    StringComparison.OrdinalIgnoreCase);
+                if (targetsAlteredTable &&
+                    delete.Where is not null &&
+                    ExpressionReferencesColumn(delete.Where, columnName))
+                {
+                    return true;
+                }
+
+                return delete.Where is not null &&
+                       ExpressionReferencesTargetTable(delete.Where);
+            }
+            case QueryStatement query:
+                return QueryReferencesTable(
+                    query,
+                    tableName,
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            default:
+                return false;
+        }
+    }
+
+    private void EnsureNoDependentView(string tableName, string operation)
+    {
+        foreach (string viewName in _catalog.GetViewNames().OrderBy(
+                     static name => name,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            if (!StoredViewReferencesTable(
+                    viewName,
+                    tableName,
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot {operation} because view '{viewName}' depends on table '{tableName}'. Drop or rewrite the view first.");
+        }
+    }
+
+    private async ValueTask EnsureNoRenameTableTriggerOrValidationRuleAsync(
+        string tableName,
+        CancellationToken ct)
+    {
+        TriggerSchema? trigger = FindTriggerDependingOnTable(tableName);
+        if (trigger is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot rename table '{tableName}' while trigger '{trigger.TriggerName}' depends on it. Drop or rewrite the trigger first.");
+        }
+
+        ValidationRule? validationRule = (await LoadValidationRulesAsync(ct))
+            .FirstOrDefault(rule =>
+                string.Equals(rule.TableName, tableName, StringComparison.OrdinalIgnoreCase));
+        if (validationRule is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot rename table '{tableName}' while validation rule '{validationRule.RuleName}' depends on it. Drop or rewrite the validation rule first.");
+        }
+    }
+
+    private async ValueTask EnsureNoRenameColumnTriggerOrValidationRuleAsync(
+        string tableName,
+        string columnName,
+        CancellationToken ct)
+    {
+        TriggerSchema? trigger = FindTriggerDependingOnColumn(
+            tableName,
+            columnName,
+            includePositionalInsertShapeDependency: false);
+        if (trigger is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot rename column '{columnName}' on table '{tableName}' while trigger '{trigger.TriggerName}' depends on it. Drop or rewrite the trigger first.");
+        }
+
+        ValidationRule? validationRule = (await LoadValidationRulesAsync(ct))
+            .FirstOrDefault(rule =>
+                string.Equals(rule.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                ValidationRuleReferencesColumn(rule, columnName));
+        if (validationRule is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot rename column '{columnName}' on table '{tableName}' while validation rule '{validationRule.RuleName}' depends on it. Drop or rewrite the validation rule first.");
+        }
+    }
+
+    private bool StoredViewReferencesTable(
+        string viewName,
+        string tableName,
+        HashSet<string> visitedViews)
+    {
+        if (!visitedViews.Add(viewName))
+            return false;
+
+        string? viewSql = _catalog.GetViewSql(viewName);
+        if (viewSql is null)
+            return false;
+
+        QueryStatement query;
+        try
+        {
+            query = Parser.Parse(viewSql) as QueryStatement
+                ?? throw new CSharpDbException(
+                    ErrorCode.CorruptDatabase,
+                    $"Persisted view '{viewName}' does not contain a query definition.");
+        }
+        catch (CSharpDbException ex) when (ex.Code != ErrorCode.CorruptDatabase)
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"Persisted view '{viewName}' cannot be analyzed before altering table '{tableName}'.",
+                ex);
+        }
+
+        return QueryReferencesTable(query, tableName, visitedViews);
+    }
+
+    private bool QueryReferencesTable(
+        QueryStatement query,
+        string tableName,
+        HashSet<string> visitedViews) =>
+        query switch
+        {
+            SelectStatement select =>
+                TableRefReferencesTable(select.From, tableName, visitedViews) ||
+                select.Columns.Any(column =>
+                    column.Expression is not null &&
+                    ExpressionReferencesTable(column.Expression, tableName, visitedViews)) ||
+                (select.Where is not null &&
+                 ExpressionReferencesTable(select.Where, tableName, visitedViews)) ||
+                (select.GroupBy is not null &&
+                 select.GroupBy.Any(expression =>
+                     ExpressionReferencesTable(expression, tableName, visitedViews))) ||
+                (select.Having is not null &&
+                 ExpressionReferencesTable(select.Having, tableName, visitedViews)) ||
+                (select.OrderBy is not null &&
+                 select.OrderBy.Any(clause =>
+                     ExpressionReferencesTable(clause.Expression, tableName, visitedViews))),
+            CompoundSelectStatement compound =>
+                QueryReferencesTable(compound.Left, tableName, visitedViews) ||
+                QueryReferencesTable(compound.Right, tableName, visitedViews) ||
+                (compound.OrderBy is not null &&
+                 compound.OrderBy.Any(clause =>
+                     ExpressionReferencesTable(clause.Expression, tableName, visitedViews))),
+            _ => false,
+        };
+
+    private bool TableRefReferencesTable(
+        TableRef tableRef,
+        string tableName,
+        HashSet<string> visitedViews) =>
+        tableRef switch
+        {
+            SimpleTableRef simple
+                when string.Equals(simple.TableName, tableName, StringComparison.OrdinalIgnoreCase) => true,
+            SimpleTableRef simple
+                when _catalog.GetViewSql(simple.TableName) is not null =>
+                StoredViewReferencesTable(simple.TableName, tableName, visitedViews),
+            JoinTableRef join =>
+                TableRefReferencesTable(join.Left, tableName, visitedViews) ||
+                TableRefReferencesTable(join.Right, tableName, visitedViews) ||
+                (join.Condition is not null &&
+                 ExpressionReferencesTable(join.Condition, tableName, visitedViews)),
+            _ => false,
+        };
+
+    private bool ExpressionReferencesTable(
+        Expression expression,
+        string tableName,
+        HashSet<string> visitedViews) =>
+        expression switch
+        {
+            BinaryExpression binary =>
+                ExpressionReferencesTable(binary.Left, tableName, visitedViews) ||
+                ExpressionReferencesTable(binary.Right, tableName, visitedViews),
+            UnaryExpression unary =>
+                ExpressionReferencesTable(unary.Operand, tableName, visitedViews),
+            CollateExpression collate =>
+                ExpressionReferencesTable(collate.Operand, tableName, visitedViews),
+            LikeExpression like =>
+                ExpressionReferencesTable(like.Operand, tableName, visitedViews) ||
+                ExpressionReferencesTable(like.Pattern, tableName, visitedViews) ||
+                (like.EscapeChar is not null &&
+                 ExpressionReferencesTable(like.EscapeChar, tableName, visitedViews)),
+            InExpression inExpression =>
+                ExpressionReferencesTable(inExpression.Operand, tableName, visitedViews) ||
+                inExpression.Values.Any(value =>
+                    ExpressionReferencesTable(value, tableName, visitedViews)),
+            InSubqueryExpression inSubquery =>
+                ExpressionReferencesTable(inSubquery.Operand, tableName, visitedViews) ||
+                QueryReferencesTable(inSubquery.Query, tableName, visitedViews),
+            ScalarSubqueryExpression scalarSubquery =>
+                QueryReferencesTable(scalarSubquery.Query, tableName, visitedViews),
+            ExistsExpression exists =>
+                QueryReferencesTable(exists.Query, tableName, visitedViews),
+            BetweenExpression between =>
+                ExpressionReferencesTable(between.Operand, tableName, visitedViews) ||
+                ExpressionReferencesTable(between.Low, tableName, visitedViews) ||
+                ExpressionReferencesTable(between.High, tableName, visitedViews),
+            IsNullExpression isNull =>
+                ExpressionReferencesTable(isNull.Operand, tableName, visitedViews),
+            FunctionCallExpression function =>
+                function.Arguments.Any(argument =>
+                    ExpressionReferencesTable(argument, tableName, visitedViews)),
+            WindowFunctionExpression window =>
+                window.Function.Arguments.Any(argument =>
+                    ExpressionReferencesTable(argument, tableName, visitedViews)) ||
+                window.Window.PartitionBy.Any(expression =>
+                    ExpressionReferencesTable(expression, tableName, visitedViews)) ||
+                window.Window.OrderBy.Any(clause =>
+                    ExpressionReferencesTable(clause.Expression, tableName, visitedViews)),
             _ => false,
         };
 

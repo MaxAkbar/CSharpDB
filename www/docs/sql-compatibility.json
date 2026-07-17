@@ -426,6 +426,51 @@
       "ci_executed": true
     },
     {
+      "id": "engine.alter.dependency_preflight",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "DropColumn_ReferencedByTransitiveView_FailsBeforeRewriteAndPreservesViewAfterReopen",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.rename_dependency_preflight",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "RenameTable_WithTriggerOrValidationRule_IsRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.rename_column_dependency_preflight",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "RenameColumn_WithTriggerOrValidationRule_IsRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.drop_stored_dependency_preflight",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "DropColumn_WithStoredCrossDependency_IsRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.public_write_rollback",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "FailedRewrite_PublicWriteTransaction_IsRollbackOnly",
+      "ci_executed": true
+    },
+    {
       "id": "parser.alter.column_metadata",
       "kind": "positive",
       "dimension": "parser",
@@ -549,6 +594,33 @@
       "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
       "source": "tests/CSharpDB.Tests/PlannerStatisticsTests.cs",
       "test": "ExplainEstimate_ReportsHistogramHeavyHitterAndCompositePrefixSources",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.explain.read_only_transaction",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/InMemoryDatabaseTests.cs",
+      "test": "FailedExplainEstimate_DoesNotPoisonExplicitTransaction",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.explain.reader_session",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/WalTests.cs",
+      "test": "ReaderSession_ExplainEstimate_UsesReadOnlySnapshotRouting",
+      "ci_executed": true
+    },
+    {
+      "id": "ado.explain.prepared_parameters",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj",
+      "source": "tests/CSharpDB.Data.Tests/CommandTests.cs",
+      "test": "Prepare_ExplainEstimate_DiscoversAndRebindsTargetParameters",
       "ci_executed": true
     },
     {
@@ -1173,6 +1245,33 @@
       "ci_executed": true
     },
     {
+      "id": "parser.window.mixed_star_projection",
+      "kind": "positive",
+      "dimension": "parser",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/WindowFunctionTests.cs",
+      "test": "Parse_WindowAndProjectionStar_PreserveSelectItemOrder",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.window.star_projection",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/WindowFunctionTests.cs",
+      "test": "MixedExpressionsAndStar_PreserveProjectionOrderAndValues",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.window.cancellation",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/WindowFunctionTests.cs",
+      "test": "WindowOperator_CancellationDuringLargePeerLoop_DisposesItsSource",
+      "ci_executed": true
+    },
+    {
       "id": "engine.window.experimental_rejections",
       "kind": "negative",
       "dimension": "rejection",
@@ -1330,10 +1429,10 @@
       "facets": {"parser": "supported", "execution": "partial", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "unsupported", "rest_stateless": "unsupported", "rest_session": "unsupported", "grpc_unary": "unsupported", "grpc_session": "unsupported", "ef_query": "unsupported", "ef_migration": "not_applicable"},
       "persistent_ddl": false,
       "first_supported_version": "4.0.4",
-      "limitations": ["Experimental in-memory slice only: one compatible window specification per SELECT; ROW_NUMBER, RANK, DENSE_RANK, and non-DISTINCT COUNT, SUM, AVG, MIN, and MAX over direct source rows. Explicit frames, named windows, nested windows, mixed ordinary aggregation/grouping, incompatible specifications, navigation functions, and spill-to-disk are rejected. Large inputs remain bounded only by available process memory."],
+      "limitations": ["Experimental in-memory slice only: one compatible window specification per SELECT; ROW_NUMBER, RANK, DENSE_RANK, and non-DISTINCT COUNT, SUM, AVG, MIN, and MAX over direct source rows. Star and mixed-expression projections preserve public SELECT-list order and hide internal window slots. Explicit frames, named windows, nested windows, mixed ordinary aggregation/grouping, incompatible specifications, navigation functions, and spill-to-disk are rejected. Large inputs remain bounded only by available process memory, although long sort/evaluation loops poll cancellation."],
       "deviations": ["Default frames are SQL-consistent: an unordered window covers the whole partition, while an ordered aggregate window uses peer-aware unbounded-preceding through current-row semantics."],
       "documentation_anchor": "sql-reference.html#limitations",
-      "positive_proof_ids": ["parser.window.experimental", "engine.window.ranking", "engine.window.aggregate_default_frames"],
+      "positive_proof_ids": ["parser.window.experimental", "parser.window.mixed_star_projection", "engine.window.ranking", "engine.window.aggregate_default_frames", "engine.window.star_projection", "engine.window.cancellation"],
       "negative_proof_ids": ["engine.window.experimental_rejections"]
     },
     {
@@ -1601,10 +1700,10 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "not_applicable"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["The default must be one of the supported typed literal or NULL forms. Adding a required column without a value for existing rows is rejected."],
+      "limitations": ["The default must be one of the supported typed literal or NULL forms. Adding a required column without a value for existing rows is rejected. A failed rewrite makes either explicit transaction API rollback-only."],
       "deviations": ["Existing rows are streamed through a shadow table root and receive the persisted default before the catalog root is swapped."],
       "documentation_anchor": "sql-reference.html#alter-table",
-      "positive_proof_ids": ["parser.alter.add", "engine.alter.add_default_backfill", "engine.alter.rewrite_rollback", "engine.alter.add.reopen", "catalog.default_check", "ado.schema.defaults_checks_keys", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "positive_proof_ids": ["parser.alter.add", "engine.alter.add_default_backfill", "engine.alter.rewrite_rollback", "engine.alter.public_write_rollback", "engine.alter.add.reopen", "catalog.default_check", "ado.schema.defaults_checks_keys", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
       "negative_proof_ids": ["parser.default_check.unsupported"]
     },
     {
@@ -1618,11 +1717,11 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["Indexed, constrained, trigger- or validation-rule-dependent, primary-key, and last-column drops are rejected. View dependency discovery and fault-injection coverage for process interruption remain follow-on work."],
+      "limitations": ["Indexed, constrained, trigger-, validation-rule-, or stored-view-dependent, primary-key, and last-column drops are rejected. Stored-view preflight is deliberately table-conservative and follows direct/transitive view chains rather than attempting column-level SQL rewriting. Deterministic fault-injection and process-interruption coverage remain follow-on work."],
       "deviations": [],
       "documentation_anchor": "sql-reference.html#alter-table",
-      "positive_proof_ids": ["parser.alter.drop", "engine.alter.drop", "engine.alter.rewrite_drop", "engine.alter.rewrite_rollback", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session", "ef.migration.basic"],
-      "negative_proof_ids": ["engine.alter.drop_indexed.rejected"]
+      "positive_proof_ids": ["parser.alter.drop", "engine.alter.drop", "engine.alter.rewrite_drop", "engine.alter.rewrite_rollback", "engine.alter.public_write_rollback", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session", "ef.migration.basic"],
+      "negative_proof_ids": ["engine.alter.drop_indexed.rejected", "engine.alter.dependency_preflight", "engine.alter.drop_stored_dependency_preflight"]
     },
     {
       "id": "alter.column.default",
@@ -1686,11 +1785,11 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["This row does not claim arbitrary vendor-specific rename syntax."],
+      "limitations": ["This row does not claim arbitrary vendor-specific rename syntax. Renames reject stored-view, trigger, and validation-rule dependencies until those definitions can be rewritten atomically."],
       "deviations": [],
       "documentation_anchor": "sql-reference.html#alter-table",
       "positive_proof_ids": ["parser.alter.rename_table", "engine.create_and_query", "engine.alter.rename_table.reopen", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session", "ef.migration.basic"],
-      "negative_proof_ids": []
+      "negative_proof_ids": ["engine.alter.rename_dependency_preflight"]
     },
     {
       "id": "alter.rename_column",
@@ -1703,11 +1802,11 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "partial", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["Dependency repair is implemented for current indexes and foreign keys, but a dedicated reopen proof is not yet linked in this development snapshot."],
+      "limitations": ["Dependency repair is implemented for current indexes, keys, checks, and foreign keys. Stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in this development snapshot."],
       "deviations": [],
       "documentation_anchor": "sql-reference.html#alter-table",
       "positive_proof_ids": ["parser.alter.rename_column", "engine.alter.rename_column", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session", "ef.migration.basic"],
-      "negative_proof_ids": ["engine.alter.rename_old.rejected"]
+      "negative_proof_ids": ["engine.alter.rename_old.rejected", "engine.alter.rename_column_dependency_preflight"]
     },
     {
       "id": "alter.drop_constraint.foreign_key",
@@ -1872,10 +1971,10 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "not_applicable"},
       "persistent_ddl": false,
       "first_supported_version": "4.0.4",
-      "limitations": ["Output describes estimate inputs and planner decisions. It is not a complete physical operator tree and reports no actual execution metrics."],
+      "limitations": ["Output describes estimate inputs and planner decisions. It follows read-only transaction routing and prepared commands discover/rebind parameters inside the target. It is not a complete physical operator tree and reports no actual execution metrics."],
       "deviations": ["The target query is not executed; mutation targets are rejected."],
       "documentation_anchor": "query-execution-pipeline.html#cardinality-estimation",
-      "positive_proof_ids": ["parser.explain.estimate", "engine.explain.estimate", "direct.explain.estimate", "ado.crud", "rest.explain", "rest.session", "grpc.sql", "grpc.session"],
+      "positive_proof_ids": ["parser.explain.estimate", "engine.explain.estimate", "engine.explain.read_only_transaction", "engine.explain.reader_session", "direct.explain.estimate", "ado.crud", "ado.explain.prepared_parameters", "rest.explain", "rest.session", "grpc.sql", "grpc.session"],
       "negative_proof_ids": ["parser.explain.mutation.rejected"]
     },
     {

@@ -930,6 +930,9 @@ internal sealed class PreparedStatementTemplate
                     CollectParameterNames(with.Ctes[i].Query, names, seen);
                 CollectParameterNames(with.MainQuery, names, seen);
                 return;
+            case ExplainEstimateStatement explain:
+                CollectParameterNames(explain.Target, names, seen);
+                return;
             case CreateTriggerStatement trigger:
                 if (trigger.WhenCondition != null)
                     CollectParameterNames(trigger.WhenCondition, names, seen);

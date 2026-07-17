@@ -9,6 +9,8 @@ namespace CSharpDB.Execution;
 /// </summary>
 internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider
 {
+    private const int CancellationCheckInterval = 1024;
+
     private enum WindowFunctionKind
     {
         RowNumber,
@@ -156,6 +158,8 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
     private List<DbValue[]>? _results;
     private int _index;
     private bool _sourceDisposed;
+    private CancellationToken _sortCancellationToken;
+    private int _sortComparisonCount;
 
     public WindowOperator(
         IOperator source,
@@ -222,7 +226,27 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
             }
 
             ct.ThrowIfCancellationRequested();
-            rows.Sort(CompareRows);
+            _sortCancellationToken = ct;
+            _sortComparisonCount = 0;
+            try
+            {
+                rows.Sort(CompareRows);
+            }
+            catch (InvalidOperationException ex)
+                when (ct.IsCancellationRequested &&
+                      ex.InnerException is OperationCanceledException cancellation)
+            {
+                throw new OperationCanceledException(
+                    "Window sorting was canceled.",
+                    cancellation,
+                    ct);
+            }
+            finally
+            {
+                _sortCancellationToken = default;
+                _sortComparisonCount = 0;
+            }
+
             ct.ThrowIfCancellationRequested();
             _results = EvaluateWindows(rows, ct);
         }
@@ -274,7 +298,10 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
     {
         var results = new List<DbValue[]>(rows.Count);
         for (int i = 0; i < rows.Count; i++)
+        {
+            ThrowIfCancellationRequestedPeriodically(i, ct);
             results.Add(new DbValue[OutputSchema.Length]);
+        }
 
         int partitionStart = 0;
         while (partitionStart < rows.Count)
@@ -287,6 +314,7 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
                        rows[partitionEnd].PartitionKeys,
                        _partitionCollations))
             {
+                ThrowIfCancellationRequestedPeriodically(partitionEnd - partitionStart, ct);
                 partitionEnd++;
             }
 
@@ -323,6 +351,7 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
             DbValue[] aggregateValues = SnapshotAggregates(aggregateStates);
             for (int rowIndex = partitionStart; rowIndex < partitionEnd; rowIndex++)
             {
+                ThrowIfCancellationRequestedPeriodically(rowIndex - partitionStart, ct);
                 WriteResultRow(
                     rows[rowIndex].Values,
                     results[rowIndex],
@@ -344,17 +373,22 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
             while (peerEnd < partitionEnd &&
                    KeysEqual(rows[peerStart].OrderKeys, rows[peerEnd].OrderKeys, _orderCollations))
             {
+                ThrowIfCancellationRequestedPeriodically(peerEnd - peerStart, ct);
                 peerEnd++;
             }
 
             denseRank++;
             for (int rowIndex = peerStart; rowIndex < peerEnd; rowIndex++)
+            {
+                ThrowIfCancellationRequestedPeriodically(rowIndex - peerStart, ct);
                 AccumulateAggregates(rows[rowIndex].Values, aggregateStates);
+            }
 
             DbValue[] aggregateValues = SnapshotAggregates(aggregateStates);
             long rank = peerStart - partitionStart + 1L;
             for (int rowIndex = peerStart; rowIndex < peerEnd; rowIndex++)
             {
+                ThrowIfCancellationRequestedPeriodically(rowIndex - peerStart, ct);
                 WriteResultRow(
                     rows[rowIndex].Values,
                     results[rowIndex],
@@ -422,6 +456,11 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
 
     private int CompareRows(MaterializedRow left, MaterializedRow right)
     {
+        _sortComparisonCount = unchecked(_sortComparisonCount + 1);
+        ThrowIfCancellationRequestedPeriodically(
+            _sortComparisonCount,
+            _sortCancellationToken);
+
         for (int i = 0; i < left.PartitionKeys.Length; i++)
         {
             int comparison = CollationSupport.Compare(
@@ -462,6 +501,12 @@ internal sealed class WindowOperator : IOperator, IEstimatedRowCountProvider, IM
         for (int i = 0; i < evaluators.Length; i++)
             keys[i] = evaluators[i](row);
         return keys;
+    }
+
+    private static void ThrowIfCancellationRequestedPeriodically(int iteration, CancellationToken ct)
+    {
+        if (iteration % CancellationCheckInterval == 0)
+            ct.ThrowIfCancellationRequested();
     }
 
     private static RuntimeFunction CompileFunction(

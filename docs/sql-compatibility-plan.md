@@ -32,14 +32,24 @@ As of 2026-07-17, the repository contains the following implemented plan slices:
 - Milestones 4–6: the first transactional shadow-root rewrite supports
   unconstrained `DROP COLUMN` and populated literal-default `ADD COLUMN`;
   direct ALTER metadata actions cover SET/DROP DEFAULT, validated SET/DROP NOT
-  NULL, and named CHECK add/drop;
+  NULL, and named CHECK add/drop. Structural ALTER now rejects persisted view,
+  trigger, and validation-rule dependencies before mutation, and both explicit
+  transaction APIs become rollback-only after a failed write;
   `UNION ALL` uses a lazy duplicate-preserving append path; and an experimental
-  in-memory Tier-1 window slice covers ranking and common aggregate windows.
+  in-memory Tier-1 window slice covers ranking and common aggregate windows
+  without leaking hidden window slots through star projections.
 - Milestones 7–9: built-in function metadata is centralized and exposed through
   `sys.functions`; the EF provider emits literal defaults, create-table checks,
   `DEFAULT VALUES`, and composite primary/index DDL; ADO.NET exposes restrictions,
   defaults, checks, ordered keys, and ordered foreign-key pairs; and current
   schema transports/tooling preserve these constraint shapes.
+- Milestones 10–11: estimate-only EXPLAIN now follows the shared read-only
+  routing contract and prepared commands discover parameters inside its target.
+  Release tooling can create an immutable compatibility snapshot, and tagged
+  release CI validates its version, schema, proof/feature parity, verified
+  commit ancestry, tracked artifacts, and prior-snapshot immutability. The
+  shared physical-plan descriptor, execution profiles, spill substrate, and
+  broader release qualification lanes remain.
 
 The public status and supported limitations live in
 `www/docs/sql-compatibility.json` and

@@ -760,7 +760,7 @@
                 </code></pre></div>
                 <hr/>
                 <h2 id="limitations">Limitations</h2>
-                <p>Window functions are available as an <strong>experimental in-memory slice</strong>: one compatible specification per SELECT with <code>ROW_NUMBER</code>, <code>RANK</code>, <code>DENSE_RANK</code>, and non-distinct <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, or <code>MAX</code>. Named windows, explicit frames, navigation functions, mixed grouping, incompatible specifications, and disk spill are not yet supported.</p>
+                <p>Window functions are available as an <strong>experimental in-memory slice</strong>: one compatible specification per SELECT with <code>ROW_NUMBER</code>, <code>RANK</code>, <code>DENSE_RANK</code>, and non-distinct <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, or <code>MAX</code>. Star and mixed-expression projections preserve SELECT-list order without exposing internal window slots, and long sort/evaluation loops poll cancellation. Named windows, explicit frames, navigation functions, mixed grouping, incompatible specifications, and disk spill are not yet supported.</p>
                 <p>Built-in scalar and aggregate metadata is queryable through <code>sys.functions</code> (also <code>sys_functions</code>). Logical primary/unique key columns are exposed through <code>sys.key_constraints</code>. The <a href="sql.html">SQL overview</a> lists the currently registered built-in families.</p>
                 <p>The following SQL features are <strong>not currently supported</strong>:</p>
                 <ul>
