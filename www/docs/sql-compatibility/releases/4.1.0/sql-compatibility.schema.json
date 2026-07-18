@@ -1,0 +1,410 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://csharpdb.com/docs/sql-compatibility.schema.json",
+  "title": "CSharpDB SQL compatibility manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "manifest_version",
+    "dialect",
+    "title",
+    "description",
+    "verified_against",
+    "proofs",
+    "features"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "sql-compatibility.schema.json"
+    },
+    "manifest_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "dialect": {
+      "type": "string",
+      "const": "CSharpDB SQL"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verified_against": {
+      "$ref": "#/definitions/verifiedAgainst"
+    },
+    "proofs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/proof"
+      }
+    },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/feature"
+      }
+    }
+  },
+  "definitions": {
+    "featureId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "availability": {
+      "type": "string",
+      "enum": [
+        "supported",
+        "partial",
+        "unsupported"
+      ]
+    },
+    "roadmap": {
+      "type": "string",
+      "enum": [
+        "shipped",
+        "in_progress",
+        "planned",
+        "out_of_scope",
+        "none"
+      ]
+    },
+    "facetName": {
+      "type": "string",
+      "enum": [
+        "parser",
+        "execution",
+        "persistence",
+        "catalog",
+        "embedded_ado_net",
+        "rest_stateless",
+        "rest_session",
+        "grpc_unary",
+        "grpc_session",
+        "ef_query",
+        "ef_migration"
+      ]
+    },
+    "facetStatus": {
+      "type": "string",
+      "enum": [
+        "supported",
+        "partial",
+        "unsupported",
+        "not_applicable"
+      ]
+    },
+    "facetMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parser",
+        "execution",
+        "persistence",
+        "catalog",
+        "embedded_ado_net",
+        "rest_stateless",
+        "rest_session",
+        "grpc_unary",
+        "grpc_session",
+        "ef_query",
+        "ef_migration"
+      ],
+      "properties": {
+        "parser": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "execution": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "persistence": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "catalog": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "embedded_ado_net": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "rest_stateless": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "rest_session": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "grpc_unary": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "grpc_session": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "ef_query": {
+          "$ref": "#/definitions/facetStatus"
+        },
+        "ef_migration": {
+          "$ref": "#/definitions/facetStatus"
+        }
+      }
+    },
+    "verifiedAgainst": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "package_version",
+        "generated_at",
+        "state"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "package_version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "development",
+            "released"
+          ]
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "dimension",
+        "project",
+        "source",
+        "test",
+        "ci_executed"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/featureId"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "positive",
+            "negative"
+          ]
+        },
+        "dimension": {
+          "type": "string",
+          "enum": [
+            "parser",
+            "execution",
+            "persistence",
+            "catalog",
+            "transport",
+            "provider",
+            "rejection"
+          ]
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^tests/.+\\.csproj$"
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^tests/.+\\.cs$"
+        },
+        "test": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "ci_executed": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "feature",
+        "syntax",
+        "availability",
+        "roadmap",
+        "applies_to",
+        "facets",
+        "persistent_ddl",
+        "limitations",
+        "deviations",
+        "documentation_anchor",
+        "positive_proof_ids",
+        "negative_proof_ids"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/featureId"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "feature": {
+          "type": "string",
+          "minLength": 1
+        },
+        "syntax": {
+          "type": "string",
+          "minLength": 1
+        },
+        "availability": {
+          "$ref": "#/definitions/availability"
+        },
+        "roadmap": {
+          "$ref": "#/definitions/roadmap"
+        },
+        "applies_to": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/facetName"
+          }
+        },
+        "facets": {
+          "$ref": "#/definitions/facetMap"
+        },
+        "persistent_ddl": {
+          "type": "boolean"
+        },
+        "first_supported_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "deviations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "documentation_anchor": {
+          "type": "string",
+          "pattern": "^[^:#?]+\\.html(?:#[A-Za-z][A-Za-z0-9_.:-]*)?$"
+        },
+        "positive_proof_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/featureId"
+          }
+        },
+        "negative_proof_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/featureId"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "supported"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "first_supported_version"
+            ],
+            "properties": {
+              "first_supported_version": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+              },
+              "positive_proof_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "partial"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "first_supported_version"
+            ],
+            "properties": {
+              "first_supported_version": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+              },
+              "limitations": {
+                "minItems": 1
+              },
+              "positive_proof_ids": {
+                "minItems": 1
+              },
+              "negative_proof_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "unsupported"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "first_supported_version"
+              ]
+            },
+            "properties": {
+              "positive_proof_ids": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
