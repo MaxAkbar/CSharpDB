@@ -35,14 +35,25 @@ public static class TableEndpoints
         var response = new TableSchemaResponse(
             schema.TableName,
             schema.Columns.Select(c => new ColumnResponse(
-                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.Collation)).ToList(),
+                c.Name, c.Type.ToString(), c.Nullable, c.IsPrimaryKey, c.IsIdentity, c.Collation, c.DefaultSql)).ToList(),
             schema.ForeignKeys.Select(fk => new ForeignKeyResponse(
                 fk.ConstraintName,
                 fk.ColumnName,
                 fk.ReferencedTableName,
                 fk.ReferencedColumnName,
                 fk.OnDelete.ToString(),
-                fk.SupportingIndexName)).ToList());
+                fk.SupportingIndexName,
+                fk.ColumnNames.Count > 0 ? fk.ColumnNames : [fk.ColumnName],
+                fk.ReferencedColumnNames.Count > 0 ? fk.ReferencedColumnNames : [fk.ReferencedColumnName])).ToList(),
+            schema.KeyConstraints.Select(key => new KeyConstraintResponse(
+                key.ConstraintName,
+                key.Kind.ToString(),
+                key.Columns,
+                key.BackingIndexName)).ToList(),
+            schema.CheckConstraints.Select(check => new CheckConstraintResponse(
+                check.ConstraintName,
+                check.ExpressionSql,
+                check.ColumnName)).ToList());
 
         return Results.Ok(response);
     }

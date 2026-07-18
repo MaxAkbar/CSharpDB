@@ -253,6 +253,18 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://csharpdb.com/docs/sql-compatibility.html</loc>
+    <lastmod>2026-07-17</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://csharpdb.com/docs/sql-compatibility-roadmap.html</loc>
+    <lastmod>2026-07-17</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://csharpdb.com/docs/sql-reference.html</loc>
     <lastmod>2026-04-24</lastmod>
     <changefreq>monthly</changefreq>

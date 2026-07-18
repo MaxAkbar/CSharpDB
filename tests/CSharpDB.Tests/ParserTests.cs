@@ -97,13 +97,36 @@ public class ParserTests
     }
 
     [Fact]
-    public void Parse_CreateTable_TableLevelForeignKey_Throws()
+    public void Parse_CreateTable_WithDefaultsAndChecks()
     {
-        var error = Assert.Throws<CSharpDB.Primitives.CSharpDbException>(
-            () => Parser.Parse("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES customers(id))"));
+        var stmt = Parser.Parse(
+            "CREATE TABLE orders (" +
+            "id INTEGER PRIMARY KEY, " +
+            "quantity INTEGER DEFAULT 1 CONSTRAINT ck_quantity CHECK (quantity > 0), " +
+            "status TEXT DEFAULT 'new', " +
+            "CHECK (status IN ('new', 'paid')))");
 
-        Assert.Equal(ErrorCode.SyntaxError, error.Code);
-        Assert.Contains("Table-level FOREIGN KEY constraints are not supported", error.Message, StringComparison.Ordinal);
+        var create = Assert.IsType<CreateTableStatement>(stmt);
+        Assert.IsType<LiteralExpression>(create.Columns[1].DefaultExpression);
+        Assert.Equal("ck_quantity", Assert.Single(create.Columns[1].CheckConstraints).ConstraintName);
+        Assert.IsType<LiteralExpression>(create.Columns[2].DefaultExpression);
+        Assert.Null(Assert.Single(create.CheckConstraints).ConstraintName);
+    }
+
+    [Fact]
+    public void Parse_CreateTable_TableLevelCompositeForeignKey()
+    {
+        var create = Assert.IsType<CreateTableStatement>(Parser.Parse(
+            "CREATE TABLE orders (tenant_id INTEGER, customer_id INTEGER, " +
+            "CONSTRAINT fk_customer FOREIGN KEY (tenant_id, customer_id) " +
+            "REFERENCES customers(tenant_id, id) ON DELETE CASCADE)"));
+
+        ForeignKeyConstraintClause foreignKey = Assert.Single(create.ForeignKeys);
+        Assert.Equal("fk_customer", foreignKey.ConstraintName);
+        Assert.Equal(["tenant_id", "customer_id"], foreignKey.Columns);
+        Assert.Equal("customers", foreignKey.ReferencedTableName);
+        Assert.Equal(["tenant_id", "id"], foreignKey.ReferencedColumns);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
     }
 
     [Fact]
@@ -199,6 +222,27 @@ public class ParserTests
         Assert.Null(insert.ColumnNames);
         Assert.Single(insert.ValueRows);
         Assert.Equal(3, insert.ValueRows[0].Count);
+    }
+
+    [Fact]
+    public void Parse_InsertDefaultValues()
+    {
+        var insert = Assert.IsType<InsertStatement>(Parser.Parse("INSERT INTO users DEFAULT VALUES"));
+
+        Assert.True(insert.IsDefaultValues);
+        Assert.Null(insert.ColumnNames);
+        Assert.Empty(Assert.Single(insert.ValueRows));
+    }
+
+    [Fact]
+    public void Parse_InsertDefaultMarkers()
+    {
+        var insert = Assert.IsType<InsertStatement>(
+            Parser.Parse("INSERT INTO users (id, name) VALUES (DEFAULT, 'a'), (2, DEFAULT)"));
+
+        Assert.False(insert.IsDefaultValues);
+        Assert.IsType<DefaultExpression>(insert.ValueRows[0][0]);
+        Assert.IsType<DefaultExpression>(insert.ValueRows[1][1]);
     }
 
     [Fact]
@@ -723,8 +767,33 @@ public class ParserTests
         var stmt = Parser.Parse("SELECT id FROM a UNION SELECT id FROM b");
         var compound = Assert.IsType<CompoundSelectStatement>(stmt);
         Assert.Equal(SetOperationKind.Union, compound.Operation);
+        Assert.Equal(SetQuantifier.Distinct, compound.Quantifier);
         Assert.IsType<SelectStatement>(compound.Left);
         Assert.IsType<SelectStatement>(compound.Right);
+    }
+
+    [Fact]
+    public void Parse_UnionAll()
+    {
+        var stmt = Parser.Parse("SELECT id FROM a UNION ALL SELECT id FROM b");
+        var compound = Assert.IsType<CompoundSelectStatement>(stmt);
+
+        Assert.Equal(SetOperationKind.Union, compound.Operation);
+        Assert.Equal(SetQuantifier.All, compound.Quantifier);
+        Assert.IsType<SelectStatement>(compound.Left);
+        Assert.IsType<SelectStatement>(compound.Right);
+    }
+
+    [Fact]
+    public void Parse_UnionAll_IsContextualAndCaseInsensitive()
+    {
+        var stmt = Parser.Parse("SELECT all FROM a UNION aLl SELECT all FROM b");
+        var compound = Assert.IsType<CompoundSelectStatement>(stmt);
+
+        Assert.Equal(SetQuantifier.All, compound.Quantifier);
+        var left = Assert.IsType<SelectStatement>(compound.Left);
+        var leftColumn = Assert.IsType<ColumnRefExpression>(left.Columns[0].Expression);
+        Assert.Equal("all", leftColumn.ColumnName);
     }
 
     [Fact]
@@ -737,6 +806,43 @@ public class ParserTests
 
         var right = Assert.IsType<CompoundSelectStatement>(outer.Right);
         Assert.Equal(SetOperationKind.Intersect, right.Operation);
+    }
+
+    [Fact]
+    public void Parse_ParenthesizedCompoundOperandOverridesPrecedence()
+    {
+        var stmt = Parser.Parse(
+            "SELECT id FROM a INTERSECT (SELECT id FROM b UNION ALL SELECT id FROM c)");
+        var outer = Assert.IsType<CompoundSelectStatement>(stmt);
+
+        Assert.Equal(SetOperationKind.Intersect, outer.Operation);
+        var right = Assert.IsType<CompoundSelectStatement>(outer.Right);
+        Assert.Equal(SetOperationKind.Union, right.Operation);
+        Assert.Equal(SetQuantifier.All, right.Quantifier);
+    }
+
+    [Fact]
+    public void Parse_ParenthesizedOperandCanHaveLocalOrderingAndPagination()
+    {
+        var stmt = Parser.Parse(
+            "SELECT id FROM a UNION ALL (SELECT id FROM b ORDER BY id LIMIT 2 OFFSET 1) ORDER BY id DESC");
+        var outer = Assert.IsType<CompoundSelectStatement>(stmt);
+        var right = Assert.IsType<SelectStatement>(outer.Right);
+
+        Assert.Equal(SetQuantifier.All, outer.Quantifier);
+        Assert.Single(right.OrderBy!);
+        Assert.Equal(2, right.Limit);
+        Assert.Equal(1, right.Offset);
+        Assert.Single(outer.OrderBy!);
+        Assert.True(outer.OrderBy![0].Descending);
+    }
+
+    [Theory]
+    [InlineData("SELECT id FROM a INTERSECT ALL SELECT id FROM b")]
+    [InlineData("SELECT id FROM a EXCEPT ALL SELECT id FROM b")]
+    public void Parse_AllIsOnlySupportedForUnion(string sql)
+    {
+        Assert.Throws<CSharpDbException>(() => Parser.Parse(sql));
     }
 
     [Fact]
@@ -972,6 +1078,49 @@ public class ParserTests
         Assert.Equal("users", alter.TableName);
         var drop = Assert.IsType<DropConstraintAction>(alter.Action);
         Assert.Equal("fk_users_parent_id_abcd1234", drop.ConstraintName);
+    }
+
+    [Fact]
+    public void Parse_AlterTable_ColumnMetadataActions()
+    {
+        var setDefault = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status SET DEFAULT 'new'"));
+        var defaultAction = Assert.IsType<AlterColumnSetDefaultAction>(setDefault.Action);
+        Assert.Equal("status", defaultAction.ColumnName);
+        Assert.IsType<LiteralExpression>(defaultAction.DefaultExpression);
+
+        var dropDefault = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status DROP DEFAULT"));
+        Assert.Equal("status", Assert.IsType<AlterColumnDropDefaultAction>(dropDefault.Action).ColumnName);
+
+        var setNotNull = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status SET NOT NULL"));
+        Assert.Equal("status", Assert.IsType<AlterColumnSetNotNullAction>(setNotNull.Action).ColumnName);
+
+        var dropNotNull = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status DROP NOT NULL"));
+        Assert.Equal("status", Assert.IsType<AlterColumnDropNotNullAction>(dropNotNull.Action).ColumnName);
+    }
+
+    [Fact]
+    public void Parse_AlterTable_AddNamedCheckConstraint()
+    {
+        var statement = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ADD CONSTRAINT ck_users_score CHECK (score >= 0)"));
+
+        var action = Assert.IsType<AddCheckConstraintAction>(statement.Action);
+        Assert.Equal("ck_users_score", action.ConstraintName);
+        Assert.IsType<BinaryExpression>(action.Expression);
+    }
+
+    [Theory]
+    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE INTEGER")]
+    [InlineData("ALTER TABLE users ALTER COLUMN status SET COLLATION NOCASE")]
+    public void Parse_AlterTable_RejectsUnsupportedColumnShapeChanges(string sql)
+    {
+        var error = Assert.Throws<CSharpDbException>(() => Parser.Parse(sql));
+
+        Assert.Contains("ALTER COLUMN", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

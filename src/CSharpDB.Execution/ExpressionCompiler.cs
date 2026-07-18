@@ -66,6 +66,9 @@ internal static class ExpressionCompiler
             UnaryExpression un => CompileMappedUnary(un, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             CollateExpression collate => CompileMappedCore(collate.Operand, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             FunctionCallExpression func => CompileMappedFunction(func, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
+            WindowFunctionExpression => (_, _) => throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                "Window functions require window planning context and cannot be compiled as scalar expressions."),
             LikeExpression like => CompileMappedLike(like, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             InExpression inExpr => CompileMappedIn(inExpr, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),
             BetweenExpression between => CompileMappedBetween(between, schema, leftColumnCount, leftColumnMap, rightColumnMap, singleRowOnly, functions),

@@ -16,6 +16,7 @@ public sealed class ColumnDefinition
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
     public string? Collation { get; init; }
+    public string? DefaultSql { get; init; }
 }
 
 public enum ForeignKeyOnDeleteAction
@@ -30,8 +31,33 @@ public sealed class ForeignKeyDefinition
     public required string ColumnName { get; init; }
     public required string ReferencedTableName { get; init; }
     public required string ReferencedColumnName { get; init; }
+    /// <summary>Ordered child columns; legacy payloads expose the scalar column as the only entry.</summary>
+    public IReadOnlyList<string> ColumnNames { get; init; } = Array.Empty<string>();
+    /// <summary>Ordered referenced columns; legacy payloads expose the scalar column as the only entry.</summary>
+    public IReadOnlyList<string> ReferencedColumnNames { get; init; } = Array.Empty<string>();
     public ForeignKeyOnDeleteAction OnDelete { get; init; } = ForeignKeyOnDeleteAction.Restrict;
     public required string SupportingIndexName { get; init; }
+}
+
+public enum KeyConstraintKind
+{
+    PrimaryKey = 0,
+    Unique = 1,
+}
+
+public sealed class KeyConstraintDefinition
+{
+    public string? ConstraintName { get; init; }
+    public KeyConstraintKind Kind { get; init; }
+    public required IReadOnlyList<string> Columns { get; init; }
+    public string? BackingIndexName { get; init; }
+}
+
+public sealed class CheckConstraintDefinition
+{
+    public string? ConstraintName { get; init; }
+    public required string ExpressionSql { get; init; }
+    public string? ColumnName { get; init; }
 }
 
 public sealed class TableSchema
@@ -39,6 +65,8 @@ public sealed class TableSchema
     public required string TableName { get; init; }
     public required IReadOnlyList<ColumnDefinition> Columns { get; init; }
     public IReadOnlyList<ForeignKeyDefinition> ForeignKeys { get; init; } = Array.Empty<ForeignKeyDefinition>();
+    public IReadOnlyList<CheckConstraintDefinition> CheckConstraints { get; init; } = Array.Empty<CheckConstraintDefinition>();
+    public IReadOnlyList<KeyConstraintDefinition> KeyConstraints { get; init; } = Array.Empty<KeyConstraintDefinition>();
 }
 
 public sealed class IndexSchema

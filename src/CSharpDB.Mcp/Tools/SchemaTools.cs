@@ -44,8 +44,12 @@ public static class SchemaTools
         {
             constraintName = fk.ConstraintName,
             columnName = fk.ColumnName,
+            columnNames = fk.ColumnNames.Count > 0 ? fk.ColumnNames : [fk.ColumnName],
             referencedTableName = fk.ReferencedTableName,
             referencedColumnName = fk.ReferencedColumnName,
+            referencedColumnNames = fk.ReferencedColumnNames.Count > 0
+                ? fk.ReferencedColumnNames
+                : [fk.ReferencedColumnName],
             onDelete = fk.OnDelete.ToString().ToLowerInvariant(),
             supportingIndexName = fk.SupportingIndexName,
         });

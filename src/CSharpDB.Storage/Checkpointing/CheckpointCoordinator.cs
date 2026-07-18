@@ -14,6 +14,7 @@ internal sealed class CheckpointCoordinator : IDisposable
     private int _deferredCheckpointRequested;
     private long _minimumRetainedWalOffset = long.MaxValue;
     private Task? _backgroundCheckpointTask;
+    private bool _backgroundCheckpointStartsStopped;
 
     public int ActiveReaderCount => Volatile.Read(ref _activeReaderCount);
     public bool HasPendingCheckpointRequest => Volatile.Read(ref _deferredCheckpointRequested) != 0;
@@ -140,13 +141,14 @@ internal sealed class CheckpointCoordinator : IDisposable
 
     public bool TryStartBackgroundCheckpoint(Func<CancellationToken, ValueTask> checkpointAction)
     {
-        if (!HasPendingCheckpointRequest)
-            return false;
-
         lock (_backgroundCheckpointGate)
         {
-            if (_backgroundCheckpointTask is { IsCompleted: false })
+            if (_backgroundCheckpointStartsStopped ||
+                !HasPendingCheckpointRequest ||
+                _backgroundCheckpointTask is { IsCompleted: false })
+            {
                 return false;
+            }
 
             _backgroundCheckpointTask = Task.Run(
                 async () => await checkpointAction(CancellationToken.None));
@@ -168,6 +170,35 @@ internal sealed class CheckpointCoordinator : IDisposable
         try
         {
             await backgroundCheckpointTask.WaitAsync(ct);
+        }
+        finally
+        {
+            lock (_backgroundCheckpointGate)
+            {
+                if (ReferenceEquals(_backgroundCheckpointTask, backgroundCheckpointTask) &&
+                    backgroundCheckpointTask.IsCompleted)
+                {
+                    _backgroundCheckpointTask = null;
+                }
+            }
+        }
+    }
+
+    public async ValueTask StopAndWaitForBackgroundCheckpointAsync()
+    {
+        Task? backgroundCheckpointTask;
+        lock (_backgroundCheckpointGate)
+        {
+            _backgroundCheckpointStartsStopped = true;
+            backgroundCheckpointTask = _backgroundCheckpointTask;
+        }
+
+        if (backgroundCheckpointTask is null)
+            return;
+
+        try
+        {
+            await backgroundCheckpointTask;
         }
         finally
         {

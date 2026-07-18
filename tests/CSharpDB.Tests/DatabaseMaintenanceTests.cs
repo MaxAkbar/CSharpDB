@@ -573,6 +573,39 @@ public sealed class DatabaseMaintenanceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task VacuumAsync_PreservesOrderedCompositeForeignKeys()
+    {
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE parents (tenant_id INTEGER, code TEXT, PRIMARY KEY (tenant_id, code));",
+            Ct);
+        await _client.ExecuteSqlAsync(
+            "CREATE TABLE children (id INTEGER PRIMARY KEY, tenant_id INTEGER, parent_code TEXT, " +
+            "FOREIGN KEY (tenant_id, parent_code) REFERENCES parents(tenant_id, code) ON DELETE CASCADE);",
+            Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO parents VALUES (1, 'north');", Ct);
+        await _client.ExecuteSqlAsync("INSERT INTO children VALUES (1, 1, 'north');", Ct);
+
+        await _client.DisposeAsync();
+        await DatabaseMaintenanceCoordinator.VacuumAsync(_dbPath, Ct);
+
+        await using (var reopened = await Database.OpenAsync(_dbPath, Ct))
+        {
+            ForeignKeyDefinition foreignKey = Assert.Single(
+                reopened.GetTableSchema("children")!.ForeignKeys);
+            Assert.Equal(["tenant_id", "parent_code"], foreignKey.ColumnNames);
+            Assert.Equal(["tenant_id", "code"], foreignKey.ReferencedColumnNames);
+
+            CSharpDbException violation = await Assert.ThrowsAsync<CSharpDbException>(
+                async () => await reopened.ExecuteAsync(
+                    "INSERT INTO children VALUES (2, 1, 'missing')",
+                    Ct));
+            Assert.Equal(ErrorCode.ConstraintViolation, violation.Code);
+        }
+
+        _client = CreateClient();
+    }
+
+    [Fact]
     public async Task VacuumAsync_PreservesLegacyUnknownNextRowId()
     {
         await _client.DisposeAsync();

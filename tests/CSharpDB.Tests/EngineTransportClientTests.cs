@@ -11,6 +11,101 @@ namespace CSharpDB.Tests;
 public sealed class EngineTransportClientTests
 {
     [Fact]
+    public async Task GetTableSchemaAsync_MapsDefaultsChecksAndLogicalKeys()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_schema_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE transport_schema (
+                    id INTEGER PRIMARY KEY,
+                    tenant TEXT NOT NULL,
+                    code TEXT DEFAULT 'new',
+                    score INTEGER,
+                    CONSTRAINT ck_transport_score CHECK (score >= 0),
+                    CONSTRAINT uq_transport_tenant_code UNIQUE (tenant, code)
+                );
+                """,
+                TestContext.Current.CancellationToken);
+            Assert.Null(create.Error);
+
+            CSharpDB.Client.Models.TableSchema? schema = await client.GetTableSchemaAsync(
+                "transport_schema",
+                TestContext.Current.CancellationToken);
+
+            Assert.NotNull(schema);
+            Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+            CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+            Assert.Equal("ck_transport_score", check.ConstraintName);
+            Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
+            KeyConstraintDefinition unique = Assert.Single(
+                schema.KeyConstraints,
+                key => key.Kind == KeyConstraintKind.Unique);
+            Assert.Equal("uq_transport_tenant_code", unique.ConstraintName);
+            Assert.Equal(["tenant", "code"], unique.Columns);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task GetTableSchemaAsync_MapsOrderedCompositeForeignKeyColumns()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_composite_fk_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE transport_parents (
+                    tenant_id INTEGER,
+                    code TEXT,
+                    PRIMARY KEY (tenant_id, code)
+                );
+                CREATE TABLE transport_children (
+                    id INTEGER PRIMARY KEY,
+                    tenant_id INTEGER,
+                    parent_code TEXT,
+                    CONSTRAINT fk_transport_parent
+                        FOREIGN KEY (tenant_id, parent_code)
+                        REFERENCES transport_parents (tenant_id, code)
+                        ON DELETE CASCADE
+                );
+                """,
+                TestContext.Current.CancellationToken);
+            Assert.Null(create.Error);
+
+            CSharpDB.Client.Models.TableSchema schema = Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                await client.GetTableSchemaAsync(
+                    "transport_children",
+                    TestContext.Current.CancellationToken));
+            ForeignKeyDefinition foreignKey = Assert.Single(schema.ForeignKeys);
+
+            Assert.Equal("tenant_id", foreignKey.ColumnName);
+            Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
+            Assert.Equal(["tenant_id", "parent_code"], foreignKey.ColumnNames);
+            Assert.Equal(["tenant_id", "code"], foreignKey.ReferencedColumnNames);
+            Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task ReleaseCachedDatabaseAsync_CancellationKeepsPendingOpenCached()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_{Guid.NewGuid():N}.db");

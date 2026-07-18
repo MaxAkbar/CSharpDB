@@ -10,28 +10,84 @@ public static partial class SchemaScriptRenderer
     public static string RenderCreateTable(TableSchema schema)
     {
         var sql = new StringBuilder();
+        var columnNames = schema.Columns
+            .Select(column => column.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        CheckConstraintDefinition[] tableChecks = schema.CheckConstraints
+            .Where(check =>
+                string.IsNullOrWhiteSpace(check.ColumnName) ||
+                !columnNames.Contains(check.ColumnName))
+            .ToArray();
+        bool hasLogicalPrimaryKey = schema.KeyConstraints.Any(
+            static key => key.Kind == KeyConstraintKind.PrimaryKey);
+
         sql.Append("CREATE TABLE ").Append(Identifier(schema.TableName)).AppendLine(" (");
 
         for (int i = 0; i < schema.Columns.Count; i++)
         {
-            bool hasTrailingItems = i < schema.Columns.Count - 1 || schema.ForeignKeys.Count > 0;
+            ColumnDefinition column = schema.Columns[i];
+            CheckConstraintDefinition[] columnChecks = schema.CheckConstraints
+                .Where(check =>
+                    !string.IsNullOrWhiteSpace(check.ColumnName) &&
+                    string.Equals(check.ColumnName, column.Name, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            bool hasTrailingItems =
+                i < schema.Columns.Count - 1 ||
+                schema.KeyConstraints.Count > 0 ||
+                tableChecks.Length > 0 ||
+                schema.ForeignKeys.Count > 0;
             sql.Append("  ")
-                .Append(RenderColumn(schema.Columns[i]))
+                .Append(RenderColumn(
+                    column,
+                    includeInlinePrimaryKey: !hasLogicalPrimaryKey,
+                    includeIdentity: !hasLogicalPrimaryKey,
+                    columnChecks))
+                .AppendLine(hasTrailingItems ? "," : string.Empty);
+        }
+
+        for (int i = 0; i < schema.KeyConstraints.Count; i++)
+        {
+            KeyConstraintDefinition key = schema.KeyConstraints[i];
+            bool hasTrailingItems =
+                i < schema.KeyConstraints.Count - 1 ||
+                tableChecks.Length > 0 ||
+                schema.ForeignKeys.Count > 0;
+            sql.Append("  ");
+            if (!string.IsNullOrWhiteSpace(key.ConstraintName))
+                sql.Append("CONSTRAINT ").Append(Identifier(key.ConstraintName!)).Append(' ');
+
+            sql.Append(key.Kind == KeyConstraintKind.PrimaryKey ? "PRIMARY KEY (" : "UNIQUE (")
+                .Append(string.Join(", ", key.Columns.Select(Identifier)))
+                .Append(')')
+                .AppendLine(hasTrailingItems ? "," : string.Empty);
+        }
+
+        for (int i = 0; i < tableChecks.Length; i++)
+        {
+            bool hasTrailingItems = i < tableChecks.Length - 1 || schema.ForeignKeys.Count > 0;
+            sql.Append("  ")
+                .Append(RenderCheckConstraint(tableChecks[i]))
                 .AppendLine(hasTrailingItems ? "," : string.Empty);
         }
 
         for (int i = 0; i < schema.ForeignKeys.Count; i++)
         {
             ForeignKeyDefinition foreignKey = schema.ForeignKeys[i];
+            IReadOnlyList<string> childColumns = foreignKey.ColumnNames.Count > 0
+                ? foreignKey.ColumnNames
+                : [foreignKey.ColumnName];
+            IReadOnlyList<string> referencedColumns = foreignKey.ReferencedColumnNames.Count > 0
+                ? foreignKey.ReferencedColumnNames
+                : [foreignKey.ReferencedColumnName];
             bool hasTrailingItems = i < schema.ForeignKeys.Count - 1;
             sql.Append("  CONSTRAINT ")
                 .Append(Identifier(foreignKey.ConstraintName))
                 .Append(" FOREIGN KEY (")
-                .Append(Identifier(foreignKey.ColumnName))
+                .Append(string.Join(", ", childColumns.Select(Identifier)))
                 .Append(") REFERENCES ")
                 .Append(Identifier(foreignKey.ReferencedTableName))
                 .Append(" (")
-                .Append(Identifier(foreignKey.ReferencedColumnName))
+                .Append(string.Join(", ", referencedColumns.Select(Identifier)))
                 .Append(')');
 
             if (foreignKey.OnDelete == ForeignKeyOnDeleteAction.Cascade)
@@ -45,22 +101,45 @@ public static partial class SchemaScriptRenderer
     }
 
     public static string RenderColumn(ColumnDefinition column)
+        => RenderColumn(
+            column,
+            includeInlinePrimaryKey: true,
+            includeIdentity: true,
+            []);
+
+    private static string RenderColumn(
+        ColumnDefinition column,
+        bool includeInlinePrimaryKey,
+        bool includeIdentity,
+        IReadOnlyList<CheckConstraintDefinition> checks)
     {
         var sql = new StringBuilder();
         sql.Append(Identifier(column.Name))
             .Append(' ')
             .Append(column.Type.ToString().ToUpperInvariant());
 
-        if (column.IsPrimaryKey)
+        if (includeInlinePrimaryKey && column.IsPrimaryKey)
             sql.Append(" PRIMARY KEY");
-        if (column.IsIdentity)
+        if (includeIdentity && column.IsIdentity)
             sql.Append(" IDENTITY");
         if (!column.Nullable)
             sql.Append(" NOT NULL");
         if (!string.IsNullOrWhiteSpace(column.Collation))
             sql.Append(" COLLATE ").Append(Identifier(column.Collation));
+        if (!string.IsNullOrWhiteSpace(column.DefaultSql))
+            sql.Append(" DEFAULT ").Append(column.DefaultSql);
+        foreach (CheckConstraintDefinition check in checks)
+            sql.Append(' ').Append(RenderCheckConstraint(check));
 
         return sql.ToString();
+    }
+
+    private static string RenderCheckConstraint(CheckConstraintDefinition check)
+    {
+        var sql = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(check.ConstraintName))
+            sql.Append("CONSTRAINT ").Append(Identifier(check.ConstraintName!)).Append(' ');
+        return sql.Append("CHECK (").Append(check.ExpressionSql).Append(')').ToString();
     }
 
     public static string RenderCreateIndex(IndexSchema index)

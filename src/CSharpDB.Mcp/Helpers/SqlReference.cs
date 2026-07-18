@@ -110,6 +110,13 @@ internal static class SqlReference
         MIN(col)              — minimum value
         MAX(col)              — maximum value
 
+        ── EXPERIMENTAL WINDOW FUNCTIONS ──
+        ROW_NUMBER(), RANK(), DENSE_RANK()
+        COUNT, SUM, AVG, MIN, MAX with OVER (...)
+        Supports one shared PARTITION BY / ORDER BY specification per SELECT.
+        Execution is in-memory; named windows, explicit frames, DISTINCT window
+        aggregates, navigation functions, and mixed grouped aggregates are rejected.
+
         ── JOIN TYPES ──
         [INNER] JOIN ... ON condition
         LEFT [OUTER] JOIN ... ON condition
@@ -120,7 +127,7 @@ internal static class SqlReference
         • SELECT DISTINCT
         • Subqueries (nested SELECT in WHERE / FROM)
         • UNION / INTERSECT / EXCEPT
-        • Window functions (ROW_NUMBER, RANK, LAG, LEAD, etc.)
+        • Advanced window functions (LAG, LEAD, named windows, explicit frames)
         • EXISTS / NOT EXISTS
         • FULL OUTER JOIN / NATURAL JOIN
         • DEFAULT, CHECK, FOREIGN KEY, UNIQUE column constraints

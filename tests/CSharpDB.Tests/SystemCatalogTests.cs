@@ -125,7 +125,7 @@ public sealed class SystemCatalogTests : IAsyncLifetime
         Assert.Equal("users", triggerRow[1].AsText);
         Assert.Equal("AFTER", triggerRow[2].AsText);
         Assert.Equal("INSERT", triggerRow[3].AsText);
-        Assert.Contains("INSERT INTO audit", triggerRow[4].AsText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("INSERT INTO \"audit\"", triggerRow[4].AsText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

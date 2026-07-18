@@ -118,6 +118,25 @@ public sealed class InMemoryDatabaseTests : IDisposable
     }
 
     [Fact]
+    public async Task FailedExplainEstimate_DoesNotPoisonExplicitTransaction()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY)", Ct);
+        await db.BeginTransactionAsync(Ct);
+
+        await Assert.ThrowsAsync<CSharpDB.Primitives.CSharpDbException>(
+            () => db.ExecuteAsync(
+                "EXPLAIN ESTIMATE FOR SELECT * FROM missing_table",
+                Ct).AsTask());
+
+        await db.ExecuteAsync("INSERT INTO t VALUES (1)", Ct);
+        await db.CommitAsync(Ct);
+
+        await using var result = await db.ExecuteAsync("SELECT COUNT(*) FROM t", Ct);
+        Assert.Equal(1L, Assert.Single(await result.ToListAsync(Ct))[0].AsInteger);
+    }
+
+    [Fact]
     public async Task SaveToFileAsync_WithActiveReaderSession_Throws()
     {
         string filePath = NewTempDbPath();

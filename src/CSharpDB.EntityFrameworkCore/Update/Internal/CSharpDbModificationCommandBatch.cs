@@ -1,5 +1,6 @@
 using System.Data;
 using System.Text;
+using CSharpDB.Primitives;
 using CSharpDB.Data;
 using CSharpDB.EntityFrameworkCore.Infrastructure.Internal;
 using Microsoft.EntityFrameworkCore;
@@ -44,7 +45,19 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
             throw new InvalidOperationException("The CSharpDB EF Core provider requires an active CSharpDbConnection.");
 
         foreach (IReadOnlyModificationCommand command in _commands)
-            await ExecuteCommandAsync(dbConnection, command, cancellationToken);
+        {
+            try
+            {
+                await ExecuteCommandAsync(dbConnection, command, cancellationToken);
+            }
+            catch (CSharpDbDataException exception)
+            {
+                throw new DbUpdateException(
+                    $"An error occurred while saving changes for table '{command.TableName}'.",
+                    exception,
+                    command.Entries);
+            }
+        }
     }
 
     private static async Task ExecuteCommandAsync(
@@ -110,22 +123,14 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
         var writeColumns = command.ColumnModifications.Where(static column => column.IsWrite).ToList();
         if (writeColumns.Count == 0)
         {
-            IColumnModification? identityKeyColumn = command.ColumnModifications.FirstOrDefault(static column =>
-                column.IsKey
-                && column.IsRead
-                && IsIntegerProperty(column.Property));
-
-            if (identityKeyColumn is null)
-            {
-                throw new NotSupportedException(
-                    $"Insert into '{command.TableName}' does not contain writable columns and cannot be translated by the CSharpDB EF Core provider.");
-            }
-
-            writeColumns.Add(identityKeyColumn);
+            sql.Append("INSERT INTO ")
+                .Append(SqlIdentifierRules.Quote(command.TableName))
+                .Append(" DEFAULT VALUES");
+            return;
         }
 
         sql.Append("INSERT INTO ")
-            .Append(command.TableName)
+            .Append(SqlIdentifierRules.Quote(command.TableName))
             .Append(" (");
 
         for (int i = 0; i < writeColumns.Count; i++)
@@ -133,7 +138,7 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
             if (i > 0)
                 sql.Append(", ");
 
-            sql.Append(writeColumns[i].ColumnName);
+            sql.Append(SqlIdentifierRules.Quote(writeColumns[i].ColumnName));
         }
 
         sql.Append(") VALUES (");
@@ -170,7 +175,7 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
             throw new NotSupportedException($"Update for '{command.TableName}' does not contain a key/concurrency predicate and is not supported by the CSharpDB EF Core provider.");
 
         sql.Append("UPDATE ")
-            .Append(command.TableName)
+            .Append(SqlIdentifierRules.Quote(command.TableName))
             .Append(" SET ");
 
         for (int i = 0; i < writeColumns.Count; i++)
@@ -181,7 +186,7 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
             IColumnModification column = writeColumns[i];
             string parameterName = $"p{parameterIndex++}";
 
-            sql.Append(column.ColumnName)
+            sql.Append(SqlIdentifierRules.Quote(column.ColumnName))
                 .Append(" = @")
                 .Append(parameterName);
 
@@ -205,7 +210,7 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
             throw new NotSupportedException($"Delete for '{command.TableName}' does not contain a key/concurrency predicate and is not supported by the CSharpDB EF Core provider.");
 
         sql.Append("DELETE FROM ")
-            .Append(command.TableName);
+            .Append(SqlIdentifierRules.Quote(command.TableName));
 
         AppendWhereClause(dbCommand, conditionColumns, sql, parameters, ref parameterIndex);
     }
@@ -229,12 +234,12 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
 
             if (value is null or DBNull)
             {
-                sql.Append(column.ColumnName).Append(" IS NULL");
+                sql.Append(SqlIdentifierRules.Quote(column.ColumnName)).Append(" IS NULL");
                 continue;
             }
 
             string parameterName = $"p{parameterIndex++}";
-            sql.Append(column.ColumnName)
+            sql.Append(SqlIdentifierRules.Quote(column.ColumnName))
                 .Append(" = @")
                 .Append(parameterName);
 

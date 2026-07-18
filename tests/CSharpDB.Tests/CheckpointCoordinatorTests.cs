@@ -77,6 +77,94 @@ public sealed class CheckpointCoordinatorTests
         Assert.False(coordinator.TryGetMinimumRetainedWalOffset(out _));
     }
 
+    [Fact]
+    public async Task StopAndWaitForBackgroundCheckpointAsync_WaitsForRunningCheckpointAndRejectsFutureStarts()
+    {
+        using var coordinator = new CheckpointCoordinator();
+        var checkpointStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowCheckpointToFinish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int checkpointCount = 0;
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.True(coordinator.TryStartBackgroundCheckpoint(async _ =>
+        {
+            checkpointStarted.SetResult();
+            await allowCheckpointToFinish.Task;
+            Interlocked.Increment(ref checkpointCount);
+        }));
+
+        await checkpointStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        Task stopTask = coordinator.StopAndWaitForBackgroundCheckpointAsync().AsTask();
+        Assert.False(stopTask.IsCompleted);
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.False(coordinator.TryStartBackgroundCheckpoint(_ => ValueTask.CompletedTask));
+
+        allowCheckpointToFinish.SetResult();
+        await stopTask.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        Assert.Equal(1, Volatile.Read(ref checkpointCount));
+        Assert.False(coordinator.TryStartBackgroundCheckpoint(_ => ValueTask.CompletedTask));
+    }
+
+    [Fact]
+    public async Task StopAndWaitForBackgroundCheckpointAsync_WithNoRunningCheckpointRejectsFutureStarts()
+    {
+        using var coordinator = new CheckpointCoordinator();
+
+        await coordinator.StopAndWaitForBackgroundCheckpointAsync();
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.False(coordinator.TryStartBackgroundCheckpoint(_ => ValueTask.CompletedTask));
+    }
+
+    [Fact]
+    public async Task StopAndWaitForBackgroundCheckpointAsync_ConcurrentCallersWaitForSameCheckpoint()
+    {
+        using var coordinator = new CheckpointCoordinator();
+        var checkpointStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowCheckpointToFinish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.True(coordinator.TryStartBackgroundCheckpoint(async _ =>
+        {
+            checkpointStarted.SetResult();
+            await allowCheckpointToFinish.Task;
+        }));
+
+        await checkpointStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        Task firstStopTask = coordinator.StopAndWaitForBackgroundCheckpointAsync().AsTask();
+        Task secondStopTask = coordinator.StopAndWaitForBackgroundCheckpointAsync().AsTask();
+        Assert.False(firstStopTask.IsCompleted);
+        Assert.False(secondStopTask.IsCompleted);
+
+        allowCheckpointToFinish.SetResult();
+        await Task.WhenAll(firstStopTask, secondStopTask)
+            .WaitAsync(TimeSpan.FromSeconds(10), ct);
+    }
+
+    [Fact]
+    public async Task StopAndWaitForBackgroundCheckpointAsync_PropagatesFailureAndStillRejectsFutureStarts()
+    {
+        using var coordinator = new CheckpointCoordinator();
+        var expected = new InvalidOperationException("checkpoint failed");
+
+        coordinator.RequestDeferredCheckpoint();
+        Assert.True(coordinator.TryStartBackgroundCheckpoint(
+            _ => ValueTask.FromException(expected)));
+
+        InvalidOperationException actual = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => coordinator.StopAndWaitForBackgroundCheckpointAsync().AsTask());
+
+        Assert.Same(expected, actual);
+        coordinator.RequestDeferredCheckpoint();
+        Assert.False(coordinator.TryStartBackgroundCheckpoint(_ => ValueTask.CompletedTask));
+    }
+
     private static WalIndex CreateIndexWithTwoWalOffsets()
     {
         var index = new WalIndex();

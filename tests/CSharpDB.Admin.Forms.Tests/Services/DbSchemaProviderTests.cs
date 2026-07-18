@@ -37,6 +37,36 @@ public class DbSchemaProviderTests
     }
 
     [Fact]
+    public async Task GetTableDefinitionAsync_PreservesOrderedCompositeForeignKeyFields()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE CompositeParents (
+                TenantId INTEGER,
+                Code TEXT,
+                PRIMARY KEY (TenantId, Code)
+            );
+            CREATE TABLE CompositeChildren (
+                Id INTEGER PRIMARY KEY,
+                TenantId INTEGER,
+                ParentCode TEXT,
+                CONSTRAINT FK_Composite_Parent
+                    FOREIGN KEY (TenantId, ParentCode)
+                    REFERENCES CompositeParents (TenantId, Code)
+            );
+            """);
+        var provider = new DbSchemaProvider(db.Client);
+
+        FormTableDefinition children = Assert.IsType<FormTableDefinition>(
+            await provider.GetTableDefinitionAsync("CompositeChildren"));
+        FormForeignKeyDefinition foreignKey = Assert.Single(children.ForeignKeys);
+
+        Assert.Equal(["TenantId", "ParentCode"], foreignKey.LocalFields);
+        Assert.Equal(["TenantId", "Code"], foreignKey.ReferencedFields);
+    }
+
+    [Fact]
     public async Task GetTableDefinitionAsync_FormatsDisplayNamesForUnderscoresAndCamelCase()
     {
         await using var db = await TestDatabaseScope.CreateAsync();

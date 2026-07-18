@@ -141,6 +141,24 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
                 TableName = schema.TableName,
                 Columns = schema.Columns.Select(MapColumnDefinition).ToArray(),
                 ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
+                CheckConstraints = schema.CheckConstraints.Select(check => new CSharpDB.Primitives.CheckConstraintDefinition
+                {
+                    ConstraintName = check.ConstraintName,
+                    ExpressionSql = check.ExpressionSql,
+                    ColumnName = check.ColumnName,
+                }).ToArray(),
+                KeyConstraints = schema.KeyConstraints.Select(key => new CSharpDB.Primitives.KeyConstraintDefinition
+                {
+                    ConstraintName = key.ConstraintName,
+                    Kind = key.Kind switch
+                    {
+                        CSharpDB.Client.Models.KeyConstraintKind.PrimaryKey => CSharpDB.Primitives.KeyConstraintKind.PrimaryKey,
+                        CSharpDB.Client.Models.KeyConstraintKind.Unique => CSharpDB.Primitives.KeyConstraintKind.Unique,
+                        _ => throw new InvalidOperationException($"Unsupported key constraint kind '{key.Kind}'."),
+                    },
+                    Columns = key.Columns.ToArray(),
+                    BackingIndexName = key.BackingIndexName,
+                }).ToArray(),
             };
 
     private static CoreColumnDefinition MapColumnDefinition(CSharpDB.Client.Models.ColumnDefinition column)
@@ -152,6 +170,7 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
             Collation = column.Collation,
+            DefaultSql = column.DefaultSql,
         };
 
     private static CoreForeignKeyDefinition MapForeignKeyDefinition(CSharpDB.Client.Models.ForeignKeyDefinition foreignKey)
@@ -161,6 +180,12 @@ internal sealed class RemoteDatabaseSession : ICSharpDbSession
             ColumnName = foreignKey.ColumnName,
             ReferencedTableName = foreignKey.ReferencedTableName,
             ReferencedColumnName = foreignKey.ReferencedColumnName,
+            ColumnNames = foreignKey.ColumnNames.Count > 0
+                ? foreignKey.ColumnNames.ToArray()
+                : [foreignKey.ColumnName],
+            ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                ? foreignKey.ReferencedColumnNames.ToArray()
+                : [foreignKey.ReferencedColumnName],
             OnDelete = foreignKey.OnDelete == CSharpDB.Client.Models.ForeignKeyOnDeleteAction.Cascade
                 ? CoreForeignKeyOnDeleteAction.Cascade
                 : CoreForeignKeyOnDeleteAction.Restrict,

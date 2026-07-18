@@ -59,7 +59,7 @@
                 <div class="footer-grid">
                     <div class="footer-brand">
                         <span class="logo-text">CSharpDB</span>
-                        <p>A zero-dependency embedded database engine for .NET with full SQL, Collections API, and ETL pipelines.</p>
+                        <p>A zero-dependency embedded database engine for .NET with CSharpDB SQL, Collections API, and ETL pipelines.</p>
                     </div>
                     <div class="footer-col">
                         <h4>Documentation</h4>
@@ -79,6 +79,8 @@
                     <div class="footer-col">
                         <h4>Features</h4>
                         <a href="${prefix}docs/sql.html">SQL Reference</a>
+                        <a href="${prefix}docs/sql-compatibility.html">SQL Compatibility</a>
+                        <a href="${prefix}docs/sql-compatibility-roadmap.html">SQL Roadmap</a>
                         <a href="${prefix}docs/collections.html">Collections API</a>
                         <a href="${prefix}docs/pipelines.html">ETL Pipelines</a>
                         <a href="${prefix}docs/ecosystem.html">Tools & Ecosystem</a>

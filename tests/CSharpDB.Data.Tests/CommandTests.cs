@@ -354,6 +354,41 @@ public class CommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prepare_ExplainEstimate_DiscoversAndRebindsTargetParameters()
+    {
+        var cmd = (CSharpDbCommand)_conn.CreateCommand();
+        cmd.CommandText = "CREATE TABLE t (id INTEGER PRIMARY KEY);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO t VALUES (1), (2);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        cmd.CommandText = "EXPLAIN ESTIMATE FOR SELECT * FROM t WHERE id = @id;";
+        var id = cmd.Parameters.AddWithValue("@id", 1);
+        cmd.Prepare();
+
+        string firstTarget = await ReadFilterTargetAsync(cmd, Ct);
+        Assert.Contains("1", firstTarget, StringComparison.Ordinal);
+        Assert.DoesNotContain("@id", firstTarget, StringComparison.OrdinalIgnoreCase);
+
+        id.Value = 2;
+        string secondTarget = await ReadFilterTargetAsync(cmd, Ct);
+        Assert.Contains("2", secondTarget, StringComparison.Ordinal);
+        Assert.DoesNotContain("@id", secondTarget, StringComparison.OrdinalIgnoreCase);
+
+        static async Task<string> ReadFilterTargetAsync(CSharpDbCommand command, CancellationToken ct)
+        {
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (reader.GetString(2) == "filter")
+                    return reader.GetString(3);
+            }
+
+            throw new Xunit.Sdk.XunitException("Expected EXPLAIN ESTIMATE to return a filter diagnostic row.");
+        }
+    }
+
+    [Fact]
     public async Task ExecuteReaderAsync_ParameterizedLimit_FallsBackToSqlBindingPath()
     {
         var cmd = (CSharpDbCommand)_conn.CreateCommand();

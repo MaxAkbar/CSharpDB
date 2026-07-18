@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Text;
 using CSharpDB.ImportExport.Models;
 using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Primitives;
@@ -17,9 +19,48 @@ public class TableArchiveTests
             Columns =
             [
                 new ColumnDefinition { Name = "id", Type = DbType.Integer, Nullable = false, IsPrimaryKey = true, IsIdentity = true },
-                new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false, Collation = "NOCASE" },
+                new ColumnDefinition { Name = "name", Type = DbType.Text, Nullable = false, Collation = "NOCASE", DefaultSql = "'anonymous'" },
                 new ColumnDefinition { Name = "balance", Type = DbType.Real, Nullable = true },
                 new ColumnDefinition { Name = "payload", Type = DbType.Blob, Nullable = true },
+            ],
+            CheckConstraints =
+            [
+                new CheckConstraintDefinition
+                {
+                    ConstraintName = "ck_customers_balance",
+                    ExpressionSql = "balance >= 0",
+                    ColumnName = "balance",
+                },
+            ],
+            ForeignKeys =
+            [
+                new ForeignKeyDefinition
+                {
+                    ConstraintName = "fk_customers_tenant",
+                    ColumnName = "id",
+                    ReferencedTableName = "tenants",
+                    ReferencedColumnName = "tenant_id",
+                    ColumnNames = ["id", "name"],
+                    ReferencedColumnNames = ["tenant_id", "customer_name"],
+                    OnDelete = ForeignKeyOnDeleteAction.Cascade,
+                    SupportingIndexName = "__fk_customers_tenant",
+                },
+            ],
+            KeyConstraints =
+            [
+                new KeyConstraintDefinition
+                {
+                    ConstraintName = "pk_customers",
+                    Kind = KeyConstraintKind.PrimaryKey,
+                    Columns = ["id"],
+                },
+                new KeyConstraintDefinition
+                {
+                    ConstraintName = "uq_customers_name",
+                    Kind = KeyConstraintKind.Unique,
+                    Columns = ["name"],
+                    BackingIndexName = "__constraint_customers_name",
+                },
             ],
             NextRowId = 12,
         };
@@ -47,6 +88,30 @@ public class TableArchiveTests
             Assert.True(restoredSchema.Columns[0].IsPrimaryKey);
             Assert.True(restoredSchema.Columns[0].IsIdentity);
             Assert.Equal("NOCASE", restoredSchema.Columns[1].Collation);
+            Assert.Equal("'anonymous'", restoredSchema.Columns[1].DefaultSql);
+            CheckConstraintDefinition check = Assert.Single(restoredSchema.CheckConstraints);
+            Assert.Equal("ck_customers_balance", check.ConstraintName);
+            Assert.Equal("balance >= 0", check.ExpressionSql);
+            Assert.Equal("balance", check.ColumnName);
+            ForeignKeyDefinition foreignKey = Assert.Single(restoredSchema.ForeignKeys);
+            Assert.Equal("id", foreignKey.ColumnName);
+            Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
+            Assert.Equal(["id", "name"], foreignKey.ColumnNames);
+            Assert.Equal(["tenant_id", "customer_name"], foreignKey.ReferencedColumnNames);
+            Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+            Assert.Collection(
+                restoredSchema.KeyConstraints,
+                primary =>
+                {
+                    Assert.Equal(KeyConstraintKind.PrimaryKey, primary.Kind);
+                    Assert.Equal(["id"], primary.Columns);
+                },
+                unique =>
+                {
+                    Assert.Equal(KeyConstraintKind.Unique, unique.Kind);
+                    Assert.Equal(["name"], unique.Columns);
+                    Assert.Equal("__constraint_customers_name", unique.BackingIndexName);
+                });
             Assert.Equal(12, restoredSchema.NextRowId);
 
             var restoredRows = new List<DbValue[]>();
@@ -65,6 +130,35 @@ public class TableArchiveTests
             Assert.True(lookup.IsIndexed);
             Assert.NotNull(lookup.Row);
             Assert.Equal("Nulls", lookup.Row![1].AsText);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_LegacySchemaWithoutAdditiveMetadata_UsesSafeDefaults()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(Path.GetTempPath(), $"legacy_schema_{Guid.NewGuid():N}.csdbtable");
+
+        try
+        {
+            await WriteLegacyArchiveAsync(path, ct);
+
+            TableSchema restored = await TableArchiveReader.ReadTableSchemaAsync(path, ct: ct);
+
+            Assert.Equal("legacy_items", restored.TableName);
+            ColumnDefinition column = Assert.Single(restored.Columns);
+            Assert.Equal("id", column.Name);
+            Assert.Null(column.DefaultSql);
+            Assert.Empty(restored.CheckConstraints);
+            Assert.Empty(restored.KeyConstraints);
+            ForeignKeyDefinition foreignKey = Assert.Single(restored.ForeignKeys);
+            Assert.Equal(["id"], foreignKey.ColumnNames);
+            Assert.Equal(["id"], foreignKey.ReferencedColumnNames);
         }
         finally
         {
@@ -157,5 +251,66 @@ public class TableArchiveTests
             if ((i & 1023) == 0)
                 await Task.Yield();
         }
+    }
+
+    private static async Task WriteLegacyArchiveAsync(string path, CancellationToken ct)
+    {
+        const int headerSize = 76;
+        byte[] schema = Encoding.UTF8.GetBytes(
+            """
+            {
+              "tableName": "legacy_items",
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "integer",
+                  "nullable": false,
+                  "isPrimaryKey": true,
+                  "isIdentity": false,
+                  "collation": null
+                }
+              ],
+              "foreignKeys": [
+                {
+                  "constraintName": "fk_legacy_items_parent",
+                  "columnName": "id",
+                  "referencedTableName": "legacy_parents",
+                  "referencedColumnName": "id",
+                  "onDelete": "restrict",
+                  "supportingIndexName": "__fk_legacy_items_parent"
+                }
+              ],
+              "nextRowId": 2
+            }
+            """);
+        byte[] manifest = Encoding.UTF8.GetBytes(
+            """
+            {
+              "formatVersion": 3,
+              "sourceTableName": "legacy_items",
+              "createdUtc": "2025-01-01T00:00:00+00:00",
+              "rowCount": 0,
+              "schemaEntry": "native:schema",
+              "rowsEntry": "native:rows",
+              "indexes": []
+            }
+            """);
+
+        long schemaOffset = headerSize;
+        long rowsOffset = schemaOffset + schema.Length;
+        long manifestOffset = rowsOffset;
+        var header = new byte[headerSize];
+        "CSDBTBL3"u8.CopyTo(header);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(8), 3);
+        BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(12), schemaOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(20), schema.Length);
+        BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(24), manifestOffset);
+        BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(32), manifest.Length);
+        BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(36), rowsOffset);
+
+        await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await stream.WriteAsync(header, ct);
+        await stream.WriteAsync(schema, ct);
+        await stream.WriteAsync(manifest, ct);
     }
 }

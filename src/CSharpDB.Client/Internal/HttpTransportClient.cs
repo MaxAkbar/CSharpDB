@@ -996,6 +996,8 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             TableName = payload.TableName,
             Columns = payload.Columns.Select(MapColumn).ToList(),
             ForeignKeys = payload.ForeignKeys.Select(MapForeignKey).ToList(),
+            CheckConstraints = (payload.CheckConstraints ?? []).Select(MapCheckConstraint).ToList(),
+            KeyConstraints = (payload.KeyConstraints ?? []).Select(MapKeyConstraint).ToList(),
         };
 
     private static ColumnDefinition MapColumn(ApiColumnResponse payload)
@@ -1009,6 +1011,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             IsPrimaryKey = payload.IsPrimaryKey,
             IsIdentity = payload.IsIdentity,
             Collation = payload.Collation,
+            DefaultSql = payload.DefaultSql,
         };
 
     private static ForeignKeyDefinition MapForeignKey(ApiForeignKeyResponse payload)
@@ -1018,10 +1021,32 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             ColumnName = payload.ColumnName,
             ReferencedTableName = payload.ReferencedTableName,
             ReferencedColumnName = payload.ReferencedColumnName,
+            ColumnNames = payload.ColumnNames is { Count: > 0 } ? payload.ColumnNames : [payload.ColumnName],
+            ReferencedColumnNames = payload.ReferencedColumnNames is { Count: > 0 } ? payload.ReferencedColumnNames : [payload.ReferencedColumnName],
             OnDelete = Enum.TryParse<ForeignKeyOnDeleteAction>(payload.OnDelete, ignoreCase: true, out var onDelete)
                 ? onDelete
                 : throw new CSharpDbClientException($"Unsupported foreign key ON DELETE action '{payload.OnDelete}'."),
             SupportingIndexName = payload.SupportingIndexName,
+        };
+
+    private static KeyConstraintDefinition MapKeyConstraint(ApiKeyConstraintResponse payload)
+        => new()
+        {
+            ConstraintName = payload.ConstraintName,
+            Kind = Enum.TryParse<KeyConstraintKind>(payload.Kind, ignoreCase: true, out var kind)
+                && Enum.IsDefined(kind)
+                ? kind
+                : throw new CSharpDbClientException($"Unsupported key constraint kind '{payload.Kind}'."),
+            Columns = payload.Columns,
+            BackingIndexName = payload.BackingIndexName,
+        };
+
+    private static CheckConstraintDefinition MapCheckConstraint(ApiCheckConstraintResponse payload)
+        => new()
+        {
+            ConstraintName = payload.ConstraintName,
+            ExpressionSql = payload.ExpressionSql,
+            ColumnName = payload.ColumnName,
         };
 
     private static IndexSchema MapIndex(ApiIndexResponse payload)
@@ -1198,9 +1223,23 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         int CollectionCount,
         int SavedQueryCount);
 
-    private sealed record ApiTableSchemaResponse(string TableName, List<ApiColumnResponse> Columns, List<ApiForeignKeyResponse> ForeignKeys);
-    private sealed record ApiColumnResponse(string Name, string Type, bool Nullable, bool IsPrimaryKey, bool IsIdentity, string? Collation);
-    private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName);
+    private sealed record ApiTableSchemaResponse(
+        string TableName,
+        List<ApiColumnResponse> Columns,
+        List<ApiForeignKeyResponse> ForeignKeys,
+        List<ApiKeyConstraintResponse>? KeyConstraints,
+        List<ApiCheckConstraintResponse>? CheckConstraints);
+    private sealed record ApiColumnResponse(
+        string Name,
+        string Type,
+        bool Nullable,
+        bool IsPrimaryKey,
+        bool IsIdentity,
+        string? Collation,
+        string? DefaultSql);
+    private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null);
+    private sealed record ApiKeyConstraintResponse(string? ConstraintName, string Kind, IReadOnlyList<string> Columns, string? BackingIndexName);
+    private sealed record ApiCheckConstraintResponse(string? ConstraintName, string ExpressionSql, string? ColumnName);
     private sealed record ApiBrowseResponse(string[] ColumnNames, List<Dictionary<string, object?>> Rows, int TotalRows, int Page, int PageSize, int TotalPages);
     private sealed record ApiRowCountResponse(string TableName, int Count);
     private sealed record ApiMutationResponse(int RowsAffected);

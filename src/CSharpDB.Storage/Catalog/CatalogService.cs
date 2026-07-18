@@ -900,7 +900,14 @@ internal sealed class CatalogService
         var indexesToDrop = GetIndexesForTable(tableName);
         foreach (var idx in indexesToDrop)
         {
-            if (_indexCache.ContainsKey(idx.IndexName))
+            if (!_indexCache.ContainsKey(idx.IndexName))
+                continue;
+
+            if (idx.Kind == IndexKind.ForeignKeyInternal)
+                await DropForeignKeyOwnedIndexAsync(idx.IndexName, ct);
+            else if (idx.Kind == IndexKind.ConstraintInternal)
+                await DropConstraintOwnedIndexAsync(idx.IndexName, ct);
+            else
                 await DropIndexAsync(idx.IndexName, ct);
         }
 
@@ -985,6 +992,76 @@ internal sealed class CatalogService
             await DeleteIndexPrefixStatisticsForTableAsync(storedSchema.TableName, ct);
 
         IncrementSchemaVersion();
+    }
+
+    /// <summary>
+    /// Atomically replaces a table's catalog payload with a new schema and data
+    /// root. The caller owns reclaiming the previous root after this method
+    /// succeeds; keeping reclamation separate lets a shadow rewrite retain the
+    /// original tree until the catalog swap is durable in the active transaction.
+    /// </summary>
+    public async ValueTask<uint> ReplaceTableStorageAsync(
+        string tableName,
+        TableSchema newSchema,
+        uint replacementRootPage,
+        long exactRowCount,
+        CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(exactRowCount);
+
+        if (!_tableRootPages.TryGetValue(tableName, out uint persistedRootPage) ||
+            !_cache.TryGetValue(tableName, out TableSchema? oldSchema))
+        {
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
+        }
+
+        if (!string.Equals(tableName, newSchema.TableName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Replacing table storage cannot rename the table.");
+
+        uint previousRootPage = _tableTrees.TryGetValue(tableName, out BTree? existingTree)
+            ? existingTree.RootPageId
+            : persistedRootPage;
+        var storedSchema = NormalizeUpdatedTableSchema(newSchema, oldSchema.NextRowId);
+        byte[] schemaBytes = _schemaSerializer.Serialize(storedSchema);
+        byte[] payload = _catalogStore.WriteRootPayload(replacementRootPage, schemaBytes);
+        long key = _schemaSerializer.TableNameToKey(tableName);
+
+        // Schema-specific statistics cannot survive a physical rewrite. Clear
+        // them before the root swap so no fallible catalog work follows the
+        // point at which the replacement becomes authoritative.
+        await DeleteColumnStatisticsAsync(tableName, ct);
+        await DeleteColumnDistributionStatisticsAsync(tableName, ct);
+        await DeleteIndexPrefixStatisticsForTableAsync(tableName, ct);
+
+        if (!await _catalogTree!.ReplaceAsync(key, payload, ct))
+            throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
+
+        _pager.SchemaRootPage = _catalogTree.RootPageId;
+        _cache[tableName] = storedSchema;
+        _tableRootPages[tableName] = replacementRootPage;
+        _persistedTableNextRowIds[tableName] = storedSchema.NextRowId;
+
+        var replacementTree = new BTree(_pager, replacementRootPage, tableName);
+        replacementTree.SetCachedEntryCount(exactRowCount);
+        _tableTrees[tableName] = replacementTree;
+
+        uint lastPersistedChangeCounter = _tableStatsCache.TryGetValue(tableName, out TableStatistics? stats)
+            ? stats.LastPersistedChangeCounter
+            : 0;
+        CacheTableStatistics(
+            new TableStatistics
+            {
+                TableName = tableName,
+                RowCount = exactRowCount,
+                HasStaleColumns = false,
+                LastPersistedChangeCounter = lastPersistedChangeCounter,
+            },
+            isExact: true,
+            markDirty: true);
+
+        RebuildForeignKeyCaches();
+        IncrementSchemaVersion();
+        return previousRootPage;
     }
 
     public async ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default)
@@ -1333,7 +1410,7 @@ internal sealed class CatalogService
         var sqlIndexes = new List<IndexSchema>(indexes.Length);
         for (int i = 0; i < indexes.Length; i++)
         {
-            if (indexes[i].Kind == IndexKind.Sql)
+            if (indexes[i].Kind is IndexKind.Sql or IndexKind.ConstraintInternal)
                 sqlIndexes.Add(indexes[i]);
         }
 
@@ -1440,17 +1517,32 @@ internal sealed class CatalogService
         => _ = await DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: false, ct);
 
     public ValueTask<bool> DropIndexAllowCorruptReclaimAsync(string indexName, CancellationToken ct = default)
-        => DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: true, ct);
+        => DropIndexAsyncCoreAsync(
+            indexName,
+            allowOwnedFullTextDrop: false,
+            ignoreCorruptReclaim: true,
+            ct,
+            allowOwnedForeignKeyDrop: true,
+            allowOwnedConstraintDrop: true);
 
     public async ValueTask DropForeignKeyOwnedIndexAsync(string indexName, CancellationToken ct = default)
         => _ = await DropIndexAsyncCoreAsync(indexName, allowOwnedFullTextDrop: false, ignoreCorruptReclaim: false, ct, allowOwnedForeignKeyDrop: true);
+
+    public async ValueTask DropConstraintOwnedIndexAsync(string indexName, CancellationToken ct = default)
+        => _ = await DropIndexAsyncCoreAsync(
+            indexName,
+            allowOwnedFullTextDrop: false,
+            ignoreCorruptReclaim: false,
+            ct,
+            allowOwnedConstraintDrop: true);
 
     private async ValueTask<bool> DropIndexAsyncCoreAsync(
         string indexName,
         bool allowOwnedFullTextDrop,
         bool ignoreCorruptReclaim,
         CancellationToken ct,
-        bool allowOwnedForeignKeyDrop = false)
+        bool allowOwnedForeignKeyDrop = false,
+        bool allowOwnedConstraintDrop = false)
     {
         if (!_indexCache.TryGetValue(indexName, out var schema))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Index '{indexName}' not found.");
@@ -1475,6 +1567,17 @@ internal sealed class CatalogService
             throw new CSharpDbException(
                 ErrorCode.SyntaxError,
                 $"Foreign key support index '{indexName}' cannot be dropped directly; drop {ownerConstraintName} instead.");
+        }
+
+        if (schema.Kind == IndexKind.ConstraintInternal && !allowOwnedConstraintDrop)
+        {
+            string ownerConstraintName = string.IsNullOrWhiteSpace(schema.OwnerIndexName)
+                ? "its owning key constraint"
+                : $"key constraint '{schema.OwnerIndexName}'";
+
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Key constraint backing index '{indexName}' cannot be dropped directly; drop {ownerConstraintName} instead.");
         }
 
         if (schema.Kind == IndexKind.FullText)
@@ -1758,6 +1861,8 @@ internal sealed class CatalogService
             TableName = schema.TableName,
             Columns = schema.Columns,
             ForeignKeys = schema.ForeignKeys,
+            CheckConstraints = schema.CheckConstraints,
+            KeyConstraints = schema.KeyConstraints,
             QualifiedMappings = schema.QualifiedMappings,
             NextRowId = normalizedNextRowId,
         };

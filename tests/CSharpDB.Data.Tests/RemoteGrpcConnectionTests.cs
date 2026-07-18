@@ -1,4 +1,5 @@
 using System.Net;
+using System.Data;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -227,6 +228,62 @@ public sealed class RemoteGrpcConnectionTests : IAsyncLifetime
         Assert.Equal("sku", schema.Columns[1].Name);
         Assert.Equal(CSharpDB.Primitives.DbType.Text, schema.Columns[1].Type);
         Assert.Equal("NOCASE", schema.Columns[1].Collation);
+    }
+
+    [Fact]
+    public async Task GetSchema_RemoteGrpcConnection_PreservesDefaultsChecksAndLogicalKeys()
+    {
+        await using var conn = CreateConnection();
+        await conn.OpenAsync(Ct);
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            CREATE TABLE grpc_data_metadata (
+                id INTEGER PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                code TEXT DEFAULT 'new',
+                score INTEGER,
+                CONSTRAINT ck_grpc_data_score CHECK (score >= 0),
+                CONSTRAINT uq_grpc_data_tenant_code UNIQUE (tenant, code)
+            );
+            """;
+        await cmd.ExecuteNonQueryAsync(Ct);
+
+        CSharpDB.Primitives.TableSchema? schema = conn.GetTableSchema("grpc_data_metadata");
+
+        Assert.NotNull(schema);
+        Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+        CSharpDB.Primitives.CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+        Assert.Equal("ck_grpc_data_score", check.ConstraintName);
+        CSharpDB.Primitives.KeyConstraintDefinition unique = Assert.Single(
+            schema.KeyConstraints,
+            key => key.Kind == CSharpDB.Primitives.KeyConstraintKind.Unique);
+        Assert.Equal(["tenant", "code"], unique.Columns);
+
+        DataRow column = Assert.Single(
+            conn.GetSchema("Columns", [null, null, "grpc_data_metadata", "code"])
+                .Rows
+                .Cast<DataRow>());
+        Assert.Equal("'new'", column["COLUMN_DEFAULT"]);
+
+        DataRow checkRow = Assert.Single(
+            conn.GetSchema(
+                    "CheckConstraints",
+                    [null, null, "grpc_data_metadata", "ck_grpc_data_score"])
+                .Rows
+                .Cast<DataRow>());
+        Assert.Contains("\"score\"", (string)checkRow["CHECK_CLAUSE"], StringComparison.Ordinal);
+
+        DataRow[] keyColumns = conn.GetSchema(
+                "KeyColumns",
+                [null, null, "grpc_data_metadata", "uq_grpc_data_tenant_code"])
+            .Rows
+            .Cast<DataRow>()
+            .OrderBy(row => (int)row["ORDINAL_POSITION"])
+            .ToArray();
+        Assert.Equal(["tenant", "code"], keyColumns.Select(row => (string)row["COLUMN_NAME"]));
+        Assert.Equal([1, 2], keyColumns.Select(row => (int)row["ORDINAL_POSITION"]));
     }
 
     private CSharpDbConnection CreateConnection()

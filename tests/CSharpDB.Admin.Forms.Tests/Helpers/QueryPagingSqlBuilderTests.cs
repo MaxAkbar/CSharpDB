@@ -20,6 +20,23 @@ public sealed class QueryPagingSqlBuilderTests
             "SELECT SLUGIFY('Hello World') LIMIT 50 OFFSET 0",
             "SELECT COUNT(*)");
 
+    [Fact]
+    public void UnionAll_PreservesQuantifierInPageAndCountSql()
+        => AssertTablelessQuerySerializes(
+            "SELECT 1 AS value UNION ALL SELECT 1 AS ignored_name;",
+            new[] { "value" },
+            "SELECT 1 AS \"value\" UNION ALL SELECT 1 AS \"ignored_name\" LIMIT 50 OFFSET 0",
+            "WITH \"__admin_query_results\" AS (SELECT 1 AS \"value\" UNION ALL SELECT 1 AS \"ignored_name\") " +
+            "SELECT COUNT(*) FROM \"__admin_query_results\"");
+
+    [Fact]
+    public void QuotedIdentifiers_RemainQuotedWhenPagingSqlIsRewritten()
+        => AssertTablelessQuerySerializes(
+            "SELECT \"order value\" AS \"display name\" FROM \"select table\";",
+            new[] { "display name" },
+            "SELECT \"order value\" AS \"display name\" FROM \"select table\" LIMIT 50 OFFSET 0",
+            "SELECT COUNT(*) FROM \"select table\"");
+
     private static void AssertTablelessQuerySerializes(
         string sql,
         string[] displayColumns,

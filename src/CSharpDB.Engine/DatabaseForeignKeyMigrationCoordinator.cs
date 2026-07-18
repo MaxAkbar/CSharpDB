@@ -249,6 +249,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             TableName = tableName,
             Columns = CloneColumns(originalSchema.Columns),
             ForeignKeys = originalSchema.ForeignKeys.ToArray(),
+            CheckConstraints = originalSchema.CheckConstraints.ToArray(),
+            KeyConstraints = originalSchema.KeyConstraints.ToArray(),
             NextRowId = originalSchema.NextRowId,
         };
 
@@ -270,6 +272,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                 TableName = currentSchema.TableName,
                 Columns = currentSchema.Columns,
                 ForeignKeys = currentSchema.ForeignKeys.Concat([definition]).ToArray(),
+                CheckConstraints = currentSchema.CheckConstraints,
+                KeyConstraints = currentSchema.KeyConstraints,
                 NextRowId = currentSchema.NextRowId,
             };
         }
@@ -294,6 +298,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             TableName = tempTableName,
             Columns = clonedColumns,
             ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
+            CheckConstraints = originalSchema.CheckConstraints,
+            KeyConstraints = originalSchema.KeyConstraints,
             NextRowId = originalSchema.NextRowId,
         };
 
@@ -302,6 +308,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             TableName = tableName,
             Columns = clonedColumns,
             ForeignKeys = Array.Empty<ForeignKeyDefinition>(),
+            CheckConstraints = originalSchema.CheckConstraints,
+            KeyConstraints = originalSchema.KeyConstraints,
             NextRowId = originalSchema.NextRowId,
         };
 
@@ -319,6 +327,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
                 TableName = tableName,
                 Columns = clonedColumns,
                 ForeignKeys = originalSchema.ForeignKeys.Concat(materializedForeignKeys.Select(static fk => fk.Definition)).ToArray(),
+                CheckConstraints = originalSchema.CheckConstraints,
+                KeyConstraints = originalSchema.KeyConstraints,
                 NextRowId = originalSchema.NextRowId,
             },
             recreatedIndexes,
@@ -570,6 +580,8 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             ColumnName = columnName,
             ReferencedTableName = parentSchema.TableName,
             ReferencedColumnName = resolvedReferencedColumn,
+            ColumnNames = [columnName],
+            ReferencedColumnNames = [resolvedReferencedColumn],
             OnDelete = onDelete,
             SupportingIndexName = GenerateForeignKeySupportIndexName(constraintName, tableName, columnName),
         };
@@ -807,6 +819,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
             Collation = column.Collation,
+            DefaultSql = column.DefaultSql,
         }).ToArray();
 
     private static IndexSchema CloneIndexSchema(IndexSchema index, string tableName)

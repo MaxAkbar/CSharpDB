@@ -15761,6 +15761,187 @@ public sealed class CountStarTableOperator : IOperator, IEstimatedRowCountProvid
 }
 
 /// <summary>
+/// Streams the left query result to completion before opening and consuming the right result.
+/// The operator owns both query results and normalizes their rows to the bound compound schema.
+/// </summary>
+internal sealed class ConcatenateOperator : IOperator, IRowBufferReuseController
+{
+    private readonly QueryResult _left;
+    private readonly QueryResult _right;
+    private bool _readingRight;
+    private bool _leftDisposed;
+    private bool _rightDisposed;
+    private bool _disposed;
+    private bool _reuseCurrentRowBuffer = true;
+    private DbValue[]? _rowBuffer;
+
+    public ConcatenateOperator(
+        QueryResult left,
+        QueryResult right,
+        ColumnDefinition[] outputSchema)
+    {
+        _left = left ?? throw new ArgumentNullException(nameof(left));
+        _right = right ?? throw new ArgumentNullException(nameof(right));
+        OutputSchema = outputSchema ?? throw new ArgumentNullException(nameof(outputSchema));
+    }
+
+    public ColumnDefinition[] OutputSchema { get; }
+    public bool ReusesCurrentRowBuffer => _reuseCurrentRowBuffer;
+    public DbValue[] Current { get; private set; } = Array.Empty<DbValue>();
+
+    public ValueTask OpenAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        Current = Array.Empty<DbValue>();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask<bool> MoveNextAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                QueryResult source = _readingRight ? _right : _left;
+                if (await source.MoveNextAsync(ct))
+                {
+                    Current = CopyAndNormalizeRow(source.Current);
+                    return true;
+                }
+
+                if (_readingRight)
+                {
+                    await DisposeRightAsync();
+                    Current = Array.Empty<DbValue>();
+                    return false;
+                }
+
+                await DisposeLeftAsync();
+                _readingRight = true;
+            }
+        }
+        catch
+        {
+            try
+            {
+                await DisposeAsync();
+            }
+            catch
+            {
+                // Preserve the execution or cancellation exception.
+            }
+
+            throw;
+        }
+    }
+
+    public void SetReuseCurrentRowBuffer(bool reuse)
+    {
+        _reuseCurrentRowBuffer = reuse;
+        _rowBuffer = null;
+        Current = Array.Empty<DbValue>();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        try
+        {
+            await DisposeLeftAsync();
+        }
+        finally
+        {
+            await DisposeRightAsync();
+            Current = Array.Empty<DbValue>();
+            _rowBuffer = null;
+        }
+    }
+
+    private DbValue[] CopyAndNormalizeRow(DbValue[] source)
+    {
+        if (source.Length != OutputSchema.Length)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"Compound query row has {source.Length} value(s), but the bound output has {OutputSchema.Length} column(s).");
+        }
+
+        DbValue[] destination;
+        if (_reuseCurrentRowBuffer)
+        {
+            _rowBuffer ??= new DbValue[OutputSchema.Length];
+            destination = _rowBuffer;
+        }
+        else
+        {
+            destination = new DbValue[OutputSchema.Length];
+        }
+
+        for (int i = 0; i < destination.Length; i++)
+            destination[i] = CompoundRowCoercion.CoerceValue(source[i], OutputSchema[i].Type, i);
+
+        return destination;
+    }
+
+    private async ValueTask DisposeLeftAsync()
+    {
+        if (_leftDisposed)
+            return;
+
+        _leftDisposed = true;
+        await _left.DisposeAsync();
+    }
+
+    private async ValueTask DisposeRightAsync()
+    {
+        if (_rightDisposed)
+            return;
+
+        _rightDisposed = true;
+        await _right.DisposeAsync();
+    }
+}
+
+internal static class CompoundRowCoercion
+{
+    public static void NormalizeRowsInPlace(
+        IReadOnlyList<DbValue[]> rows,
+        IReadOnlyList<ColumnDefinition> outputSchema)
+    {
+        for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+        {
+            DbValue[] row = rows[rowIndex];
+            if (row.Length != outputSchema.Count)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TypeMismatch,
+                    $"Compound query row has {row.Length} value(s), but the bound output has {outputSchema.Count} column(s).");
+            }
+
+            for (int columnIndex = 0; columnIndex < row.Length; columnIndex++)
+                row[columnIndex] = CoerceValue(row[columnIndex], outputSchema[columnIndex].Type, columnIndex);
+        }
+    }
+
+    public static DbValue CoerceValue(DbValue value, DbType targetType, int columnIndex)
+    {
+        if (value.IsNull || targetType == DbType.Null || value.Type == targetType)
+            return value;
+
+        if (targetType == DbType.Real && value.Type == DbType.Integer)
+            return DbValue.FromReal(value.AsInteger);
+
+        throw new CSharpDbException(
+            ErrorCode.TypeMismatch,
+            $"Compound query column {columnIndex + 1} expected {targetType}, but a branch produced {value.Type}.");
+    }
+}
+
+/// <summary>
 /// Yields pre-materialized rows. Used for CTEs whose results have been computed upfront.
 /// </summary>
 public sealed class MaterializedOperator : IOperator, IEstimatedRowCountProvider, IMaterializedRowsProvider

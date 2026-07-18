@@ -149,6 +149,10 @@ public sealed class Tokenizer
             {
                 tokens.Add(ReadIdentifierOrKeyword());
             }
+            else if (c == '"')
+            {
+                tokens.Add(ReadQuotedIdentifier());
+            }
             else if (c == '@')
             {
                 tokens.Add(ReadParameter());
@@ -184,8 +188,41 @@ public sealed class Tokenizer
             _pos++;
 
         string value = _input[start.._pos];
+        SqlIdentifierRules.Validate(value);
         var type = Keywords.TryGetValue(value, out var kw) ? kw : TokenType.Identifier;
         return new Token(type, value, start);
+    }
+
+    private Token ReadQuotedIdentifier()
+    {
+        int start = _pos;
+        _pos++; // skip opening double quote
+        var builder = new System.Text.StringBuilder();
+
+        while (_pos < _input.Length)
+        {
+            char c = _input[_pos++];
+            if (c != '"')
+            {
+                builder.Append(c);
+                continue;
+            }
+
+            if (_pos < _input.Length && _input[_pos] == '"')
+            {
+                builder.Append('"');
+                _pos++;
+                continue;
+            }
+
+            string value = builder.ToString();
+            SqlIdentifierRules.Validate(value, "Quoted identifier");
+            return new Token(TokenType.Identifier, value, start);
+        }
+
+        throw new CSharpDbException(
+            ErrorCode.SyntaxError,
+            $"Unterminated quoted identifier at position {start}.");
     }
 
     private Token ReadNumber()

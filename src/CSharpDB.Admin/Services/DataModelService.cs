@@ -697,8 +697,14 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     {
         ConstraintName = foreignKey.ConstraintName,
         ColumnName = foreignKey.ColumnName,
+        ColumnNames = foreignKey.ColumnNames.Count > 0
+            ? foreignKey.ColumnNames
+            : [foreignKey.ColumnName],
         ReferencedTableName = foreignKey.ReferencedTableName,
         ReferencedColumnName = foreignKey.ReferencedColumnName,
+        ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+            ? foreignKey.ReferencedColumnNames
+            : [foreignKey.ReferencedColumnName],
         OnDelete = foreignKey.OnDelete.ToString().ToUpperInvariant(),
     };
 
@@ -706,8 +712,14 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
     {
         ConstraintName = foreignKey.ConstraintName,
         ColumnName = foreignKey.ColumnName,
+        ColumnNames = foreignKey.ColumnNames.Count > 0
+            ? foreignKey.ColumnNames
+            : [foreignKey.ColumnName],
         ReferencedTableName = foreignKey.ReferencedTableName,
         ReferencedColumnName = foreignKey.ReferencedColumnName,
+        ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+            ? foreignKey.ReferencedColumnNames
+            : [foreignKey.ReferencedColumnName],
         OnDelete = foreignKey.OnDelete.ToString().ToUpperInvariant(),
     };
 

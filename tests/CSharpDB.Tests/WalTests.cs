@@ -178,6 +178,26 @@ public class WalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ReaderSession_ExplainEstimate_UsesReadOnlySnapshotRouting()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)", ct);
+        await _db.ExecuteAsync("INSERT INTO t VALUES (1, 'original')", ct);
+
+        using var reader = _db.CreateReaderSession();
+        await using var result = await reader.ExecuteReadAsync(
+            "EXPLAIN ESTIMATE FOR SELECT * FROM t WHERE id = 1",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.NotEmpty(rows);
+        Assert.Contains(rows, row =>
+            row.Any(value =>
+                value.Type == DbType.Text &&
+                value.AsText.Contains("t", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
     public async Task ReaderSession_PreparedCountStarStatement_UsesSnapshotState()
     {
         var ct = TestContext.Current.CancellationToken;

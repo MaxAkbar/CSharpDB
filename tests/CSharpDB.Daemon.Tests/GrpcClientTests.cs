@@ -1231,6 +1231,38 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_MapsDefaultsChecksAndLogicalKeys()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult create = await client.ExecuteSqlAsync(
+            """
+            CREATE TABLE grpc_schema_metadata (
+                id INTEGER PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                code TEXT DEFAULT 'new',
+                score INTEGER,
+                CONSTRAINT ck_grpc_schema_score CHECK (score >= 0),
+                CONSTRAINT uq_grpc_schema_tenant_code UNIQUE (tenant, code)
+            );
+            """,
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema? schema = await client.GetTableSchemaAsync("grpc_schema_metadata", Ct);
+        Assert.NotNull(schema);
+        Assert.Equal("'new'", Assert.Single(schema!.Columns, column => column.Name == "code").DefaultSql);
+        CheckConstraintDefinition check = Assert.Single(schema.CheckConstraints);
+        Assert.Equal("ck_grpc_schema_score", check.ConstraintName);
+        Assert.Contains("score", check.ExpressionSql, StringComparison.OrdinalIgnoreCase);
+        KeyConstraintDefinition unique = Assert.Single(
+            schema.KeyConstraints,
+            key => key.Kind == KeyConstraintKind.Unique);
+        Assert.Equal(["tenant", "code"], unique.Columns);
+    }
+
+    [Fact]
     public async Task GrpcClient_MapsForeignKeyMetadata()
     {
         using var transportClient = CreateGrpcHttpClient();
@@ -1255,6 +1287,64 @@ public sealed class GrpcClientTests : IAsyncLifetime
         Assert.Equal("id", foreignKey.ReferencedColumnName);
         Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
         Assert.StartsWith("__fk_grpc_children_parent_id_", foreignKey.SupportingIndexName, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GrpcClient_MapsOrderedCompositeForeignKeyMetadata()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult createResult = await client.ExecuteSqlAsync(
+            """
+            CREATE TABLE grpc_composite_parents (
+                tenant_id INTEGER,
+                code TEXT,
+                PRIMARY KEY (tenant_id, code)
+            );
+            CREATE TABLE grpc_composite_children (
+                id INTEGER PRIMARY KEY,
+                tenant_id INTEGER,
+                parent_code TEXT,
+                CONSTRAINT fk_grpc_composite_parent
+                    FOREIGN KEY (tenant_id, parent_code)
+                    REFERENCES grpc_composite_parents (tenant_id, code)
+                    ON DELETE CASCADE
+            );
+            """,
+            Ct);
+        Assert.Null(createResult.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await client.GetTableSchemaAsync("grpc_composite_children", Ct));
+        ForeignKeyDefinition foreignKey = Assert.Single(schema.ForeignKeys);
+
+        Assert.Equal("tenant_id", foreignKey.ColumnName);
+        Assert.Equal("tenant_id", foreignKey.ReferencedColumnName);
+        Assert.Equal(["tenant_id", "parent_code"], foreignKey.ColumnNames);
+        Assert.Equal(["tenant_id", "code"], foreignKey.ReferencedColumnNames);
+        Assert.Equal(ForeignKeyOnDeleteAction.Cascade, foreignKey.OnDelete);
+    }
+
+    [Fact]
+    public void GrpcModelMapper_LegacyForeignKeyMessageUsesScalarFallback()
+    {
+        var message = new ForeignKeyDefinitionMessage
+        {
+            ConstraintName = "fk_legacy_parent",
+            ColumnName = "parent_id",
+            ReferencedTableName = "parents",
+            ReferencedColumnName = "id",
+            OnDelete = ForeignKeyOnDeleteActionEnum.ForeignKeyOnDeleteActionRestrict,
+            SupportingIndexName = "__fk_legacy_parent",
+        };
+
+        ForeignKeyDefinition foreignKey = GrpcModelMapper.ToModel(message);
+
+        Assert.Equal(["parent_id"], foreignKey.ColumnNames);
+        Assert.Equal(["id"], foreignKey.ReferencedColumnNames);
+        Assert.Equal("parent_id", foreignKey.ColumnName);
+        Assert.Equal("id", foreignKey.ReferencedColumnName);
     }
 
     [Fact]

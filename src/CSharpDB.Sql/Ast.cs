@@ -10,6 +10,9 @@ public sealed class CreateTableStatement : Statement
 {
     public required string TableName { get; init; }
     public required List<ColumnDef> Columns { get; init; }
+    public List<CheckConstraintClause> CheckConstraints { get; init; } = [];
+    public List<KeyConstraintClause> KeyConstraints { get; init; } = [];
+    public List<ForeignKeyConstraintClause> ForeignKeys { get; init; } = [];
     public bool IfNotExists { get; init; }
     public bool IsTemporary { get; init; }
 }
@@ -29,6 +32,16 @@ public sealed class ForeignKeyClause
         CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
 }
 
+public sealed class ForeignKeyConstraintClause
+{
+    public string? ConstraintName { get; init; }
+    public required List<string> Columns { get; init; }
+    public required string ReferencedTableName { get; init; }
+    public List<string>? ReferencedColumns { get; init; }
+    public CSharpDB.Primitives.ForeignKeyOnDeleteAction OnDelete { get; init; } =
+        CSharpDB.Primitives.ForeignKeyOnDeleteAction.Restrict;
+}
+
 public sealed class ColumnDef
 {
     public required string Name { get; init; }
@@ -38,6 +51,21 @@ public sealed class ColumnDef
     public bool IsNullable { get; init; } = true;
     public string? Collation { get; init; }
     public ForeignKeyClause? ForeignKey { get; init; }
+    public Expression? DefaultExpression { get; init; }
+    public List<CheckConstraintClause> CheckConstraints { get; init; } = [];
+}
+
+public sealed class CheckConstraintClause
+{
+    public string? ConstraintName { get; init; }
+    public required Expression Expression { get; init; }
+}
+
+public sealed class KeyConstraintClause
+{
+    public string? ConstraintName { get; init; }
+    public CSharpDB.Primitives.KeyConstraintKind Kind { get; init; }
+    public required List<string> Columns { get; init; }
 }
 
 public sealed class DropTableStatement : Statement
@@ -64,6 +92,7 @@ public sealed class InsertStatement : Statement
     public required string TableName { get; init; }
     public List<string>? ColumnNames { get; init; }
     public required List<List<Expression>> ValueRows { get; init; }
+    public bool IsDefaultValues { get; init; }
 }
 
 public sealed class SelectStatement : QueryStatement
@@ -86,11 +115,18 @@ public enum SetOperationKind
     Except,
 }
 
+public enum SetQuantifier
+{
+    Distinct,
+    All,
+}
+
 public sealed class CompoundSelectStatement : QueryStatement
 {
     public required QueryStatement Left { get; init; }
     public required QueryStatement Right { get; init; }
     public required SetOperationKind Operation { get; init; }
+    public SetQuantifier Quantifier { get; init; } = SetQuantifier.Distinct;
     public List<OrderByClause>? OrderBy { get; init; }
     public int? Limit { get; init; }
     public int? Offset { get; init; }
@@ -173,6 +209,12 @@ public sealed class AddColumnAction : AlterAction
     public required ColumnDef Column { get; init; }
 }
 
+public sealed class AddCheckConstraintAction : AlterAction
+{
+    public required string ConstraintName { get; init; }
+    public required Expression Expression { get; init; }
+}
+
 public sealed class DropColumnAction : AlterAction
 {
     public required string ColumnName { get; init; }
@@ -192,6 +234,27 @@ public sealed class RenameColumnAction : AlterAction
 {
     public required string OldColumnName { get; init; }
     public required string NewColumnName { get; init; }
+}
+
+public sealed class AlterColumnSetDefaultAction : AlterAction
+{
+    public required string ColumnName { get; init; }
+    public required Expression DefaultExpression { get; init; }
+}
+
+public sealed class AlterColumnDropDefaultAction : AlterAction
+{
+    public required string ColumnName { get; init; }
+}
+
+public sealed class AlterColumnSetNotNullAction : AlterAction
+{
+    public required string ColumnName { get; init; }
+}
+
+public sealed class AlterColumnDropNotNullAction : AlterAction
+{
+    public required string ColumnName { get; init; }
 }
 
 // ============ CREATE INDEX / DROP INDEX ============
@@ -324,6 +387,12 @@ public sealed class WithStatement : Statement
 
 public abstract class Expression { }
 
+/// <summary>
+/// Contextual DEFAULT marker used by INSERT value lists. It is materialized
+/// against the target column and is not a generally evaluable SQL expression.
+/// </summary>
+public sealed class DefaultExpression : Expression { }
+
 public sealed class LiteralExpression : Expression
 {
     public required object? Value { get; init; } // long, double, string, null, or byte[]
@@ -419,4 +488,21 @@ public sealed class FunctionCallExpression : Expression
     public required List<Expression> Arguments { get; init; }
     public bool IsDistinct { get; init; }
     public bool IsStarArg { get; init; } // for COUNT(*)
+}
+
+/// <summary>
+/// A function evaluated over a SQL window. Window calls are represented
+/// separately from ordinary function calls so aggregate detection cannot
+/// accidentally collapse a row-preserving window query.
+/// </summary>
+public sealed class WindowFunctionExpression : Expression
+{
+    public required FunctionCallExpression Function { get; init; }
+    public required WindowSpecification Window { get; init; }
+}
+
+public sealed class WindowSpecification
+{
+    public List<Expression> PartitionBy { get; init; } = [];
+    public List<OrderByClause> OrderBy { get; init; } = [];
 }

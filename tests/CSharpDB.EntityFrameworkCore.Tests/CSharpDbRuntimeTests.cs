@@ -245,15 +245,82 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ModelValidation_RejectsDefaultsAndCheckConstraints()
+    public async Task LiteralDefaultsAndCreateTableChecks_AreApplied()
     {
         await using var defaultValueDb = new DefaultValueModelContext($"Data Source={GetDbPath("defaults")}");
-        var defaultError = await Assert.ThrowsAsync<NotSupportedException>(() => defaultValueDb.Database.EnsureCreatedAsync(Ct));
-        Assert.Contains("defaultvalue", defaultError.Message, StringComparison.OrdinalIgnoreCase);
+        await defaultValueDb.Database.EnsureCreatedAsync(Ct);
+        defaultValueDb.Items.Add(new DefaultValueEntity());
+        await defaultValueDb.SaveChangesAsync(Ct);
+        Assert.Equal("pending", await defaultValueDb.Items.Select(item => item.Name).SingleAsync(Ct));
 
         await using var checkConstraintDb = new CheckConstraintModelContext($"Data Source={GetDbPath("checks")}");
-        var checkError = await Assert.ThrowsAsync<NotSupportedException>(() => checkConstraintDb.Database.EnsureCreatedAsync(Ct));
-        Assert.Contains("check constraints", checkError.Message, StringComparison.OrdinalIgnoreCase);
+        await checkConstraintDb.Database.EnsureCreatedAsync(Ct);
+        checkConstraintDb.Items.Add(new CheckConstraintEntity { Value = 1 });
+        await checkConstraintDb.SaveChangesAsync(Ct);
+
+        checkConstraintDb.Items.Add(new CheckConstraintEntity { Value = 0 });
+        var checkError = await Assert.ThrowsAsync<DbUpdateException>(() => checkConstraintDb.SaveChangesAsync(Ct));
+        Assert.Contains("check", checkError.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task IdentityOnlyEntity_UsesDefaultValuesAndReturnsGeneratedKey()
+    {
+        await using var db = new IdentityOnlyModelContext($"Data Source={GetDbPath("identity-only")}");
+        await db.Database.EnsureCreatedAsync(Ct);
+
+        var entity = new IdentityOnlyEntity();
+        db.Items.Add(entity);
+        await db.SaveChangesAsync(Ct);
+
+        Assert.True(entity.Id > 0);
+        Assert.Equal(1, await db.Items.CountAsync(Ct));
+    }
+
+    [Fact]
+    public async Task CompositeKeyEntity_SupportsCrudIndexesAndDuplicateRejection()
+    {
+        string dbPath = GetDbPath("composite-key");
+
+        await using (var db = new CompositeKeyModelContext($"Data Source={dbPath}"))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.OrderLines.AddRange(
+                new CompositeOrderLine { OrderId = 10, LineNo = 1, Sku = "alpha", Quantity = 2 },
+                new CompositeOrderLine { OrderId = 10, LineNo = 2, Sku = "beta", Quantity = 1 });
+            await db.SaveChangesAsync(Ct);
+
+            CompositeOrderLine line = await db.OrderLines.SingleAsync(
+                item => item.OrderId == 10 && item.LineNo == 1,
+                Ct);
+            line.Quantity = 5;
+            await db.SaveChangesAsync(Ct);
+
+            db.Remove(await db.OrderLines.SingleAsync(
+                item => item.OrderId == 10 && item.LineNo == 2,
+                Ct));
+            await db.SaveChangesAsync(Ct);
+        }
+
+        await using (var duplicate = new CompositeKeyModelContext($"Data Source={dbPath}"))
+        {
+            duplicate.OrderLines.Add(new CompositeOrderLine
+            {
+                OrderId = 10,
+                LineNo = 1,
+                Sku = "duplicate",
+                Quantity = 9,
+            });
+
+            await Assert.ThrowsAsync<DbUpdateException>(() => duplicate.SaveChangesAsync(Ct));
+        }
+
+        await using var verify = new CompositeKeyModelContext($"Data Source={dbPath}");
+        CompositeOrderLine persisted = await verify.OrderLines.AsNoTracking().SingleAsync(Ct);
+        Assert.Equal(10, persisted.OrderId);
+        Assert.Equal(1, persisted.LineNo);
+        Assert.Equal(5, persisted.Quantity);
+        Assert.Equal("alpha", persisted.Sku);
     }
 
     [Theory]
@@ -370,6 +437,26 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
                 .ToTable(tableBuilder => tableBuilder.HasCheckConstraint("CK_CheckConstraintEntity_Value", "Value > 0"));
     }
 
+    private sealed class IdentityOnlyModelContext(string connectionString) : TestDbContext(connectionString)
+    {
+        public DbSet<IdentityOnlyEntity> Items => Set<IdentityOnlyEntity>();
+    }
+
+    private sealed class CompositeKeyModelContext(string connectionString) : TestDbContext(connectionString)
+    {
+        public DbSet<CompositeOrderLine> OrderLines => Set<CompositeOrderLine>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<CompositeOrderLine>(entity =>
+            {
+                entity.HasKey(line => new { line.OrderId, line.LineNo });
+                entity.HasIndex(line => new { line.OrderId, line.Sku }).IsUnique();
+                entity.HasIndex(line => new { line.Sku, line.LineNo });
+            });
+        }
+    }
+
     private sealed class PersonRecord
     {
         public int Id { get; set; }
@@ -444,7 +531,7 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     {
         public int Id { get; set; }
 
-        public string Name { get; set; } = string.Empty;
+        public string? Name { get; set; }
     }
 
     private sealed class CheckConstraintEntity
@@ -452,6 +539,22 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public int Id { get; set; }
 
         public int Value { get; set; }
+    }
+
+    private sealed class IdentityOnlyEntity
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class CompositeOrderLine
+    {
+        public int OrderId { get; set; }
+
+        public int LineNo { get; set; }
+
+        public string Sku { get; set; } = string.Empty;
+
+        public int Quantity { get; set; }
     }
 
     private enum PersonStatus

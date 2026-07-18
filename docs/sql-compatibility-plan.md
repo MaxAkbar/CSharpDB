@@ -4,10 +4,57 @@ Internal implementation plan for expanding the CSharpDB SQL dialect from its
 current useful subset into a predictable, documented surface for real-world
 applications, ADO.NET tooling, and ORMs.
 
-This file is intentionally kept under the top-level `docs/` folder and is not
-part of the public `www` documentation site. The public compatibility matrix
-described below is a product deliverable and should be published under
-`www/docs` as soon as its first audited baseline is ready.
+This file is intentionally kept under the top-level `docs/` folder as the
+detailed internal implementation plan. The public, proof-backed compatibility
+matrix and implementation roadmap are published under `www/docs`.
+
+## Implementation Status (Development Snapshot)
+
+As of 2026-07-17, the repository contains the following implemented plan slices:
+
+- Milestone 1: the machine-readable manifest, JSON Schema, deterministic HTML
+  generator, proof validation, documentation preflight, CI/Pages gates, and
+  public roadmap page are present under `www/docs`.
+- Milestone 2: quoted identifiers, SQL three-valued logic, typed-literal/NULL
+  defaults, `DEFAULT` insert forms, named/unnamed deterministic row-local
+  checks, shared row validation, additive schema serialization, reopen
+  coverage, catalogs, and direct/HTTP/gRPC/archive/DevOps metadata propagation
+  are implemented. Stable schema ids, statement-time defaults, and every
+  mutation/import surface remain.
+- Milestone 3: named/unnamed logical primary and unique keys, including
+  composite tuples, are persisted and enforced without changing legacy single
+  `INTEGER PRIMARY KEY` identity behavior. Column/table scalar and composite
+  foreign keys now use ordered metadata, validate candidate keys/types/
+  collations, implement MATCH SIMPLE plus immediate RESTRICT/CASCADE, survive
+  reopen, repair rename/drop dependencies, and round-trip through current
+  transports and tooling. Additional referential actions, deferrability,
+  stable ids, and EF composite-FK generation remain.
+- Milestones 4–6: the first transactional shadow-root rewrite supports
+  unconstrained `DROP COLUMN` and populated literal-default `ADD COLUMN`;
+  direct ALTER metadata actions cover SET/DROP DEFAULT, validated SET/DROP NOT
+  NULL, and named CHECK add/drop. Structural ALTER now rejects persisted view,
+  trigger, and validation-rule dependencies before mutation, and both explicit
+  transaction APIs become rollback-only after a failed write;
+  `UNION ALL` uses a lazy duplicate-preserving append path; and an experimental
+  in-memory Tier-1 window slice covers ranking and common aggregate windows
+  without leaking hidden window slots through star projections.
+- Milestones 7–9: built-in function metadata is centralized and exposed through
+  `sys.functions`; the EF provider emits literal defaults, create-table checks,
+  `DEFAULT VALUES`, and composite primary/index DDL; ADO.NET exposes restrictions,
+  defaults, checks, ordered keys, and ordered foreign-key pairs; and current
+  schema transports/tooling preserve these constraint shapes.
+- Milestones 10–11: estimate-only EXPLAIN now follows the shared read-only
+  routing contract and prepared commands discover parameters inside its target.
+  Release tooling can create an immutable compatibility snapshot, and tagged
+  release CI validates its version, schema, proof/feature parity, verified
+  commit ancestry, tracked artifacts, and prior-snapshot immutability. The
+  shared physical-plan descriptor, execution profiles, spill substrate, and
+  broader release qualification lanes remain.
+
+The public status and supported limitations live in
+`www/docs/sql-compatibility.json` and
+`www/docs/sql-compatibility-roadmap.html`. This section is a progress snapshot,
+not a claim that the remaining milestone acceptance criteria are complete.
 
 ## Target Outcome
 
@@ -40,7 +87,11 @@ The goal is not to claim compatibility with every vendor dialect. The goal is a
 coherent CSharpDB dialect, strong compatibility with its supported providers,
 and honest documentation for everything else.
 
-## Current Baseline
+## Original Baseline
+
+The following baseline was captured when this plan was written. It is retained
+as implementation history; the development snapshot above and the public
+compatibility manifest are authoritative for current status.
 
 Implemented behavior to preserve and extend:
 

@@ -35,9 +35,6 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         if (entityType.GetKeys().Count() > 1)
             throw new NotSupportedException($"Entity '{entityType.DisplayName()}' defines alternate keys, which are not supported by the CSharpDB EF Core provider in v1.");
 
-        if (entityType.GetDeclaredCheckConstraints().Any())
-            throw new NotSupportedException($"Entity '{entityType.DisplayName()}' defines check constraints, which are not supported by the CSharpDB EF Core provider.");
-
         string? tableName = entityType.GetTableName();
         if (!string.IsNullOrWhiteSpace(tableName))
             CSharpDbProviderValidation.ValidateSimpleIdentifier(tableName, "Table name");
@@ -49,10 +46,10 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
 
         foreach (var index in entityType.GetIndexes())
         {
-            if (index.Properties.Count != 1)
+            if (index.Properties.Count == 0)
             {
                 throw new NotSupportedException(
-                    $"Index '{index.Name}' on entity '{entityType.DisplayName()}' uses multiple columns, which are not supported by the CSharpDB EF Core provider in v1.");
+                    $"Index '{index.Name}' on entity '{entityType.DisplayName()}' must contain at least one column.");
             }
 
             if (!string.IsNullOrWhiteSpace(index.Name))
@@ -78,11 +75,9 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         if (property.GetComputedColumnSql() is not null)
             throw new NotSupportedException($"Property '{entityType.DisplayName()}.{property.Name}' uses a computed column, which is not supported by the CSharpDB EF Core provider.");
 
-        if (property.FindAnnotation(RelationalAnnotationNames.DefaultValue) is not null)
-            throw new NotSupportedException($"Property '{entityType.DisplayName()}.{property.Name}' uses DefaultValue, which is not supported by the CSharpDB EF Core provider.");
-
         if (property.GetDefaultValueSql() is not null)
-            throw new NotSupportedException($"Property '{entityType.DisplayName()}.{property.Name}' uses DefaultValueSql, which is not supported by the CSharpDB EF Core provider.");
+            throw new NotSupportedException(
+                $"Property '{entityType.DisplayName()}.{property.Name}' uses DefaultValueSql, but the CSharpDB EF Core provider currently supports literal DefaultValue metadata only.");
 
         if (property.IsConcurrencyToken && property.ValueGenerated == ValueGenerated.OnAddOrUpdate)
             throw new NotSupportedException($"Property '{entityType.DisplayName()}.{property.Name}' uses rowversion semantics, which are not supported by the CSharpDB EF Core provider.");

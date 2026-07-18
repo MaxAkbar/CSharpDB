@@ -207,16 +207,6 @@ public sealed class DbFunctionRegistry
 
 public sealed class DbFunctionRegistryBuilder
 {
-    private static readonly HashSet<string> s_reservedFunctionNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "TEXT",
-        "COUNT",
-        "SUM",
-        "AVG",
-        "MIN",
-        "MAX",
-    };
-
     private readonly Dictionary<string, Dictionary<int, DbScalarFunctionDefinition>> _scalarFunctions =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -230,7 +220,7 @@ public sealed class DbFunctionRegistryBuilder
         ArgumentOutOfRangeException.ThrowIfNegative(arity);
         ArgumentNullException.ThrowIfNull(invoke);
 
-        if (s_reservedFunctionNames.Contains(normalizedName))
+        if (DbBuiltInFunctionRegistry.IsBuiltInName(normalizedName))
             throw new ArgumentException($"Function name '{name}' is reserved and cannot be overridden.", nameof(name));
 
         if (_scalarFunctions.ContainsKey(normalizedName))
@@ -268,7 +258,7 @@ public sealed class DbFunctionRegistryBuilder
     }
 
     internal static bool IsReservedFunctionName(string name)
-        => s_reservedFunctionNames.Contains(name);
+        => DbBuiltInFunctionRegistry.IsBuiltInName(name);
 
     private static string ValidateFunctionName(string name)
     {

@@ -17,6 +17,7 @@ public sealed class WriteTransaction : IAsyncDisposable
     private readonly QueryPlanner _planner;
     private readonly long _initialSchemaVersion;
     private bool _completed;
+    private bool _writeFailed;
 
     internal WriteTransaction(
         Database database,
@@ -109,6 +110,13 @@ public sealed class WriteTransaction : IAsyncDisposable
     public async ValueTask CommitAsync(CancellationToken ct = default)
     {
         EnsureActive();
+        if (_writeFailed)
+        {
+            await RollbackAsync(CancellationToken.None);
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                "The transaction was rolled back because an earlier write failed.");
+        }
 
         PagerCommitResult commit;
         KeyValuePair<string, long>[] committedNextRowIds;
@@ -200,11 +208,24 @@ public sealed class WriteTransaction : IAsyncDisposable
         Func<IDisposable> executionScopeFactory,
         CancellationToken ct)
     {
-        using var scope = executionScopeFactory();
-        QueryResult result = await _planner.ExecuteAsync(statement, ct);
-        if (result.IsQuery)
-            result.SetExecutionScopeFactory(executionScopeFactory);
-        return result;
+        bool isMutating = !SqlStatementClassifier.IsReadOnly(statement);
+        if (isMutating)
+            EnsureWriteAllowed();
+
+        try
+        {
+            using var scope = executionScopeFactory();
+            QueryResult result = await _planner.ExecuteAsync(statement, ct);
+            if (result.IsQuery)
+                result.SetExecutionScopeFactory(executionScopeFactory);
+            return result;
+        }
+        catch
+        {
+            if (isMutating)
+                _writeFailed = true;
+            throw;
+        }
     }
 
     private async ValueTask<QueryResult> ExecuteWriteAsyncCore(
@@ -212,10 +233,19 @@ public sealed class WriteTransaction : IAsyncDisposable
         Func<IDisposable> executionScopeFactory,
         CancellationToken ct)
     {
-        using var scope = executionScopeFactory();
-        return statement is InsertStatement insert
-            ? await _planner.ExecuteInsertAsync(insert, persistRootChanges: false, ct)
-            : await _planner.ExecuteAsync(statement, ct);
+        EnsureWriteAllowed();
+        try
+        {
+            using var scope = executionScopeFactory();
+            return statement is InsertStatement insert
+                ? await _planner.ExecuteInsertAsync(insert, persistRootChanges: false, ct)
+                : await _planner.ExecuteAsync(statement, ct);
+        }
+        catch
+        {
+            _writeFailed = true;
+            throw;
+        }
     }
 
     private async ValueTask<QueryResult> ExecuteSimpleInsertAsyncCore(
@@ -223,7 +253,26 @@ public sealed class WriteTransaction : IAsyncDisposable
         Func<IDisposable> executionScopeFactory,
         CancellationToken ct)
     {
-        using var scope = executionScopeFactory();
-        return await _planner.ExecuteSimpleInsertAsync(insert, persistRootChanges: false, ct);
+        EnsureWriteAllowed();
+        try
+        {
+            using var scope = executionScopeFactory();
+            return await _planner.ExecuteSimpleInsertAsync(insert, persistRootChanges: false, ct);
+        }
+        catch
+        {
+            _writeFailed = true;
+            throw;
+        }
+    }
+
+    private void EnsureWriteAllowed()
+    {
+        if (!_writeFailed)
+            return;
+
+        throw new CSharpDbException(
+            ErrorCode.Unknown,
+            "The transaction is aborted because an earlier write failed; roll it back before issuing another write.");
     }
 }

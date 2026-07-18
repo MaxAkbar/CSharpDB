@@ -70,6 +70,75 @@ public sealed class SchemaSerializerCompatibilityTests
     }
 
     [Fact]
+    public void SerializeDeserialize_TableSchema_RoundTripsDefaultsAndChecks()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "orders",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "id",
+                    Type = DbType.Integer,
+                    IsPrimaryKey = true,
+                    IsIdentity = true,
+                    Nullable = false,
+                },
+                new ColumnDefinition
+                {
+                    Name = "quantity",
+                    Type = DbType.Integer,
+                    Nullable = false,
+                    DefaultSql = "1",
+                },
+                new ColumnDefinition
+                {
+                    Name = "status",
+                    Type = DbType.Text,
+                    Nullable = true,
+                    DefaultSql = "'new'",
+                },
+            ],
+            CheckConstraints =
+            [
+                new CheckConstraintDefinition
+                {
+                    ConstraintName = "ck_orders_quantity",
+                    ColumnName = "quantity",
+                    ExpressionSql = "(quantity > 0)",
+                },
+                new CheckConstraintDefinition
+                {
+                    ConstraintName = null,
+                    ColumnName = null,
+                    ExpressionSql = "status IN ('new', 'paid')",
+                },
+            ],
+            NextRowId = 12,
+        };
+
+        TableSchema decoded = SchemaSerializer.Deserialize(SchemaSerializer.Serialize(schema));
+
+        Assert.Equal("1", decoded.Columns[1].DefaultSql);
+        Assert.Equal("'new'", decoded.Columns[2].DefaultSql);
+        Assert.Collection(
+            decoded.CheckConstraints,
+            check =>
+            {
+                Assert.Equal("ck_orders_quantity", check.ConstraintName);
+                Assert.Equal("quantity", check.ColumnName);
+                Assert.Equal("(quantity > 0)", check.ExpressionSql);
+            },
+            check =>
+            {
+                Assert.Null(check.ConstraintName);
+                Assert.Null(check.ColumnName);
+                Assert.Equal("status IN ('new', 'paid')", check.ExpressionSql);
+            });
+    }
+
+    [Fact]
     public void Deserialize_LegacyPayloadWithoutNextRowId_DefaultsToUnknown()
     {
         byte[] legacy = BuildLegacyTableSchemaPayload(
@@ -88,6 +157,21 @@ public sealed class SchemaSerializerCompatibilityTests
         Assert.True(decoded.Columns[0].IsIdentity);
         Assert.Null(decoded.Columns[0].Collation);
         Assert.Null(decoded.Columns[1].Collation);
+    }
+
+    [Theory]
+    [InlineData(1UL)]
+    [InlineData(2UL)]
+    public void Deserialize_PreviousVersionedTableMetadata_DefaultsNewConstraintFields(
+        ulong metadataVersion)
+    {
+        byte[] payload = BuildVersionedTableSchemaPayload(metadataVersion);
+
+        TableSchema decoded = SchemaSerializer.Deserialize(payload);
+
+        Assert.Equal(42L, decoded.NextRowId);
+        Assert.All(decoded.Columns, column => Assert.Null(column.DefaultSql));
+        Assert.Empty(decoded.CheckConstraints);
     }
 
     [Fact]
@@ -186,6 +270,25 @@ public sealed class SchemaSerializerCompatibilityTests
         }
 
         ms.WriteByte(isUnique ? (byte)1 : (byte)0);
+        return ms.ToArray();
+    }
+
+    private static byte[] BuildVersionedTableSchemaPayload(ulong metadataVersion)
+    {
+        ColumnDefinition[] columns =
+        [
+            new ColumnDefinition { Name = "id", Type = DbType.Integer, IsPrimaryKey = true, Nullable = false },
+            new ColumnDefinition { Name = "value", Type = DbType.Text, Nullable = true },
+        ];
+        using var ms = new MemoryStream();
+        ms.Write(BuildLegacyTableSchemaPayload("versioned", columns));
+        WriteVarint(ms, 42);
+        WriteVarint(ms, metadataVersion);
+        WriteVarint(ms, (ulong)columns.Length);
+        for (int i = 0; i < columns.Length; i++)
+            WriteVarint(ms, 0); // null collation
+        if (metadataVersion >= 2)
+            WriteVarint(ms, 0); // foreign-key count
         return ms.ToArray();
     }
 

@@ -1,6 +1,6 @@
 # CSharpDB
 
-A zero-dependency embedded database engine for .NET with full SQL support, a typed NoSQL Collection API, built-in full-text search, ETL pipelines, and an ADO.NET provider — all in a single NuGet package.
+A zero-dependency embedded database engine for .NET with a documented CSharpDB SQL subset, a typed NoSQL Collection API, built-in full-text search, ETL pipelines, and an ADO.NET provider — all in a single NuGet package.
 
 [![NuGet](https://img.shields.io/nuget/v/CSharpDB)](https://www.nuget.org/packages/CSharpDB)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)](https://dotnet.microsoft.com/download/dotnet/10.0)
@@ -58,7 +58,7 @@ await using var db = await Database.OpenHybridAsync("app.db");
 
 ### SQL Support
 
-A full SQL engine with DDL, DML, JOINs, aggregates, CTEs, subqueries, views, triggers, and stored procedures.
+A CSharpDB SQL engine with a defined DDL, DML, JOIN, aggregate, CTE, subquery, view, trigger, and stored-procedure surface. See the [SQL compatibility matrix](https://csharpdb.com/docs/sql-compatibility.html) for feature-level status and limitations.
 
 **DDL**
 ```csharp

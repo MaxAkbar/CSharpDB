@@ -6,7 +6,8 @@ namespace CSharpDB.Execution;
 internal static class ScalarFunctionEvaluator
 {
     public static bool IsAggregateFunction(string functionName)
-        => functionName.ToUpperInvariant() is "COUNT" or "SUM" or "AVG" or "MIN" or "MAX";
+        => DbBuiltInFunctionRegistry.TryGet(functionName, out DbBuiltInFunctionDescriptor descriptor) &&
+           descriptor.Kind == DbBuiltInFunctionKind.Aggregate;
 
     public static DbValue Evaluate(FunctionCallExpression func, Func<Expression, DbValue> evaluateArgument)
         => Evaluate(func, evaluateArgument, DbFunctionRegistry.Empty);

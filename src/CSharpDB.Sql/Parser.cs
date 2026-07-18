@@ -1368,12 +1368,39 @@ public sealed class Parser
         Expect(TokenType.LeftParen);
 
         var columns = new List<ColumnDef>();
+        var checkConstraints = new List<CheckConstraintClause>();
+        var keyConstraints = new List<KeyConstraintClause>();
+        var foreignKeys = new List<ForeignKeyConstraintClause>();
         do
         {
             if (Peek().Type == TokenType.Foreign)
-                throw Error("Table-level FOREIGN KEY constraints are not supported.");
+            {
+                foreignKeys.Add(ParseTableForeignKeyClause(constraintName: null));
+            }
 
-            columns.Add(ParseColumnDef());
+            else if (Peek().Type == TokenType.Constraint)
+            {
+                Advance();
+                string constraintName = ExpectIdentifier();
+                if (Peek().Type == TokenType.Foreign)
+                    foreignKeys.Add(ParseTableForeignKeyClause(constraintName));
+                else if (Peek().Type is TokenType.Primary or TokenType.Unique)
+                    keyConstraints.Add(ParseKeyConstraintClause(constraintName));
+                else
+                    checkConstraints.Add(ParseCheckConstraintClause(constraintName, constraintPrefixConsumed: true));
+            }
+            else if (Peek().Type is TokenType.Primary or TokenType.Unique)
+            {
+                keyConstraints.Add(ParseKeyConstraintClause(constraintName: null));
+            }
+            else if (IsContextualKeyword(Peek(), "CHECK"))
+            {
+                checkConstraints.Add(ParseCheckConstraintClause());
+            }
+            else
+            {
+                columns.Add(ParseColumnDef());
+            }
         } while (TryConsume(TokenType.Comma));
 
         Expect(TokenType.RightParen);
@@ -1382,6 +1409,9 @@ public sealed class Parser
         {
             TableName = tableName,
             Columns = columns,
+            CheckConstraints = checkConstraints,
+            KeyConstraints = keyConstraints,
+            ForeignKeys = foreignKeys,
             IfNotExists = ifNotExists,
             IsTemporary = isTemporary,
         };
@@ -1484,8 +1514,11 @@ public sealed class Parser
         bool isNullable = true;
         string? collation = null;
         ForeignKeyClause? foreignKey = null;
+        Expression? defaultExpression = null;
+        var checkConstraints = new List<CheckConstraintClause>();
 
-        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT / COLLATE / REFERENCES modifiers.
+        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT / COLLATE /
+        // REFERENCES / DEFAULT / CHECK modifiers.
         while (true)
         {
             if (Peek().Type == TokenType.Primary)
@@ -1526,6 +1559,17 @@ public sealed class Parser
 
                 foreignKey = ParseColumnForeignKeyClause(name);
             }
+            else if (TryConsumeContextualKeyword("DEFAULT"))
+            {
+                if (defaultExpression != null)
+                    throw Error($"DEFAULT specified multiple times for column '{name}'.");
+
+                defaultExpression = ParseExpression();
+            }
+            else if (Peek().Type == TokenType.Constraint || IsContextualKeyword(Peek(), "CHECK"))
+            {
+                checkConstraints.Add(ParseCheckConstraintClause());
+            }
             else break;
         }
 
@@ -1548,6 +1592,59 @@ public sealed class Parser
             IsNullable = isNullable,
             Collation = collation,
             ForeignKey = foreignKey,
+            DefaultExpression = defaultExpression,
+            CheckConstraints = checkConstraints,
+        };
+    }
+
+    private CheckConstraintClause ParseCheckConstraintClause(
+        string? constraintName = null,
+        bool constraintPrefixConsumed = false)
+    {
+        if (!constraintPrefixConsumed && TryConsume(TokenType.Constraint))
+            constraintName = ExpectIdentifier();
+
+        if (!TryConsumeContextualKeyword("CHECK"))
+            throw Error("Expected CHECK constraint.");
+
+        Expect(TokenType.LeftParen);
+        Expression expression = ParseExpression();
+        Expect(TokenType.RightParen);
+        return new CheckConstraintClause
+        {
+            ConstraintName = constraintName,
+            Expression = expression,
+        };
+    }
+
+    private KeyConstraintClause ParseKeyConstraintClause(string? constraintName)
+    {
+        KeyConstraintKind kind;
+        if (TryConsume(TokenType.Primary))
+        {
+            Expect(TokenType.Key);
+            kind = KeyConstraintKind.PrimaryKey;
+        }
+        else if (TryConsume(TokenType.Unique))
+        {
+            kind = KeyConstraintKind.Unique;
+        }
+        else
+        {
+            throw Error("Expected PRIMARY KEY or UNIQUE constraint.");
+        }
+
+        Expect(TokenType.LeftParen);
+        var columns = new List<string> { ExpectIdentifier() };
+        while (TryConsume(TokenType.Comma))
+            columns.Add(ExpectIdentifier());
+        Expect(TokenType.RightParen);
+
+        return new KeyConstraintClause
+        {
+            ConstraintName = constraintName,
+            Kind = kind,
+            Columns = columns,
         };
     }
 
@@ -1566,21 +1663,8 @@ public sealed class Parser
             Expect(TokenType.RightParen);
         }
 
-        var onDelete = ForeignKeyOnDeleteAction.Restrict;
-        if (TryConsume(TokenType.On))
-        {
-            if (!TryConsume(TokenType.Delete))
-                throw Error($"Only ON DELETE is supported for column '{columnName}'.");
-
-            if (TryConsume(TokenType.Cascade))
-            {
-                onDelete = ForeignKeyOnDeleteAction.Cascade;
-            }
-            else
-            {
-                throw Error($"Only ON DELETE CASCADE is supported for column '{columnName}'.");
-            }
-        }
+        ForeignKeyOnDeleteAction onDelete = ParseForeignKeyOnDeleteAction(
+            $"column '{columnName}'");
 
         return new ForeignKeyClause
         {
@@ -1588,6 +1672,71 @@ public sealed class Parser
             ReferencedColumnName = referencedColumnName,
             OnDelete = onDelete,
         };
+    }
+
+    private ForeignKeyConstraintClause ParseTableForeignKeyClause(string? constraintName)
+    {
+        Expect(TokenType.Foreign);
+        Expect(TokenType.Key);
+        Expect(TokenType.LeftParen);
+        List<string> columns = ParseIdentifierList();
+        Expect(TokenType.RightParen);
+
+        Expect(TokenType.References);
+        string referencedTableName = ParseMultipartIdentifier();
+        List<string>? referencedColumns = null;
+        if (TryConsume(TokenType.LeftParen))
+        {
+            referencedColumns = ParseIdentifierList();
+            Expect(TokenType.RightParen);
+        }
+
+        ForeignKeyOnDeleteAction onDelete = ParseForeignKeyOnDeleteAction(
+            constraintName is { Length: > 0 }
+                ? $"foreign key constraint '{constraintName}'"
+                : "table-level foreign key");
+
+        return new ForeignKeyConstraintClause
+        {
+            ConstraintName = constraintName,
+            Columns = columns,
+            ReferencedTableName = referencedTableName,
+            ReferencedColumns = referencedColumns,
+            OnDelete = onDelete,
+        };
+    }
+
+    private List<string> ParseIdentifierList()
+    {
+        var identifiers = new List<string> { ExpectIdentifier() };
+        while (TryConsume(TokenType.Comma))
+            identifiers.Add(ExpectIdentifier());
+        return identifiers;
+    }
+
+    private ForeignKeyOnDeleteAction ParseForeignKeyOnDeleteAction(string context)
+    {
+        var onDelete = ForeignKeyOnDeleteAction.Restrict;
+        if (TryConsume(TokenType.On))
+        {
+            if (!TryConsume(TokenType.Delete))
+                throw Error($"Only ON DELETE is supported for {context}.");
+
+            if (TryConsume(TokenType.Cascade))
+            {
+                onDelete = ForeignKeyOnDeleteAction.Cascade;
+            }
+            else if (TryConsumeContextualKeyword("RESTRICT"))
+            {
+                onDelete = ForeignKeyOnDeleteAction.Restrict;
+            }
+            else
+            {
+                throw Error($"Only ON DELETE RESTRICT and ON DELETE CASCADE are supported for {context}.");
+            }
+        }
+
+        return onDelete;
     }
 
     private Statement ParseDrop()
@@ -1782,10 +1931,31 @@ public sealed class Parser
         if (t == TokenType.Add)
         {
             Advance();
-            // Optional COLUMN keyword
-            TryConsume(TokenType.Column);
-            var colDef = ParseColumnDef();
-            action = new AddColumnAction { Column = colDef };
+            if (TryConsume(TokenType.Constraint))
+            {
+                string constraintName = ExpectIdentifier();
+                if (!IsContextualKeyword(Peek(), "CHECK"))
+                {
+                    throw Error(
+                        "ALTER TABLE ADD CONSTRAINT currently supports named CHECK constraints only.");
+                }
+
+                CheckConstraintClause check = ParseCheckConstraintClause(
+                    constraintName,
+                    constraintPrefixConsumed: true);
+                action = new AddCheckConstraintAction
+                {
+                    ConstraintName = constraintName,
+                    Expression = check.Expression,
+                };
+            }
+            else
+            {
+                // Optional COLUMN keyword
+                TryConsume(TokenType.Column);
+                var colDef = ParseColumnDef();
+                action = new AddColumnAction { Column = colDef };
+            }
         }
         else if (t == TokenType.Drop)
         {
@@ -1804,6 +1974,56 @@ public sealed class Parser
             {
                 string colName = ExpectIdentifier();
                 action = new DropColumnAction { ColumnName = colName };
+            }
+        }
+        else if (t == TokenType.Alter)
+        {
+            Advance();
+            Expect(TokenType.Column);
+            string columnName = ExpectIdentifier();
+
+            if (TryConsume(TokenType.Set))
+            {
+                if (TryConsumeContextualKeyword("DEFAULT"))
+                {
+                    action = new AlterColumnSetDefaultAction
+                    {
+                        ColumnName = columnName,
+                        DefaultExpression = ParseExpression(),
+                    };
+                }
+                else if (TryConsume(TokenType.Not))
+                {
+                    Expect(TokenType.Null);
+                    action = new AlterColumnSetNotNullAction { ColumnName = columnName };
+                }
+                else
+                {
+                    throw Error(
+                        "ALTER COLUMN SET supports only SET DEFAULT <literal> and SET NOT NULL.");
+                }
+            }
+            else if (TryConsume(TokenType.Drop))
+            {
+                if (TryConsumeContextualKeyword("DEFAULT"))
+                {
+                    action = new AlterColumnDropDefaultAction { ColumnName = columnName };
+                }
+                else if (TryConsume(TokenType.Not))
+                {
+                    Expect(TokenType.Null);
+                    action = new AlterColumnDropNotNullAction { ColumnName = columnName };
+                }
+                else
+                {
+                    throw Error(
+                        "ALTER COLUMN DROP supports only DROP DEFAULT and DROP NOT NULL.");
+                }
+            }
+            else
+            {
+                throw Error(
+                    "ALTER COLUMN supports SET DEFAULT, DROP DEFAULT, SET NOT NULL, and DROP NOT NULL; changing a column type or collation requires a table rewrite and is not supported.");
             }
         }
         else if (t == TokenType.Rename)
@@ -1836,7 +2056,7 @@ public sealed class Parser
         }
         else
         {
-            throw Error($"Expected ADD, DROP, or RENAME after ALTER TABLE, got '{Peek().Value}'.");
+            throw Error($"Expected ADD, DROP, ALTER, or RENAME after ALTER TABLE, got '{Peek().Value}'.");
         }
 
         return new AlterTableStatement { TableName = tableName, Action = action };
@@ -1869,6 +2089,21 @@ public sealed class Parser
             }
         }
 
+        if (TryConsumeContextualKeyword("DEFAULT"))
+        {
+            if (columnNames != null)
+                throw Error("INSERT DEFAULT VALUES cannot specify a column list.");
+
+            Expect(TokenType.Values);
+            return new InsertStatement
+            {
+                TableName = tableName,
+                ColumnNames = null,
+                ValueRows = [new List<Expression>()],
+                IsDefaultValues = true,
+            };
+        }
+
         Expect(TokenType.Values);
 
         var valueRows = new List<List<Expression>>();
@@ -1878,7 +2113,9 @@ public sealed class Parser
             var row = new List<Expression>();
             do
             {
-                row.Add(ParseExpression());
+                row.Add(TryConsumeContextualKeyword("DEFAULT")
+                    ? new DefaultExpression()
+                    : ParseExpression());
             } while (TryConsume(TokenType.Comma));
             Expect(TokenType.RightParen);
             valueRows.Add(row);
@@ -1913,6 +2150,7 @@ public sealed class Parser
                 Left = compound.Left,
                 Right = compound.Right,
                 Operation = compound.Operation,
+                Quantifier = compound.Quantifier,
                 OrderBy = orderBy,
                 Limit = limit,
                 Offset = offset,
@@ -1927,12 +2165,16 @@ public sealed class Parser
 
         while (Peek().Type is TokenType.Union or TokenType.Except)
         {
-            var op = Advance().Type switch
+            var opToken = Advance().Type;
+            var op = opToken switch
             {
                 TokenType.Union => SetOperationKind.Union,
                 TokenType.Except => SetOperationKind.Except,
                 _ => throw new InvalidOperationException(),
             };
+            var quantifier = opToken == TokenType.Union && TryConsumeContextualKeyword("ALL")
+                ? SetQuantifier.All
+                : SetQuantifier.Distinct;
 
             var right = ParseIntersectExpression();
             left = new CompoundSelectStatement
@@ -1940,6 +2182,7 @@ public sealed class Parser
                 Left = left,
                 Right = right,
                 Operation = op,
+                Quantifier = quantifier,
             };
         }
 
@@ -1948,21 +2191,32 @@ public sealed class Parser
 
     private QueryStatement ParseIntersectExpression()
     {
-        QueryStatement left = ParseSelectCore();
+        QueryStatement left = ParseQueryPrimary();
 
         while (Peek().Type == TokenType.Intersect)
         {
             Advance();
-            var right = ParseSelectCore();
+            var right = ParseQueryPrimary();
             left = new CompoundSelectStatement
             {
                 Left = left,
                 Right = right,
                 Operation = SetOperationKind.Intersect,
+                Quantifier = SetQuantifier.Distinct,
             };
         }
 
         return left;
+    }
+
+    private QueryStatement ParseQueryPrimary()
+    {
+        if (!TryConsume(TokenType.LeftParen))
+            return ParseSelectCore();
+
+        var query = ParseQueryExpression();
+        Expect(TokenType.RightParen);
+        return query;
     }
 
     private SelectStatement ParseSelectCore()
@@ -1971,31 +2225,30 @@ public sealed class Parser
         bool isDistinct = TryConsume(TokenType.Distinct);
 
         var columns = new List<SelectColumn>();
-        if (Peek().Type == TokenType.Star)
+        do
         {
-            Advance();
-            columns.Add(new SelectColumn { IsStar = true });
-        }
-        else
-        {
-            do
+            if (Peek().Type == TokenType.Star)
             {
-                var expr = ParseExpression();
-                string? alias = null;
-                if (Peek().Type == TokenType.As)
-                {
-                    Advance();
-                    alias = ExpectIdentifier();
-                }
-                else if (Peek().Type == TokenType.Identifier)
-                {
-                    // Implicit alias: SELECT expr alias (no AS keyword)
-                    alias = Peek().Value;
-                    Advance();
-                }
-                columns.Add(new SelectColumn { Expression = expr, Alias = alias });
-            } while (TryConsume(TokenType.Comma));
-        }
+                Advance();
+                columns.Add(new SelectColumn { IsStar = true });
+                continue;
+            }
+
+            var expr = ParseExpression();
+            string? alias = null;
+            if (Peek().Type == TokenType.As)
+            {
+                Advance();
+                alias = ExpectIdentifier();
+            }
+            else if (Peek().Type == TokenType.Identifier)
+            {
+                // Implicit alias: SELECT expr alias (no AS keyword)
+                alias = Peek().Value;
+                Advance();
+            }
+            columns.Add(new SelectColumn { Expression = expr, Alias = alias });
+        } while (TryConsume(TokenType.Comma));
 
         TableRef from = TryConsume(TokenType.From)
             ? ParseTableRef()
@@ -2649,6 +2902,14 @@ public sealed class Parser
     private Expression ParsePostfix()
     {
         Expression expression = ParsePrimary();
+        if (TryConsumeContextualKeyword("OVER"))
+        {
+            if (expression is not FunctionCallExpression function)
+                throw Error("OVER can only follow a function call.");
+
+            expression = ParseWindowFunction(function);
+        }
+
         while (TryConsume(TokenType.Collate))
         {
             expression = new CollateExpression
@@ -2659,6 +2920,45 @@ public sealed class Parser
         }
 
         return expression;
+    }
+
+    private WindowFunctionExpression ParseWindowFunction(FunctionCallExpression function)
+    {
+        if (!TryConsume(TokenType.LeftParen))
+            throw Error("Named windows are not supported; OVER requires a parenthesized window specification.");
+
+        var partitionBy = new List<Expression>();
+        if (TryConsumeContextualKeyword("PARTITION"))
+        {
+            Expect(TokenType.By);
+            do
+            {
+                partitionBy.Add(ParseExpression());
+            } while (TryConsume(TokenType.Comma));
+        }
+
+        List<OrderByClause>? orderBy = ParseOptionalOrderBy();
+
+        if (IsContextualKeyword(Peek(), "ROWS") ||
+            IsContextualKeyword(Peek(), "RANGE") ||
+            IsContextualKeyword(Peek(), "GROUPS"))
+        {
+            throw Error("Explicit window frames are not supported in the experimental window-function tier.");
+        }
+
+        if (Peek().Type != TokenType.RightParen)
+            throw Error($"Unsupported window clause '{Peek().Value}'.");
+
+        Advance();
+        return new WindowFunctionExpression
+        {
+            Function = function,
+            Window = new WindowSpecification
+            {
+                PartitionBy = partitionBy,
+                OrderBy = orderBy ?? [],
+            },
+        };
     }
 
     private static bool IsAggregateFunctionToken(TokenType type) =>
@@ -2886,6 +3186,22 @@ public sealed class Parser
         }
         return false;
     }
+
+    private bool TryConsumeContextualKeyword(string keyword)
+    {
+        var token = Peek();
+        if (!IsContextualKeyword(token, keyword))
+        {
+            return false;
+        }
+
+        Advance();
+        return true;
+    }
+
+    private static bool IsContextualKeyword(Token token, string keyword) =>
+        token.Type == TokenType.Identifier &&
+        token.Value.Equals(keyword, StringComparison.OrdinalIgnoreCase);
 
     private CSharpDbException Error(string message) =>
         new(ErrorCode.SyntaxError, $"Syntax error at position {Peek().Position}: {message}");

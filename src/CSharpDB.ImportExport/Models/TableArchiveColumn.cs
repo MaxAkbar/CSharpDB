@@ -10,6 +10,7 @@ public sealed class TableArchiveColumn
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
     public string? Collation { get; init; }
+    public string? DefaultSql { get; init; }
 
     public static TableArchiveColumn FromColumn(ColumnDefinition column) => new()
     {
@@ -19,6 +20,7 @@ public sealed class TableArchiveColumn
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
         Collation = column.Collation,
+        DefaultSql = column.DefaultSql,
     };
 
     public ColumnDefinition ToColumn() => new()
@@ -29,5 +31,6 @@ public sealed class TableArchiveColumn
         IsPrimaryKey = IsPrimaryKey,
         IsIdentity = IsIdentity,
         Collation = Collation,
+        DefaultSql = DefaultSql,
     };
 }

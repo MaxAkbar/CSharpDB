@@ -5136,6 +5136,95 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UnionAll_PreservesDuplicatesNullsAndFirstBranchColumnName()
+    {
+        await _db.ExecuteAsync("CREATE TABLE union_all_left (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("CREATE TABLE union_all_right (val INTEGER)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO union_all_left VALUES (1), (1), (NULL)", TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync("INSERT INTO union_all_right VALUES (1), (NULL)", TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT val AS left_name FROM union_all_left " +
+            "UNION ALL SELECT val AS right_name FROM union_all_right " +
+            "ORDER BY left_name",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal("left_name", result.Schema[0].Name);
+        Assert.Equal(5, rows.Count);
+        Assert.Equal(2, rows.Count(row => row[0].IsNull));
+        Assert.Equal(3, rows.Count(row => !row[0].IsNull && row[0].AsInteger == 1));
+    }
+
+    [Fact]
+    public async Task UnionAll_PromotesNumericBranchesToTheCommonType()
+    {
+        await using var result = await _db.ExecuteAsync(
+            "SELECT 1 AS value UNION ALL SELECT 2.5 AS ignored_name ORDER BY value",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DbType.Real, result.Schema[0].Type);
+        Assert.Equal("value", result.Schema[0].Name);
+        Assert.Equal([1d, 2.5d], rows.Select(row => row[0].AsReal).ToArray());
+    }
+
+    [Fact]
+    public async Task UnionDistinct_UsesThePromotedNumericTypeForDuplicateElimination()
+    {
+        await using var result = await _db.ExecuteAsync(
+            "SELECT 1 AS value UNION SELECT 1.0 AS ignored_name",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(rows);
+        Assert.Equal(DbType.Real, rows[0][0].Type);
+        Assert.Equal(1d, rows[0][0].AsReal);
+    }
+
+    [Fact]
+    public async Task UnionAll_RejectsIncompatibleBranchTypesBeforeEnumeration()
+    {
+        var error = await Assert.ThrowsAsync<CSharpDbException>(async () =>
+            await _db.ExecuteAsync(
+                "SELECT 1 AS value UNION ALL SELECT 'text' AS value",
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(ErrorCode.TypeMismatch, error.Code);
+        Assert.Contains("left branch is Integer", error.Message, StringComparison.Ordinal);
+        Assert.Contains("right branch is Text", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnionAll_ParenthesizedOperandKeepsLocalOrderAndLimit()
+    {
+        await using var result = await _db.ExecuteAsync(
+            "SELECT 3 AS value " +
+            "UNION ALL (SELECT 2 AS value UNION ALL SELECT 1 AS value ORDER BY value LIMIT 1) " +
+            "ORDER BY value",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal([1L, 3L], rows.Select(row => row[0].AsInteger).ToArray());
+    }
+
+    [Fact]
+    public async Task CompoundView_RoundTripsParenthesizedUnionAll()
+    {
+        await _db.ExecuteAsync(
+            "CREATE VIEW union_all_grouped AS " +
+            "SELECT 1 AS value EXCEPT (SELECT 1 AS value UNION ALL SELECT 2 AS value)",
+            TestContext.Current.CancellationToken);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT value FROM union_all_grouped",
+            TestContext.Current.CancellationToken);
+        var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty(rows);
+    }
+
+    [Fact]
     public async Task Intersect_ReturnsDistinctSharedRows()
     {
         await _db.ExecuteAsync("CREATE TABLE intersect_left (val INTEGER)", TestContext.Current.CancellationToken);

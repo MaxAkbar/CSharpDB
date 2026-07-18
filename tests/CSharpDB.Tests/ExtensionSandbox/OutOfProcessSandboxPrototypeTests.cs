@@ -51,7 +51,7 @@ public sealed class OutOfProcessSandboxPrototypeTests
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromMilliseconds(150));
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () => await sandbox.InvokeCommandAsync(
                 "Sleep",
                 new Dictionary<string, object?> { ["delayMs"] = 5_000 },

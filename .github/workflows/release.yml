@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -38,6 +40,16 @@ jobs:
       - name: Guard NuGet package dependency closure
         shell: pwsh
         run: ./scripts/Test-NuGetPackageClosure.ps1
+
+      - name: Qualify SQL compatibility release snapshot
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          ./scripts/Test-SqlCompatibilityRelease.ps1 `
+            -Version $env:RELEASE_TAG `
+            -TagCommit $env:RELEASE_COMMIT
 
       - name: Restore
         run: dotnet restore CSharpDB.slnx

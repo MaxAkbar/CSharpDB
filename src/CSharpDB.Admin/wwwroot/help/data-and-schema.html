@@ -73,7 +73,8 @@
                     <thead><tr><th>Action</th><th>Description</th></tr></thead>
                     <tbody>
                         <tr><td>Run</td><td>Executes SQL and shows results, row count, and elapsed time.</td></tr>
-                        <tr><td>Analyze</td><td>Shows the execution plan without changing data.</td></tr>
+                        <tr><td>Estimate</td><td>Runs <code>EXPLAIN ESTIMATE FOR</code> to show query-estimation inputs and planner decisions without executing the target query.</td></tr>
+                        <tr><td>Analyze</td><td>Runs <code>ANALYZE</code> to collect persisted table, column, histogram, and index-prefix statistics for the query planner.</td></tr>
                         <tr><td>Format</td><td>Reformats SQL for readability.</td></tr>
                         <tr><td>Save</td><td>Stores reusable SQL in the saved query catalog.</td></tr>
                     </tbody>
