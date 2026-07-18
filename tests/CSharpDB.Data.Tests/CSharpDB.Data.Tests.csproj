@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CSharpDB.Data\CSharpDB.Data.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Daemon\CSharpDB.Daemon.csproj" />
   </ItemGroup>
 
   <ItemGroup>
