@@ -2,6 +2,7 @@ using CSharpDB.Data;
 using CSharpDB.Sql;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -1333,6 +1334,204 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
     }
 
     [Fact]
+    public void MigrationsSqlGenerator_DecimalScaleChange_RemainsExplicitlyRejected()
+    {
+        string dbPath =
+            Path.Combine(
+                _workspace,
+                "alter-column-decimal-scale-rejection.db");
+        using var db =
+            new MigrationRuntimeContext(
+                $"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+
+        var operation = new AlterColumnOperation
+        {
+            Name = "Amount",
+            Table = "Items",
+            ClrType = typeof(decimal),
+            ColumnType = "INTEGER",
+            Precision = 18,
+            Scale = 4,
+            IsNullable = false,
+            OldColumn = new AddColumnOperation
+            {
+                Name = "Amount",
+                Table = "Items",
+                ClrType = typeof(decimal),
+                ColumnType = "INTEGER",
+                Precision = 18,
+                Scale = 2,
+                IsNullable = false,
+            },
+        };
+
+        NotSupportedException error =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [operation],
+                    model: null));
+        Assert.Contains(
+            "from decimal(18, 2) to decimal(18, 4)",
+            error.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "data rewrite",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        using var scaleTwo =
+            new DecimalScaleTwoMigrationContext(
+                $"Data Source={dbPath}");
+        using var scaleFour =
+            new DecimalScaleFourMigrationContext(
+                $"Data Source={dbPath}");
+        IMigrationsModelDiffer modelDiffer =
+            scaleFour.GetService<IMigrationsModelDiffer>();
+        AlterColumnOperation generatedOperation =
+            Assert.IsType<AlterColumnOperation>(
+                Assert.Single(
+                    modelDiffer.GetDifferences(
+                        scaleTwo
+                            .GetService<IDesignTimeModel>()
+                            .Model
+                            .GetRelationalModel(),
+                        scaleFour
+                            .GetService<IDesignTimeModel>()
+                            .Model
+                            .GetRelationalModel())));
+        Assert.Equal(
+            typeof(long),
+            generatedOperation.ClrType);
+        Assert.Equal(
+            "18,4",
+            generatedOperation[
+                "CSharpDB:DecimalStorage"]);
+        Assert.Equal(
+            "18,2",
+            generatedOperation.OldColumn[
+                "CSharpDB:DecimalStorage"]);
+
+        NotSupportedException generatedError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [generatedOperation],
+                    scaleFour.Model));
+        Assert.Contains(
+            "from decimal(18, 2) to decimal(18, 4)",
+            generatedError.Message,
+            StringComparison.Ordinal);
+
+        using var integerSource =
+            new LongDecimalTransitionMigrationContext(
+                $"Data Source={dbPath}");
+        AlterColumnOperation transitionOperation =
+            Assert.IsType<AlterColumnOperation>(
+                Assert.Single(
+                    modelDiffer.GetDifferences(
+                        integerSource
+                            .GetService<IDesignTimeModel>()
+                            .Model
+                            .GetRelationalModel(),
+                        scaleTwo
+                            .GetService<IDesignTimeModel>()
+                            .Model
+                            .GetRelationalModel())));
+        Assert.Equal(
+            "18,2",
+            transitionOperation[
+                "CSharpDB:DecimalStorage"]);
+        Assert.Null(
+            transitionOperation.OldColumn[
+                "CSharpDB:DecimalStorage"]);
+        NotSupportedException transitionError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [transitionOperation],
+                    scaleTwo.Model));
+        Assert.Contains(
+            "into or out of provider-owned scaled decimal storage",
+            transitionError.Message,
+            StringComparison.Ordinal);
+
+        var createTable =
+            new CreateTableOperation
+            {
+                Name = "DecimalKeys",
+            };
+        createTable.Columns.Add(
+            new AddColumnOperation
+            {
+                Name = "Id",
+                Table = createTable.Name,
+                ClrType = typeof(decimal),
+                ColumnType = "INTEGER",
+                Precision = 18,
+                Scale = 2,
+                IsNullable = false,
+            });
+        createTable.PrimaryKey =
+            new AddPrimaryKeyOperation
+            {
+                Name = "PK_DecimalKeys",
+                Table = createTable.Name,
+                Columns = ["Id"],
+            };
+        NotSupportedException keyError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [createTable],
+                    model: null));
+        Assert.Contains(
+            "decimal primary key",
+            keyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        var addDecimalPrimaryKey =
+            new AddPrimaryKeyOperation
+            {
+                Name = "PK_DecimalItems_Amount",
+                Table = "DecimalItems",
+                Columns = ["Amount"],
+            };
+        NotSupportedException addKeyError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [addDecimalPrimaryKey],
+                    scaleTwo.Model));
+        Assert.Contains(
+            "decimal primary key",
+            addKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        using var converted =
+            new ConvertedDecimalMigrationContext(
+                $"Data Source={dbPath}");
+        var convertedColumn =
+            new AddColumnOperation
+            {
+                Name = "Amount",
+                Table = "ConvertedItems",
+                ClrType = typeof(decimal),
+                ColumnType = "INTEGER",
+                Precision = 30,
+                Scale = 10,
+                IsNullable = false,
+            };
+        string convertedSql =
+            Assert.Single(
+                generator.Generate(
+                    [convertedColumn],
+                    converted.Model))
+                .CommandText;
+        Assert.Contains(
+            "\"Amount\" INTEGER",
+            convertedSql,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task MigrationsSqlGenerator_AlterColumnNumericType_ExecutesUpAndDownAndPersists()
     {
         string dbPath = Path.Combine(_workspace, "alter-column-numeric-type.db");
@@ -2019,6 +2218,89 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
             => optionsBuilder.UseCSharpDb(connectionString);
     }
 
+    private sealed class DecimalScaleTwoMigrationContext(
+        string connectionString)
+        : DbContext
+    {
+        public DbSet<DecimalMigrationItem> Items =>
+            Set<DecimalMigrationItem>();
+
+        protected override void OnConfiguring(
+            DbContextOptionsBuilder optionsBuilder) =>
+            optionsBuilder.UseCSharpDb(connectionString);
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DecimalMigrationItem>()
+                .ToTable("DecimalItems");
+            modelBuilder.Entity<DecimalMigrationItem>()
+                .Property(item => item.Amount)
+                .HasPrecision(18, 2);
+        }
+    }
+
+    private sealed class DecimalScaleFourMigrationContext(
+        string connectionString)
+        : DbContext
+    {
+        public DbSet<DecimalMigrationItem> Items =>
+            Set<DecimalMigrationItem>();
+
+        protected override void OnConfiguring(
+            DbContextOptionsBuilder optionsBuilder) =>
+            optionsBuilder.UseCSharpDb(connectionString);
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DecimalMigrationItem>()
+                .ToTable("DecimalItems");
+            modelBuilder.Entity<DecimalMigrationItem>()
+                .Property(item => item.Amount)
+                .HasPrecision(18, 4);
+        }
+    }
+
+    private sealed class ConvertedDecimalMigrationContext(
+        string connectionString)
+        : DbContext
+    {
+        public DbSet<DecimalMigrationItem> Items =>
+            Set<DecimalMigrationItem>();
+
+        protected override void OnConfiguring(
+            DbContextOptionsBuilder optionsBuilder) =>
+            optionsBuilder.UseCSharpDb(connectionString);
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DecimalMigrationItem>()
+                .ToTable("ConvertedItems");
+            modelBuilder.Entity<DecimalMigrationItem>()
+                .Property(item => item.Amount)
+                .HasConversion<long>();
+        }
+    }
+
+    private sealed class LongDecimalTransitionMigrationContext(
+        string connectionString)
+        : DbContext
+    {
+        public DbSet<LongDecimalMigrationItem> Items =>
+            Set<LongDecimalMigrationItem>();
+
+        protected override void OnConfiguring(
+            DbContextOptionsBuilder optionsBuilder) =>
+            optionsBuilder.UseCSharpDb(connectionString);
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<LongDecimalMigrationItem>()
+                .ToTable("DecimalItems");
+    }
+
     private static async Task ExecuteScriptAsync(string dbPath, string script)
     {
         await using var connection = new CSharpDbConnection($"Data Source={dbPath}");
@@ -2061,6 +2343,20 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
         public string Name { get; set; } = string.Empty;
 
         public string? Slug { get; set; }
+    }
+
+    private sealed class DecimalMigrationItem
+    {
+        public int Id { get; set; }
+
+        public decimal Amount { get; set; }
+    }
+
+    private sealed class LongDecimalMigrationItem
+    {
+        public int Id { get; set; }
+
+        public long Amount { get; set; }
     }
 
     [DbContext(typeof(MigrationRuntimeContext))]

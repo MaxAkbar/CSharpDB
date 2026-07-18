@@ -119,10 +119,16 @@
       "id": "types.decimal",
       "category": "Data types",
       "name": "Exact decimal mapping",
-      "status": "Planned",
+      "status": "Partial",
       "tier": "tier1",
-      "summary": "Decimal currently requires an explicit application value converter.",
-      "proofTests": ["ModelValidation_RejectsDecimalWithoutConverter"]
+      "summary": "Decimal and nullable decimal use provider-owned scaled INTEGER storage without an application converter. The default is decimal(18,2); precision 1-18 and scale 0-precision support exact round trips, parameters used with one facet mapping, comparisons, ordering, and ordinary indexes. Excess fractional digits and overflow are rejected rather than rounded. Keys, defaults, generated values, custom store types, computed decimal expressions (including arithmetic, numeric casts, conditionals/coalescing, and aggregates), decimal collection/subquery Contains, cross-facet parameter reuse, comparisons with application-converter decimal mappings, model-mapped decimal functions, and precision/scale-changing migrations remain unsupported and fail explicitly. Complex properties are rejected until flattened mappings are qualified.",
+      "proofTests": [
+        "DecimalScaledIntegerMapping_RoundTripsAndSupportsParametersComparisonsAndOrdering",
+        "DecimalScaledIntegerMapping_RejectsLossyAndOverflowingValues",
+        "DecimalModelValidation_RejectsUnsupportedFacetsDefaultsAndKeys",
+        "UnsupportedDecimalExpressions_ReportBeforeCommandDispatch",
+        "MigrationsSqlGenerator_DecimalScaleChange_RemainsExplicitlyRejected"
+      ]
     },
     {
       "id": "migrations.ensure-created",
@@ -246,7 +252,7 @@
       "name": "Basic LINQ queries",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "Where, ordering, Skip/Take pagination, scalar projection, Single, Any, Count, constant/parameter collection Contains, and simple Include queries are supported.",
+      "summary": "Where, ordering, Skip/Take pagination, scalar projection, Single, Any, Count, non-decimal constant/parameter collection Contains, and simple Include queries are supported.",
       "proofTests": ["Queries_IncludePaginationAndContainsOverConstantsAndParameters_Succeed"]
     },
     {
@@ -323,11 +329,12 @@
       "name": "Unsupported LINQ diagnostics",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "Unsupported CLR methods and members, recognized TakeWhile and SkipWhile operators, unsupported distinct aggregate shapes, and unsupported grouped aggregate shapes retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1005 guidance before command dispatch.",
+      "summary": "Unsupported CLR methods and members, recognized TakeWhile/SkipWhile, Concat/Union/Except/Intersect, and ExecuteUpdate operators, unsupported distinct/grouped aggregate shapes, and unsafe decimal expressions retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1006 guidance before command dispatch.",
       "proofTests": [
         "UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch",
         "UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch",
-        "UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch"
+        "UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch",
+        "UnsupportedDecimalExpressions_ReportBeforeCommandDispatch"
       ]
     },
     {

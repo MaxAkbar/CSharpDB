@@ -187,6 +187,14 @@ public sealed class SampleSmokeTests : IAsyncLifetime
                 var rows = await postCountQuery.ToListAsync(Ct);
                 Assert.Equal(3L, rows[0][0].AsInteger);
             }
+
+            await using (var budgetQuery = await db.ExecuteAsync(
+                             "SELECT MonthlyBudget FROM Blogs WHERE Name = 'Engineering';",
+                             Ct))
+            {
+                var rows = await budgetQuery.ToListAsync(Ct);
+                Assert.Equal(125050L, rows[0][0].AsInteger);
+            }
         }
         finally
         {

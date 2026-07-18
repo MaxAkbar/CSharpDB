@@ -45,13 +45,30 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
 
     protected override RelationalTypeMapping? FindMapping(in RelationalTypeMappingInfo mappingInfo)
     {
+        Type? clrType = mappingInfo.ClrType;
+        Type? unwrappedClrType = clrType is null
+            ? null
+            : Nullable.GetUnderlyingType(clrType) ?? clrType;
+
+        if (unwrappedClrType == typeof(decimal))
+        {
+            (int precision, int scale) =
+                CSharpDbDecimalStorage.ResolveFacets(
+                    mappingInfo.Precision,
+                    mappingInfo.Scale);
+            return Compose(
+                LongMapping,
+                new CSharpDbDecimalToInt64Converter(
+                    precision,
+                    scale));
+        }
+
         if (!string.IsNullOrWhiteSpace(mappingInfo.StoreTypeNameBase)
             && StoreTypeMappings.TryGetValue(mappingInfo.StoreTypeNameBase, out var storeTypeMapping))
         {
             return storeTypeMapping;
         }
 
-        Type? clrType = mappingInfo.ClrType;
         if (clrType is null)
             return null;
 
@@ -78,7 +95,6 @@ public sealed class CSharpDbTypeMappingSource : RelationalTypeMappingSource
             var type when type == typeof(DateOnly) => DateOnlyMapping,
             var type when type == typeof(TimeOnly) => TimeOnlyMapping,
             var type when type == typeof(byte[]) => BlobMapping,
-            var type when type == typeof(decimal) => null,
             _ => null,
         };
     }

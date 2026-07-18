@@ -1,3 +1,4 @@
+using CSharpDB.EntityFrameworkCore.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using System.Linq.Expressions;
@@ -6,6 +7,10 @@ namespace CSharpDB.EntityFrameworkCore.Query.Internal;
 
 public sealed class CSharpDbQuerySqlGenerator : QuerySqlGenerator
 {
+    private readonly Dictionary<string, (int Precision, int Scale)>
+        _decimalParameterFacets =
+            new(StringComparer.Ordinal);
+
     public CSharpDbQuerySqlGenerator(QuerySqlGeneratorDependencies dependencies)
         : base(dependencies)
     {
@@ -28,6 +33,40 @@ public sealed class CSharpDbQuerySqlGenerator : QuerySqlGenerator
 
             Visit(selectExpression.Offset);
         }
+    }
+
+    protected override void GenerateRootCommand(
+        Expression queryExpression)
+    {
+        _decimalParameterFacets.Clear();
+        base.GenerateRootCommand(queryExpression);
+    }
+
+    protected override Expression VisitSqlParameter(
+        SqlParameterExpression sqlParameterExpression)
+    {
+        if (sqlParameterExpression.TypeMapping?.Converter is
+            CSharpDbDecimalToInt64Converter converter)
+        {
+            var facets =
+                (converter.Precision, converter.Scale);
+            if (_decimalParameterFacets.TryGetValue(
+                    sqlParameterExpression.Name,
+                    out var previousFacets) &&
+                previousFacets != facets)
+            {
+                throw new InvalidOperationException(
+                    CSharpDbQueryTranslationDiagnostics
+                        .ForDecimal(
+                            $"Parameter '{sqlParameterExpression.Name}' is reused with incompatible decimal facets decimal({previousFacets.Precision}, {previousFacets.Scale}) and decimal({facets.Precision}, {facets.Scale})."));
+            }
+
+            _decimalParameterFacets[
+                sqlParameterExpression.Name] = facets;
+        }
+
+        return base.VisitSqlParameter(
+            sqlParameterExpression);
     }
 
     protected override Expression VisitSelect(SelectExpression selectExpression)

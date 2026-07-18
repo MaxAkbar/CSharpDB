@@ -1,3 +1,4 @@
+using CSharpDB.EntityFrameworkCore.Storage.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -21,6 +22,20 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         if (model.GetSequences().Any())
             throw new NotSupportedException("Sequences and HiLo are not supported by the CSharpDB EF Core provider.");
 
+        foreach (IDbFunction dbFunction in
+                 model.GetDbFunctions())
+        {
+            if (IsDecimalType(
+                    dbFunction.ReturnType) ||
+                dbFunction.Parameters.Any(parameter =>
+                    IsDecimalType(
+                        parameter.ClrType)))
+            {
+                throw new NotSupportedException(
+                    $"DbFunction '{dbFunction.ModelName}' uses decimal parameters or return values, which are outside CSharpDB's exact scaled-integer foundation.");
+            }
+        }
+
         foreach (var entityType in model.GetEntityTypes())
         {
             ValidateEntityType(entityType);
@@ -35,6 +50,12 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         string? tableName = entityType.GetTableName();
         if (!string.IsNullOrWhiteSpace(tableName))
             CSharpDbProviderValidation.ValidateSimpleIdentifier(tableName, "Table name");
+
+        if (entityType.GetComplexProperties().Any())
+        {
+            throw new NotSupportedException(
+                $"Entity '{entityType.DisplayName()}' uses complex properties, which are not yet supported by the CSharpDB EF Core provider.");
+        }
 
         foreach (var property in entityType.GetProperties())
         {
@@ -63,10 +84,51 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
     {
         CSharpDbProviderValidation.ValidateSimpleIdentifier(property.Name, "Column name");
 
-        if (property.ClrType == typeof(decimal) && property.GetValueConverter() is null)
+        Type clrType = Nullable.GetUnderlyingType(
+                property.ClrType) ??
+            property.ClrType;
+        if (clrType == typeof(decimal) &&
+            property.GetValueConverter() is null)
         {
-            throw new NotSupportedException(
-                $"Property '{entityType.DisplayName()}.{property.Name}' uses decimal without an explicit value converter. Map it to TEXT or REAL explicitly for the CSharpDB EF Core provider.");
+            (int precision, int scale) =
+                CSharpDbDecimalStorage.ResolveFacets(
+                    property.GetPrecision(),
+                    property.GetScale());
+
+            string? configuredStoreType =
+                property.FindAnnotation(
+                        RelationalAnnotationNames.ColumnType)?
+                    .Value as string;
+            if (configuredStoreType is not null &&
+                !string.Equals(
+                    configuredStoreType.Trim(),
+                    "INTEGER",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new NotSupportedException(
+                    $"Property '{entityType.DisplayName()}.{property.Name}' configures store type '{configuredStoreType}', but CSharpDB decimal({precision}, {scale}) uses provider-owned scaled INTEGER storage. Configure precision and scale with HasPrecision instead of HasColumnType.");
+            }
+
+            if (entityType.GetKeys().Any(key =>
+                    key.Properties.Contains(property)))
+            {
+                throw new NotSupportedException(
+                    $"Property '{entityType.DisplayName()}.{property.Name}' uses CSharpDB decimal({precision}, {scale}) as a key. Provider-owned decimal key mappings are not supported in this bounded release.");
+            }
+
+            if (property.FindAnnotation(
+                    RelationalAnnotationNames.DefaultValue) is not null ||
+                property.GetDefaultValueSql() is not null)
+            {
+                throw new NotSupportedException(
+                    $"Property '{entityType.DisplayName()}.{property.Name}' configures a database default for CSharpDB decimal({precision}, {scale}). Decimal defaults are not supported until scaled-literal migration semantics are implemented.");
+            }
+
+            if (property.ValueGenerated != ValueGenerated.Never)
+            {
+                throw new NotSupportedException(
+                    $"Property '{entityType.DisplayName()}.{property.Name}' uses generated-value semantics with CSharpDB decimal({precision}, {scale}), which are not supported in this bounded release.");
+            }
         }
 
         if (property.GetComputedColumnSql() is not null)
@@ -91,4 +153,8 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
                 $"Foreign key '{foreignKey.Properties[0].Name}' uses delete behavior '{foreignKey.DeleteBehavior}', which is not supported by the CSharpDB EF Core provider in v1.");
         }
     }
+
+    private static bool IsDecimalType(Type type) =>
+        (Nullable.GetUnderlyingType(type) ?? type) ==
+        typeof(decimal);
 }

@@ -19,6 +19,8 @@ public sealed class BloggingContext(string databasePath) : DbContext
         modelBuilder.Entity<Blog>(blog =>
         {
             blog.Property(item => item.Name).IsRequired();
+            blog.Property(item => item.MonthlyBudget)
+                .HasPrecision(18, 2);
             blog.HasMany(item => item.Posts)
                 .WithOne(item => item.Blog)
                 .HasForeignKey(item => item.BlogId)
@@ -37,6 +39,8 @@ public sealed class Blog
     public int Id { get; set; }
 
     public string Name { get; set; } = string.Empty;
+
+    public decimal MonthlyBudget { get; set; }
 
     public List<Post> Posts { get; set; } = [];
 }

@@ -241,12 +241,48 @@ surrounding transaction. If those commands are extracted into a custom deploymen
 script, keep them in one transaction so a failed later facet also restores the
 original table and index roots.
 
+## Exact Decimal Foundation
+
+`decimal` and nullable `decimal` properties no longer require an application
+value converter for the bounded exact mapping. The provider stores values as
+signed scaled `INTEGER`s, so round trips, parameters used with one facet
+mapping, equality/range comparisons, ordering, and ordinary indexes remain
+exact:
+
+```csharp
+modelBuilder.Entity<Invoice>()
+    .Property(invoice => invoice.Amount)
+    .HasPrecision(18, 4);
+```
+
+The default is `decimal(18, 2)`. Precision must be between 1 and 18, and scale
+must be between 0 and precision. A write with more fractional digits than the
+configured scale is rejected instead of rounded, and a value outside the
+configured precision is rejected as overflow. Raw SQL sees the scaled
+`INTEGER` representation; for example, `12.3400` at scale 4 is stored as
+`123400`.
+
+This first slice deliberately rejects decimal keys, database defaults,
+generated values, precision/scale-changing migrations, and computed decimal
+expressions including arithmetic, numeric casts, conditionals/coalescing, and
+`Sum`/`Average`/`Min`/`Max`. Decimal collection or subquery `Contains` and
+reusing one captured parameter across different decimal facets are also
+rejected, as are comparisons with application-converter decimal mappings and
+model-mapped functions with decimal parameters or returns. Unsafe query
+expressions fail before command dispatch with
+`CDBEF1006`. Configure precision and scale with
+`HasPrecision(precision, scale)`; custom decimal store-type declarations are
+not accepted for the provider-owned mapping. Applications that call
+`IMigrationsSqlGenerator` directly with a hand-authored `AddPrimaryKeyOperation`
+must pass the target model; with `model: null`, that low-level operation does
+not carry enough column metadata to identify a decimal mapping.
+
 ## LINQ Translation
 
 The provider qualifies a deliberately bounded server-side LINQ surface.
 Alongside `Where`, ordering, `Skip`/`Take`, scalar projections, `Single`,
-`Any`, `Count`, constant/parameter collection `Contains`, and simple
-`Include`, these CLR members and methods translate to CSharpDB SQL:
+`Any`, `Count`, non-decimal constant/parameter collection `Contains`, and
+simple `Include`, these CLR members and methods translate to CSharpDB SQL:
 
 - `string.Length`
 - parameterless `ToLower()`, `ToLowerInvariant()`, `ToUpper()`, and
@@ -311,9 +347,10 @@ provider guidance:
 |------|---------|
 | `CDBEF1001` | Unsupported CLR method |
 | `CDBEF1002` | Unsupported CLR member |
-| `CDBEF1003` | Recognized unsupported query operator, currently `TakeWhile` or `SkipWhile` |
+| `CDBEF1003` | Recognized unsupported query operator: `TakeWhile`, `SkipWhile`, `Concat`, `Union`, `Except`, `Intersect`, or `ExecuteUpdate` |
 | `CDBEF1004` | Unsupported distinct aggregate shape |
 | `CDBEF1005` | Unsupported grouped aggregate shape |
+| `CDBEF1006` | Unsupported decimal operation outside the exact scaled-integer foundation |
 
 When client evaluation is intentional, apply selective supported filters
 first, then call `AsEnumerable()` explicitly before the unsupported portion.
@@ -342,12 +379,18 @@ an entire table.
 | Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
+| Exact decimal mapping | Partial | Provider-owned scaled `INTEGER` storage for precision 1–18; exact round trips, parameters, comparisons, and ordering |
 | Bounded LINQ/query subset | Partial | Basic operators plus the string, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, and aggregate shapes receive provider diagnostics |
-| Supported CLR types | Yes | `bool`, integral types, enums, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
+| Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
 
 ## Current Limitations
 
-- `decimal` requires an explicit value converter
+- provider-owned decimal mapping does not yet support keys, defaults, generated
+  values, computed decimal expressions, or precision/scale-changing migrations
+- complex properties are rejected until their flattened column mappings are
+  formally qualified
+- `ExecuteUpdate` is rejected until assignment conversions and decimal facets
+  are formally qualified
 - schemas are unsupported in runtime and migrations
 - computed columns, `DefaultValueSql`, and rowversion are unsupported
 - string `StartsWith`, `EndsWith`, instance `Contains`, `StringComparison`

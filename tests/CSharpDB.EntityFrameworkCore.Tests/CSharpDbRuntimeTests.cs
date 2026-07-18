@@ -1786,14 +1786,609 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ModelValidation_RejectsDecimalWithoutConverter()
+    public async Task DecimalScaledIntegerMapping_RoundTripsAndSupportsParametersComparisonsAndOrdering()
     {
         string dbPath = GetDbPath("decimal");
 
-        await using var db = new DecimalModelContext($"Data Source={dbPath}");
-        var error = await Assert.ThrowsAsync<NotSupportedException>(() => db.Database.EnsureCreatedAsync(Ct));
+        await using (var db =
+                     new DecimalModelContext(
+                         $"Data Source={dbPath}"))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.Items.AddRange(
+                new DecimalEntity
+                {
+                    Amount = -99999999999999.9999m,
+                    OptionalAmount = null,
+                },
+                new DecimalEntity
+                {
+                    Amount = 0.0100m,
+                    OptionalAmount = 12.34m,
+                },
+                new DecimalEntity
+                {
+                    Amount = 12345678901234.5678m,
+                    OptionalAmount = -0.01m,
+                });
+            await db.SaveChangesAsync(Ct);
+            db.ChangeTracker.Clear();
 
-        Assert.Contains("decimal without an explicit value converter", error.Message, StringComparison.OrdinalIgnoreCase);
+            decimal minimum = -0.0100m;
+            IQueryable<decimal> query = db.Items
+                .Where(item => item.Amount >= minimum)
+                .OrderBy(item => item.Amount)
+                .Select(item => item.Amount);
+
+            string sql = query.ToQueryString();
+            Assert.Contains(
+                "@minimum='-100'",
+                sql,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "ORDER BY",
+                sql,
+                StringComparison.Ordinal);
+            Assert.Equal(
+                [0.0100m, 12345678901234.5678m],
+                await query.ToListAsync(Ct));
+
+            Assert.Equal(
+                -0.01m,
+                await db.Items
+                    .Where(item =>
+                        item.OptionalAmount != null &&
+                        item.OptionalAmount < 0m)
+                    .Select(item => item.OptionalAmount)
+                    .SingleAsync(Ct));
+
+            DecimalEntity updated =
+                await db.Items.SingleAsync(
+                    item => item.Amount == 0.0100m,
+                    Ct);
+            updated.Amount = 42.4200m;
+            updated.OptionalAmount = 0.00m;
+            await db.SaveChangesAsync(Ct);
+            db.ChangeTracker.Clear();
+
+            await db.Database.OpenConnectionAsync(Ct);
+            await using var command =
+                db.Database.GetDbConnection().CreateCommand();
+            command.CommandText =
+                "SELECT Amount FROM Items WHERE Amount > 0 ORDER BY Amount DESC LIMIT 1";
+            object? stored = await command.ExecuteScalarAsync(Ct);
+            Assert.Equal(
+                123456789012345678L,
+                Convert.ToInt64(stored));
+        }
+
+        await using var reopened =
+            new DecimalModelContext(
+                $"Data Source={dbPath}");
+        Assert.Equal(
+            [
+                -99999999999999.9999m,
+                42.4200m,
+                12345678901234.5678m,
+            ],
+            await reopened.Items
+                .OrderBy(item => item.Amount)
+                .Select(item => item.Amount)
+                .ToListAsync(Ct));
+
+        string defaultFacetPath =
+            GetDbPath("decimal-default-facets");
+        await using var defaultFacets =
+            new DefaultFacetDecimalContext(
+                $"Data Source={defaultFacetPath}");
+        await defaultFacets.Database.EnsureCreatedAsync(Ct);
+        defaultFacets.Items.Add(new DecimalEntity
+        {
+            Amount = 12.34m,
+        });
+        await defaultFacets.SaveChangesAsync(Ct);
+        await defaultFacets.Database.OpenConnectionAsync(Ct);
+        await using var defaultFacetCommand =
+            defaultFacets.Database.GetDbConnection()
+                .CreateCommand();
+        defaultFacetCommand.CommandText =
+            "SELECT Amount FROM Items";
+        Assert.Equal(
+            1234L,
+            Convert.ToInt64(
+                await defaultFacetCommand.ExecuteScalarAsync(
+                    Ct)));
+    }
+
+    [Fact]
+    public async Task DecimalScaledIntegerMapping_RejectsLossyAndOverflowingValues()
+    {
+        string scalePath =
+            GetDbPath("decimal-scale-rejection");
+        await using (var db =
+                     new DecimalModelContext(
+                         $"Data Source={scalePath}"))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.Items.Add(new DecimalEntity
+            {
+                Amount = 1.23456m,
+            });
+
+            Exception error =
+                await Assert.ThrowsAnyAsync<Exception>(
+                    () => db.SaveChangesAsync(Ct));
+            Assert.Contains(
+                "more than 4 fractional digits",
+                error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        string precisionPath =
+            GetDbPath("decimal-precision-rejection");
+        await using var overflowDb =
+            new DecimalModelContext(
+                $"Data Source={precisionPath}");
+        await overflowDb.Database.EnsureCreatedAsync(Ct);
+        overflowDb.Items.Add(new DecimalEntity
+        {
+            Amount = 100000000000000.0000m,
+        });
+
+        Exception overflow =
+            await Assert.ThrowsAnyAsync<Exception>(
+                () => overflowDb.SaveChangesAsync(Ct));
+        Assert.Contains(
+            "exceeds CSharpDB decimal(18, 4)",
+            overflow.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+
+        overflowDb.ChangeTracker.Clear();
+        await overflowDb.Database.ExecuteSqlRawAsync(
+            "INSERT INTO Items (Amount, OptionalAmount, ComparisonAmount) VALUES (1000000000000000000, NULL, 0)",
+            cancellationToken: Ct);
+        Exception storedOverflow =
+            await Assert.ThrowsAnyAsync<Exception>(
+                () => overflowDb.Items
+                    .AsNoTracking()
+                    .SingleAsync(Ct));
+        Assert.Contains(
+            "Stored scaled integer '1000000000000000000' exceeds CSharpDB decimal(18, 4)",
+            storedOverflow.ToString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DecimalModelValidation_RejectsUnsupportedFacetsDefaultsAndKeys()
+    {
+        await AssertDecimalModelErrorAsync<
+            InvalidDecimalPrecisionContext>(
+            "precision 19");
+        await AssertDecimalModelErrorAsync<
+            InvalidDecimalScaleContext>(
+            "decimal(4, 5) is invalid");
+        await AssertDecimalModelErrorAsync<
+            DecimalDefaultContext>(
+            "Decimal defaults are not supported");
+        await AssertDecimalModelErrorAsync<
+            DecimalKeyContext>(
+            "as a key");
+        await AssertDecimalModelErrorAsync<
+            DecimalGeneratedContext>(
+            "generated-value semantics");
+        await AssertDecimalModelErrorAsync<
+            DecimalCustomStoreTypeContext>(
+            "configures store type 'REAL'");
+        await AssertDecimalModelErrorAsync<
+            DecimalComplexTypeContext>(
+            "complex properties");
+        await AssertDecimalModelErrorAsync<
+            DecimalDbFunctionContext>(
+            "uses decimal parameters or return values");
+    }
+
+    [Fact]
+    public async Task UnsupportedDecimalExpressions_ReportBeforeCommandDispatch()
+    {
+        string dbPath =
+            GetDbPath("decimal-expression-diagnostics");
+        var interceptor = new ReaderCountingInterceptor();
+        await using var db =
+            new DecimalModelContext(
+                $"Data Source={dbPath}",
+                interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Items.Add(new DecimalEntity
+        {
+            Amount = 12.3400m,
+        });
+        await db.SaveChangesAsync(Ct);
+        interceptor.Reset();
+
+        InvalidOperationException arithmeticError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Where(item =>
+                        item.Amount * 2m > 20m)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            arithmeticError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Multiply",
+            arithmeticError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException castError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Where(item =>
+                        (decimal)item.Id < item.Amount)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            castError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Convert",
+            castError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException mixedScaleError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Where(item =>
+                        item.OptionalAmount != null &&
+                        item.Amount >
+                        item.OptionalAmount.Value)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            mixedScaleError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "different scales",
+            mixedScaleError.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException mixedScaleEqualsError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Where(item =>
+                        item.OptionalAmount != null &&
+                        item.Amount.Equals(
+                            item.OptionalAmount.Value))
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            mixedScaleEqualsError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "different scales",
+            mixedScaleEqualsError.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        decimal sharedThreshold = 1m;
+        InvalidOperationException reusedParameterError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Where(item =>
+                        item.Amount > sharedThreshold &&
+                        item.ComparisonAmount >
+                        sharedThreshold)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            reusedParameterError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "reused with incompatible decimal facets",
+            reusedParameterError.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException containsError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Where(item =>
+                        db.Items
+                            .Select(candidate =>
+                                candidate
+                                    .OptionalAmount!.Value)
+                            .Contains(item.Amount))
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            containsError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Contains",
+            containsError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        var decimalValues =
+            new List<decimal>
+            {
+                12.34m,
+            };
+        InvalidOperationException collectionContainsError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Where(item =>
+                        decimalValues.Contains(
+                            item.Amount))
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            collectionContainsError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Contains",
+            collectionContainsError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException methodArithmeticError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Select(item =>
+                        decimal.Multiply(
+                            item.Amount,
+                            2m))
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            methodArithmeticError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Multiply",
+            methodArithmeticError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException mathDecimalError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Select(item =>
+                        Math.Round(item.Amount))
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            mathDecimalError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Round",
+            mathDecimalError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException convertDecimalError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Select(item =>
+                        Convert.ToDecimal(item.Id))
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            convertDecimalError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ToDecimal",
+            convertDecimalError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException nullableDecimalError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Select(item =>
+                        item.OptionalAmount
+                            .GetValueOrDefault())
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            nullableDecimalError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "GetValueOrDefault",
+            nullableDecimalError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException setOperationError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Select(item => item.Amount)
+                    .Concat(
+                        db.Items.Select(item =>
+                            item.OptionalAmount!.Value))
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            setOperationError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Queryable.Concat",
+            setOperationError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException executeUpdateError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items.ExecuteUpdateAsync(
+                    setters => setters.SetProperty(
+                        item => item.Amount,
+                        item => item
+                            .OptionalAmount!.Value),
+                    Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            executeUpdateError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ExecuteUpdate",
+            executeUpdateError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            0,
+            interceptor.NonQueryCommandCount);
+
+        InvalidOperationException coalesceError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Select(item =>
+                        item.OptionalAmount ??
+                        item.Amount)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            coalesceError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Coalesce",
+            coalesceError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        InvalidOperationException conditionalError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Items
+                    .Select(item =>
+                        item.Id > 0
+                            ? item.Amount
+                            : 0m)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            conditionalError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Conditional",
+            conditionalError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        var aggregateCases =
+            new (string Name, Func<Task> Execute)[]
+            {
+                (
+                    "Sum",
+                    async () =>
+                    {
+                        _ = await db.Items.SumAsync(
+                            item => item.Amount,
+                            Ct);
+                    }),
+                (
+                    "Average",
+                    async () =>
+                    {
+                        _ = await db.Items.AverageAsync(
+                            item => item.Amount,
+                            Ct);
+                    }),
+                (
+                    "Min",
+                    async () =>
+                    {
+                        _ = await db.Items.MinAsync(
+                            item => item.Amount,
+                            Ct);
+                    }),
+                (
+                    "Max",
+                    async () =>
+                    {
+                        _ = await db.Items.MaxAsync(
+                            item => item.Amount,
+                            Ct);
+                    }),
+            };
+
+        foreach ((string name, Func<Task> execute) in
+                 aggregateCases)
+        {
+            InvalidOperationException aggregateError =
+                await Assert.ThrowsAsync<
+                    InvalidOperationException>(
+                    execute);
+            Assert.Contains(
+                "CDBEF1006",
+                aggregateError.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                name,
+                aggregateError.Message,
+                StringComparison.Ordinal);
+            Assert.Equal(
+                0,
+                interceptor.ReaderCommandCount);
+        }
+
+        string filterPath =
+            GetDbPath(
+                "decimal-global-filter-diagnostics");
+        var filterInterceptor =
+            new ReaderCountingInterceptor();
+        await using var filteredDb =
+            new GlobalFilterDecimalContext(
+                $"Data Source={filterPath}",
+                filterInterceptor);
+        await filteredDb.Database
+            .EnsureCreatedAsync(Ct);
+        filterInterceptor.Reset();
+        InvalidOperationException filterError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => filteredDb.Items
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            filterError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Contains",
+            filterError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            0,
+            filterInterceptor.ReaderCommandCount);
+
+        string mixedMappingPath =
+            GetDbPath(
+                "decimal-mixed-mapping-diagnostics");
+        var mixedMappingInterceptor =
+            new ReaderCountingInterceptor();
+        await using var mixedMappingDb =
+            new MixedDecimalMappingContext(
+                $"Data Source={mixedMappingPath}",
+                mixedMappingInterceptor);
+        await mixedMappingDb.Database
+            .EnsureCreatedAsync(Ct);
+        mixedMappingInterceptor.Reset();
+        InvalidOperationException mixedMappingError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => mixedMappingDb.Items
+                    .Where(item =>
+                        item.ProviderAmount >
+                        item.ConvertedAmount)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1006",
+            mixedMappingError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "application-converter",
+            mixedMappingError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            0,
+            mixedMappingInterceptor.ReaderCommandCount);
     }
 
     [Fact]
@@ -1946,6 +2541,29 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     private string GetDbPath(string name)
         => Path.Combine(_workspace, $"{name}.db");
 
+    private async Task AssertDecimalModelErrorAsync<TContext>(
+        string expectedMessage)
+        where TContext : TestDbContext
+    {
+        string connectionString =
+            $"Data Source={GetDbPath(typeof(TContext).Name)}";
+        var db = (TContext?)Activator.CreateInstance(
+            typeof(TContext),
+            connectionString) ??
+            throw new InvalidOperationException(
+                $"Could not create {typeof(TContext).Name}.");
+        await using (db)
+        {
+            NotSupportedException error =
+                await Assert.ThrowsAsync<NotSupportedException>(
+                    () => db.Database.EnsureCreatedAsync(Ct));
+            Assert.Contains(
+                expectedMessage,
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     private static PersonRecord CreateNumericPerson(
         string name,
         double score,
@@ -2055,9 +2673,239 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         }
     }
 
-    private sealed class DecimalModelContext(string connectionString) : TestDbContext(connectionString)
+    private sealed class DecimalModelContext : TestDbContext
     {
+        public DecimalModelContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
         public DbSet<DecimalEntity> Items => Set<DecimalEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasPrecision(18, 4);
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.OptionalAmount)
+                .HasPrecision(10, 2);
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.ComparisonAmount)
+                .HasPrecision(10, 2);
+            modelBuilder.Entity<DecimalEntity>()
+                .HasIndex(item => item.Amount)
+                .IsUnique();
+        }
+    }
+
+    private sealed class GlobalFilterDecimalContext
+        : TestDbContext
+    {
+        public GlobalFilterDecimalContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(
+                connectionString,
+                interceptors)
+        {
+        }
+
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasPrecision(18, 4);
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item =>
+                    item.OptionalAmount)
+                .HasPrecision(10, 2);
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item =>
+                    item.ComparisonAmount)
+                .HasPrecision(10, 2);
+            modelBuilder.Entity<DecimalEntity>()
+                .HasQueryFilter(item =>
+                    Items
+                        .Select(candidate =>
+                            candidate
+                                .OptionalAmount!.Value)
+                        .Contains(item.Amount));
+        }
+    }
+
+    private sealed class MixedDecimalMappingContext
+        : TestDbContext
+    {
+        public MixedDecimalMappingContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(
+                connectionString,
+                interceptors)
+        {
+        }
+
+        public DbSet<MixedDecimalMappingEntity> Items =>
+            Set<MixedDecimalMappingEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder
+                .Entity<MixedDecimalMappingEntity>()
+                .Property(item =>
+                    item.ProviderAmount)
+                .HasPrecision(18, 4);
+            modelBuilder
+                .Entity<MixedDecimalMappingEntity>()
+                .Property(item =>
+                    item.ConvertedAmount)
+                .HasConversion<long>();
+        }
+    }
+
+    private sealed class InvalidDecimalPrecisionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasPrecision(19, 4);
+    }
+
+    private sealed class DefaultFacetDecimalContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+    }
+
+    private sealed class InvalidDecimalScaleContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasPrecision(4, 5);
+    }
+
+    private sealed class DecimalDefaultContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasPrecision(18, 2)
+                .HasDefaultValue(0m);
+    }
+
+    private sealed class DecimalKeyContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalKeyEntity> Items =>
+            Set<DecimalKeyEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DecimalKeyEntity>()
+                .HasKey(item => item.Id);
+            modelBuilder.Entity<DecimalKeyEntity>()
+                .Property(item => item.Id)
+                .HasPrecision(18, 2)
+                .ValueGeneratedNever();
+        }
+    }
+
+    private sealed class DecimalGeneratedContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasPrecision(18, 2)
+                .ValueGeneratedOnAdd();
+    }
+
+    private sealed class DecimalCustomStoreTypeContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<DecimalEntity>()
+                .Property(item => item.Amount)
+                .HasColumnType("REAL");
+    }
+
+    private sealed class DecimalComplexTypeContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalComplexEntity> Items =>
+            Set<DecimalComplexEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<DecimalComplexEntity>()
+                .ComplexProperty(
+                    item => item.Details,
+                    complex => complex
+                        .Property(details =>
+                            details.Amount)
+                        .HasColumnType("REAL"));
+    }
+
+    private sealed class DecimalDbFunctionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<DecimalEntity> Items =>
+            Set<DecimalEntity>();
+
+        public static decimal DecimalAbs(
+            decimal value) =>
+            throw new NotSupportedException();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.HasDbFunction(
+                typeof(DecimalDbFunctionContext)
+                    .GetMethod(
+                        nameof(DecimalAbs))!);
     }
 
     private sealed class SchemaModelContext(string connectionString) : TestDbContext(connectionString)
@@ -2320,8 +3168,13 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         private readonly object _commandLock = new();
         private readonly List<string> _readerCommandTexts = [];
         private int _readerCommandCount;
+        private int _nonQueryCommandCount;
 
         public int ReaderCommandCount => Volatile.Read(ref _readerCommandCount);
+
+        public int NonQueryCommandCount =>
+            Volatile.Read(
+                ref _nonQueryCommandCount);
 
         public IReadOnlyList<string> ReaderCommandTexts
         {
@@ -2335,8 +3188,23 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public void Reset()
         {
             Volatile.Write(ref _readerCommandCount, 0);
+            Volatile.Write(
+                ref _nonQueryCommandCount,
+                0);
             lock (_commandLock)
                 _readerCommandTexts.Clear();
+        }
+
+        public override ValueTask<InterceptionResult<int>>
+            NonQueryExecutingAsync(
+                DbCommand command,
+                CommandEventData eventData,
+                InterceptionResult<int> result,
+                CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(
+                ref _nonQueryCommandCount);
+            return ValueTask.FromResult(result);
         }
 
         public override ValueTask<InterceptionResult<DbDataReader>>
@@ -2358,6 +3226,37 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public int Id { get; set; }
 
         public decimal Amount { get; set; }
+
+        public decimal? OptionalAmount { get; set; }
+
+        public decimal ComparisonAmount { get; set; }
+    }
+
+    private sealed class DecimalKeyEntity
+    {
+        public decimal Id { get; set; }
+    }
+
+    private sealed class DecimalComplexEntity
+    {
+        public int Id { get; set; }
+
+        public DecimalComplexDetails Details { get; set; } =
+            new();
+    }
+
+    private sealed class DecimalComplexDetails
+    {
+        public decimal Amount { get; set; }
+    }
+
+    private sealed class MixedDecimalMappingEntity
+    {
+        public int Id { get; set; }
+
+        public decimal ProviderAmount { get; set; }
+
+        public decimal ConvertedAmount { get; set; }
     }
 
     private sealed class DefaultValueEntity

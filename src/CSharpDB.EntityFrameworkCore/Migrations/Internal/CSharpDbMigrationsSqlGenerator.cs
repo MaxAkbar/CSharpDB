@@ -1,5 +1,7 @@
 using System.Text;
 using CSharpDB.EntityFrameworkCore.Infrastructure.Internal;
+using CSharpDB.EntityFrameworkCore.Storage.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
@@ -27,7 +29,12 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             + operation.UniqueConstraints.Count
             + operation.ForeignKeys.Count);
         foreach (AddColumnOperation column in operation.Columns)
-            definitions.Add(BuildColumnDefinition(createTable: null, column, foreignKey: null));
+            definitions.Add(
+                BuildColumnDefinition(
+                    operation,
+                    column,
+                    foreignKey: null,
+                    model));
 
         foreach (AddCheckConstraintOperation checkConstraint in operation.CheckConstraints)
             definitions.Add(BuildCheckConstraintDefinition(checkConstraint));
@@ -94,7 +101,12 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         builder.Append("ALTER TABLE ")
             .Append(QuoteIdentifier(operation.Table))
             .Append(" ADD COLUMN ")
-            .Append(BuildColumnDefinition(createTable: null, operation, foreignKey: null));
+            .Append(
+                BuildColumnDefinition(
+                    createTable: null,
+                    operation,
+                    foreignKey: null,
+                    model));
 
         EndCommand(builder, terminate);
     }
@@ -177,6 +189,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
     protected override void Generate(AlterColumnOperation operation, IModel? model, MigrationCommandListBuilder builder)
     {
+        PopulateOldColumnIdentity(operation);
         ValidateColumnOperation(operation);
         ValidateColumnOperation(operation.OldColumn);
 
@@ -189,6 +202,45 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
                 operation.OldColumn.Name,
                 operation.OldColumn,
                 model: null);
+
+        bool targetIsDecimal =
+            TryGetProviderOwnedDecimalFacets(
+                operation,
+                storeType,
+                model,
+                out int precision,
+                out int scale);
+        bool oldIsDecimal =
+            TryGetProviderOwnedDecimalFacets(
+                operation.OldColumn,
+                oldStoreType,
+                model: null,
+                out int oldPrecision,
+                out int oldScale);
+        ValidateDecimalColumnOperation(
+            operation,
+            storeType,
+            model);
+        ValidateDecimalColumnOperation(
+            operation.OldColumn,
+            oldStoreType,
+            model: null);
+
+        if (targetIsDecimal != oldIsDecimal)
+        {
+            throw Unsupported(
+                $"changing column '{operation.Table}.{operation.Name}' into or out of provider-owned scaled decimal storage without an explicit data rewrite");
+        }
+
+        if (targetIsDecimal)
+        {
+            if (precision != oldPrecision ||
+                scale != oldScale)
+            {
+                throw Unsupported(
+                    $"changing CSharpDB decimal precision or scale on column '{operation.Table}.{operation.Name}' from decimal({oldPrecision}, {oldScale}) to decimal({precision}, {scale}) without a scaled-integer data rewrite");
+            }
+        }
 
         bool typeChanged = !string.Equals(storeType, oldStoreType, StringComparison.OrdinalIgnoreCase);
         if (typeChanged && !IsSupportedNumericTypeRewrite(oldStoreType, storeType))
@@ -298,6 +350,23 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
     protected override void Generate(AddPrimaryKeyOperation operation, IModel? model, MigrationCommandListBuilder builder, bool terminate)
     {
+        if (model is not null)
+        {
+            ITable? table = model
+                .GetRelationalModel()
+                .FindTable(
+                    operation.Table,
+                    operation.Schema);
+            if (operation.Columns.Any(column =>
+                    table?.FindColumn(column)?
+                        .StoreTypeMapping.Converter is
+                        CSharpDbDecimalToInt64Converter))
+            {
+                throw Unsupported(
+                    $"provider-owned scaled decimal primary key on table '{operation.Table}'");
+            }
+        }
+
         builder.Append("ALTER TABLE ")
             .Append(QuoteIdentifier(operation.Table))
             .Append(" ADD ")
@@ -406,20 +475,45 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         ColumnOperation operation,
         IModel? model,
         MigrationCommandListBuilder builder)
-        => builder.Append(BuildColumnDefinition(createTable: null, operation, foreignKey: null));
+        => builder.Append(
+            BuildColumnDefinition(
+                createTable: null,
+                operation,
+                foreignKey: null,
+                model));
 
     private string BuildColumnDefinition(
         CreateTableOperation? createTable,
         ColumnOperation operation,
-        AddForeignKeyOperation? foreignKey)
+        AddForeignKeyOperation? foreignKey,
+        IModel? model)
     {
         ValidateColumnOperation(operation);
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Column name");
 
         string storeType = operation.ColumnType ?? GetColumnType(operation.Schema, operation.Table, operation.Name, operation, model: null);
-        bool isPrimaryKeyColumn = createTable?.PrimaryKey?.Columns is { Length: 1 } pkColumns
-            && string.Equals(pkColumns[0], operation.Name, StringComparison.OrdinalIgnoreCase);
-        bool isIdentityColumn = isPrimaryKeyColumn && string.Equals(storeType, "INTEGER", StringComparison.OrdinalIgnoreCase);
+        string[]? primaryKeyColumns =
+            createTable?.PrimaryKey?.Columns;
+        bool isPrimaryKeyColumn =
+            primaryKeyColumns?.Contains(
+                operation.Name,
+                StringComparer.OrdinalIgnoreCase) ==
+            true;
+        ValidateDecimalColumnOperation(
+            operation,
+            storeType,
+            model);
+        if (isPrimaryKeyColumn &&
+            TryGetProviderOwnedDecimalFacets(
+                operation,
+                storeType,
+                model,
+                out _,
+                out _))
+        {
+            throw Unsupported(
+                $"provider-owned scaled decimal primary key column '{operation.Table}.{operation.Name}'");
+        }
 
         var builder = new StringBuilder();
         builder.Append(QuoteIdentifier(operation.Name))
@@ -439,13 +533,7 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
                 .Append(QuoteIdentifier(collation));
         }
 
-        if (isPrimaryKeyColumn)
-        {
-            builder.Append(" PRIMARY KEY");
-            if (isIdentityColumn)
-                builder.Append(" IDENTITY");
-        }
-        else if (!operation.IsNullable)
+        if (!operation.IsNullable)
         {
             builder.Append(" NOT NULL");
         }
@@ -583,6 +671,117 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
     private static bool IsStoreType(string storeType, string expected) =>
         string.Equals(storeType.Trim(), expected, StringComparison.OrdinalIgnoreCase);
 
+    private static bool TryGetProviderOwnedDecimalFacets(
+        ColumnOperation operation,
+        string storeType,
+        IModel? model,
+        out int precision,
+        out int scale)
+    {
+        precision = 0;
+        scale = 0;
+        if (!IsStoreType(storeType, "INTEGER"))
+            return false;
+
+        if (TryParseDecimalStorageAnnotation(
+                operation,
+                out precision,
+                out scale))
+        {
+            return true;
+        }
+
+        IColumn? mappedColumn = model?
+            .GetRelationalModel()
+            .FindTable(
+                operation.Table,
+                operation.Schema)?
+            .FindColumn(operation.Name);
+        if (mappedColumn is not null)
+        {
+            if (mappedColumn.StoreTypeMapping.Converter is not
+                CSharpDbDecimalToInt64Converter converter)
+            {
+                return false;
+            }
+
+            precision = converter.Precision;
+            scale = converter.Scale;
+            return true;
+        }
+
+        Type clrType = Nullable.GetUnderlyingType(
+                operation.ClrType) ??
+            operation.ClrType;
+        if (clrType != typeof(decimal))
+            return false;
+
+        (precision, scale) =
+            CSharpDbDecimalStorage.ResolveFacets(
+                operation.Precision,
+                operation.Scale);
+        return true;
+    }
+
+    private static bool TryParseDecimalStorageAnnotation(
+        ColumnOperation operation,
+        out int precision,
+        out int scale)
+    {
+        precision = 0;
+        scale = 0;
+        if (operation.FindAnnotation(
+                CSharpDbAnnotationNames.DecimalStorage)?
+            .Value is not string encoded)
+        {
+            return false;
+        }
+
+        string[] facets = encoded.Split(',');
+        if (facets.Length != 2 ||
+            !int.TryParse(
+                facets[0],
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out precision) ||
+            !int.TryParse(
+                facets[1],
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out scale))
+        {
+            throw new InvalidOperationException(
+                $"Invalid CSharpDB decimal storage annotation '{encoded}' on column '{operation.Table}.{operation.Name}'.");
+        }
+
+        CSharpDbDecimalStorage.ValidateFacets(
+            precision,
+            scale);
+        return true;
+    }
+
+    private static void ValidateDecimalColumnOperation(
+        ColumnOperation operation,
+        string storeType,
+        IModel? model)
+    {
+        if (!TryGetProviderOwnedDecimalFacets(
+                operation,
+                storeType,
+                model,
+                out _,
+                out _))
+        {
+            return;
+        }
+
+        if (operation.DefaultValue is not null)
+        {
+            throw Unsupported(
+                $"literal defaults for provider-owned scaled decimal column '{operation.Table}.{operation.Name}'");
+        }
+    }
+
     private static bool CollationsSemanticallyEqual(string? left, string? right) =>
         string.Equals(
             NormalizeBinaryCollation(left),
@@ -638,6 +837,27 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Column name");
+    }
+
+    private static void PopulateOldColumnIdentity(
+        AlterColumnOperation operation)
+    {
+        if (string.IsNullOrWhiteSpace(
+                operation.OldColumn.Table))
+        {
+            operation.OldColumn.Table =
+                operation.Table;
+        }
+
+        if (string.IsNullOrWhiteSpace(
+                operation.OldColumn.Name))
+        {
+            operation.OldColumn.Name =
+                operation.Name;
+        }
+
+        operation.OldColumn.Schema ??=
+            operation.Schema;
     }
 
     private static void ValidateNoSchema(string? schema, string objectName)

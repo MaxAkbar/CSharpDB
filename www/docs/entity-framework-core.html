@@ -213,8 +213,19 @@ dotnet ef migrations script --idempotent</code></pre>
                 <div class="callout callout-warning"><strong>Primary-key migration rules:</strong> named single-<code>TEXT</code> and composite <code>INTEGER</code>/<code>TEXT</code> logical primary keys support standalone add/drop migrations. Adding a physical single-<code>INTEGER</code> primary key to populated data validates non-NULL uniqueness, makes those values the physical row IDs, and atomically rebuilds ready ordinary/unique SQL, constraint-owned, and foreign-key-support indexes. Full-text, collection, and non-ready indexes reject the operation before mutation. EF drops use <code>DROP CONSTRAINT</code> with the exact key name. Use raw <code>ALTER TABLE ... DROP PRIMARY KEY</code> only for a legacy unnamed key. Dropping a primary key preserves <code>NOT NULL</code>; dropping a physical <code>INTEGER</code> key also ends its identity role. Adds reject existing nulls or duplicates without leaving key/index metadata, and drops are blocked when an inbound foreign key has no equivalent unique candidate.</div>
                 <div class="callout callout-warning"><strong>Bounded column rewrites:</strong> dependency-free <code>INTEGER</code> to <code>REAL</code> changes accept values in the exactly representable ±2<sup>53</sup> range; the reverse accepts only finite, integral signed 64-bit values. <code>TEXT</code> columns can change among supported collations or return to default <code>BINARY</code>. Ready ordinary and unique SQL indexes that inherit the column collation are rebuilt atomically with the table; explicit-collation and unrelated indexes retain their roots. Row IDs are preserved, and checks plus affected uniqueness are revalidated. Key constraints, foreign keys, full-text/collection dependencies, views on the table, table-owned triggers, cross-table triggers that reference the column, and applicable validation rules remain blocked. Compound default/type/collation/nullability commands must remain in one migration transaction so a later failure restores the original table and index roots.</div>
 
+                <h2 id="decimal-mapping">Exact Decimal Foundation</h2>
+                <p><code>decimal</code> and nullable <code>decimal</code> properties use provider-owned scaled <code>INTEGER</code> storage without an application value converter. The default is <code>decimal(18, 2)</code>; precision must be from 1 through 18, and scale must be from 0 through precision. Configure other supported facets with <code>HasPrecision(precision, scale)</code>.</p>
+                <div class="code-block" data-title="OnModelCreating">
+                    <pre><code>modelBuilder.Entity&lt;Invoice&gt;()
+    .Property(invoice =&gt; invoice.Amount)
+    .HasPrecision(18, 4);</code></pre>
+                </div>
+                <p>Round trips, nullable values, parameters used with one facet mapping, equality/range comparisons, ordering, and ordinary indexes remain exact. Values with excess fractional digits are rejected instead of rounded, and values outside the configured precision fail as overflow. Raw SQL sees the scaled representation: <code>12.3400</code> at scale 4 is stored as <code>123400</code>.</p>
+                <div class="callout callout-warning"><strong>Bounded decimal surface:</strong> decimal keys, database defaults, generated values, precision/scale-changing migrations, and computed decimal expressions—including arithmetic, numeric casts, conditionals/coalescing, and <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code>—are not yet qualified. Decimal collection/subquery <code>Contains</code>, cross-facet parameter reuse, comparisons with application-converter decimal mappings, and model-mapped functions with decimal parameters or returns are also rejected. Unsafe query expressions fail before command dispatch with <code>CDBEF1006</code>. Use <code>HasPrecision(precision, scale)</code>, not a custom decimal store type, for the provider-owned mapping.</div>
+                <p>When calling <code>IMigrationsSqlGenerator</code> directly with a hand-authored <code>AddPrimaryKeyOperation</code>, pass the target model. A low-level call with <code>model: null</code> does not carry enough column metadata to identify a decimal mapping.</p>
+
                 <h2 id="linq-translation">LINQ Translation</h2>
-                <p>The provider qualifies a deliberately bounded server-side LINQ surface. Basic support includes <code>Where</code>, ordering, <code>Skip</code>/<code>Take</code>, scalar projections, <code>Single</code>, <code>Any</code>, <code>Count</code>, constant/parameter collection <code>Contains</code>, and simple <code>Include</code> queries.</p>
+                <p>The provider qualifies a deliberately bounded server-side LINQ surface. Basic support includes <code>Where</code>, ordering, <code>Skip</code>/<code>Take</code>, scalar projections, <code>Single</code>, <code>Any</code>, <code>Count</code>, non-decimal constant/parameter collection <code>Contains</code>, and simple <code>Include</code> queries.</p>
 
                 <h3>String members and methods</h3>
                 <ul>
@@ -248,7 +259,7 @@ dotnet ef migrations script --idempotent</code></pre>
                 <p><code>double</code>, transformed, non-<code>BINARY</code>-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw group transforms; post-projection filtering, projection, distinct, limits, set, or join operations; nested grouping; predicate/CASE aggregates; casts; and broader types or shapes are rejected with <code>CDBEF1005</code> before command dispatch.</p>
 
                 <div class="callout callout-warning">
-                    <strong>String-semantics boundary:</strong> string <code>StartsWith</code>, <code>EndsWith</code>, instance <code>Contains</code>, and <code>StringComparison</code> overloads are not translated yet. CSharpDB's current pattern-search functions are case-insensitive, so translating these methods would silently change ordinary .NET string semantics. Collection <code>Contains</code> over constants and parameters is supported.
+                    <strong>String-semantics boundary:</strong> string <code>StartsWith</code>, <code>EndsWith</code>, instance <code>Contains</code>, and <code>StringComparison</code> overloads are not translated yet. CSharpDB's current pattern-search functions are case-insensitive, so translating these methods would silently change ordinary .NET string semantics. Non-decimal collection <code>Contains</code> over constants and parameters is supported.
                 </div>
                 <p><code>DateTimeOffset</code> components; integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads; long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants and other unqualified aggregate variants; broader distinct and grouped aggregate shapes; set-operation; and correlated-query shapes remain outside the qualified surface.</p>
 
@@ -259,9 +270,10 @@ dotnet ef migrations script --idempotent</code></pre>
                     <tbody>
                         <tr><td><code>CDBEF1001</code></td><td>Unsupported CLR method</td></tr>
                         <tr><td><code>CDBEF1002</code></td><td>Unsupported CLR member</td></tr>
-                        <tr><td><code>CDBEF1003</code></td><td>Recognized unsupported query operator, currently <code>TakeWhile</code> or <code>SkipWhile</code></td></tr>
+                        <tr><td><code>CDBEF1003</code></td><td>Recognized unsupported query operator: <code>TakeWhile</code>, <code>SkipWhile</code>, <code>Concat</code>, <code>Union</code>, <code>Except</code>, <code>Intersect</code>, or <code>ExecuteUpdate</code></td></tr>
                         <tr><td><code>CDBEF1004</code></td><td>Unsupported distinct aggregate shape</td></tr>
                         <tr><td><code>CDBEF1005</code></td><td>Unsupported grouped aggregate shape</td></tr>
+                        <tr><td><code>CDBEF1006</code></td><td>Unsupported decimal operation outside the exact scaled-integer foundation</td></tr>
                     </tbody>
                 </table>
                 <p>When client evaluation is intentional, apply selective supported filters first, then call <code>AsEnumerable()</code> explicitly before the unsupported portion. This makes the server/client boundary visible and avoids accidentally loading an entire table.</p>
@@ -287,14 +299,17 @@ dotnet ef migrations script --idempotent</code></pre>
                         <tr><td>Literal column defaults</td><td>Partial</td><td><code>HasDefaultValue(...)</code> values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported</td></tr>
                         <tr><td>Check constraints</td><td>Partial</td><td>Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine</td></tr>
                         <tr><td><code>AlterColumn</code></td><td>Partial</td><td>Literal default/nullability changes, exact dependency-free <code>INTEGER</code>/<code>REAL</code> rewrites, and <code>TEXT</code> collation changes with inherited ordinary/unique SQL-index rebuilding</td></tr>
+                        <tr><td>Exact decimal mapping</td><td>Partial</td><td>Provider-owned scaled <code>INTEGER</code> storage for precision 1–18; exact round trips, parameters, comparisons, and ordering</td></tr>
                         <tr><td>Bounded LINQ/query subset</td><td>Partial</td><td>Basic operators plus the string, temporal, finite-double math, scalar numeric aggregate, direct-column distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, and aggregate shapes receive provider diagnostics</td></tr>
-                        <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>byte[]</code></td></tr>
+                        <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, bounded exact <code>decimal</code>, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>byte[]</code></td></tr>
                     </tbody>
                 </table>
 
                 <h2 id="limitations">Current Limitations</h2>
                 <ul>
-                    <li><code>decimal</code> requires an explicit value converter.</li>
+                    <li>Provider-owned decimal mapping does not yet support keys, defaults, generated values, computed decimal expressions, or precision/scale-changing migrations.</li>
+                    <li>Complex properties are rejected until their flattened column mappings are formally qualified.</li>
+                    <li><code>ExecuteUpdate</code> is rejected until assignment conversions and decimal facets are formally qualified.</li>
                     <li>Schemas are unsupported in runtime and migrations.</li>
                     <li>Computed columns, <code>DefaultValueSql</code>, and rowversion are unsupported.</li>
                     <li>String <code>StartsWith</code>, <code>EndsWith</code>, instance <code>Contains</code>, <code>StringComparison</code> overloads, and <code>DateTimeOffset</code> component translation are unsupported.</li>

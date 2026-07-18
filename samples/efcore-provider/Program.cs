@@ -15,6 +15,7 @@ if (!await db.Blogs.AnyAsync())
         new Blog
         {
             Name = "Engineering",
+            MonthlyBudget = 1250.50m,
             Posts =
             [
                 new Post { Title = "Release checklist" },
@@ -24,6 +25,7 @@ if (!await db.Blogs.AnyAsync())
         new Blog
         {
             Name = "Operations",
+            MonthlyBudget = 800.00m,
             Posts =
             [
                 new Post { Title = "Backup runbook" },

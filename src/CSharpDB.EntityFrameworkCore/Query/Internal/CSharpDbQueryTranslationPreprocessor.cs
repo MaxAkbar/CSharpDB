@@ -53,6 +53,8 @@ public sealed class CSharpDbQueryTranslationPreprocessor
 
     public override Expression Process(Expression query)
     {
+        ValidateDecimalSafety(query);
+
         string? unsafeDistinctAggregate =
             CSharpDbQueryTranslationDiagnostics
                 .FindUnsafeDistinctCardinality(query);
@@ -92,10 +94,24 @@ public sealed class CSharpDbQueryTranslationPreprocessor
         string? operatorName =
             CSharpDbQueryTranslationDiagnostics.FindUnsupportedOperator(
                 query);
+        if (operatorName is
+            "Queryable.Concat" or
+            "Queryable.Union" or
+            "Queryable.Except" or
+            "Queryable.Intersect" or
+            "RelationalQueryableExtensions.ExecuteUpdate")
+        {
+            throw new InvalidOperationException(
+                CSharpDbQueryTranslationDiagnostics.ForOperator(
+                    operatorName));
+        }
 
         try
         {
-            return base.Process(query);
+            Expression processed =
+                base.Process(query);
+            ValidateDecimalSafety(processed);
+            return processed;
         }
         catch (InvalidOperationException exception)
             when (operatorName is not null &&
@@ -109,6 +125,30 @@ public sealed class CSharpDbQueryTranslationPreprocessor
             throw new InvalidOperationException(
                 $"{exception.Message}{Environment.NewLine}{details}",
                 exception);
+        }
+    }
+
+    private void ValidateDecimalSafety(
+        Expression query)
+    {
+        string? unsafeDecimalExpression =
+            CSharpDbQueryTranslationDiagnostics
+                .FindUnsafeDecimalExpression(query);
+        if (unsafeDecimalExpression is not null)
+        {
+            throw new InvalidOperationException(
+                unsafeDecimalExpression);
+        }
+
+        string? unsafeDecimalParameterReuse =
+            CSharpDbQueryTranslationDiagnostics
+                .FindUnsafeDecimalParameterReuse(
+                    query,
+                    _model);
+        if (unsafeDecimalParameterReuse is not null)
+        {
+            throw new InvalidOperationException(
+                unsafeDecimalParameterReuse);
         }
     }
 

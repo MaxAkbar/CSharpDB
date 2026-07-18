@@ -86,6 +86,12 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 nameof(Queryable.Average));
         }
 
+        if (IsDecimalType(resultType))
+        {
+            return UnsupportedDecimalAggregate(
+                nameof(Queryable.Average));
+        }
+
         if (!IsDistinct(source))
             return base.TranslateAverage(source, selector, resultType);
 
@@ -163,6 +169,12 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 nameof(Queryable.Max));
         }
 
+        if (IsDecimalType(resultType))
+        {
+            return UnsupportedDecimalAggregate(
+                nameof(Queryable.Max));
+        }
+
         if (!IsDistinct(source))
             return base.TranslateMax(source, selector, resultType);
 
@@ -193,6 +205,12 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 nameof(Queryable.Min));
         }
 
+        if (IsDecimalType(resultType))
+        {
+            return UnsupportedDecimalAggregate(
+                nameof(Queryable.Min));
+        }
+
         if (!IsDistinct(source))
             return base.TranslateMin(source, selector, resultType);
 
@@ -220,6 +238,12 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         if (IsGrouped(source))
         {
             return UnsupportedGroupedResultAggregate(
+                nameof(Queryable.Sum));
+        }
+
+        if (IsDecimalType(resultType))
+        {
+            return UnsupportedDecimalAggregate(
                 nameof(Queryable.Sum));
         }
 
@@ -377,6 +401,15 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         return null;
     }
 
+    private ShapedQueryExpression? UnsupportedDecimalAggregate(
+        string aggregateName)
+    {
+        AddTranslationErrorDetails(
+            CSharpDbQueryTranslationDiagnostics.ForDecimal(
+                $"Decimal aggregate '{aggregateName}' is deferred until scaled accumulation, overflow, and result-scale semantics are qualified."));
+        return null;
+    }
+
     private static bool TryGetSimpleDistinctColumn(
         ShapedQueryExpression source,
         out SelectExpression selectExpression,
@@ -451,6 +484,10 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         Nullable.GetUnderlyingType(type) is null
             ? typeof(Nullable<>).MakeGenericType(type)
             : type;
+
+    private static bool IsDecimalType(Type type) =>
+        (Nullable.GetUnderlyingType(type) ?? type) ==
+        typeof(decimal);
 
     private bool TryValidateGroupingKey(
         Expression expression,

@@ -1,8 +1,10 @@
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using CSharpDB.EntityFrameworkCore.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
+using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 
 namespace CSharpDB.EntityFrameworkCore.Query.Internal;
 
@@ -42,6 +44,38 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
     {
         string? previousDetails = TranslationErrorDetails;
         Expression translated = base.VisitMethodCall(methodCallExpression);
+        if (translated is SqlBinaryExpression sqlBinary &&
+            IsDecimalComparison(sqlBinary.OperatorType) &&
+            HasMixedProviderDecimalMappings(sqlBinary) &&
+            CountDecimalOperands(methodCallExpression) >= 2)
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForDecimal(
+                        "Comparing provider-owned scaled decimal storage with a decimal application-converter mapping would compare incompatible raw values."));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
+        if (translated is SqlBinaryExpression sqlBinaryWithScales &&
+            IsDecimalComparison(
+                sqlBinaryWithScales.OperatorType) &&
+            TryGetDecimalScale(
+                sqlBinaryWithScales.Left,
+                out int leftScale) &&
+            TryGetDecimalScale(
+                sqlBinaryWithScales.Right,
+                out int rightScale) &&
+            leftScale != rightScale)
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForDecimal(
+                        $"Comparing decimal operands with different scales ({leftScale} and {rightScale}) would compare incompatible scaled integers."));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
         if (ReferenceEquals(
                 translated,
                 QueryCompilationContext.NotTranslatedExpression) &&
@@ -55,6 +89,101 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
         }
 
         return translated;
+    }
+
+    protected override Expression VisitBinary(
+        BinaryExpression binaryExpression)
+    {
+        if (IsUnsupportedDecimalArithmetic(
+                binaryExpression))
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForDecimal(
+                        $"Decimal operator '{binaryExpression.NodeType}' is outside the exact scaled-integer foundation."));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
+        Expression translated =
+            base.VisitBinary(binaryExpression);
+        if (translated is SqlBinaryExpression sqlBinary &&
+            IsDecimalComparison(
+                binaryExpression.NodeType) &&
+            HasMixedProviderDecimalMappings(
+                sqlBinary) &&
+            IsDecimalType(
+                binaryExpression.Left.Type) &&
+            IsDecimalType(
+                binaryExpression.Right.Type) &&
+            !IsNullConstant(
+                binaryExpression.Left) &&
+            !IsNullConstant(
+                binaryExpression.Right))
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForDecimal(
+                        "Comparing provider-owned scaled decimal storage with a decimal application-converter mapping would compare incompatible raw values."));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
+        if (translated is SqlBinaryExpression sqlBinaryWithScales &&
+            IsDecimalComparison(
+                binaryExpression.NodeType) &&
+            TryGetDecimalScale(
+                sqlBinaryWithScales.Left,
+                out int leftScale) &&
+            TryGetDecimalScale(
+                sqlBinaryWithScales.Right,
+                out int rightScale) &&
+            leftScale != rightScale)
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForDecimal(
+                        $"Comparing decimal operands with different scales ({leftScale} and {rightScale}) would compare incompatible scaled integers."));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
+        return translated;
+    }
+
+    protected override Expression VisitConditional(
+        ConditionalExpression conditionalExpression)
+    {
+        if (IsDecimalType(
+                conditionalExpression.Type))
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForDecimal(
+                        "Conditional decimal projections are outside the exact scaled-integer foundation."));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
+        return base.VisitConditional(
+            conditionalExpression);
+    }
+
+    protected override Expression VisitUnary(
+        UnaryExpression unaryExpression)
+    {
+        if (IsUnsupportedDecimalUnary(
+                unaryExpression))
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForDecimal(
+                        $"Decimal unary operator or cast '{unaryExpression.NodeType}' is outside the exact scaled-integer foundation."));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
+        return base.VisitUnary(unaryExpression);
     }
 
     protected override Expression VisitMember(MemberExpression memberExpression)
@@ -85,6 +214,134 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
             currentDetails.Length > previousLength &&
             currentDetails.AsSpan(previousLength)
                 .Contains("CDBEF", StringComparison.Ordinal);
+    }
+
+    private static bool IsUnsupportedDecimalArithmetic(
+        BinaryExpression expression) =>
+        (expression.NodeType is
+            ExpressionType.Add or
+            ExpressionType.AddChecked or
+            ExpressionType.Subtract or
+            ExpressionType.SubtractChecked or
+            ExpressionType.Multiply or
+            ExpressionType.MultiplyChecked or
+            ExpressionType.Divide or
+            ExpressionType.Modulo or
+            ExpressionType.Power or
+            ExpressionType.Coalesce) &&
+        (IsDecimalType(expression.Left.Type) ||
+         IsDecimalType(expression.Right.Type) ||
+         IsDecimalType(expression.Type));
+
+    private static bool IsUnsupportedDecimalUnary(
+        UnaryExpression expression)
+    {
+        bool operandIsDecimal =
+            IsDecimalType(expression.Operand.Type);
+        bool resultIsDecimal =
+            IsDecimalType(expression.Type);
+        return (expression.NodeType is
+                ExpressionType.Negate or
+                ExpressionType.NegateChecked or
+                ExpressionType.UnaryPlus or
+                ExpressionType.Increment or
+                ExpressionType.Decrement) &&
+            (operandIsDecimal || resultIsDecimal) ||
+            (expression.NodeType is
+                ExpressionType.Convert or
+                ExpressionType.ConvertChecked) &&
+            operandIsDecimal != resultIsDecimal;
+    }
+
+    private static bool IsDecimalType(Type type) =>
+        (Nullable.GetUnderlyingType(type) ?? type) ==
+        typeof(decimal);
+
+    private static bool IsDecimalComparison(
+        ExpressionType expressionType) =>
+        expressionType is
+            ExpressionType.Equal or
+            ExpressionType.NotEqual or
+            ExpressionType.LessThan or
+            ExpressionType.LessThanOrEqual or
+            ExpressionType.GreaterThan or
+            ExpressionType.GreaterThanOrEqual;
+
+    private static bool HasMixedProviderDecimalMappings(
+        SqlBinaryExpression expression)
+    {
+        bool leftIsProviderDecimal =
+            TryGetDecimalScale(
+                expression.Left,
+                out _);
+        bool rightIsProviderDecimal =
+            TryGetDecimalScale(
+                expression.Right,
+                out _);
+        return leftIsProviderDecimal !=
+            rightIsProviderDecimal;
+    }
+
+    private static int CountDecimalOperands(
+        MethodCallExpression expression)
+    {
+        int count = expression.Object is not null &&
+            IsDecimalType(
+                UnwrapConvert(expression.Object).Type)
+            ? 1
+            : 0;
+        return count + expression.Arguments.Count(
+            argument => IsDecimalType(
+                UnwrapConvert(argument).Type));
+    }
+
+    private static bool IsNullConstant(
+        Expression expression)
+    {
+        expression = UnwrapConvert(expression);
+        return expression is ConstantExpression
+        {
+            Value: null,
+        };
+    }
+
+    private static Expression UnwrapConvert(
+        Expression expression)
+    {
+        while (expression is UnaryExpression
+               {
+                   NodeType:
+                       ExpressionType.Convert or
+                       ExpressionType.ConvertChecked,
+               } conversion)
+        {
+            expression = conversion.Operand;
+        }
+
+        return expression;
+    }
+
+    private static bool TryGetDecimalScale(
+        SqlExpression expression,
+        out int scale)
+    {
+        while (expression is SqlUnaryExpression
+               {
+                   OperatorType: ExpressionType.Convert,
+               } conversion)
+        {
+            expression = conversion.Operand;
+        }
+
+        if (expression.TypeMapping?.Converter is
+            CSharpDbDecimalToInt64Converter converter)
+        {
+            scale = converter.Scale;
+            return true;
+        }
+
+        scale = 0;
+        return false;
     }
 }
 
@@ -128,11 +385,35 @@ internal static class CSharpDbQueryTranslationDiagnostics
         "CDBEF1005: The CSharpDB EF Core provider cannot translate this GroupBy shape to the qualified server-side aggregate surface. " +
         $"{reason} Use direct scalar or composite mapped keys and project keys plus supported aggregates, or call AsEnumerable() explicitly after selective server-side filters. See {DocumentationUrl}.";
 
+    public static string ForDecimal(string reason) =>
+        "CDBEF1006: The CSharpDB EF Core provider cannot translate this decimal expression within the exact scaled-integer foundation. " +
+        $"{reason} Use comparisons and ordering over directly mapped decimal properties, or perform arithmetic after AsEnumerable(). See {DocumentationUrl}.";
+
     public static string? FindUnsupportedOperator(Expression expression)
     {
         var visitor = new UnsupportedOperatorFindingExpressionVisitor();
         visitor.Visit(expression);
         return visitor.OperatorName;
+    }
+
+    public static string? FindUnsafeDecimalExpression(
+        Expression expression)
+    {
+        var visitor =
+            new UnsafeDecimalExpressionFindingVisitor();
+        visitor.Visit(expression);
+        return visitor.Diagnostic;
+    }
+
+    public static string? FindUnsafeDecimalParameterReuse(
+        Expression expression,
+        IModel model)
+    {
+        var visitor =
+            new UnsafeDecimalParameterReuseFindingVisitor(
+                model);
+        visitor.Visit(expression);
+        return visitor.Diagnostic;
     }
 
     public static string? FindUnsafeDistinctCardinality(
@@ -222,6 +503,18 @@ internal static class CSharpDbQueryTranslationDiagnostics
             MethodCallExpression node)
         {
             if (OperatorName is null &&
+                node.Method.Name ==
+                    "ExecuteUpdate" &&
+                node.Method.DeclaringType?.Namespace?
+                    .StartsWith(
+                        "Microsoft.EntityFrameworkCore",
+                        StringComparison.Ordinal) ==
+                    true)
+            {
+                OperatorName =
+                    "RelationalQueryableExtensions.ExecuteUpdate";
+            }
+            else if (OperatorName is null &&
                 node.Method.DeclaringType == typeof(Queryable))
             {
                 OperatorName = node.Method.Name switch
@@ -230,6 +523,14 @@ internal static class CSharpDbQueryTranslationDiagnostics
                         "Queryable.TakeWhile",
                     nameof(Queryable.SkipWhile) =>
                         "Queryable.SkipWhile",
+                    nameof(Queryable.Concat) =>
+                        "Queryable.Concat",
+                    nameof(Queryable.Union) =>
+                        "Queryable.Union",
+                    nameof(Queryable.Except) =>
+                        "Queryable.Except",
+                    nameof(Queryable.Intersect) =>
+                        "Queryable.Intersect",
                     _ => null,
                 };
             }
@@ -238,6 +539,321 @@ internal static class CSharpDbQueryTranslationDiagnostics
                 ? base.VisitMethodCall(node)
                 : node;
         }
+    }
+
+    private sealed class
+        UnsafeDecimalExpressionFindingVisitor
+        : ExpressionVisitor
+    {
+        public string? Diagnostic { get; private set; }
+
+        protected override Expression VisitMethodCall(
+            MethodCallExpression node)
+        {
+            if (Diagnostic is null &&
+                IsUnsupportedDecimalMethod(node))
+            {
+                Diagnostic = ForDecimal(
+                    $"Decimal method '{node.Method.Name}' is outside the exact scaled-integer foundation.");
+            }
+
+            return Diagnostic is null
+                ? base.VisitMethodCall(node)
+                : node;
+        }
+
+        private static bool IsUnsupportedDecimalMethod(
+            MethodCallExpression node)
+        {
+            if (node.Method.Name ==
+                    nameof(List<decimal>.Contains) &&
+                node.Object is not null &&
+                node.Arguments.Count == 1 &&
+                IsDecimalType(
+                    node.Arguments[0].Type) &&
+                (typeof(IEnumerable<decimal>)
+                        .IsAssignableFrom(
+                            node.Object.Type) ||
+                 typeof(IEnumerable<decimal?>)
+                        .IsAssignableFrom(
+                            node.Object.Type)))
+            {
+                return true;
+            }
+
+            if (node.Method.DeclaringType is
+                    { IsGenericType: true } declaringType &&
+                declaringType.GetGenericTypeDefinition() ==
+                    typeof(Nullable<>) &&
+                declaringType.GetGenericArguments()[0] ==
+                    typeof(decimal) &&
+                node.Method.Name ==
+                    nameof(Nullable<decimal>
+                        .GetValueOrDefault))
+            {
+                return true;
+            }
+
+            if (node.Method.IsGenericMethod &&
+                node.Method.Name == nameof(Queryable.Contains) &&
+                node.Method.DeclaringType is not null &&
+                (node.Method.DeclaringType ==
+                    typeof(Queryable) ||
+                 node.Method.DeclaringType ==
+                    typeof(Enumerable)) &&
+                IsDecimalType(
+                    node.Method
+                        .GetGenericArguments()[0]))
+            {
+                return true;
+            }
+
+            if (node.Method.DeclaringType == typeof(decimal))
+            {
+                return node.Method.Name !=
+                    nameof(decimal.Equals);
+            }
+
+            bool hasDecimalOperand =
+                node.Object is not null &&
+                    IsDecimalType(node.Object.Type) ||
+                node.Arguments.Any(argument =>
+                    IsDecimalType(argument.Type));
+            bool returnsDecimal =
+                IsDecimalType(node.Method.ReturnType);
+            return node.Method.DeclaringType == typeof(Math) &&
+                    (hasDecimalOperand ||
+                     returnsDecimal) ||
+                node.Method.DeclaringType == typeof(Convert) &&
+                    (hasDecimalOperand ||
+                     returnsDecimal);
+        }
+
+        protected override Expression VisitBinary(
+            BinaryExpression node)
+        {
+            if (Diagnostic is null &&
+                node.NodeType is
+                    ExpressionType.Add or
+                    ExpressionType.AddChecked or
+                    ExpressionType.Subtract or
+                    ExpressionType.SubtractChecked or
+                    ExpressionType.Multiply or
+                    ExpressionType.MultiplyChecked or
+                    ExpressionType.Divide or
+                    ExpressionType.Modulo or
+                    ExpressionType.Power or
+                    ExpressionType.Coalesce &&
+                (IsDecimalType(node.Left.Type) ||
+                 IsDecimalType(node.Right.Type) ||
+                 IsDecimalType(node.Type)))
+            {
+                Diagnostic = ForDecimal(
+                    $"Decimal operator '{node.NodeType}' is outside the exact scaled-integer foundation.");
+            }
+
+            return Diagnostic is null
+                ? base.VisitBinary(node)
+                : node;
+        }
+
+        protected override Expression VisitUnary(
+            UnaryExpression node)
+        {
+            bool operandIsDecimal =
+                IsDecimalType(node.Operand.Type);
+            bool resultIsDecimal =
+                IsDecimalType(node.Type);
+            if (Diagnostic is null &&
+                ((node.NodeType is
+                        ExpressionType.Negate or
+                        ExpressionType.NegateChecked or
+                        ExpressionType.UnaryPlus or
+                        ExpressionType.Increment or
+                        ExpressionType.Decrement &&
+                    (operandIsDecimal ||
+                     resultIsDecimal)) ||
+                 (node.NodeType is
+                        ExpressionType.Convert or
+                        ExpressionType.ConvertChecked &&
+                    operandIsDecimal != resultIsDecimal)))
+            {
+                Diagnostic = ForDecimal(
+                    $"Decimal unary operator or cast '{node.NodeType}' is outside the exact scaled-integer foundation.");
+            }
+
+            return Diagnostic is null
+                ? base.VisitUnary(node)
+                : node;
+        }
+
+        protected override Expression VisitConditional(
+            ConditionalExpression node)
+        {
+            if (Diagnostic is null &&
+                IsDecimalType(node.Type))
+            {
+                Diagnostic = ForDecimal(
+                    "Conditional decimal projections are outside the exact scaled-integer foundation.");
+            }
+
+            return Diagnostic is null
+                ? base.VisitConditional(node)
+                : node;
+        }
+
+        private static bool IsDecimalType(Type type) =>
+            (Nullable.GetUnderlyingType(type) ?? type) ==
+            typeof(decimal);
+    }
+
+    private sealed class
+        UnsafeDecimalParameterReuseFindingVisitor
+        : ExpressionVisitor
+    {
+        private readonly IModel _model;
+        private readonly Dictionary<
+            string,
+            (int Precision, int Scale)> _facetsByParameter =
+                new(StringComparer.Ordinal);
+
+        public UnsafeDecimalParameterReuseFindingVisitor(
+            IModel model)
+        {
+            _model = model;
+        }
+
+        public string? Diagnostic { get; private set; }
+
+        protected override Expression VisitBinary(
+            BinaryExpression node)
+        {
+            if (Diagnostic is null &&
+                IsDecimalComparison(node.NodeType))
+            {
+                RecordParameterFacets(
+                    node.Left,
+                    node.Right);
+                RecordParameterFacets(
+                    node.Right,
+                    node.Left);
+            }
+
+            return Diagnostic is null
+                ? base.VisitBinary(node)
+                : node;
+        }
+
+        private void RecordParameterFacets(
+            Expression propertyExpression,
+            Expression parameterExpression)
+        {
+            if (Diagnostic is not null ||
+                !TryGetDecimalPropertyFacets(
+                    propertyExpression,
+                    out int precision,
+                    out int scale) ||
+                UnwrapConvert(parameterExpression) is not
+                    QueryParameterExpression parameter)
+            {
+                return;
+            }
+
+            var facets =
+                (Precision: precision, Scale: scale);
+            if (_facetsByParameter.TryGetValue(
+                    parameter.Name,
+                    out var previousFacets) &&
+                previousFacets != facets)
+            {
+                Diagnostic = ForDecimal(
+                    $"Parameter '{parameter.Name}' is reused with incompatible decimal facets decimal({previousFacets.Precision}, {previousFacets.Scale}) and decimal({facets.Precision}, {facets.Scale}). Capture a separate parameter value for each decimal mapping.");
+                return;
+            }
+
+            _facetsByParameter[parameter.Name] =
+                facets;
+        }
+
+        private bool TryGetDecimalPropertyFacets(
+            Expression expression,
+            out int precision,
+            out int scale)
+        {
+            precision = 0;
+            scale = 0;
+            expression = UnwrapConvert(expression);
+
+            if (expression is MemberExpression
+                {
+                    Member.Name: nameof(Nullable<int>.Value),
+                    Expression: MemberExpression nullableMember,
+                } &&
+                Nullable.GetUnderlyingType(
+                    nullableMember.Type) ==
+                typeof(decimal))
+            {
+                expression = nullableMember;
+            }
+
+            if (expression is not MemberExpression member)
+                return false;
+
+            Type? entityClrType =
+                member.Expression?.Type;
+            IProperty? property = _model
+                .GetEntityTypes()
+                .Where(entityType =>
+                    entityType.ClrType ==
+                        entityClrType ||
+                    entityType.ClrType ==
+                        member.Member.DeclaringType)
+                .Select(entityType =>
+                    entityType.FindProperty(
+                        member.Member.Name))
+                .FirstOrDefault(candidate =>
+                    candidate is not null);
+            if (property is null ||
+                property.GetValueConverter() is not null ||
+                (Nullable.GetUnderlyingType(
+                        property.ClrType) ??
+                    property.ClrType) != typeof(decimal))
+            {
+                return false;
+            }
+
+            (precision, scale) =
+                CSharpDbDecimalStorage.ResolveFacets(
+                    property.GetPrecision(),
+                    property.GetScale());
+            return true;
+        }
+
+        private static Expression UnwrapConvert(
+            Expression expression)
+        {
+            while (expression is UnaryExpression
+                   {
+                       NodeType:
+                           ExpressionType.Convert or
+                           ExpressionType.ConvertChecked,
+                   } conversion)
+            {
+                expression = conversion.Operand;
+            }
+
+            return expression;
+        }
+
+        private static bool IsDecimalComparison(
+            ExpressionType nodeType) =>
+            nodeType is
+                ExpressionType.Equal or
+                ExpressionType.NotEqual or
+                ExpressionType.LessThan or
+                ExpressionType.LessThanOrEqual or
+                ExpressionType.GreaterThan or
+                ExpressionType.GreaterThanOrEqual;
     }
 
     private sealed class UnsafeGroupBySourceFindingExpressionVisitor
