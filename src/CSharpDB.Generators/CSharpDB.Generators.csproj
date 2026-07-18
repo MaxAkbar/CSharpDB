@@ -14,8 +14,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="5.6.0" PrivateAssets="all" />
+    <!-- Pinned to Roslyn 5.3.0 to match the SDK version pinned in global.json (10.0.203); newer Roslyn versions cause the analyzer to be skipped (CS9057). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="5.3.0" PrivateAssets="all" />
     <PackageReference Include="System.Text.Json" Version="10.0.10" PrivateAssets="all" />
   </ItemGroup>
 

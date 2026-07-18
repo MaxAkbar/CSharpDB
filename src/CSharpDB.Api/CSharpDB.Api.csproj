@@ -10,7 +10,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
-    <PackageReference Include="Microsoft.OpenApi" Version="3.9.0" />
+    <!-- Microsoft.AspNetCore.OpenApi 10.0.10 generates code against the Microsoft.OpenApi 2.x surface; upgrading to 3.x (e.g. 3.9.0) breaks the build. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
     <PackageReference Include="Scalar.AspNetCore" Version="2.16.15" />
   </ItemGroup>
 
