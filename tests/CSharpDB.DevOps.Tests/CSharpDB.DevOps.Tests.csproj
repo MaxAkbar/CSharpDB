@@ -18,7 +18,7 @@
 
   <ItemGroup>
     <PackageReference Update="coverlet.collector" Version="10.0.1" />
-    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.5.1" />
+    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.8.1" />
   </ItemGroup>
 
 </Project>
