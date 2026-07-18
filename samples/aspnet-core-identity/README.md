@@ -13,13 +13,19 @@ This sample shows ASP.NET Core 10 authentication and authorization wired to a si
 
 Everything &mdash; users, roles, role assignments, claims, lockout state &mdash; lives in a single `.db` file beside the binaries.
 
-## Why Not EF Core + ASP.NET Core Identity Here?
+## Why Does This Sample Use a Custom Store?
 
-The current CSharpDB EF Core provider does not support composite primary keys. ASP.NET Core Identity's standard schema uses composite keys on `AspNetUserRoles`, `AspNetUserLogins`, and `AspNetUserTokens`, so `IdentityDbContext<TUser>` cannot be created on CSharpDB without subclassing the Identity stores.
+The CSharpDB EF Core provider now supports the composite primary keys and
+foreign keys used by ASP.NET Core Identity's standard schema. Full
+`IdentityDbContext<TUser>` compatibility has not yet been qualified in the
+provider compatibility suite, however, so this sample intentionally keeps its
+small, directly inspectable store.
 
 This sample takes the runs-today path: a small custom user store over `CSharpDB.Data`. The auth and authorization pipeline is the standard ASP.NET Core surface (`AddAuthentication`, `AddCookie`, `AddJwtBearer`, `AddAuthorization`) &mdash; only the user store is custom, and it is small enough to read in one sitting ([UserStore.cs](UserStore.cs)).
 
-When the EF Core provider gains composite-key support, the same Identity flows shown here will become available with `IdentityDbContext<AppUser>` and `AddIdentity<AppUser, IdentityRole>().AddEntityFrameworkStores<AppDbContext>()`.
+An EF-backed Identity sample using `IdentityDbContext<AppUser>` and
+`AddIdentity<AppUser, IdentityRole>().AddEntityFrameworkStores<AppDbContext>()`
+will be added once that end-to-end compatibility target is covered by tests.
 
 ## Run The Sample
 

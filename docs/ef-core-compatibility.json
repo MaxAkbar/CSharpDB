@@ -1,0 +1,349 @@
+{
+  "$schema": "ef-core-compatibility.schema.json",
+  "manifestVersion": 1,
+  "provider": "CSharpDB.EntityFrameworkCore",
+  "efCoreVersion": "10.0.10",
+  "tiers": {
+    "tier1": "Common application patterns that form the primary production support target.",
+    "tier2": "Advanced patterns that are supported when explicitly listed.",
+    "tier3": "Experimental, planned, or explicitly unsupported behavior."
+  },
+  "features": [
+    {
+      "id": "runtime.file-backed",
+      "category": "Runtime and connections",
+      "name": "File-backed embedded databases",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "UseCSharpDb supports direct embedded file-backed databases.",
+      "proofTests": ["EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds"]
+    },
+    {
+      "id": "runtime.private-memory",
+      "category": "Runtime and connections",
+      "name": "Private in-memory databases",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "A private :memory: database is supported while its supplied connection remains open.",
+      "proofTests": ["UseCSharpDb_WithPrivateMemoryConnection_SupportsRuntimeOperations"]
+    },
+    {
+      "id": "runtime.remote-and-pooling",
+      "category": "Runtime and connections",
+      "name": "Remote transports, pooling, and named shared memory",
+      "status": "Unsupported",
+      "tier": "tier3",
+      "summary": "The provider rejects endpoint, non-direct, pooled, and named shared-memory configurations.",
+      "proofTests": ["ProviderValidation_RejectsUnsupportedConnectionConfigurations"]
+    },
+    {
+      "id": "model.composite-primary-keys",
+      "category": "Model features",
+      "name": "Composite primary keys and indexes",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Composite primary keys and ordered composite indexes are supported.",
+      "proofTests": ["CompositeKeyEntity_SupportsCrudIndexesAndDuplicateRejection"]
+    },
+    {
+      "id": "model.foreign-keys",
+      "category": "Model features",
+      "name": "Foreign keys",
+      "status": "Partial",
+      "tier": "tier1",
+      "summary": "Named scalar and composite foreign keys support create, standalone add/drop, primary or alternate-key targets, and cascade or restrictive delete behavior.",
+      "proofTests": [
+        "MigrationsSqlGenerator_StandaloneForeignKey_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_StandaloneCompositeForeignKey_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_CreateTable_PreservesForeignAndUniqueConstraintNames",
+        "MigrationsSqlGenerator_AddConstraints_RejectsInvalidExistingDataWithoutPersistingMetadata",
+        "AlternateKeyRelationship_SupportsEnsureCreatedAndEnforcement",
+        "CompositeForeignKeyRelationship_SupportsEnsureCreatedAndEnforcement",
+        "MigrationsSqlGenerator_EmitsCompositeForeignKeysAndStandalonePrimaryKeyChanges"
+      ]
+    },
+    {
+      "id": "model.alternate-keys",
+      "category": "Model features",
+      "name": "Alternate keys and unique constraints",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Single and composite alternate keys are created as named unique constraints and support standalone add/drop migrations.",
+      "proofTests": [
+        "MigrationsSqlGenerator_StandaloneUniqueConstraint_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_CreateTable_PreservesForeignAndUniqueConstraintNames",
+        "AlternateKeyRelationship_SupportsEnsureCreatedAndEnforcement"
+      ]
+    },
+    {
+      "id": "model.literal-defaults",
+      "category": "Model features",
+      "name": "Literal column defaults",
+      "status": "Partial",
+      "tier": "tier1",
+      "summary": "Literal INTEGER, REAL, TEXT, BLOB, and NULL defaults are supported; DefaultValueSql is not.",
+      "proofTests": ["LiteralDefaultsAndCreateTableChecks_AreApplied", "MigrationsSqlGenerator_EmitsLiteralDefaultAndCreateTableCheck"]
+    },
+    {
+      "id": "model.check-constraints",
+      "category": "Model features",
+      "name": "Check constraints",
+      "status": "Partial",
+      "tier": "tier1",
+      "summary": "Create-table checks and standalone add/drop migrations are supported for deterministic row-local expressions accepted by the engine.",
+      "proofTests": [
+        "LiteralDefaultsAndCreateTableChecks_AreApplied",
+        "MigrationsSqlGenerator_EmitsLiteralDefaultAndCreateTableCheck",
+        "MigrationsSqlGenerator_StandaloneCheckConstraint_CanBeAddedAndDropped"
+      ]
+    },
+    {
+      "id": "model.computed-columns",
+      "category": "Model features",
+      "name": "Computed columns",
+      "status": "Planned",
+      "tier": "tier3",
+      "summary": "Computed column metadata is rejected pending engine and catalog support.",
+      "proofTests": []
+    },
+    {
+      "id": "types.core",
+      "category": "Data types",
+      "name": "Core CLR type mappings",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Boolean, integral, enum, floating-point, string, GUID, temporal, and byte-array values round-trip.",
+      "proofTests": ["EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds"]
+    },
+    {
+      "id": "types.decimal",
+      "category": "Data types",
+      "name": "Exact decimal mapping",
+      "status": "Planned",
+      "tier": "tier1",
+      "summary": "Decimal currently requires an explicit application value converter.",
+      "proofTests": ["ModelValidation_RejectsDecimalWithoutConverter"]
+    },
+    {
+      "id": "migrations.ensure-created",
+      "category": "Migrations and DDL",
+      "name": "EnsureCreated",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "EnsureCreated supports file-backed and private in-memory databases.",
+      "proofTests": ["EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds", "UseCSharpDb_WithPrivateMemoryConnection_SupportsRuntimeOperations"]
+    },
+    {
+      "id": "migrations.database-migrate",
+      "category": "Migrations and DDL",
+      "name": "Database.Migrate and migration history",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Compiled migrations apply to file-backed databases and can be safely rerun.",
+      "proofTests": ["DatabaseMigrate_AppliesCompiledMigrations_AndCanBeReRun"]
+    },
+    {
+      "id": "migrations.scripts",
+      "category": "Migrations and DDL",
+      "name": "Non-idempotent migration scripts",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "IMigrator generates executable SQL for the supported migration operation set.",
+      "proofTests": ["Migrator_GenerateScript_ProducesSupportedSql"]
+    },
+    {
+      "id": "migrations.idempotent-scripts",
+      "category": "Migrations and DDL",
+      "name": "Idempotent migration scripts",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Conditional migration-history blocks can be generated and rerun against empty, partial, and current databases.",
+      "proofTests": [
+        "Migrator_GenerateIdempotentScript_ProducesConditionalMigrationBlocks",
+        "Migrator_GenerateIdempotentScript_CanRunRepeatedlyFromEmptyDatabase",
+        "Migrator_GenerateIdempotentScript_AppliesOnlyMissingMigration"
+      ]
+    },
+    {
+      "id": "migrations.primary-key-alterations",
+      "category": "Migrations and DDL",
+      "name": "Standalone primary-key migrations",
+      "status": "Partial",
+      "tier": "tier1",
+      "summary": "Named single-TEXT and composite INTEGER/TEXT logical primary keys support standalone add/drop migrations. A physical single-INTEGER primary key can also be added to populated data: validated non-NULL unique values become the physical row IDs while ready ordinary/unique SQL, constraint-owned, and foreign-key-support indexes are rebuilt atomically. Full-text, collection, and non-ready indexes remain unsupported. EF drops require the exact constraint name, raw ALTER TABLE DROP PRIMARY KEY remains available for legacy unnamed keys, and dropping a key preserves NOT NULL.",
+      "proofTests": [
+        "MigrationsSqlGenerator_EmitsCompositeForeignKeysAndStandalonePrimaryKeyChanges",
+        "MigrationsSqlGenerator_StandaloneCompositePrimaryKey_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_StandaloneTextPrimaryKey_PreservesNotNullAfterDrop",
+        "MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeysUnalignedRowsAndPersists",
+        "MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeyRollsBackMigrationTransaction",
+        "AlterTable_DropPrimaryKey_RawSyntaxHandlesUnnamedPrimaryKey",
+        "MigrationsSqlGenerator_AddPrimaryKey_RejectsInvalidRowsWithoutResidualMetadata",
+        "MigrationsSqlGenerator_DropPrimaryKey_RequiresAlternateCandidateForForeignKeys"
+      ]
+    },
+    {
+      "id": "migrations.numeric-type-rewrites",
+      "category": "Migrations and DDL",
+      "name": "Numeric column type changes",
+      "status": "Partial",
+      "tier": "tier1",
+      "summary": "AlterColumn supports dependency-free INTEGER-to-REAL and REAL-to-INTEGER shadow-root rewrites. INTEGER values must be exactly representable as REAL; REAL values must be finite, integral, and within Int64 range. TEXT/BLOB conversions and columns used by keys, indexes, or foreign keys remain unsupported. A view on the table, a table-owned trigger, a cross-table trigger that references the column, or an applicable validation rule must be removed first.",
+      "proofTests": [
+        "MigrationsSqlGenerator_AlterColumnNumericType_ExecutesUpAndDownAndPersists",
+        "MigrationsSqlGenerator_AlterColumnNumericType_FailureRollsBackCompoundTransaction",
+        "MigrationsSqlGenerator_AlterColumn_InfersOldStoreTypeWithoutUsingTargetModelColumn",
+        "MigrationsSqlGenerator_AlterColumnNumericType_RejectsDependentIndexWithoutChangingSchema",
+        "MigrationsSqlGenerator_NonNumericAlterColumnTypeChange_RemainsExplicitlyRejected"
+      ]
+    },
+    {
+      "id": "migrations.collation-rewrites",
+      "category": "Migrations and DDL",
+      "name": "Text column collation changes",
+      "status": "Partial",
+      "tier": "tier1",
+      "summary": "AlterColumn supports TEXT collation changes through an atomic table-and-index shadow-root rewrite, including return to the default BINARY collation. Ready ordinary and unique SQL indexes that inherit the column collation are rebuilt; explicit-collation and unrelated indexes retain their roots. Checks and uniqueness are revalidated, and a failure restores every original root. Key constraints, foreign keys, full-text/collection dependencies, views on the table, table-owned triggers, cross-table triggers that reference the column, and applicable validation rules remain unsupported.",
+      "proofTests": [
+        "MigrationsSqlGenerator_AlterColumnCollation_ExecutesUpAndDownAndPersists",
+        "MigrationsSqlGenerator_AlterColumnCollation_RebuiltIndexRollsBackWithCompoundMigration"
+      ]
+    },
+    {
+      "id": "migrations.schema-alterations",
+      "category": "Migrations and DDL",
+      "name": "Practical schema alterations",
+      "status": "Partial",
+      "tier": "tier1",
+      "summary": "Add, drop, and rename columns; table rename; create/drop/rename index operations; named check, unique, foreign-key, and bounded primary-key add/drop; populated single-INTEGER primary-key rekeying with relational-index rebuilding; AlterColumn literal-default/nullability changes; dependency-free exact INTEGER/REAL rewrites; and TEXT-collation rewrites with inherited ordinary/unique SQL-index rebuilding are supported. Broader primary-key rekeys, indexed numeric changes, key/FK/full-text/collection-dependent column rewrites, and TEXT/BLOB type conversions remain unsupported.",
+      "proofTests": [
+        "MigrationsSqlGenerator_AlterColumnDefaultAndNullability_ExecutesAndPersists",
+        "MigrationsSqlGenerator_AlterColumnSetNotNull_RejectsExistingNullsWithoutChangingSchema",
+        "MigrationsSqlGenerator_AlterColumnNumericType_ExecutesUpAndDownAndPersists",
+        "MigrationsSqlGenerator_AlterColumnNumericType_FailureRollsBackCompoundTransaction",
+        "MigrationsSqlGenerator_AlterColumn_InfersOldStoreTypeWithoutUsingTargetModelColumn",
+        "MigrationsSqlGenerator_AlterColumnCollation_ExecutesUpAndDownAndPersists",
+        "MigrationsSqlGenerator_AlterColumnCollation_RebuiltIndexRollsBackWithCompoundMigration",
+        "MigrationsSqlGenerator_AlterColumnNumericType_RejectsDependentIndexWithoutChangingSchema",
+        "MigrationsSqlGenerator_NonNumericAlterColumnTypeChange_RemainsExplicitlyRejected",
+        "MigrationsSqlGenerator_RenameIndex_ExecutesAndPersists",
+        "MigrationsSqlGenerator_StandaloneCheckConstraint_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_StandaloneForeignKey_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_StandaloneCompositeForeignKey_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_StandaloneUniqueConstraint_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_AddConstraints_RejectsInvalidExistingDataWithoutPersistingMetadata",
+        "MigrationsSqlGenerator_StandaloneCompositePrimaryKey_CanBeAddedAndDropped",
+        "MigrationsSqlGenerator_StandaloneTextPrimaryKey_PreservesNotNullAfterDrop",
+        "MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeysUnalignedRowsAndPersists",
+        "MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeyRollsBackMigrationTransaction",
+        "MigrationsSqlGenerator_AddPrimaryKey_RejectsInvalidRowsWithoutResidualMetadata",
+        "MigrationsSqlGenerator_DropPrimaryKey_RequiresAlternateCandidateForForeignKeys"
+      ]
+    },
+    {
+      "id": "query.basic",
+      "category": "Query operators and methods",
+      "name": "Basic LINQ queries",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Where, ordering, Skip/Take pagination, scalar projection, Single, Any, Count, constant/parameter collection Contains, and simple Include queries are supported.",
+      "proofTests": ["Queries_IncludePaginationAndContainsOverConstantsAndParameters_Succeed"]
+    },
+    {
+      "id": "query.string-functions",
+      "category": "Query operators and methods",
+      "name": "String members and methods",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "String Length, parameterless ToLower/ToLowerInvariant, ToUpper/ToUpperInvariant, Trim/TrimStart/TrimEnd, Replace(string, string), and both Substring overloads translate in predicates, projections, and ordering. LOWER/UPPER use invariant CSharpDB server semantics rather than CurrentCulture.",
+      "proofTests": ["Queries_StringFunctionsTranslateInPredicatesProjectionsAndOrdering"]
+    },
+    {
+      "id": "query.temporal-components",
+      "category": "Query operators and methods",
+      "name": "Date and time components",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "DateTime Year/Month/Day/Hour/Minute/Second, DateOnly Year/Month/Day, and TimeOnly Hour/Minute/Second translate in predicates and projections.",
+      "proofTests": ["Queries_DateAndTimeComponentsTranslateInPredicatesAndProjections"]
+    },
+    {
+      "id": "query.numeric-functions",
+      "category": "Query operators and methods",
+      "name": "Double-precision math functions",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "For finite REAL-mapped values, Math.Abs(double), Round(double), Floor(double), Ceiling(double), Truncate(double), and Sign(double) translate in predicates, projections, and ordering with SQL null propagation. Round uses midpoint-to-even semantics. Integral, decimal, MathF, precision-argument, midpoint-mode, and transcendental overloads remain outside the qualified surface.",
+      "proofTests": [
+        "Queries_DoubleMathFunctionsTranslateInPredicatesProjectionsAndOrdering",
+        "DoubleMathFunctions_MatchForFiniteNonMidpointValues"
+      ]
+    },
+    {
+      "id": "query.scalar-numeric-aggregates",
+      "category": "Query operators and methods",
+      "name": "Scalar numeric aggregates",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Count, LongCount, simple and bounded-shape Any, Sum over int/double/nullable double, Average over double/nullable double, and Min/Max over int/double/nullable double are qualified for filtered, empty, and all-null scalar queries. Long- and float-valued Sum/Average/Min/Max variants, integer Average, text Min/Max, Distinct aggregates, and GroupBy remain outside the qualified surface.",
+      "proofTests": [
+        "Queries_ScalarNumericAggregatesTranslateWithExpectedEmptyAndNullableSemantics",
+        "ScalarNumericAggregates_MatchForBoundedValuesAndNulls"
+      ]
+    },
+    {
+      "id": "query.unsupported-diagnostics",
+      "category": "Query operators and methods",
+      "name": "Unsupported LINQ diagnostics",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Unsupported CLR methods and members, plus recognized TakeWhile and SkipWhile operators, retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1003 guidance before command dispatch.",
+      "proofTests": ["UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch"]
+    },
+    {
+      "id": "query.advanced",
+      "category": "Query operators and methods",
+      "name": "Advanced LINQ translation",
+      "status": "Planned",
+      "tier": "tier2",
+      "summary": "String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, unqualified aggregate type/shape variants, GroupBy, set operations, joins, and correlated-query coverage remain planned.",
+      "proofTests": []
+    },
+    {
+      "id": "tracking.crud",
+      "category": "Change tracking and concurrency",
+      "name": "CRUD and change tracking",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Tracked insert, update, delete, generated integer keys, and affected-row checks are supported.",
+      "proofTests": ["EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds", "IdentityOnlyEntity_UsesDefaultValuesAndReturnsGeneratedKey"]
+    },
+    {
+      "id": "concurrency.application-token",
+      "category": "Change tracking and concurrency",
+      "name": "Application-managed concurrency tokens",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Original concurrency-token values participate in write predicates and stale writes throw DbUpdateConcurrencyException.",
+      "proofTests": ["SaveChanges_WithConcurrencyToken_ThrowsWhenRowWasModified"]
+    },
+    {
+      "id": "concurrency.rowversion",
+      "category": "Change tracking and concurrency",
+      "name": "Database-generated rowversion",
+      "status": "Planned",
+      "tier": "tier1",
+      "summary": "IsRowVersion and Timestamp semantics are rejected pending database-generated token support.",
+      "proofTests": []
+    },
+    {
+      "id": "design-time.migrations",
+      "category": "Design-time tooling",
+      "name": "EF Core design-time migrations",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "The provider registers design-time services for migrations add, script, and database update workflows.",
+      "proofTests": ["Migrator_GenerateScript_ProducesSupportedSql"]
+    }
+  ]
+}

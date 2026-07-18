@@ -68,6 +68,28 @@ public class ExpressionCompilerContractTests
     }
 
     [Fact]
+    public void UnaryMinus_PropagatesNullInCompiledAndFallbackEvaluation()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "nullable_number",
+            Columns =
+            [
+                new ColumnDefinition { Name = "value", Type = DbType.Real, Nullable = true },
+            ],
+        };
+        Expression expression = new UnaryExpression
+        {
+            Op = TokenType.Minus,
+            Operand = new ColumnRefExpression { ColumnName = "value" },
+        };
+        DbValue[] row = [DbValue.Null];
+
+        Assert.True(ExpressionCompiler.CompileSpan(expression, schema)(row).IsNull);
+        Assert.True(ExpressionEvaluator.Evaluate(expression, row, schema).IsNull);
+    }
+
+    [Fact]
     public void CompileJoinSpan_EvaluatesArithmeticAndTextFunctionPredicate()
     {
         var schema = new TableSchema

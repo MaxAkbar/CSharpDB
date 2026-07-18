@@ -222,6 +222,7 @@ public static class DbBuiltInScalarFunctions
                 value = EvaluateRound(args);
                 return true;
             case "INT":
+            case "FLOOR":
                 RequireArgumentCount(name, args, 1);
                 value = TryConvertDouble(args[0], out double intValue) ? FromReal(Math.Floor(intValue)) : DbValue.Null;
                 return true;

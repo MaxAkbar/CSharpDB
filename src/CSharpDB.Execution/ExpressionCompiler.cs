@@ -168,6 +168,7 @@ internal static class ExpressionCompiler
                 TokenType.Not => BoolToDb(!operandValue.IsTruthy),
                 TokenType.Minus => operandValue.Type switch
                 {
+                    DbType.Null => DbValue.Null,
                     DbType.Integer => DbValue.FromInteger(-operandValue.AsInteger),
                     DbType.Real => DbValue.FromReal(-operandValue.AsReal),
                     _ => throw new CSharpDbException(ErrorCode.TypeMismatch, "Cannot negate non-numeric value."),

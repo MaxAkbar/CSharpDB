@@ -104,7 +104,7 @@ public static class DbBuiltInFunctionRegistry
 
         Scalar("ABS", [], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "numeric"),
         Scalar("ROUND", [], 1, 2, "numeric[, integer]", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "numeric"),
-        Scalar("INT", [], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "floor"),
+        Scalar("INT", ["FLOOR"], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "floor"),
         Scalar("FIX", [], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "truncate toward zero"),
         Scalar("SGN", [], 1, 1, "numeric", DbType.Integer, "integer", DbFunctionNullBehavior.Propagates, "numeric sign"),
         Scalar("CSTR", [], 1, 1, "any", DbType.Text, "text", DbFunctionNullBehavior.HandlesNull, "invariant conversion"),

@@ -7,10 +7,25 @@ namespace CSharpDB.Execution;
 
 internal static class IndexMaintenanceHelper
 {
-    public static async ValueTask BackfillIndexAsync(
+    public static ValueTask BackfillIndexAsync(
         SchemaCatalog catalog,
         TableSchema tableSchema,
         IndexSchema indexSchema,
+        IRecordSerializer readSerializer,
+        CancellationToken ct = default)
+        => BackfillIndexAsync(
+            catalog.GetTableTree(indexSchema.TableName),
+            tableSchema,
+            indexSchema,
+            catalog.GetIndexStore(indexSchema.IndexName),
+            readSerializer,
+            ct);
+
+    internal static async ValueTask BackfillIndexAsync(
+        BTree tableTree,
+        TableSchema tableSchema,
+        IndexSchema indexSchema,
+        IIndexStore indexStore,
         IRecordSerializer readSerializer,
         CancellationToken ct = default)
     {
@@ -27,9 +42,10 @@ internal static class IndexMaintenanceHelper
             indexColumnIndices);
         SqlIndexStorageMode storageMode = ResolveSqlIndexStorageMode(indexSchema, tableSchema);
 
-        var tableTree = catalog.GetTableTree(indexSchema.TableName);
-        var indexStore = catalog.GetIndexStore(indexSchema.IndexName);
-        var scan = new TableScanOperator(tableTree, tableSchema, readSerializer);
+        await using var scan = new TableScanOperator(
+            tableTree,
+            tableSchema,
+            readSerializer);
         await scan.OpenAsync(ct);
 
         if (!indexSchema.IsUnique)

@@ -26,6 +26,32 @@ public sealed class SqlScriptSplitterTests
     }
 
     [Fact]
+    public void TrySplitCompleteStatements_KeepsConditionalBodyAsSingleStatement()
+    {
+        string sql = """
+            CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY);
+            IF NOT EXISTS (SELECT 1 FROM history WHERE id = 'm1') BEGIN
+                CREATE TABLE items (id INTEGER PRIMARY KEY);
+                INSERT INTO history VALUES ('m1');
+            END;
+            """;
+
+        bool ok = SqlScriptSplitter.TrySplitCompleteStatements(
+            sql,
+            out var statements,
+            out var remainder,
+            out var error);
+
+        Assert.True(ok);
+        Assert.Null(error);
+        Assert.Equal(string.Empty, remainder);
+        Assert.Equal(2, statements.Count);
+        var conditional = Assert.IsType<ConditionalStatement>(Parser.Parse(statements[1]));
+        Assert.True(conditional.Negated);
+        Assert.Equal(2, conditional.Body.Count);
+    }
+
+    [Fact]
     public void TrySplitCompleteStatements_IgnoresEmptyStatements()
     {
         string sql = ";;CREATE TABLE t (id INTEGER PRIMARY KEY);;;;INSERT INTO t VALUES (1);;";

@@ -83,7 +83,7 @@
                         <option value="window-functions">Window functions</option>
                     </select></label>
                 </div>
-                <p id="compat-visible-count" aria-live="polite">Showing 43 feature rows.</p>
+                <p id="compat-visible-count" aria-live="polite">Showing 48 feature rows.</p>
                 <article class="compat-card" id="feature-alter.add_column.defaulted" data-status="supported" data-category="alter-table" data-search="alter.add_column.defaulted alter table add a column with a literal default and backfill existing rows alter table users add column status text not null default &#39;new&#39; the default must be one of the supported typed literal or null forms. adding a required column without a value for existing rows is rejected. a failed rewrite makes either explicit transaction api rollback-only. existing rows are streamed through a shadow table root and receive the persisted default before the catalog root is swapped.">
                     <div class="compat-card-head">
                         <div>
@@ -123,6 +123,46 @@
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.constraint.primary_key.add" data-status="partial" data-category="alter-table" data-search="alter.constraint.primary_key.add alter table add a named primary-key constraint alter table items add constraint pk_items primary key (tenant_id, code) logical single-column and composite keys are added without a table rewrite after all existing rows pass non-null and uniqueness validation. one primary key is allowed per table. a single integer primary key uses the physical row key: populated tables are rekeyed from validated non-null unique column values while every ready ordinary/unique sql, constraint-internal, and foreign-key-internal index is rebuilt atomically. full-text, collection, and non-ready indexes remain unsupported and reject the operation before mutation. logical keys use an engine-owned unique backing index. adding any primary key makes its columns not null; a physical single integer key also gains identity/default-value generation. its high-water mark is not reduced and advances past the largest existing nonnegative key when that successor is representable.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Add a named primary-key constraint</h3>
+                            <div class="compat-id">alter.constraint.primary_key.add · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE items ADD CONSTRAINT pk_items PRIMARY KEY (tenant_id, code)</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Execution</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Logical single-column and composite keys are added without a table rewrite after all existing rows pass non-NULL and uniqueness validation. One primary key is allowed per table. A single INTEGER primary key uses the physical row key: populated tables are rekeyed from validated non-NULL unique column values while every ready ordinary/unique SQL, constraint-internal, and foreign-key-internal index is rebuilt atomically. Full-text, collection, and non-ready indexes remain unsupported and reject the operation before mutation.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Logical keys use an engine-owned unique backing index. Adding any primary key makes its columns NOT NULL; a physical single INTEGER key also gains identity/default-value generation. Its high-water mark is not reduced and advances past the largest existing nonnegative key when that successor is representable.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ef.migration.primary_key.generated_sql, ef.migration.primary_key.logical, ef.migration.primary_key.text, engine.alter.primary_key.integer_rekey, ef.migration.primary_key.integer_rekey, ef.migration.primary_key.integer_rekey_rollback, catalog.key_constraints, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.alter.primary_key.integer_duplicate.rejected, engine.alter.primary_key.unsupported_index.rejected, ef.migration.primary_key.second_key.rejected, ef.migration.primary_key.invalid_data.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.2.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-alter.add_column.nullable" data-status="supported" data-category="alter-table" data-search="alter.add_column.nullable alter table add a nullable column without a default alter table users add column nickname text computed values are not supported. literal-default backfill and selected alter column metadata actions are qualified in separate rows. ">
                     <div class="compat-card-head">
@@ -199,14 +239,54 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-alter.drop_constraint.foreign_key" data-status="partial" data-category="alter-table" data-search="alter.drop_constraint.foreign_key alter table drop a foreign-key constraint by name alter table children drop constraint fk_children_parent only existing foreign-key constraints are handled. other constraint kinds do not yet exist, and the ef provider rejects standalone foreign-key changes. ">
+                <article class="compat-card" id="feature-alter.column.numeric_type" data-status="partial" data-category="alter-table" data-search="alter.column.numeric_type alter table convert a dependency-free column between integer and real alter table measurements alter column amount type real only integer-to-real and real-to-integer are accepted. integer values must remain within the exactly representable inclusive range -2^53 through 2^53; real values must be finite, integral, and within the signed 64-bit integer range. an incompatible stored value leaves the original root and schema unchanged. the altered column cannot participate in a primary/unique key, ordinary index, or incoming/outgoing foreign key. the conservative preflight also rejects any view that references the table, any trigger owned by the table, a cross-table trigger that references the column, and an applicable validation rule. affected-index rebuild and dependency rewriting are not implemented. text/blob conversions remain unsupported. a persisted default must validate for the target type, so drop default and a later compatible set default may be required. the generated multi-command default/type/nullability sequence must execute in one migration transaction so a conversion failure restores every facet. successful conversion streams rows through a transactional shadow root, preserves each physical row id and indexes on other columns, revalidates check constraints, swaps the catalog root atomically, and persists across reopen. ef core infers the old store type independently of the target model column and orders drop default, type, set default, and nullability changes when those facets change together.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Convert a dependency-free column between INTEGER and REAL</h3>
+                            <div class="compat-id">alter.column.numeric_type · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE measurements ALTER COLUMN amount TYPE REAL</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Execution</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Only INTEGER-to-REAL and REAL-to-INTEGER are accepted. INTEGER values must remain within the exactly representable inclusive range -2^53 through 2^53; REAL values must be finite, integral, and within the signed 64-bit INTEGER range. An incompatible stored value leaves the original root and schema unchanged. The altered column cannot participate in a primary/unique key, ordinary index, or incoming/outgoing foreign key. The conservative preflight also rejects any view that references the table, any trigger owned by the table, a cross-table trigger that references the column, and an applicable validation rule. Affected-index rebuild and dependency rewriting are not implemented. TEXT/BLOB conversions remain unsupported. A persisted default must validate for the target type, so DROP DEFAULT and a later compatible SET DEFAULT may be required. The generated multi-command default/type/nullability sequence must execute in one migration transaction so a conversion failure restores every facet.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Successful conversion streams rows through a transactional shadow root, preserves each physical row ID and indexes on other columns, revalidates CHECK constraints, swaps the catalog root atomically, and persists across reopen. EF Core infers the old store type independently of the target model column and orders DROP DEFAULT, TYPE, SET DEFAULT, and nullability changes when those facets change together.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_shape, engine.alter.column_numeric_type, ef.migration.alter_column_numeric_type, ef.migration.alter_column_compound_rollback, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">parser.alter.column_type.unsupported, engine.alter.column_numeric_inexact.rejected, engine.alter.column_numeric_default.rejected, engine.alter.column_shape_dependency.rejected, ef.migration.alter_column_nonnumeric.rejected, ef.migration.alter_column_old_type_inference.rejected, ef.migration.alter_column_dependent_index.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.2.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.drop_constraint.foreign_key" data-status="supported" data-category="alter-table" data-search="alter.drop_constraint.foreign_key alter table drop a foreign-key constraint by name alter table children drop constraint fk_children_parent the named constraint must exist. provider versions before 4.2.0 may have generated engine-owned names for create-time foreign keys; those stored names must be used in one-time drop migrations. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>Drop a foreign-key constraint by name</h3>
                             <div class="compat-id">alter.drop_constraint.foreign_key · ALTER TABLE</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-supported">supported</span>
                             <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
                         </div>
                     </div>
@@ -214,7 +294,7 @@
                     <div class="facet-grid">
                         <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
-                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
@@ -222,18 +302,58 @@
                         <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-unsupported"><span class="facet-name">EF migration</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>Only existing foreign-key constraints are handled. Other constraint kinds do not yet exist, and the EF provider rejects standalone foreign-key changes.</li>
+                            <li>The named constraint must exist. Provider versions before 4.2.0 may have generated engine-owned names for create-time foreign keys; those stored names must be used in one-time drop migrations.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.drop, engine.fk.drop_constraint, catalog.fk, ado.schema.fk, rest.sql, rest.session, grpc.fk.metadata, grpc.session</span></p>
-                            <p><strong>Negative:</strong> <span class="compat-proof">engine.fk.drop_missing.rejected, ef.fk.standalone.rejected</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.drop, engine.fk.drop_constraint, catalog.fk, ado.schema.fk, rest.sql, rest.session, grpc.fk.metadata, grpc.session, ef.migration.foreign_key, ef.migration.composite_foreign_key</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.fk.drop_missing.rejected</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.constraint.primary_key.drop" data-status="supported" data-category="alter-table" data-search="alter.constraint.primary_key.drop alter table drop a named or current primary-key constraint alter table items drop constraint pk_items; alter table items drop primary key drop constraint requires the stored constraint name and is the normal ef core generated form. drop primary key targets the current key without a name and also handles legacy unnamed keys. a referenced key cannot be dropped unless an equivalent ordered unique candidate key remains for every dependent foreign key. dropping a logical key removes its engine-owned backing index. dropping a physical single integer key removes identity/default-value generation. primary-key columns remain not null after either form.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Drop a named or current primary-key constraint</h3>
+                            <div class="compat-id">alter.constraint.primary_key.drop · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE items DROP CONSTRAINT pk_items; ALTER TABLE items DROP PRIMARY KEY</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>DROP CONSTRAINT requires the stored constraint name and is the normal EF Core generated form. DROP PRIMARY KEY targets the current key without a name and also handles legacy unnamed keys. A referenced key cannot be dropped unless an equivalent ordered UNIQUE candidate key remains for every dependent foreign key.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>Dropping a logical key removes its engine-owned backing index. Dropping a physical single INTEGER key removes identity/default-value generation. Primary-key columns remain NOT NULL after either form.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.drop_primary_key, ef.migration.primary_key.generated_sql, ef.migration.primary_key.logical, ef.migration.primary_key.text, ef.migration.primary_key.integer_rekey, engine.alter.drop_primary_key.raw, catalog.key_constraints, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.migration.primary_key.exact_name.rejected, ef.migration.primary_key.dependency.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.2.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-alter.drop_column.unconstrained" data-status="supported" data-category="alter-table" data-search="alter.drop_column.unconstrained alter table drop an unconstrained, non-indexed column alter table users drop column obsolete_value indexed, constrained, trigger-, validation-rule-, or stored-view-dependent, primary-key, and last-column drops are rejected. stored-view preflight is deliberately table-conservative and follows direct/transitive view chains rather than attempting column-level sql rewriting. deterministic fault-injection and process-interruption coverage remain follow-on work. ">
                     <div class="compat-card-head">
@@ -279,7 +399,7 @@
                         </div>
                         <div class="compat-badges">
                             <span class="compat-badge compat-badge-partial">partial</span>
-                            <span class="compat-badge compat-badge-roadmap">roadmap: planned</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
                     <pre class="compat-syntax"><code>ALTER TABLE users RENAME COLUMN old_name TO new_name</code></pre>
@@ -343,6 +463,45 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
+                <article class="compat-card" id="feature-alter.rename_index" data-status="supported" data-category="alter-table" data-search="alter.rename_index alter table rename an ordinary sql index alter table users rename index ix_users_name to ix_users_full_name only ordinary sql indexes can be renamed directly. constraint-, foreign-key-, full-text-, and collection-owned indexes retain engine-managed names. the physical index root and uniqueness behavior are preserved; existing prefix statistics for the old name are invalidated.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Rename an ordinary SQL index</h3>
+                            <div class="compat-id">alter.rename_index · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE users RENAME INDEX ix_users_name TO ix_users_full_name</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Execution</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Persistence</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST stateless</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">REST session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Only ordinary SQL indexes can be renamed directly. Constraint-, foreign-key-, full-text-, and collection-owned indexes retain engine-managed names.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>The physical index root and uniqueness behavior are preserved; existing prefix statistics for the old name are invalidated.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.rename_index, engine.alter.rename_index, ef.migration.rename_index, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.2.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
                 <article class="compat-card" id="feature-alter.column.default" data-status="supported" data-category="alter-table" data-search="alter.column.default alter table set or drop a literal column default alter table users alter column status set default &#39;new&#39; set default accepts only the literal default forms supported by create table; it changes future writes and does not rewrite existing values. ">
                     <div class="compat-card-head">
                         <div>
@@ -379,7 +538,47 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-alter.column.not_null" data-status="supported" data-category="alter-table" data-search="alter.column.not_null alter table set or drop column not null metadata alter table users alter column email set not null set not null scans existing rows and refuses the metadata change if any value is null. type and collation changes are not part of this feature. ">
+                <article class="compat-card" id="feature-alter.column.collation" data-status="partial" data-category="alter-table" data-search="alter.column.collation alter table set or drop a text column collation alter table customers alter column code set collation nocase set collation and drop collation apply only to text columns. ready ordinary and unique sql indexes that inherit the column collation are rebuilt; indexes with an explicit collation and indexes on other columns retain their roots. primary/unique key constraints, incoming/outgoing foreign keys, full-text or collection dependencies, and non-ready indexes remain unsupported. the conservative preflight also rejects any view that references the table, any trigger owned by the table, a cross-table trigger that references the column, and an applicable validation rule. existing rows are rechecked under the target collation, so a check failure or newly colliding unique-index values reject the rewrite and leave every original root unchanged. the metadata change builds detached table and affected-index roots, swaps their catalog payloads atomically in the active transaction, preserves each physical row id, reclaims the replaced roots only after adoption, and persists across reopen. drop collation restores the default binary comparison behavior.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>Set or drop a TEXT column collation</h3>
+                            <div class="compat-id">alter.column.collation · ALTER TABLE</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>ALTER TABLE customers ALTER COLUMN code SET COLLATION NOCASE</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-supported"><span class="facet-name">Parser</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Execution</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Persistence</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">Catalog</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST stateless</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">REST session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC unary</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">gRPC session</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>SET COLLATION and DROP COLLATION apply only to TEXT columns. Ready ordinary and unique SQL indexes that inherit the column collation are rebuilt; indexes with an explicit collation and indexes on other columns retain their roots. Primary/unique key constraints, incoming/outgoing foreign keys, full-text or collection dependencies, and non-ready indexes remain unsupported. The conservative preflight also rejects any view that references the table, any trigger owned by the table, a cross-table trigger that references the column, and an applicable validation rule. Existing rows are rechecked under the target collation, so a CHECK failure or newly colliding unique-index values reject the rewrite and leave every original root unchanged.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>The metadata change builds detached table and affected-index roots, swaps their catalog payloads atomically in the active transaction, preserves each physical row ID, reclaims the replaced roots only after adoption, and persists across reopen. DROP COLLATION restores the default binary comparison behavior.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_shape, engine.alter.column_collation, engine.alter.column_collation_indexed, engine.alter.column_collation_explicit_index, engine.alter.column_collation_rollback, ef.migration.alter_column_collation, ef.migration.alter_column_collation_rollback, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.alter.column_collation_check.rejected, engine.alter.column_collation_collision.rejected, engine.alter.column_shape_dependency.rejected</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.2.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-alter.column.not_null" data-status="supported" data-category="alter-table" data-search="alter.column.not_null alter table set or drop column not null metadata alter table users alter column email set not null set not null scans existing rows and refuses the metadata change if any value is null. bounded numeric type and text collation rewrites are qualified in separate rows. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>Set or drop column NOT NULL metadata</h3>
@@ -406,7 +605,7 @@
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>SET NOT NULL scans existing rows and refuses the metadata change if any value is NULL. Type and collation changes are not part of this feature.</li>
+                            <li>SET NOT NULL scans existing rows and refuses the metadata change if any value is NULL. Bounded numeric type and TEXT collation rewrites are qualified in separate rows.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
@@ -489,7 +688,7 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-schema.key.composite_primary" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_primary defaults and constraints composite table-level primary key constraint pk_order_lines primary key (order_id, line_no) this row covers primary key declarations inside create table. a composite key is a logical constraint and does not infer integer identity behavior; standalone add/drop primary key remains outside this feature. one primary key is allowed per table and every participating value must be non-null.">
+                <article class="compat-card" id="feature-schema.key.composite_primary" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_primary defaults and constraints composite table-level primary key constraint pk_order_lines primary key (order_id, line_no) this row covers primary key declarations inside create table. a composite key is a logical constraint and does not infer integer identity behavior; the separately qualified standalone add/drop behavior starts in 4.2.0. one primary key is allowed per table and every participating value must be non-null.">
                     <div class="compat-card-head">
                         <div>
                             <h3>Composite table-level primary key</h3>
@@ -516,7 +715,7 @@
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>This row covers PRIMARY KEY declarations inside CREATE TABLE. A composite key is a logical constraint and does not infer integer identity behavior; standalone ADD/DROP PRIMARY KEY remains outside this feature.</li>
+                            <li>This row covers PRIMARY KEY declarations inside CREATE TABLE. A composite key is a logical constraint and does not infer integer identity behavior; the separately qualified standalone ADD/DROP behavior starts in 4.2.0.</li>
                         </ul>
                         <h4>Intentional deviations</h4>
                         <ul class="compat-list">
@@ -528,7 +727,7 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-schema.key.composite_unique" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_unique defaults and constraints composite table-level unique key constraint uq_tenant_email unique (tenant_id, email) this row covers unique declarations inside create table. standalone add unique remains outside this feature; named unique constraints can be removed with drop constraint when no foreign key depends on them. rows containing null in any participating column do not collide with one another.">
+                <article class="compat-card" id="feature-schema.key.composite_unique" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_unique defaults and constraints composite table-level unique key constraint uq_tenant_email unique (tenant_id, email) sql and ef migrations support named unique declarations during create table plus standalone add/drop constraint. a unique constraint cannot be dropped while a foreign key depends on it. rows containing null in any participating column do not collide with one another.">
                     <div class="compat-card-head">
                         <div>
                             <h3>Composite table-level unique key</h3>
@@ -551,11 +750,11 @@
                         <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>This row covers UNIQUE declarations inside CREATE TABLE. Standalone ADD UNIQUE remains outside this feature; named UNIQUE constraints can be removed with DROP CONSTRAINT when no foreign key depends on them.</li>
+                            <li>SQL and EF migrations support named UNIQUE declarations during CREATE TABLE plus standalone ADD/DROP CONSTRAINT. A unique constraint cannot be dropped while a foreign key depends on it.</li>
                         </ul>
                         <h4>Intentional deviations</h4>
                         <ul class="compat-list">
@@ -563,7 +762,7 @@
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">parser.key.composite, schema.key.serialization, engine.key.composite_unique, catalog.key_constraints, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.key.composite, schema.key.serialization, engine.key.composite_unique, catalog.key_constraints, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints, ef.alternate_key, ef.migration.unique_constraint</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
@@ -847,14 +1046,14 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#logical">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-schema.foreign_key.composite" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.composite foreign keys composite foreign key foreign key (order_id, line_no) references lines(order_id, line_no) the referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. match full, match partial, deferred validation, on update actions, and ef composite-fk generation are not supported. match simple is used: any null child component suppresses the parent lookup.">
+                <article class="compat-card" id="feature-schema.foreign_key.composite" data-status="supported" data-category="foreign-keys" data-search="schema.foreign_key.composite foreign keys composite foreign key foreign key (order_id, line_no) references lines(order_id, line_no) the referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. match full, match partial, deferred validation, and on update actions are not supported. match simple is used: any null child component suppresses the parent lookup.">
                     <div class="compat-card-head">
                         <div>
                             <h3>Composite foreign key</h3>
                             <div class="compat-id">schema.foreign_key.composite · Foreign keys</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-supported">supported</span>
                             <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
@@ -870,11 +1069,11 @@
                         <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-unsupported"><span class="facet-name">EF migration</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>The referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. MATCH FULL, MATCH PARTIAL, deferred validation, ON UPDATE actions, and EF composite-FK generation are not supported.</li>
+                            <li>The referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. MATCH FULL, MATCH PARTIAL, deferred validation, and ON UPDATE actions are not supported.</li>
                         </ul>
                         <h4>Intentional deviations</h4>
                         <ul class="compat-list">
@@ -882,19 +1081,19 @@
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, schema.fk.composite_vacuum, catalog.fk.composite_pairs, engine.fk.composite_dependencies, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata, archive.schema.constraints, devops.fk.composite_metadata</span></p>
-                            <p><strong>Negative:</strong> <span class="compat-proof">engine.fk.composite_validation, ef.composite_fk.rejected</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, schema.fk.composite_vacuum, catalog.fk.composite_pairs, engine.fk.composite_dependencies, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata, archive.schema.constraints, devops.fk.composite_metadata, ef.composite_fk, ef.migration.composite_foreign_key</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.fk.composite_validation</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-schema.foreign_key.on_delete_cascade" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.on_delete_cascade foreign keys immediate on delete cascade behavior parent_id integer references parents(id) on delete cascade cascade is immediate for scalar and composite keys. deferred constraints and standalone ef foreign-key changes are not supported. ">
+                <article class="compat-card" id="feature-schema.foreign_key.on_delete_cascade" data-status="supported" data-category="foreign-keys" data-search="schema.foreign_key.on_delete_cascade foreign keys immediate on delete cascade behavior parent_id integer references parents(id) on delete cascade cascade is immediate for scalar and composite keys; deferred constraints are a separate unsupported feature. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>Immediate ON DELETE CASCADE behavior</h3>
                             <div class="compat-id">schema.foreign_key.on_delete_cascade · Foreign keys</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-supported">supported</span>
                             <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
@@ -910,27 +1109,26 @@
                         <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>CASCADE is immediate for scalar and composite keys. Deferred constraints and standalone EF foreign-key changes are not supported.</li>
+                            <li>CASCADE is immediate for scalar and composite keys; deferred constraints are a separate unsupported feature.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, parser.fk.table_composite, engine.fk.cascade, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, rest.fk.composite_metadata, rest.session, grpc.fk.composite_metadata, grpc.session</span></p>
-                            <p><strong>Negative:</strong> <span class="compat-proof">ef.fk.standalone.rejected</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, parser.fk.table_composite, engine.fk.cascade, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, rest.fk.composite_metadata, rest.session, grpc.fk.composite_metadata, grpc.session, ef.migration.foreign_key</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-schema.foreign_key.on_delete_restrict" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.on_delete_restrict foreign keys immediate on delete restrict behavior parent_id integer references parents(id) restrict is immediate for scalar and composite keys. deferred constraints and standalone ef foreign-key changes are not supported. omitting on delete selects immediate restrict.">
+                <article class="compat-card" id="feature-schema.foreign_key.on_delete_restrict" data-status="supported" data-category="foreign-keys" data-search="schema.foreign_key.on_delete_restrict foreign keys immediate on delete restrict behavior parent_id integer references parents(id) restrict is immediate for scalar and composite keys; deferred constraints are a separate unsupported feature. omitting on delete selects immediate restrict.">
                     <div class="compat-card-head">
                         <div>
                             <h3>Immediate ON DELETE RESTRICT behavior</h3>
                             <div class="compat-id">schema.foreign_key.on_delete_restrict · Foreign keys</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-supported">supported</span>
                             <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
@@ -946,11 +1144,11 @@
                         <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>RESTRICT is immediate for scalar and composite keys. Deferred constraints and standalone EF foreign-key changes are not supported.</li>
+                            <li>RESTRICT is immediate for scalar and composite keys; deferred constraints are a separate unsupported feature.</li>
                         </ul>
                         <h4>Intentional deviations</h4>
                         <ul class="compat-list">
@@ -958,8 +1156,7 @@
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, parser.fk.table_composite, engine.fk.restrict, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, rest.sql, rest.session, grpc.fk.composite_metadata, grpc.session</span></p>
-                            <p><strong>Negative:</strong> <span class="compat-proof">ef.fk.standalone.rejected</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, parser.fk.table_composite, engine.fk.restrict, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, rest.sql, rest.session, grpc.fk.composite_metadata, grpc.session, ef.migration.foreign_key</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
@@ -998,14 +1195,14 @@
                         </details>
                     <p><strong>First supported version:</strong> not supported · <a href="sql-reference.html#limitations">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-schema.foreign_key.column_single" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.column_single foreign keys single-column column-level foreign key parent_id integer references parents(id) the referenced column must be an ordered primary or unique candidate key with a compatible type and collation. ef supports inline single-column create-table relationships but rejects standalone foreign-key changes. enforcement is immediate; deferred validation is not supported.">
+                <article class="compat-card" id="feature-schema.foreign_key.column_single" data-status="supported" data-category="foreign-keys" data-search="schema.foreign_key.column_single foreign keys single-column column-level foreign key parent_id integer references parents(id) the referenced column must be an ordered primary or unique candidate key with a compatible type and collation. ef emits named table-level declarations and supports standalone add/drop migrations. enforcement is immediate; deferred validation is not supported.">
                     <div class="compat-card-head">
                         <div>
                             <h3>Single-column column-level foreign key</h3>
                             <div class="compat-id">schema.foreign_key.column_single · Foreign keys</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-supported">supported</span>
                             <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
@@ -1021,11 +1218,11 @@
                         <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>The referenced column must be an ordered primary or unique candidate key with a compatible type and collation. EF supports inline single-column create-table relationships but rejects standalone foreign-key changes.</li>
+                            <li>The referenced column must be an ordered primary or unique candidate key with a compatible type and collation. EF emits named table-level declarations and supports standalone add/drop migrations.</li>
                         </ul>
                         <h4>Intentional deviations</h4>
                         <ul class="compat-list">
@@ -1033,19 +1230,18 @@
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, engine.fk.enforcement, schema.fk.serialization, catalog.fk, ado.schema.fk, direct.fk.composite_metadata, rest.sql, rest.session, grpc.fk.metadata, grpc.session</span></p>
-                            <p><strong>Negative:</strong> <span class="compat-proof">ef.fk.standalone.rejected</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.column, engine.fk.enforcement, schema.fk.serialization, catalog.fk, ado.schema.fk, direct.fk.composite_metadata, rest.sql, rest.session, grpc.fk.metadata, grpc.session, ef.alternate_key, ef.migration.foreign_key</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-schema.foreign_key.table_level" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.table_level foreign keys table-level foreign key clause foreign key (parent_id) references parents(id) sql supports table-level scalar and composite declarations. the ef provider generates inline scalar relationships but still rejects composite and standalone foreign-key operations. constraint validation is immediate and uses match simple for nullable composite child keys.">
+                <article class="compat-card" id="feature-schema.foreign_key.table_level" data-status="supported" data-category="foreign-keys" data-search="schema.foreign_key.table_level foreign keys table-level foreign key clause foreign key (parent_id) references parents(id) sql and the ef provider support named table-level scalar and composite declarations plus standalone add/drop migrations. constraint validation is immediate and uses match simple for nullable composite child keys.">
                     <div class="compat-card-head">
                         <div>
                             <h3>Table-level FOREIGN KEY clause</h3>
                             <div class="compat-id">schema.foreign_key.table_level · Foreign keys</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-supported">supported</span>
                             <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
@@ -1061,11 +1257,11 @@
                         <div class="facet facet-supported"><span class="facet-name">gRPC unary</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-supported"><span class="facet-name">gRPC session</span><span class="facet-status">supported</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>SQL supports table-level scalar and composite declarations. The EF provider generates inline scalar relationships but still rejects composite and standalone foreign-key operations.</li>
+                            <li>SQL and the EF provider support named table-level scalar and composite declarations plus standalone add/drop migrations.</li>
                         </ul>
                         <h4>Intentional deviations</h4>
                         <ul class="compat-list">
@@ -1073,12 +1269,11 @@
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata</span></p>
-                            <p><strong>Negative:</strong> <span class="compat-proof">ef.composite_fk.rejected</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata, ef.composite_fk, ef.migration.foreign_key, ef.migration.composite_foreign_key</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-provider.ef_migration.basic" data-status="supported" data-category="generated-sql" data-search="provider.ef_migration.basic generated sql basic ef core migrations dotnet ef database update the supported operation set is create/drop table, add/drop/rename column, rename table, and create/drop index within the provider&#39;s schema restrictions. ">
+                <article class="compat-card" id="feature-provider.ef_migration.basic" data-status="supported" data-category="generated-sql" data-search="provider.ef_migration.basic generated sql basic ef core migrations dotnet ef database update the supported operation set is create/drop table, add/drop/rename column, rename table, create/drop/rename index, add/drop named check, unique, foreign-key, and qualified primary-key constraints, plus altercolumn changes to literal defaults, nullability, exact dependency-free integer/real types, and text collations. text collation changes atomically rebuild affected ready ordinary/unique sql indexes that inherit the column collation; key/fk/full-text/collection dependencies remain unsupported. for numeric type changes the generator drops an old default before type and reapplies a compatible target default afterward; indexed numeric changes remain unsupported because real index keys are not implemented. compound altercolumn command sequences must execute in one migration transaction. adding a single integer primary key rekeys validated populated rows and atomically rebuilds ready ordinary/unique sql, constraint-internal, and foreign-key-internal indexes; full-text, collection, and non-ready indexes remain unsupported. text/blob type conversions and broader dependency rewriting remain unsupported. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>Basic EF Core migrations</h3>
@@ -1105,22 +1300,23 @@
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>The supported operation set is create/drop table, add/drop/rename column, rename table, and create/drop index within the provider&#39;s schema restrictions.</li>
+                            <li>The supported operation set is create/drop table, add/drop/rename column, rename table, create/drop/rename index, add/drop named check, unique, foreign-key, and qualified primary-key constraints, plus AlterColumn changes to literal defaults, nullability, exact dependency-free INTEGER/REAL types, and TEXT collations. TEXT collation changes atomically rebuild affected ready ordinary/unique SQL indexes that inherit the column collation; key/FK/full-text/collection dependencies remain unsupported. For numeric type changes the generator drops an old default before TYPE and reapplies a compatible target default afterward; indexed numeric changes remain unsupported because REAL index keys are not implemented. Compound AlterColumn command sequences must execute in one migration transaction. Adding a single INTEGER primary key rekeys validated populated rows and atomically rebuilds ready ordinary/unique SQL, constraint-internal, and foreign-key-internal indexes; full-text, collection, and non-ready indexes remain unsupported. TEXT/BLOB type conversions and broader dependency rewriting remain unsupported.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">ef.migration.basic</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ef.migration.basic, ef.migration.alter_column, ef.migration.alter_column_numeric_type, ef.migration.alter_column_compound_rollback, ef.migration.alter_column_collation, ef.migration.alter_column_collation_rollback, ef.migration.rename_index, ef.migration.check_constraint, ef.migration.foreign_key, ef.migration.composite_foreign_key, ef.migration.unique_constraint, ef.migration.primary_key.generated_sql, ef.migration.primary_key.logical, ef.migration.primary_key.text, ef.migration.primary_key.integer_rekey, ef.migration.primary_key.integer_rekey_rollback</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.migration.alter_column_nonnumeric.rejected, ef.migration.alter_column_old_type_inference.rejected, ef.migration.alter_column_dependent_index.rejected, ef.migration.primary_key.invalid_data.rejected, ef.migration.primary_key.dependency.rejected</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="entity-framework-core.html#migrations">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-provider.ef_query.crud" data-status="supported" data-category="generated-sql" data-search="provider.ef_query.crud generated sql ef core embedded crud and basic query translation db.users.where(u =&gt; u.id == id).tolistasync() the first-party provider is embedded/direct only and supports a deliberately bounded ef core 10 relational subset. ">
+                <article class="compat-card" id="feature-provider.ef_query.crud" data-status="partial" data-category="generated-sql" data-search="provider.ef_query.crud generated sql ef core embedded crud and bounded query translation db.users.where(u =&gt; u.id == id).tolistasync() the first-party provider is embedded/direct only. the proved query slice covers where, ordering, skip/take, scalar projection, single, simple and bounded-shape any, count/longcount, constant/parameter collection contains, simple include, selected string and temporal members, finite-double math functions, and bounded scalar numeric aggregates. string startswith/endswith/instance contains and stringcomparison overloads, datetimeoffset components, integral/decimal/mathf/precision-argument/midpoint-mode/transcendental math overloads, long- and float-valued sum/average/min/max variants and other unqualified aggregate variants, takewhile/skipwhile, groupby, set-operation, join, and correlated-query shapes remain outside the qualified surface. recognized unsupported clr methods, members, and selected operators fail before command dispatch with provider diagnostics. tolower()/toupper() and their invariant variants map to csharpdb lower/upper and therefore use invariant server semantics rather than .net currentculture. math.round(double) uses csharpdb midpoint-to-even semantics. scalar numeric aggregate qualification is limited to bounded values and the explicitly documented clr types because engine accumulation and ef-generated conversions differ for wider variants.">
                     <div class="compat-card-head">
                         <div>
-                            <h3>EF Core embedded CRUD and basic query translation</h3>
+                            <h3>EF Core embedded CRUD and bounded query translation</h3>
                             <div class="compat-id">provider.ef_query.crud · Generated SQL</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-partial">partial</span>
                             <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
@@ -1135,28 +1331,34 @@
                         <div class="facet facet-not_applicable"><span class="facet-name">REST session</span><span class="facet-status">not applicable</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">gRPC unary</span><span class="facet-status">not applicable</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-supported"><span class="facet-name">EF query</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF query</span><span class="facet-status">partial</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF migration</span><span class="facet-status">not applicable</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>The first-party provider is embedded/direct only and supports a deliberately bounded EF Core 10 relational subset.</li>
+                            <li>The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, constant/parameter collection Contains, simple Include, selected string and temporal members, finite-double math functions, and bounded scalar numeric aggregates. String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, GroupBy, set-operation, join, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, and selected operators fail before command dispatch with provider diagnostics.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>ToLower()/ToUpper() and their invariant variants map to CSharpDB LOWER/UPPER and therefore use invariant server semantics rather than .NET CurrentCulture.</li>
+                            <li>Math.Round(double) uses CSharpDB midpoint-to-even semantics. Scalar numeric aggregate qualification is limited to bounded values and the explicitly documented CLR types because engine accumulation and EF-generated conversions differ for wider variants.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">ef.crud</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ef.crud, ef.query.basic, ef.query.string_functions, ef.query.temporal_components, ef.query.numeric_functions, ef.query.numeric_functions.compatibility, ef.query.scalar_numeric_aggregates, ef.query.scalar_numeric_aggregates.compatibility</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">ef.query.unsupported_diagnostics</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="entity-framework-core.html#supported-surface">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.0.4 · <a href="entity-framework-core.html#linq-translation">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-provider.ef_migration.idempotent" data-status="unsupported" data-category="generated-sql" data-search="provider.ef_migration.idempotent generated sql idempotent ef migration scripts imigrator.generatescript(options: idempotent) the provider throws a clear notsupportedexception for idempotent scripts; a migration-history and locking design is not part of the first compatibility release. ">
+                <article class="compat-card" id="feature-provider.ef_migration.idempotent" data-status="supported" data-category="generated-sql" data-search="provider.ef_migration.idempotent generated sql idempotent ef migration scripts imigrator.generatescript(options: idempotent) scripts target file-backed embedded databases and the migration operations supported by the provider. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>Idempotent EF migration scripts</h3>
                             <div class="compat-id">provider.ef_migration.idempotent · Generated SQL</div>
                         </div>
                         <div class="compat-badges">
-                            <span class="compat-badge compat-badge-unsupported">unsupported</span>
-                            <span class="compat-badge compat-badge-roadmap">roadmap: out of scope</span>
+                            <span class="compat-badge compat-badge-supported">supported</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
                         </div>
                     </div>
                     <pre class="compat-syntax"><code>IMigrator.GenerateScript(options: Idempotent)</code></pre>
@@ -1171,17 +1373,17 @@
                         <div class="facet facet-not_applicable"><span class="facet-name">gRPC unary</span><span class="facet-status">not applicable</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
                         <div class="facet facet-not_applicable"><span class="facet-name">EF query</span><span class="facet-status">not applicable</span></div>
-                        <div class="facet facet-unsupported"><span class="facet-name">EF migration</span><span class="facet-status">unsupported</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF migration</span><span class="facet-status">supported</span></div>
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>The provider throws a clear NotSupportedException for idempotent scripts; a migration-history and locking design is not part of the first compatibility release.</li>
+                            <li>Scripts target file-backed embedded databases and the migration operations supported by the provider.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Negative:</strong> <span class="compat-proof">ef.migration.idempotent.rejected</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">ef.migration.idempotent</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> not supported · <a href="entity-framework-core.html#limitations">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.2.0 · <a href="entity-framework-core.html#migrations">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-metadata.ado_getschema.core" data-status="supported" data-category="metadata" data-search="metadata.ado_getschema.core metadata ado.net getschema core collections connection.getschema(&quot;columns&quot;) supported collections are metadatacollections, restrictions, tables, columns, indexes, foreignkeys, views, checkconstraints, keyconstraints, and keycolumns. collection-specific restrictions are documented by the restrictions collection. ">
                     <div class="compat-card-head">
@@ -1328,7 +1530,7 @@
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
-                            <p><strong>Positive:</strong> <span class="compat-proof">catalog.functions, engine.functions.catalog_query, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
+                            <p><strong>Positive:</strong> <span class="compat-proof">catalog.functions, engine.functions.catalog_query, engine.functions.floor_alias, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.1.0 · <a href="sql.html">Related documentation</a></p>
                 </article>

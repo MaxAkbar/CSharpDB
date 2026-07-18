@@ -104,6 +104,7 @@ public static class ExpressionEvaluator
             TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
             TokenType.Minus => operand.Type switch
             {
+                DbType.Null => DbValue.Null,
                 DbType.Integer => DbValue.FromInteger(-operand.AsInteger),
                 DbType.Real => DbValue.FromReal(-operand.AsReal),
                 _ => throw new CSharpDbException(ErrorCode.TypeMismatch, "Cannot negate non-numeric value."),

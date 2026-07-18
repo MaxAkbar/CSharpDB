@@ -9,6 +9,9 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "README.md"
+      - "docs/ef-core-compatibility.json"
+      - "docs/ef-core-compatibility.schema.json"
+      - "scripts/Build-EfCoreCompatibility.ps1"
       - "scripts/Build-SqlCompatibilityMatrix.ps1"
       - "scripts/Test-Documentation.ps1"
       - "www/**"

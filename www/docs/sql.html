@@ -102,8 +102,9 @@
                 <div class="code-block" data-title="SQL">
                     <pre><code><span class="kw">ALTER TABLE</span> Employees <span class="kw">ADD COLUMN</span> Title <span class="tp">TEXT</span>;
 <span class="kw">ALTER TABLE</span> Employees <span class="kw">DROP CONSTRAINT</span> fk_employees_deptid_a1b2c3d4;
+<span class="kw">ALTER TABLE</span> Employees <span class="kw">RENAME INDEX</span> idx_emp_dept <span class="kw">TO</span> idx_employees_department;
 <span class="kw">DROP TABLE</span> Employees;
-<span class="kw">DROP INDEX</span> idx_emp_dept;
+<span class="kw">DROP INDEX</span> idx_employees_department;
 <span class="kw">DROP VIEW</span> HighEarners;</code></pre>
                 </div>
 
@@ -219,7 +220,7 @@
                         <tr><td><code>ABS(value)</code></td><td>Absolute value</td></tr>
                         <tr><td><code>ROUND(value, digits)</code></td><td>Round to N decimal places</td></tr>
                         <tr><td><code>SGN(value)</code></td><td>Sign of a number (-1, 0, 1)</td></tr>
-                        <tr><td><code>INT(value)</code></td><td>Floor a numeric value</td></tr>
+                        <tr><td><code>INT(value)</code> / <code>FLOOR(value)</code></td><td>Floor a numeric value</td></tr>
                         <tr><td><code>FIX(value)</code></td><td>Truncate a numeric value toward zero</td></tr>
                     </tbody>
                 </table>

@@ -213,7 +213,7 @@
                 <tbody>
                 <tr>
                 <td><strong>SQL compatibility program</strong></td>
-                <td>The public dialect contract and proof-backed compatibility matrix are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, table-level/composite foreign keys, Tier-1 windows, a transactional table-rewrite foundation, constraint metadata transport, EF-generated defaults/checks/composite keys, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers additional referential actions, broader ALTER operations, deeper generated-SQL qualification, normalized metadata, physical explain/profile output, and release qualification. See the <a href="docs/sql-compatibility-roadmap.html">implementation roadmap</a>.</td>
+                <td>The public dialect contract and proof-backed compatibility matrix are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys, Tier-1 windows, transactional shadow-root rewrites including exact INTEGER/REAL and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers additional referential actions, nonnumeric and indexed-numeric rewrites, broader physical-rekey ALTER operations, deeper generated-SQL qualification, normalized metadata, physical explain/profile output, and release qualification. See the <a href="docs/sql-compatibility-roadmap.html">implementation roadmap</a>.</td>
                 <td>In Progress</td>
                 </tr>
                 <tr>
@@ -252,8 +252,18 @@
                 <td>Partial</td>
                 </tr>
                 <tr>
+                <td><strong>ALTER COLUMN rewrites</strong></td>
+                <td>Dependency-free INTEGER-to-REAL and REAL-to-INTEGER changes plus SET/DROP COLLATION on TEXT use transactional shadow roots, preserve row ids, revalidate checks, persist across reopen, and are emitted by EF Core. Collation changes atomically rebuild ready ordinary/unique SQL indexes that inherit the column collation; explicit-collation and unrelated roots remain unchanged, and uniqueness collisions restore the original roots. Compound EF default/type/collation/nullability commands run in one migration transaction and roll back together on failure. Numeric conversion is exact: INTEGER values are limited to ±2<sup>53</sup>, and REAL values must be finite, integral Int64 values. TEXT/BLOB conversions, indexed numeric changes, and broader dependency rewriting remain.</td>
+                <td>Partial</td>
+                </tr>
+                <tr>
+                <td><strong>Primary and unique keys</strong></td>
+                <td>Named/unnamed single and composite primary/unique keys support persistence, enforcement, ordered catalogs, and EF migrations. Standalone PRIMARY KEY add/drop covers validated logical keys, populated single INTEGER rekeying with atomic ready relational-index rebuilding, exact-name EF drops, and raw current-key drop. Full-text, collection, other, and non-ready indexes remain outside the bounded physical-rekey path.</td>
+                <td>Partial</td>
+                </tr>
+                <tr>
                 <td><strong>Foreign key constraints</strong></td>
-                <td>Column/table scalar and composite constraints with MATCH SIMPLE, immediate RESTRICT/CASCADE, candidate-key/type/collation validation, persistence, dependency repair, ordered catalogs, ADO.NET, direct/REST/gRPC, archive, and schema-tooling coverage. Additional actions, deferrability, stable ids, and EF composite-FK generation remain.</td>
+                <td>Column/table scalar and composite constraints with MATCH SIMPLE, immediate RESTRICT/CASCADE, candidate-key/type/collation validation, persistence, dependency repair, ordered catalogs, ADO.NET, direct/REST/gRPC, archive, schema-tooling, and named EF create/add/drop coverage. Additional actions, deferrability, and stable ids remain.</td>
                 <td>Partial</td>
                 </tr>
                 <tr>
@@ -476,7 +486,7 @@
                 </tr>
                 <tr>
                 <td><strong>Schema</strong></td>
-                <td>Literal SQL <code>DEFAULT</code> values, deterministic row-local <code>CHECK</code> constraints, logical composite primary/unique keys, table-level/composite foreign keys with MATCH SIMPLE and immediate RESTRICT/CASCADE, additive transport/archive and ADO.NET constraint metadata, SET/DROP DEFAULT, validated SET/DROP NOT NULL and named CHECK changes, plus the first transactional shadow-root ALTER rewrite are implemented. Statement-time/function defaults, arbitrary functions/subqueries in checks, stable schema ids, type/collation/key-shape ALTER operations, additional referential actions, deferred constraints, and fault-injected rewrite recovery remain</td>
+                <td>Literal SQL <code>DEFAULT</code> values, deterministic row-local <code>CHECK</code> constraints, logical composite primary/unique keys, standalone PRIMARY KEY add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys with MATCH SIMPLE and immediate RESTRICT/CASCADE, additive transport/archive and ADO.NET constraint metadata, SET/DROP DEFAULT, validated SET/DROP NOT NULL and named constraint changes, plus transactional shadow-root rewrites for exact dependency-free INTEGER/REAL type changes and TEXT collation changes with inherited ordinary/unique SQL-index rebuilding are implemented. Statement-time/function defaults, arbitrary functions/subqueries in checks, stable schema ids, TEXT/BLOB type conversions, indexed numeric changes, broader dependency rewriting and physical rekey shapes/index kinds, additional referential actions, deferred constraints, and fault-injected rewrite recovery remain</td>
                 </tr>
                 <tr>
                 <td><strong>Indexes</strong></td>
@@ -566,6 +576,8 @@
                 <li>Opt-in adaptive join re-optimization behind <code>DatabaseOptions.AdaptiveQueryReoptimization</code></li>
                 <li>SQL statement and SELECT plan caching</li>
                 <li>First-class <code>IDENTITY</code> / <code>AUTOINCREMENT</code> support for <code>INTEGER PRIMARY KEY</code> columns</li>
+                <li>Standalone <code>PRIMARY KEY</code> add/drop for validated logical keys and populated single-INTEGER rekeys with atomic relational-index rebuilding, including EF migrations, rollback, and dependency guards</li>
+                <li>Exact dependency-free INTEGER/REAL and indexed TEXT-collation ALTER COLUMN rewrites with atomic table/index roots, row-ID, check/uniqueness, rollback, reopen, and EF migration coverage</li>
                 <li>Persisted table <code>NextRowId</code> high-water mark with compatibility fallback for legacy metadata</li>
                 <li>Views and triggers (BEFORE/AFTER on INSERT/UPDATE/DELETE)</li>
                 <li>Foreign key constraints: scalar/composite, column/table syntax, MATCH SIMPLE, immediate RESTRICT/CASCADE, ordered catalogs, and transport/archive preservation</li>

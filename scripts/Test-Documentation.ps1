@@ -337,6 +337,13 @@ catch {
     Add-DocumentationError $_.Exception.Message
 }
 
+try {
+    & (Join-Path $PSScriptRoot 'Build-EfCoreCompatibility.ps1') -Check
+}
+catch {
+    Add-DocumentationError $_.Exception.Message
+}
+
 if ($errors.Count -gt 0) {
     $message = "Documentation validation failed with $($errors.Count) error(s):`n - " + ($errors -join "`n - ")
     throw $message

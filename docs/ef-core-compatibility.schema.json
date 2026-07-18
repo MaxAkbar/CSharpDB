@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://csharpdb.com/schemas/ef-core-compatibility.schema.json",
+  "title": "CSharpDB EF Core compatibility manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "manifestVersion", "provider", "efCoreVersion", "tiers", "features"],
+  "properties": {
+    "$schema": { "const": "ef-core-compatibility.schema.json" },
+    "manifestVersion": { "const": 1 },
+    "provider": { "const": "CSharpDB.EntityFrameworkCore" },
+    "efCoreVersion": { "type": "string", "minLength": 1 },
+    "tiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tier1", "tier2", "tier3"],
+      "properties": {
+        "tier1": { "type": "string", "minLength": 1 },
+        "tier2": { "type": "string", "minLength": 1 },
+        "tier3": { "type": "string", "minLength": 1 }
+      }
+    },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/feature" }
+    }
+  },
+  "definitions": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "name", "status", "tier", "summary", "proofTests"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+        },
+        "category": {
+          "enum": [
+            "Runtime and connections",
+            "Model features",
+            "Data types",
+            "Migrations and DDL",
+            "Query operators and methods",
+            "Change tracking and concurrency",
+            "Design-time tooling"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": ["Supported", "Partial", "Unsupported", "Planned"]
+        },
+        "tier": {
+          "enum": ["tier1", "tier2", "tier3"]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "proofTests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

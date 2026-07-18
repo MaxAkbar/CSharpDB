@@ -105,6 +105,16 @@ public sealed class CSharpDbCommand : DbCommand
 
         try
         {
+            string normalizedCommand = CommandText.Trim().TrimEnd(';').Trim();
+            if (normalizedCommand.Equals("START TRANSACTION", StringComparison.OrdinalIgnoreCase)
+                || normalizedCommand.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase)
+                || normalizedCommand.Equals("COMMIT", StringComparison.OrdinalIgnoreCase)
+                || normalizedCommand.Equals("ROLLBACK", StringComparison.OrdinalIgnoreCase))
+            {
+                await connection.ExecuteTransactionControlAsync(normalizedCommand, cancellationToken);
+                return new QueryResult(0);
+            }
+
             if (!session.SupportsStructuredExecution)
             {
                 string sql = SqlParameterBinder.Bind(CommandText, _parameters);

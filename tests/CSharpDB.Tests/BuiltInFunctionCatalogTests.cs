@@ -19,6 +19,10 @@ public sealed class BuiltInFunctionCatalogTests
         Assert.True(length.IsDeterministic);
         Assert.True(length.AllowedInChecks);
 
+        Assert.True(DbBuiltInFunctionRegistry.TryGet("floor", out var floor));
+        Assert.Equal("INT", floor.Name);
+        Assert.Equal(DbType.Real, floor.ReturnType);
+
         Assert.True(DbBuiltInFunctionRegistry.TryGet("count", out var count));
         Assert.Equal(DbBuiltInFunctionKind.Aggregate, count.Kind);
         Assert.False(count.AllowedInDefaults);
@@ -26,6 +30,19 @@ public sealed class BuiltInFunctionCatalogTests
 
         Assert.Throws<ArgumentException>(() => DbFunctionRegistry.Create(functions =>
             functions.AddScalar("datetime", 0, static (_, _) => DbValue.Null)));
+    }
+
+    [Fact]
+    public async Task FloorAlias_ExecutesThroughSql()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await using var result = await db.ExecuteAsync(
+            "SELECT FLOOR(-12.55), FLOOR(NULL)",
+            Ct);
+
+        DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
+        Assert.Equal(-13, row[0].AsReal);
+        Assert.True(row[1].IsNull);
     }
 
     [Fact]

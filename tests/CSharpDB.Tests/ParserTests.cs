@@ -1081,6 +1081,15 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_AlterTable_DropPrimaryKey()
+    {
+        var stmt = Parser.Parse("ALTER TABLE users DROP PRIMARY KEY");
+        var alter = Assert.IsType<AlterTableStatement>(stmt);
+        Assert.Equal("users", alter.TableName);
+        Assert.IsType<DropPrimaryKeyAction>(alter.Action);
+    }
+
+    [Fact]
     public void Parse_AlterTable_ColumnMetadataActions()
     {
         var setDefault = Assert.IsType<AlterTableStatement>(
@@ -1113,14 +1122,43 @@ public class ParserTests
         Assert.IsType<BinaryExpression>(action.Expression);
     }
 
+    [Fact]
+    public void Parse_AlterTable_ColumnShapeChanges()
+    {
+        var setIntegerType = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN score TYPE INTEGER"));
+        var integerTypeAction = Assert.IsType<AlterColumnSetTypeAction>(setIntegerType.Action);
+        Assert.Equal("score", integerTypeAction.ColumnName);
+        Assert.Equal(TokenType.Integer, integerTypeAction.TypeToken);
+
+        var setRealType = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN score TYPE REAL"));
+        Assert.Equal(
+            TokenType.Real,
+            Assert.IsType<AlterColumnSetTypeAction>(setRealType.Action).TypeToken);
+
+        var setCollation = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status SET COLLATION nocase"));
+        var setCollationAction =
+            Assert.IsType<AlterColumnSetCollationAction>(setCollation.Action);
+        Assert.Equal("status", setCollationAction.ColumnName);
+        Assert.Equal("NOCASE", setCollationAction.Collation);
+
+        var dropCollation = Assert.IsType<AlterTableStatement>(
+            Parser.Parse("ALTER TABLE users ALTER COLUMN status DROP COLLATION"));
+        Assert.Equal(
+            "status",
+            Assert.IsType<AlterColumnDropCollationAction>(dropCollation.Action).ColumnName);
+    }
+
     [Theory]
-    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE INTEGER")]
-    [InlineData("ALTER TABLE users ALTER COLUMN status SET COLLATION NOCASE")]
-    public void Parse_AlterTable_RejectsUnsupportedColumnShapeChanges(string sql)
+    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE TEXT")]
+    [InlineData("ALTER TABLE users ALTER COLUMN status TYPE BLOB")]
+    public void Parse_AlterTable_RejectsUnsupportedTypeTargets(string sql)
     {
         var error = Assert.Throws<CSharpDbException>(() => Parser.Parse(sql));
 
-        Assert.Contains("ALTER COLUMN", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("INTEGER and REAL", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1152,6 +1190,17 @@ public class ParserTests
         var rename = Assert.IsType<RenameColumnAction>(alter.Action);
         Assert.Equal("name", rename.OldColumnName);
         Assert.Equal("full_name", rename.NewColumnName);
+    }
+
+    [Fact]
+    public void Parse_AlterTable_RenameIndex()
+    {
+        var stmt = Parser.Parse("ALTER TABLE users RENAME INDEX ix_users_name TO ix_users_full_name");
+        var alter = Assert.IsType<AlterTableStatement>(stmt);
+        Assert.Equal("users", alter.TableName);
+        var rename = Assert.IsType<RenameIndexAction>(alter.Action);
+        Assert.Equal("ix_users_name", rename.OldIndexName);
+        Assert.Equal("ix_users_full_name", rename.NewIndexName);
     }
 
     #endregion

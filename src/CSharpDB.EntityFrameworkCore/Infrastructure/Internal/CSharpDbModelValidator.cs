@@ -32,9 +32,6 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         if (!string.IsNullOrWhiteSpace(entityType.GetSchema()))
             throw new NotSupportedException($"Entity '{entityType.DisplayName()}' uses schema '{entityType.GetSchema()}', but schemas are not supported by the CSharpDB EF Core provider.");
 
-        if (entityType.GetKeys().Count() > 1)
-            throw new NotSupportedException($"Entity '{entityType.DisplayName()}' defines alternate keys, which are not supported by the CSharpDB EF Core provider in v1.");
-
         string? tableName = entityType.GetTableName();
         if (!string.IsNullOrWhiteSpace(tableName))
             CSharpDbProviderValidation.ValidateSimpleIdentifier(tableName, "Table name");
@@ -85,18 +82,6 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
 
     private static void ValidateForeignKey(IEntityType entityType, IForeignKey foreignKey)
     {
-        if (foreignKey.Properties.Count != 1 || foreignKey.PrincipalKey.Properties.Count != 1)
-        {
-            throw new NotSupportedException(
-                $"Foreign key '{entityType.DisplayName()}_{string.Join("_", foreignKey.Properties.Select(p => p.Name))}' is composite, which is not supported by the CSharpDB EF Core provider in v1.");
-        }
-
-        if (foreignKey.PrincipalEntityType.FindPrimaryKey() != foreignKey.PrincipalKey)
-        {
-            throw new NotSupportedException(
-                $"Foreign key '{foreignKey.Properties[0].Name}' targets an alternate key, which is not supported by the CSharpDB EF Core provider in v1.");
-        }
-
         if (foreignKey.DeleteBehavior is not DeleteBehavior.Cascade
             and not DeleteBehavior.ClientNoAction
             and not DeleteBehavior.NoAction

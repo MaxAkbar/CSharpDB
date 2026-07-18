@@ -242,6 +242,28 @@ public sealed class CSharpDbConnection : DbConnection
 
     internal void ClearTransaction() => _currentTransaction = null;
 
+    internal async ValueTask ExecuteTransactionControlAsync(
+        string command,
+        CancellationToken cancellationToken)
+    {
+        if (command.Equals("START TRANSACTION", StringComparison.OrdinalIgnoreCase)
+            || command.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase))
+        {
+            await BeginDbTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+            return;
+        }
+
+        CSharpDbTransaction transaction = _currentTransaction
+            ?? throw new InvalidOperationException("No transaction is active.");
+
+        if (command.Equals("COMMIT", StringComparison.OrdinalIgnoreCase))
+            await transaction.CommitAsync(cancellationToken);
+        else if (command.Equals("ROLLBACK", StringComparison.OrdinalIgnoreCase))
+            await transaction.RollbackAsync(cancellationToken);
+        else
+            throw new ArgumentOutOfRangeException(nameof(command), command, "Unknown transaction control command.");
+    }
+
     internal static int GetPoolCountForTest() => CSharpDbConnectionPoolRegistry.GetPoolCountForTest();
     internal static int GetSharedMemoryHostCountForTest() => SharedMemoryDatabaseRegistry.GetHostCountForTest();
 
