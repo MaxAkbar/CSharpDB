@@ -26,6 +26,7 @@ version4.1.0 establishes CSharpDB's proof-backed SQL compatibility contract and 
 
 ### Compatibility and Release Qualification
 
+- Published the immutable 4.1.0 SQL compatibility snapshot required by tagged-release qualification, and aligned package, manifest, roadmap, and generated-matrix metadata with the release.
 - Added tooling and release CI gates for immutable per-version compatibility snapshots, strict semantic-version progression, verified commit ancestry, manifest/schema parity, tracked artifacts, and prior-snapshot immutability.
 - Legacy schema fixtures remain readable, and newly added schema metadata is serialized additively and covered by reopen, archive, transport, and tooling tests.
 - Pager shutdown now atomically stops and drains background checkpoints before final WAL cleanup, preventing a late checkpoint from truncating a WAL while the next daemon host recovers it.
