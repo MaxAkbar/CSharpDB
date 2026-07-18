@@ -9,7 +9,7 @@
     <meta name="description" content="Implementation roadmap for the CSharpDB SQL dialect: constraints, keys, ALTER TABLE, compound queries, windows, functions, generated SQL, metadata, EXPLAIN, and release qualification.">
     <link rel="canonical" href="https://csharpdb.com/docs/sql-compatibility-roadmap.html">
     <meta property="og:title" content="SQL Compatibility Roadmap — CSharpDB">
-    <meta property="og:description" content="Staged implementation roadmap and current development status for the CSharpDB SQL dialect.">
+    <meta property="og:description" content="Staged implementation roadmap, CSharpDB 4.1.0 release status, and remaining work for the CSharpDB SQL dialect.">
     <meta property="og:url" content="https://csharpdb.com/docs/sql-compatibility-roadmap.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "TechArticle",
         "name": "SQL Compatibility Roadmap",
-        "description": "Staged implementation roadmap and current development status for the CSharpDB SQL dialect.",
+        "description": "Staged implementation roadmap, CSharpDB 4.1.0 release status, and remaining work for the CSharpDB SQL dialect.",
         "url": "https://csharpdb.com/docs/sql-compatibility-roadmap.html",
         "isPartOf": {"@type": "WebSite", "name": "CSharpDB", "url": "https://csharpdb.com"}
     }
@@ -29,7 +29,7 @@
         window.currentPage = 'roadmap'; window.pagePathPrefix = '../';
         window.pageConfig = {
             title: 'SQL Compatibility Roadmap',
-            description: 'Staged implementation roadmap and current development status for the CSharpDB SQL dialect.',
+            description: 'Staged implementation roadmap, CSharpDB 4.1.0 release status, and remaining work for the CSharpDB SQL dialect.',
             keywords: 'CSharpDB SQL roadmap, SQL compatibility, DEFAULT, CHECK, UNION ALL, window functions, EF Core, metadata, EXPLAIN',
             canonicalPath: 'docs/sql-compatibility-roadmap.html',
             ogType: 'article',
@@ -50,7 +50,7 @@
                     limitations, applicable surfaces, and proof IDs of a specific feature.
                 </div>
 
-                <p><strong>Development snapshot:</strong> July 17, 2026. A milestone is complete only when its required behavior, persistence, metadata, negative cases, and applicable surface tests pass. A partial milestone can contain useful supported rows while adjacent rows remain unsupported.</p>
+                <p><strong>CSharpDB 4.1.0 release snapshot:</strong> July 18, 2026. A milestone is complete only when its required behavior, persistence, metadata, negative cases, and applicable surface tests pass. A partial milestone can contain useful supported rows while adjacent rows remain unsupported.</p>
 
                 <h2 id="status">Milestone Status</h2>
                 <table class="doc-table">
@@ -62,7 +62,7 @@
                         <td>1</td>
                         <td>Dialect contract and public compatibility matrix</td>
                         <td><strong>Implemented</strong></td>
-                        <td>Machine-readable manifest, generated page, schema/proof validation, documentation checks, navigation, and CI/Pages gates are present as a development preview. Snapshot creation and tagged-release validation tooling is now present, but no immutable release snapshot has been published yet and the public page does not yet default to a latest-release snapshot.</td>
+                        <td>The machine-readable manifest, generated page, schema/proof validation, documentation checks, navigation, and CI/Pages gates are implemented. The canonical matrix now describes CSharpDB 4.1.0 and is paired with an immutable per-version snapshot checked by the tagged-release qualification gate.</td>
                     </tr>
                     <tr>
                         <td>2</td>

@@ -8,9 +8,9 @@ This file is intentionally kept under the top-level `docs/` folder as the
 detailed internal implementation plan. The public, proof-backed compatibility
 matrix and implementation roadmap are published under `www/docs`.
 
-## Implementation Status (Development Snapshot)
+## Implementation Status (CSharpDB 4.1.0 Release Boundary)
 
-As of 2026-07-17, the repository contains the following implemented plan slices:
+As of 2026-07-18, CSharpDB 4.1.0 contains the following implemented plan slices:
 
 - Milestone 1: the machine-readable manifest, JSON Schema, deterministic HTML
   generator, proof validation, documentation preflight, CI/Pages gates, and
@@ -45,16 +45,17 @@ As of 2026-07-17, the repository contains the following implemented plan slices:
   schema transports/tooling preserve these constraint shapes.
 - Milestones 10–11: estimate-only EXPLAIN now follows the shared read-only
   routing contract and prepared commands discover parameters inside its target.
-  Release tooling can create an immutable compatibility snapshot, and tagged
-  release CI validates its version, schema, proof/feature parity, verified
-  commit ancestry, tracked artifacts, and prior-snapshot immutability. The
+  The release includes an immutable compatibility snapshot, and tagged release
+  CI validates its version, schema, proof/feature parity, verified commit
+  ancestry, tracked artifacts, and prior-snapshot immutability. The
   shared physical-plan descriptor, execution profiles, spill substrate, and
   broader release qualification lanes remain.
 
 The public status and supported limitations live in
 `www/docs/sql-compatibility.json` and
-`www/docs/sql-compatibility-roadmap.html`. This section is a progress snapshot,
-not a claim that the remaining milestone acceptance criteria are complete.
+`www/docs/sql-compatibility-roadmap.html`. This section records the 4.1.0
+release boundary, not a claim that the remaining milestone acceptance criteria
+are complete.
 
 ## Target Outcome
 
@@ -90,7 +91,7 @@ and honest documentation for everything else.
 ## Original Baseline
 
 The following baseline was captured when this plan was written. It is retained
-as implementation history; the development snapshot above and the public
+as implementation history; the release boundary above and the public
 compatibility manifest are authoritative for current status.
 
 Implemented behavior to preserve and extend:

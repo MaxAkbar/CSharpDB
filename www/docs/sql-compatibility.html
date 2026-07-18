@@ -55,16 +55,14 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>CSharpDB SQL Compatibility</h1>
-                <p class="lead">Feature-level compatibility for the CSharpDB SQL dialect. This development snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.</p>
-                <div class="callout callout-warning">
-                    <strong>Development preview.</strong> This page describes the audited main-branch snapshot below, not the latest released package. No released compatibility snapshot has been published yet.
-                </div>
+                <p class="lead">Feature-level compatibility for the CSharpDB SQL dialect in CSharpDB 4.1.0. This released snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.</p>
+                <div class="callout callout-info"><strong>Released snapshot.</strong> This matrix describes the package version shown below.</div>
                 <p>Availability and roadmap intent are independent. A planned row may still be unavailable today. Partial rows state their exact limitations. No aggregate compatibility percentage is published.</p>
                 <div class="compat-meta">
-                    <div><span>Snapshot</span>Development preview</div>
-                    <div><span>Package</span>4.0.4</div>
-                    <div><span>Commit</span><code>522f98d</code></div>
-                    <div><span>Generated</span>07/17/2026 15:20:19</div>
+                    <div><span>Snapshot</span>Released snapshot</div>
+                    <div><span>Package</span>4.1.0</div>
+                    <div><span>Commit</span><code>d2cad70</code></div>
+                    <div><span>Generated</span>07/18/2026 03:51:39</div>
                 </div>
                 <p>Machine-readable sources: <a href="sql-compatibility.json">manifest JSON</a> and <a href="sql-compatibility.schema.json">JSON Schema</a>. Follow implementation sequencing in the <a href="sql-compatibility-roadmap.html">SQL Compatibility Roadmap</a>.</p>
                 <div class="compat-toolbar" aria-label="Compatibility filters">
@@ -124,7 +122,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.add, engine.alter.add_default_backfill, engine.alter.rewrite_rollback, engine.alter.public_write_rollback, engine.alter.add.reopen, catalog.default_check, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-alter.add_column.nullable" data-status="supported" data-category="alter-table" data-search="alter.add_column.nullable alter table add a nullable column without a default alter table users add column nickname text computed values are not supported. literal-default backfill and selected alter column metadata actions are qualified in separate rows. ">
                     <div class="compat-card-head">
@@ -199,7 +197,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_metadata, engine.alter.named_check, schema.default_check.serialization, catalog.default_check, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-alter.drop_constraint.foreign_key" data-status="partial" data-category="alter-table" data-search="alter.drop_constraint.foreign_key alter table drop a foreign-key constraint by name alter table children drop constraint fk_children_parent only existing foreign-key constraints are handled. other constraint kinds do not yet exist, and the ef provider rejects standalone foreign-key changes. ">
                     <div class="compat-card-head">
@@ -273,7 +271,7 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-alter.rename_column" data-status="partial" data-category="alter-table" data-search="alter.rename_column alter table rename a column alter table users rename column old_name to new_name dependency repair is implemented for current indexes, keys, checks, and foreign keys. stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in this development snapshot. ">
+                <article class="compat-card" id="feature-alter.rename_column" data-status="partial" data-category="alter-table" data-search="alter.rename_column alter table rename a column alter table users rename column old_name to new_name dependency repair is implemented for current indexes, keys, checks, and foreign keys. stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release snapshot. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>Rename a column</h3>
@@ -300,7 +298,7 @@
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>Dependency repair is implemented for current indexes, keys, checks, and foreign keys. Stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in this development snapshot.</li>
+                            <li>Dependency repair is implemented for current indexes, keys, checks, and foreign keys. Stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release snapshot.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
@@ -379,7 +377,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_metadata, engine.alter.column_default, engine.alter.column_default_runtime, catalog.default_check, ado.schema.defaults_checks_keys, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-alter.column.not_null" data-status="supported" data-category="alter-table" data-search="alter.column.not_null alter table set or drop column not null metadata alter table users alter column email set not null set not null scans existing rows and refuses the metadata change if any value is null. type and collation changes are not part of this feature. ">
                     <div class="compat-card-head">
@@ -414,7 +412,7 @@
                             <summary>Automated proof ids</summary>
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.alter.column_metadata, engine.alter.column_not_null, engine.alter.add.reopen, catalog.core, ado.schema.core, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-ddl.create_table.basic" data-status="supported" data-category="data-definition" data-search="ddl.create_table.basic data definition create a basic durable table create table users (id integer primary key, name text not null) this row covers primitive columns, nullability, and a single-column primary key; defaults, checks, and composite primary keys are separate rows. ">
                     <div class="compat-card-head">
@@ -489,7 +487,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.default_check.create, schema.default_check.serialization, engine.check.enforcement, engine.check.update_atomic, engine.default_check.reopen, catalog.default_check, engine.default_check.rename, engine.three_valued.truth_tables, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, ef.schema.literal_defaults_checks</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-schema.key.composite_primary" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_primary defaults and constraints composite table-level primary key constraint pk_order_lines primary key (order_id, line_no) this row covers primary key declarations inside create table. a composite key is a logical constraint and does not infer integer identity behavior; standalone add/drop primary key remains outside this feature. one primary key is allowed per table and every participating value must be non-null.">
                     <div class="compat-card-head">
@@ -528,7 +526,7 @@
                             <summary>Automated proof ids</summary>
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.key.composite, schema.key.serialization, engine.key.composite_primary, catalog.key_constraints, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints, ef.schema.composite_keys, ef.runtime.composite_keys</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-schema.key.composite_unique" data-status="supported" data-category="defaults-and-constraints" data-search="schema.key.composite_unique defaults and constraints composite table-level unique key constraint uq_tenant_email unique (tenant_id, email) this row covers unique declarations inside create table. standalone add unique remains outside this feature; named unique constraints can be removed with drop constraint when no foreign key depends on them. rows containing null in any participating column do not collide with one another.">
                     <div class="compat-card-head">
@@ -567,7 +565,7 @@
                             <summary>Automated proof ids</summary>
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.key.composite, schema.key.serialization, engine.key.composite_unique, catalog.key_constraints, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-dml.insert.default_keyword" data-status="partial" data-category="defaults-and-constraints" data-search="dml.insert.default_keyword defaults and constraints default markers and default values in insert insert into orders (status) values (default) core sql covers insert default values and default markers in value tuples against literal column defaults. feature-specific ado.net, rest, grpc, and ef query paths are not yet linked, and the available default expression shapes are limited by the literal-only column default row. an explicit null does not request a default; it remains null.">
                     <div class="compat-card-head">
@@ -607,7 +605,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.insert.default_values, parser.insert.default_markers, engine.default.apply, ef.insert.default_values</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#insert">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#insert">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-schema.not_null.enforcement" data-status="partial" data-category="defaults-and-constraints" data-search="schema.not_null.enforcement defaults and constraints not null write enforcement name text not null core tests cover sql insert rejection, shared direct insertbatch validation, and sys.columns nullability. a narrow reopen proof and feature-specific ado.net, rest, and grpc write tests are not yet linked. not null is enforced independently from check; check may accept unknown while not null still rejects null.">
                     <div class="compat-card-head">
@@ -687,7 +685,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.default_check.create, schema.default_check.serialization, engine.default.apply, engine.default_check.reopen, catalog.default_check, engine.default_check.rename, ado.schema.defaults_checks_keys, grpc.ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, archive.schema.constraints, ef.schema.literal_defaults_checks</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-schema.check.table" data-status="partial" data-category="defaults-and-constraints" data-search="schema.check.table defaults and constraints table check constraint constraint ck_total check (total &gt;= 0) checks must be deterministic and row-local. parameters, functions, subqueries, and qualified references are rejected. core sql covers enforcement, persistence, catalog exposure, rename dependency repair, named alter add/drop, ado.net metadata, direct/rest/grpc schema transport, archive round trips, and ef create-table checks. a false result rejects the write, while null/unknown passes in accordance with sql check semantics. enforcement is immediate.">
                     <div class="compat-card-head">
@@ -727,7 +725,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.default_check.create, schema.default_check.serialization, engine.check.enforcement, engine.check.update_atomic, engine.default_check.reopen, catalog.default_check, engine.default_check.rename, engine.alter.named_check, engine.three_valued.truth_tables, ado.schema.defaults_checks_keys, direct.schema.constraints, rest.schema.constraints, grpc.schema.constraints, ef.schema.literal_defaults_checks</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.default_check.unsupported</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-identifiers.quoted" data-status="partial" data-category="dialect-foundation" data-search="identifiers.quoted dialect foundation double-quoted identifiers create table &quot;order details&quot; (&quot;order id&quot; integer) core sql tests cover reserved words, whitespace, and doubled-quote escapes through create, insert, and select. names are limited to 128 characters and cannot contain nul. a dedicated reopen/catalog proof and feature-specific ado.net, rest, grpc, and ef query/migration round trips are not yet linked; the ef proof covers identifier generation only. double quotes delimit identifiers and a doubled double quote escapes a quote. name resolution remains ordinal case-insensitive rather than introducing case-sensitive quoted names.">
                     <div class="compat-card-head">
@@ -767,7 +765,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.identifier.quoted, engine.identifier.quoted_reserved, engine.identifier.quoted_escape, ef.identifier.quoted_helper</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.identifier.quoted_unterminated</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#identifiers">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#identifiers">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-identifiers.unquoted_simple" data-status="supported" data-category="dialect-foundation" data-search="identifiers.unquoted_simple dialect foundation unquoted simple identifiers create table customer_orders (order_id integer primary key) an unquoted name must begin with a letter recognized by .net or underscore and continue with letters, decimal digits, or underscores. reserved keywords require quoting, nul is rejected, and the maximum length is 128 characters. name resolution is ordinal case-insensitive on current catalog paths.">
                     <div class="compat-card-head">
@@ -847,7 +845,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.three_valued.expressions, engine.three_valued.truth_tables</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">engine.three_valued.unknown_cases</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#logical">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#logical">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-schema.foreign_key.composite" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.composite foreign keys composite foreign key foreign key (order_id, line_no) references lines(order_id, line_no) the referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. match full, match partial, deferred validation, on update actions, and ef composite-fk generation are not supported. match simple is used: any null child component suppresses the parent lookup.">
                     <div class="compat-card-head">
@@ -887,7 +885,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, schema.fk.composite_vacuum, catalog.fk.composite_pairs, engine.fk.composite_dependencies, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata, archive.schema.constraints, devops.fk.composite_metadata</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">engine.fk.composite_validation, ef.composite_fk.rejected</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-schema.foreign_key.on_delete_cascade" data-status="partial" data-category="foreign-keys" data-search="schema.foreign_key.on_delete_cascade foreign keys immediate on delete cascade behavior parent_id integer references parents(id) on delete cascade cascade is immediate for scalar and composite keys. deferred constraints and standalone ef foreign-key changes are not supported. ">
                     <div class="compat-card-head">
@@ -1078,7 +1076,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.fk.table_composite, engine.fk.composite, schema.fk.composite_reopen, catalog.fk.composite_pairs, ado.fk.composite_metadata, direct.fk.composite_metadata, rest.fk.composite_metadata, grpc.fk.composite_metadata</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">ef.composite_fk.rejected</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#create-table">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#create-table">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-provider.ef_migration.basic" data-status="supported" data-category="generated-sql" data-search="provider.ef_migration.basic generated sql basic ef core migrations dotnet ef database update the supported operation set is create/drop table, add/drop/rename column, rename table, and create/drop index within the provider&#39;s schema restrictions. ">
                     <div class="compat-card-head">
@@ -1185,7 +1183,7 @@
                         </details>
                     <p><strong>First supported version:</strong> not supported · <a href="entity-framework-core.html#limitations">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-metadata.ado_getschema.core" data-status="supported" data-category="metadata" data-search="metadata.ado_getschema.core metadata ado.net getschema core collections connection.getschema(&quot;columns&quot;) supported collections are metadatacollections, restrictions, datasourceinformation, datatypes, reservedwords, tables, columns, indexes, indexcolumns, views, viewcolumns, foreignkeys, defaults, checkconstraints, keyconstraints, and keycolumns. collection-specific restrictions are documented by the restrictions collection. ">
+                <article class="compat-card" id="feature-metadata.ado_getschema.core" data-status="supported" data-category="metadata" data-search="metadata.ado_getschema.core metadata ado.net getschema core collections connection.getschema(&quot;columns&quot;) supported collections are metadatacollections, restrictions, tables, columns, indexes, foreignkeys, views, checkconstraints, keyconstraints, and keycolumns. collection-specific restrictions are documented by the restrictions collection. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>ADO.NET GetSchema core collections</h3>
@@ -1212,7 +1210,7 @@
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>Supported collections are MetaDataCollections, Restrictions, DataSourceInformation, DataTypes, ReservedWords, Tables, Columns, Indexes, IndexColumns, Views, ViewColumns, ForeignKeys, Defaults, CheckConstraints, KeyConstraints, and KeyColumns. Collection-specific restrictions are documented by the Restrictions collection.</li>
+                            <li>Supported collections are MetaDataCollections, Restrictions, Tables, Columns, Indexes, ForeignKeys, Views, CheckConstraints, KeyConstraints, and KeyColumns. Collection-specific restrictions are documented by the Restrictions collection.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>
@@ -1332,7 +1330,7 @@
                             <summary>Automated proof ids</summary>
                             <p><strong>Positive:</strong> <span class="compat-proof">catalog.functions, engine.functions.catalog_query, rest.sql, rest.session, grpc.sql, grpc.session</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql.html">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql.html">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-query.select.basic" data-status="supported" data-category="queries" data-search="query.select.basic queries basic select with projection and filter select id, name from users where id = @id advanced expressions and generated provider shapes are qualified separately. ">
                     <div class="compat-card-head">
@@ -1657,7 +1655,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.union.all, parser.union.all.contextual, engine.union_all.duplicates, engine.union_all.numeric_promotion, engine.union_all.parenthesized, engine.union_all.view, operator.union_all.outer_limit, operator.union_all.cancellation, admin.union_all.paging</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">parser.union.all.non_union_rejected, engine.union_all.incompatible_types</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#set-operations">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#set-operations">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-query.window.row_number" data-status="partial" data-category="window-functions" data-search="query.window.row_number window functions experimental ranking and aggregate window slice row_number() over (partition by customer_id order by created_at) experimental in-memory slice only: one compatible window specification per select; row_number, rank, dense_rank, and non-distinct count, sum, avg, min, and max over direct source rows. star and mixed-expression projections preserve public select-list order and hide internal window slots. explicit frames, named windows, nested windows, mixed ordinary aggregation/grouping, incompatible specifications, navigation functions, and spill-to-disk are rejected. large inputs remain bounded only by available process memory, although long sort/evaluation loops poll cancellation. default frames are sql-consistent: an unordered window covers the whole partition, while an ordered aggregate window uses peer-aware unbounded-preceding through current-row semantics.">
                     <div class="compat-card-head">
@@ -1697,7 +1695,7 @@
                             <p><strong>Positive:</strong> <span class="compat-proof">parser.window.experimental, parser.window.mixed_star_projection, engine.window.ranking, engine.window.aggregate_default_frames, engine.window.star_projection, engine.window.cancellation</span></p>
                             <p><strong>Negative:</strong> <span class="compat-proof">engine.window.experimental_rejections</span></p>
                         </details>
-                    <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#limitations">Related documentation</a></p>
+                    <p><strong>First supported version:</strong> 4.1.0 · <a href="sql-reference.html#limitations">Related documentation</a></p>
                 </article>
             </div>
         </div>
