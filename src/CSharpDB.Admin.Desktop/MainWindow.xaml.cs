@@ -94,18 +94,34 @@ public partial class MainWindow : Window
     private async void OnOpenDatabase(object sender, RoutedEventArgs e)
         => await OpenDatabaseAsync(showErrors: true);
 
-    private async void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        DesktopDialogRequest? request = null;
         try
         {
             if (!IsCurrentAdminSource(e.Source))
                 return;
 
-            request = ParseDialogRequest(e.WebMessageAsJson);
+            DesktopDialogRequest? request = ParseDialogRequest(e.WebMessageAsJson);
             if (request is null)
                 return;
 
+            // A native modal dialog must not be opened while WebView2 is invoking one
+            // of its callbacks. Doing so creates a nested message loop (reentrancy) and
+            // can terminate the browser process with 0x80000003. Queue the work so this
+            // event returns to WebView2 before ShowDialog is called.
+            _ = Dispatcher.InvokeAsync(() => ProcessDialogRequestAsync(request));
+        }
+        catch (Exception)
+        {
+            // WebView messages are an external input boundary. A malformed message
+            // must never escape this native event callback.
+        }
+    }
+
+    private async Task ProcessDialogRequestAsync(DesktopDialogRequest request)
+    {
+        try
+        {
             DialogOutcome outcome = request.Dialog switch
             {
                 "open-database" => await OpenDatabaseAsync(showErrors: true),
@@ -119,15 +135,11 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (_isClosing)
         {
-            if (request is not null)
-                PostDialogResponse(request.RequestId, DialogOutcome.CanceledByUser());
+            PostDialogResponse(request.RequestId, DialogOutcome.CanceledByUser());
         }
         catch (Exception ex)
         {
-            // WebView messages are an external input boundary. Never allow a malformed
-            // message or a dialog failure to escape this async-void event handler.
-            if (request is not null)
-                PostDialogResponse(request.RequestId, DialogOutcome.Failed(ex.Message));
+            PostDialogResponse(request.RequestId, DialogOutcome.Failed(ex.Message));
         }
     }
 

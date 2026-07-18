@@ -11,7 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.8" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,7 +20,7 @@
 
   <ItemGroup>
     <PackageReference Update="coverlet.collector" Version="10.0.1" />
-    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.5.1" />
+    <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.8.1" />
   </ItemGroup>
 
 </Project>
