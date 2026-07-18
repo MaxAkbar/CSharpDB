@@ -2,7 +2,7 @@
 
 ## version4.1.0
 
-version4.1.0 establishes CSharpDB's proof-backed SQL compatibility contract and expands the dialect across constraints, composite relationships, transactional schema changes, compound queries, windows, metadata, and generated SQL. It also hardens ALTER and window execution and adds immutable compatibility release gates.
+version4.1.0 establishes CSharpDB's proof-backed SQL compatibility contract and expands the dialect across constraints, composite relationships, transactional schema changes, compound queries, windows, metadata, and generated SQL. It also hardens ALTER and window execution, pager shutdown, and immutable compatibility release gates.
 
 ### SQL and Schema Compatibility
 
@@ -28,5 +28,6 @@ version4.1.0 establishes CSharpDB's proof-backed SQL compatibility contract and 
 
 - Added tooling and release CI gates for immutable per-version compatibility snapshots, strict semantic-version progression, verified commit ancestry, manifest/schema parity, tracked artifacts, and prior-snapshot immutability.
 - Legacy schema fixtures remain readable, and newly added schema metadata is serialized additively and covered by reopen, archive, transport, and tooling tests.
+- Pager shutdown now atomically stops and drains background checkpoints before final WAL cleanup, preventing a late checkpoint from truncating a WAL while the next daemon host recovers it.
 - Broader ALTER type/collation/key rewrites, spill-backed windows, physical `EXPLAIN ANALYZE`, and the remaining performance, replay, upgrade, and crash-qualification lanes remain planned rather than advertised as supported.
-- Release validation completed with a zero-warning solution build, 2,302 passing tests across the solution, 43 documented compatibility features backed by 141 proof IDs, and positive plus tamper-rejection release-gate fixtures.
+- Release validation completed with a zero-warning solution build, 2,306 passing tests across the solution, 43 documented compatibility features backed by 141 proof IDs, positive plus tamper-rejection release-gate fixtures, and 10 fresh-process passes of the complete daemon suite.
