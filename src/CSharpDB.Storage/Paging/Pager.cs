@@ -2647,10 +2647,14 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return; // Snapshot readers don't own resources
         }
 
+        ValueTask backgroundCheckpointShutdown = _checkpoints is not null
+            ? _checkpoints.StopAndWaitForBackgroundCheckpointAsync()
+            : ValueTask.CompletedTask;
+
         if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true)
             await RollbackAsync();
 
-        await WaitForBackgroundCheckpointAsync();
+        await backgroundCheckpointShutdown;
 
         // Final checkpoint before close
         if (_walIndex.FrameCount > 0)
@@ -2748,9 +2752,12 @@ public sealed class Pager : IAsyncDisposable, IDisposable
             return;
         }
 
+        Task? backgroundCheckpointShutdown =
+            _checkpoints?.StopAndWaitForBackgroundCheckpointAsync().AsTask();
+
         if (GetCurrentTransaction() is not null || _transactions?.InTransaction == true)
             RollbackAsync().AsTask().GetAwaiter().GetResult();
-        WaitForBackgroundCheckpointAsync().AsTask().GetAwaiter().GetResult();
+        backgroundCheckpointShutdown?.GetAwaiter().GetResult();
         if (_ownsPageReadProviders)
             DisposePageReadProvider();
         _device.Dispose();
