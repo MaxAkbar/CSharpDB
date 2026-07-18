@@ -239,10 +239,18 @@ dotnet ef migrations script --idempotent</code></pre>
                 <h3>Scalar numeric aggregates</h3>
                 <p>The qualified aggregate slice covers <code>Count</code>, <code>LongCount</code>, simple and bounded-shape <code>Any</code>, <code>Sum</code> over <code>int</code>, <code>double</code>, and nullable <code>double</code>, <code>Average</code> over <code>double</code> and nullable <code>double</code>, and <code>Min</code>/<code>Max</code> over <code>int</code>, <code>double</code>, and nullable <code>double</code>. Filtered, empty, and all-NULL cases are cross-checked against SQLite.</p>
 
+                <h3>Distinct numeric aggregates</h3>
+                <p>The qualified scalar shape is an optional <code>Where</code>, followed by selection of one directly mapped nonnullable <code>int</code> column, <code>Distinct</code>, and <code>Count</code>, <code>LongCount</code>, <code>Sum</code>, <code>Min</code>, or <code>Max</code>.</p>
+                <div class="callout callout-warning"><strong>Deliberately bounded:</strong> distinct <code>Average</code>, nullable or non-<code>int</code> columns, configured value converters, ordering, row limits, predicates after <code>Distinct</code>, intervening operators, computed or composite selectors, casts, and derived sources are rejected with <code>CDBEF1004</code> before command dispatch. Nullable <code>Distinct().Count()</code> and <code>Distinct().LongCount()</code> also cannot preserve LINQ's rule that a distinct NULL is counted once because SQL <code>COUNT(DISTINCT column)</code> ignores NULL.</div>
+
+                <h3>Grouped numeric aggregates</h3>
+                <p>Direct single-table <code>GroupBy</code> supports an optional pre-filter and direct mapped Boolean, integral, enum, default-<code>BINARY</code> string, or nullable keys. Composite keys must use C# anonymous types or <code>ValueTuple</code>. Boolean key columns must contain canonical provider-written <code>0</code>/<code>1</code> storage. One grouped projection can contain direct keys plus bare <code>Count</code>/<code>LongCount</code>, <code>Sum</code> over <code>int</code>/<code>double</code>/nullable <code>double</code>, <code>Average</code> over <code>double</code>/nullable <code>double</code>, <code>Min</code>/<code>Max</code> over <code>int</code>/<code>double</code>/nullable <code>double</code>, and direct nonnullable-<code>int</code> <code>Distinct</code> variants for every listed aggregate except <code>Average</code>. Basic <code>HAVING</code> predicates, including aggregate <code>IS NULL</code>, and ordering by a directly projected key or aggregate are supported.</p>
+                <p><code>double</code>, transformed, non-<code>BINARY</code>-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw group transforms; post-projection filtering, projection, distinct, limits, set, or join operations; nested grouping; predicate/CASE aggregates; casts; and broader types or shapes are rejected with <code>CDBEF1005</code> before command dispatch.</p>
+
                 <div class="callout callout-warning">
                     <strong>String-semantics boundary:</strong> string <code>StartsWith</code>, <code>EndsWith</code>, instance <code>Contains</code>, and <code>StringComparison</code> overloads are not translated yet. CSharpDB's current pattern-search functions are case-insensitive, so translating these methods would silently change ordinary .NET string semantics. Collection <code>Contains</code> over constants and parameters is supported.
                 </div>
-                <p><code>DateTimeOffset</code> components; integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads; long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants and other unqualified aggregate variants; <code>GroupBy</code>; set-operation; and correlated-query shapes remain outside the qualified surface.</p>
+                <p><code>DateTimeOffset</code> components; integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads; long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants and other unqualified aggregate variants; broader distinct and grouped aggregate shapes; set-operation; and correlated-query shapes remain outside the qualified surface.</p>
 
                 <h3>Unsupported-expression diagnostics</h3>
                 <p>Unsupported expressions retain EF Core's <code>InvalidOperationException</code> and add stable provider guidance before a command is dispatched. Diagnostics identify the construct without adding parameter values.</p>
@@ -252,6 +260,8 @@ dotnet ef migrations script --idempotent</code></pre>
                         <tr><td><code>CDBEF1001</code></td><td>Unsupported CLR method</td></tr>
                         <tr><td><code>CDBEF1002</code></td><td>Unsupported CLR member</td></tr>
                         <tr><td><code>CDBEF1003</code></td><td>Recognized unsupported query operator, currently <code>TakeWhile</code> or <code>SkipWhile</code></td></tr>
+                        <tr><td><code>CDBEF1004</code></td><td>Unsupported distinct aggregate shape</td></tr>
+                        <tr><td><code>CDBEF1005</code></td><td>Unsupported grouped aggregate shape</td></tr>
                     </tbody>
                 </table>
                 <p>When client evaluation is intentional, apply selective supported filters first, then call <code>AsEnumerable()</code> explicitly before the unsupported portion. This makes the server/client boundary visible and avoids accidentally loading an entire table.</p>
@@ -277,7 +287,7 @@ dotnet ef migrations script --idempotent</code></pre>
                         <tr><td>Literal column defaults</td><td>Partial</td><td><code>HasDefaultValue(...)</code> values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported</td></tr>
                         <tr><td>Check constraints</td><td>Partial</td><td>Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine</td></tr>
                         <tr><td><code>AlterColumn</code></td><td>Partial</td><td>Literal default/nullability changes, exact dependency-free <code>INTEGER</code>/<code>REAL</code> rewrites, and <code>TEXT</code> collation changes with inherited ordinary/unique SQL-index rebuilding</td></tr>
-                        <tr><td>Bounded LINQ/query subset</td><td>Partial</td><td>Basic operators plus the string, temporal, finite-double math, and scalar numeric aggregate translations listed above; unsupported methods, members, and selected operators receive provider diagnostics</td></tr>
+                        <tr><td>Bounded LINQ/query subset</td><td>Partial</td><td>Basic operators plus the string, temporal, finite-double math, scalar numeric aggregate, direct-column distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, and aggregate shapes receive provider diagnostics</td></tr>
                         <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>byte[]</code></td></tr>
                     </tbody>
                 </table>
@@ -289,7 +299,7 @@ dotnet ef migrations script --idempotent</code></pre>
                     <li>Computed columns, <code>DefaultValueSql</code>, and rowversion are unsupported.</li>
                     <li>String <code>StartsWith</code>, <code>EndsWith</code>, instance <code>Contains</code>, <code>StringComparison</code> overloads, and <code>DateTimeOffset</code> component translation are unsupported.</li>
                     <li>Integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads are outside the qualified translation surface.</li>
-                    <li>Long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants, integer <code>Average</code>, text <code>Min</code>/<code>Max</code>, <code>Distinct</code> aggregates, and <code>GroupBy</code> remain outside the qualified surface.</li>
+                    <li>Long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants, integer <code>Average</code>, text <code>Min</code>/<code>Max</code>, and broader distinct/grouped aggregate types and shapes remain outside the qualified surface.</li>
                     <li>Physical <code>INTEGER</code> primary-key rekeying supports ready ordinary/unique SQL, constraint-owned, and foreign-key-support indexes; full-text, collection, and non-ready indexes are rejected.</li>
                     <li>Pooled connections are rejected by the EF Core provider.</li>
                     <li>Named shared-memory databases (<code>:memory:&lt;name&gt;</code>) are rejected.</li>

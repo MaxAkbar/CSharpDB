@@ -271,6 +271,29 @@ bounded-shape `Any`, `Sum` over `int`, `double`, and nullable `double`,
 cross-checked against SQLite. `Math.Round(double)` uses midpoint-to-even
 semantics, and translated math functions propagate SQL NULL.
 
+The bounded distinct-aggregate shape is an optional `Where`, selection of one
+directly mapped nonnullable `int` column, `Distinct`, then `Count`,
+`LongCount`, `Sum`, `Min`, or `Max`. Distinct `Average`, nullable or non-`int`
+columns, configured value converters, predicates after `Distinct`, ordering,
+limits, intervening operators, computed/composite selectors, casts, and
+derived sources are rejected with `CDBEF1004` before command dispatch.
+
+Direct single-table `GroupBy` supports an optional pre-filter and direct mapped
+Boolean, integral, enum, default-`BINARY` string, or nullable keys. Composite
+keys must use C# anonymous types or `ValueTuple`, and Boolean key columns must
+contain canonical provider-written `0`/`1` storage. A single grouped projection
+may
+contain direct keys plus bare `Count`/`LongCount`, `Sum` over
+`int`/`double`/nullable `double`, `Average` over `double`/nullable `double`,
+`Min`/`Max` over `int`/`double`/nullable `double`, and the nonnullable-`int`
+distinct variants above. Basic `HAVING`, including aggregate `IS NULL`, and
+ordering by a directly projected key or aggregate are supported. `double`,
+transformed, non-`BINARY`-collated, or configured-converter keys; aggregate
+value converters; element/result selector overloads; group materialization;
+raw group transforms; post-projection filtering/projection/distinct/limits/set
+operations; predicate aggregates; casts; and broader shapes are rejected with
+`CDBEF1005`.
+
 String `StartsWith`, `EndsWith`, instance `Contains`, and
 `StringComparison` overloads are not translated yet. CSharpDB's current
 pattern-search functions are case-insensitive, so translating those methods
@@ -278,8 +301,8 @@ would silently change ordinary .NET string semantics. `DateTimeOffset`
 components, integral/decimal/`MathF` math overloads, two-argument or
 midpoint-mode rounding, long- and float-valued `Sum`/`Average`/`Min`/`Max`
 variants and other unqualified aggregate variants,
-`GroupBy`, set-operation, and correlated query shapes also remain outside the
-qualified surface.
+broader distinct/grouped aggregate variants, set-operation, and correlated
+query shapes also remain outside the qualified surface.
 
 Unsupported expressions retain EF Core's `InvalidOperationException` and add
 provider guidance:
@@ -289,6 +312,8 @@ provider guidance:
 | `CDBEF1001` | Unsupported CLR method |
 | `CDBEF1002` | Unsupported CLR member |
 | `CDBEF1003` | Recognized unsupported query operator, currently `TakeWhile` or `SkipWhile` |
+| `CDBEF1004` | Unsupported distinct aggregate shape |
+| `CDBEF1005` | Unsupported grouped aggregate shape |
 
 When client evaluation is intentional, apply selective supported filters
 first, then call `AsEnumerable()` explicitly before the unsupported portion.
@@ -317,7 +342,7 @@ an entire table.
 | Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
-| Bounded LINQ/query subset | Partial | Basic operators plus the string, temporal, finite-double math, and scalar numeric aggregate translations listed above; unsupported methods, members, and selected operators receive provider diagnostics |
+| Bounded LINQ/query subset | Partial | Basic operators plus the string, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, and aggregate shapes receive provider diagnostics |
 | Supported CLR types | Yes | `bool`, integral types, enums, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
 
 ## Current Limitations
@@ -330,8 +355,9 @@ an entire table.
 - integral, decimal, `MathF`, precision-argument, midpoint-mode, and
   transcendental math overloads are outside the qualified translation surface
 - long- and float-valued `Sum`/`Average`/`Min`/`Max` variants, integer
-  `Average`, text `Min`/`Max`,
-  `Distinct` aggregates, and `GroupBy` remain outside the qualified surface
+  non-distinct `Average`, text `Min`/`Max`, distinct `Average`, non-`int`
+  distinct aggregates, and broader `GroupBy` variants remain outside the
+  qualified surface
 - physical `INTEGER` primary-key rekeying supports ready ordinary/unique SQL,
   constraint-owned, and foreign-key-support indexes; full-text, collection, and
   non-ready indexes are rejected

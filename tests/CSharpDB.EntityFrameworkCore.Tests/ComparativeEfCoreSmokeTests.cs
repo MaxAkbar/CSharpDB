@@ -236,6 +236,137 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
         Assert.Null(await allNull.MaxAsync(row => row.OptionalNumber, Ct));
     }
 
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task GroupedAndDistinctAggregates_MatchForBoundedValues(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "grouped-distinct-aggregates"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 2,
+                Number = 2.5,
+                OptionalNumber = 2.5,
+                TextCol = "active-one",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 4,
+                Number = 7.5,
+                OptionalNumber = null,
+                TextCol = "active-two",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 4,
+                Number = 7.5,
+                OptionalNumber = 2.5,
+                TextCol = "active-duplicate",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                Value = 8,
+                Number = -3,
+                OptionalNumber = 1,
+                TextCol = "inactive-one",
+                Category = "Inactive",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                Value = 8,
+                Number = -3,
+                OptionalNumber = null,
+                TextCol = "inactive-duplicate",
+                Category = "Inactive",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        var grouped = await db.Rows
+            .GroupBy(row => row.Category)
+            .Where(group => group.Count() >= 2)
+            .Select(group => new
+            {
+                Category = group.Key,
+                Count = group.Count(),
+                IntegerSum = group.Sum(row => row.Value),
+                IntegerMin = group.Min(row => row.Value),
+                IntegerMax = group.Max(row => row.Value),
+                Sum = group.Sum(row => row.Number),
+                Average = group.Average(row => row.Number),
+                Min = group.Min(row => row.Number),
+                Max = group.Max(row => row.Number),
+                DistinctIntegerCount = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Count(),
+                DistinctIntegerSum = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Sum(),
+                DistinctIntegerMin = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Min(),
+                DistinctIntegerMax = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Max(),
+            })
+            .OrderByDescending(row => row.Count)
+            .ThenBy(row => row.Category)
+            .ToListAsync(Ct);
+
+        Assert.Equal(2, grouped.Count);
+        Assert.Equal("Active", grouped[0].Category);
+        Assert.Equal(3, grouped[0].Count);
+        Assert.Equal(10, grouped[0].IntegerSum);
+        Assert.Equal(2, grouped[0].IntegerMin);
+        Assert.Equal(4, grouped[0].IntegerMax);
+        Assert.Equal(17.5, grouped[0].Sum);
+        Assert.Equal(17.5 / 3, grouped[0].Average, precision: 10);
+        Assert.Equal(2.5, grouped[0].Min);
+        Assert.Equal(7.5, grouped[0].Max);
+        Assert.Equal(2, grouped[0].DistinctIntegerCount);
+        Assert.Equal(6, grouped[0].DistinctIntegerSum);
+        Assert.Equal(2, grouped[0].DistinctIntegerMin);
+        Assert.Equal(4, grouped[0].DistinctIntegerMax);
+        Assert.Equal("Inactive", grouped[1].Category);
+        Assert.Equal(2, grouped[1].Count);
+        Assert.Equal(16, grouped[1].IntegerSum);
+        Assert.Equal(8, grouped[1].IntegerMin);
+        Assert.Equal(8, grouped[1].IntegerMax);
+        Assert.Equal(-6, grouped[1].Sum);
+        Assert.Equal(-3, grouped[1].Average);
+        Assert.Equal(-3, grouped[1].Min);
+        Assert.Equal(-3, grouped[1].Max);
+        Assert.Equal(1, grouped[1].DistinctIntegerCount);
+        Assert.Equal(8, grouped[1].DistinctIntegerSum);
+        Assert.Equal(8, grouped[1].DistinctIntegerMin);
+        Assert.Equal(8, grouped[1].DistinctIntegerMax);
+
+        IQueryable<int> distinctValues =
+            db.Rows.Select(row => row.Value).Distinct();
+
+        Assert.Equal(3, await distinctValues.CountAsync(Ct));
+        Assert.Equal(3L, await distinctValues.LongCountAsync(Ct));
+        Assert.Equal(14, await distinctValues.SumAsync(Ct));
+        Assert.Equal(2, await distinctValues.MinAsync(Ct));
+        Assert.Equal(8, await distinctValues.MaxAsync(Ct));
+    }
+
     private ComparisonDbContext CreateContext(ProviderKind provider, string dbPath)
         => new(provider, provider switch
         {

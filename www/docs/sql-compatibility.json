@@ -1047,6 +1047,60 @@
       "ci_executed": true
     },
     {
+      "id": "ef.query.scalar_distinct_aggregates",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.scalar_distinct_aggregates.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "GroupedAndDistinctAggregates_MatchForBoundedValues",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.scalar_distinct_aggregates.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.grouped_aggregates",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.grouped_aggregates.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "GroupedAndDistinctAggregates_MatchForBoundedValues",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.grouped_aggregates.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
       "id": "ef.query.unsupported_diagnostics",
       "kind": "negative",
       "dimension": "rejection",
@@ -2439,11 +2493,11 @@
       "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "partial", "ef_migration": "not_applicable"},
       "persistent_ddl": false,
       "first_supported_version": "4.0.4",
-      "limitations": ["The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, constant/parameter collection Contains, simple Include, selected string and temporal members, finite-double math functions, and bounded scalar numeric aggregates. String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, GroupBy, set-operation, join, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, and selected operators fail before command dispatch with provider diagnostics."],
-      "deviations": ["ToLower()/ToUpper() and their invariant variants map to CSharpDB LOWER/UPPER and therefore use invariant server semantics rather than .NET CurrentCulture.", "Math.Round(double) uses CSharpDB midpoint-to-even semantics. Scalar numeric aggregate qualification is limited to bounded values and the explicitly documented CLR types because engine accumulation and EF-generated conversions differ for wider variants."],
+      "limitations": ["The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, constant/parameter collection Contains, simple Include, selected string and temporal members, finite-double math functions, bounded scalar numeric aggregates, direct-column integer-distinct aggregates, and direct single-table grouped numeric aggregates. Distinct scalar aggregates require an optional pre-filter followed by one directly mapped nonnullable int-column projection and Distinct, then Count, LongCount, Sum, Min, or Max. Distinct Average, nullable or non-int columns, value converters, ordering, limits, predicates after Distinct, intervening operators, computed/composite selectors, casts, and derived sources are rejected. GroupBy requires direct mapped bool, integral, enum, default-BINARY string, or nullable keys; composite keys must use C# anonymous types or ValueTuple, and Boolean keys require canonical provider-written 0/1 storage. It supports one direct-key/bare-aggregate projection, qualified non-distinct Sum/Average/Min/Max, nonnullable-int direct-column distinct Count/LongCount/Sum/Min/Max, basic HAVING, and ordering by a directly projected key or aggregate. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw or post-projection group transforms; nested/joined grouping; predicate/CASE aggregates; and broader types/shapes are rejected. String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, set-operation, join, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, operators, and aggregate shapes fail before command dispatch with provider diagnostics."],
+      "deviations": ["ToLower()/ToUpper() and their invariant variants map to CSharpDB LOWER/UPPER and therefore use invariant server semantics rather than .NET CurrentCulture.", "Math.Round(double) uses CSharpDB midpoint-to-even semantics. Scalar numeric aggregate qualification is limited to bounded values and the explicitly documented CLR types because engine accumulation and EF-generated conversions differ for wider variants.", "Nullable Distinct().Count()/LongCount() is intentionally rejected because LINQ counts one distinct NULL while SQL COUNT(DISTINCT column) ignores NULL."],
       "documentation_anchor": "entity-framework-core.html#linq-translation",
-      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.string_functions", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility"],
-      "negative_proof_ids": ["ef.query.unsupported_diagnostics"]
+      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.string_functions", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
+      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
     },
     {
       "id": "provider.ef_migration.basic",

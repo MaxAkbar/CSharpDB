@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using CSharpDB.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -456,6 +457,1173 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics()
+    {
+        string dbPath = GetDbPath("grouped-distinct-aggregates");
+        var interceptor = new ReaderCountingInterceptor();
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}",
+            interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.People.AddRange(
+            CreateNumericPerson(
+                "ActiveOne",
+                2.5,
+                1,
+                active: true,
+                optionalScore: 2.5,
+                optionalRank: 1,
+                status: PersonStatus.Active),
+            CreateNumericPerson(
+                "ActiveTwo",
+                7.5,
+                2,
+                active: true,
+                optionalScore: null,
+                optionalRank: null,
+                status: PersonStatus.Active),
+            CreateNumericPerson(
+                "ActiveDuplicate",
+                7.5,
+                3,
+                active: true,
+                optionalScore: 2.5,
+                optionalRank: 1,
+                status: PersonStatus.Active),
+            CreateNumericPerson(
+                "InactiveOne",
+                -3,
+                4,
+                optionalScore: 1,
+                optionalRank: 2,
+                status: PersonStatus.Suspended),
+            CreateNumericPerson(
+                "InactiveDuplicate",
+                -3,
+                5,
+                optionalScore: null,
+                optionalRank: null,
+                status: PersonStatus.Unknown));
+        await db.SaveChangesAsync(Ct);
+        interceptor.Reset();
+
+        var groupedQuery = db.People
+            .GroupBy(person => person.Active)
+            .Select(group => new
+            {
+                Active = group.Key,
+                Count = group.Count(),
+                LongCount = group.LongCount(),
+                Sum = group.Sum(person => person.Score),
+                Average = group.Average(person => person.Score),
+                Min = group.Min(person => person.Score),
+                Max = group.Max(person => person.Score),
+                OptionalSum =
+                    group.Sum(person => person.OptionalScore),
+                OptionalAverage =
+                    group.Average(person => person.OptionalScore),
+                DistinctCount = group
+                    .Select(person => person.Id)
+                    .Distinct()
+                    .Count(),
+                DistinctSum = group
+                    .Select(person => person.Id)
+                    .Distinct()
+                    .Sum(),
+            })
+            .OrderByDescending(row => row.Count)
+            .ThenBy(row => row.Active);
+
+        string groupedSql = groupedQuery.ToQueryString();
+        var grouped = await groupedQuery.ToListAsync(Ct);
+        var active = Assert.Single(grouped, row => row.Active);
+        var inactive = Assert.Single(grouped, row => !row.Active);
+
+        Assert.Contains("GROUP BY", groupedSql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY", groupedSql, StringComparison.Ordinal);
+        Assert.Contains("COUNT(DISTINCT", groupedSql, StringComparison.Ordinal);
+        Assert.True(grouped[0].Active);
+        Assert.Equal(3, active.Count);
+        Assert.Equal(3L, active.LongCount);
+        Assert.Equal(17.5, active.Sum);
+        Assert.Equal(17.5 / 3, active.Average, precision: 10);
+        Assert.Equal(2.5, active.Min);
+        Assert.Equal(7.5, active.Max);
+        Assert.Equal(5, active.OptionalSum);
+        Assert.Equal(2.5, active.OptionalAverage);
+        Assert.Equal(3, active.DistinctCount);
+        Assert.Equal(6, active.DistinctSum);
+        Assert.Equal(2, inactive.Count);
+        Assert.Equal(2L, inactive.LongCount);
+        Assert.Equal(-6, inactive.Sum);
+        Assert.Equal(-3, inactive.Average);
+        Assert.Equal(-3, inactive.Min);
+        Assert.Equal(-3, inactive.Max);
+        Assert.Equal(1, inactive.OptionalSum);
+        Assert.Equal(1, inactive.OptionalAverage);
+        Assert.Equal(2, inactive.DistinctCount);
+        Assert.Equal(9, inactive.DistinctSum);
+
+        var filteredCompositeHavingQuery = db.People
+            .Where(person => person.Score <= 7.5)
+            .GroupBy(person => new
+            {
+                person.Active,
+                person.Status,
+            })
+            .Where(group => group.Count() > 2)
+            .Select(group => new
+            {
+                group.Key.Active,
+                group.Key.Status,
+                Count = group.Count(),
+                Sum = group.Sum(person => person.Score),
+            });
+        string filteredCompositeHavingSql =
+            filteredCompositeHavingQuery.ToQueryString();
+        var filteredCompositeHaving =
+            await filteredCompositeHavingQuery.SingleAsync(Ct);
+
+        Assert.Contains(
+            "GROUP BY",
+            filteredCompositeHavingSql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "HAVING",
+            filteredCompositeHavingSql,
+            StringComparison.Ordinal);
+        Assert.True(filteredCompositeHaving.Active);
+        Assert.Equal(PersonStatus.Active, filteredCompositeHaving.Status);
+        Assert.Equal(3, filteredCompositeHaving.Count);
+        Assert.Equal(17.5, filteredCompositeHaving.Sum);
+
+        var nullableKeyGroups = await db.People
+            .GroupBy(person => person.OptionalRank)
+            .Select(group => new
+            {
+                group.Key,
+                Count = group.Count(),
+            })
+            .OrderBy(row => row.Key)
+            .ToListAsync(Ct);
+        Assert.Equal(3, nullableKeyGroups.Count);
+        Assert.Null(nullableKeyGroups[0].Key);
+        Assert.Equal(2, nullableKeyGroups[0].Count);
+        Assert.Equal(1, nullableKeyGroups[1].Key);
+        Assert.Equal(2, nullableKeyGroups[1].Count);
+        Assert.Equal(2, nullableKeyGroups[2].Key);
+        Assert.Equal(1, nullableKeyGroups[2].Count);
+
+        var nullAggregateGroups = await db.People
+            .GroupBy(person => person.Status)
+            .Where(group =>
+                group.Average(person => person.OptionalScore) ==
+                null)
+            .Select(group => group.Key)
+            .ToListAsync(Ct);
+        Assert.Equal(
+            [PersonStatus.Unknown],
+            nullAggregateGroups);
+
+        var emptyGroups = await db.People
+            .Where(person => person.Score > 100)
+            .GroupBy(person => person.Active)
+            .Select(group => new
+            {
+                group.Key,
+                Count = group.Count(),
+            })
+            .ToListAsync(Ct);
+        Assert.Empty(emptyGroups);
+
+        IQueryable<int> distinctRanks =
+            db.People.Select(person => person.Id).Distinct();
+        IQueryable<int?> distinctOptionalRanks =
+            db.People.Select(person => person.OptionalRank).Distinct();
+        IQueryable<int> filteredDistinctRanks = db.People
+            .Where(person => person.Score > 0)
+            .Select(person => person.Id)
+            .Distinct();
+        IQueryable<int> emptyDistinctRanks = db.People
+            .Where(person => person.Score > 100)
+            .Select(person => person.Id)
+            .Distinct();
+
+        Assert.Equal(5, await distinctRanks.CountAsync(Ct));
+        Assert.Equal(5L, await distinctRanks.LongCountAsync(Ct));
+        Assert.Equal(15, await distinctRanks.SumAsync(Ct));
+        Assert.Equal(1, await distinctRanks.MinAsync(Ct));
+        Assert.Equal(5, await distinctRanks.MaxAsync(Ct));
+        Assert.Equal(3, await filteredDistinctRanks.CountAsync(Ct));
+        Assert.Equal(6, await filteredDistinctRanks.SumAsync(Ct));
+        Assert.Equal(0, await emptyDistinctRanks.CountAsync(Ct));
+        Assert.Equal(0, await emptyDistinctRanks.SumAsync(Ct));
+        await AssertEmptyDistinctThrows(
+            () => emptyDistinctRanks.MinAsync(Ct));
+        await AssertEmptyDistinctThrows(
+            () => emptyDistinctRanks.MaxAsync(Ct));
+
+        int commandsBeforeNullableDistinctCount =
+            interceptor.ReaderCommandCount;
+        InvalidOperationException nullableDistinctCountException =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => distinctOptionalRanks.CountAsync(Ct));
+        Assert.Contains(
+            "CDBEF1004",
+            nullableDistinctCountException.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "counts NULL once",
+            nullableDistinctCountException.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            commandsBeforeNullableDistinctCount,
+            interceptor.ReaderCommandCount);
+
+        string dispatchedSql = string.Join(
+            Environment.NewLine,
+            interceptor.ReaderCommandTexts);
+        Assert.Contains("GROUP BY", dispatchedSql, StringComparison.Ordinal);
+        Assert.Contains("COUNT(DISTINCT", dispatchedSql, StringComparison.Ordinal);
+        Assert.Contains("SUM(DISTINCT", dispatchedSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("AVG(DISTINCT", dispatchedSql, StringComparison.Ordinal);
+        Assert.Contains("MIN(", dispatchedSql, StringComparison.Ordinal);
+        Assert.Contains("MAX(", dispatchedSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("FROM (", dispatchedSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("CAST(", dispatchedSql, StringComparison.Ordinal);
+
+        async Task AssertEmptyDistinctThrows<T>(
+            Func<Task<T>> operation)
+        {
+            int commandsBefore = interceptor.ReaderCommandCount;
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    async () => _ = await operation());
+            Assert.Equal(
+                commandsBefore + 1,
+                interceptor.ReaderCommandCount);
+            Assert.Contains(
+                "Nullable object",
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch()
+    {
+        string dbPath =
+            GetDbPath("unsupported-distinct-aggregates");
+        var interceptor = new ReaderCountingInterceptor();
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}",
+            interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.People.Add(
+            CreateNumericPerson(
+                "Only",
+                2.5,
+                1,
+                active: true,
+                optionalScore: null));
+        await db.SaveChangesAsync(Ct);
+        interceptor.Reset();
+
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.OptionalScore)
+                    .Distinct()
+                    .CountAsync(Ct);
+            },
+            "counts NULL once");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .GroupBy(person => person.Active)
+                    .Select(group => group
+                        .Select(person => person.OptionalScore)
+                        .Distinct()
+                        .Count())
+                    .ToListAsync(Ct);
+            },
+            "counts NULL once");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Id)
+                    .Distinct()
+                    .AverageAsync(Ct);
+            },
+            "Average over Distinct");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Score)
+                    .Distinct()
+                    .CountAsync(Ct);
+            },
+            "nonnullable int column");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => new
+                    {
+                        person.Active,
+                        person.Status,
+                    })
+                    .Distinct()
+                    .CountAsync(Ct);
+            },
+            "direct member access");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Score)
+                    .Distinct()
+                    .CountAsync(score => score > 0, Ct);
+            },
+            "predicate after Distinct");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Score)
+                    .Distinct()
+                    .Where(score => score > 0)
+                    .SumAsync(Ct);
+            },
+            "predicate after Distinct");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Id)
+                    .Distinct()
+                    .TagWith("after-distinct")
+                    .Where(id => id > 0)
+                    .SumAsync(Ct);
+            },
+            "predicate after Distinct");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Id)
+                    .Distinct()
+                    .Select(id => id)
+                    .Where(id => id > 0)
+                    .SumAsync(Ct);
+            },
+            "predicate after Distinct");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Score + 1)
+                    .Distinct()
+                    .SumAsync(Ct);
+            },
+            "direct member access");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .OrderBy(person => person.Id)
+                    .Select(person => person.Id)
+                    .Distinct()
+                    .SumAsync(Ct);
+            },
+            "source operator 'OrderBy'");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => person.Id)
+                    .Select(id => id)
+                    .Distinct()
+                    .SumAsync(Ct);
+            },
+            "direct member access");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .Select(person => (int)person.Id)
+                    .Distinct()
+                    .SumAsync(Ct);
+            },
+            "without casts");
+        await AssertRejected(
+            async () =>
+            {
+                _ = await db.People
+                    .OrderBy(person => person.Id)
+                    .Take(1)
+                    .Select(person => person.Score)
+                    .Distinct()
+                    .SumAsync(Ct);
+            },
+            "source operator 'Take'");
+
+        string convertedDbPath =
+            GetDbPath("unsupported-converted-distinct-aggregates");
+        await using (var convertedDb =
+            new ConvertedAggregateStorageContext(
+                $"Data Source={convertedDbPath}",
+                interceptor))
+        {
+            await convertedDb.Database.EnsureCreatedAsync(Ct);
+            convertedDb.Items.Add(
+                new ConvertedAggregateStorageEntity
+                {
+                    Active = true,
+                    Score = 2.5,
+                    ShiftedScore = 2.5,
+                    IntText = 2,
+                });
+            await convertedDb.SaveChangesAsync(Ct);
+            interceptor.Reset();
+
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await convertedDb.Items
+                        .Select(item => item.Score)
+                        .Distinct()
+                        .SumAsync(Ct);
+                },
+                "uses a value converter");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await convertedDb.Items
+                        .Select(item => item.ShiftedScore)
+                        .Distinct()
+                        .SumAsync(Ct);
+                },
+                "uses a value converter");
+        }
+
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        async Task AssertRejected(
+            Func<Task> operation,
+            string expectedReason)
+        {
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    operation);
+            Assert.Contains(
+                "CDBEF1004",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                expectedReason,
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch()
+    {
+        string dbPath =
+            GetDbPath("unsupported-grouped-aggregates");
+        var interceptor = new ReaderCountingInterceptor();
+
+        await using (var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}",
+            interceptor))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.People.Add(
+                CreateNumericPerson(
+                    "Only",
+                    2.5,
+                    1,
+                    active: true));
+            await db.SaveChangesAsync(Ct);
+            interceptor.Reset();
+
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Name.ToLower())
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "direct mapped scalar columns");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => (long)person.Id)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "transformed and expression keys");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Score)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "key type 'Double'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person =>
+                            new ReferenceEqualityGroupKey(
+                                person.Id))
+                        .Select(group => group.Count())
+                        .ToListAsync(Ct);
+                },
+                "anonymous types and ValueTuple");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person =>
+                            new ForgedAnonymousTypeKey(
+                                person.Id))
+                        .Select(group => group.Count())
+                        .ToListAsync(Ct);
+                },
+                "anonymous types and ValueTuple");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .CountAsync(Ct);
+                },
+                "already-grouped result rows");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .ToListAsync(Ct);
+                },
+                "Materializing IGrouping");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .AnyAsync(Ct);
+                },
+                "Grouped sequence operator 'Any'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .SingleAsync(
+                            row => row.Count > 0,
+                            Ct);
+                },
+                "Grouped sequence operator 'Single'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .AnyAsync(Ct);
+                },
+                "Grouped sequence operator 'Any'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .Take(1)
+                        .GroupBy(person => person.Active)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "source operator 'Take'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Take(1)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "Post-GroupBy operator 'Take'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Cast<object>()
+                        .ToListAsync(Ct);
+                },
+                "Post-GroupBy operator 'Cast'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .Select(person => new
+                        {
+                            Key = person.Name.ToLower(),
+                            person.Score,
+                        })
+                        .GroupBy(row => row.Key)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "source operator 'Select'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .Select(person => new PersonRecord
+                        {
+                            Active = person.Active,
+                            Score =
+                                person.Score + int.MaxValue,
+                        })
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Sum(
+                            person => person.Score))
+                        .ToListAsync(Ct);
+                },
+                "source operator 'Select'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Count(
+                            person => person.Score > 0))
+                        .ToListAsync(Ct);
+                },
+                "Predicate Count produces CASE");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.LongCount(
+                            person => person.Score > 0))
+                        .ToListAsync(Ct);
+                },
+                "Predicate LongCount produces CASE");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Average(
+                            person => person.Id))
+                        .ToListAsync(Ct);
+                },
+                "Average over 'Int32'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Sum(
+                            person => person.Visits))
+                        .ToListAsync(Ct);
+                },
+                "Sum over 'Int64'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Sum(
+                            person => person.Score + 1))
+                        .ToListAsync(Ct);
+                },
+                "selectors must be one directly mapped");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group
+                            .Select(person => person.Id)
+                            .Distinct()
+                            .Average())
+                        .ToListAsync(Ct);
+                },
+                "introduces a CAST");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Average(
+                            person => (double)person.Id))
+                        .ToListAsync(Ct);
+                },
+                "selectors must be one directly mapped");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group =>
+                            group.Count() > 0
+                                ? group.Sum(
+                                    person => person.Score)
+                                : 0)
+                        .ToListAsync(Ct);
+                },
+                "Grouped projections must contain");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Where(group =>
+                            group.Sum(person => person.Id) +
+                            int.MaxValue >
+                            0)
+                        .Select(group => group.Key)
+                        .ToListAsync(Ct);
+                },
+                "Generated HAVING predicates must use");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Sum = group.Sum(
+                                person => person.Id),
+                        })
+                        .Where(row =>
+                            row.Sum + int.MaxValue > 0)
+                        .ToListAsync(Ct);
+                },
+                "Post-GroupBy operator 'Where'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Sum = group.Sum(
+                                person => person.Id),
+                        })
+                        .OrderBy(row =>
+                            row.Sum + int.MaxValue)
+                        .ToListAsync(Ct);
+                },
+                "Grouped ordering must use");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .OrderBy(row => (long)row.Count)
+                        .ToListAsync(Ct);
+                },
+                "without casts");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Sum(
+                            person => person.Id))
+                        .Select(sum => sum + int.MaxValue)
+                        .ToListAsync(Ct);
+                },
+                "Post-GroupBy operator 'Select'");
+            await AssertRejected(
+                async () =>
+                {
+                    IQueryable<int> groupedProjection =
+                        db.People
+                            .GroupBy(person => person.Active)
+                            .Select(group => group.Count());
+                    IQueryable<int> plainProjection =
+                        db.People.Select(person => person.Id);
+                    _ = await plainProjection
+                        .Concat(groupedProjection)
+                        .ToListAsync(Ct);
+                },
+                "Post-GroupBy operator 'Concat'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group => group.Sum(
+                            person => person.Id))
+                        .Distinct()
+                        .Select(sum => sum + int.MaxValue)
+                        .ToListAsync(Ct);
+                },
+                "Post-GroupBy operator 'Select'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group =>
+                            new EmptyGroupedProjection())
+                        .ToListAsync(Ct);
+                },
+                "Grouped projections must contain");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Name)
+                        .Select(group => new
+                        {
+                            Derived = group.Key.Length,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "Grouped projections must contain");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Where(group => group.Any())
+                        .Select(group => group.Key)
+                        .ToListAsync(Ct);
+                },
+                "Grouped sequence operator 'Any'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(person => person.Active)
+                        .Select(group =>
+                            group.Sum(person => person.Id) +
+                            int.MaxValue)
+                        .ToListAsync(Ct);
+                },
+                "Grouped projections must contain");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(
+                            person => person.Active,
+                            person => person.Score)
+                        .Select(group => group.Sum())
+                        .ToListAsync(Ct);
+                },
+                "without a selector");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .GroupBy(
+                            person => person.Active,
+                            person => person.Score,
+                            (active, scores) => new
+                            {
+                                Active = active,
+                                Positive = scores.Count(
+                                    score => score > 0),
+                            })
+                        .ToListAsync(Ct);
+                },
+                "element-selector and result-selector");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .Join(
+                            db.People,
+                            left => left.Id,
+                            right => right.Id,
+                            (left, right) => new
+                            {
+                                Left = left,
+                                Right = right,
+                            })
+                        .GroupBy(row => row.Left.Active)
+                        .Select(group => group.Count())
+                        .ToListAsync(Ct);
+                },
+                "source operator 'Join'");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.People
+                        .SelectMany(
+                            person => db.People
+                                .Where(other =>
+                                    other.Active ==
+                                    person.Active)
+                                .GroupBy(other =>
+                                    other.Active)
+                                .Select(group => new
+                                {
+                                    group.Key,
+                                    Count =
+                                        group.Count(),
+                                }),
+                            (_, group) => group.Count)
+                        .ToListAsync(Ct);
+                },
+                "Post-GroupBy operator 'SelectMany'");
+        }
+
+        string convertedAggregateDbPath =
+            GetDbPath("unsupported-converted-grouped-aggregates");
+        await using (var db = new ConvertedAggregateStorageContext(
+            $"Data Source={convertedAggregateDbPath}",
+            interceptor))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.Items.AddRange(
+                new ConvertedAggregateStorageEntity
+                {
+                    Active = true,
+                    Score = 2.5,
+                    ShiftedScore = 2.5,
+                    IntText = 2,
+                },
+                new ConvertedAggregateStorageEntity
+                {
+                    Active = true,
+                    Score = 7.5,
+                    ShiftedScore = 7.5,
+                    IntText = 10,
+                });
+            await db.SaveChangesAsync(Ct);
+            interceptor.Reset();
+
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.Items
+                        .GroupBy(item => item.Active)
+                        .Select(group => group.Sum(
+                            item => item.Score))
+                        .ToListAsync(Ct);
+                },
+                "uses a value converter");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.Items
+                        .GroupBy(item => item.Active)
+                        .Select(group => group.Sum(
+                            item => item.ShiftedScore))
+                        .ToListAsync(Ct);
+                },
+                "uses a value converter");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.Items
+                        .GroupBy(item => item.Active)
+                        .Select(group => new
+                        {
+                            Min = group.Min(
+                                item => item.IntText),
+                            Max = group.Max(
+                                item => item.IntText),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "uses a value converter");
+        }
+
+        string nonBinaryDbPath =
+            GetDbPath("unsupported-nonbinary-grouping");
+        await using (var db = new NonBinaryGroupingContext(
+            $"Data Source={nonBinaryDbPath}",
+            interceptor))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.Items.AddRange(
+                new NonBinaryGroupEntity { Category = "A" },
+                new NonBinaryGroupEntity { Category = "a" });
+            await db.SaveChangesAsync(Ct);
+            interceptor.Reset();
+
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.Items
+                        .GroupBy(item => item.Category)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "binary equality");
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.Items
+                        .GroupBy(item =>
+                            new NonBinaryCompositeGroupKey(
+                                item.Category)
+                            {
+                                Id = item.Id,
+                            })
+                        .Select(group => group.Count())
+                        .ToListAsync(Ct);
+                },
+                "anonymous types and ValueTuple");
+        }
+
+        string convertedNonBinaryDbPath =
+            GetDbPath("unsupported-converted-nonbinary-grouping");
+        await using (var db = new ConvertedNonBinaryGroupingContext(
+            $"Data Source={convertedNonBinaryDbPath}",
+            interceptor))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.Items.AddRange(
+                new ConvertedNonBinaryGroupEntity
+                {
+                    Kind = ConvertedGroupKind.Upper,
+                },
+                new ConvertedNonBinaryGroupEntity
+                {
+                    Kind = ConvertedGroupKind.Lower,
+                });
+            await db.SaveChangesAsync(Ct);
+            interceptor.Reset();
+
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.Items
+                        .GroupBy(item => item.Kind)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "configured value converter");
+        }
+
+        string convertedStringKeyDbPath =
+            GetDbPath("unsupported-converted-string-grouping");
+        await using (var db = new ConvertedStringGroupingContext(
+            $"Data Source={convertedStringKeyDbPath}",
+            interceptor))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            db.Items.AddRange(
+                new NonBinaryGroupEntity { Category = "A" },
+                new NonBinaryGroupEntity { Category = "a" });
+            await db.SaveChangesAsync(Ct);
+            interceptor.Reset();
+
+            await AssertRejected(
+                async () =>
+                {
+                    _ = await db.Items
+                        .GroupBy(item => item.Category)
+                        .Select(group => new
+                        {
+                            group.Key,
+                            Count = group.Count(),
+                        })
+                        .ToListAsync(Ct);
+                },
+                "configured value converter");
+        }
+
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        async Task AssertRejected(
+            Func<Task> operation,
+            string expectedReason)
+        {
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    operation);
+            Assert.Contains(
+                "CDBEF1005",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                expectedReason,
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, interceptor.ReaderCommandCount);
+        }
+    }
+
+    [Fact]
     public async Task UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch()
     {
         string dbPath = GetDbPath("unsupported-linq");
@@ -783,14 +1951,18 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         double score,
         long visits,
         bool active = false,
-        double? optionalScore = null) =>
+        double? optionalScore = null,
+        int? optionalRank = null,
+        PersonStatus status = PersonStatus.Unknown) =>
         new()
         {
             Name = name,
             Active = active,
             Score = score,
             OptionalScore = optionalScore,
+            OptionalRank = optionalRank,
             Visits = visits,
+            Status = status,
             GuidValue = Guid.NewGuid(),
             CreatedAt = DateTime.UnixEpoch,
             ObservedAt = DateTimeOffset.UnixEpoch,
@@ -920,6 +2092,110 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public DbSet<IdentityOnlyEntity> Items => Set<IdentityOnlyEntity>();
     }
 
+    private sealed class NonBinaryGroupingContext : TestDbContext
+    {
+        public NonBinaryGroupingContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
+        public DbSet<NonBinaryGroupEntity> Items =>
+            Set<NonBinaryGroupEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NonBinaryGroupEntity>()
+                .Property(item => item.Category)
+                .UseCollation("NOCASE");
+        }
+    }
+
+    private sealed class ConvertedNonBinaryGroupingContext
+        : TestDbContext
+    {
+        public ConvertedNonBinaryGroupingContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
+        public DbSet<ConvertedNonBinaryGroupEntity> Items =>
+            Set<ConvertedNonBinaryGroupEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ConvertedNonBinaryGroupEntity>()
+                .Property(item => item.Kind)
+                .HasConversion(
+                    value => value == ConvertedGroupKind.Upper
+                        ? "A"
+                        : "a",
+                    value => value == "A"
+                        ? ConvertedGroupKind.Upper
+                        : ConvertedGroupKind.Lower)
+                .UseCollation("NOCASE");
+        }
+    }
+
+    private sealed class ConvertedAggregateStorageContext
+        : TestDbContext
+    {
+        public ConvertedAggregateStorageContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
+        public DbSet<ConvertedAggregateStorageEntity> Items =>
+            Set<ConvertedAggregateStorageEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ConvertedAggregateStorageEntity>()
+                .Property(item => item.Score)
+                .HasConversion<string>();
+            modelBuilder.Entity<ConvertedAggregateStorageEntity>()
+                .Property(item => item.IntText)
+                .HasConversion<string>();
+            modelBuilder.Entity<ConvertedAggregateStorageEntity>()
+                .Property(item => item.ShiftedScore)
+                .HasConversion(
+                    value => value + 1,
+                    value => value - 1);
+        }
+    }
+
+    private sealed class ConvertedStringGroupingContext
+        : TestDbContext
+    {
+        public ConvertedStringGroupingContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
+        public DbSet<NonBinaryGroupEntity> Items =>
+            Set<NonBinaryGroupEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NonBinaryGroupEntity>()
+                .Property(item => item.Category)
+                .HasConversion(
+                    value => value,
+                    value => value.ToLowerInvariant());
+        }
+    }
+
     private sealed class CompositeKeyModelContext(string connectionString) : TestDbContext(connectionString)
     {
         public DbSet<CompositeOrderLine> OrderLines => Set<CompositeOrderLine>();
@@ -981,6 +2257,8 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public double Score { get; set; }
 
         public double? OptionalScore { get; set; }
+
+        public int? OptionalRank { get; set; }
 
         public long Visits { get; set; }
 
@@ -1087,6 +2365,62 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public int Id { get; set; }
 
         public string? Name { get; set; }
+    }
+
+    private sealed class NonBinaryGroupEntity
+    {
+        public int Id { get; set; }
+
+        public string Category { get; set; } = string.Empty;
+    }
+
+    private sealed class NonBinaryCompositeGroupKey(
+        string category)
+    {
+        public string Category { get; } = category;
+
+        public int Id { get; set; }
+    }
+
+    private sealed class ReferenceEqualityGroupKey(int id)
+    {
+        public int Id { get; } = id;
+    }
+
+    [CompilerGenerated]
+    private sealed class ForgedAnonymousTypeKey(int id)
+    {
+        public int Id { get; } = id;
+    }
+
+    private sealed class ConvertedNonBinaryGroupEntity
+    {
+        public int Id { get; set; }
+
+        public ConvertedGroupKind Kind { get; set; }
+    }
+
+    private sealed class ConvertedAggregateStorageEntity
+    {
+        public int Id { get; set; }
+
+        public bool Active { get; set; }
+
+        public double Score { get; set; }
+
+        public double ShiftedScore { get; set; }
+
+        public int IntText { get; set; }
+    }
+
+    private sealed class EmptyGroupedProjection
+    {
+    }
+
+    private enum ConvertedGroupKind
+    {
+        Upper,
+        Lower,
     }
 
     private sealed class CheckConstraintEntity

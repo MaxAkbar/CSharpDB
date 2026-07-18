@@ -5459,7 +5459,16 @@ public sealed class QueryPlanner
             if (stmt.IsDistinct)
                 op = new DistinctOperator(op, useOrderedDistinctSingleColumnFastPath);
 
-            op = ApplyOrdering(op, stmt.OrderBy, aggregateSchema, orderByTopN);
+            List<OrderByClause>? aggregateOrderBy =
+                RewriteAggregateOrderByToOutputColumns(
+                    stmt.OrderBy,
+                    stmt.Columns,
+                    outputCols);
+            op = ApplyOrdering(
+                op,
+                aggregateOrderBy,
+                aggregateSchema,
+                orderByTopN);
         }
         else
         {
@@ -6583,7 +6592,16 @@ public sealed class QueryPlanner
             if (stmt.IsDistinct)
                 op = new DistinctOperator(op, useOrderedDistinctSingleColumnFastPath);
 
-            op = ApplyOrdering(op, stmt.OrderBy, aggSchema, orderByTopN);
+            List<OrderByClause>? aggregateOrderBy =
+                RewriteAggregateOrderByToOutputColumns(
+                    stmt.OrderBy,
+                    stmt.Columns,
+                    outputCols);
+            op = ApplyOrdering(
+                op,
+                aggregateOrderBy,
+                aggSchema,
+                orderByTopN);
         }
         else
         {
@@ -6794,6 +6812,295 @@ public sealed class QueryPlanner
             return new TopNSortOperator(source, orderBy, schema, topN.Value, _functions);
 
         return new SortOperator(source, orderBy, schema, _functions);
+    }
+
+    private static List<OrderByClause>?
+        RewriteAggregateOrderByToOutputColumns(
+            List<OrderByClause>? orderBy,
+            List<SelectColumn> columns,
+            IReadOnlyList<ColumnDefinition> outputColumns)
+    {
+        if (orderBy is not { Count: > 0 })
+            return orderBy;
+
+        string? duplicateOutputName = outputColumns
+            .GroupBy(
+                static column => column.Name,
+                StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(
+                static group => group.Count() > 1)?
+            .Key;
+        if (duplicateOutputName is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Aggregate ORDER BY requires unique output names; duplicate output column name '{duplicateOutputName}' is ambiguous.");
+        }
+
+        var outputSlots = new Dictionary<string, string>(
+            StringComparer.Ordinal);
+        for (int i = 0; i < columns.Count; i++)
+        {
+            Expression? expression = columns[i].Expression;
+            if (expression is null)
+                continue;
+
+            outputSlots.TryAdd(
+                WindowExpressionSupport.GetExpressionKey(expression),
+                outputColumns[i].Name);
+        }
+
+        List<OrderByClause>? rewritten = null;
+        for (int i = 0; i < orderBy.Count; i++)
+        {
+            OrderByClause clause = orderBy[i];
+            Expression rewrittenExpression =
+                RewriteAggregateOrderByExpression(
+                    clause.Expression,
+                    outputSlots,
+                    out bool changed);
+            if (!changed)
+            {
+                if (rewritten is not null)
+                    rewritten.Add(clause);
+                continue;
+            }
+
+            rewritten ??= new List<OrderByClause>(orderBy.Count);
+            while (rewritten.Count < i)
+                rewritten.Add(orderBy[rewritten.Count]);
+            rewritten.Add(new OrderByClause
+            {
+                Expression = rewrittenExpression,
+                Descending = clause.Descending,
+            });
+        }
+
+        return rewritten ?? orderBy;
+    }
+
+    private static Expression RewriteAggregateOrderByExpression(
+        Expression expression,
+        IReadOnlyDictionary<string, string> outputSlots,
+        out bool changed)
+    {
+        string expressionKey =
+            WindowExpressionSupport.GetExpressionKey(expression);
+        if (outputSlots.TryGetValue(
+                expressionKey,
+                out string? outputName))
+        {
+            changed = true;
+            return new ColumnRefExpression
+            {
+                ColumnName = outputName,
+            };
+        }
+
+        changed = false;
+        switch (expression)
+        {
+            case BinaryExpression binary:
+            {
+                Expression left =
+                    RewriteAggregateOrderByExpression(
+                        binary.Left,
+                        outputSlots,
+                        out bool leftChanged);
+                Expression right =
+                    RewriteAggregateOrderByExpression(
+                        binary.Right,
+                        outputSlots,
+                        out bool rightChanged);
+                changed = leftChanged || rightChanged;
+                return changed
+                    ? new BinaryExpression
+                    {
+                        Op = binary.Op,
+                        Left = left,
+                        Right = right,
+                    }
+                    : expression;
+            }
+
+            case UnaryExpression unary:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        unary.Operand,
+                        outputSlots,
+                        out changed);
+                return changed
+                    ? new UnaryExpression
+                    {
+                        Op = unary.Op,
+                        Operand = operand,
+                    }
+                    : expression;
+            }
+
+            case CollateExpression collate:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        collate.Operand,
+                        outputSlots,
+                        out changed);
+                return changed
+                    ? new CollateExpression
+                    {
+                        Operand = operand,
+                        Collation = collate.Collation,
+                    }
+                    : expression;
+            }
+
+            case IsNullExpression isNull:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        isNull.Operand,
+                        outputSlots,
+                        out changed);
+                return changed
+                    ? new IsNullExpression
+                    {
+                        Operand = operand,
+                        Negated = isNull.Negated,
+                    }
+                    : expression;
+            }
+
+            case FunctionCallExpression function:
+            {
+                var arguments =
+                    new List<Expression>(function.Arguments.Count);
+                bool anyChanged = false;
+                foreach (Expression argument in function.Arguments)
+                {
+                    arguments.Add(
+                        RewriteAggregateOrderByExpression(
+                            argument,
+                            outputSlots,
+                            out bool argumentChanged));
+                    anyChanged |= argumentChanged;
+                }
+
+                changed = anyChanged;
+                return changed
+                    ? new FunctionCallExpression
+                    {
+                        FunctionName = function.FunctionName,
+                        Arguments = arguments,
+                        IsDistinct = function.IsDistinct,
+                        IsStarArg = function.IsStarArg,
+                    }
+                    : expression;
+            }
+
+            case BetweenExpression between:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        between.Operand,
+                        outputSlots,
+                        out bool operandChanged);
+                Expression low =
+                    RewriteAggregateOrderByExpression(
+                        between.Low,
+                        outputSlots,
+                        out bool lowChanged);
+                Expression high =
+                    RewriteAggregateOrderByExpression(
+                        between.High,
+                        outputSlots,
+                        out bool highChanged);
+                changed =
+                    operandChanged || lowChanged || highChanged;
+                return changed
+                    ? new BetweenExpression
+                    {
+                        Operand = operand,
+                        Low = low,
+                        High = high,
+                        Negated = between.Negated,
+                    }
+                    : expression;
+            }
+
+            case LikeExpression like:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        like.Operand,
+                        outputSlots,
+                        out bool operandChanged);
+                Expression pattern =
+                    RewriteAggregateOrderByExpression(
+                        like.Pattern,
+                        outputSlots,
+                        out bool patternChanged);
+                Expression? escape = null;
+                bool escapeChanged = false;
+                if (like.EscapeChar is not null)
+                {
+                    escape =
+                        RewriteAggregateOrderByExpression(
+                        like.EscapeChar,
+                        outputSlots,
+                        out escapeChanged);
+                }
+                changed =
+                    operandChanged ||
+                    patternChanged ||
+                    escapeChanged;
+                return changed
+                    ? new LikeExpression
+                    {
+                        Operand = operand,
+                        Pattern = pattern,
+                        EscapeChar = escape,
+                        Negated = like.Negated,
+                    }
+                    : expression;
+            }
+
+            case InExpression inExpression:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        inExpression.Operand,
+                        outputSlots,
+                        out bool operandChanged);
+                var values =
+                    new List<Expression>(
+                        inExpression.Values.Count);
+                bool anyValueChanged = false;
+                foreach (Expression value in
+                         inExpression.Values)
+                {
+                    values.Add(
+                        RewriteAggregateOrderByExpression(
+                            value,
+                            outputSlots,
+                            out bool valueChanged));
+                    anyValueChanged |= valueChanged;
+                }
+
+                changed = operandChanged || anyValueChanged;
+                return changed
+                    ? new InExpression
+                    {
+                        Operand = operand,
+                        Values = values,
+                        Negated = inExpression.Negated,
+                    }
+                    : expression;
+            }
+
+            default:
+                return expression;
+        }
     }
 
     private IOperator BuildWindowSelectPipeline(

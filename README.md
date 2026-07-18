@@ -178,6 +178,19 @@ CSharpDB is more than an embedded SQL engine. The same database can be used thro
 
 ---
 
+## EF Core 10 Provider
+
+CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and private in-memory databases. Its qualified LINQ surface includes ordinary filtering, ordering, pagination, projections, selected string/temporal/math translations, bounded scalar numeric aggregates, and two deliberately constrained aggregate extensions:
+
+- Direct single-table `GroupBy` over mapped scalar or anonymous-type/`ValueTuple` composite keys, with optional pre-filtering, qualified bare numeric aggregates, basic `HAVING`, and ordering by directly projected keys or aggregates.
+- `Where` (optional) → selection of one directly mapped nonnullable `int` column → `Distinct` → `Count`, `LongCount`, `Sum`, `Min`, or `Max`.
+
+Distinct `Average`, nullable or non-`int` columns, value-converted columns, predicates after `Distinct`, and transformed or derived distinct shapes are intentionally rejected. In particular, nullable distinct `Count`/`LongCount` cannot preserve LINQ's rule that a distinct `null` is counted once because SQL `COUNT(DISTINCT ...)` ignores it.
+
+Grouped keys may be direct mapped Boolean, integral, enum, default-`BINARY` string, or nullable values; Boolean columns must contain canonical provider-written `0`/`1` storage. Configured key converters and `double` keys are outside the qualified surface. Grouped projections may contain the direct key plus bare `Count`/`LongCount`, qualified non-distinct `Sum`/`Average`/`Min`/`Max`, and the same nonnullable-`int` distinct variants listed above. Transformed keys or results, group materialization, post-projection filters or projections, raw group transforms, nested or joined grouping, predicate aggregates, and unsupported aggregate types or value converters fail before command dispatch with provider diagnostics. See the [EF Core provider guide](https://csharpdb.com/docs/entity-framework-core.html#linq-translation) and [generated compatibility manifest](docs/ef-core-compatibility.md) for the complete boundary.
+
+---
+
 ## Use from Any Language
 
 **Node.js:**

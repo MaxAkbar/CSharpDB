@@ -285,10 +285,36 @@
       "name": "Scalar numeric aggregates",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "Count, LongCount, simple and bounded-shape Any, Sum over int/double/nullable double, Average over double/nullable double, and Min/Max over int/double/nullable double are qualified for filtered, empty, and all-null scalar queries. Long- and float-valued Sum/Average/Min/Max variants, integer Average, text Min/Max, Distinct aggregates, and GroupBy remain outside the qualified surface.",
+      "summary": "Count, LongCount, simple and bounded-shape Any, Sum over int/double/nullable double, Average over double/nullable double, and Min/Max over int/double/nullable double are qualified for filtered, empty, and all-null scalar queries. Long- and float-valued Sum/Average/Min/Max variants, integer Average, text Min/Max, and other unqualified aggregate types and shapes remain outside the qualified surface.",
       "proofTests": [
         "Queries_ScalarNumericAggregatesTranslateWithExpectedEmptyAndNullableSemantics",
         "ScalarNumericAggregates_MatchForBoundedValuesAndNulls"
+      ]
+    },
+    {
+      "id": "query.scalar-distinct-aggregates",
+      "category": "Query operators and methods",
+      "name": "Scalar distinct numeric aggregates",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "An optional Where followed by selection of one directly mapped nonnullable int column and Distinct supports Count, LongCount, Sum, Min, and Max. Distinct Average, nullable or non-int columns, value-converted columns, ordering, limits, predicates after Distinct, computed or composite selectors, casts, intervening operators, and derived sources are rejected with CDBEF1004 before command dispatch. Nullable distinct Count/LongCount cannot preserve LINQ's rule that NULL is counted once because SQL COUNT(DISTINCT) ignores NULL.",
+      "proofTests": [
+        "Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics",
+        "GroupedAndDistinctAggregates_MatchForBoundedValues",
+        "UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch"
+      ]
+    },
+    {
+      "id": "query.grouped-aggregates",
+      "category": "Query operators and methods",
+      "name": "Grouped numeric aggregates",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Direct single-table GroupBy supports optional pre-filtering; direct mapped bool, integral, enum, default-BINARY string, and nullable keys; C# anonymous-type or ValueTuple composite keys; one projection containing direct keys with bare Count/LongCount, qualified non-distinct Sum/Average/Min/Max, and nonnullable-int direct-column Distinct Count/LongCount/Sum/Min/Max; basic HAVING including aggregate IS NULL; and ordering by a directly projected key or aggregate. Boolean keys require canonical provider-written 0/1 storage. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; Distinct Average; element/result selector overloads; group materialization; raw or post-projection group transforms; nested or joined grouping; predicate/CASE aggregates; casts; and broader types or shapes are rejected with CDBEF1005 before command dispatch.",
+      "proofTests": [
+        "Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics",
+        "GroupedAndDistinctAggregates_MatchForBoundedValues",
+        "UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch"
       ]
     },
     {
@@ -297,8 +323,12 @@
       "name": "Unsupported LINQ diagnostics",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "Unsupported CLR methods and members, plus recognized TakeWhile and SkipWhile operators, retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1003 guidance before command dispatch.",
-      "proofTests": ["UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch"]
+      "summary": "Unsupported CLR methods and members, recognized TakeWhile and SkipWhile operators, unsupported distinct aggregate shapes, and unsupported grouped aggregate shapes retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1005 guidance before command dispatch.",
+      "proofTests": [
+        "UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch",
+        "UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch",
+        "UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch"
+      ]
     },
     {
       "id": "query.advanced",
@@ -306,7 +336,7 @@
       "name": "Advanced LINQ translation",
       "status": "Planned",
       "tier": "tier2",
-      "summary": "String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, unqualified aggregate type/shape variants, GroupBy, set operations, joins, and correlated-query coverage remain planned.",
+      "summary": "String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, broader distinct and grouped aggregate types and shapes, set operations, joins, and correlated-query coverage remain planned.",
       "proofTests": []
     },
     {
