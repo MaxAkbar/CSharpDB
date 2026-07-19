@@ -4,7 +4,7 @@
   "title": "CSharpDB EF Core compatibility manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "manifestVersion", "provider", "efCoreVersion", "tiers", "features"],
+  "required": ["$schema", "manifestVersion", "provider", "efCoreVersion", "tiers", "maturity", "features"],
   "properties": {
     "$schema": { "const": "ef-core-compatibility.schema.json" },
     "manifestVersion": { "const": 1 },
@@ -18,6 +18,19 @@
         "tier1": { "type": "string", "minLength": 1 },
         "tier2": { "type": "string", "minLength": 1 },
         "tier3": { "type": "string", "minLength": 1 }
+      }
+    },
+    "maturity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["designation", "scope", "tier2Policy", "tier3Policy"],
+      "properties": {
+        "designation": {
+          "const": "Production-ready for the documented embedded tier-1 surface"
+        },
+        "scope": { "type": "string", "minLength": 1 },
+        "tier2Policy": { "type": "string", "minLength": 1 },
+        "tier3Policy": { "type": "string", "minLength": 1 }
       }
     },
     "features": {
@@ -44,6 +57,7 @@
             "Migrations and DDL",
             "Query operators and methods",
             "Change tracking and concurrency",
+            "Application compatibility",
             "Design-time tooling"
           ]
         },

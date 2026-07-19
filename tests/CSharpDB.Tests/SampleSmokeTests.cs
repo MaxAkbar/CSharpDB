@@ -178,6 +178,10 @@ public sealed class SampleSmokeTests : IAsyncLifetime
             Assert.Contains("BlogsWithoutPosts: 1", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("StringPredicateMatches: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("LikePredicateMatches: 1", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                "TerminalExceptBlogsWithoutPosts: 1",
+                result.StdOut,
+                StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Research|0", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("RowVersionBytes: 8", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(

@@ -1,5 +1,34 @@
 # What's New
 
+## version4.2.0
+
+version4.2.0 advances `CSharpDB.EntityFrameworkCore` from a credible baseline to a proof-backed, production-ready provider for its documented embedded Tier 1 surface. Support remains intentionally bounded: every partial or unsupported area is called out in the generated compatibility matrix rather than implied by the overall designation.
+
+### Migrations and Model Fidelity
+
+- Added repeatable idempotent migration scripts and expanded practical schema evolution, including bounded column, key, foreign-key, check-constraint, index, default, nullability, numeric-type, and collation changes with transactional failure behavior.
+- Expanded literal defaults, standalone named checks, and metadata round trips while retaining early validation for unsupported shapes; computed columns and `DefaultValueSql` remain explicitly unsupported.
+- Added first-class exact `decimal` mapping for the qualified precision and scale envelope, including round trips, single-facet parameters, comparisons, ordering, ordinary indexes, overflow handling, and durable reopen tests. Computed decimal expressions and precision/scale-changing migrations remain outside the supported contract.
+
+### Concurrency and Queries
+
+- Added database-generated `byte[]` rowversion support with generated-value refresh, stale update/delete detection, raw SQL and trigger advancement, reopen behavior, and clear scope limitations.
+- Broadened Tier 1 LINQ translation across string predicates, grouped aggregates, direct inner and left joins, ordinal string operations, bounded `LIKE`, and set operations.
+- Added stable provider diagnostics for unsupported LINQ and model shapes so known limitations fail before malformed SQL reaches the engine.
+
+### Application and Package Qualification
+
+- Qualified explicit transaction commit and rollback behavior and documented that savepoints are unsupported.
+- Added a bounded ASP.NET Core Identity readiness profile for schema version 1 with integer user and role keys, including the seven-table store workflow, relationships, claims, logins, tokens, concurrency stamps, cancellation, rollback, cascade cleanup, and reopen persistence.
+- Added a runnable ASP.NET Core minimal API sample and an in-process HTTP compatibility test that proves CRUD and persistence across host restarts.
+- Added a package-only consumer gate that restores freshly packed NuGet artifacts and exercises CRUD, reopen, `dotnet ef migrations add`, script generation, and database update without project references.
+
+### Compatibility and Adoption
+
+- Published a generated EF Core compatibility matrix with status, support tier, exact contract, and execution-proof identifiers for every claim.
+- Added shared EF Core patch-version qualification across the provider, tests, samples, benchmarks, Identity integration, and package smoke fixture.
+- Expanded the provider guide, package README, website, sample catalog, migration deployment guidance, query cookbook, troubleshooting, upgrade notes, and production-readiness checklist from the same bounded support contract.
+
 ## version4.1.0
 
 version4.1.0 establishes CSharpDB's proof-backed SQL compatibility contract and expands the dialect across constraints, composite relationships, transactional schema changes, compound queries, windows, metadata, and generated SQL. It also hardens ALTER and window execution, pager shutdown, and immutable compatibility release gates.

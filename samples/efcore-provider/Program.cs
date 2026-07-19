@@ -60,6 +60,12 @@ var likePredicateMatches = await db.Blogs
             likePattern))
     .Select(blog => blog.Name)
     .ToListAsync();
+var terminalExceptBlogIds = await db.Blogs
+    .Select(blog => blog.Id)
+    .Except(
+        db.Posts.Select(post =>
+            post.BlogId))
+    .ToListAsync();
 var joinedPosts = await db.Blogs
     .Join(
         db.Posts,
@@ -109,6 +115,8 @@ Console.WriteLine($"LeftJoinedRows: {leftJoinedRows.Count}");
 Console.WriteLine($"BlogsWithoutPosts: {blogsWithoutPosts}");
 Console.WriteLine($"StringPredicateMatches: {stringPredicateMatches.Count}");
 Console.WriteLine($"LikePredicateMatches: {likePredicateMatches.Count}");
+Console.WriteLine(
+    $"TerminalExceptBlogsWithoutPosts: {terminalExceptBlogIds.Count}");
 Console.WriteLine($"RowVersionBytes: {rowVersionAfterRawSql.Length}");
 Console.WriteLine(
     $"RowVersionAdvancedAfterRawSql: {!rowVersionBeforeRawSql.SequenceEqual(rowVersionAfterRawSql)}");

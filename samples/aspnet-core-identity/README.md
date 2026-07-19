@@ -15,17 +15,15 @@ Everything &mdash; users, roles, role assignments, claims, lockout state &mdash;
 
 ## Why Does This Sample Use a Custom Store?
 
-The CSharpDB EF Core provider now supports the composite primary keys and
-foreign keys used by ASP.NET Core Identity's standard schema. Full
-`IdentityDbContext<TUser>` compatibility has not yet been qualified in the
-provider compatibility suite, however, so this sample intentionally keeps its
-small, directly inspectable store.
+The provider compatibility suite qualifies a bounded EF-backed Identity
+profile: Identity schema v1 with integer user and role keys. This sample
+intentionally remains a small custom `CSharpDB.Data` store because it
+demonstrates the broader cookie, JWT, role, policy, and lockout pipeline
+independently of that EF profile. The default string-key
+`IdentityDbContext<TUser>`, schema versions 2 and 3, and passkeys remain
+unqualified.
 
 This sample takes the runs-today path: a small custom user store over `CSharpDB.Data`. The auth and authorization pipeline is the standard ASP.NET Core surface (`AddAuthentication`, `AddCookie`, `AddJwtBearer`, `AddAuthorization`) &mdash; only the user store is custom, and it is small enough to read in one sitting ([UserStore.cs](UserStore.cs)).
-
-An EF-backed Identity sample using `IdentityDbContext<AppUser>` and
-`AddIdentity<AppUser, IdentityRole>().AddEntityFrameworkStores<AppDbContext>()`
-will be added once that end-to-end compatibility target is covered by tests.
 
 ## Run The Sample
 

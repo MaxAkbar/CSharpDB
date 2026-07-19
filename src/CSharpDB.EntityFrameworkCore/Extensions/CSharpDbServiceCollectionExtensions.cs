@@ -26,6 +26,7 @@ public static class CSharpDbServiceCollectionExtensions
             .TryAdd<Microsoft.EntityFrameworkCore.Storage.IDatabaseProvider, DatabaseProvider<CSharpDbOptionsExtension>>()
             .TryAdd<IProviderConventionSetBuilder, CSharpDbConventionSetBuilder>()
             .TryAdd<IRelationalConnection, CSharpDbRelationalConnection>()
+            .TryAdd<IRelationalTransactionFactory, CSharpDbRelationalTransactionFactory>()
             .TryAdd<IRelationalDatabaseCreator, CSharpDbRelationalDatabaseCreator>()
             .TryAdd<IRelationalTypeMappingSource, CSharpDbTypeMappingSource>()
             .TryAdd<IMethodCallTranslatorProvider, CSharpDbMethodCallTranslatorProvider>()

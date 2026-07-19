@@ -689,6 +689,195 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
     [Theory]
     [InlineData(ProviderKind.CSharpDb)]
     [InlineData(ProviderKind.Sqlite)]
+    public async Task DirectIntegerSetOperations_Match(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "direct-integer-set-operations"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 1,
+                LongValue = 3_000_000_001,
+                OptionalValue = null,
+                Category = "Left",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 2,
+                LongValue = 3_000_000_002,
+                OptionalValue = 2,
+                Category = "Left",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 2,
+                LongValue = 3_000_000_002,
+                OptionalValue = null,
+                Category = "Left",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                Value = 2,
+                LongValue = 3_000_000_002,
+                OptionalValue = null,
+                Category = "Right",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                Value = 3,
+                LongValue = 3_000_000_003,
+                OptionalValue = 3,
+                Category = "Right",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string leftCategory = "Left";
+        string rightCategory = "Right";
+        string missingCategory = "Missing";
+        IQueryable<int> left = db.Rows
+            .Where(row => row.Category == leftCategory)
+            .Select(row => row.Value);
+        IQueryable<int> right = db.Rows
+            .Where(row => row.Category == rightCategory)
+            .Select(row => row.Value);
+        IQueryable<int> empty = db.Rows
+            .Where(row => row.Category == missingCategory)
+            .Select(row => row.Value);
+
+        Assert.Equal(
+            [1, 2, 3],
+            (await left
+                .Union(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [1, 2, 2, 2, 3],
+            (await left
+                .Concat(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [2],
+            (await left
+                .Intersect(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [1],
+            (await left
+                .Except(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+
+        IQueryable<int?> nullableLeft = db.Rows
+            .Where(row => row.Category == leftCategory)
+            .Select(row => row.OptionalValue);
+        IQueryable<int?> nullableRight = db.Rows
+            .Where(row => row.Category == rightCategory)
+            .Select(row => row.OptionalValue);
+
+        Assert.Equal(
+            [null, 2, 3],
+            (await nullableLeft
+                .Union(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+        Assert.Equal(
+            [null, null, null, 2, 3],
+            (await nullableLeft
+                .Concat(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+        Assert.Equal(
+            [null],
+            (await nullableLeft
+                .Intersect(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+        Assert.Equal(
+            [2],
+            (await nullableLeft
+                .Except(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+
+        Assert.Equal(
+            [1, 2],
+            (await left
+                .Union(empty)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [1, 2, 2],
+            (await left
+                .Concat(empty)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Empty(
+            await left
+                .Intersect(empty)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1, 2],
+            (await left
+                .Except(empty)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+
+        IQueryable<long> longLeft = db.Rows
+            .Where(row => row.Category == leftCategory)
+            .Select(row => row.LongValue);
+        IQueryable<long> longRight = db.Rows
+            .Where(row => row.Category == rightCategory)
+            .Select(row => row.LongValue);
+
+        Assert.Equal(
+            [3_000_000_001L, 3_000_000_002L, 3_000_000_003L],
+            (await longLeft
+                .Union(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [
+                3_000_000_001L,
+                3_000_000_002L,
+                3_000_000_002L,
+                3_000_000_002L,
+                3_000_000_003L,
+            ],
+            (await longLeft
+                .Concat(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [3_000_000_002L],
+            (await longLeft
+                .Intersect(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [3_000_000_001L],
+            (await longLeft
+                .Except(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
     public async Task DirectInnerJoin_MatchesForBoundedIntegerKeys(
         ProviderKind provider)
     {
@@ -917,6 +1106,8 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
                 entity.HasKey(row => row.Id);
                 entity.Property(row => row.Id).ValueGeneratedNever();
                 entity.Property(row => row.Value);
+                entity.Property(row => row.LongValue);
+                entity.Property(row => row.OptionalValue);
                 entity.Property(row => row.Number);
                 entity.Property(row => row.OptionalNumber);
                 entity.Property(row => row.TextCol);
@@ -947,6 +1138,10 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
         public int Id { get; set; }
 
         public int Value { get; set; }
+
+        public long LongValue { get; set; }
+
+        public int? OptionalValue { get; set; }
 
         public double Number { get; set; }
 

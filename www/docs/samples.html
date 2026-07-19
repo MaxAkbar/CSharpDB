@@ -45,6 +45,28 @@
                     <strong>Looking for explanation-first guides?</strong> Use <a href="tutorials/index.html">Tutorials</a> for step-by-step walkthroughs. This page is for runnable samples, example apps, and companion code you can adapt directly.
                 </div>
 
+                <h2>EF Core and ASP.NET Core</h2>
+                <p>The EF Core minimal API sample is the quickest application-level proof for the provider. It registers a scoped <code>DbContext</code> with <code>AddDbContext</code> and <code>UseCSharpDb</code>, creates a file-backed database at startup, and exposes cancellation-aware Todo CRUD endpoints. The compatibility suite drives the real HTTP surface and verifies that data survives a host restart.</p>
+
+                <div class="code-block" data-title="Bash">
+                    <pre><code>dotnet run --project samples/efcore-minimal-api/EfCoreMinimalApiSample.csproj</code></pre>
+                </div>
+
+                <div class="next-steps-grid" style="margin-bottom: 40px;">
+                    <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/efcore-minimal-api" class="next-step-card">
+                        <h4>EF Core Minimal API Source</h4>
+                        <p>DI registration, generated integer keys, HTTP CRUD, cancellation, and restart persistence</p>
+                    </a>
+                    <a href="entity-framework-core.html" class="next-step-card">
+                        <h4>EF Core Provider Guide</h4>
+                        <p>Supported migrations, LINQ, transactions, Identity profile, and explicit limitations</p>
+                    </a>
+                    <a href="https://github.com/maxakbar/csharpdb/tree/main/samples/aspnet-core-identity" class="next-step-card">
+                        <h4>Authentication Sample — ADO.NET Store</h4>
+                        <p>Runnable cookie, JWT, role, policy, and lockout flow using a custom CSharpDB.Data store</p>
+                    </a>
+                </div>
+
                 <h2>API-Level Sharding</h2>
                 <p>The API-level sharding sample is the fastest way to see master-catalog route-key sharding in action. It creates a master database plus four shard files, seeds the active shard map into the master catalog, and uses an e-commerce order-history scenario: recent orders are paged from the current month route, a 10-row page can be filled from multiple month routes, older history is loaded by selecting an older month route, the shard-admin map/status snapshot is printed, and the docs outline bounded over-fetch and continuation-token alternatives.</p>
 

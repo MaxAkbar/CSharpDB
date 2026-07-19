@@ -6,7 +6,7 @@
   "description": "Feature-level compatibility for the CSharpDB SQL dialect. This development snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.",
   "verified_against": {
     "commit": "d2cad70e202b1792a4fc313e5b5576849104a3ad",
-    "package_version": "4.1.0",
+    "package_version": "4.2.0",
     "generated_at": "2026-07-18T03:51:39Z",
     "state": "development"
   },
@@ -1179,6 +1179,60 @@
       "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
       "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
       "test": "UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.like",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_EfFunctionsLikeTranslatesWithBoundedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.like.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "EfFunctionsLike_MatchesForBoundedAsciiPatterns",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.like.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedLikeShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.direct_integer_set_operations",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_DirectIntegerSetOperationsTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.direct_integer_set_operations.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "DirectIntegerSetOperations_Match",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.direct_integer_set_operations.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedDirectIntegerSetOperationShapes_ReportBeforeCommandDispatch",
       "ci_executed": true
     },
     {
@@ -2877,6 +2931,7 @@
       "id": "provider.ef_query.ordinal_string_search",
       "category": "Generated SQL",
       "feature": "EF Core bounded ordinal string predicates",
+      "ef_core_feature_id": "query.ordinal-string-search",
       "syntax": "db.Rows.Where(row => row.Text.Contains(pattern) || row.Text.StartsWith(prefix, StringComparison.Ordinal))",
       "availability": "supported",
       "roadmap": "shipped",
@@ -2891,6 +2946,42 @@
       "negative_proof_ids": ["ef.query.ordinal_string_search.unsupported_overloads"]
     },
     {
+      "id": "provider.ef_query.like",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded LIKE predicates",
+      "ef_core_feature_id": "query.like",
+      "syntax": "db.Rows.Where(row => EF.Functions.Like(row.Text, pattern, \"!\"))",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["The exact two- and three-string EF.Functions.Like overloads are qualified when the match expression is one direct converter-free TEXT property and the pattern is constant or captured. Percent matches zero or more UTF-16 code units, underscore matches one, and CSharpDB matching is invariant case-insensitive. The escape overload requires a compile-time non-null one-UTF-16-code-unit string literal other than percent. Transformed or converted match expressions, row-derived patterns, captured or invalid escapes, and other overloads fail before command dispatch with CDBEF1001."],
+      "deviations": ["CSharpDB LIKE uses invariant case-insensitive matching; SQLite parity proofs are intentionally limited to bounded ASCII cases where semantics are comparable."],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.like", "ef.query.like.compatibility"],
+      "negative_proof_ids": ["ef.query.like.unsupported_shapes"]
+    },
+    {
+      "id": "provider.ef_query.direct_integer_set_operations",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded terminal integer set operations",
+      "ef_core_feature_id": "query.direct-integer-set-operations",
+      "syntax": "db.Active.Select(row => row.Id).Union(db.Archived.Select(row => row.Id))",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Exactly one terminal no-comparer Queryable.Concat, Union, Intersect, or Except is qualified when each branch remains one direct mapped entity table with optional filtering and selects one compatible converter-free INTEGER-backed int, long, or nullable equivalent. Concat preserves duplicates; the other operators apply distinct set semantics, including one NULL where appropriate. Entity, composite, constant, converted, transformed, mixed-mapping, non-integer, ordered, limited, distinct, grouped, joined, derived, nested, chained, comparer, and post-set composition shapes fail before command dispatch with CDBEF1009 or CDBEF1003."],
+      "deviations": ["Result order is unspecified; materialize the terminal set operation before client-side ordering or transformation."],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.direct_integer_set_operations", "ef.query.direct_integer_set_operations.compatibility"],
+      "negative_proof_ids": ["ef.query.direct_integer_set_operations.unsupported_shapes"]
+    },
+    {
       "id": "provider.ef_query.crud",
       "category": "Generated SQL",
       "feature": "EF Core embedded CRUD and bounded query translation",
@@ -2901,11 +2992,11 @@
       "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "partial", "ef_migration": "not_applicable"},
       "persistent_ddl": false,
       "first_supported_version": "4.0.4",
-      "limitations": ["The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, non-decimal constant/parameter collection Contains, simple Include, bounded direct inner and left joins, selected string and temporal members, bounded ordinal string predicates, finite-double math functions, bounded exact-decimal comparisons and ordering, bounded scalar numeric aggregates, direct-column integer-distinct aggregates, and direct single-table grouped numeric aggregates. Distinct scalar aggregates require an optional pre-filter followed by one directly mapped nonnullable int-column projection and Distinct, then Count, LongCount, Sum, Min, or Max. Distinct Average, nullable or non-int columns, value converters, ordering, limits, predicates after Distinct, intervening operators, computed/composite selectors, casts, and derived sources are rejected. GroupBy requires direct mapped bool, integral, enum, default-BINARY string, or nullable keys; composite keys must use C# anonymous types or ValueTuple, and Boolean keys require canonical provider-written 0/1 storage. It supports one direct-key/bare-aggregate projection, qualified non-distinct Sum/Average/Min/Max, nonnullable-int direct-column distinct Count/LongCount/Sum/Min/Max, basic HAVING, and ordering by a directly projected key or aggregate. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw or post-projection group transforms; nested/joined grouping; predicate/CASE aggregates; and broader types/shapes are rejected. All other string-search overloads—including default culture-sensitive StartsWith/EndsWith, the Boolean/CultureInfo forms, non-Ordinal or captured StringComparison modes, and character overloads—plus DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, decimal arithmetic/aggregates/Contains, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, Concat/Union/Except/Intersect, ExecuteUpdate, filtered-inner/composite/chained/right/cross joins, broader left-join shapes, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, operators, aggregate shapes, join shapes, and decimal expressions fail before command dispatch with provider diagnostics."],
+      "limitations": ["The first-party provider is embedded/direct only, and its overall LINQ surface remains deliberately partial. The authoritative feature-by-feature contract, support tier, limitations, and proof-test names are maintained in docs/ef-core-compatibility.json and published in the generated EF Core compatibility matrix. Focused SQL-matrix rows describe major translated surfaces without duplicating that exhaustive contract. Unsupported methods, members, operators, aggregate, join, LIKE, set-operation, and decimal shapes fail before command dispatch with provider diagnostics."],
       "deviations": ["ToLower()/ToUpper() and their invariant variants map to CSharpDB LOWER/UPPER and therefore use invariant server semantics rather than .NET CurrentCulture.", "Math.Round(double) uses CSharpDB midpoint-to-even semantics. Scalar numeric aggregate qualification is limited to bounded values and the explicitly documented CLR types because engine accumulation and EF-generated conversions differ for wider variants.", "Nullable Distinct().Count()/LongCount() is intentionally rejected because LINQ counts one distinct NULL while SQL COUNT(DISTINCT column) ignores NULL."],
       "documentation_anchor": "entity-framework-core.html#linq-translation",
-      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.inner_join", "ef.query.inner_join.compatibility", "ef.query.left_join", "ef.query.left_join.compatibility", "ef.query.left_join.navigation", "ef.query.left_join.composite_navigation", "ef.query.string_functions", "ef.query.ordinal_string_search", "ef.query.ordinal_string_search.compatibility", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
-      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.ordinal_string_search.unsupported_overloads", "ef.query.inner_join.unsupported_shapes", "ef.query.left_join.unsupported_shapes", "ef.query.join.unsupported_operators", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
+      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.inner_join", "ef.query.inner_join.compatibility", "ef.query.left_join", "ef.query.left_join.compatibility", "ef.query.left_join.navigation", "ef.query.left_join.composite_navigation", "ef.query.string_functions", "ef.query.ordinal_string_search", "ef.query.ordinal_string_search.compatibility", "ef.query.like", "ef.query.like.compatibility", "ef.query.direct_integer_set_operations", "ef.query.direct_integer_set_operations.compatibility", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
+      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.ordinal_string_search.unsupported_overloads", "ef.query.like.unsupported_shapes", "ef.query.direct_integer_set_operations.unsupported_shapes", "ef.query.inner_join.unsupported_shapes", "ef.query.left_join.unsupported_shapes", "ef.query.join.unsupported_operators", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
     },
     {
       "id": "provider.ef_migration.basic",

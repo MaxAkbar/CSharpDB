@@ -9,6 +9,9 @@ $wwwRoot = Join-Path $repoRoot 'www'
 $manifestPath = Join-Path $wwwRoot 'docs/sql-compatibility.json'
 $schemaPath = Join-Path $wwwRoot 'docs/sql-compatibility.schema.json'
 $generatedPath = Join-Path $wwwRoot 'docs/sql-compatibility.html'
+$efManifestPath = Join-Path $repoRoot 'docs/ef-core-compatibility.json'
+$efSchemaPath = Join-Path $repoRoot 'docs/ef-core-compatibility.schema.json'
+$efGeneratedPath = Join-Path $wwwRoot 'docs/ef-core-compatibility.html'
 $errors = [Collections.Generic.List[string]]::new()
 
 function Add-DocumentationError {
@@ -34,7 +37,7 @@ function Test-FragmentExists {
     return [regex]::IsMatch($content, "(?i)(?:id|name)\s*=\s*[`"']$escaped[`"']")
 }
 
-foreach ($requiredFile in @($manifestPath, $schemaPath, $generatedPath)) {
+foreach ($requiredFile in @($manifestPath, $schemaPath, $generatedPath, $efManifestPath, $efSchemaPath, $efGeneratedPath)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         Add-DocumentationError "Required documentation artifact is missing: $requiredFile"
     }
@@ -56,6 +59,18 @@ catch {
 }
 
 $manifest = $manifestJson | ConvertFrom-Json -Depth 100
+$efManifestJson = [IO.File]::ReadAllText($efManifestPath)
+try {
+    $efSchemaValid = $efManifestJson |
+        Test-Json -SchemaFile $efSchemaPath -ErrorAction Stop
+    if (-not $efSchemaValid) {
+        Add-DocumentationError 'ef-core-compatibility.json does not satisfy ef-core-compatibility.schema.json.'
+    }
+}
+catch {
+    Add-DocumentationError "EF Core compatibility JSON Schema validation failed: $($_.Exception.Message)"
+}
+$efManifest = $efManifestJson | ConvertFrom-Json -Depth 100
 $facetOrder = @(
     'parser',
     'execution',
@@ -226,6 +241,80 @@ foreach ($proofId in $proofIds) {
     }
 }
 
+$mappedEfFeatureIds =
+    [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+$efProviderTestProject =
+    'tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj'
+foreach ($sqlFeature in @($manifest.features)) {
+    if ($sqlFeature.PSObject.Properties.Name -notcontains
+        'ef_core_feature_id') {
+        continue
+    }
+
+    $sqlFeatureId = [string]$sqlFeature.id
+    $efFeatureId = [string]$sqlFeature.ef_core_feature_id
+    if (-not $mappedEfFeatureIds.Add($efFeatureId)) {
+        Add-DocumentationError "EF Core compatibility feature '$efFeatureId' is mapped by more than one SQL compatibility row."
+    }
+
+    $matchingEfFeatures = @(
+        $efManifest.features |
+            Where-Object {
+                [string]$_.id -ceq $efFeatureId
+            }
+    )
+    if ($matchingEfFeatures.Count -ne 1) {
+        Add-DocumentationError "SQL feature '$sqlFeatureId' maps to EF Core feature '$efFeatureId', but exactly one matching EF feature is required and $($matchingEfFeatures.Count) were found."
+        continue
+    }
+
+    $efFeature = $matchingEfFeatures[0]
+    $normalizedEfStatus = switch -CaseSensitive (
+        [string]$efFeature.status) {
+        'Supported' { 'supported' }
+        'Partial' { 'partial' }
+        'Unsupported' { 'unsupported' }
+        'Planned' { 'unsupported' }
+        default {
+            Add-DocumentationError "EF Core feature '$efFeatureId' has unrecognized status '$($efFeature.status)'."
+            $null
+        }
+    }
+    if ($null -ne $normalizedEfStatus -and
+        [string]$sqlFeature.availability -cne
+            $normalizedEfStatus) {
+        Add-DocumentationError "SQL feature '$sqlFeatureId' availability '$($sqlFeature.availability)' does not match EF Core feature '$efFeatureId' status '$($efFeature.status)'."
+    }
+
+    $sqlProofTests = @(
+        @(
+            @($sqlFeature.positive_proof_ids) +
+            @($sqlFeature.negative_proof_ids)
+        ) |
+            ForEach-Object {
+                $proofId = [string]$_
+                if ($proofById.ContainsKey($proofId) -and
+                    [string]$proofById[$proofId].project -ceq
+                        $efProviderTestProject) {
+                    [string]$proofById[$proofId].test
+                }
+            } |
+            Sort-Object -Unique
+    )
+    $efProofTests = @(
+        @($efFeature.proofTests) |
+            ForEach-Object {
+                [string]$_
+            } |
+            Sort-Object -Unique
+    )
+    if (($sqlProofTests -join '|') -cne
+        ($efProofTests -join '|')) {
+        Add-DocumentationError "SQL feature '$sqlFeatureId' and EF Core feature '$efFeatureId' must reference the same provider proof tests. SQL has [$($sqlProofTests -join ', ')]; EF has [$($efProofTests -join ', ')]."
+    }
+}
+
 $internalLinkPattern = '(?i)(?:href|src)\s*=\s*["''](?<url>[^"'']+)["'']'
 foreach ($htmlFile in Get-ChildItem -LiteralPath $wwwRoot -Recurse -File -Filter '*.html') {
     $html = [IO.File]::ReadAllText($htmlFile.FullName)
@@ -273,7 +362,13 @@ $requiredLinkChecks = @(
     @{ Path = 'www/roadmap.html'; Text = 'href="docs/sql-compatibility.html"' },
     @{ Path = 'www/roadmap-reference.html'; Text = 'href="docs/sql-compatibility.html"' },
     @{ Path = 'www/js/csharpdb.bundle.js'; Text = 'docs/sql-compatibility.html' },
-    @{ Path = 'www/sitemap.xml'; Text = 'https://csharpdb.com/docs/sql-compatibility.html' }
+    @{ Path = 'www/sitemap.xml'; Text = 'https://csharpdb.com/docs/sql-compatibility.html' },
+    @{ Path = 'README.md'; Text = 'https://csharpdb.com/docs/ef-core-compatibility.html' },
+    @{ Path = 'src/CSharpDB.EntityFrameworkCore/README.md'; Text = 'https://csharpdb.com/docs/ef-core-compatibility.html' },
+    @{ Path = 'www/docs/index.html'; Text = 'href="ef-core-compatibility.html"' },
+    @{ Path = 'www/docs/entity-framework-core.html'; Text = 'href="ef-core-compatibility.html"' },
+    @{ Path = 'www/js/csharpdb.bundle.js'; Text = 'docs/ef-core-compatibility.html' },
+    @{ Path = 'www/sitemap.xml'; Text = 'https://csharpdb.com/docs/ef-core-compatibility.html' }
 )
 foreach ($check in $requiredLinkChecks) {
     $checkPath = Resolve-RepositoryPath $check.Path
@@ -291,6 +386,9 @@ try {
     $locations = @($sitemap.SelectNodes("//*[local-name()='loc']") | ForEach-Object { [string]$_.InnerText })
     if (@($locations | Where-Object { $_ -ceq 'https://csharpdb.com/docs/sql-compatibility.html' }).Count -ne 1) {
         Add-DocumentationError 'sitemap.xml must contain exactly one SQL compatibility page entry.'
+    }
+    if (@($locations | Where-Object { $_ -ceq 'https://csharpdb.com/docs/ef-core-compatibility.html' }).Count -ne 1) {
+        Add-DocumentationError 'sitemap.xml must contain exactly one EF Core compatibility page entry.'
     }
 
     foreach ($location in $locations) {
@@ -330,6 +428,51 @@ if ([regex]::IsMatch($visibleGeneratedHtml, '\b[0-9]+(?:\.[0-9]+)?%')) {
     Add-DocumentationError 'Compatibility HTML must not publish an aggregate percentage.'
 }
 
+$generatedEfHtml = [IO.File]::ReadAllText($efGeneratedPath)
+$requiredMaturityStatements = @(
+    [string]$efManifest.maturity.designation,
+    [string]$efManifest.maturity.scope,
+    [string]$efManifest.maturity.tier2Policy,
+    [string]$efManifest.maturity.tier3Policy
+)
+foreach ($statement in $requiredMaturityStatements) {
+    $encodedStatement = [Net.WebUtility]::HtmlEncode($statement)
+    if ([string]::IsNullOrWhiteSpace($statement) -or
+        -not $generatedEfHtml.Contains(
+            $encodedStatement,
+            [StringComparison]::Ordinal)) {
+        Add-DocumentationError "Generated EF Core compatibility HTML is missing a manifest maturity statement: $statement"
+    }
+}
+
+$generatedEfFeatureRows = [regex]::Matches(
+    $generatedEfHtml,
+    'class="ef-feature-row"').Count
+if ($generatedEfFeatureRows -ne @($efManifest.features).Count) {
+    Add-DocumentationError "Generated EF Core compatibility HTML has $generatedEfFeatureRows feature rows; the manifest has $(@($efManifest.features).Count)."
+}
+
+$unavailableTier1Features = @(
+    $efManifest.features |
+        Where-Object {
+            [string]$_.tier -ceq 'tier1' -and
+            [string]$_.status -in @('Unsupported', 'Planned')
+        }
+)
+if ($unavailableTier1Features.Count -gt 0) {
+    Add-DocumentationError "The production-ready Tier 1 designation cannot include unavailable Tier 1 rows: $(@($unavailableTier1Features.id) -join ', ')."
+}
+
+$visibleGeneratedEfHtml = [regex]::Replace(
+    $generatedEfHtml,
+    '(?is)<(?:style|script)\b.*?</(?:style|script)>',
+    '')
+if ([regex]::IsMatch(
+    $visibleGeneratedEfHtml,
+    '\b[0-9]+(?:\.[0-9]+)?%')) {
+    Add-DocumentationError 'EF Core compatibility HTML must not publish an aggregate percentage.'
+}
+
 try {
     & (Join-Path $PSScriptRoot 'Build-SqlCompatibilityMatrix.ps1') -Check
 }
@@ -349,4 +492,4 @@ if ($errors.Count -gt 0) {
     throw $message
 }
 
-Write-Host "Documentation validation passed: $($manifest.features.Count) compatibility rows, $($manifest.proofs.Count) proof ids, internal links, navigation, sitemap, schema, and generated HTML."
+Write-Host "Documentation validation passed: $($manifest.features.Count) SQL compatibility rows, $($manifest.proofs.Count) SQL proof ids, $(@($efManifest.features).Count) EF Core compatibility rows, scoped maturity, internal links, navigation, sitemap, schemas, and generated HTML."

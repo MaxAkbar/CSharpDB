@@ -21,6 +21,10 @@ embedded file-backed or private in-memory CSharpDB databases.
 - `EnsureCreated()`, `Database.Migrate()`, and standard `dotnet ef` flows
 - CRUD, change tracking, application-managed concurrency tokens, bounded
   database-generated rowversion, and a focused LINQ subset
+- explicit transactions with commit and rollback (savepoints are explicitly
+  unsupported)
+- a bounded ASP.NET Core Identity profile using schema v1 and integer user and
+  role keys
 
 This package is intentionally scoped as a v1 embedded provider. It does not
 target daemon/client transports, pooled connections, or broad schema-rebuild
@@ -120,6 +124,56 @@ var options = new DbContextOptionsBuilder<BloggingContext>()
 await using var db = new BloggingContext(options);
 await db.Database.EnsureCreatedAsync();
 ```
+
+## Explicit Transactions
+
+`SaveChanges`, commit, and rollback work inside explicit EF Core transactions.
+The engine does not implement savepoints, so the provider advertises
+`SupportsSavepoints == false`; this tells EF Core not to create its automatic
+pre-`SaveChanges` savepoint.
+
+```csharp
+await using var transaction = await db.Database.BeginTransactionAsync();
+db.Blogs.Add(new Blog { Name = "Transactional" });
+await db.SaveChangesAsync();
+await transaction.CommitAsync();
+```
+
+Manual `CreateSavepoint`, `RollbackToSavepoint`, and `ReleaseSavepoint` calls
+throw `NotSupportedException`.
+
+## ASP.NET Core Identity Qualified Profile
+
+The application compatibility suite qualifies Identity schema v1 with
+integer user and role keys. Configure that exact model explicitly:
+
+```csharp
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+
+public sealed class AppUser : IdentityUser<int>;
+
+public sealed class AppIdentityContext(
+    DbContextOptions<AppIdentityContext> options)
+    : IdentityDbContext<AppUser, IdentityRole<int>, int>(options)
+{
+    protected override Version SchemaVersion => new(1, 0);
+}
+
+builder.Services.AddDbContext<AppIdentityContext>(options =>
+    options.UseCSharpDb(builder.Configuration.GetConnectionString("CSharpDB")!));
+
+builder.Services
+    .AddIdentity<AppUser, IdentityRole<int>>()
+    .AddEntityFrameworkStores<AppIdentityContext>();
+```
+
+The qualified workflows cover the seven schema-v1 tables, users, roles,
+memberships, claims, external logins, tokens, persistence across reopen,
+cascade cleanup, concurrency stamps, transaction rollback, and cancellation.
+This is a bounded `Partial` compatibility designation: the default string-key
+context, Identity schema versions 2 and 3, passkeys, and unlisted store APIs
+remain unqualified.
 
 ## Embedded Storage Tuning
 
@@ -382,6 +436,23 @@ custom comparers, chained joins, the classic
 `GroupJoin`/`SelectMany`/`DefaultIfEmpty` pattern, `RightJoin`, and cross joins
 fail before command dispatch with `CDBEF1007`, `CDBEF1008`, or `CDBEF1003`.
 
+Exactly one terminal `Queryable.Concat`, `Queryable.Union`,
+`Queryable.Intersect`, or `Queryable.Except` is qualified when both branches
+remain direct mapped entity tables with optional filtering and each projects
+one compatible, converter-free `INTEGER`-backed `int`, `long`, or nullable
+equivalent. `Concat` preserves duplicates. The other three operators apply
+distinct set semantics, with SQL `NULL` participating as one set value for
+nullable projections. Result order is unspecified; materialize the set
+operation before applying client-side ordering or transformations.
+
+Entity, composite, constant, converted, and transformed projections; branch
+ordering, row limits, distinct, grouping, joins, derived/value sources, mixed
+or non-integer mappings, nested or chained set operations, and any
+server-side filtering, projection, distinct, ordering, pagination,
+aggregation, or subquery use after the set operation are rejected with
+`CDBEF1009` before command dispatch. The comparer overloads of `Union`,
+`Intersect`, and `Except` remain unsupported and report `CDBEF1003`.
+
 The bounded distinct-aggregate shape is an optional `Where`, selection of one
 directly mapped nonnullable `int` column, `Distinct`, then `Count`,
 `LongCount`, `Sum`, `Min`, or `Max`. Distinct `Average`, nullable or non-`int`
@@ -431,8 +502,8 @@ non-ordinal or captured `StringComparison` modes, and character overloads.
 `DateTimeOffset` components, integral/decimal/`MathF` math overloads,
 two-argument or midpoint-mode rounding, long- and float-valued
 `Sum`/`Average`/`Min`/`Max` variants and other unqualified aggregate variants,
-broader distinct/grouped aggregate variants, set-operation, and correlated
-query shapes also remain outside the qualified surface.
+broader distinct/grouped aggregate variants, broader or composed set-operation
+shapes, and correlated query shapes also remain outside the qualified surface.
 
 Unsupported expressions retain EF Core's `InvalidOperationException` and add
 provider guidance:
@@ -441,12 +512,13 @@ provider guidance:
 |------|---------|
 | `CDBEF1001` | Unsupported CLR method |
 | `CDBEF1002` | Unsupported CLR member |
-| `CDBEF1003` | Recognized unsupported query operator: `TakeWhile`, `SkipWhile`, `Concat`, `Union`, `Except`, `Intersect`, `Join(comparer)`, `LeftJoin(comparer)`, `GroupJoin`, `SelectMany`, `DefaultIfEmpty`, `RightJoin`, or `ExecuteUpdate` |
+| `CDBEF1003` | Recognized unsupported query operator, including `TakeWhile`, `SkipWhile`, set-operation comparer overloads, `Join(comparer)`, `LeftJoin(comparer)`, `GroupJoin`, `SelectMany`, `DefaultIfEmpty`, `RightJoin`, or `ExecuteUpdate` |
 | `CDBEF1004` | Unsupported distinct aggregate shape |
 | `CDBEF1005` | Unsupported grouped aggregate shape |
 | `CDBEF1006` | Unsupported decimal operation outside the exact scaled-integer foundation |
 | `CDBEF1007` | Unsupported inner-join shape outside the bounded direct-join surface |
 | `CDBEF1008` | Unsupported left-join shape outside the bounded direct-join surface |
+| `CDBEF1009` | Unsupported set-operation shape outside the bounded terminal direct-integer surface |
 
 When client evaluation is intentional, apply selective supported filters
 first, then call `AsEnumerable()` explicitly before the unsupported portion.
@@ -466,6 +538,7 @@ an entire table.
 | `dotnet ef database update` | Yes | File-backed only |
 | `dotnet ef migrations script` | Yes | Includes idempotent scripts guarded by `__EFMigrationsHistory` |
 | CRUD + change tracking | Yes | Includes affected-row concurrency checks |
+| Explicit transactions | Partial | `SaveChanges`, commit, and rollback are supported; savepoints are not |
 | Database-generated rowversion | Partial | One nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` per table; runtime and initial table creation are supported, standalone add/alter migrations are not |
 | Integer identity propagation | Yes | Single-column integer primary keys |
 | Composite primary keys and indexes | Yes | Composite primary keys are emitted as table constraints; composite unique and non-unique indexes preserve declared column order |
@@ -477,7 +550,8 @@ an entire table.
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
 | Exact decimal mapping | Partial | Provider-owned scaled `INTEGER` storage for precision 1–18; exact round trips, parameters, comparisons, and ordering |
-| Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins and the string, `EF.Functions.Like`, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, aggregate shapes, and join shapes receive provider diagnostics |
+| Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins, terminal direct-integer set operations, and the string, `EF.Functions.Like`, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, set-operation shapes, aggregate shapes, and join shapes receive provider diagnostics |
+| ASP.NET Core Identity | Partial | Identity schema v1 with `IdentityUser<int>` and `IdentityRole<int>` for the manifest-listed workflows |
 | Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
 
 ## Current Limitations
@@ -493,6 +567,11 @@ an entire table.
   sources, derived/composite/chained joins, classic
   `GroupJoin`/`SelectMany`/`DefaultIfEmpty`, right joins, and cross joins remain
   unsupported
+- set operations are limited to one terminal `Concat`, `Union`, `Intersect`,
+  or `Except` over compatible direct converter-free `INTEGER` `int`/`long`
+  column projections; branch ordering or limits, broader projections and
+  mappings, comparer overloads, nested/chained operations, and server
+  composition after the operation remain unsupported
 - optional relationships support client-side `ClientSetNull`; database-side
   `DeleteBehavior.SetNull`/`ON DELETE SET NULL` remains unsupported
 - schemas are unsupported in runtime and migrations
@@ -516,9 +595,58 @@ an entire table.
   non-ready indexes are rejected
 - pooled connections are rejected
 - named shared-memory databases (`:memory:<name>`) are rejected
+- transaction savepoints are unsupported; the provider reports
+  `SupportsSavepoints == false`, allowing ordinary explicit-transaction
+  `SaveChanges` calls to proceed without EF Core creating automatic savepoints
+- ASP.NET Core Identity is qualified only for schema v1 with integer user and
+  role keys; default string keys, schema versions 2 and 3, passkeys, and
+  unlisted store APIs remain unqualified
 - `TEXT`/`BLOB` type conversions, lossy numeric conversions, indexed numeric
   changes, and collation changes involving key, foreign-key, full-text, or
   collection dependencies still require broader rewrite support
+
+## Production Readiness Checklist
+
+The provider is production-ready for the documented embedded Tier 1 surface.
+This is a scoped designation, not a claim that every EF Core feature is
+supported. Tier 2 behavior is qualified only when its row is explicitly
+listed; Tier 3 and unlisted behavior are outside the designation.
+
+Before deployment:
+
+- pin the qualified CSharpDB and EF Core patch versions
+- use a file-backed or correctly lifetime-managed private in-memory database;
+  do not configure pooling, endpoint, daemon, or named shared-memory transports
+- review the generated compatibility matrix for every model, migration, LINQ,
+  type-mapping, concurrency, and application feature the workload uses
+- generate and review migrations, run the idempotent deployment script twice
+  against an empty database and once against a production-like upgrade copy,
+  and verify rollback or restore from a database-plus-WAL backup
+- test optimistic-concurrency conflict handling and cancellation through the
+  actual request/job boundary
+- assert unsupported LINQ fails with the documented provider diagnostic before
+  command dispatch; keep every intentional client-evaluation boundary explicit
+- restore and run the packed provider plus real `dotnet ef` commands from the
+  exact NuGet artifacts intended for publication
+- load-test the application's reader/writer mix, database size, storage preset,
+  shutdown, backup, and recovery procedure on the deployment platform
+
+## Upgrade Notes for 4.2.0
+
+- Provider versions before 4.2.0 could leave create-time foreign keys with
+  engine-generated names. Query `sys.foreign_keys` and use the stored name in a
+  one-time drop migration; new schemas preserve EF constraint names.
+- The exact decimal mapping stores scaled integers. Do not assume an existing
+  `REAL`, `TEXT`, converted, or differently scaled column will be rewritten
+  automatically. Inspect existing data and use an explicit, validated data
+  migration before switching that property to the provider-owned mapping.
+- Database-generated rowversion can be introduced when its table is created.
+  Standalone add/alter rowversion migrations remain unsupported.
+- The compatibility manifest is qualified against EF Core 10.0.10. Treat a
+  later EF Core patch as an upgrade that must pass the provider compatibility,
+  packaged-consumer, and real `dotnet ef` lanes before deployment.
+- ASP.NET Core Identity applications must retain integer user/role keys and
+  schema v1 to remain inside the qualified profile.
 
 ## Dependencies
 
@@ -539,8 +667,12 @@ The provider depends on:
 ## Docs and Samples
 
 - [EF Core provider guide](https://csharpdb.com/docs/entity-framework-core.html)
+- [Public EF Core compatibility matrix](https://csharpdb.com/docs/ef-core-compatibility.html)
 - [Versioned EF Core compatibility matrix](../../docs/ef-core-compatibility.md)
 - [EF Core provider sample](../../samples/efcore-provider/README.md)
+- [ASP.NET Core minimal API sample](../../samples/efcore-minimal-api/README.md)
+- [ASP.NET Core authentication sample](../../samples/aspnet-core-identity/README.md)
+  (custom `CSharpDB.Data` store, distinct from the qualified EF-backed profile)
 - [ADO.NET and EF storage tuning notes](https://csharpdb.com/docs/ado-ef-storage-tuning.html)
 
 ## License

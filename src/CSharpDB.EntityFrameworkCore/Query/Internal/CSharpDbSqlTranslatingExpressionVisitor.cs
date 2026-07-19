@@ -547,6 +547,61 @@ internal static class CSharpDbQueryTranslationDiagnostics
         "CDBEF1008: The CSharpDB EF Core provider cannot translate this left-join shape within the bounded direct-join surface. " +
         $"{reason} LeftJoin two direct entity roots on one nonnullable INTEGER-backed int, long, or int/long-backed enum property, use nullable unmatched-side projections, then apply filtering, ordering, and pagination after LeftJoin. See {DocumentationUrl}.";
 
+    public static string ForSetOperation(
+        string operatorName,
+        string reason) =>
+        $"CDBEF1009: The CSharpDB EF Core provider cannot translate LINQ set operation '{operatorName}' within the bounded direct-integer surface. " +
+        $"{reason} Use exactly one terminal Concat, Union, Intersect, or Except whose two branches each select one direct converter-free INTEGER-backed int, long, or nullable equivalent from a mapped entity root with optional filtering. Materialize the set operation before further composition. See {DocumentationUrl}.";
+
+    public static string?
+        FindUnsupportedSetOperationComposition(
+            Expression expression)
+    {
+        var visitor =
+            new DirectSetOperationFindingExpressionVisitor();
+        visitor.Visit(expression);
+        if (visitor.Operations.Count == 0)
+            return null;
+
+        MethodCallExpression operation =
+            visitor.Operations[0];
+        string operatorName =
+            $"Queryable.{operation.Method.Name}";
+        if (visitor.Operations.Count > 1)
+        {
+            return ForSetOperation(
+                operatorName,
+                "Nested or chained set operations require derived-table SQL and are not supported.");
+        }
+
+        Expression terminalExpression = expression;
+        while (terminalExpression is MethodCallExpression
+               {
+                   Arguments.Count: > 0,
+               } wrapper &&
+               IsTransparentSetOperationAnnotation(
+                   wrapper.Method))
+        {
+            terminalExpression = wrapper.Arguments[0];
+        }
+
+        return ReferenceEquals(terminalExpression, operation)
+            ? null
+            : ForSetOperation(
+                operatorName,
+                "The set operation must be the terminal server-side query; post-set filtering, projection, distinct, ordering, pagination, aggregation, and subquery use require derived-table SQL that CSharpDB does not yet support.");
+    }
+
+    private static bool IsTransparentSetOperationAnnotation(
+        MethodInfo method) =>
+        method.DeclaringType?.Namespace?
+            .StartsWith(
+                "Microsoft.EntityFrameworkCore",
+                StringComparison.Ordinal) == true &&
+        method.Name is
+            "TagWith" or
+            "TagWithCallSite";
+
     public static string? FindUnsupportedOperator(Expression expression)
     {
         var visitor = new UnsupportedOperatorFindingExpressionVisitor();
@@ -700,37 +755,63 @@ internal static class CSharpDbQueryTranslationDiagnostics
                 }
                 else
                 {
-                    OperatorName =
-                        node.Method.Name switch
-                        {
-                            nameof(Queryable.TakeWhile) =>
-                                "Queryable.TakeWhile",
-                            nameof(Queryable.SkipWhile) =>
-                                "Queryable.SkipWhile",
-                            nameof(Queryable.Concat) =>
-                                "Queryable.Concat",
-                            nameof(Queryable.Union) =>
-                                "Queryable.Union",
-                            nameof(Queryable.Except) =>
-                                "Queryable.Except",
-                            nameof(Queryable.Intersect) =>
-                                "Queryable.Intersect",
-                            nameof(Queryable.GroupJoin) =>
-                                "Queryable.GroupJoin",
-                            nameof(Queryable.SelectMany) =>
-                                "Queryable.SelectMany",
-                            nameof(Queryable.DefaultIfEmpty) =>
-                                "Queryable.DefaultIfEmpty",
-                            "RightJoin" =>
-                                "Queryable.RightJoin",
-                            _ => null,
-                        };
+                    OperatorName = node.Method.Name switch
+                    {
+                        nameof(Queryable.TakeWhile) =>
+                            "Queryable.TakeWhile",
+                        nameof(Queryable.SkipWhile) =>
+                            "Queryable.SkipWhile",
+                        nameof(Queryable.Union)
+                            when node.Arguments.Count == 3 =>
+                            "Queryable.Union(comparer)",
+                        nameof(Queryable.Except)
+                            when node.Arguments.Count == 3 =>
+                            "Queryable.Except(comparer)",
+                        nameof(Queryable.Intersect)
+                            when node.Arguments.Count == 3 =>
+                            "Queryable.Intersect(comparer)",
+                        nameof(Queryable.GroupJoin) =>
+                            "Queryable.GroupJoin",
+                        nameof(Queryable.SelectMany) =>
+                            "Queryable.SelectMany",
+                        nameof(Queryable.DefaultIfEmpty) =>
+                            "Queryable.DefaultIfEmpty",
+                        "RightJoin" =>
+                            "Queryable.RightJoin",
+                        _ => null,
+                    };
                 }
             }
 
             return OperatorName is null
                 ? base.VisitMethodCall(node)
                 : node;
+        }
+    }
+
+    private sealed class
+        DirectSetOperationFindingExpressionVisitor
+        : ExpressionVisitor
+    {
+        public List<MethodCallExpression> Operations { get; } =
+            [];
+
+        protected override Expression VisitMethodCall(
+            MethodCallExpression node)
+        {
+            if (node.Method.DeclaringType ==
+                    typeof(Queryable) &&
+                node.Arguments.Count == 2 &&
+                node.Method.Name is
+                    nameof(Queryable.Concat) or
+                    nameof(Queryable.Union) or
+                    nameof(Queryable.Intersect) or
+                    nameof(Queryable.Except))
+            {
+                Operations.Add(node);
+            }
+
+            return base.VisitMethodCall(node);
         }
     }
 

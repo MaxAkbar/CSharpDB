@@ -1,4 +1,6 @@
 <Project>
+  <Import Project="$(MSBuildThisFileDirectory)../Directory.Build.props" />
+
   <PropertyGroup>
     <Authors>MaxAkbar</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -9,7 +11,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>4.1.0</Version>
+    <Version>4.2.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />

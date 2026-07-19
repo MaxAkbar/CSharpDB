@@ -50,6 +50,8 @@
                         <li><a href="#install">Install</a></li>
                         <li><a href="#basic-usage">Basic Usage</a></li>
                         <li><a href="#connections">Connections</a></li>
+                        <li><a href="#transactions">Transactions</a></li>
+                        <li><a href="#aspnet-identity">ASP.NET Core Identity</a></li>
                         <li><a href="#tuning">Storage Tuning</a></li>
                         <li><a href="#migrations">Migrations</a></li>
                         <li><a href="#rowversion-concurrency">RowVersion</a></li>
@@ -68,6 +70,7 @@
                 <div class="callout callout-info">
                     <strong>Scope:</strong> the provider supports file-backed databases and private in-memory databases. It does not target daemon, client, endpoint, or pooled connection transports.
                 </div>
+                <p>Use the generated <a href="ef-core-compatibility.html">EF Core compatibility matrix</a> as the authoritative, evidence-backed support boundary for production qualification.</p>
 
                 <h2 id="install">Install</h2>
                 <div class="code-block" data-title="Bash">
@@ -154,8 +157,44 @@ var options = new DbContextOptionsBuilder&lt;BloggingContext&gt;()
     .Options;
 
 await using var db = new BloggingContext(options);
-await db.Database.EnsureCreatedAsync();</code></pre>
+                await db.Database.EnsureCreatedAsync();</code></pre>
                 </div>
+
+                <h2 id="transactions">Explicit Transactions</h2>
+                <p><code>SaveChanges</code>, commit, and rollback work inside explicit EF Core transactions. CSharpDB does not implement transaction savepoints, so the provider advertises <code>SupportsSavepoints == false</code> and EF Core skips its automatic pre-<code>SaveChanges</code> savepoint.</p>
+                <div class="code-block" data-title="Commit an explicit transaction">
+                    <pre><code>await using var transaction = await db.Database.BeginTransactionAsync();
+db.Blogs.Add(new Blog { Name = "Transactional" });
+await db.SaveChangesAsync();
+await transaction.CommitAsync();</code></pre>
+                </div>
+                <div class="callout callout-warning"><strong>Savepoint boundary:</strong> manual <code>CreateSavepoint</code>, <code>RollbackToSavepoint</code>, and <code>ReleaseSavepoint</code> calls throw <code>NotSupportedException</code>.</div>
+
+                <h2 id="aspnet-identity">ASP.NET Core Identity Qualified Profile</h2>
+                <p>The application compatibility suite qualifies a deliberately bounded profile: Identity schema v1 with integer user and role keys. Configure that exact model explicitly.</p>
+                <div class="code-block" data-title="AppIdentityContext.cs">
+                    <pre><code>using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+
+public sealed class AppUser : IdentityUser&lt;int&gt;;
+
+public sealed class AppIdentityContext(
+    DbContextOptions&lt;AppIdentityContext&gt; options)
+    : IdentityDbContext&lt;AppUser, IdentityRole&lt;int&gt;, int&gt;(options)
+{
+    protected override Version SchemaVersion =&gt; new(1, 0);
+}
+
+builder.Services.AddDbContext&lt;AppIdentityContext&gt;(options =&gt;
+    options.UseCSharpDb(
+        builder.Configuration.GetConnectionString("CSharpDB")!));
+
+builder.Services
+    .AddIdentity&lt;AppUser, IdentityRole&lt;int&gt;&gt;()
+    .AddEntityFrameworkStores&lt;AppIdentityContext&gt;();</code></pre>
+                </div>
+                <p>The qualified workflows cover the seven schema-v1 tables, users, roles, memberships, claims, external logins, tokens, persistence across reopen, cascade cleanup, concurrency stamps, transaction rollback, and cancellation.</p>
+                <div class="callout callout-warning"><strong>Partial compatibility:</strong> the default string-key <code>IdentityDbContext&lt;TUser&gt;</code>, Identity schema versions 2 and 3, passkeys, and unlisted store APIs remain unqualified. In particular, the standard string-key role-membership join is outside the provider's bounded integer-key join surface and reports <code>CDBEF1007</code>.</div>
 
                 <h2 id="tuning">Embedded Storage Tuning</h2>
                 <p>The EF Core provider can pass embedded engine tuning down into the <code>CSharpDbConnection</code> it creates. Use named presets and embedded open modes when you want discoverable, compile-checked settings.</p>
@@ -280,6 +319,10 @@ public sealed class Document
                 <p><code>LeftJoin</code> preserves an outer row when no inner row matches. The unmatched inner entity and reference-type members materialize as <code>null</code>; project unmatched inner value-type members to nullable CLR types, for example <code>PostId = (int?)post!.Id</code>. This explicit nullable projection prevents SQL <code>NULL</code> from being interpreted as a value type's CLR default.</p>
                 <div class="callout callout-warning"><strong>Deliberately bounded:</strong> filtered inner sources, prior ordering or row limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/configured-converter/transformed or composite keys, and chained joins fail before command dispatch with <code>CDBEF1007</code> for <code>Join</code> or <code>CDBEF1008</code> for <code>LeftJoin</code>. Comparer overloads, the classic <code>GroupJoin</code>/<code>SelectMany</code>/<code>DefaultIfEmpty</code> left-join pattern, standalone <code>GroupJoin</code> or <code>SelectMany</code>, <code>RightJoin</code>, and cross-join forms remain unsupported and report <code>CDBEF1003</code>.</div>
 
+                <h3>Terminal integer set operations</h3>
+                <p>Exactly one terminal no-comparer <code>Queryable.Concat</code>, <code>Queryable.Union</code>, <code>Queryable.Intersect</code>, or <code>Queryable.Except</code> is qualified when both branches remain direct mapped entity tables with optional filtering and each projects one compatible, converter-free <code>INTEGER</code>-backed <code>int</code>, <code>long</code>, or nullable equivalent. <code>Concat</code> preserves duplicates. The other three operators use distinct set semantics, including one SQL <code>NULL</code> set value where appropriate. Result order is unspecified; materialize before applying client-side ordering or transformations.</p>
+                <div class="callout callout-warning"><strong>Deliberately terminal:</strong> entity, composite, constant, converted, or transformed projections; branch ordering, row limits, distinct, grouping, joins, derived/value sources, mixed or non-integer mappings, nested or chained operations, and server-side composition after the set operation are rejected before command dispatch with <code>CDBEF1009</code>. The comparer overloads of <code>Union</code>, <code>Intersect</code>, and <code>Except</code> remain unsupported and report <code>CDBEF1003</code>.</div>
+
                 <h3>Distinct numeric aggregates</h3>
                 <p>The qualified scalar shape is an optional <code>Where</code>, followed by selection of one directly mapped nonnullable <code>int</code> column, <code>Distinct</code>, and <code>Count</code>, <code>LongCount</code>, <code>Sum</code>, <code>Min</code>, or <code>Max</code>.</p>
                 <div class="callout callout-warning"><strong>Deliberately bounded:</strong> distinct <code>Average</code>, nullable or non-<code>int</code> columns, configured value converters, ordering, row limits, predicates after <code>Distinct</code>, intervening operators, computed or composite selectors, casts, and derived sources are rejected with <code>CDBEF1004</code> before command dispatch. Nullable <code>Distinct().Count()</code> and <code>Distinct().LongCount()</code> also cannot preserve LINQ's rule that a distinct NULL is counted once because SQL <code>COUNT(DISTINCT column)</code> ignores NULL.</div>
@@ -291,7 +334,7 @@ public sealed class Document
                 <div class="callout callout-warning">
                     <strong>String-semantics boundary:</strong> all other string-search overloads are not translated, including default culture-sensitive <code>StartsWith(string)</code>/<code>EndsWith(string)</code>, the Boolean/<code>CultureInfo</code> forms, non-ordinal or captured <code>StringComparison</code> modes, and character overloads. Transformed or configured-converter <code>LIKE</code> match expressions, row-derived patterns, and captured, empty, multi-character, or null escapes are also rejected. They fail before command dispatch with <code>CDBEF1001</code> guidance. Plain <code>Contains(string)</code>, the three literal-<code>StringComparison.Ordinal</code> overloads, and the bounded <code>EF.Functions.Like</code> forms above are qualified. Non-decimal collection <code>Contains</code> over constants and parameters is also supported.
                 </div>
-                <p><code>DateTimeOffset</code> components; integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads; long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants and other unqualified aggregate variants; broader distinct and grouped aggregate shapes; set operations; composite/chained/right/cross or derived-source joins; and correlated-query shapes remain outside the qualified surface.</p>
+                <p><code>DateTimeOffset</code> components; integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads; long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants and other unqualified aggregate variants; broader distinct and grouped aggregate shapes; broader set-operation projections, mappings, nesting, chaining, and post-set composition; composite/chained/right/cross or derived-source joins; and correlated-query shapes remain outside the qualified surface.</p>
 
                 <h3>Unsupported-expression diagnostics</h3>
                 <p>Unsupported expressions retain EF Core's <code>InvalidOperationException</code> and add stable provider guidance before a command is dispatched. Diagnostics identify the construct without adding parameter values.</p>
@@ -300,12 +343,13 @@ public sealed class Document
                     <tbody>
                         <tr><td><code>CDBEF1001</code></td><td>Unsupported CLR method</td></tr>
                         <tr><td><code>CDBEF1002</code></td><td>Unsupported CLR member</td></tr>
-                        <tr><td><code>CDBEF1003</code></td><td>Recognized unsupported query operator: <code>TakeWhile</code>, <code>SkipWhile</code>, <code>Concat</code>, <code>Union</code>, <code>Except</code>, <code>Intersect</code>, <code>Join(comparer)</code>, <code>LeftJoin(comparer)</code>, <code>GroupJoin</code>, <code>SelectMany</code>, <code>DefaultIfEmpty</code>, <code>RightJoin</code>, or <code>ExecuteUpdate</code></td></tr>
+                        <tr><td><code>CDBEF1003</code></td><td>Recognized unsupported query operator, including <code>TakeWhile</code>, <code>SkipWhile</code>, set-operation comparer overloads, <code>Join(comparer)</code>, <code>LeftJoin(comparer)</code>, <code>GroupJoin</code>, <code>SelectMany</code>, <code>DefaultIfEmpty</code>, <code>RightJoin</code>, or <code>ExecuteUpdate</code></td></tr>
                         <tr><td><code>CDBEF1004</code></td><td>Unsupported distinct aggregate shape</td></tr>
                         <tr><td><code>CDBEF1005</code></td><td>Unsupported grouped aggregate shape</td></tr>
                         <tr><td><code>CDBEF1006</code></td><td>Unsupported decimal operation outside the exact scaled-integer foundation</td></tr>
                         <tr><td><code>CDBEF1007</code></td><td>Unsupported inner-join shape outside the bounded direct-join surface</td></tr>
                         <tr><td><code>CDBEF1008</code></td><td>Unsupported left-join shape outside the bounded direct-join surface</td></tr>
+                        <tr><td><code>CDBEF1009</code></td><td>Unsupported set-operation shape outside the bounded terminal direct-integer surface</td></tr>
                     </tbody>
                 </table>
                 <p>When client evaluation is intentional, apply selective supported filters first, then call <code>AsEnumerable()</code> explicitly before the unsupported portion. This makes the server/client boundary visible and avoids accidentally loading an entire table.</p>
@@ -323,6 +367,7 @@ public sealed class Document
                         <tr><td><code>dotnet ef database update</code></td><td>Yes</td><td>File-backed only</td></tr>
                         <tr><td><code>dotnet ef migrations script</code></td><td>Yes</td><td>Includes idempotent scripts guarded by <code>__EFMigrationsHistory</code></td></tr>
                         <tr><td>CRUD + change tracking</td><td>Yes</td><td>Includes affected-row concurrency checks</td></tr>
+                        <tr><td>Explicit transactions</td><td>Partial</td><td><code>SaveChanges</code>, commit, and rollback are supported; savepoints are not</td></tr>
                         <tr><td>Database-generated rowversion</td><td>Partial</td><td>One nonnullable <code>byte[]</code> <code>[Timestamp]</code>/<code>IsRowVersion()</code> per table; runtime and initial table creation are supported, standalone add/alter migrations are not</td></tr>
                         <tr><td>Integer identity propagation</td><td>Yes</td><td>Single-column integer primary keys</td></tr>
                         <tr><td>Composite primary keys and indexes</td><td>Yes</td><td>Composite primary keys are emitted as table constraints; composite unique and non-unique indexes preserve declared column order</td></tr>
@@ -333,7 +378,8 @@ public sealed class Document
                         <tr><td>Check constraints</td><td>Partial</td><td>Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine</td></tr>
                         <tr><td><code>AlterColumn</code></td><td>Partial</td><td>Literal default/nullability changes, exact dependency-free <code>INTEGER</code>/<code>REAL</code> rewrites, and <code>TEXT</code> collation changes with inherited ordinary/unique SQL-index rebuilding</td></tr>
                         <tr><td>Exact decimal mapping</td><td>Partial</td><td>Provider-owned scaled <code>INTEGER</code> storage for precision 1–18; exact round trips, parameters, comparisons, and ordering</td></tr>
-                        <tr><td>Bounded LINQ/query subset</td><td>Partial</td><td>Basic operators plus bounded direct inner and left joins and the string, <code>EF.Functions.Like</code>, temporal, finite-double math, scalar numeric aggregate, direct-column distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, aggregate shapes, and join shapes receive provider diagnostics</td></tr>
+                        <tr><td>Bounded LINQ/query subset</td><td>Partial</td><td>Basic operators plus bounded direct inner and left joins, terminal direct-integer set operations, and the string, <code>EF.Functions.Like</code>, temporal, finite-double math, scalar numeric aggregate, direct-column distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, set-operation shapes, aggregate shapes, and join shapes receive provider diagnostics</td></tr>
+                        <tr><td>ASP.NET Core Identity</td><td>Partial</td><td>Identity schema v1 with <code>IdentityUser&lt;int&gt;</code> and <code>IdentityRole&lt;int&gt;</code> for the manifest-listed workflows</td></tr>
                         <tr><td>Supported CLR types</td><td>Yes</td><td><code>bool</code>, integral types, enums, bounded exact <code>decimal</code>, <code>double</code>, <code>float</code>, <code>string</code>, <code>Guid</code>, <code>DateTime</code>, <code>DateTimeOffset</code>, <code>DateOnly</code>, <code>TimeOnly</code>, <code>byte[]</code></td></tr>
                     </tbody>
                 </table>
@@ -344,6 +390,7 @@ public sealed class Document
                     <li>Complex properties are rejected until their flattened column mappings are formally qualified.</li>
                     <li><code>ExecuteUpdate</code> is rejected until assignment conversions and decimal facets are formally qualified.</li>
                     <li>Direct <code>Join</code> and no-comparer <code>LeftJoin</code> are limited to one nonnullable <code>int</code>, <code>long</code>, or <code>int</code>/<code>long</code>-backed enum key; filtered inner sources, derived/composite/chained joins, comparer overloads, classic <code>GroupJoin</code>/<code>SelectMany</code>/<code>DefaultIfEmpty</code> left joins, <code>RightJoin</code>, and cross joins remain unsupported.</li>
+                    <li>Set operations are limited to one terminal <code>Concat</code>, <code>Union</code>, <code>Intersect</code>, or <code>Except</code> over compatible direct converter-free <code>INTEGER</code> <code>int</code>/<code>long</code> column projections; branch ordering or limits, broader projections and mappings, comparer overloads, nested/chained operations, and server composition after the operation remain unsupported.</li>
                     <li>Optional relationships support EF's client-side <code>ClientSetNull</code>; database-side <code>DeleteBehavior.SetNull</code>/<code>ON DELETE SET NULL</code> remains unsupported.</li>
                     <li>Schemas are unsupported in runtime and migrations.</li>
                     <li>Computed columns and <code>DefaultValueSql</code> are unsupported.</li>
@@ -355,6 +402,8 @@ public sealed class Document
                     <li>Pooled connections are rejected by the EF Core provider.</li>
                     <li>Named shared-memory databases (<code>:memory:&lt;name&gt;</code>) are rejected.</li>
                     <li>Endpoint, daemon, and non-direct transports are rejected.</li>
+                    <li>Transaction savepoints are unsupported. The provider reports that capability accurately so ordinary explicit-transaction <code>SaveChanges</code> calls do not issue savepoint SQL.</li>
+                    <li>ASP.NET Core Identity is qualified only for schema v1 with integer user and role keys; default string keys, schema versions 2 and 3, passkeys, and unlisted store APIs remain unqualified.</li>
                     <li><code>TEXT</code>/<code>BLOB</code> type conversions, lossy numeric conversions, numeric type changes on indexed/key/foreign-key columns, and collation changes involving key/foreign-key/full-text/collection dependencies require broader rewrite support.</li>
                     <li>Broad table-rebuild migration emulation is not implemented; unsupported operations fail explicitly.</li>
                 </ul>
@@ -365,9 +414,9 @@ public sealed class Document
                 <div class="next-steps">
                     <h2>Next Steps</h2>
                     <div class="next-steps-grid">
-                        <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/efcore-provider" class="next-step-card">
-                            <h4>EF Core Sample</h4>
-                            <p>Run the minimal provider sample and design-time context factory</p>
+                        <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/efcore-minimal-api" class="next-step-card">
+                            <h4>ASP.NET Core Minimal API</h4>
+                            <p>Run the DI-backed Todo API with qualified HTTP CRUD and restart persistence</p>
                         </a>
                         <a href="ecosystem.html" class="next-step-card">
                             <h4>Tools &amp; Ecosystem</h4>

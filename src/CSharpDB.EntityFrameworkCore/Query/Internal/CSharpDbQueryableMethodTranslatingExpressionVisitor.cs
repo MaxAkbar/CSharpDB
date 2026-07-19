@@ -77,6 +77,74 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         return base.Translate(expression);
     }
 
+    protected override ShapedQueryExpression TranslateConcat(
+        ShapedQueryExpression source1,
+        ShapedQueryExpression source2)
+    {
+        if (!TryValidateDirectIntegerSetOperation(
+                source1,
+                source2,
+                out string reason))
+        {
+            return UnsupportedSetOperation(
+                "Queryable.Concat",
+                reason);
+        }
+
+        return base.TranslateConcat(source1, source2);
+    }
+
+    protected override ShapedQueryExpression TranslateExcept(
+        ShapedQueryExpression source1,
+        ShapedQueryExpression source2)
+    {
+        if (!TryValidateDirectIntegerSetOperation(
+                source1,
+                source2,
+                out string reason))
+        {
+            return UnsupportedSetOperation(
+                "Queryable.Except",
+                reason);
+        }
+
+        return base.TranslateExcept(source1, source2);
+    }
+
+    protected override ShapedQueryExpression TranslateIntersect(
+        ShapedQueryExpression source1,
+        ShapedQueryExpression source2)
+    {
+        if (!TryValidateDirectIntegerSetOperation(
+                source1,
+                source2,
+                out string reason))
+        {
+            return UnsupportedSetOperation(
+                "Queryable.Intersect",
+                reason);
+        }
+
+        return base.TranslateIntersect(source1, source2);
+    }
+
+    protected override ShapedQueryExpression TranslateUnion(
+        ShapedQueryExpression source1,
+        ShapedQueryExpression source2)
+    {
+        if (!TryValidateDirectIntegerSetOperation(
+                source1,
+                source2,
+                out string reason))
+        {
+            return UnsupportedSetOperation(
+                "Queryable.Union",
+                reason);
+        }
+
+        return base.TranslateUnion(source1, source2);
+    }
+
     protected override ShapedQueryExpression? TranslateAverage(
         ShapedQueryExpression source,
         LambdaExpression? selector,
@@ -623,6 +691,178 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 $"Decimal aggregate '{aggregateName}' is deferred until scaled accumulation, overflow, and result-scale semantics are qualified."));
         return null;
     }
+
+    private ShapedQueryExpression UnsupportedSetOperation(
+        string operatorName,
+        string reason)
+    {
+        AddTranslationErrorDetails(
+            CSharpDbQueryTranslationDiagnostics.ForSetOperation(
+                operatorName,
+                reason));
+        return null!;
+    }
+
+    private static bool TryValidateDirectIntegerSetOperation(
+        ShapedQueryExpression source1,
+        ShapedQueryExpression source2,
+        out string reason)
+    {
+        if (!TryGetDirectIntegerSetOperationColumn(
+                source1,
+                "left",
+                out SetOperationColumnDescriptor left,
+                out reason) ||
+            !TryGetDirectIntegerSetOperationColumn(
+                source2,
+                "right",
+                out SetOperationColumnDescriptor right,
+                out reason))
+        {
+            return false;
+        }
+
+        if (left.ClrType != right.ClrType ||
+            left.MappingClrType != right.MappingClrType ||
+            !string.Equals(
+                left.StoreType,
+                right.StoreType,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            reason =
+                $"The branch mappings '{left.ClrType.Name}/{left.MappingClrType.Name}/{left.StoreType}' and '{right.ClrType.Name}/{right.MappingClrType.Name}/{right.StoreType}' are incompatible. Both branches must project the same direct int or long mapping.";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private static bool TryGetDirectIntegerSetOperationColumn(
+        ShapedQueryExpression source,
+        string sourceName,
+        out SetOperationColumnDescriptor descriptor,
+        out string reason)
+    {
+        descriptor = default;
+        if (source.QueryExpression is not SelectExpression
+            {
+                Tables.Count: 1,
+            } selectExpression ||
+            selectExpression.Tables[0] is not TableExpression table ||
+            selectExpression.IsDistinct ||
+            selectExpression.GroupBy.Count != 0 ||
+            selectExpression.Having is not null ||
+            selectExpression.Limit is not null ||
+            selectExpression.Offset is not null ||
+            selectExpression.Orderings.Count != 0)
+        {
+            reason =
+                $"The {sourceName} branch must be one direct mapped entity table with optional filtering and no ordering, row limits, distinct, grouping, joins, derived sources, or another set operation.";
+            return false;
+        }
+
+        Expression shaper = source.ShaperExpression;
+        if (shaper is UnaryExpression conversion)
+        {
+            Type? materializedType =
+                Nullable.GetUnderlyingType(conversion.Operand.Type);
+            if (conversion.NodeType != ExpressionType.Convert ||
+                conversion.Method is not null ||
+                materializedType != conversion.Type)
+            {
+                reason =
+                    $"The {sourceName} branch applies a CLR conversion to the projected column. Explicit boxing, numeric casts, and nullable lifts are outside the direct-column surface.";
+                return false;
+            }
+
+            shaper = conversion.Operand;
+        }
+
+        if (shaper is not
+                ProjectionBindingExpression projectionBinding ||
+            !ReferenceEquals(
+                projectionBinding.QueryExpression,
+                selectExpression) ||
+            selectExpression.GetProjection(projectionBinding)
+                is not ColumnExpression column ||
+            !string.Equals(
+                column.TableAlias,
+                table.Alias,
+                StringComparison.Ordinal))
+        {
+            reason =
+                $"The {sourceName} branch must project one direct mapped scalar column; entity, composite, constant, converted, and transformed projections are unsupported.";
+            return false;
+        }
+
+        Type clrType =
+            Nullable.GetUnderlyingType(column.Type) ??
+            column.Type;
+        Type shapedClrType =
+            Nullable.GetUnderlyingType(
+                source.ShaperExpression.Type) ??
+            source.ShaperExpression.Type;
+        bool shapedNullable =
+            Nullable.GetUnderlyingType(
+                source.ShaperExpression.Type) is not null;
+        if (shapedClrType != clrType)
+        {
+            reason =
+                $"The {sourceName} branch applies a CLR conversion to the projected column. Explicit boxing, numeric casts, and nullable lifts are outside the direct-column surface.";
+            return false;
+        }
+
+        if (clrType != typeof(int) &&
+            clrType != typeof(long))
+        {
+            reason =
+                $"The {sourceName} branch projects '{column.Type.Name}'. Only direct int, long, and nullable equivalents are qualified.";
+            return false;
+        }
+
+        if (shapedNullable != column.IsNullable)
+        {
+            reason =
+                $"The {sourceName} branch applies a CLR conversion to the projected column. Explicit boxing, numeric casts, and nullable lifts are outside the direct-column surface.";
+            return false;
+        }
+
+        if (column.TypeMapping is not
+                RelationalTypeMapping typeMapping ||
+            !string.Equals(
+                typeMapping.StoreType,
+                "INTEGER",
+                StringComparison.OrdinalIgnoreCase) ||
+            typeMapping.Converter is not null)
+        {
+            reason =
+                $"The {sourceName} branch column must use a converter-free INTEGER mapping.";
+            return false;
+        }
+
+        Type mappingClrType =
+            Nullable.GetUnderlyingType(typeMapping.ClrType) ??
+            typeMapping.ClrType;
+        if (mappingClrType != clrType)
+        {
+            reason =
+                $"The {sourceName} branch maps CLR type '{clrType.Name}' through incompatible provider type '{mappingClrType.Name}'.";
+            return false;
+        }
+
+        descriptor = new SetOperationColumnDescriptor(
+            clrType,
+            mappingClrType,
+            typeMapping.StoreType);
+        reason = string.Empty;
+        return true;
+    }
+
+    private readonly record struct SetOperationColumnDescriptor(
+        Type ClrType,
+        Type MappingClrType,
+        string StoreType);
 
     private static bool TryGetSimpleDistinctColumn(
         ShapedQueryExpression source,

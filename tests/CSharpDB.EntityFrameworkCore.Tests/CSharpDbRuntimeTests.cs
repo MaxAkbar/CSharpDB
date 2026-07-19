@@ -1553,6 +1553,215 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Queries_DirectIntegerSetOperationsTranslateWithExpectedSemantics()
+    {
+        string dbPath =
+            GetDbPath("direct-integer-set-operations");
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.People.AddRange(
+            new PersonRecord
+            {
+                Name = "Left-null",
+                OptionalRank = null,
+                Visits = 10,
+                Status = PersonStatus.Active,
+            },
+            new PersonRecord
+            {
+                Name = "Left-two-a",
+                OptionalRank = 2,
+                Visits = 20,
+                Status = PersonStatus.Active,
+            },
+            new PersonRecord
+            {
+                Name = "Left-two-b",
+                OptionalRank = 2,
+                Visits = 20,
+                Status = PersonStatus.Active,
+            },
+            new PersonRecord
+            {
+                Name = "Right-null",
+                OptionalRank = null,
+                Visits = 20,
+                Status = PersonStatus.Suspended,
+            },
+            new PersonRecord
+            {
+                Name = "Right-three",
+                OptionalRank = 3,
+                Visits = 30,
+                Status = PersonStatus.Suspended,
+            });
+        var blogWithPost = new Blog
+        {
+            Name = "With post",
+            Posts =
+            [
+                new Post
+                {
+                    Title = "First",
+                },
+            ],
+        };
+        var blogWithoutPost = new Blog
+        {
+            Name = "Without post",
+        };
+        db.Blogs.AddRange(
+            blogWithPost,
+            blogWithoutPost);
+        await db.SaveChangesAsync(Ct);
+
+        PersonStatus leftStatus =
+            PersonStatus.Active;
+        PersonStatus rightStatus =
+            PersonStatus.Suspended;
+        PersonStatus emptyStatus =
+            PersonStatus.Unknown;
+        IQueryable<int?> leftRanks = db.People
+            .Where(person =>
+                person.Status == leftStatus)
+            .Select(person =>
+                person.OptionalRank);
+        IQueryable<int?> rightRanks = db.People
+            .Where(person =>
+                person.Status == rightStatus)
+            .Select(person =>
+                person.OptionalRank);
+        IQueryable<int?> emptyRanks = db.People
+            .Where(person =>
+                person.Status == emptyStatus)
+            .Select(person =>
+                person.OptionalRank);
+
+        IQueryable<int?> union =
+            leftRanks.Union(rightRanks);
+        IQueryable<int?> concat =
+            leftRanks.Concat(rightRanks);
+        IQueryable<int?> intersect =
+            leftRanks.Intersect(rightRanks);
+        IQueryable<int?> except =
+            leftRanks.Except(rightRanks);
+
+        string unionSql = union.ToQueryString();
+        Assert.Contains(
+            "UNION",
+            unionSql,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "UNION ALL",
+            unionSql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "UNION ALL",
+            concat.ToQueryString(),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "INTERSECT",
+            intersect.ToQueryString(),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "EXCEPT",
+            except.ToQueryString(),
+            StringComparison.Ordinal);
+
+        List<int?> unionValues =
+            await union.ToListAsync(Ct);
+        Assert.Equal(
+            1,
+            unionValues.Count(value =>
+                value is null));
+        Assert.Equal(
+            [2, 3],
+            unionValues
+                .Where(value =>
+                    value.HasValue)
+                .Select(value =>
+                    value!.Value)
+                .Order());
+
+        List<int?> concatValues =
+            await concat.ToListAsync(Ct);
+        Assert.Equal(
+            2,
+            concatValues.Count(value =>
+                value is null));
+        Assert.Equal(
+            [2, 2, 3],
+            concatValues
+                .Where(value =>
+                    value.HasValue)
+                .Select(value =>
+                    value!.Value)
+                .Order());
+
+        Assert.Equal(
+            [null],
+            await intersect.ToListAsync(Ct));
+        Assert.Equal(
+            [2],
+            await except.ToListAsync(Ct));
+
+        IQueryable<int?> taggedUnion = union
+            .TagWith("bounded terminal set operation");
+        Assert.Contains(
+            "bounded terminal set operation",
+            taggedUnion.ToQueryString(),
+            StringComparison.Ordinal);
+        Assert.Equal(
+            unionValues.Order(),
+            (await taggedUnion.ToListAsync(Ct)).Order());
+
+        List<int?> emptyUnion =
+            await leftRanks
+                .Union(emptyRanks)
+                .ToListAsync(Ct);
+        Assert.Equal(
+            1,
+            emptyUnion.Count(value =>
+                value is null));
+        Assert.Equal(
+            [2],
+            emptyUnion
+                .Where(value =>
+                    value.HasValue)
+                .Select(value =>
+                    value!.Value)
+                .Order());
+
+        IQueryable<long> leftVisits = db.People
+            .Where(person =>
+                person.Status == leftStatus)
+            .Select(person =>
+                person.Visits);
+        IQueryable<long> rightVisits = db.People
+            .Where(person =>
+                person.Status == rightStatus)
+            .Select(person =>
+                person.Visits);
+        Assert.Equal(
+            [10L],
+            (await leftVisits
+                .Except(rightVisits)
+                .ToListAsync(Ct))
+                .Order());
+
+        Assert.Equal(
+            [blogWithoutPost.Id],
+            await db.Blogs
+                .Select(blog => blog.Id)
+                .Except(
+                    db.Posts.Select(post =>
+                        post.BlogId))
+                .ToListAsync(Ct));
+    }
+
+    [Fact]
     public async Task Queries_DateAndTimeComponentsTranslateInPredicatesAndProjections()
     {
         string dbPath = GetDbPath("temporal-components");
@@ -3383,6 +3592,258 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UnsupportedDirectIntegerSetOperationShapes_ReportBeforeCommandDispatch()
+    {
+        string dbPath =
+            GetDbPath("unsupported-set-operation-shapes");
+        var interceptor =
+            new ReaderCountingInterceptor();
+
+        await using var db =
+            new ProviderRuntimeContext(
+                $"Data Source={dbPath}",
+                interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+
+        IQueryable<int> leftIds = db.People
+            .Where(person =>
+                person.Active)
+            .Select(person =>
+                person.Id);
+        IQueryable<int> rightIds = db.People
+            .Where(person =>
+                !person.Active)
+            .Select(person =>
+                person.Id);
+
+        long sensitiveThreshold =
+            918273645546372819L;
+        IQueryable<long> sensitiveUnion = db.People
+            .Where(person =>
+                person.Visits > sensitiveThreshold)
+            .Select(person =>
+                person.Visits)
+            .Union(
+                db.People
+                    .Where(person =>
+                        person.Visits <=
+                        sensitiveThreshold)
+                    .Select(person =>
+                        person.Visits));
+        await AssertRejected(
+            () => sensitiveUnion
+                .Where(value =>
+                    value > 0)
+                .ToListAsync(Ct),
+            "terminal server-side query",
+            sensitiveThreshold.ToString(
+                CultureInfo.InvariantCulture));
+
+        await AssertRejected(
+            () => leftIds
+                .Union(rightIds)
+                .Select(value =>
+                    value + 1)
+                .ToListAsync(Ct),
+            "terminal server-side query");
+        await AssertRejected(
+            () => leftIds
+                .Union(rightIds)
+                .OrderBy(value =>
+                    value)
+                .ToListAsync(Ct),
+            "terminal server-side query");
+        await AssertRejected(
+            () => leftIds
+                .Union(rightIds)
+                .Take(1)
+                .ToListAsync(Ct),
+            "terminal server-side query");
+        await AssertRejected(
+            () => leftIds
+                .Union(rightIds)
+                .CountAsync(Ct),
+            "terminal server-side query");
+
+        await AssertRejected(
+            () => db.People
+                .OrderBy(person =>
+                    person.Id)
+                .Select(person =>
+                    person.Id)
+                .Union(rightIds)
+                .ToListAsync(Ct),
+            "left branch must be one direct mapped entity table");
+        await AssertRejected(
+            () => db.People
+                .Take(1)
+                .Select(person =>
+                    person.Id)
+                .Union(rightIds)
+                .ToListAsync(Ct),
+            "left branch must be one direct mapped entity table");
+        await AssertRejected(
+            () => db.People
+                .Select(person =>
+                    person.Id)
+                .Distinct()
+                .Union(rightIds)
+                .ToListAsync(Ct),
+            "left branch must be one direct mapped entity table");
+
+        await AssertRejected(
+            () => leftIds
+                .Union(rightIds)
+                .Except(leftIds)
+                .ToListAsync(Ct),
+            "Nested or chained set operations");
+        await AssertRejected(
+            () => db.People
+                .Select(person =>
+                    person.Id + 1)
+                .Union(rightIds)
+                .ToListAsync(Ct),
+            "project one direct mapped scalar column");
+        await AssertRejected(
+            () => db.People
+                .Select(person =>
+                    (object)person.Id)
+                .Union(
+                    db.People.Select(person =>
+                        (object)person.Id))
+                .ToListAsync(Ct),
+            "applies a CLR conversion");
+        await AssertRejected(
+            () => db.People
+                .Select(person => new
+                {
+                    person.Id,
+                    person.Visits,
+                })
+                .Union(
+                    db.People.Select(person =>
+                        new
+                        {
+                            person.Id,
+                            person.Visits,
+                        }))
+                .ToListAsync(Ct),
+            "project one direct mapped scalar column");
+        await AssertRejected(
+            () => db.People
+                .Where(person =>
+                    person.Active)
+                .Union(
+                    db.People.Where(person =>
+                        !person.Active))
+                .ToListAsync(Ct),
+            "project one direct mapped scalar column");
+        await AssertRejected(
+            () => db.Blogs
+                .Select(blog =>
+                    blog.Name)
+                .Union(
+                    db.Blogs.Select(blog =>
+                        blog.Name))
+                .ToListAsync(Ct),
+            "Only direct int, long, and nullable equivalents");
+        await AssertRejected(
+            () => db.People
+                .Select(person =>
+                    person.Score)
+                .Concat(
+                    db.People.Select(person =>
+                        person.Score))
+                .ToListAsync(Ct),
+            "Only direct int, long, and nullable equivalents");
+        await AssertRejected(
+            () => db.People
+                .Select(person =>
+                    person.GuidValue)
+                .Intersect(
+                    db.People.Select(person =>
+                        person.GuidValue))
+                .ToListAsync(Ct),
+            "Only direct int, long, and nullable equivalents");
+
+        await using var convertedDb =
+            new ConvertedJoinModelContext(
+                $"Data Source={GetDbPath("unsupported-converted-set-operation")}",
+                interceptor);
+        await convertedDb.Database
+            .EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+        await AssertRejected(
+            () => convertedDb.Items
+                .Select(item =>
+                    item.Code)
+                .Union(
+                    convertedDb.Items.Select(item =>
+                        item.Code))
+                .ToListAsync(Ct),
+            "converter-free INTEGER mapping");
+
+        InvalidOperationException comparerError =
+            await Assert.ThrowsAsync<
+                InvalidOperationException>(
+                () => leftIds
+                    .Union(
+                        rightIds,
+                        EqualityComparer<int>.Default)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            comparerError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Queryable.Union(comparer)",
+            comparerError.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            0,
+            interceptor.ReaderCommandCount);
+
+        async Task AssertRejected(
+            Func<Task> operation,
+            string expectedReason,
+            string? sensitiveValue = null)
+        {
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<
+                    InvalidOperationException>(
+                    operation);
+            Assert.Contains(
+                "CDBEF1009",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "bounded direct-integer surface",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                expectedReason,
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                "#linq-translation",
+                exception.Message,
+                StringComparison.Ordinal);
+            if (sensitiveValue is not null)
+            {
+                Assert.DoesNotContain(
+                    sensitiveValue,
+                    exception.Message,
+                    StringComparison.Ordinal);
+            }
+
+            Assert.Equal(
+                0,
+                interceptor.ReaderCommandCount);
+        }
+    }
+
+    [Fact]
     public async Task UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch()
     {
         string dbPath = GetDbPath("unsupported-linq");
@@ -4201,11 +4662,11 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
                             item.OptionalAmount!.Value))
                     .ToListAsync(Ct));
         Assert.Contains(
-            "CDBEF1003",
+            "CDBEF1009",
             setOperationError.Message,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Queryable.Concat",
+            "Only direct int, long, and nullable equivalents",
             setOperationError.Message,
             StringComparison.Ordinal);
         Assert.Equal(0, interceptor.ReaderCommandCount);

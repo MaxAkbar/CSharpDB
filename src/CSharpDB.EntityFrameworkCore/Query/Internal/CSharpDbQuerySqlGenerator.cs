@@ -10,6 +10,7 @@ public sealed class CSharpDbQuerySqlGenerator : QuerySqlGenerator
     private readonly Dictionary<string, (int Precision, int Scale)>
         _decimalParameterFacets =
             new(StringComparer.Ordinal);
+    private int _selectDepth;
 
     public CSharpDbQuerySqlGenerator(QuerySqlGeneratorDependencies dependencies)
         : base(dependencies)
@@ -39,6 +40,7 @@ public sealed class CSharpDbQuerySqlGenerator : QuerySqlGenerator
         Expression queryExpression)
     {
         _decimalParameterFacets.Clear();
+        _selectDepth = 0;
         base.GenerateRootCommand(queryExpression);
     }
 
@@ -71,21 +73,119 @@ public sealed class CSharpDbQuerySqlGenerator : QuerySqlGenerator
 
     protected override Expression VisitSelect(SelectExpression selectExpression)
     {
-        if (selectExpression.GroupBy.Count > 0 &&
-            FindUnsupportedGroupedSqlShape(
-                selectExpression) is
-                { } groupedShapeReason)
+        bool isRoot = _selectDepth == 0;
+        _selectDepth++;
+        try
         {
-            throw new InvalidOperationException(
-                CSharpDbQueryTranslationDiagnostics
-                    .ForGroupedAggregate(
-                        groupedShapeReason));
+            if (isRoot)
+            {
+                var setOperationFinder =
+                    new SetOperationFindingExpressionVisitor();
+                setOperationFinder.Visit(selectExpression);
+                if (setOperationFinder.Count > 0 &&
+                    (setOperationFinder.Count != 1 ||
+                     !IsBareSetOperationSelect(
+                         selectExpression)))
+                {
+                    throw new InvalidOperationException(
+                        CSharpDbQueryTranslationDiagnostics
+                            .ForSetOperation(
+                                GetSetOperationName(
+                                    setOperationFinder
+                                        .FirstOperation!),
+                                "Generated SQL would require a derived table, nested set operation, or other non-terminal set composition, which is outside CSharpDB's qualified SQL shape."));
+                }
+            }
+
+            if (selectExpression.GroupBy.Count > 0 &&
+                FindUnsupportedGroupedSqlShape(
+                    selectExpression) is
+                    { } groupedShapeReason)
+            {
+                throw new InvalidOperationException(
+                    CSharpDbQueryTranslationDiagnostics
+                        .ForGroupedAggregate(
+                            groupedShapeReason));
+            }
+
+            if (TryGenerateTopLevelExistsProjection(
+                    selectExpression))
+            {
+                return selectExpression;
+            }
+
+            return base.VisitSelect(selectExpression);
         }
+        finally
+        {
+            _selectDepth--;
+        }
+    }
 
-        if (TryGenerateTopLevelExistsProjection(selectExpression))
-            return selectExpression;
+    private static bool IsBareSetOperationSelect(
+        SelectExpression selectExpression) =>
+        selectExpression is
+        {
+            Tables: [SetOperationBase setOperation],
+            Predicate: null,
+            Orderings: [],
+            Offset: null,
+            Limit: null,
+            IsDistinct: false,
+            Having: null,
+            GroupBy: [],
+        } &&
+        selectExpression.Projection.Count ==
+            setOperation.Source1.Projection.Count &&
+        selectExpression.Projection
+            .Select((projection, index) =>
+                projection.Expression is
+                    ColumnExpression column &&
+                string.Equals(
+                    column.TableAlias,
+                    setOperation.Alias,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    column.Name,
+                    setOperation.Source1
+                        .Projection[index].Alias,
+                    StringComparison.Ordinal))
+            .All(static matches => matches);
 
-        return base.VisitSelect(selectExpression);
+    private static string GetSetOperationName(
+        SetOperationBase setOperation) =>
+        setOperation switch
+        {
+            UnionExpression
+                {
+                    IsDistinct: false,
+                } => "Queryable.Concat",
+            UnionExpression => "Queryable.Union",
+            IntersectExpression =>
+                "Queryable.Intersect",
+            ExceptExpression => "Queryable.Except",
+            _ => "Queryable.SetOperation",
+        };
+
+    private sealed class
+        SetOperationFindingExpressionVisitor
+        : ExpressionVisitor
+    {
+        public int Count { get; private set; }
+
+        public SetOperationBase? FirstOperation { get; private set; }
+
+        protected override Expression VisitExtension(
+            Expression node)
+        {
+            if (node is SetOperationBase setOperation)
+            {
+                Count++;
+                FirstOperation ??= setOperation;
+            }
+
+            return base.VisitExtension(node);
+        }
     }
 
     private static string? FindUnsupportedGroupedSqlShape(

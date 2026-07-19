@@ -100,14 +100,22 @@ public sealed class CSharpDbQueryTranslationPreprocessor
                 unsupportedLeftJoinShape);
         }
 
+        string? unsupportedSetOperationComposition =
+            CSharpDbQueryTranslationDiagnostics
+                .FindUnsupportedSetOperationComposition(query);
+        if (unsupportedSetOperationComposition is not null)
+        {
+            throw new InvalidOperationException(
+                unsupportedSetOperationComposition);
+        }
+
         string? operatorName =
             CSharpDbQueryTranslationDiagnostics.FindUnsupportedOperator(
                 query);
         if (operatorName is
-            "Queryable.Concat" or
-            "Queryable.Union" or
-            "Queryable.Except" or
-            "Queryable.Intersect" or
+            "Queryable.Union(comparer)" or
+            "Queryable.Except(comparer)" or
+            "Queryable.Intersect(comparer)" or
             "Queryable.GroupJoin" or
             "Queryable.SelectMany" or
             "Queryable.DefaultIfEmpty" or
