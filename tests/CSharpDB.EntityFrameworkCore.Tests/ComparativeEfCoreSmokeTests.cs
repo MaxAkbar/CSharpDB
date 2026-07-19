@@ -547,6 +547,94 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
             });
     }
 
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task DirectLeftJoin_PreservesUnmatchedRowsForBoundedIntegerKeys(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "direct-left-join"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 2,
+                TextCol = "outer-one",
+                Category = "Outer",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 3,
+                TextCol = "lookup-two",
+                Category = "Lookup",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 99,
+                TextCol = "lookup-three",
+                Category = "Lookup",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                Value = 2,
+                TextCol = "outer-four",
+                Category = "Outer",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                Value = 88,
+                TextCol = "unmatched",
+                Category = "Outer",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        int minimumInnerId = 2;
+        var results = await db.Rows
+            .Where(outer =>
+                outer.Category == "Outer")
+            .LeftJoin(
+                db.Rows,
+                outer => outer.Value,
+                inner => inner.Id,
+                (outer, inner) => new
+                {
+                    OuterId = outer.Id,
+                    InnerId = (int?)inner!.Id,
+                    InnerText = (string?)inner!.TextCol,
+                })
+            .Where(result =>
+                result.InnerId == null ||
+                result.InnerId >= minimumInnerId)
+            .OrderBy(result => result.OuterId)
+            .Skip(1)
+            .Take(10)
+            .ToListAsync(Ct);
+
+        Assert.Collection(
+            results,
+            result =>
+            {
+                Assert.Equal(4, result.OuterId);
+                Assert.Equal(2, result.InnerId);
+                Assert.Equal(
+                    "lookup-two",
+                    result.InnerText);
+            },
+            result =>
+            {
+                Assert.Equal(5, result.OuterId);
+                Assert.Null(result.InnerId);
+                Assert.Null(result.InnerText);
+            });
+    }
+
     private ComparisonDbContext CreateContext(ProviderKind provider, string dbPath)
         => new(provider, provider switch
         {

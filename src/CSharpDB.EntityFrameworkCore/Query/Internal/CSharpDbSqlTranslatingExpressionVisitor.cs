@@ -393,11 +393,24 @@ internal static class CSharpDbQueryTranslationDiagnostics
         "CDBEF1007: The CSharpDB EF Core provider cannot translate this inner-join shape within the bounded direct-join surface. " +
         $"{reason} Join two direct entity roots on one nonnullable INTEGER-backed int, long, or int/long-backed enum property, then apply filtering, ordering, and pagination after Join. See {DocumentationUrl}.";
 
+    public static string ForLeftJoin(string reason) =>
+        "CDBEF1008: The CSharpDB EF Core provider cannot translate this left-join shape within the bounded direct-join surface. " +
+        $"{reason} LeftJoin two direct entity roots on one nonnullable INTEGER-backed int, long, or int/long-backed enum property, use nullable unmatched-side projections, then apply filtering, ordering, and pagination after LeftJoin. See {DocumentationUrl}.";
+
     public static string? FindUnsupportedOperator(Expression expression)
     {
         var visitor = new UnsupportedOperatorFindingExpressionVisitor();
         visitor.Visit(expression);
         return visitor.OperatorName;
+    }
+
+    public static string? FindUnsupportedLeftJoinShape(
+        Expression expression)
+    {
+        var visitor =
+            new UnsupportedLeftJoinShapeFindingExpressionVisitor();
+        visitor.Visit(expression);
+        return visitor.Diagnostic;
     }
 
     public static string? FindUnsafeDecimalExpression(
@@ -528,6 +541,13 @@ internal static class CSharpDbQueryTranslationDiagnostics
                     OperatorName =
                         "Queryable.Join(comparer)";
                 }
+                else if (node.Method.Name ==
+                             "LeftJoin" &&
+                         node.Arguments.Count == 6)
+                {
+                    OperatorName =
+                        "Queryable.LeftJoin(comparer)";
+                }
                 else
                 {
                     OperatorName =
@@ -551,8 +571,6 @@ internal static class CSharpDbQueryTranslationDiagnostics
                                 "Queryable.SelectMany",
                             nameof(Queryable.DefaultIfEmpty) =>
                                 "Queryable.DefaultIfEmpty",
-                            "LeftJoin" =>
-                                "Queryable.LeftJoin",
                             "RightJoin" =>
                                 "Queryable.RightJoin",
                             _ => null,
@@ -563,6 +581,66 @@ internal static class CSharpDbQueryTranslationDiagnostics
             return OperatorName is null
                 ? base.VisitMethodCall(node)
                 : node;
+        }
+    }
+
+    private sealed class
+        UnsupportedLeftJoinShapeFindingExpressionVisitor
+        : ExpressionVisitor
+    {
+        public string? Diagnostic { get; private set; }
+
+        protected override Expression VisitMethodCall(
+            MethodCallExpression node)
+        {
+            if (Diagnostic is null &&
+                node.Method.DeclaringType ==
+                    typeof(Queryable) &&
+                node.Method.Name ==
+                    "LeftJoin" &&
+                node.Arguments.Count == 5 &&
+                (IsCompositeKeySelector(
+                    node.Arguments[2]) ||
+                 IsCompositeKeySelector(
+                    node.Arguments[3])))
+            {
+                Diagnostic = ForLeftJoin(
+                    "Composite left-join keys are not yet qualified; use one direct nonnullable mapped scalar property.");
+            }
+
+            return Diagnostic is null
+                ? base.VisitMethodCall(node)
+                : node;
+        }
+
+        private static bool IsCompositeKeySelector(
+            Expression expression)
+        {
+            while (expression is UnaryExpression
+                   {
+                       NodeType: ExpressionType.Quote,
+                   } quote)
+            {
+                expression = quote.Operand;
+            }
+
+            if (expression is not LambdaExpression selector)
+                return false;
+
+            Expression body = selector.Body;
+            while (body is UnaryExpression
+                   {
+                       NodeType:
+                           ExpressionType.Convert or
+                           ExpressionType.ConvertChecked,
+                   } conversion)
+            {
+                body = conversion.Operand;
+            }
+
+            return body is NewExpression or
+                MemberInitExpression or
+                NewArrayExpression;
         }
     }
 

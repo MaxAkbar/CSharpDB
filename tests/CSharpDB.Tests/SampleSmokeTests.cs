@@ -171,9 +171,12 @@ public sealed class SampleSmokeTests : IAsyncLifetime
 
             Assert.Equal(0, result.ExitCode);
             Assert.True(File.Exists(dbPath), "The EF Core sample did not produce the expected database file.");
-            Assert.Contains("Blogs: 2", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Blogs: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Posts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("JoinedPosts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("LeftJoinedRows: 4", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("BlogsWithoutPosts: 1", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Research|0", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("RowVersionBytes: 8", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(
                 "RowVersionAdvancedAfterRawSql: True",
@@ -185,7 +188,7 @@ public sealed class SampleSmokeTests : IAsyncLifetime
             await using (var blogCountQuery = await db.ExecuteAsync("SELECT COUNT(*) FROM Blogs;", Ct))
             {
                 var rows = await blogCountQuery.ToListAsync(Ct);
-                Assert.Equal(2L, rows[0][0].AsInteger);
+                Assert.Equal(3L, rows[0][0].AsInteger);
             }
 
             await using (var postCountQuery = await db.ExecuteAsync("SELECT COUNT(*) FROM Posts;", Ct))

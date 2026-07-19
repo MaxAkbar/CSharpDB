@@ -361,6 +361,187 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Queries_DirectLeftJoinTranslatesAndExecutes()
+    {
+        string dbPath = GetDbPath("direct-left-join");
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Blogs.AddRange(
+            new Blog
+            {
+                Name = "Alpha",
+                Posts =
+                [
+                    new Post { Title = "Welcome" },
+                    new Post { Title = "GettingStarted" },
+                ],
+            },
+            new Blog
+            {
+                Name = "Beta",
+                Posts =
+                [
+                    new Post { Title = "Roadmap" },
+                ],
+            },
+            new Blog
+            {
+                Name = "Gamma",
+            });
+        db.People.AddRange(
+            CreateNumericPerson(
+                "EnumOuter",
+                1,
+                1,
+                status: PersonStatus.Active),
+            CreateNumericPerson(
+                "EnumInner",
+                2,
+                2,
+                status: PersonStatus.Active),
+            CreateNumericPerson(
+                "EnumUnmatched",
+                3,
+                3,
+                status: PersonStatus.Unknown));
+        db.Widgets.AddRange(
+            new ManualWidget
+            {
+                Id = 42,
+                Name = "LongOuter",
+            },
+            new ManualWidget
+            {
+                Id = 43,
+                Name = "LongAlias",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string excludedBlog = "Beta";
+        string excludedTitle = "Roadmap";
+        var query = db.Blogs
+            .Where(blog =>
+                blog.Name != excludedBlog)
+            .LeftJoin(
+                db.Posts,
+                blog => blog.Id,
+                post => post.BlogId,
+                (blog, post) => new
+                {
+                    BlogName = blog.Name,
+                    Post = post,
+                    PostId = (int?)post!.Id,
+                    PostTitle = post!.Title,
+                })
+            .Where(result =>
+                result.PostId == null ||
+                result.PostTitle != excludedTitle)
+            .OrderBy(result =>
+                result.BlogName)
+            .ThenBy(result =>
+                result.PostTitle)
+            .Skip(0)
+            .Take(3);
+
+        string sql = query.ToQueryString();
+        Assert.Contains(
+            "LEFT JOIN",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+
+        var results = await query.ToListAsync(Ct);
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal(
+            ["GettingStarted", "Welcome"],
+            results
+                .Where(result =>
+                    result.BlogName == "Alpha")
+                .Select(result =>
+                    result.PostTitle));
+        Assert.All(
+            results.Where(result =>
+                result.BlogName == "Alpha"),
+            result =>
+            {
+                Assert.NotNull(result.Post);
+                Assert.NotNull(result.PostId);
+            });
+
+        var unmatched = Assert.Single(
+            results,
+            result =>
+                result.BlogName == "Gamma");
+        Assert.Null(unmatched.Post);
+        Assert.Null(unmatched.PostId);
+        Assert.Null(unmatched.PostTitle);
+
+        var enumQuery = db.People
+            .Where(person =>
+                person.Name == "EnumOuter")
+            .LeftJoin(
+                db.People,
+                outer => outer.Status,
+                inner => inner.Status,
+                (outer, inner) => new
+                {
+                    OuterName = outer.Name,
+                    InnerName = inner!.Name,
+                })
+            .OrderBy(result =>
+                result.InnerName);
+
+        Assert.Contains(
+            "LEFT JOIN",
+            enumQuery.ToQueryString(),
+            StringComparison.OrdinalIgnoreCase);
+        var enumResults =
+            await enumQuery.ToListAsync(Ct);
+        Assert.Equal(
+            ["EnumInner", "EnumOuter"],
+            enumResults.Select(result =>
+                result.InnerName));
+        Assert.All(
+            enumResults,
+            result => Assert.Equal(
+                "EnumOuter",
+                result.OuterName));
+
+        var longKeyQuery = db.Widgets
+            .Where(widget =>
+                widget.Id >= 42)
+            .LeftJoin(
+                db.Widgets,
+                outer => outer.Id,
+                inner => inner.Id,
+                (outer, inner) => new
+                {
+                    OuterName = outer.Name,
+                    InnerName = inner!.Name,
+                })
+            .OrderBy(result =>
+                result.OuterName);
+
+        Assert.Contains(
+            "LEFT JOIN",
+            longKeyQuery.ToQueryString(),
+            StringComparison.OrdinalIgnoreCase);
+        var longKeyResults =
+            await longKeyQuery.ToListAsync(Ct);
+        Assert.Equal(
+            ["LongAlias", "LongOuter"],
+            longKeyResults.Select(result =>
+                result.OuterName));
+        Assert.All(
+            longKeyResults,
+            result => Assert.Equal(
+                result.OuterName,
+                result.InnerName));
+    }
+
+    [Fact]
     public async Task UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch()
     {
         var interceptor = new ReaderCountingInterceptor();
@@ -616,7 +797,252 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task UnsupportedOuterAndCrossJoinOperators_ReportBeforeCommandDispatch()
+    public async Task UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch()
+    {
+        var interceptor = new ReaderCountingInterceptor();
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={GetDbPath("unsupported-left-join")}",
+            interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+
+        await AssertRejected(
+            () => db.Blogs
+                .LeftJoin(
+                    db.Posts.Where(post =>
+                        post.Id > 0),
+                    blog => blog.Id,
+                    post => post.BlogId,
+                    (blog, post) => blog.Name)
+                .ToListAsync(Ct),
+            "inner source cannot be pre-filtered");
+
+        await AssertRejected(
+            () => db.Posts
+                .LeftJoin(
+                    db.Blogs,
+                    post => EF.Property<int?>(
+                        post,
+                        nameof(Post.BlogId)),
+                    blog => EF.Property<int?>(
+                        blog,
+                        nameof(Blog.Id)),
+                    (post, blog) => post.Title)
+                .ToListAsync(Ct),
+            "direct mapped scalar property");
+
+        await AssertRejected(
+            () => db.Posts
+                .LeftJoin(
+                    db.Blogs.Where(blog =>
+                        blog.Id > 0),
+                    post => EF.Property<int?>(
+                        post,
+                        nameof(Post.BlogId)),
+                    blog => EF.Property<int?>(
+                        blog,
+                        nameof(Blog.Id)),
+                    (post, blog) => post.Title)
+                .ToListAsync(Ct),
+            "inner source cannot be pre-filtered");
+
+        await AssertRejected(
+            () => db.Blogs
+                .OrderBy(blog =>
+                    blog.Id)
+                .LeftJoin(
+                    db.Posts,
+                    blog => blog.Id,
+                    post => post.BlogId,
+                    (blog, post) => blog.Name)
+                .ToListAsync(Ct),
+            "outer source");
+
+        await AssertRejected(
+            () => db.Blogs
+                .LeftJoin(
+                    db.Posts,
+                    blog => new
+                    {
+                        blog.Id,
+                        Text = blog.Name,
+                    },
+                    post => new
+                    {
+                        Id = post.BlogId,
+                        Text = post.Title,
+                    },
+                    (blog, post) => blog.Name)
+                .ToListAsync(Ct),
+            "Composite left-join keys");
+
+        await AssertRejected(
+            () => db.People
+                .LeftJoin(
+                    db.People,
+                    outer => outer.OptionalRank,
+                    inner => inner.OptionalRank,
+                    (outer, inner) => outer.Name)
+                .ToListAsync(Ct),
+            "nullable");
+
+        await AssertRejected(
+            () => db.Blogs
+                .LeftJoin(
+                    db.Posts,
+                    blog => blog.Id + 0,
+                    post => post.BlogId,
+                    (blog, post) => blog.Name)
+                .ToListAsync(Ct),
+            "direct mapped scalar property");
+
+        await AssertRejected(
+            () => db.Blogs
+                .LeftJoin(
+                    db.Posts,
+                    blog => (short)blog.Id,
+                    post => (short)post.BlogId,
+                    (blog, post) => blog.Name)
+                .ToListAsync(Ct),
+            "transformed keys");
+
+        await AssertRejected(
+            () => db.Blogs
+                .LeftJoin(
+                    db.Posts,
+                    blog => blog.Name,
+                    post => post.Title,
+                    (blog, post) => blog.Id)
+                .ToListAsync(Ct),
+            "INTEGER-backed");
+
+        await AssertRejected(
+            () => db.Blogs
+                .LeftJoin(
+                    db.Posts,
+                    blog => blog.Id,
+                    post => post.BlogId,
+                    (blog, post) => new
+                    {
+                        BlogId = blog.Id,
+                        post!.Title,
+                    })
+                .LeftJoin(
+                    db.People,
+                    pair => pair.BlogId,
+                    person => person.Id,
+                    (pair, person) => pair.Title)
+                .ToListAsync(Ct),
+            "outer source");
+
+        var compositeInterceptor =
+            new ReaderCountingInterceptor();
+        await using var compositeDb =
+            new OptionalCompositeForeignKeyModelContext(
+                $"Data Source={GetDbPath("unsupported-explicit-composite-left-join")}",
+                compositeInterceptor);
+        await compositeDb.Database.EnsureCreatedAsync(Ct);
+        compositeInterceptor.Reset();
+
+        InvalidOperationException explicitCompositeError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => compositeDb.Children
+                    .LeftJoin(
+                        compositeDb.Parents,
+                        child => new object?[]
+                        {
+                            EF.Property<int?>(
+                                child,
+                                nameof(
+                                    OptionalCompositeForeignKeyChild
+                                        .TenantId)),
+                            EF.Property<int?>(
+                                child,
+                                nameof(
+                                    OptionalCompositeForeignKeyChild
+                                        .ParentNo)),
+                        },
+                        parent => new object?[]
+                        {
+                            EF.Property<int?>(
+                                parent,
+                                nameof(
+                                    OptionalCompositeForeignKeyParent
+                                        .TenantId)),
+                            EF.Property<int?>(
+                                parent,
+                                nameof(
+                                    OptionalCompositeForeignKeyParent
+                                        .ParentNo)),
+                        },
+                        (child, parent) =>
+                            child.Id)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1008",
+            explicitCompositeError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Composite left-join keys",
+            explicitCompositeError.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            0,
+            compositeInterceptor.ReaderCommandCount);
+
+        var converterInterceptor =
+            new ReaderCountingInterceptor();
+        await using var convertedDb =
+            new ConvertedJoinModelContext(
+                $"Data Source={GetDbPath("unsupported-converted-left-join")}",
+                converterInterceptor);
+        await convertedDb.Database.EnsureCreatedAsync(Ct);
+        converterInterceptor.Reset();
+
+        InvalidOperationException converterKeyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => convertedDb.Items
+                    .LeftJoin(
+                        convertedDb.Items,
+                        outer => outer.Code,
+                        inner => inner.Code,
+                        (outer, inner) => outer.Id)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1008",
+            converterKeyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "configured value converter",
+            converterKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            0,
+            converterInterceptor.ReaderCommandCount);
+
+        async Task AssertRejected(
+            Func<Task> operation,
+            string expectedReason)
+        {
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    operation);
+            Assert.Contains(
+                "CDBEF1008",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                expectedReason,
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                0,
+                interceptor.ReaderCommandCount);
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch()
     {
         var interceptor = new ReaderCountingInterceptor();
         await using var db = new ProviderRuntimeContext(
@@ -647,6 +1073,37 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
             groupJoinError.Message,
             StringComparison.Ordinal);
 
+        InvalidOperationException classicLeftJoinPatternError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .GroupJoin(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, posts) => new
+                        {
+                            Blog = blog,
+                            Posts = posts,
+                        })
+                    .SelectMany(
+                        pair => pair.Posts.DefaultIfEmpty(),
+                        (pair, post) => new
+                        {
+                            pair.Blog.Name,
+                            PostTitle = post == null
+                                ? null
+                                : post.Title,
+                        })
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            classicLeftJoinPatternError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SelectMany",
+            classicLeftJoinPatternError.Message,
+            StringComparison.Ordinal);
+
         InvalidOperationException selectManyError =
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => db.Blogs
@@ -667,22 +1124,23 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
             selectManyError.Message,
             StringComparison.Ordinal);
 
-        InvalidOperationException leftJoinError =
+        InvalidOperationException comparerLeftJoinError =
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => db.Blogs
                     .LeftJoin(
                         db.Posts,
                         blog => blog.Id,
                         post => post.BlogId,
-                        (blog, post) => blog.Name)
+                        (blog, post) => blog.Name,
+                        EqualityComparer<int>.Default)
                     .ToListAsync(Ct));
         Assert.Contains(
             "CDBEF1003",
-            leftJoinError.Message,
+            comparerLeftJoinError.Message,
             StringComparison.Ordinal);
         Assert.Contains(
-            "LeftJoin",
-            leftJoinError.Message,
+            "LeftJoin(comparer)",
+            comparerLeftJoinError.Message,
             StringComparison.Ordinal);
 
         InvalidOperationException rightJoinError =
@@ -3364,6 +3822,122 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OptionalRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal()
+    {
+        string dbPath =
+            GetDbPath("optional-client-set-null-include");
+
+        await using var db =
+            new OptionalForeignKeyModelContext(
+                $"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+
+        var parent = new OptionalForeignKeyParent();
+        parent.Children.Add(
+            new OptionalForeignKeyChild());
+        db.Parents.Add(parent);
+        db.Children.Add(
+            new OptionalForeignKeyChild());
+        await db.SaveChangesAsync(Ct);
+        db.ChangeTracker.Clear();
+
+        var query = db.Children
+            .AsNoTracking()
+            .Include(child =>
+                child.Parent)
+            .OrderBy(child =>
+                child.Id);
+        Assert.Contains(
+            "LEFT JOIN",
+            query.ToQueryString(),
+            StringComparison.OrdinalIgnoreCase);
+
+        List<OptionalForeignKeyChild> children =
+            await query.ToListAsync(Ct);
+        Assert.Equal(2, children.Count);
+
+        OptionalForeignKeyChild linked =
+            Assert.Single(
+                children,
+                child =>
+                    child.ParentId is not null);
+        Assert.NotNull(linked.Parent);
+        Assert.Equal(
+            linked.ParentId,
+            linked.Parent.Id);
+
+        OptionalForeignKeyChild orphan =
+            Assert.Single(
+                children,
+                child =>
+                    child.ParentId is null);
+        Assert.Null(orphan.Parent);
+    }
+
+    [Fact]
+    public async Task OptionalCompositeRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal()
+    {
+        string dbPath =
+            GetDbPath("optional-composite-client-set-null-include");
+
+        await using var db =
+            new OptionalCompositeForeignKeyModelContext(
+                $"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+
+        var parent = new OptionalCompositeForeignKeyParent
+        {
+            TenantId = 7,
+            ParentNo = 42,
+        };
+        parent.Children.Add(
+            new OptionalCompositeForeignKeyChild());
+        db.Parents.Add(parent);
+        db.Children.Add(
+            new OptionalCompositeForeignKeyChild
+            {
+                TenantId = 7,
+            });
+        await db.SaveChangesAsync(Ct);
+        db.ChangeTracker.Clear();
+
+        var query = db.Children
+            .AsNoTracking()
+            .Include(child =>
+                child.Parent)
+            .OrderBy(child =>
+                child.Id);
+        Assert.Contains(
+            "LEFT JOIN",
+            query.ToQueryString(),
+            StringComparison.OrdinalIgnoreCase);
+
+        List<OptionalCompositeForeignKeyChild> children =
+            await query.ToListAsync(Ct);
+        Assert.Equal(2, children.Count);
+
+        OptionalCompositeForeignKeyChild linked =
+            Assert.Single(
+                children,
+                child =>
+                    child.ParentNo is not null);
+        Assert.NotNull(linked.Parent);
+        Assert.Equal(
+            linked.TenantId,
+            linked.Parent.TenantId);
+        Assert.Equal(
+            linked.ParentNo,
+            linked.Parent.ParentNo);
+
+        OptionalCompositeForeignKeyChild orphan =
+            Assert.Single(
+                children,
+                child =>
+                    child.ParentNo is null);
+        Assert.Null(orphan.Parent);
+    }
+
+    [Fact]
     public async Task OptionalRelationship_DefaultClientSetNull_UntrackedDependentKeepsDatabaseProtection()
     {
         string dbPath = GetDbPath("optional-client-set-null-untracked");
@@ -4302,10 +4876,16 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         }
     }
 
-    private sealed class OptionalCompositeForeignKeyModelContext(
-        string connectionString)
-        : TestDbContext(connectionString)
+    private sealed class OptionalCompositeForeignKeyModelContext
+        : TestDbContext
     {
+        public OptionalCompositeForeignKeyModelContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
         public DbSet<OptionalCompositeForeignKeyParent> Parents =>
             Set<OptionalCompositeForeignKeyParent>();
 

@@ -268,12 +268,28 @@
       "name": "Bounded direct inner joins",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "One explicit Queryable.Join between sources that normalize to direct mapped entity roots supports a filtered outer source, one direct nonnullable INTEGER-backed int, long, or int/long-backed enum key per side, qualified scalar or entity result projections, and post-join filtering, ordering, and Skip/Take pagination. Integer-key behavior is cross-checked with SQLite, and enum, long-key, and self-join aliases are covered. Filtered inner sources, prior ordering or row limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/configured-converter/transformed/composite keys, custom comparers, chained joins, GroupJoin, SelectMany, DefaultIfEmpty, and left/right joins are rejected before command dispatch with CDBEF1007 or CDBEF1003.",
+      "summary": "One explicit Queryable.Join between sources that normalize to direct mapped entity roots supports a filtered outer source, one direct nonnullable INTEGER-backed int, long, or int/long-backed enum key per side, qualified scalar or entity result projections, and post-join filtering, ordering, and Skip/Take pagination. Integer-key behavior is cross-checked with SQLite, and enum, long-key, and self-join aliases are covered. Filtered inner sources, prior ordering or row limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/configured-converter/transformed/composite keys, custom comparers, chained joins, GroupJoin, SelectMany, DefaultIfEmpty, RightJoin, and cross joins are rejected before command dispatch with CDBEF1007 or CDBEF1003.",
       "proofTests": [
         "Queries_DirectInnerJoinTranslatesAndExecutes",
         "DirectInnerJoin_MatchesForBoundedIntegerKeys",
         "UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch",
-        "UnsupportedOuterAndCrossJoinOperators_ReportBeforeCommandDispatch"
+        "UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch"
+      ]
+    },
+    {
+      "id": "query.direct-left-joins",
+      "category": "Query operators and methods",
+      "name": "Bounded direct left joins",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "One explicit no-comparer Queryable.LeftJoin between sources that normalize to direct mapped entity roots supports a filtered outer source, an unfiltered inner source, one compatible direct nonnullable INTEGER-backed int, long, or int/long-backed enum key per side, duplicate matches, unmatched outer rows, nullable inner entity/reference/explicitly-nullable scalar projections, and post-join filtering, ordering, and Skip/Take pagination. Navigation-generated left joins used by Include remain supported. Filtered inner sources, prior ordering or row limits, derived/projected sources, nullable/text/configured-converter/transformed/composite keys, chained joins, custom comparers, the classic GroupJoin/SelectMany/DefaultIfEmpty pattern, RightJoin, and cross joins are rejected before command dispatch with CDBEF1008 or CDBEF1003.",
+      "proofTests": [
+        "Queries_DirectLeftJoinTranslatesAndExecutes",
+        "DirectLeftJoin_PreservesUnmatchedRowsForBoundedIntegerKeys",
+        "UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch",
+        "UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch",
+        "OptionalRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal",
+        "OptionalCompositeRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal"
       ]
     },
     {
@@ -350,14 +366,15 @@
       "name": "Unsupported LINQ diagnostics",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "Unsupported CLR methods and members, recognized TakeWhile/SkipWhile, Concat/Union/Except/Intersect, Join(comparer), GroupJoin/SelectMany/DefaultIfEmpty/LeftJoin/RightJoin, and ExecuteUpdate operators, unsupported distinct/grouped/inner-join shapes, and unsafe decimal expressions retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1007 guidance before command dispatch.",
+      "summary": "Unsupported CLR methods and members, recognized TakeWhile/SkipWhile, Concat/Union/Except/Intersect, Join(comparer), LeftJoin(comparer), GroupJoin/SelectMany/DefaultIfEmpty/RightJoin, and ExecuteUpdate operators, unsupported distinct/grouped/inner-join/left-join shapes, and unsafe decimal expressions retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1008 guidance before command dispatch.",
       "proofTests": [
         "UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch",
         "UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch",
         "UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch",
         "UnsupportedDecimalExpressions_ReportBeforeCommandDispatch",
         "UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch",
-        "UnsupportedOuterAndCrossJoinOperators_ReportBeforeCommandDispatch"
+        "UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch",
+        "UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch"
       ]
     },
     {
@@ -366,7 +383,7 @@
       "name": "Advanced LINQ translation",
       "status": "Planned",
       "tier": "tier2",
-      "summary": "String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, broader distinct and grouped aggregate types and shapes, set operations, composite/chained/outer/cross or derived-source joins, and correlated-query coverage remain planned.",
+      "summary": "String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, broader distinct and grouped aggregate types and shapes, set operations, composite/chained/right/cross or derived-source joins, broader left-join shapes, and correlated-query coverage remain planned.",
       "proofTests": []
     },
     {

@@ -91,6 +91,15 @@ public sealed class CSharpDbQueryTranslationPreprocessor
                 unsafeGroupedAggregate);
         }
 
+        string? unsupportedLeftJoinShape =
+            CSharpDbQueryTranslationDiagnostics
+                .FindUnsupportedLeftJoinShape(query);
+        if (unsupportedLeftJoinShape is not null)
+        {
+            throw new InvalidOperationException(
+                unsupportedLeftJoinShape);
+        }
+
         string? operatorName =
             CSharpDbQueryTranslationDiagnostics.FindUnsupportedOperator(
                 query);
@@ -102,7 +111,7 @@ public sealed class CSharpDbQueryTranslationPreprocessor
             "Queryable.GroupJoin" or
             "Queryable.SelectMany" or
             "Queryable.DefaultIfEmpty" or
-            "Queryable.LeftJoin" or
+            "Queryable.LeftJoin(comparer)" or
             "Queryable.RightJoin" or
             "Queryable.Join(comparer)" or
             "RelationalQueryableExtensions.ExecuteUpdate")

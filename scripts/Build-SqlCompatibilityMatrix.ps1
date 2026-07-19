@@ -157,7 +157,7 @@ Add-HtmlLine $builder "                <h1>$(ConvertTo-HtmlText $manifest.title)
 Add-HtmlLine $builder "                <p class=`"lead`">$(ConvertTo-HtmlText $manifest.description)</p>"
 if ($state -eq 'development') {
     Add-HtmlLine $builder '                <div class="callout callout-warning">'
-    Add-HtmlLine $builder '                    <strong>Development preview.</strong> This page describes the audited main-branch snapshot below, not the latest released package. No released compatibility snapshot has been published yet.'
+    Add-HtmlLine $builder '                    <strong>Development preview.</strong> This page describes the audited development snapshot below, not the latest released package. Released snapshots remain available in the per-version archives.'
     Add-HtmlLine $builder '                </div>'
 }
 else {

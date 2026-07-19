@@ -30,6 +30,11 @@ if (!await db.Blogs.AnyAsync())
             [
                 new Post { Title = "Backup runbook" },
             ],
+        },
+        new Blog
+        {
+            Name = "Research",
+            MonthlyBudget = 500.00m,
         });
 
     await db.SaveChangesAsync();
@@ -52,6 +57,22 @@ var joinedPosts = await db.Blogs
     .OrderBy(item => item.BlogName)
     .ThenBy(item => item.Title)
     .ToListAsync();
+var leftJoinedRows = await db.Blogs
+    .LeftJoin(
+        db.Posts,
+        blog => blog.Id,
+        post => post.BlogId,
+        (blog, post) => new
+        {
+            BlogName = blog.Name,
+            PostId = (int?)post!.Id,
+            PostTitle = post!.Title,
+        })
+    .OrderBy(item => item.BlogName)
+    .ThenBy(item => item.PostTitle)
+    .ToListAsync();
+int blogsWithoutPosts = leftJoinedRows
+    .Count(item => item.PostId is null);
 
 Blog engineering = blogs.Single(blog => blog.Name == "Engineering");
 byte[] rowVersionBeforeRawSql = engineering.RowVersion.ToArray();
@@ -68,6 +89,8 @@ Console.WriteLine($"Database: {Path.GetFullPath(databasePath)}");
 Console.WriteLine($"Blogs: {blogs.Count}");
 Console.WriteLine($"Posts: {await db.Posts.CountAsync()}");
 Console.WriteLine($"JoinedPosts: {joinedPosts.Count}");
+Console.WriteLine($"LeftJoinedRows: {leftJoinedRows.Count}");
+Console.WriteLine($"BlogsWithoutPosts: {blogsWithoutPosts}");
 Console.WriteLine($"RowVersionBytes: {rowVersionAfterRawSql.Length}");
 Console.WriteLine(
     $"RowVersionAdvancedAfterRawSql: {!rowVersionBeforeRawSql.SequenceEqual(rowVersionAfterRawSql)}");

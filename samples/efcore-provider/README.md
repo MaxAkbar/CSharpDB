@@ -8,6 +8,7 @@ This sample shows the embedded EF Core 10 provider running against a file-backed
 - exact `decimal(18, 2)` mapping through provider-owned scaled-integer storage
 - collection navigation loading with `Include(...)`
 - a direct two-entity `Join(...)` over nonnullable integer keys
+- a direct two-entity `LeftJoin(...)` that preserves a blog without posts
 - documented guidance for the conventional optional-relationship `ClientSetNull` pattern
 - database-generated `[Timestamp]`/rowversion concurrency, including raw SQL updates
 - design-time context creation for `dotnet ef`
@@ -22,13 +23,16 @@ Expected output looks like:
 
 ```text
 Database: C:\...\efcore-provider.db
-Blogs: 2
+Blogs: 3
 Posts: 3
 JoinedPosts: 3
+LeftJoinedRows: 4
+BlogsWithoutPosts: 1
 RowVersionBytes: 8
 RowVersionAdvancedAfterRawSql: True
 Engineering|2
 Operations|1
+Research|0
 ```
 
 ## First Migration
@@ -87,6 +91,9 @@ NULL` is not supported.
   eight-byte, big-endian per-row revisions rather than SQL Server's
   database-wide counter. Inner joins are limited to one direct `Join` over
   nonnullable `int`, `long`, or `int`/`long`-backed enum keys; filtered inner
-  sources, composite/chained joins, and outer/cross joins remain unsupported.
+  sources and composite/chained joins remain unsupported. The same bounded
+  key and source rules apply to one direct `LeftJoin`, with nullable
+  unmatched-side projections; other outer joins and cross joins remain
+  unsupported.
 
 For the full provider guide and supported-feature matrix, see the [EF Core Provider guide](https://csharpdb.com/docs/entity-framework-core.html).

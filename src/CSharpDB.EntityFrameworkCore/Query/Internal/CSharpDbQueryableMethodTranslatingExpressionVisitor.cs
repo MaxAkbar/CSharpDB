@@ -385,6 +385,130 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         return translation;
     }
 
+    protected override ShapedQueryExpression? TranslateLeftJoin(
+        ShapedQueryExpression outer,
+        ShapedQueryExpression inner,
+        LambdaExpression outerKeySelector,
+        LambdaExpression innerKeySelector,
+        LambdaExpression resultSelector)
+    {
+        if (IsNavigationExpansionJoin(
+                outerKeySelector,
+                innerKeySelector,
+                resultSelector) &&
+            TryRecognizeNavigationExpansionJoinKeys(
+                outerKeySelector,
+                innerKeySelector,
+                outer,
+                inner,
+                out _,
+                out _))
+        {
+            return base.TranslateLeftJoin(
+                outer,
+                inner,
+                outerKeySelector,
+                innerKeySelector,
+                resultSelector);
+        }
+
+        if (!TryValidateInnerJoinSource(
+                outer,
+                allowPredicate: true,
+                "outer",
+                out string reason,
+                "LeftJoin") ||
+            !TryValidateInnerJoinSource(
+                inner,
+                allowPredicate: false,
+                "inner",
+                out reason,
+                "LeftJoin"))
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForLeftJoin(reason));
+            return null;
+        }
+
+        if (!TryValidateInnerJoinKey(
+                outerKeySelector,
+                "outer",
+                out InnerJoinKeyDescriptor outerKey,
+                out reason,
+                "left-join") ||
+            !TryValidateInnerJoinKey(
+                innerKeySelector,
+                "inner",
+                out InnerJoinKeyDescriptor innerKey,
+                out reason,
+                "left-join"))
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForLeftJoin(reason));
+            return null;
+        }
+
+        if (outerKey.ClrType !=
+                innerKey.ClrType ||
+            outerKey.ProviderClrType !=
+            innerKey.ProviderClrType)
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForLeftJoin(
+                        $"The key mappings use incompatible CLR/provider types '{outerKey.ClrType.Name}/{outerKey.ProviderClrType.Name}' and '{innerKey.ClrType.Name}/{innerKey.ProviderClrType.Name}'. Both sides must use the same direct INTEGER-backed mapping."));
+            return null;
+        }
+
+        ShapedQueryExpression? translation =
+            base.TranslateLeftJoin(
+                outer,
+                inner,
+                outerKeySelector,
+                innerKeySelector,
+                resultSelector);
+        if (translation is null)
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics
+                    .ForLeftJoin(
+                        "The direct equality predicate or result projection could not be translated by the qualified scalar translation surface."));
+        }
+
+        return translation;
+    }
+
+    private static bool IsNavigationExpansionJoin(
+        LambdaExpression outerKeySelector,
+        LambdaExpression innerKeySelector,
+        LambdaExpression resultSelector)
+    {
+        // EF Core 10 navigation expansion creates fresh transparent-identifier
+        // parameters, while an explicit Queryable.LeftJoin reuses its key
+        // parameters. Preserve that identity boundary so user-authored
+        // EF.Property selectors cannot enter the navigation-only bypass.
+        Type resultType =
+            resultSelector.Body.Type;
+        return outerKeySelector.Parameters.Count == 1 &&
+            innerKeySelector.Parameters.Count == 1 &&
+            resultSelector.Parameters.Count == 2 &&
+            resultType.IsGenericType &&
+            string.Equals(
+                resultType
+                    .GetGenericTypeDefinition()
+                    .FullName,
+                "Microsoft.EntityFrameworkCore.Query.TransparentIdentifierFactory+TransparentIdentifier`2",
+                StringComparison.Ordinal) &&
+            !ReferenceEquals(
+                outerKeySelector.Parameters[0],
+                resultSelector.Parameters[0]) &&
+            !ReferenceEquals(
+                innerKeySelector.Parameters[0],
+                resultSelector.Parameters[1]);
+    }
+
     private ShapedQueryExpression? TranslateSimpleDistinctAggregate(
         ShapedQueryExpression source,
         string aggregateName,
@@ -736,7 +860,8 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         ShapedQueryExpression source,
         bool allowPredicate,
         string sourceName,
-        out string reason)
+        out string reason,
+        string joinOperatorName = "Join")
     {
         if (source.QueryExpression is not SelectExpression
             {
@@ -764,7 +889,7 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
             selectExpression.Predicate is not null)
         {
             reason =
-                "The inner source cannot be pre-filtered because EF Core represents that shape as a derived JOIN target, which is outside CSharpDB's qualified SQL grammar. Move the predicate after Join.";
+                $"The inner source cannot be pre-filtered because EF Core represents that shape as a derived JOIN target, which is outside CSharpDB's qualified SQL grammar. Move the predicate after {joinOperatorName}.";
             return false;
         }
 
@@ -776,7 +901,8 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         LambdaExpression keySelector,
         string selectorName,
         out InnerJoinKeyDescriptor descriptor,
-        out string reason)
+        out string reason,
+        string joinKind = "inner-join")
     {
         descriptor = default;
         if (keySelector.Parameters.Count != 1 ||
@@ -792,10 +918,11 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
             StripInnerJoinKeyBoxing(
                 keySelector.Body);
         if (expression is NewExpression or
-            MemberInitExpression)
+            MemberInitExpression or
+            NewArrayExpression)
         {
             reason =
-                "Composite inner-join keys are not yet qualified; use one direct nonnullable mapped scalar property.";
+                $"Composite {joinKind} keys are not yet qualified; use one direct nonnullable mapped scalar property.";
             return false;
         }
 
@@ -912,60 +1039,139 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         innerDescriptor = default;
         reason = string.Empty;
 
-        if (outer.ShaperExpression is not
-                RelationalStructuralTypeShaperExpression
-                {
-                    StructuralType: IEntityType outerEntityType,
-                } ||
-            inner.ShaperExpression is not
-                RelationalStructuralTypeShaperExpression
-                {
-                    StructuralType: IEntityType innerEntityType,
-                } ||
-            !TryGetNavigationExpansionProperty(
+        if (!TryRecognizeNavigationExpansionJoinKeys(
                 outerKeySelector,
-                outerEntityType,
-                out IProperty outerProperty) ||
-            !TryGetNavigationExpansionProperty(
                 innerKeySelector,
-                innerEntityType,
-                out IProperty innerProperty) ||
-            !IsSinglePropertyForeignKeyPair(
-                outerEntityType,
-                outerProperty,
-                innerEntityType,
-                innerProperty))
+                outer,
+                inner,
+                out IReadOnlyList<IProperty> outerProperties,
+                out IReadOnlyList<IProperty> innerProperties) ||
+            outerProperties.Count != 1 ||
+            innerProperties.Count != 1)
         {
             return false;
         }
 
         return TryValidateInnerJoinProperty(
-                outerProperty,
-                outerProperty.ClrType,
+                outerProperties[0],
+                outerProperties[0].ClrType,
                 "outer navigation",
                 out outerDescriptor,
                 out reason) &&
             TryValidateInnerJoinProperty(
-                innerProperty,
-                innerProperty.ClrType,
+                innerProperties[0],
+                innerProperties[0].ClrType,
                 "inner navigation",
                 out innerDescriptor,
                 out reason);
     }
 
-    private static bool TryGetNavigationExpansionProperty(
+    private static bool TryRecognizeNavigationExpansionJoinKeys(
+        LambdaExpression outerKeySelector,
+        LambdaExpression innerKeySelector,
+        ShapedQueryExpression outer,
+        ShapedQueryExpression inner,
+        out IReadOnlyList<IProperty> outerProperties,
+        out IReadOnlyList<IProperty> innerProperties)
+    {
+        outerProperties = [];
+        innerProperties = [];
+
+        return outer.ShaperExpression is
+                RelationalStructuralTypeShaperExpression
+                {
+                    StructuralType: IEntityType outerEntityType,
+                } &&
+            inner.ShaperExpression is
+                RelationalStructuralTypeShaperExpression
+                {
+                    StructuralType: IEntityType innerEntityType,
+                } &&
+            TryGetNavigationExpansionProperties(
+                outerKeySelector,
+                outerEntityType,
+                out outerProperties) &&
+            TryGetNavigationExpansionProperties(
+                innerKeySelector,
+                innerEntityType,
+                out innerProperties) &&
+            IsForeignKeyPropertyPair(
+                outerEntityType,
+                outerProperties,
+                innerEntityType,
+                innerProperties);
+    }
+
+    private static bool TryGetNavigationExpansionProperties(
         LambdaExpression keySelector,
+        IEntityType sourceEntityType,
+        out IReadOnlyList<IProperty> properties)
+    {
+        properties = [];
+        if (keySelector.Parameters.Count != 1 ||
+            sourceEntityType.ClrType !=
+            keySelector.Parameters[0].Type)
+        {
+            return false;
+        }
+
+        ParameterExpression parameter =
+            keySelector.Parameters[0];
+        if (TryGetNavigationExpansionProperty(
+                keySelector.Body,
+                parameter,
+                sourceEntityType,
+                out IProperty property))
+        {
+            properties = [property];
+            return true;
+        }
+
+        if (keySelector.Body is not NewArrayExpression
+            {
+                NodeType: ExpressionType.NewArrayInit,
+                Type: var arrayType,
+                Expressions.Count: > 1,
+            } array ||
+            arrayType != typeof(object[]))
+        {
+            return false;
+        }
+
+        var resolvedProperties =
+            new List<IProperty>(
+                array.Expressions.Count);
+        foreach (Expression expression in
+                 array.Expressions)
+        {
+            if (!TryGetNavigationExpansionProperty(
+                    StripInnerJoinKeyBoxing(expression),
+                    parameter,
+                    sourceEntityType,
+                    out property))
+            {
+                return false;
+            }
+
+            resolvedProperties.Add(property);
+        }
+
+        properties = resolvedProperties;
+        return true;
+    }
+
+    private static bool TryGetNavigationExpansionProperty(
+        Expression expression,
+        ParameterExpression parameter,
         IEntityType sourceEntityType,
         out IProperty property)
     {
-        // Navigation expansion emits an unboxed EF.Property<T?> call.
-        // Keep this exact shape so user-authored, object-boxed Join selectors
-        // still pass through the bounded public-Join validation.
+        // Navigation expansion emits EF.Property<T?> for each FK/PK member.
+        // Composite keys are wrapped in an object[] with object conversions.
+        // Keep these exact shapes so ordinary public Join/LeftJoin selectors
+        // still pass through their bounded direct-key validation.
         property = null!;
-        if (keySelector.Parameters.Count != 1 ||
-            sourceEntityType.ClrType !=
-            keySelector.Parameters[0].Type ||
-            keySelector.Body is not MethodCallExpression
+        if (expression is not MethodCallExpression
             {
                 Method:
                 {
@@ -983,15 +1189,17 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
                 ],
             } propertyCall ||
             declaringType != typeof(EF) ||
-            Nullable.GetUnderlyingType(propertyCall.Type) is not
-                Type selectorType ||
             !ReferenceEquals(
                 StripInnerJoinKeyBoxing(entityExpression),
-                keySelector.Parameters[0]))
+                parameter))
         {
             return false;
         }
 
+        Type selectorType =
+            Nullable.GetUnderlyingType(
+                propertyCall.Type) ??
+            propertyCall.Type;
         IProperty? resolvedProperty =
             sourceEntityType.FindProperty(propertyName);
         if (resolvedProperty is null ||
@@ -1006,40 +1214,47 @@ public sealed class CSharpDbQueryableMethodTranslatingExpressionVisitor
         return true;
     }
 
-    private static bool IsSinglePropertyForeignKeyPair(
+    private static bool IsForeignKeyPropertyPair(
         IEntityType outerEntityType,
-        IProperty outerProperty,
+        IReadOnlyList<IProperty> outerProperties,
         IEntityType innerEntityType,
-        IProperty innerProperty) =>
-        IsSinglePropertyForeignKeyPairInDirection(
+        IReadOnlyList<IProperty> innerProperties) =>
+        IsForeignKeyPropertyPairInDirection(
             outerEntityType,
-            outerProperty,
+            outerProperties,
             innerEntityType,
-            innerProperty) ||
-        IsSinglePropertyForeignKeyPairInDirection(
+            innerProperties) ||
+        IsForeignKeyPropertyPairInDirection(
             innerEntityType,
-            innerProperty,
+            innerProperties,
             outerEntityType,
-            outerProperty);
+            outerProperties);
 
-    private static bool IsSinglePropertyForeignKeyPairInDirection(
+    private static bool IsForeignKeyPropertyPairInDirection(
         IEntityType dependentEntityType,
-        IProperty dependentProperty,
+        IReadOnlyList<IProperty> dependentProperties,
         IEntityType principalEntityType,
-        IProperty principalProperty) =>
+        IReadOnlyList<IProperty> principalProperties) =>
+        dependentProperties.Count ==
+            principalProperties.Count &&
+        dependentProperties.Count > 0 &&
         dependentEntityType.GetForeignKeys().Any(
             foreignKey =>
-                foreignKey.Properties.Count == 1 &&
-                foreignKey.PrincipalKey.Properties.Count == 1 &&
+                foreignKey.Properties.Count ==
+                    dependentProperties.Count &&
+                foreignKey.PrincipalKey.Properties.Count ==
+                    principalProperties.Count &&
                 ReferenceEquals(
                     foreignKey.PrincipalEntityType,
                     principalEntityType) &&
-                ReferenceEquals(
-                    foreignKey.Properties[0],
-                    dependentProperty) &&
-                ReferenceEquals(
-                    foreignKey.PrincipalKey.Properties[0],
-                    principalProperty));
+                foreignKey.Properties
+                    .SequenceEqual(
+                        dependentProperties,
+                        ReferenceEqualityComparer.Instance) &&
+                foreignKey.PrincipalKey.Properties
+                    .SequenceEqual(
+                        principalProperties,
+                        ReferenceEqualityComparer.Instance));
 
     private static bool IsQualifiedInnerJoinKeyType(
         Type type)

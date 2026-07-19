@@ -353,20 +353,26 @@ bounded-shape `Any`, `Sum` over `int`, `double`, and nullable `double`,
 cross-checked against SQLite. `Math.Round(double)` uses midpoint-to-even
 semantics, and translated math functions propagate SQL NULL.
 
-One explicit `Queryable.Join` is qualified between sources that normalize to
-direct mapped entity roots.
-The outer root may have an optional `Where`; the inner root must remain
-unfiltered because EF Core otherwise emits a derived-table join target that
-CSharpDB's current table-reference grammar does not accept. Each side must use
-one direct nonnullable `int`, `long`, or `int`/`long`-backed enum property
-backed by `INTEGER` with compatible provider mappings. Qualified scalar or entity result projections
-and post-join filtering, ordering, and `Skip`/`Take` are supported, including
-self-joins. Filtered inner sources, prior ordering or limits, source shapes
-that remain projected or derived after EF normalization,
-nullable/text/decimal/configured-converter/transformed or
-composite keys, custom comparers, chained joins, `GroupJoin`, `SelectMany`, `DefaultIfEmpty`,
-and left/right joins fail before command dispatch with `CDBEF1007` or
-`CDBEF1003`.
+One explicit `Queryable.Join` and one explicit no-comparer
+`Queryable.LeftJoin` are qualified between sources that normalize to direct
+mapped entity roots. The outer root may have an optional `Where`; the inner
+root must remain unfiltered because EF Core otherwise emits a derived-table
+join target that CSharpDB's current table-reference grammar does not accept.
+Each side must use one direct nonnullable `int`, `long`, or
+`int`/`long`-backed enum property backed by `INTEGER` with compatible provider
+mappings. Qualified scalar or entity result projections and post-join
+filtering, ordering, and `Skip`/`Take` are supported, including self-joins.
+
+`LeftJoin` preserves duplicate matches and unmatched outer rows. An unmatched
+inner entity and its reference-type projections materialize as `null`;
+value-type projections from the inner side must be explicitly nullable or
+coalesced, such as `(int?)post.Id`. Navigation-generated left joins used by
+`Include` remain supported. Filtered inner sources, prior ordering or limits,
+source shapes that remain projected or derived after EF normalization,
+nullable/text/decimal/configured-converter/transformed or composite keys,
+custom comparers, chained joins, the classic
+`GroupJoin`/`SelectMany`/`DefaultIfEmpty` pattern, `RightJoin`, and cross joins
+fail before command dispatch with `CDBEF1007`, `CDBEF1008`, or `CDBEF1003`.
 
 The bounded distinct-aggregate shape is an optional `Where`, selection of one
 directly mapped nonnullable `int` column, `Distinct`, then `Count`,
@@ -408,11 +414,12 @@ provider guidance:
 |------|---------|
 | `CDBEF1001` | Unsupported CLR method |
 | `CDBEF1002` | Unsupported CLR member |
-| `CDBEF1003` | Recognized unsupported query operator: `TakeWhile`, `SkipWhile`, `Concat`, `Union`, `Except`, `Intersect`, `Join(comparer)`, `GroupJoin`, `SelectMany`, `DefaultIfEmpty`, `LeftJoin`, `RightJoin`, or `ExecuteUpdate` |
+| `CDBEF1003` | Recognized unsupported query operator: `TakeWhile`, `SkipWhile`, `Concat`, `Union`, `Except`, `Intersect`, `Join(comparer)`, `LeftJoin(comparer)`, `GroupJoin`, `SelectMany`, `DefaultIfEmpty`, `RightJoin`, or `ExecuteUpdate` |
 | `CDBEF1004` | Unsupported distinct aggregate shape |
 | `CDBEF1005` | Unsupported grouped aggregate shape |
 | `CDBEF1006` | Unsupported decimal operation outside the exact scaled-integer foundation |
 | `CDBEF1007` | Unsupported inner-join shape outside the bounded direct-join surface |
+| `CDBEF1008` | Unsupported left-join shape outside the bounded direct-join surface |
 
 When client evaluation is intentional, apply selective supported filters
 first, then call `AsEnumerable()` explicitly before the unsupported portion.
@@ -443,7 +450,7 @@ an entire table.
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
 | Exact decimal mapping | Partial | Provider-owned scaled `INTEGER` storage for precision 1–18; exact round trips, parameters, comparisons, and ordering |
-| Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner joins and the string, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, aggregate shapes, and join shapes receive provider diagnostics |
+| Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins and the string, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, aggregate shapes, and join shapes receive provider diagnostics |
 | Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
 
 ## Current Limitations
@@ -454,9 +461,11 @@ an entire table.
   formally qualified
 - `ExecuteUpdate` is rejected until assignment conversions and decimal facets
   are formally qualified
-- inner joins are limited to one direct `Join` over a nonnullable `int`, `long`,
-  or `int`/`long`-backed enum key; filtered inner sources, derived/composite/chained joins,
-  `GroupJoin`, outer joins, and cross joins remain unsupported
+- direct joins are limited to one `Join` or no-comparer `LeftJoin` over a
+  nonnullable `int`, `long`, or `int`/`long`-backed enum key; filtered inner
+  sources, derived/composite/chained joins, classic
+  `GroupJoin`/`SelectMany`/`DefaultIfEmpty`, right joins, and cross joins remain
+  unsupported
 - optional relationships support client-side `ClientSetNull`; database-side
   `DeleteBehavior.SetNull`/`ON DELETE SET NULL` remains unsupported
 - schemas are unsupported in runtime and migrations
