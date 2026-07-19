@@ -27,8 +27,9 @@ embedded file-backed or private in-memory CSharpDB databases.
   role keys
 
 This package is intentionally scoped as a v1 embedded provider. It does not
-target daemon/client transports, pooled connections, or broad schema-rebuild
-emulation.
+target daemon/client transports or broad schema-rebuild emulation. Provider-
+created file connections use a warm embedded-engine pool by default; specify
+`Pooling=false` to request a physical close after each EF operation.
 
 ## Installation
 
@@ -593,7 +594,10 @@ an entire table.
 - physical `INTEGER` primary-key rekeying supports ready ordinary/unique SQL,
   constraint-owned, and foreign-key-support indexes; full-text, collection, and
   non-ready indexes are rejected
-- pooled connections are rejected
+- provider-created file connections are pooled by default; logical close resets
+  connection-scoped state, persistent queries use committed snapshot readers
+  during data-only writes, schema changes are serialized against those readers,
+  and `ClearPool`/`ClearAllPools` performs the physical checkpoint and WAL cleanup
 - named shared-memory databases (`:memory:<name>`) are rejected
 - transaction savepoints are unsupported; the provider reports
   `SupportsSavepoints == false`, allowing ordinary explicit-transaction
@@ -616,7 +620,7 @@ Before deployment:
 
 - pin the qualified CSharpDB and EF Core patch versions
 - use a file-backed or correctly lifetime-managed private in-memory database;
-  do not configure pooling, endpoint, daemon, or named shared-memory transports
+  do not configure endpoint, daemon, or named shared-memory transports
 - review the generated compatibility matrix for every model, migration, LINQ,
   type-mapping, concurrency, and application feature the workload uses
 - generate and review migrations, run the idempotent deployment script twice

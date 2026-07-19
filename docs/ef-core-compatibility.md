@@ -94,8 +94,9 @@ Statuses describe the current provider behavior. A planned feature is not availa
 | Feature | Status | Tier | Contract | Proof tests |
 | --- | --- | --- | --- | --- |
 | Explicit transactions and savepoint boundary | Partial | tier1 | Explicit EF Core transactions support SaveChanges plus commit and rollback. The provider advertises SupportsSavepoints as false so EF Core does not issue automatic savepoints inside an explicit transaction; manual savepoint APIs report NotSupportedException without dispatching unsupported SQL. | ExplicitTransaction_SaveChangesCanCommitAndRollback, ExplicitSavepointApis_ReportUnsupportedCapability |
+| File connection pooling | Supported | tier1 | Provider-created file connections enable pooling by default and reuse one warm embedded engine across EF-managed logical open/close cycles. Explicit Pooling=false remains supported. EnsureDeleted retires the matching pool before file deletion and supports recreating the database afterward. The lower-level logical-session lifecycle and concurrency boundaries are documented by CSharpDB.Data. | ProviderCreatedFileConnection_UsesPoolingAndReusesWarmDatabase, ProviderCreatedFileConnection_RespectsExplicitPoolingFalse, EnsureDeleted_DefaultPooledFile_RetiresPoolAndSupportsRecreation |
 | File-backed embedded databases | Supported | tier1 | UseCSharpDb supports direct embedded file-backed databases. | EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds |
 | Private in-memory databases | Supported | tier1 | A private :memory: database is supported while its supplied connection remains open. | UseCSharpDb_WithPrivateMemoryConnection_SupportsRuntimeOperations |
-| Remote transports, pooling, and named shared memory | Unsupported | tier3 | The provider rejects endpoint, non-direct, pooled, and named shared-memory configurations. | ProviderValidation_RejectsUnsupportedConnectionConfigurations |
+| Remote transports and named shared memory | Unsupported | tier3 | The provider rejects endpoint, non-direct, and named shared-memory configurations. | ProviderValidation_RejectsUnsupportedConnectionConfigurations |
 
-Manifest rows: 40.
+Manifest rows: 41.

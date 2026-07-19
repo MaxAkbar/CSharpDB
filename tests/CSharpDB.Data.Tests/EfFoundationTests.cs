@@ -39,13 +39,13 @@ public sealed class EfFoundationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task OpenAsync_PooledFileConnection_KeepsRemoteSession()
+    public async Task OpenAsync_PooledFileConnection_UsesPooledDatabaseSession()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath};Pooling=true;Max Pool Size=1");
 
         await conn.OpenAsync(Ct);
 
-        Assert.IsType<RemoteDatabaseSession>(conn.GetSession());
+        Assert.IsType<PooledDatabaseSession>(conn.GetSession());
     }
 
     [Fact]

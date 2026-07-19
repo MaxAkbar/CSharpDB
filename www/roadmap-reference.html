@@ -298,7 +298,7 @@
                 </tr>
                 <tr>
                 <td><strong>Connection pooling</strong></td>
-                <td>Pool underlying direct embedded sessions behind <code>CSharpDbConnection</code> to amortize open/close cost</td>
+                <td>Multiplex logical <code>CSharpDbConnection</code> sessions over one warm embedded engine to amortize physical open/close cost</td>
                 <td>Done</td>
                 </tr>
                 <tr>

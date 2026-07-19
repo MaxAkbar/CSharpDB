@@ -34,12 +34,25 @@
       "proofTests": ["UseCSharpDb_WithPrivateMemoryConnection_SupportsRuntimeOperations"]
     },
     {
-      "id": "runtime.remote-and-pooling",
+      "id": "runtime.connection-pooling",
       "category": "Runtime and connections",
-      "name": "Remote transports, pooling, and named shared memory",
+      "name": "File connection pooling",
+      "status": "Supported",
+      "tier": "tier1",
+      "summary": "Provider-created file connections enable pooling by default and reuse one warm embedded engine across EF-managed logical open/close cycles. Explicit Pooling=false remains supported. EnsureDeleted retires the matching pool before file deletion and supports recreating the database afterward. The lower-level logical-session lifecycle and concurrency boundaries are documented by CSharpDB.Data.",
+      "proofTests": [
+        "ProviderCreatedFileConnection_UsesPoolingAndReusesWarmDatabase",
+        "ProviderCreatedFileConnection_RespectsExplicitPoolingFalse",
+        "EnsureDeleted_DefaultPooledFile_RetiresPoolAndSupportsRecreation"
+      ]
+    },
+    {
+      "id": "runtime.remote-and-named-shared-memory",
+      "category": "Runtime and connections",
+      "name": "Remote transports and named shared memory",
       "status": "Unsupported",
       "tier": "tier3",
-      "summary": "The provider rejects endpoint, non-direct, pooled, and named shared-memory configurations.",
+      "summary": "The provider rejects endpoint, non-direct, and named shared-memory configurations.",
       "proofTests": ["ProviderValidation_RejectsUnsupportedConnectionConfigurations"]
     },
     {

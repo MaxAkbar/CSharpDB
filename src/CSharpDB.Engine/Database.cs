@@ -1230,9 +1230,17 @@ public sealed class Database : IAsyncDisposable
     /// Caller must dispose the returned ReaderSession when done.
     /// </summary>
     public ReaderSession CreateReaderSession()
+        => CreateReaderSession(
+            CaptureSnapshotRowCounts(),
+            allowCurrentCatalogRowCounts: true);
+
+    internal ReaderSession CreateReaderSession(
+        IReadOnlyDictionary<string, long> snapshotRowCounts,
+        bool allowCurrentCatalogRowCounts)
     {
+        ArgumentNullException.ThrowIfNull(snapshotRowCounts);
+
         var snapshot = _pager.AcquireReaderSnapshot();
-        var snapshotRowCounts = CaptureSnapshotRowCounts();
         return new ReaderSession(
             _pager,
             _catalog,
@@ -1241,8 +1249,12 @@ public sealed class Database : IAsyncDisposable
             _statementCache,
             _functions,
             _planner.AdaptiveQueryReoptimization,
-            snapshotRowCounts);
+            snapshotRowCounts,
+            allowCurrentCatalogRowCounts);
     }
+
+    internal IReadOnlyDictionary<string, long> CaptureReaderSnapshotRowCounts() =>
+        CaptureSnapshotRowCounts();
 
     private Dictionary<string, long> CaptureSnapshotRowCounts()
     {
@@ -1265,6 +1277,9 @@ public sealed class Database : IAsyncDisposable
 
     internal IDisposable EnterTemporaryTableSessionScope(object sessionKey) =>
         _temporaryTables.EnterSessionScope(sessionKey);
+
+    internal bool HasTemporaryTablesForCurrentSession =>
+        _temporaryTables.GetTableNames().Count != 0;
 
     internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
@@ -2233,6 +2248,7 @@ public sealed class Database : IAsyncDisposable
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
         private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
+        private readonly bool _allowCurrentCatalogRowCounts;
         private readonly AdaptiveQueryReoptimizationOptions _adaptiveQueryReoptimization;
         private Pager? _snapshotPager;
         private QueryPlanner? _planner;
@@ -2249,7 +2265,8 @@ public sealed class Database : IAsyncDisposable
             StatementCache statementCache,
             DbFunctionRegistry functions,
             AdaptiveQueryReoptimizationOptions adaptiveQueryReoptimization,
-            IReadOnlyDictionary<string, long> snapshotRowCounts)
+            IReadOnlyDictionary<string, long> snapshotRowCounts,
+            bool allowCurrentCatalogRowCounts)
         {
             _pager = pager;
             _catalog = catalog;
@@ -2263,6 +2280,7 @@ public sealed class Database : IAsyncDisposable
             _snapshot = snapshot;
             _adaptiveQueryReoptimization = adaptiveQueryReoptimization;
             _snapshotRowCounts = snapshotRowCounts;
+            _allowCurrentCatalogRowCounts = allowCurrentCatalogRowCounts;
         }
 
         /// <summary>
@@ -2451,7 +2469,8 @@ public sealed class Database : IAsyncDisposable
                 return true;
             }
 
-            if (_catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
+            if (_allowCurrentCatalogRowCounts &&
+                _catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
             {
                 result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
                 return true;

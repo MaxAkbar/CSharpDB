@@ -68,7 +68,7 @@
                 <p class="lead"><code>CSharpDB.EntityFrameworkCore</code> is an embedded-only Entity Framework Core 10 provider built on top of <code>CSharpDB.Data</code>. Use standard EF Core <code>DbContext</code>, migrations, change tracking, and LINQ patterns against local CSharpDB databases.</p>
 
                 <div class="callout callout-info">
-                    <strong>Scope:</strong> the provider supports file-backed databases and private in-memory databases. It does not target daemon, client, endpoint, or pooled connection transports.
+                    <strong>Scope:</strong> the provider supports file-backed databases and private in-memory databases. Provider-created file connections use a warm embedded-engine pool by default. Daemon, client, endpoint, and named shared-memory transports remain outside the provider scope.
                 </div>
                 <p>Use the generated <a href="ef-core-compatibility.html">EF Core compatibility matrix</a> as the authoritative, evidence-backed support boundary for production qualification.</p>
 
@@ -159,6 +159,12 @@ var options = new DbContextOptionsBuilder&lt;BloggingContext&gt;()
 await using var db = new BloggingContext(options);
                 await db.Database.EnsureCreatedAsync();</code></pre>
                 </div>
+                <p>Provider-created file connections enable pooling unless the
+connection string explicitly sets <code>Pooling=false</code>. EF Core can continue
+its normal logical open/close pattern while CSharpDB retains one warm embedded
+engine. Logical close rolls back unfinished transactions and clears
+session-scoped temporary state; <code>CSharpDbConnection.ClearPool</code> and
+<code>ClearAllPools</code> perform the physical close and WAL cleanup.</p>
 
                 <h2 id="transactions">Explicit Transactions</h2>
                 <p><code>SaveChanges</code>, commit, and rollback work inside explicit EF Core transactions. CSharpDB does not implement transaction savepoints, so the provider advertises <code>SupportsSavepoints == false</code> and EF Core skips its automatic pre-<code>SaveChanges</code> savepoint.</p>
@@ -360,6 +366,7 @@ public sealed class Document
                     <tbody>
                         <tr><td>Embedded runtime provider</td><td>Yes</td><td>No daemon or remote transports</td></tr>
                         <tr><td>File-backed databases</td><td>Yes</td><td>Primary supported runtime and migration mode</td></tr>
+                        <tr><td>File connection pooling</td><td>Yes</td><td>Provider-created connections enable pooling by default; <code>Pooling=false</code> remains available for an explicit physical-close lifecycle</td></tr>
                         <tr><td>Private <code>:memory:</code> runtime</td><td>Yes</td><td>Requires an open <code>CSharpDbConnection</code></td></tr>
                         <tr><td><code>EnsureCreated()</code></td><td>Yes</td><td>File-backed and private in-memory</td></tr>
                         <tr><td><code>Database.Migrate()</code></td><td>Yes</td><td>File-backed only</td></tr>
@@ -399,7 +406,6 @@ public sealed class Document
                     <li>Integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads are outside the qualified translation surface.</li>
                     <li>Long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants, integer <code>Average</code>, text <code>Min</code>/<code>Max</code>, and broader distinct/grouped aggregate types and shapes remain outside the qualified surface.</li>
                     <li>Physical <code>INTEGER</code> primary-key rekeying supports ready ordinary/unique SQL, constraint-owned, and foreign-key-support indexes; full-text, collection, and non-ready indexes are rejected.</li>
-                    <li>Pooled connections are rejected by the EF Core provider.</li>
                     <li>Named shared-memory databases (<code>:memory:&lt;name&gt;</code>) are rejected.</li>
                     <li>Endpoint, daemon, and non-direct transports are rejected.</li>
                     <li>Transaction savepoints are unsupported. The provider reports that capability accurately so ordinary explicit-transaction <code>SaveChanges</code> calls do not issue savepoint SQL.</li>

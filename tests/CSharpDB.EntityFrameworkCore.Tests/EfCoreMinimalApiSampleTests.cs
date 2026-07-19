@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using CSharpDB.Data;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -64,6 +65,8 @@ public sealed class EfCoreMinimalApiSampleTests
                 Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
             }
 
+            await CSharpDbConnection.ClearPoolAsync($"Data Source={databasePath}");
+
             Assert.True(
                 File.Exists(databasePath),
                 "The minimal API did not create the configured database file.");
@@ -92,6 +95,7 @@ public sealed class EfCoreMinimalApiSampleTests
         }
         finally
         {
+            await CSharpDbConnection.ClearPoolAsync($"Data Source={databasePath}");
             await DeleteIfExistsAsync(databasePath);
             await DeleteIfExistsAsync(databasePath + ".wal");
 

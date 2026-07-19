@@ -212,16 +212,38 @@ Pooling note:
 
 - file-backed pooling is now options-aware
 - distinct explicit options object instances do not share a pool in v1
+- one warm embedded engine is multiplexed across pooled logical sessions
+- `Max Pool Size` limits simultaneous logical sessions over that engine
+- persistent queries stream from committed WAL snapshots, so a reader does not
+  block data-only writes and does not observe their uncommitted changes
+- persistent schema changes report the database as busy while a snapshot reader
+  is active; after a session attempts schema DDL inside an explicit transaction,
+  other sessions cannot start reads until that transaction commits or rolls back
+- a logical session that owns temporary-table state reports the database as busy
+  while another session owns an explicit write transaction, because that
+  temporary state cannot be combined safely with the committed persistent
+  snapshot
+- opening the same file with an incompatible pooled configuration replaces an
+  idle pool and is rejected while connections from the prior configuration
+  remain open
+- pooled and explicitly non-pooled physical ownership cannot overlap for the
+  same file; a non-pooled open retires an idle pool and is rejected while pooled
+  logical sessions remain open
 - `ClearPool(connectionString)` clears all pooled entries for the normalized
   file-backed target
 
 ## Connection Pooling (Opt-In)
 
-Connection pooling is disabled by default. Enable it explicitly in the connection string:
+Connection pooling is disabled by default for standalone ADO.NET callers. Enable
+it explicitly in the connection string:
 
 ```bash
 Data Source=myapp.db;Pooling=true;Max Pool Size=16
 ```
+
+Provider-created EF Core file connections enable pooling by default. Add
+`Pooling=false` to the EF connection string when a physical close after each
+operation is required.
 
 To force-release pooled physical connections (for example before deleting database files):
 

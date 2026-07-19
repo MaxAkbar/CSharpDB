@@ -196,7 +196,8 @@ open connection held for the timed run</li>
 one externally-owned open connection reused across short-lived <code>DbContext</code>
 instances</li>
 <li><code>--efcore-compare-auto-open-close</code>: the same insert shapes with EF-managed
-auto-open/close left in the measurement</li>
+logical auto-open/close, pool checkout, session reset, and return left in the
+measurement; both providers enable pooling</li>
 <li>CSharpDB EF Core provider versus SQLite EF Core provider in both cases</li>
 </ul>
 <p>Important limitation:</p>
@@ -332,7 +333,8 @@ question again. It is isolating provider-layer overhead.</p>
 <li>one open connection held for the whole timed run in <code>--efcore-compare</code>, or</li>
 <li>one externally-owned open connection reused across short-lived contexts in
 <code>--efcore-compare-hybrid-shared-connection</code>, or</li>
-<li>EF-managed auto-open/close in <code>--efcore-compare-auto-open-close</code></li>
+<li>EF-managed logical auto-open/close with pooling enabled for both providers in
+<code>--efcore-compare-auto-open-close</code></li>
 </ul>
 </li>
 <li>one <code>SaveChangesAsync()</code> loop</li>

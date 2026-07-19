@@ -215,7 +215,9 @@ NULL` is not supported.
 
 - Runtime + migrations: file-backed databases
 - Runtime only: private `:memory:` when you supply and keep open a `CSharpDbConnection`
-- Unsupported in v1: pooled connections, named shared-memory databases,
+- Provider-created file connections use pooling by default; specify
+  `Pooling=false` to request a physical close after each EF operation.
+- Unsupported in v1: named shared-memory databases,
   endpoint/daemon transports, schemas, computed/default SQL columns,
   decimal keys/arithmetic/aggregates, and precision/scale-changing migrations.
   Rowversion supports one nonnullable `byte[]` property configured with

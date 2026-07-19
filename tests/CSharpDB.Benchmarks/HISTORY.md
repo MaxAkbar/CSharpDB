@@ -1024,7 +1024,7 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 | `--concurrent-adonet-compare` | CSharpDB ADO.NET vs SQLite ADO.NET | Shared-memory, non-durable | `4` or `8` concurrent writer tasks | Provider-host overhead comparison without file durability costs |
 | `--efcore-compare` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | Steady-state ORM-layer insert comparison with one open connection per timed run |
 | `--efcore-compare-hybrid-shared-connection` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | Short-lived `DbContext` comparison with one externally-owned open connection reused for the timed run |
-| `--efcore-compare-auto-open-close` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | EF-managed connection-lifecycle comparison where each `SaveChangesAsync` can auto-open/close |
+| `--efcore-compare-auto-open-close` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL`; pooling enabled for both | Single writer | EF-managed logical connection-lifecycle comparison including pool checkout, session reset, and return |
 | `--native-aot-insert-compare` | CSharpDB ADO.NET vs CSharpDB NativeAOT FFI vs SQLite ADO.NET | File-backed, durable | Single writer | Isolates managed-provider overhead versus direct native FFI on the CSharpDB side |
 
 ### Single Writer vs Multi Writer
@@ -1045,7 +1045,34 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 - The EF Core comparison is currently single-writer only. It is a `SaveChangesAsync` insert benchmark, not a concurrent writer benchmark.
 - The EF Core harness opens one connection per provider/context for the timed run so it measures steady-state `SaveChangesAsync` cost instead of repeated per-save connection open/close cost.
 - The separate `--efcore-compare-hybrid-shared-connection` harness keeps one externally-owned open connection alive for the timed run while creating a fresh `DbContext` for each save. That isolates `DbContext` lifetime cost from physical connection open cost.
-- The separate `--efcore-compare-auto-open-close` harness keeps the same single-writer durable workload but leaves connection lifetime under EF's default management so repeated auto-open/close cost stays in the measurement.
+- The separate `--efcore-compare-auto-open-close` harness keeps the same single-writer durable workload but leaves connection lifetime under EF's default management. Both providers enable pooling, so it measures logical open/close, pool checkout/return, and session-reset cost rather than repeated physical database reopen.
+
+#### July 19, 2026 EF Auto-Open/Close Pooling Diagnosis
+
+The physical-reopen baseline
+`efcore-compare-auto-open-close-20260719-162725.csv` used
+`Pooling=false` for both providers. After CSharpDB adopted a warm embedded-engine
+pool, the final repeat-three run enabled pooling for both providers and wrote
+`efcore-compare-auto-open-close-20260719-180133-median-of-3.csv`.
+The build-output CSV files are not committed; this table is the durable result
+record:
+
+| Provider and workload | Physical-reopen P50 | Final pooled P50 | Final pooled throughput |
+|-----------------------|--------------------:|-----------------:|------------------------:|
+| CSharpDB single insert | 31.4129 ms | 3.5798 ms | 269.3 ops/sec |
+| SQLite single insert | 17.4332 ms | 3.4126 ms | 288.1 ops/sec |
+| CSharpDB batch 100 | 33.1151 ms | 4.0749 ms | 23,348.9 rows/sec |
+| SQLite batch 100 | 18.9045 ms | 4.2992 ms | 22,445.7 rows/sec |
+
+The final pooled workloads are near parity: CSharpDB trails the tested SQLite
+single-insert throughput by 6.5% and leads batch-100 throughput by 4.0%. The
+remaining visible tail target is CSharpDB batch P99.9 (36.4038 ms versus
+SQLite's 10.9271 ms).
+
+A focused BenchmarkDotNet rerun of
+`AdoNetBenchmarks.ConnectionOpenClose_*` after the lifecycle rewrite measured a
+9.298 ms mean with pooling disabled and a 2.499 us mean for a pooled logical
+open/close cycle (10 measured iterations after 3 warmups).
 
 ### CSharpDB Engine Semantics In These Comparisons
 
@@ -1064,7 +1091,7 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 - `--concurrent-adonet-compare` answers "how much concurrency overhead comes from the provider layer itself when durability is removed?"
 - `--efcore-compare` answers "what is the steady-state ORM-layer delta for `SaveChangesAsync` inserts on the two providers when the connection is already open?"
 - `--efcore-compare-hybrid-shared-connection` answers "what is the ORM-layer delta when each unit of work gets a short-lived `DbContext`, but the underlying connection stays open?"
-- `--efcore-compare-auto-open-close` answers "what is the ORM-layer delta when EF owns the connection lifetime and each save may pay open/close cost?"
+- `--efcore-compare-auto-open-close` answers "what is the ORM-layer delta when EF owns the logical connection lifetime and each provider reuses its warm pooled database resources?"
 - `--native-aot-insert-compare` answers "how much managed ADO.NET overhead remains versus a native CSharpDB call surface?"
 
 ### Validation Coverage

@@ -19,6 +19,8 @@ version4.2.0 advances `CSharpDB.EntityFrameworkCore` from a credible baseline to
 ### Application and Package Qualification
 
 - Qualified explicit transaction commit and rollback behavior and documented that savepoints are unsupported.
+- Added warm embedded-engine connection pooling for EF-created file connections, including logical-session cleanup, streamed committed-snapshot readers for data-only concurrency, serialized schema changes, poisoned-engine eviction after failed resets, bounded concurrent leases, explicit opt-out, and physical checkpoint/WAL cleanup through the pool-clear APIs.
+- Against the pooling-disabled physical-reopen baseline, the repeat-three EF-managed auto-open/close comparison reduced CSharpDB median single-insert latency from 31.41 ms to 3.58 ms and batch-100 latency from 33.12 ms to 4.07 ms. Final pooled throughput reached 269 single inserts/sec and 23,349 batch rows/sec, placing the tested workloads within about 7% of SQLite. A focused ADO.NET lifecycle rerun measured 9.298 ms for physical open/close and 2.499 us for the pooled logical cycle.
 - Added a bounded ASP.NET Core Identity readiness profile for schema version 1 with integer user and role keys, including the seven-table store workflow, relationships, claims, logins, tokens, concurrency stamps, cancellation, rollback, cascade cleanup, and reopen persistence.
 - Added a runnable ASP.NET Core minimal API sample and an in-process HTTP compatibility test that proves CRUD and persistence across host restarts.
 - Added a package-only consumer gate that restores freshly packed NuGet artifacts and exercises CRUD, reopen, `dotnet ef migrations add`, script generation, and database update without project references.

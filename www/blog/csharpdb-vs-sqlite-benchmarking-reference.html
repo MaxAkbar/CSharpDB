@@ -305,7 +305,8 @@
                 one externally-owned open connection reused across short-lived <code>DbContext</code>
                 instances</li>
                 <li><code>--efcore-compare-auto-open-close</code>: the same insert shapes with EF-managed
-                auto-open/close left in the measurement</li>
+                logical auto-open/close, pool checkout, session reset, and return
+                left in the measurement; both providers enable pooling</li>
                 <li>CSharpDB EF Core provider versus SQLite EF Core provider</li>
                 <li>CSharpDB EF Core configured with <code>UseStoragePreset(WriteOptimized)</code> and
                 <code>UseEmbeddedOpenMode(Direct)</code></li>

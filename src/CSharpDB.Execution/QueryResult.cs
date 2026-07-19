@@ -204,6 +204,16 @@ public sealed class QueryResult : IAsyncDisposable
         _disposeCallback = disposeCallback;
     }
 
+    internal void AppendDisposeCallback(Func<ValueTask> disposeCallback)
+    {
+        ArgumentNullException.ThrowIfNull(disposeCallback);
+
+        Func<ValueTask>? existing = _disposeCallback;
+        _disposeCallback = existing is null
+            ? disposeCallback
+            : () => InvokeDisposeCallbacksAsync(existing, disposeCallback);
+    }
+
     internal void SetExecutionScopeFactory(Func<IDisposable> executionScopeFactory)
     {
         ArgumentNullException.ThrowIfNull(executionScopeFactory);
@@ -562,26 +572,50 @@ public sealed class QueryResult : IAsyncDisposable
 
     private async ValueTask DisposeOperatorAsync()
     {
-        if (_operator != null)
+        try
         {
-            using IDisposable? scope = EnterExecutionScope();
-            await _operator.DisposeAsync();
+            if (_operator != null)
+            {
+                using IDisposable? scope = EnterExecutionScope();
+                await _operator.DisposeAsync();
+            }
         }
-
-        if (_disposeCallback != null)
-            await _disposeCallback();
+        finally
+        {
+            if (_disposeCallback != null)
+                await _disposeCallback();
+        }
     }
 
     private async ValueTask DisposeBatchOperatorAsync()
     {
-        if (_batchOperator != null)
+        try
         {
-            using IDisposable? scope = EnterExecutionScope();
-            await _batchOperator.DisposeAsync();
+            if (_batchOperator != null)
+            {
+                using IDisposable? scope = EnterExecutionScope();
+                await _batchOperator.DisposeAsync();
+            }
         }
+        finally
+        {
+            if (_disposeCallback != null)
+                await _disposeCallback();
+        }
+    }
 
-        if (_disposeCallback != null)
-            await _disposeCallback();
+    private static async ValueTask InvokeDisposeCallbacksAsync(
+        Func<ValueTask> first,
+        Func<ValueTask> second)
+    {
+        try
+        {
+            await first();
+        }
+        finally
+        {
+            await second();
+        }
     }
 
     private sealed class MaterializedRowsOperator : IOperator, IMaterializedRowsProvider, IEstimatedRowCountProvider

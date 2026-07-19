@@ -64,7 +64,7 @@
                 <div class="ef-meta">
                     <div><span>Provider</span><code>CSharpDB.EntityFrameworkCore</code></div>
                     <div><span>Qualified EF Core version</span>10.0.10</div>
-                    <div><span>Manifest rows</span>40</div>
+                    <div><span>Manifest rows</span>41</div>
                 </div>
                 <p>Read the <a href="entity-framework-core.html">provider guide</a> for setup and usage, then use this generated matrix as the authoritative public support boundary. The versioned <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/docs/ef-core-compatibility.json">manifest JSON</a> and <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/docs/ef-core-compatibility.schema.json">JSON Schema</a> remain the machine-readable sources.</p>
                 <h2>Support tiers</h2>
@@ -87,7 +87,7 @@
                     <label><span class="sr-only">Filter status</span><select id="ef-status"><option value="">All statuses</option><option value="supported">Supported</option><option value="partial">Partial</option><option value="unsupported">Unsupported</option><option value="planned">Planned</option></select></label>
                     <label><span class="sr-only">Filter tier</span><select id="ef-tier"><option value="">All tiers</option><option value="tier1">Tier 1</option><option value="tier2">Tier 2</option><option value="tier3">Tier 3</option></select></label>
                 </div>
-                <p id="ef-visible-count" aria-live="polite">Showing 40 feature rows.</p>
+                <p id="ef-visible-count" aria-live="polite">Showing 41 feature rows.</p>
                 <section class="ef-category">
                     <h2>Application compatibility</h2>
                     <div class="ef-table-wrap">
@@ -735,6 +735,21 @@
                                         </details>
                                     </td>
                                 </tr>
+                                <tr class="ef-feature-row" id="feature-runtime.connection-pooling" data-status="supported" data-tier="tier1" data-search="runtime.connection-pooling runtime and connections file connection pooling supported tier1 provider-created file connections enable pooling by default and reuse one warm embedded engine across ef-managed logical open/close cycles. explicit pooling=false remains supported. ensuredeleted retires the matching pool before file deletion and supports recreating the database afterward. the lower-level logical-session lifecycle and concurrency boundaries are documented by csharpdb.data. providercreatedfileconnection_usespoolingandreuseswarmdatabase providercreatedfileconnection_respectsexplicitpoolingfalse ensuredeleted_defaultpooledfile_retirespoolandsupportsrecreation">
+                                    <td><span class="ef-feature-name">File connection pooling</span><span class="ef-feature-id">runtime.connection-pooling</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Provider-created file connections enable pooling by default and reuse one warm embedded engine across EF-managed logical open/close cycles. Explicit Pooling=false remains supported. EnsureDeleted retires the matching pool before file deletion and supports recreating the database afterward. The lower-level logical-session lifecycle and concurrency boundaries are documented by CSharpDB.Data.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>ProviderCreatedFileConnection_UsesPoolingAndReusesWarmDatabase</code></li>
+                                                <li><code>ProviderCreatedFileConnection_RespectsExplicitPoolingFalse</code></li>
+                                                <li><code>EnsureDeleted_DefaultPooledFile_RetiresPoolAndSupportsRecreation</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
                                 <tr class="ef-feature-row" id="feature-runtime.file-backed" data-status="supported" data-tier="tier1" data-search="runtime.file-backed runtime and connections file-backed embedded databases supported tier1 usecsharpdb supports direct embedded file-backed databases. ensurecreated_filebackedcrudandtyperoundtrip_succeeds">
                                     <td><span class="ef-feature-name">File-backed embedded databases</span><span class="ef-feature-id">runtime.file-backed</span></td>
                                     <td><span class="ef-badge ef-badge-supported">Supported</span></td>
@@ -761,12 +776,12 @@
                                         </details>
                                     </td>
                                 </tr>
-                                <tr class="ef-feature-row" id="feature-runtime.remote-and-pooling" data-status="unsupported" data-tier="tier3" data-search="runtime.remote-and-pooling runtime and connections remote transports, pooling, and named shared memory unsupported tier3 the provider rejects endpoint, non-direct, pooled, and named shared-memory configurations. providervalidation_rejectsunsupportedconnectionconfigurations">
-                                    <td><span class="ef-feature-name">Remote transports, pooling, and named shared memory</span><span class="ef-feature-id">runtime.remote-and-pooling</span></td>
+                                <tr class="ef-feature-row" id="feature-runtime.remote-and-named-shared-memory" data-status="unsupported" data-tier="tier3" data-search="runtime.remote-and-named-shared-memory runtime and connections remote transports and named shared memory unsupported tier3 the provider rejects endpoint, non-direct, and named shared-memory configurations. providervalidation_rejectsunsupportedconnectionconfigurations">
+                                    <td><span class="ef-feature-name">Remote transports and named shared memory</span><span class="ef-feature-id">runtime.remote-and-named-shared-memory</span></td>
                                     <td><span class="ef-badge ef-badge-unsupported">Unsupported</span></td>
                                     <td><span class="ef-tier">Tier 3</span></td>
                                     <td>
-                                        <p>The provider rejects endpoint, non-direct, pooled, and named shared-memory configurations.</p>
+                                        <p>The provider rejects endpoint, non-direct, and named shared-memory configurations.</p>
                                         <details><summary>1 automated proof test(s)</summary>
                                             <ul class="ef-proof-list">
                                                 <li><code>ProviderValidation_RejectsUnsupportedConnectionConfigurations</code></li>

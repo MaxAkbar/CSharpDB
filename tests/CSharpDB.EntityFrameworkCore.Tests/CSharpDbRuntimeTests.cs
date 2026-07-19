@@ -89,6 +89,100 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ProviderCreatedFileConnection_UsesPoolingAndReusesWarmDatabase()
+    {
+        string dbPath = GetDbPath("default-pooling");
+        string connectionString = $"Data Source={dbPath}";
+
+        await using (var first = new ProviderRuntimeContext(connectionString))
+        {
+            CSharpDbConnection connection =
+                Assert.IsType<CSharpDbConnection>(first.Database.GetDbConnection());
+            Assert.True(new CSharpDbConnectionStringBuilder(connection.ConnectionString).Pooling);
+
+            await first.Database.EnsureCreatedAsync(Ct);
+            first.Widgets.Add(new ManualWidget
+            {
+                Id = 7,
+                Name = "pooled",
+            });
+            await first.SaveChangesAsync(Ct);
+
+            Assert.Equal(System.Data.ConnectionState.Closed, connection.State);
+            Assert.Equal(1, CSharpDbConnection.GetIdlePoolSizeForTest(connection.ConnectionString));
+        }
+
+        await using var second = new ProviderRuntimeContext(connectionString);
+        Assert.Equal("pooled", await second.Widgets
+            .Where(widget => widget.Id == 7)
+            .Select(widget => widget.Name)
+            .SingleAsync(Ct));
+    }
+
+    [Fact]
+    public void ProviderCreatedFileConnection_RespectsExplicitPoolingFalse()
+    {
+        string dbPath = GetDbPath("pooling-disabled");
+        using var db = new ProviderRuntimeContext($"Data Source={dbPath};Pooling=false");
+
+        CSharpDbConnection connection =
+            Assert.IsType<CSharpDbConnection>(db.Database.GetDbConnection());
+
+        Assert.False(new CSharpDbConnectionStringBuilder(connection.ConnectionString).Pooling);
+    }
+
+    [Fact]
+    public async Task EnsureDeleted_DefaultPooledFile_RetiresPoolAndSupportsRecreation()
+    {
+        string dbPath = GetDbPath("ensure-deleted-default-pooling");
+        string connectionString = $"Data Source={dbPath}";
+
+        await using (var db = new ProviderRuntimeContext(connectionString))
+        {
+            Assert.True(await db.Database.EnsureCreatedAsync(Ct));
+            db.Widgets.Add(new ManualWidget
+            {
+                Id = 1,
+                Name = "before-delete",
+            });
+            await db.SaveChangesAsync(Ct);
+
+            CSharpDbConnection connection =
+                Assert.IsType<CSharpDbConnection>(db.Database.GetDbConnection());
+            Assert.True(new CSharpDbConnectionStringBuilder(connection.ConnectionString).Pooling);
+            Assert.Equal(System.Data.ConnectionState.Closed, connection.State);
+            Assert.Equal(1, CSharpDbConnection.GetIdlePoolSizeForTest(connection.ConnectionString));
+            Assert.True(File.Exists(dbPath));
+
+            await db.Database.OpenConnectionAsync(Ct);
+            Assert.Equal(System.Data.ConnectionState.Open, connection.State);
+
+            Assert.True(await db.Database.EnsureDeletedAsync(Ct));
+
+            Assert.Equal(System.Data.ConnectionState.Closed, connection.State);
+            Assert.False(File.Exists(dbPath));
+            Assert.False(File.Exists(dbPath + ".wal"));
+            Assert.Equal(0, CSharpDbConnection.GetIdlePoolSizeForTest(connection.ConnectionString));
+
+            Assert.True(await db.Database.EnsureCreatedAsync(Ct));
+            db.Widgets.Add(new ManualWidget
+            {
+                Id = 2,
+                Name = "after-recreate",
+            });
+            await db.SaveChangesAsync(Ct);
+        }
+
+        await using var reopened = new ProviderRuntimeContext(connectionString);
+        Assert.Equal(
+            ["after-recreate"],
+            await reopened.Widgets
+                .OrderBy(widget => widget.Id)
+                .Select(widget => widget.Name)
+                .ToListAsync(Ct));
+    }
+
+    [Fact]
     public async Task Queries_IncludePaginationAndContainsOverConstantsAndParameters_Succeed()
     {
         string dbPath = GetDbPath("queries");
@@ -5250,7 +5344,6 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData("Data Source=provider.db;Pooling=true", "pooled connections")]
     [InlineData("Data Source=:memory:shared", "named shared-memory")]
     [InlineData("Data Source=provider.db;Transport=Http", "direct embedded transports")]
     [InlineData("Endpoint=http://localhost:5123;Transport=Http", "Endpoint connections")]

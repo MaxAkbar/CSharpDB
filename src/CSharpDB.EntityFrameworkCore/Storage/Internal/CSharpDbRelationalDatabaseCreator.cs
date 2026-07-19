@@ -44,16 +44,24 @@ public sealed class CSharpDbRelationalDatabaseCreator : RelationalDatabaseCreato
     public override void Delete()
         => DeleteAsync().GetAwaiter().GetResult();
 
-    public override Task DeleteAsync(CancellationToken cancellationToken = default)
+    public override async Task DeleteAsync(CancellationToken cancellationToken = default)
     {
         string? filePath = TryGetFilePath();
         if (filePath is null)
-            return Task.CompletedTask;
+            return;
 
-        if (File.Exists(filePath))
-            File.Delete(filePath);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.CompletedTask;
+        // A logically closed pooled connection can still own the embedded database
+        // and its WAL. Close this context's logical connection first, then retire
+        // the matching warm pool before removing either file.
+        await Dependencies.Connection.CloseAsync();
+        await CSharpDbConnection.ClearPoolAsync(GetConnectionString());
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        DeleteIfExists(filePath + ".wal");
+        DeleteIfExists(filePath);
     }
 
     public override bool HasTables()
@@ -88,8 +96,24 @@ public sealed class CSharpDbRelationalDatabaseCreator : RelationalDatabaseCreato
     private CSharpDbConnection CreateStandaloneConnection()
     {
         if (Dependencies.Connection.DbConnection is CSharpDbConnection existing)
-            return new CSharpDbConnection(existing.ConnectionString);
+        {
+            return new CSharpDbConnection(
+                existing.ConnectionString,
+                existing.DirectDatabaseOptions,
+                existing.HybridDatabaseOptions);
+        }
 
         return new CSharpDbConnection(Dependencies.Connection.ConnectionString ?? string.Empty);
+    }
+
+    private string GetConnectionString()
+        => Dependencies.Connection.DbConnection is CSharpDbConnection existing
+            ? existing.ConnectionString
+            : Dependencies.Connection.ConnectionString ?? string.Empty;
+
+    private static void DeleteIfExists(string filePath)
+    {
+        if (File.Exists(filePath))
+            File.Delete(filePath);
     }
 }

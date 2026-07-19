@@ -419,21 +419,25 @@ public sealed class CSharpDbConnection : DbConnection
 
         if (builder.Pooling)
         {
-            string pooledConnectionString = $"Data Source={normalizedPath}";
             PoolKey key = CreatePoolKey(normalizedPath, builder.MaxPoolSize, configuration);
-            var pool = CSharpDbConnectionPoolRegistry.GetOrCreate(
+            return await CSharpDbConnectionPoolRegistry.OpenPooledSessionAsync(
                 key,
-                pooledConnectionString,
-                (connectionString, ct) => OpenDirectClientAsync(
-                    connectionString,
-                    configuration.EffectiveDirectDatabaseOptions,
-                    configuration.EffectiveHybridDatabaseOptions,
-                    ct));
-            ICSharpDbClient pooledClient = await pool.RentAsync(cancellationToken);
-            return new RemoteDatabaseSession(pooledClient, pool.ReturnAsync);
+                ct => OpenEmbeddedDatabaseAsync(normalizedPath, configuration, ct),
+                cancellationToken);
         }
 
-        Engine.Database database = configuration.EffectiveHybridDatabaseOptions is null
+        return await CSharpDbConnectionPoolRegistry.OpenDirectSessionAsync(
+            normalizedPath,
+            ct => OpenEmbeddedDatabaseAsync(normalizedPath, configuration, ct),
+            cancellationToken);
+    }
+
+    private static async ValueTask<Engine.Database> OpenEmbeddedDatabaseAsync(
+        string normalizedPath,
+        ResolvedEmbeddedConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        return configuration.EffectiveHybridDatabaseOptions is null
             ? await Engine.Database.OpenAsync(
                 normalizedPath,
                 configuration.EffectiveDirectDatabaseOptions,
@@ -443,8 +447,6 @@ public sealed class CSharpDbConnection : DbConnection
                 configuration.EffectiveDirectDatabaseOptions,
                 configuration.EffectiveHybridDatabaseOptions,
                 cancellationToken);
-
-        return new DirectDatabaseSession(database);
     }
 
     private static async ValueTask<ICSharpDbSession> OpenPrivateMemorySessionAsync(
@@ -489,20 +491,6 @@ public sealed class CSharpDbConnection : DbConnection
 
         return new RemoteDatabaseSession(client);
     }
-
-    private static async ValueTask<ICSharpDbClient> OpenDirectClientAsync(
-        string connectionString,
-        DatabaseOptions directDatabaseOptions,
-        HybridDatabaseOptions? hybridDatabaseOptions,
-        CancellationToken cancellationToken)
-        => await OpenClientAsync(new CSharpDbClientOptions
-        {
-            Transport = CSharpDbTransport.Direct,
-            ConnectionString = connectionString,
-            DirectDatabaseOptions = directDatabaseOptions,
-            HybridDatabaseOptions = hybridDatabaseOptions,
-            RouteContext = BuildRouteContext(new CSharpDbConnectionStringBuilder(connectionString)),
-        }, cancellationToken);
 
     private static PoolKey CreatePoolKey(
         string normalizedPath,

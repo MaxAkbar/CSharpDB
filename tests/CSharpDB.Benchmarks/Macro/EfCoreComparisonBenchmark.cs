@@ -306,8 +306,8 @@ public static class EfCoreComparisonBenchmark
             string baseInfo = Provider switch
             {
                 ProviderKind.CSharpDb =>
-                    $"provider=CSharpDB.EntityFrameworkCore/{GetCSharpDbProviderVersion()}, connectionPooling=false, connection-lifetime={connectionLifetime}, dbcontext-lifetime={dbContextLifetime}, surface=DbContext.SaveChangesAsync, storage-preset=WriteOptimized, embedded-open-mode=direct",
-                ProviderKind.Sqlite => $"provider=Microsoft.EntityFrameworkCore.Sqlite/{GetSqliteEfCoreProviderVersion()}, cache=private, pooling=false, connection-lifetime={connectionLifetime}, dbcontext-lifetime={dbContextLifetime}, journal_mode=wal, synchronous=full, busyTimeoutMs=1000, surface=DbContext.SaveChangesAsync",
+                    $"provider=CSharpDB.EntityFrameworkCore/{GetCSharpDbProviderVersion()}, connectionPooling=true, connection-lifetime={connectionLifetime}, dbcontext-lifetime={dbContextLifetime}, surface=DbContext.SaveChangesAsync, storage-preset=WriteOptimized, embedded-open-mode=direct",
+                ProviderKind.Sqlite => $"provider=Microsoft.EntityFrameworkCore.Sqlite/{GetSqliteEfCoreProviderVersion()}, cache=private, pooling=true, connection-lifetime={connectionLifetime}, dbcontext-lifetime={dbContextLifetime}, journal_mode=wal, synchronous=full, busyTimeoutMs=1000, surface=DbContext.SaveChangesAsync",
                 _ => throw new ArgumentOutOfRangeException(),
             };
 
@@ -322,6 +322,16 @@ public static class EfCoreComparisonBenchmark
                 await asyncDisposable.DisposeAsync().ConfigureAwait(false);
             else
                 _sharedConnection?.Dispose();
+
+            if (Provider == ProviderKind.CSharpDb)
+            {
+                await CSharpDbConnection.ClearPoolAsync(
+                    GetCSharpDbConnectionString(FilePath)).ConfigureAwait(false);
+            }
+            else
+            {
+                SqliteConnection.ClearAllPools();
+            }
 
             DeleteFiles(Provider, FilePath);
         }
@@ -465,7 +475,7 @@ public static class EfCoreComparisonBenchmark
     }
 
     private static string GetCSharpDbConnectionString(string filePath)
-        => $"Data Source={filePath};Pooling=false;Storage Preset=WriteOptimized;Embedded Open Mode=Direct";
+        => $"Data Source={filePath};Pooling=true;Storage Preset=WriteOptimized;Embedded Open Mode=Direct";
 
     private static string GetSqliteConnectionString(string filePath)
         => new SqliteConnectionStringBuilder
@@ -473,7 +483,7 @@ public static class EfCoreComparisonBenchmark
             DataSource = filePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Cache = SqliteCacheMode.Private,
-            Pooling = false,
+            Pooling = true,
             DefaultTimeout = 30,
         }.ToString();
 
