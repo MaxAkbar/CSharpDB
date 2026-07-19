@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Data.Common;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using CSharpDB.Data;
 using Microsoft.EntityFrameworkCore;
@@ -1249,6 +1250,159 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
             .Select(blog => blog.Name.ToLower())
             .SingleAsync(Ct);
         Assert.Equal("i", serverLower);
+    }
+
+    [Fact]
+    public async Task Queries_OrdinalStringSearchMethodsTranslateWithExpectedSemantics()
+    {
+        string dbPath = GetDbPath("ordinal-string-search");
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Blogs.AddRange(
+            new Blog
+            {
+                Name = @"Alpha%_\Ωmega",
+                OptionalText = "needle-here",
+            },
+            new Blog
+            {
+                Name = @"alpha%_\Ωmega",
+            },
+            new Blog
+            {
+                Name = "prefix-middle-suffix",
+                OptionalText = "other",
+            },
+            new Blog
+            {
+                Name = "café-東京-🙂",
+            },
+            new Blog
+            {
+                Name = @"AlphaXX\Ωmega",
+            },
+            new Blog
+            {
+                Name = string.Empty,
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string specialPattern = "%_\\";
+        string suffix = "Ωmega";
+        IQueryable<Blog> exactMatchQuery = db.Blogs
+            .Where(blog =>
+                blog.Name.Contains(specialPattern) &&
+                blog.Name.StartsWith(
+                    "Alpha",
+                    StringComparison.Ordinal) &&
+                blog.Name.EndsWith(
+                    suffix,
+                    StringComparison.Ordinal) &&
+                blog.Name.Contains(
+                    "_\\Ω",
+                    StringComparison.Ordinal));
+
+        string sql = exactMatchQuery.ToQueryString();
+        Assert.Contains(
+            "ORDINAL_CONTAINS(",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ORDINAL_STARTS_WITH(",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ORDINAL_ENDS_WITH(",
+            sql,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            " LIKE ",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "INSTR(",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            @"Alpha%_\Ωmega",
+            await exactMatchQuery
+                .Select(blog => blog.Name)
+                .SingleAsync(Ct));
+
+        Assert.Equal(
+            [@"Alpha%_\Ωmega", @"alpha%_\Ωmega"],
+            await db.Blogs
+                .Where(blog => blog.Name.Contains(specialPattern))
+                .OrderBy(blog => blog.Name)
+                .Select(blog => blog.Name)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            ["alpha%_\\Ωmega"],
+            await db.Blogs
+                .Where(blog => blog.Name.Contains("alpha"))
+                .Select(blog => blog.Name)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            ["café-東京-🙂"],
+            await db.Blogs
+                .Where(blog =>
+                    blog.Name.StartsWith(
+                        "café",
+                        StringComparison.Ordinal) &&
+                    blog.Name.Contains(
+                        "東京",
+                        StringComparison.Ordinal) &&
+                    blog.Name.EndsWith(
+                        "🙂",
+                        StringComparison.Ordinal))
+                .Select(blog => blog.Name)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            ["needle-here"],
+            await db.Blogs
+                .Where(blog =>
+                    blog.OptionalText!.Contains("needle"))
+                .Select(blog => blog.OptionalText!)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            6,
+            await db.Blogs.CountAsync(
+                blog =>
+                    blog.Name.Contains(string.Empty) &&
+                    blog.Name.StartsWith(
+                        string.Empty,
+                        StringComparison.Ordinal) &&
+                    blog.Name.EndsWith(
+                        string.Empty,
+                        StringComparison.Ordinal),
+                Ct));
+
+        const string LongerThanEveryValue =
+            "this-pattern-is-longer-than-every-seeded-value";
+        Assert.False(
+            await db.Blogs.AnyAsync(
+                blog =>
+                    blog.Name.Contains(LongerThanEveryValue) ||
+                    blog.Name.StartsWith(
+                        LongerThanEveryValue,
+                        StringComparison.Ordinal) ||
+                    blog.Name.EndsWith(
+                        LongerThanEveryValue,
+                        StringComparison.Ordinal),
+                Ct));
+
+        Assert.Equal(
+            5,
+            await db.Blogs.CountAsync(
+                blog => !blog.Name.Contains("middle"),
+                Ct));
     }
 
     [Fact]
@@ -2648,6 +2802,284 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch()
+    {
+        string dbPath = GetDbPath("unsupported-string-search");
+        var interceptor = new ReaderCountingInterceptor();
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}",
+            interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Blogs.Add(new Blog { Name = "Alpha" });
+        await db.SaveChangesAsync(Ct);
+        interceptor.Reset();
+
+        string defaultPrefix =
+            "sensitive-default-prefix-7e119c";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.StartsWith(defaultPrefix))
+                .ToListAsync(Ct),
+            "System.String.StartsWith(System.String)",
+            defaultPrefix,
+            expectedGuidance:
+                "use the overload with a compile-time StringComparison.Ordinal");
+
+        string defaultSuffix =
+            "sensitive-default-suffix-92c4d1";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.EndsWith(defaultSuffix))
+                .ToListAsync(Ct),
+            "System.String.EndsWith(System.String)",
+            defaultSuffix,
+            expectedGuidance:
+                "use the overload with a compile-time StringComparison.Ordinal");
+
+        string ignoreCasePrefix =
+            "sensitive-ignore-case-prefix-6af212";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.StartsWith(
+                        ignoreCasePrefix,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToListAsync(Ct),
+            "System.String.StartsWith(System.String, System.StringComparison)",
+            ignoreCasePrefix,
+            expectsStringComparisonGuidance: true);
+
+        string currentCultureSuffix =
+            "sensitive-current-culture-suffix-c5289e";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.EndsWith(
+                        currentCultureSuffix,
+                        StringComparison.CurrentCulture))
+                .ToListAsync(Ct),
+            "System.String.EndsWith(System.String, System.StringComparison)",
+            currentCultureSuffix,
+            expectsStringComparisonGuidance: true);
+
+        string invariantCultureFragment =
+            "sensitive-invariant-fragment-0b4cf8";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.Contains(
+                        invariantCultureFragment,
+                        StringComparison.InvariantCulture))
+                .ToListAsync(Ct),
+            "System.String.Contains(System.String, System.StringComparison)",
+            invariantCultureFragment,
+            expectsStringComparisonGuidance: true);
+
+        string capturedComparisonPattern =
+            "sensitive-captured-comparison-323fe1";
+        StringComparison capturedComparison =
+            StringComparison.Ordinal;
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.StartsWith(
+                        capturedComparisonPattern,
+                        capturedComparison))
+                .ToListAsync(Ct),
+            "System.String.StartsWith(System.String, System.StringComparison)",
+            capturedComparisonPattern,
+            expectsStringComparisonGuidance: true);
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.EndsWith(
+                        capturedComparisonPattern,
+                        capturedComparison))
+                .ToListAsync(Ct),
+            "System.String.EndsWith(System.String, System.StringComparison)",
+            capturedComparisonPattern,
+            expectsStringComparisonGuidance: true);
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.Contains(
+                        capturedComparisonPattern,
+                        capturedComparison))
+                .ToListAsync(Ct),
+            "System.String.Contains(System.String, System.StringComparison)",
+            capturedComparisonPattern,
+            expectsStringComparisonGuidance: true);
+
+        char sensitiveChar = '\u241f';
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.StartsWith(sensitiveChar))
+                .ToListAsync(Ct),
+            "System.String.StartsWith(System.Char)",
+            sensitiveChar.ToString(),
+            expectedGuidance:
+                "Character overloads are not supported");
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.EndsWith(sensitiveChar))
+                .ToListAsync(Ct),
+            "System.String.EndsWith(System.Char)",
+            sensitiveChar.ToString(),
+            expectedGuidance:
+                "Character overloads are not supported");
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.Contains(sensitiveChar))
+                .ToListAsync(Ct),
+            "System.String.Contains(System.Char)",
+            sensitiveChar.ToString(),
+            expectedGuidance:
+                "Character overloads are not supported");
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.Contains(
+                        sensitiveChar,
+                        StringComparison.Ordinal))
+                .ToListAsync(Ct),
+            "System.String.Contains(System.Char, System.StringComparison)",
+            sensitiveChar.ToString(),
+            expectedGuidance:
+                "Character overloads are not supported");
+
+        string cultureInfoPrefix =
+            "sensitive-culture-info-prefix-1d30d8";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.StartsWith(
+                        cultureInfoPrefix,
+                        false,
+                        CultureInfo.InvariantCulture))
+                .ToListAsync(Ct),
+            "System.String.StartsWith(System.String, System.Boolean, System.Globalization.CultureInfo)",
+            cultureInfoPrefix);
+
+        string cultureInfoSuffix =
+            "sensitive-culture-info-suffix-b0cd28";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    blog.Name.EndsWith(
+                        cultureInfoSuffix,
+                        false,
+                        CultureInfo.InvariantCulture))
+                .ToListAsync(Ct),
+            "System.String.EndsWith(System.String, System.Boolean, System.Globalization.CultureInfo)",
+            cultureInfoSuffix);
+
+        string convertedDbPath =
+            GetDbPath("unsupported-converted-string-search");
+        await using var convertedDb =
+            new ConvertedStringSearchContext(
+                $"Data Source={convertedDbPath}",
+                interceptor);
+        await convertedDb.Database.EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+
+        string directConvertedPattern =
+            "sensitive-direct-converted-pattern-f3b4b6";
+        await AssertRejected(
+            () => convertedDb.Rows
+                .Where(row =>
+                    row.Converted.Contains(directConvertedPattern))
+                .ToListAsync(Ct),
+            "System.String.Contains(System.String)",
+            directConvertedPattern);
+
+        string transformedInstancePattern =
+            "sensitive-transformed-instance-pattern-ea0f53";
+        string transformedInstanceSuffix =
+            transformedInstancePattern;
+        await AssertRejected(
+            () => convertedDb.Rows
+                .Where(row =>
+                    (row.Converted + transformedInstanceSuffix)
+                    .Contains(transformedInstancePattern))
+                .ToListAsync(Ct),
+            "System.String.Contains(System.String)",
+            transformedInstancePattern);
+
+        string transformedPatternSuffix =
+            "sensitive-transformed-pattern-suffix-14d79c";
+        await AssertRejected(
+            () => convertedDb.Rows
+                .Where(row =>
+                    row.Normal.Contains(
+                        row.Converted + transformedPatternSuffix))
+                .ToListAsync(Ct),
+            "System.String.Contains(System.String)",
+            transformedPatternSuffix);
+
+        Assert.Equal(0, interceptor.ReaderCommandCount);
+
+        async Task AssertRejected(
+            Func<Task> operation,
+            string expectedSignature,
+            string sensitiveValue,
+            bool expectsStringComparisonGuidance = false,
+            string? expectedGuidance = null)
+        {
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    operation);
+            Assert.Contains(
+                "CDBEF1001",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                expectedSignature,
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Keep supported filters server-side",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "#linq-translation",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                sensitiveValue,
+                exception.Message,
+                StringComparison.Ordinal);
+            if (expectsStringComparisonGuidance)
+            {
+                Assert.Contains(
+                    "compile-time StringComparison.Ordinal",
+                    exception.Message,
+                    StringComparison.Ordinal);
+                Assert.Contains(
+                    "captured comparison values and other comparison modes are not supported",
+                    exception.Message,
+                    StringComparison.Ordinal);
+            }
+            if (expectedGuidance is not null)
+            {
+                Assert.Contains(
+                    expectedGuidance,
+                    exception.Message,
+                    StringComparison.Ordinal);
+            }
+
+            Assert.Equal(
+                0,
+                interceptor.ReaderCommandCount);
+        }
+    }
+
+    [Fact]
     public async Task UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch()
     {
         string dbPath = GetDbPath("unsupported-linq");
@@ -2673,13 +3105,14 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         InvalidOperationException methodError =
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 db.Blogs
-                    .Where(blog => blog.Name.Contains(
-                        "alpha",
-                        StringComparison.Ordinal))
+                    .Where(blog =>
+                        blog.Name.PadLeft(10) == "Alpha")
                     .ToListAsync(Ct));
         Assert.Contains("CDBEF1001", methodError.Message, StringComparison.Ordinal);
-        Assert.Contains("System.String.Contains", methodError.Message, StringComparison.Ordinal);
-        Assert.Contains("StringComparison", methodError.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "System.String.PadLeft(System.Int32)",
+            methodError.Message,
+            StringComparison.Ordinal);
         Assert.Contains("#linq-translation", methodError.Message, StringComparison.Ordinal);
 
         InvalidOperationException memberError =
@@ -4221,6 +4654,30 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         }
     }
 
+    private sealed class ConvertedStringSearchContext
+        : TestDbContext
+    {
+        public ConvertedStringSearchContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(connectionString, interceptors)
+        {
+        }
+
+        public DbSet<ConvertedStringSearchEntity> Rows =>
+            Set<ConvertedStringSearchEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ConvertedStringSearchEntity>()
+                .Property(row => row.Converted)
+                .HasConversion(
+                    value => value.ToUpperInvariant(),
+                    value => value);
+        }
+    }
+
     private sealed class RowVersionModelContext(
         string connectionString)
         : TestDbContext(connectionString)
@@ -5221,6 +5678,15 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public int Id { get; set; }
 
         public int Code { get; set; }
+    }
+
+    private sealed class ConvertedStringSearchEntity
+    {
+        public int Id { get; set; }
+
+        public string Normal { get; set; } = string.Empty;
+
+        public string Converted { get; set; } = string.Empty;
     }
 
     private sealed class DefaultValueEntity

@@ -254,8 +254,11 @@ public sealed class Document
                     <li>Parameterless <code>Trim()</code>, <code>TrimStart()</code>, and <code>TrimEnd()</code></li>
                     <li><code>Replace(string, string)</code></li>
                     <li><code>Substring(start)</code> and <code>Substring(start, length)</code>; the provider converts .NET's zero-based start index to CSharpDB's one-based SQL index</li>
+                    <li><code>Contains(string)</code> with ordinal semantics</li>
+                    <li><code>StartsWith(string, StringComparison.Ordinal)</code>, <code>EndsWith(string, StringComparison.Ordinal)</code>, and <code>Contains(string, StringComparison.Ordinal)</code> when the comparison argument is a literal</li>
                 </ul>
                 <p>Both culture-sensitive and invariant CLR casing methods map to CSharpDB <code>LOWER</code>/<code>UPPER</code>. They therefore use invariant server semantics, not the application's <code>CurrentCulture</code>.</p>
+                <p>Ordinal string predicates require provider-owned, converter-free <code>TEXT</code> mappings. Search text may be a constant or captured parameter, including an empty string, and is treated literally: <code>%</code>, <code>_</code>, and backslash are not wildcard or escape syntax. The dedicated translations are case-sensitive and propagate SQL <code>NULL</code>.</p>
 
                 <h3>Date and time components</h3>
                 <ul>
@@ -284,7 +287,7 @@ public sealed class Document
                 <p><code>double</code>, transformed, non-<code>BINARY</code>-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw group transforms; post-projection filtering, projection, distinct, limits, set, or join operations; nested grouping; predicate/CASE aggregates; casts; and broader types or shapes are rejected with <code>CDBEF1005</code> before command dispatch.</p>
 
                 <div class="callout callout-warning">
-                    <strong>String-semantics boundary:</strong> string <code>StartsWith</code>, <code>EndsWith</code>, instance <code>Contains</code>, and <code>StringComparison</code> overloads are not translated yet. CSharpDB's current pattern-search functions are case-insensitive, so translating these methods would silently change ordinary .NET string semantics. Non-decimal collection <code>Contains</code> over constants and parameters is supported.
+                    <strong>String-semantics boundary:</strong> all other string-search overloads are not translated, including default culture-sensitive <code>StartsWith(string)</code>/<code>EndsWith(string)</code>, the Boolean/<code>CultureInfo</code> forms, non-ordinal or captured <code>StringComparison</code> modes, and character overloads. They fail before command dispatch with <code>CDBEF1001</code> guidance. Plain <code>Contains(string)</code> and the three literal-<code>StringComparison.Ordinal</code> overloads above are qualified. Non-decimal collection <code>Contains</code> over constants and parameters is also supported.
                 </div>
                 <p><code>DateTimeOffset</code> components; integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads; long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants and other unqualified aggregate variants; broader distinct and grouped aggregate shapes; set operations; composite/chained/right/cross or derived-source joins; and correlated-query shapes remain outside the qualified surface.</p>
 
@@ -343,7 +346,7 @@ public sealed class Document
                     <li>Schemas are unsupported in runtime and migrations.</li>
                     <li>Computed columns and <code>DefaultValueSql</code> are unsupported.</li>
                     <li>Rowversion is limited to one nonnullable <code>byte[]</code> property created with its table; standalone add/alter rowversion migrations are unsupported.</li>
-                    <li>String <code>StartsWith</code>, <code>EndsWith</code>, instance <code>Contains</code>, <code>StringComparison</code> overloads, and <code>DateTimeOffset</code> component translation are unsupported.</li>
+                    <li>All other string-search overloads—including default <code>StartsWith(string)</code>/<code>EndsWith(string)</code>, the Boolean/<code>CultureInfo</code> forms, non-ordinal or captured <code>StringComparison</code> modes, and character overloads—plus <code>DateTimeOffset</code> component translation are unsupported.</li>
                     <li>Integral, decimal, <code>MathF</code>, precision-argument, midpoint-mode, and transcendental math overloads are outside the qualified translation surface.</li>
                     <li>Long- and float-valued <code>Sum</code>/<code>Average</code>/<code>Min</code>/<code>Max</code> variants, integer <code>Average</code>, text <code>Min</code>/<code>Max</code>, and broader distinct/grouped aggregate types and shapes remain outside the qualified surface.</li>
                     <li>Physical <code>INTEGER</code> primary-key rekeying supports ready ordinary/unique SQL, constraint-owned, and foreign-key-support indexes; full-text, collection, and non-ready indexes are rejected.</li>

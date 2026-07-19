@@ -353,14 +353,56 @@ internal static class CSharpDbQueryTranslationDiagnostics
     public static string ForMethod(MethodInfo method)
     {
         string signature = FormatMethod(method);
-        string guidance = method.GetParameters().Any(static parameter =>
-                parameter.ParameterType == typeof(StringComparison))
-            ? " StringComparison overloads are not supported; configure an appropriate CSharpDB collation or use a supported invariant casing method before comparison."
-            : string.Empty;
+        string guidance = GetMethodGuidance(method);
 
         return
             $"CDBEF1001: The CSharpDB EF Core provider cannot translate LINQ method '{signature}' to SQL.{guidance} " +
             $"Keep supported filters server-side, rewrite this expression, or call AsEnumerable() explicitly before the unsupported portion. See {DocumentationUrl}.";
+    }
+
+    private static string GetMethodGuidance(MethodInfo method)
+    {
+        ParameterInfo[] parameters = method.GetParameters();
+        if (method.DeclaringType == typeof(string) &&
+            method.Name is
+                nameof(string.StartsWith) or
+                nameof(string.EndsWith) or
+                nameof(string.Contains))
+        {
+            if (parameters.Any(static parameter =>
+                    parameter.ParameterType == typeof(char)))
+            {
+                return
+                    " Character overloads are not supported; use Contains(string), or use StartsWith/EndsWith with a string argument and compile-time StringComparison.Ordinal.";
+            }
+
+            if (parameters.Any(static parameter =>
+                    parameter.ParameterType == typeof(StringComparison)))
+            {
+                return
+                    " StringComparison overloads are supported only for string StartsWith, EndsWith, and Contains with a compile-time StringComparison.Ordinal argument; captured comparison values and other comparison modes are not supported.";
+            }
+
+            if (method.Name is
+                    nameof(string.StartsWith) or
+                    nameof(string.EndsWith) &&
+                parameters is
+                [
+                    {
+                        ParameterType: var parameterType,
+                    },
+                ] &&
+                parameterType == typeof(string))
+            {
+                return
+                    " This culture-sensitive overload is not supported; use the overload with a compile-time StringComparison.Ordinal argument.";
+            }
+        }
+
+        return parameters.Any(static parameter =>
+                parameter.ParameterType == typeof(StringComparison))
+            ? " StringComparison overloads for this method are not supported."
+            : string.Empty;
     }
 
     public static string ForMember(MemberInfo member)

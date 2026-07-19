@@ -722,8 +722,27 @@
                 <td>TEXT</td>
                 <td>Converts any value to its text representation</td>
                 </tr>
+                <tr>
+                <td><code>ORDINAL_STARTS_WITH(text, prefix)</code></td>
+                <td>2</td>
+                <td>INTEGER or NULL</td>
+                <td>Case-sensitive ordinal prefix test; pattern characters are literal</td>
+                </tr>
+                <tr>
+                <td><code>ORDINAL_ENDS_WITH(text, suffix)</code></td>
+                <td>2</td>
+                <td>INTEGER or NULL</td>
+                <td>Case-sensitive ordinal suffix test; pattern characters are literal</td>
+                </tr>
+                <tr>
+                <td><code>ORDINAL_CONTAINS(text, search)</code></td>
+                <td>2</td>
+                <td>INTEGER or NULL</td>
+                <td>Case-sensitive ordinal substring test; pattern characters are literal</td>
+                </tr>
                 </tbody>
                 </table>
+                <p>The three ordinal search functions return <code>1</code> for true, <code>0</code> for false, and <code>NULL</code> when either argument is <code>NULL</code>. They use .NET ordinal UTF-16 code-unit semantics and do not apply collation, wildcard, or escape rules.</p>
                 <hr/>
                 <h2 id="parameters">Parameters</h2>
                 <p>Named parameters are supported in value positions using the <code>@</code> prefix:</p>

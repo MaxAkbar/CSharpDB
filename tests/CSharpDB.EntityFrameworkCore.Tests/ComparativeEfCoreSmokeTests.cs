@@ -241,6 +241,95 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
     [Theory]
     [InlineData(ProviderKind.CSharpDb)]
     [InlineData(ProviderKind.Sqlite)]
+    public async Task PlainStringContains_MatchesForBoundedPatterns(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "plain-string-contains"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                TextCol = @"alpha%_\omega",
+                OptionalText = "needle-here",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                TextCol = "literal_percent_%",
+                OptionalText = null,
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                TextCol = "literal_under_score",
+                OptionalText = "other",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                TextCol = "plain",
+                OptionalText = null,
+                Category = "Search",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string specialPattern = "%_\\";
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    row.TextCol.Contains(specialPattern))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1, 2],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("%"))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1, 2, 3],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("_"))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("\\"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("omega"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            4,
+            await db.Rows.CountAsync(
+                row => row.TextCol.Contains(string.Empty),
+                Ct));
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    row.OptionalText!.Contains("needle"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
     public async Task ScalarNumericAggregates_MatchForBoundedValuesAndNulls(ProviderKind provider)
     {
         await using var db = CreateContext(provider, GetDbPath(provider, "aggregates"));
@@ -697,6 +786,7 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
                 entity.Property(row => row.Number);
                 entity.Property(row => row.OptionalNumber);
                 entity.Property(row => row.TextCol);
+                entity.Property(row => row.OptionalText);
                 entity.Property(row => row.Category);
             });
 
@@ -729,6 +819,8 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
         public double? OptionalNumber { get; set; }
 
         public string TextCol { get; set; } = string.Empty;
+
+        public string? OptionalText { get; set; }
 
         public string Category { get; set; } = string.Empty;
     }

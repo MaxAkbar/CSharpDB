@@ -44,6 +44,14 @@ List<Blog> blogs = await db.Blogs
     .OrderBy(blog => blog.Name)
     .Include(blog => blog.Posts)
     .ToListAsync();
+var stringPredicateMatches = await db.Blogs
+    .Where(blog =>
+        blog.Name.Contains("search")
+        || blog.Name.StartsWith("Eng", StringComparison.Ordinal)
+        || blog.Name.EndsWith("tions", StringComparison.Ordinal))
+    .OrderBy(blog => blog.Name)
+    .Select(blog => blog.Name)
+    .ToListAsync();
 var joinedPosts = await db.Blogs
     .Join(
         db.Posts,
@@ -91,6 +99,7 @@ Console.WriteLine($"Posts: {await db.Posts.CountAsync()}");
 Console.WriteLine($"JoinedPosts: {joinedPosts.Count}");
 Console.WriteLine($"LeftJoinedRows: {leftJoinedRows.Count}");
 Console.WriteLine($"BlogsWithoutPosts: {blogsWithoutPosts}");
+Console.WriteLine($"StringPredicateMatches: {stringPredicateMatches.Count}");
 Console.WriteLine($"RowVersionBytes: {rowVersionAfterRawSql.Length}");
 Console.WriteLine(
     $"RowVersionAdvancedAfterRawSql: {!rowVersionBeforeRawSql.SequenceEqual(rowVersionAfterRawSql)}");

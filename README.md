@@ -184,6 +184,7 @@ CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and
 
 Its qualified LINQ surface includes ordinary filtering, ordering, pagination, projections, selected string/temporal/math translations, bounded scalar numeric aggregates, bounded direct inner and left joins, and two deliberately constrained aggregate extensions:
 
+- Ordinal string search for plain `string.Contains(string)` and for `StartsWith`, `EndsWith`, or `Contains` when the `StringComparison` argument is the literal `StringComparison.Ordinal`.
 - One explicit `Join` between direct entity roots over a nonnullable `int`, `long`, or `int`/`long`-backed enum key, with qualified scalar or entity result projection and post-join filtering, ordering, and pagination.
 - One explicit no-comparer `Queryable.LeftJoin` over the same direct-root and key surface. Unmatched inner entities and reference members materialize as `null`; project unmatched inner value-type members to nullable CLR types, such as `(int?)inner.Id`.
 - Direct single-table `GroupBy` over mapped scalar or anonymous-type/`ValueTuple` composite keys, with optional pre-filtering, qualified bare numeric aggregates, basic `HAVING`, and ordering by directly projected keys or aggregates.
@@ -194,6 +195,14 @@ Distinct `Average`, nullable or non-`int` columns, value-converted columns, pred
 Grouped keys may be direct mapped Boolean, integral, enum, default-`BINARY` string, or nullable values; Boolean columns must contain canonical provider-written `0`/`1` storage. Configured key converters and `double` keys are outside the qualified surface. Grouped projections may contain the direct key plus bare `Count`/`LongCount`, qualified non-distinct `Sum`/`Average`/`Min`/`Max`, and the same nonnullable-`int` distinct variants listed above. Transformed keys or results, group materialization, post-projection filters or projections, raw group transforms, nested or joined grouping, predicate aggregates, and unsupported aggregate types or value converters fail before command dispatch with provider diagnostics. See the [rowversion contract](https://csharpdb.com/docs/entity-framework-core.html#rowversion-concurrency), [EF Core provider guide](https://csharpdb.com/docs/entity-framework-core.html#linq-translation), and [generated compatibility manifest](docs/ef-core-compatibility.md) for the complete boundary.
 
 For both direct join forms, the inner source must be unfiltered; filtered inner roots, prior ordering or row limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/transformed/composite keys, and chained joins remain explicitly unsupported. Unsupported direct inner-join shapes report `CDBEF1007`, and unsupported direct left-join shapes report `CDBEF1008`. Comparer overloads, the classic `GroupJoin`/`SelectMany`/`DefaultIfEmpty` left-join pattern, `RightJoin`, and cross-join forms remain unsupported and report the general query-operator diagnostic `CDBEF1003`.
+
+String predicates require provider-owned, converter-free `TEXT` mappings.
+Search text may be a constant or parameter and is always treated literally:
+`%`, `_`, and backslash are not wildcard or escape syntax. All other
+string-search overloads—including default
+`StartsWith(string)`/`EndsWith(string)`, the Boolean/`CultureInfo` forms,
+non-ordinal or captured `StringComparison` modes, and character overloads—
+remain unsupported and fail before command dispatch with `CDBEF1001`.
 
 ---
 

@@ -687,6 +687,33 @@
       "ci_executed": true
     },
     {
+      "id": "catalog.functions.ordinal_string_search",
+      "kind": "positive",
+      "dimension": "catalog",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
+      "test": "Registry_DescribesOrdinalStringSearchFunctions",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.functions.ordinal_string_search",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
+      "test": "OrdinalStringSearchFunctions_UseLiteralCaseSensitiveSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.functions.ordinal_string_search.utf16",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
+      "test": "OrdinalStringSearchFunctions_CompareUtf16CodeUnits",
+      "ci_executed": true
+    },
+    {
       "id": "catalog.fk",
       "kind": "positive",
       "dimension": "catalog",
@@ -1125,6 +1152,33 @@
       "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
       "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
       "test": "Queries_StringFunctionsTranslateInPredicatesProjectionsAndOrdering",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.ordinal_string_search",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_OrdinalStringSearchMethodsTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.ordinal_string_search.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "PlainStringContains_MatchesForBoundedPatterns",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.ordinal_string_search.unsupported_overloads",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch",
       "ci_executed": true
     },
     {
@@ -2328,6 +2382,23 @@
       "negative_proof_ids": ["engine.three_valued.unknown_cases"]
     },
     {
+      "id": "expressions.ordinal_string_search",
+      "category": "Expressions",
+      "feature": "Ordinal string search functions",
+      "syntax": "ORDINAL_STARTS_WITH(text, prefix); ORDINAL_ENDS_WITH(text, suffix); ORDINAL_CONTAINS(text, search)",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["parser", "execution", "catalog"],
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "not_applicable", "catalog": "supported", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "not_applicable", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": [],
+      "deviations": ["These functions use .NET ordinal UTF-16 code-unit semantics independently of SQL collation. Percent, underscore, and backslash are literal characters rather than pattern syntax. Either NULL argument produces NULL."],
+      "documentation_anchor": "sql.html#built-in-functions",
+      "positive_proof_ids": ["catalog.functions.ordinal_string_search", "engine.functions.ordinal_string_search", "engine.functions.ordinal_string_search.utf16"],
+      "negative_proof_ids": []
+    },
+    {
       "id": "schema.foreign_key.column_single",
       "category": "Foreign keys",
       "feature": "Single-column column-level foreign key",
@@ -2697,7 +2768,7 @@
       "limitations": ["The registry centralizes names, aliases, kinds, arity, return metadata, determinism, and registered callbacks. Rich binder type signatures, generated documentation tables, and a broader conformance corpus remain follow-on work."],
       "deviations": ["CSharpDB exposes this metadata through sys.functions and the sys_functions alias."],
       "documentation_anchor": "sql.html",
-      "positive_proof_ids": ["catalog.functions", "engine.functions.catalog_query", "engine.functions.floor_alias", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "positive_proof_ids": ["catalog.functions", "catalog.functions.ordinal_string_search", "engine.functions.catalog_query", "engine.functions.floor_alias", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
       "negative_proof_ids": []
     },
     {
@@ -2803,6 +2874,23 @@
       "negative_proof_ids": ["ef.query.left_join.unsupported_shapes", "ef.query.join.unsupported_operators"]
     },
     {
+      "id": "provider.ef_query.ordinal_string_search",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded ordinal string predicates",
+      "syntax": "db.Rows.Where(row => row.Text.Contains(pattern) || row.Text.StartsWith(prefix, StringComparison.Ordinal))",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Converter-free TEXT mappings support plain Contains(string) with ordinal semantics and StartsWith, EndsWith, or Contains when the StringComparison argument is the compile-time constant Ordinal value. Constant and captured string search text, empty and longer search text, literal percent/underscore/backslash characters, case-sensitive Unicode, nullable sources, and negation are qualified. All other string-search overloads—including default culture-sensitive StartsWith(string)/EndsWith(string), the Boolean/CultureInfo forms, non-Ordinal or captured comparison modes, and character overloads—plus configured value converters fail before command dispatch with CDBEF1001."],
+      "deviations": [],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.ordinal_string_search", "ef.query.ordinal_string_search.compatibility"],
+      "negative_proof_ids": ["ef.query.ordinal_string_search.unsupported_overloads"]
+    },
+    {
       "id": "provider.ef_query.crud",
       "category": "Generated SQL",
       "feature": "EF Core embedded CRUD and bounded query translation",
@@ -2813,11 +2901,11 @@
       "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "partial", "ef_migration": "not_applicable"},
       "persistent_ddl": false,
       "first_supported_version": "4.0.4",
-      "limitations": ["The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, non-decimal constant/parameter collection Contains, simple Include, bounded direct inner and left joins, selected string and temporal members, finite-double math functions, bounded exact-decimal comparisons and ordering, bounded scalar numeric aggregates, direct-column integer-distinct aggregates, and direct single-table grouped numeric aggregates. Distinct scalar aggregates require an optional pre-filter followed by one directly mapped nonnullable int-column projection and Distinct, then Count, LongCount, Sum, Min, or Max. Distinct Average, nullable or non-int columns, value converters, ordering, limits, predicates after Distinct, intervening operators, computed/composite selectors, casts, and derived sources are rejected. GroupBy requires direct mapped bool, integral, enum, default-BINARY string, or nullable keys; composite keys must use C# anonymous types or ValueTuple, and Boolean keys require canonical provider-written 0/1 storage. It supports one direct-key/bare-aggregate projection, qualified non-distinct Sum/Average/Min/Max, nonnullable-int direct-column distinct Count/LongCount/Sum/Min/Max, basic HAVING, and ordering by a directly projected key or aggregate. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw or post-projection group transforms; nested/joined grouping; predicate/CASE aggregates; and broader types/shapes are rejected. String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, decimal arithmetic/aggregates/Contains, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, Concat/Union/Except/Intersect, ExecuteUpdate, filtered-inner/composite/chained/right/cross joins, broader left-join shapes, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, operators, aggregate shapes, join shapes, and decimal expressions fail before command dispatch with provider diagnostics."],
+      "limitations": ["The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, non-decimal constant/parameter collection Contains, simple Include, bounded direct inner and left joins, selected string and temporal members, bounded ordinal string predicates, finite-double math functions, bounded exact-decimal comparisons and ordering, bounded scalar numeric aggregates, direct-column integer-distinct aggregates, and direct single-table grouped numeric aggregates. Distinct scalar aggregates require an optional pre-filter followed by one directly mapped nonnullable int-column projection and Distinct, then Count, LongCount, Sum, Min, or Max. Distinct Average, nullable or non-int columns, value converters, ordering, limits, predicates after Distinct, intervening operators, computed/composite selectors, casts, and derived sources are rejected. GroupBy requires direct mapped bool, integral, enum, default-BINARY string, or nullable keys; composite keys must use C# anonymous types or ValueTuple, and Boolean keys require canonical provider-written 0/1 storage. It supports one direct-key/bare-aggregate projection, qualified non-distinct Sum/Average/Min/Max, nonnullable-int direct-column distinct Count/LongCount/Sum/Min/Max, basic HAVING, and ordering by a directly projected key or aggregate. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw or post-projection group transforms; nested/joined grouping; predicate/CASE aggregates; and broader types/shapes are rejected. All other string-search overloads—including default culture-sensitive StartsWith/EndsWith, the Boolean/CultureInfo forms, non-Ordinal or captured StringComparison modes, and character overloads—plus DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, decimal arithmetic/aggregates/Contains, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, Concat/Union/Except/Intersect, ExecuteUpdate, filtered-inner/composite/chained/right/cross joins, broader left-join shapes, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, operators, aggregate shapes, join shapes, and decimal expressions fail before command dispatch with provider diagnostics."],
       "deviations": ["ToLower()/ToUpper() and their invariant variants map to CSharpDB LOWER/UPPER and therefore use invariant server semantics rather than .NET CurrentCulture.", "Math.Round(double) uses CSharpDB midpoint-to-even semantics. Scalar numeric aggregate qualification is limited to bounded values and the explicitly documented CLR types because engine accumulation and EF-generated conversions differ for wider variants.", "Nullable Distinct().Count()/LongCount() is intentionally rejected because LINQ counts one distinct NULL while SQL COUNT(DISTINCT column) ignores NULL."],
       "documentation_anchor": "entity-framework-core.html#linq-translation",
-      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.inner_join", "ef.query.inner_join.compatibility", "ef.query.left_join", "ef.query.left_join.compatibility", "ef.query.left_join.navigation", "ef.query.left_join.composite_navigation", "ef.query.string_functions", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
-      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.inner_join.unsupported_shapes", "ef.query.left_join.unsupported_shapes", "ef.query.join.unsupported_operators", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
+      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.inner_join", "ef.query.inner_join.compatibility", "ef.query.left_join", "ef.query.left_join.compatibility", "ef.query.left_join.navigation", "ef.query.left_join.composite_navigation", "ef.query.string_functions", "ef.query.ordinal_string_search", "ef.query.ordinal_string_search.compatibility", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
+      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.ordinal_string_search.unsupported_overloads", "ef.query.inner_join.unsupported_shapes", "ef.query.left_join.unsupported_shapes", "ef.query.join.unsupported_operators", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
     },
     {
       "id": "provider.ef_migration.basic",

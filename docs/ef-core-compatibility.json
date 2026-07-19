@@ -298,8 +298,12 @@
       "name": "String members and methods",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "String Length, parameterless ToLower/ToLowerInvariant, ToUpper/ToUpperInvariant, Trim/TrimStart/TrimEnd, Replace(string, string), and both Substring overloads translate in predicates, projections, and ordering. LOWER/UPPER use invariant CSharpDB server semantics rather than CurrentCulture.",
-      "proofTests": ["Queries_StringFunctionsTranslateInPredicatesProjectionsAndOrdering"]
+      "summary": "String Length, parameterless ToLower/ToLowerInvariant, ToUpper/ToUpperInvariant, Trim/TrimStart/TrimEnd, Replace(string, string), and both Substring overloads translate in predicates, projections, and ordering. Converter-free TEXT also supports ordinal plain Contains(string) plus StartsWith, EndsWith, and Contains overloads whose StringComparison argument is the literal Ordinal value. Search text may be constant or parameterized and treats %, _, and backslash literally. LOWER/UPPER use invariant CSharpDB server semantics rather than CurrentCulture.",
+      "proofTests": [
+        "Queries_StringFunctionsTranslateInPredicatesProjectionsAndOrdering",
+        "Queries_OrdinalStringSearchMethodsTranslateWithExpectedSemantics",
+        "PlainStringContains_MatchesForBoundedPatterns"
+      ]
     },
     {
       "id": "query.temporal-components",
@@ -374,7 +378,8 @@
         "UnsupportedDecimalExpressions_ReportBeforeCommandDispatch",
         "UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch",
         "UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch",
-        "UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch"
+        "UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch",
+        "UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch"
       ]
     },
     {
@@ -383,7 +388,7 @@
       "name": "Advanced LINQ translation",
       "status": "Planned",
       "tier": "tier2",
-      "summary": "String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, broader distinct and grouped aggregate types and shapes, set operations, composite/chained/right/cross or derived-source joins, broader left-join shapes, and correlated-query coverage remain planned.",
+      "summary": "All other string-search overloads—including default culture-sensitive StartsWith(string)/EndsWith(string), the Boolean/CultureInfo forms, non-Ordinal or captured StringComparison modes, and character overloads—plus DateTimeOffset components, broader distinct and grouped aggregate types and shapes, set operations, composite/chained/right/cross or derived-source joins, broader left-join shapes, and correlated-query coverage remain planned.",
       "proofTests": []
     },
     {

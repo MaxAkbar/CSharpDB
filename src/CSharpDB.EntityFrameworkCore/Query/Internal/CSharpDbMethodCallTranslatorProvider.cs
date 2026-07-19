@@ -1,8 +1,10 @@
+using System.Linq.Expressions;
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace CSharpDB.EntityFrameworkCore.Query.Internal;
 
@@ -22,6 +24,23 @@ public sealed class CSharpDbMethodCallTranslatorProvider : RelationalMethodCallT
 
 internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
 {
+    private static readonly MethodInfo ContainsStringMethod =
+        typeof(string).GetRuntimeMethod(
+            nameof(string.Contains),
+            [typeof(string)])!;
+    private static readonly MethodInfo StartsWithStringComparisonMethod =
+        typeof(string).GetRuntimeMethod(
+            nameof(string.StartsWith),
+            [typeof(string), typeof(StringComparison)])!;
+    private static readonly MethodInfo EndsWithStringComparisonMethod =
+        typeof(string).GetRuntimeMethod(
+            nameof(string.EndsWith),
+            [typeof(string), typeof(StringComparison)])!;
+    private static readonly MethodInfo ContainsStringComparisonMethod =
+        typeof(string).GetRuntimeMethod(
+            nameof(string.Contains),
+            [typeof(string), typeof(StringComparison)])!;
+
     private readonly ISqlExpressionFactory _sqlExpressionFactory;
 
     public CSharpDbStringMethodTranslator(ISqlExpressionFactory sqlExpressionFactory)
@@ -35,6 +54,36 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
     {
         if (instance is null || method.DeclaringType != typeof(string))
             return null;
+
+        string? ordinalSearchFunction = method switch
+        {
+            _ when method == ContainsStringMethod =>
+                "ORDINAL_CONTAINS",
+            _ when method == StartsWithStringComparisonMethod &&
+                IsConstantOrdinalComparison(arguments) =>
+                "ORDINAL_STARTS_WITH",
+            _ when method == EndsWithStringComparisonMethod &&
+                IsConstantOrdinalComparison(arguments) =>
+                "ORDINAL_ENDS_WITH",
+            _ when method == ContainsStringComparisonMethod &&
+                IsConstantOrdinalComparison(arguments) =>
+                "ORDINAL_CONTAINS",
+            _ => null,
+        };
+        if (ordinalSearchFunction is not null &&
+            TryApplyConverterFreeTextMapping(
+                instance,
+                arguments[0],
+                out SqlExpression mappedInstance,
+                out SqlExpression mappedPattern))
+        {
+            return _sqlExpressionFactory.Function(
+                ordinalSearchFunction,
+                [mappedInstance, mappedPattern],
+                nullable: true,
+                argumentsPropagateNullability: [true, true],
+                typeof(bool));
+        }
 
         if (arguments.Count == 0)
         {
@@ -94,6 +143,94 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
         }
 
         return null;
+    }
+
+    private bool TryApplyConverterFreeTextMapping(
+        SqlExpression instance,
+        SqlExpression pattern,
+        out SqlExpression mappedInstance,
+        out SqlExpression mappedPattern)
+    {
+        RelationalTypeMapping? textMapping =
+            instance.TypeMapping ??
+            pattern.TypeMapping;
+        if (!IsConverterFreeTextMapping(textMapping) ||
+            instance.TypeMapping is { } instanceMapping &&
+            !IsConverterFreeTextMapping(instanceMapping) ||
+            pattern.TypeMapping is { } patternMapping &&
+            !IsConverterFreeTextMapping(patternMapping) ||
+            !ContainsOnlyConverterFreeTextMappings(instance) ||
+            !ContainsOnlyConverterFreeTextMappings(pattern))
+        {
+            mappedInstance = null!;
+            mappedPattern = null!;
+            return false;
+        }
+
+        mappedInstance = _sqlExpressionFactory.ApplyTypeMapping(
+            instance,
+            textMapping);
+        mappedPattern = _sqlExpressionFactory.ApplyTypeMapping(
+            pattern,
+            textMapping);
+        return true;
+    }
+
+    private static bool ContainsOnlyConverterFreeTextMappings(
+        SqlExpression expression)
+    {
+        var visitor =
+            new ConverterFreeTextMappingValidator();
+        visitor.Visit(expression);
+        return visitor.IsValid;
+    }
+
+    private static bool IsConverterFreeTextMapping(
+        RelationalTypeMapping? typeMapping) =>
+        typeMapping is
+        {
+            Converter: null,
+            ClrType: var clrType,
+        } &&
+        clrType == typeof(string) &&
+        string.Equals(
+            typeMapping.StoreType,
+            "TEXT",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsConstantOrdinalComparison(
+        IReadOnlyList<SqlExpression> arguments) =>
+        arguments.Count == 2 &&
+        arguments[1] is SqlConstantExpression
+        {
+            Value: StringComparison.Ordinal,
+        };
+
+    private sealed class ConverterFreeTextMappingValidator
+        : ExpressionVisitor
+    {
+        public bool IsValid { get; private set; } = true;
+
+        public override Expression? Visit(Expression? node)
+        {
+            if (!IsValid || node is null)
+                return node;
+
+            if (node is SqlExpression
+                {
+                    TypeMapping: { } typeMapping,
+                } sqlExpression &&
+                (typeMapping.Converter is not null ||
+                 (sqlExpression.Type == typeof(string) ||
+                  typeMapping.ClrType == typeof(string)) &&
+                 !IsConverterFreeTextMapping(typeMapping)))
+            {
+                IsValid = false;
+                return node;
+            }
+
+            return base.Visit(node);
+        }
     }
 
     private SqlExpression TextFunction(

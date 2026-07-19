@@ -197,7 +197,7 @@
 
                 <p>Hygiene commands return normal query rows, so they work through embedded SQL, ADO.NET, Admin query tabs, the CLI, HTTP, and gRPC. Validation rules are stored in a hidden internal table and exposed through <code>sys.validation_rules</code> and <code>sys_validation_rules</code>.</p>
 
-                <h2>Built-in Functions</h2>
+                <h2 id="built-in-functions">Built-in Functions</h2>
 
                 <h3>String Functions</h3>
                 <table class="doc-table">
@@ -210,8 +210,12 @@
                         <tr><td><code>TRIM(text)</code></td><td>Remove leading/trailing whitespace</td></tr>
                         <tr><td><code>REPLACE(text, from, to)</code></td><td>String replacement</td></tr>
                         <tr><td><code>INSTR(text, search)</code></td><td>Find position of substring</td></tr>
+                        <tr><td><code>ORDINAL_STARTS_WITH(text, prefix)</code></td><td>Case-sensitive ordinal prefix test; returns 1, 0, or NULL</td></tr>
+                        <tr><td><code>ORDINAL_ENDS_WITH(text, suffix)</code></td><td>Case-sensitive ordinal suffix test; returns 1, 0, or NULL</td></tr>
+                        <tr><td><code>ORDINAL_CONTAINS(text, search)</code></td><td>Case-sensitive ordinal substring test; returns 1, 0, or NULL</td></tr>
                     </tbody>
                 </table>
+                <p>The ordinal search functions use .NET ordinal UTF-16 code-unit semantics and do not apply SQL collation, wildcard, or escape rules. In particular, <code>%</code>, <code>_</code>, and backslash are ordinary characters.</p>
 
                 <h3>Math Functions</h3>
                 <table class="doc-table">

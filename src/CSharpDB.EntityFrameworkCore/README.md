@@ -336,6 +336,11 @@ simple `Include`, these CLR members and methods translate to CSharpDB SQL:
 - parameterless `Trim()`, `TrimStart()`, and `TrimEnd()`
 - `Replace(string, string)`
 - `Substring(start)` and `Substring(start, length)`
+- `Contains(string)` with ordinal semantics
+- `StartsWith(string, StringComparison.Ordinal)`,
+  `EndsWith(string, StringComparison.Ordinal)`, and
+  `Contains(string, StringComparison.Ordinal)` when the comparison argument is
+  a literal
 - `DateTime.Year`, `Month`, `Day`, `Hour`, `Minute`, and `Second`
 - `DateOnly.Year`, `Month`, and `Day`
 - `TimeOnly.Hour`, `Minute`, and `Second`
@@ -397,13 +402,17 @@ raw group transforms; post-projection filtering/projection/distinct/limits/set
 operations; predicate aggregates; casts; and broader shapes are rejected with
 `CDBEF1005`.
 
-String `StartsWith`, `EndsWith`, instance `Contains`, and
-`StringComparison` overloads are not translated yet. CSharpDB's current
-pattern-search functions are case-insensitive, so translating those methods
-would silently change ordinary .NET string semantics. `DateTimeOffset`
-components, integral/decimal/`MathF` math overloads, two-argument or
-midpoint-mode rounding, long- and float-valued `Sum`/`Average`/`Min`/`Max`
-variants and other unqualified aggregate variants,
+String predicates require provider-owned, converter-free `TEXT` mappings.
+Search text may be a constant or captured parameter, including empty strings,
+and is treated literally: `%`, `_`, and backslash are not pattern syntax.
+Plain `Contains(string)` and the qualified literal-`Ordinal` overloads are
+case-sensitive and propagate SQL NULL. All other string-search overloads
+remain unsupported, including default culture-sensitive
+`StartsWith(string)`/`EndsWith(string)`, the Boolean/`CultureInfo` forms,
+non-ordinal or captured `StringComparison` modes, and character overloads.
+`DateTimeOffset` components, integral/decimal/`MathF` math overloads,
+two-argument or midpoint-mode rounding, long- and float-valued
+`Sum`/`Average`/`Min`/`Max` variants and other unqualified aggregate variants,
 broader distinct/grouped aggregate variants, set-operation, and correlated
 query shapes also remain outside the qualified surface.
 
@@ -472,8 +481,10 @@ an entire table.
 - computed columns and `DefaultValueSql` are unsupported
 - rowversion is limited to one nonnullable `byte[]` property created with its
   table; standalone add/alter rowversion migrations are unsupported
-- string `StartsWith`, `EndsWith`, instance `Contains`, `StringComparison`
-  overloads, and `DateTimeOffset` component translation are unsupported
+- all other string-search overloads—including default
+  `StartsWith(string)`/`EndsWith(string)`, the Boolean/`CultureInfo` forms,
+  non-ordinal or captured `StringComparison` modes, and character overloads—
+  plus `DateTimeOffset` component translation are unsupported
 - integral, decimal, `MathF`, precision-argument, midpoint-mode, and
   transcendental math overloads are outside the qualified translation surface
 - long- and float-valued `Sum`/`Average`/`Min`/`Max` variants, integer

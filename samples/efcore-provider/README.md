@@ -7,6 +7,8 @@ This sample shows the embedded EF Core 10 provider running against a file-backed
 - insert/query/update-friendly entity mapping
 - exact `decimal(18, 2)` mapping through provider-owned scaled-integer storage
 - collection navigation loading with `Include(...)`
+- ordinal string predicates with plain `Contains(string)` and literal
+  `StringComparison.Ordinal` for `StartsWith`, `EndsWith`, and `Contains`
 - a direct two-entity `Join(...)` over nonnullable integer keys
 - a direct two-entity `LeftJoin(...)` that preserves a blog without posts
 - documented guidance for the conventional optional-relationship `ClientSetNull` pattern
@@ -28,6 +30,7 @@ Posts: 3
 JoinedPosts: 3
 LeftJoinedRows: 4
 BlogsWithoutPosts: 1
+StringPredicateMatches: 3
 RowVersionBytes: 8
 RowVersionAdvancedAfterRawSql: True
 Engineering|2
@@ -94,6 +97,11 @@ NULL` is not supported.
   sources and composite/chained joins remain unsupported. The same bounded
   key and source rules apply to one direct `LeftJoin`, with nullable
   unmatched-side projections; other outer joins and cross joins remain
-  unsupported.
+  unsupported. Plain `Contains(string)` is ordinal. `StartsWith`, `EndsWith`,
+  and the two-argument `Contains` require a literal
+  `StringComparison.Ordinal`; all other string-search overloads remain
+  unsupported, including default culture-sensitive `StartsWith`/`EndsWith`,
+  the Boolean/`CultureInfo` forms, ignore-case or culture comparison modes,
+  captured comparison modes, and character overloads.
 
 For the full provider guide and supported-feature matrix, see the [EF Core Provider guide](https://csharpdb.com/docs/entity-framework-core.html).

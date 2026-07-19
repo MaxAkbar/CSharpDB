@@ -132,6 +132,30 @@ public static class DbBuiltInScalarFunctions
                 RequireArgumentCount(name, args, 2, 3);
                 value = EvaluateInStr(args);
                 return true;
+            case "ORDINAL_STARTS_WITH":
+                RequireArgumentCount(name, args, 2);
+                value = args[0].IsNull || args[1].IsNull
+                    ? DbValue.Null
+                    : FromBoolean(ToScalarString(args[0]).StartsWith(
+                        ToScalarString(args[1]),
+                        StringComparison.Ordinal));
+                return true;
+            case "ORDINAL_ENDS_WITH":
+                RequireArgumentCount(name, args, 2);
+                value = args[0].IsNull || args[1].IsNull
+                    ? DbValue.Null
+                    : FromBoolean(ToScalarString(args[0]).EndsWith(
+                        ToScalarString(args[1]),
+                        StringComparison.Ordinal));
+                return true;
+            case "ORDINAL_CONTAINS":
+                RequireArgumentCount(name, args, 2);
+                value = args[0].IsNull || args[1].IsNull
+                    ? DbValue.Null
+                    : FromBoolean(ToScalarString(args[0]).Contains(
+                        ToScalarString(args[1]),
+                        StringComparison.Ordinal));
+                return true;
             case "REPLACE":
                 RequireArgumentCount(name, args, 3);
                 value = !args[0].IsNull && !args[1].IsNull
