@@ -7,6 +7,7 @@ This sample shows the embedded EF Core 10 provider running against a file-backed
 - insert/query/update-friendly entity mapping
 - exact `decimal(18, 2)` mapping through provider-owned scaled-integer storage
 - collection navigation loading with `Include(...)`
+- a direct two-entity `Join(...)` over nonnullable integer keys
 - design-time context creation for `dotnet ef`
 
 ## Run The Sample
@@ -21,6 +22,7 @@ Expected output looks like:
 Database: C:\...\efcore-provider.db
 Blogs: 2
 Posts: 3
+JoinedPosts: 3
 Engineering|2
 Operations|1
 ```
@@ -44,6 +46,8 @@ The sample includes `BloggingContextFactory`, so `dotnet ef` can create the cont
 - Unsupported in v1: pooled connections, named shared-memory databases,
   endpoint/daemon transports, schemas, computed/default SQL columns,
   database-generated rowversion, and decimal keys/arithmetic/aggregates or
-  precision/scale-changing migrations
+  precision/scale-changing migrations. Inner joins are limited to one direct
+  `Join` over nonnullable `int`, `long`, or `int`/`long`-backed enum keys; filtered inner sources,
+  composite/chained joins, and outer/cross joins remain unsupported.
 
 For the full provider guide and supported-feature matrix, see the [EF Core Provider guide](https://csharpdb.com/docs/entity-framework-core.html).

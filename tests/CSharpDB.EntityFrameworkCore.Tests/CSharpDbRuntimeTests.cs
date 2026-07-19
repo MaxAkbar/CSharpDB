@@ -129,6 +129,32 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
             .Include(blog => blog.Posts)
             .ToListAsync(Ct);
 
+        var requiredReferenceQuery = db.Posts
+            .AsNoTracking()
+            .Include(post => post.Blog)
+            .OrderBy(post => post.Title);
+        Assert.Contains(
+            "INNER JOIN",
+            requiredReferenceQuery.ToQueryString(),
+            StringComparison.OrdinalIgnoreCase);
+        List<Post> postsWithBlogs =
+            await requiredReferenceQuery.ToListAsync(Ct);
+
+        var navigationFilterQuery = db.Posts
+            .AsNoTracking()
+            .Where(post =>
+                post.Blog.Name == "Alpha")
+            .OrderBy(post =>
+                post.Title)
+            .Select(post =>
+                post.Title);
+        Assert.Contains(
+            "INNER JOIN",
+            navigationFilterQuery.ToQueryString(),
+            StringComparison.OrdinalIgnoreCase);
+        List<string> alphaPostTitles =
+            await navigationFilterQuery.ToListAsync(Ct);
+
         List<string> pagedNames = await db.Blogs
             .OrderBy(blog => blog.Name)
             .Skip(1)
@@ -154,11 +180,550 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
 
         Assert.Equal("Alpha", alphaName);
         Assert.Equal(2, alpha.Posts.Count);
+        Assert.Equal(3, postsWithBlogs.Count);
+        Assert.All(
+            postsWithBlogs,
+            post => Assert.False(
+                string.IsNullOrEmpty(
+                    post.Blog.Name)));
+        Assert.Equal(
+            ["GettingStarted", "Welcome"],
+            alphaPostTitles);
         Assert.Equal(["Beta"], pagedNames);
         Assert.Equal(["Alpha", "Gamma"], parameterContains);
         Assert.Equal(["Alpha", "Gamma"], constantContains);
         Assert.True(await db.Posts.AnyAsync(post => post.Title == "Welcome", Ct));
         Assert.Equal(3, await db.Posts.CountAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Queries_DirectInnerJoinTranslatesAndExecutes()
+    {
+        string dbPath = GetDbPath("direct-inner-join");
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Blogs.AddRange(
+            new Blog
+            {
+                Name = "Alpha",
+                Posts =
+                [
+                    new Post { Title = "Welcome" },
+                    new Post { Title = "GettingStarted" },
+                ],
+            },
+            new Blog
+            {
+                Name = "Beta",
+                Posts =
+                [
+                    new Post { Title = "Roadmap" },
+                ],
+            },
+            new Blog
+            {
+                Name = "Gamma",
+            });
+        db.People.AddRange(
+            CreateNumericPerson(
+                "EnumOuter",
+                1,
+                1,
+                status: PersonStatus.Active),
+            CreateNumericPerson(
+                "EnumInner",
+                2,
+                2,
+                status: PersonStatus.Active),
+            CreateNumericPerson(
+                "EnumUnmatched",
+                3,
+                3,
+                status: PersonStatus.Unknown));
+        db.Widgets.AddRange(
+            new ManualWidget
+            {
+                Id = 42,
+                Name = "LongOuter",
+            },
+            new ManualWidget
+            {
+                Id = 43,
+                Name = "LongUnmatched",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        int minimumBlogId = 0;
+        string excludedTitle = "Roadmap";
+        var query = db.Blogs
+            .Where(blog => blog.Id > minimumBlogId)
+            .Join(
+                db.Posts,
+                blog => blog.Id,
+                post => post.BlogId,
+                (blog, post) => new
+                {
+                    BlogId = blog.Id,
+                    BlogName = blog.Name,
+                    PostId = post.Id,
+                    post.Title,
+                })
+            .Where(result =>
+                result.Title != excludedTitle &&
+                result.Title.Length > 5)
+            .OrderBy(result => result.BlogName)
+            .ThenBy(result => result.Title)
+            .Skip(0)
+            .Take(2);
+
+        string sql = query.ToQueryString();
+        Assert.Contains(
+            "INNER JOIN",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+
+        var results = await query.ToListAsync(Ct);
+
+        Assert.Equal(2, results.Count);
+        Assert.All(
+            results,
+            result => Assert.Equal("Alpha", result.BlogName));
+        Assert.Equal(
+            ["GettingStarted", "Welcome"],
+            results.Select(result => result.Title));
+
+        Post projectedEntity = await db.Blogs
+            .Where(blog =>
+                blog.Name == "Alpha")
+            .Join(
+                db.Posts,
+                blog => blog.Id,
+                post => post.BlogId,
+                (blog, post) => post)
+            .OrderBy(post =>
+                post.Title)
+            .FirstAsync(Ct);
+        Assert.Equal(
+            "GettingStarted",
+            projectedEntity.Title);
+
+        var enumQuery = db.People
+            .Where(person =>
+                person.Name == "EnumOuter")
+            .Join(
+                db.People,
+                outer => outer.Status,
+                inner => inner.Status,
+                (outer, inner) => new
+                {
+                    OuterName = outer.Name,
+                    InnerName = inner.Name,
+                })
+            .Where(result =>
+                result.InnerName == "EnumInner");
+
+        Assert.Contains(
+            "INNER JOIN",
+            enumQuery.ToQueryString(),
+            StringComparison.OrdinalIgnoreCase);
+        var enumResult =
+            Assert.Single(
+                await enumQuery.ToListAsync(Ct));
+        Assert.Equal(
+            "EnumOuter",
+            enumResult.OuterName);
+        Assert.Equal(
+            "EnumInner",
+            enumResult.InnerName);
+
+        var longKeyResult = await db.Widgets
+            .Where(widget =>
+                widget.Id == 42)
+            .Join(
+                db.Widgets,
+                outer => outer.Id,
+                inner => inner.Id,
+                (outer, inner) => new
+                {
+                    OuterName = outer.Name,
+                    InnerName = inner.Name,
+                })
+            .SingleAsync(Ct);
+        Assert.Equal(
+            "LongOuter",
+            longKeyResult.OuterName);
+        Assert.Equal(
+            "LongOuter",
+            longKeyResult.InnerName);
+    }
+
+    [Fact]
+    public async Task UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch()
+    {
+        var interceptor = new ReaderCountingInterceptor();
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={GetDbPath("unsupported-inner-join")}",
+            interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+
+        InvalidOperationException filteredInnerError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .Join(
+                        db.Posts.Where(post =>
+                            post.Id > 0),
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, post) => blog.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            filteredInnerError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "inner source cannot be pre-filtered",
+            filteredInnerError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException efPropertyFilteredInnerError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Posts
+                    .Join(
+                        db.Blogs.Where(blog =>
+                            blog.Id > 0),
+                        post => EF.Property<int?>(
+                            post,
+                            nameof(Post.BlogId)),
+                        blog => EF.Property<int?>(
+                            blog,
+                            nameof(Blog.Id)),
+                        (post, blog) => post.Title)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            efPropertyFilteredInnerError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "inner source cannot be pre-filtered",
+            efPropertyFilteredInnerError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException limitedOuterError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .OrderBy(blog => blog.Id)
+                    .Take(1)
+                    .Join(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, post) => blog.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            limitedOuterError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "outer source",
+            limitedOuterError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException orderedOuterError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .OrderBy(blog => blog.Id)
+                    .Join(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, post) => blog.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            orderedOuterError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "outer source",
+            orderedOuterError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException compositeKeyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .Join(
+                        db.Posts,
+                        blog => new
+                        {
+                            blog.Id,
+                            Text = blog.Name,
+                        },
+                        post => new
+                        {
+                            Id = post.BlogId,
+                            Text = post.Title,
+                        },
+                        (blog, post) => blog.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            compositeKeyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Composite inner-join keys",
+            compositeKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException nullableKeyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.People
+                    .Join(
+                        db.People,
+                        outer => outer.OptionalRank,
+                        inner => inner.OptionalRank,
+                        (outer, inner) => outer.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            nullableKeyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "nullable",
+            nullableKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException transformedKeyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .Join(
+                        db.Posts,
+                        blog => blog.Id + 0,
+                        post => post.BlogId,
+                        (blog, post) => blog.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            transformedKeyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "direct mapped scalar property",
+            transformedKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException narrowingKeyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .Join(
+                        db.Posts,
+                        blog => (short)blog.Id,
+                        post => (short)post.BlogId,
+                        (blog, post) => blog.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            narrowingKeyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "transformed keys",
+            narrowingKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException textKeyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .Join(
+                        db.Posts,
+                        blog => blog.Name,
+                        post => post.Title,
+                        (blog, post) => blog.Id)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            textKeyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "INTEGER-backed",
+            textKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException chainedJoinError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .Join(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, post) => new
+                        {
+                            BlogId = blog.Id,
+                            PostTitle = post.Title,
+                        })
+                    .Join(
+                        db.People,
+                        pair => pair.BlogId,
+                        person => person.Id,
+                        (pair, person) => new
+                        {
+                            pair.PostTitle,
+                            PersonName = person.Name,
+                        })
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            chainedJoinError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "outer source",
+            chainedJoinError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        var converterInterceptor =
+            new ReaderCountingInterceptor();
+        await using var convertedDb =
+            new ConvertedJoinModelContext(
+                $"Data Source={GetDbPath("unsupported-converted-join")}",
+                converterInterceptor);
+        await convertedDb.Database.EnsureCreatedAsync(Ct);
+        converterInterceptor.Reset();
+
+        InvalidOperationException converterKeyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => convertedDb.Items
+                    .Join(
+                        convertedDb.Items,
+                        outer => outer.Code,
+                        inner => inner.Code,
+                        (outer, inner) => outer.Id)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1007",
+            converterKeyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "configured value converter",
+            converterKeyError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            0,
+            interceptor.ReaderCommandCount);
+        Assert.Equal(
+            0,
+            converterInterceptor.ReaderCommandCount);
+    }
+
+    [Fact]
+    public async Task UnsupportedOuterAndCrossJoinOperators_ReportBeforeCommandDispatch()
+    {
+        var interceptor = new ReaderCountingInterceptor();
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={GetDbPath("unsupported-join-operators")}",
+            interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+
+        InvalidOperationException groupJoinError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .GroupJoin(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, posts) => new
+                        {
+                            blog.Name,
+                            Posts = posts,
+                        })
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            groupJoinError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "GroupJoin",
+            groupJoinError.Message,
+            StringComparison.Ordinal);
+
+        InvalidOperationException selectManyError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .SelectMany(
+                        _ => db.Posts,
+                        (blog, post) => new
+                        {
+                            BlogName = blog.Name,
+                            post.Title,
+                        })
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            selectManyError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SelectMany",
+            selectManyError.Message,
+            StringComparison.Ordinal);
+
+        InvalidOperationException leftJoinError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .LeftJoin(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, post) => blog.Name)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            leftJoinError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "LeftJoin",
+            leftJoinError.Message,
+            StringComparison.Ordinal);
+
+        InvalidOperationException rightJoinError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .RightJoin(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, post) => post.Title)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            rightJoinError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "RightJoin",
+            rightJoinError.Message,
+            StringComparison.Ordinal);
+
+        InvalidOperationException comparerJoinError =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => db.Blogs
+                    .Join(
+                        db.Posts,
+                        blog => blog.Id,
+                        post => post.BlogId,
+                        (blog, post) => blog.Name,
+                        EqualityComparer<int>.Default)
+                    .ToListAsync(Ct));
+        Assert.Contains(
+            "CDBEF1003",
+            comparerJoinError.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Join(comparer)",
+            comparerJoinError.Message,
+            StringComparison.Ordinal);
+
+        Assert.Equal(
+            0,
+            interceptor.ReaderCommandCount);
     }
 
     [Fact]
@@ -2772,6 +3337,29 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         }
     }
 
+    private sealed class ConvertedJoinModelContext
+        : TestDbContext
+    {
+        public ConvertedJoinModelContext(
+            string connectionString,
+            params IInterceptor[] interceptors)
+            : base(
+                connectionString,
+                interceptors)
+        {
+        }
+
+        public DbSet<ConvertedJoinEntity> Items =>
+            Set<ConvertedJoinEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder
+                .Entity<ConvertedJoinEntity>()
+                .Property(item => item.Code)
+                .HasConversion<long>();
+    }
+
     private sealed class InvalidDecimalPrecisionContext(
         string connectionString)
         : TestDbContext(connectionString)
@@ -3257,6 +3845,13 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public decimal ProviderAmount { get; set; }
 
         public decimal ConvertedAmount { get; set; }
+    }
+
+    private sealed class ConvertedJoinEntity
+    {
+        public int Id { get; set; }
+
+        public int Code { get; set; }
     }
 
     private sealed class DefaultValueEntity

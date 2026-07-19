@@ -389,6 +389,10 @@ internal static class CSharpDbQueryTranslationDiagnostics
         "CDBEF1006: The CSharpDB EF Core provider cannot translate this decimal expression within the exact scaled-integer foundation. " +
         $"{reason} Use comparisons and ordering over directly mapped decimal properties, or perform arithmetic after AsEnumerable(). See {DocumentationUrl}.";
 
+    public static string ForInnerJoin(string reason) =>
+        "CDBEF1007: The CSharpDB EF Core provider cannot translate this inner-join shape within the bounded direct-join surface. " +
+        $"{reason} Join two direct entity roots on one nonnullable INTEGER-backed int, long, or int/long-backed enum property, then apply filtering, ordering, and pagination after Join. See {DocumentationUrl}.";
+
     public static string? FindUnsupportedOperator(Expression expression)
     {
         var visitor = new UnsupportedOperatorFindingExpressionVisitor();
@@ -517,22 +521,43 @@ internal static class CSharpDbQueryTranslationDiagnostics
             else if (OperatorName is null &&
                 node.Method.DeclaringType == typeof(Queryable))
             {
-                OperatorName = node.Method.Name switch
+                if (node.Method.Name ==
+                        nameof(Queryable.Join) &&
+                    node.Arguments.Count == 6)
                 {
-                    nameof(Queryable.TakeWhile) =>
-                        "Queryable.TakeWhile",
-                    nameof(Queryable.SkipWhile) =>
-                        "Queryable.SkipWhile",
-                    nameof(Queryable.Concat) =>
-                        "Queryable.Concat",
-                    nameof(Queryable.Union) =>
-                        "Queryable.Union",
-                    nameof(Queryable.Except) =>
-                        "Queryable.Except",
-                    nameof(Queryable.Intersect) =>
-                        "Queryable.Intersect",
-                    _ => null,
-                };
+                    OperatorName =
+                        "Queryable.Join(comparer)";
+                }
+                else
+                {
+                    OperatorName =
+                        node.Method.Name switch
+                        {
+                            nameof(Queryable.TakeWhile) =>
+                                "Queryable.TakeWhile",
+                            nameof(Queryable.SkipWhile) =>
+                                "Queryable.SkipWhile",
+                            nameof(Queryable.Concat) =>
+                                "Queryable.Concat",
+                            nameof(Queryable.Union) =>
+                                "Queryable.Union",
+                            nameof(Queryable.Except) =>
+                                "Queryable.Except",
+                            nameof(Queryable.Intersect) =>
+                                "Queryable.Intersect",
+                            nameof(Queryable.GroupJoin) =>
+                                "Queryable.GroupJoin",
+                            nameof(Queryable.SelectMany) =>
+                                "Queryable.SelectMany",
+                            nameof(Queryable.DefaultIfEmpty) =>
+                                "Queryable.DefaultIfEmpty",
+                            "LeftJoin" =>
+                                "Queryable.LeftJoin",
+                            "RightJoin" =>
+                                "Queryable.RightJoin",
+                            _ => null,
+                        };
+                }
             }
 
             return OperatorName is null

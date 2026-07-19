@@ -99,6 +99,12 @@ public sealed class CSharpDbQueryTranslationPreprocessor
             "Queryable.Union" or
             "Queryable.Except" or
             "Queryable.Intersect" or
+            "Queryable.GroupJoin" or
+            "Queryable.SelectMany" or
+            "Queryable.DefaultIfEmpty" or
+            "Queryable.LeftJoin" or
+            "Queryable.RightJoin" or
+            "Queryable.Join(comparer)" or
             "RelationalQueryableExtensions.ExecuteUpdate")
         {
             throw new InvalidOperationException(

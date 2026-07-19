@@ -1038,6 +1038,42 @@
       "ci_executed": true
     },
     {
+      "id": "ef.query.inner_join",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_DirectInnerJoinTranslatesAndExecutes",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.inner_join.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "DirectInnerJoin_MatchesForBoundedIntegerKeys",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.inner_join.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.inner_join.unsupported_operators",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedOuterAndCrossJoinOperators_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
       "id": "ef.query.string_functions",
       "kind": "positive",
       "dimension": "provider",
@@ -2545,6 +2581,23 @@
       "negative_proof_ids": ["ef.types.decimal.value_rejections", "ef.types.decimal.model_rejections", "ef.types.decimal.query_rejections", "ef.types.decimal.migration_rejection"]
     },
     {
+      "id": "provider.ef_query.inner_join",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded direct inner joins",
+      "syntax": "db.Parents.Join(db.Children, p => p.Id, c => c.ParentId, (p, c) => new { p.Name, c.Value })",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Exactly one explicit Queryable.Join without a custom comparer is qualified between sources that normalize to direct mapped entity roots. The outer root may have a pre-filter; the inner root must be unfiltered because EF Core otherwise emits a derived JOIN target not accepted by CSharpDB's current table-reference grammar. Each side must use one direct nonnullable INTEGER-backed int, long, or int/long-backed enum property with compatible provider mappings. Qualified scalar or entity result projection plus post-join filtering, ordering, and Skip/Take are supported. Prior ordering or limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/configured-converter/transformed/composite keys, custom comparers, chained joins, GroupJoin, SelectMany, DefaultIfEmpty, and left/right joins fail before command dispatch."],
+      "deviations": [],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.inner_join", "ef.query.inner_join.compatibility"],
+      "negative_proof_ids": ["ef.query.inner_join.unsupported_shapes", "ef.query.inner_join.unsupported_operators"]
+    },
+    {
       "id": "provider.ef_query.crud",
       "category": "Generated SQL",
       "feature": "EF Core embedded CRUD and bounded query translation",
@@ -2555,11 +2608,11 @@
       "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "partial", "ef_migration": "not_applicable"},
       "persistent_ddl": false,
       "first_supported_version": "4.0.4",
-      "limitations": ["The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, non-decimal constant/parameter collection Contains, simple Include, selected string and temporal members, finite-double math functions, bounded exact-decimal comparisons and ordering, bounded scalar numeric aggregates, direct-column integer-distinct aggregates, and direct single-table grouped numeric aggregates. Distinct scalar aggregates require an optional pre-filter followed by one directly mapped nonnullable int-column projection and Distinct, then Count, LongCount, Sum, Min, or Max. Distinct Average, nullable or non-int columns, value converters, ordering, limits, predicates after Distinct, intervening operators, computed/composite selectors, casts, and derived sources are rejected. GroupBy requires direct mapped bool, integral, enum, default-BINARY string, or nullable keys; composite keys must use C# anonymous types or ValueTuple, and Boolean keys require canonical provider-written 0/1 storage. It supports one direct-key/bare-aggregate projection, qualified non-distinct Sum/Average/Min/Max, nonnullable-int direct-column distinct Count/LongCount/Sum/Min/Max, basic HAVING, and ordering by a directly projected key or aggregate. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw or post-projection group transforms; nested/joined grouping; predicate/CASE aggregates; and broader types/shapes are rejected. String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, decimal arithmetic/aggregates/Contains, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, Concat/Union/Except/Intersect, ExecuteUpdate, join, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, operators, aggregate shapes, and decimal expressions fail before command dispatch with provider diagnostics."],
+      "limitations": ["The first-party provider is embedded/direct only. The proved query slice covers Where, ordering, Skip/Take, scalar projection, Single, simple and bounded-shape Any, Count/LongCount, non-decimal constant/parameter collection Contains, simple Include, bounded direct inner joins, selected string and temporal members, finite-double math functions, bounded exact-decimal comparisons and ordering, bounded scalar numeric aggregates, direct-column integer-distinct aggregates, and direct single-table grouped numeric aggregates. Distinct scalar aggregates require an optional pre-filter followed by one directly mapped nonnullable int-column projection and Distinct, then Count, LongCount, Sum, Min, or Max. Distinct Average, nullable or non-int columns, value converters, ordering, limits, predicates after Distinct, intervening operators, computed/composite selectors, casts, and derived sources are rejected. GroupBy requires direct mapped bool, integral, enum, default-BINARY string, or nullable keys; composite keys must use C# anonymous types or ValueTuple, and Boolean keys require canonical provider-written 0/1 storage. It supports one direct-key/bare-aggregate projection, qualified non-distinct Sum/Average/Min/Max, nonnullable-int direct-column distinct Count/LongCount/Sum/Min/Max, basic HAVING, and ordering by a directly projected key or aggregate. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw or post-projection group transforms; nested/joined grouping; predicate/CASE aggregates; and broader types/shapes are rejected. String StartsWith/EndsWith/instance Contains and StringComparison overloads, DateTimeOffset components, integral/decimal/MathF/precision-argument/midpoint-mode/transcendental math overloads, decimal arithmetic/aggregates/Contains, long- and float-valued Sum/Average/Min/Max variants and other unqualified aggregate variants, TakeWhile/SkipWhile, Concat/Union/Except/Intersect, ExecuteUpdate, filtered-inner/composite/chained/outer/cross joins, and correlated-query shapes remain outside the qualified surface. Recognized unsupported CLR methods, members, operators, aggregate shapes, join shapes, and decimal expressions fail before command dispatch with provider diagnostics."],
       "deviations": ["ToLower()/ToUpper() and their invariant variants map to CSharpDB LOWER/UPPER and therefore use invariant server semantics rather than .NET CurrentCulture.", "Math.Round(double) uses CSharpDB midpoint-to-even semantics. Scalar numeric aggregate qualification is limited to bounded values and the explicitly documented CLR types because engine accumulation and EF-generated conversions differ for wider variants.", "Nullable Distinct().Count()/LongCount() is intentionally rejected because LINQ counts one distinct NULL while SQL COUNT(DISTINCT column) ignores NULL."],
       "documentation_anchor": "entity-framework-core.html#linq-translation",
-      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.string_functions", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
-      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
+      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.inner_join", "ef.query.inner_join.compatibility", "ef.query.string_functions", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
+      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.inner_join.unsupported_shapes", "ef.query.inner_join.unsupported_operators", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
     },
     {
       "id": "provider.ef_migration.basic",

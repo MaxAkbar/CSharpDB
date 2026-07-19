@@ -173,6 +173,7 @@ public sealed class SampleSmokeTests : IAsyncLifetime
             Assert.True(File.Exists(dbPath), "The EF Core sample did not produce the expected database file.");
             Assert.Contains("Blogs: 2", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Posts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("JoinedPosts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
 
             await using var db = await Database.OpenAsync(dbPath, Ct);
 

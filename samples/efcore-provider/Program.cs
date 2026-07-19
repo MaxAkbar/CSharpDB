@@ -39,10 +39,24 @@ List<Blog> blogs = await db.Blogs
     .OrderBy(blog => blog.Name)
     .Include(blog => blog.Posts)
     .ToListAsync();
+var joinedPosts = await db.Blogs
+    .Join(
+        db.Posts,
+        blog => blog.Id,
+        post => post.BlogId,
+        (blog, post) => new
+        {
+            BlogName = blog.Name,
+            post.Title,
+        })
+    .OrderBy(item => item.BlogName)
+    .ThenBy(item => item.Title)
+    .ToListAsync();
 
 Console.WriteLine($"Database: {Path.GetFullPath(databasePath)}");
 Console.WriteLine($"Blogs: {blogs.Count}");
 Console.WriteLine($"Posts: {await db.Posts.CountAsync()}");
+Console.WriteLine($"JoinedPosts: {joinedPosts.Count}");
 
 foreach (Blog blog in blogs)
     Console.WriteLine($"{blog.Name}|{blog.Posts.Count}");
