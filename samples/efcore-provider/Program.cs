@@ -52,6 +52,14 @@ var stringPredicateMatches = await db.Blogs
     .OrderBy(blog => blog.Name)
     .Select(blog => blog.Name)
     .ToListAsync();
+string likePattern = "%AT_ONS";
+var likePredicateMatches = await db.Blogs
+    .Where(blog =>
+        EF.Functions.Like(
+            blog.Name,
+            likePattern))
+    .Select(blog => blog.Name)
+    .ToListAsync();
 var joinedPosts = await db.Blogs
     .Join(
         db.Posts,
@@ -100,6 +108,7 @@ Console.WriteLine($"JoinedPosts: {joinedPosts.Count}");
 Console.WriteLine($"LeftJoinedRows: {leftJoinedRows.Count}");
 Console.WriteLine($"BlogsWithoutPosts: {blogsWithoutPosts}");
 Console.WriteLine($"StringPredicateMatches: {stringPredicateMatches.Count}");
+Console.WriteLine($"LikePredicateMatches: {likePredicateMatches.Count}");
 Console.WriteLine($"RowVersionBytes: {rowVersionAfterRawSql.Length}");
 Console.WriteLine(
     $"RowVersionAdvancedAfterRawSql: {!rowVersionBeforeRawSql.SequenceEqual(rowVersionAfterRawSql)}");

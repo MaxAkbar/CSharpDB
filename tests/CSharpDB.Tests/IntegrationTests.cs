@@ -1119,6 +1119,57 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Like_WithDanglingEscape_DoesNotMatch()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE escaped_values (id INTEGER, value TEXT)",
+            TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync(
+            "INSERT INTO escaped_values VALUES (1, 'abc!'), (2, 'abc%'), (3, '')",
+            TestContext.Current.CancellationToken);
+
+        await using (var bangResult = await _db.ExecuteAsync(
+                         "SELECT id FROM escaped_values WHERE value LIKE 'abc!' ESCAPE '!'",
+                         TestContext.Current.CancellationToken))
+        {
+            Assert.Empty(
+                await bangResult.ToListAsync(
+                    TestContext.Current.CancellationToken));
+        }
+
+        await using (var percentResult = await _db.ExecuteAsync(
+                         "SELECT id FROM escaped_values WHERE value LIKE '%' ESCAPE '%'",
+                         TestContext.Current.CancellationToken))
+        {
+            Assert.Empty(
+                await percentResult.ToListAsync(
+                    TestContext.Current.CancellationToken));
+        }
+
+        await using var doubledEscapeResult =
+            await _db.ExecuteAsync(
+                "SELECT id FROM escaped_values WHERE value LIKE 'abc%%' ESCAPE '%'",
+                TestContext.Current.CancellationToken);
+        var rows = await doubledEscapeResult.ToListAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Single(rows);
+        Assert.Equal(
+            2,
+            rows[0][0].AsInteger);
+
+        await using var emptyPatternResult =
+            await _db.ExecuteAsync(
+                "SELECT id FROM escaped_values WHERE value LIKE ''",
+                TestContext.Current.CancellationToken);
+        var emptyRows = await emptyPatternResult.ToListAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Single(emptyRows);
+        Assert.Equal(
+            3,
+            emptyRows[0][0].AsInteger);
+    }
+
+    [Fact]
     public async Task In_Integers()
     {
         await _db.ExecuteAsync("CREATE TABLE nums (id INTEGER, val INTEGER)", TestContext.Current.CancellationToken);

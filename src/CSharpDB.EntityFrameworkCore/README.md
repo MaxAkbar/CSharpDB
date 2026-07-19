@@ -341,6 +341,9 @@ simple `Include`, these CLR members and methods translate to CSharpDB SQL:
   `EndsWith(string, StringComparison.Ordinal)`, and
   `Contains(string, StringComparison.Ordinal)` when the comparison argument is
   a literal
+- `EF.Functions.Like(match, pattern)` and
+  `EF.Functions.Like(match, pattern, escape)` over one directly mapped,
+  converter-free `TEXT` property
 - `DateTime.Year`, `Month`, `Day`, `Hour`, `Minute`, and `Second`
 - `DateOnly.Year`, `Month`, and `Day`
 - `TimeOnly.Hour`, `Minute`, and `Second`
@@ -403,11 +406,26 @@ operations; predicate aggregates; casts; and broader shapes are rejected with
 `CDBEF1005`.
 
 String predicates require provider-owned, converter-free `TEXT` mappings.
-Search text may be a constant or captured parameter, including empty strings,
-and is treated literally: `%`, `_`, and backslash are not pattern syntax.
-Plain `Contains(string)` and the qualified literal-`Ordinal` overloads are
-case-sensitive and propagate SQL NULL. All other string-search overloads
-remain unsupported, including default culture-sensitive
+For ordinal string search, text may be a constant or captured parameter,
+including an empty string, and is treated literally: `%`, `_`, and backslash
+are not pattern syntax. Plain `Contains(string)` and the qualified
+literal-`Ordinal` overloads are case-sensitive and propagate SQL NULL.
+
+`EF.Functions.Like` intentionally uses SQL pattern syntax: `%` matches zero or
+more UTF-16 code units and `_` matches one UTF-16 code unit. The match must be
+one direct `TEXT` property, while the pattern may be a constant or captured
+string, including `null`. CSharpDB `LIKE` is invariant case-insensitive. The
+three-string overload requires the escape to be a compile-time, non-null,
+one-UTF-16-code-unit string literal other than `%`. A positive nullable `LIKE`
+predicate excludes SQL NULL; EF Core's normal null compensation makes a
+negated nullable predicate include NULL rows. Compatibility tests compare
+bounded ASCII patterns with SQLite; Unicode casing and supplementary-character
+wildcard behavior are provider-specific.
+
+Transformed or configured-converter match expressions, row-derived patterns,
+and captured, empty, multi-character, or null escapes fail before command
+dispatch with `CDBEF1001`. All other string-search overloads remain
+unsupported, including default culture-sensitive
 `StartsWith(string)`/`EndsWith(string)`, the Boolean/`CultureInfo` forms,
 non-ordinal or captured `StringComparison` modes, and character overloads.
 `DateTimeOffset` components, integral/decimal/`MathF` math overloads,
@@ -459,7 +477,7 @@ an entire table.
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
 | Exact decimal mapping | Partial | Provider-owned scaled `INTEGER` storage for precision 1–18; exact round trips, parameters, comparisons, and ordering |
-| Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins and the string, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, aggregate shapes, and join shapes receive provider diagnostics |
+| Bounded LINQ/query subset | Partial | Basic operators plus bounded direct inner and left joins and the string, `EF.Functions.Like`, temporal, finite-double math, scalar numeric aggregate, direct-column integer-distinct aggregate, and direct single-table grouped aggregate translations listed above; unsupported methods, members, operators, aggregate shapes, and join shapes receive provider diagnostics |
 | Supported CLR types | Yes | `bool`, integral types, enums, bounded exact `decimal`, `double`, `float`, `string`, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`, `byte[]` |
 
 ## Current Limitations
@@ -484,7 +502,9 @@ an entire table.
 - all other string-search overloads—including default
   `StartsWith(string)`/`EndsWith(string)`, the Boolean/`CultureInfo` forms,
   non-ordinal or captured `StringComparison` modes, and character overloads—
-  plus `DateTimeOffset` component translation are unsupported
+  plus transformed/configured-converter `LIKE` matches, row-derived `LIKE`
+  patterns, captured or invalid `LIKE` escapes, and `DateTimeOffset` component
+  translation are unsupported
 - integral, decimal, `MathF`, precision-argument, midpoint-mode, and
   transcendental math overloads are outside the qualified translation surface
 - long- and float-valued `Sum`/`Average`/`Min`/`Max` variants, integer

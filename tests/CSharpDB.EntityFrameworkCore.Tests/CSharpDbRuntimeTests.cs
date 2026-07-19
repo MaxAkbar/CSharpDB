@@ -1406,6 +1406,153 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Queries_EfFunctionsLikeTranslatesWithBoundedSemantics()
+    {
+        string dbPath =
+            GetDbPath("ef-functions-like");
+
+        await using var db = new ProviderRuntimeContext(
+            $"Data Source={dbPath}");
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Blogs.AddRange(
+            new Blog
+            {
+                Name = "Alpha_One%",
+                OptionalText = "Needle-here",
+            },
+            new Blog
+            {
+                Name = "alpha-Two",
+            },
+            new Blog
+            {
+                Name = "Beta%literal",
+                OptionalText = "other",
+            },
+            new Blog
+            {
+                Name = "Gamma",
+            },
+            new Blog
+            {
+                Name = string.Empty,
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string prefixPattern = "alpha%";
+        IQueryable<Blog> prefixQuery = db.Blogs
+            .Where(blog =>
+                EF.Functions.Like(
+                    blog.Name,
+                    prefixPattern));
+
+        string prefixSql = prefixQuery.ToQueryString();
+        Assert.Contains(
+            " LIKE ",
+            prefixSql,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            ["Alpha_One%", "alpha-Two"],
+            await prefixQuery
+                .OrderBy(blog => blog.Id)
+                .Select(blog => blog.Name)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            "alpha-Two",
+            await db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        "alpha_two"))
+                .Select(blog => blog.Name)
+                .SingleAsync(Ct));
+
+        string? nullPattern = null;
+        Assert.False(
+            await db.Blogs.AnyAsync(
+                blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        nullPattern!),
+                Ct));
+        Assert.Contains(
+            string.Empty,
+            await db.Blogs
+                .Select(blog => blog.Name)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            string.Empty,
+            await db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        string.Empty))
+                .Select(blog => blog.Name)
+                .SingleAsync(Ct));
+
+        string escapedPattern =
+            "alpha!_one!%";
+        IQueryable<Blog> escapedQuery = db.Blogs
+            .Where(blog =>
+                EF.Functions.Like(
+                    blog.Name,
+                    escapedPattern,
+                    "!"));
+        string escapedSql =
+            escapedQuery.ToQueryString();
+        Assert.Contains(
+            " ESCAPE ",
+            escapedSql,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "Alpha_One%",
+            await escapedQuery
+                .Select(blog => blog.Name)
+                .SingleAsync(Ct));
+
+        Assert.Equal(
+            [true, true, false, false, false],
+            await db.Blogs
+                .OrderBy(blog => blog.Id)
+                .Select(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        prefixPattern))
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            ["Beta%literal", "Gamma", ""],
+            await db.Blogs
+                .Where(blog =>
+                    !EF.Functions.Like(
+                        blog.Name,
+                        prefixPattern))
+                .OrderBy(blog => blog.Id)
+                .Select(blog => blog.Name)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            ["Needle-here"],
+            await db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.OptionalText!,
+                        "%needle%"))
+                .Select(blog => blog.OptionalText!)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            ["alpha-Two", "Beta%literal", "Gamma", ""],
+            await db.Blogs
+                .Where(blog =>
+                    !EF.Functions.Like(
+                        blog.OptionalText!,
+                        "%needle%"))
+                .OrderBy(blog => blog.Id)
+                .Select(blog => blog.Name)
+                .ToListAsync(Ct));
+    }
+
+    [Fact]
     public async Task Queries_DateAndTimeComponentsTranslateInPredicatesAndProjections()
     {
         string dbPath = GetDbPath("temporal-components");
@@ -3069,6 +3216,162 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
             {
                 Assert.Contains(
                     expectedGuidance,
+                    exception.Message,
+                    StringComparison.Ordinal);
+            }
+
+            Assert.Equal(
+                0,
+                interceptor.ReaderCommandCount);
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedLikeShapes_ReportBeforeCommandDispatch()
+    {
+        string dbPath =
+            GetDbPath("unsupported-like-shapes");
+        var interceptor =
+            new ReaderCountingInterceptor();
+
+        await using var db =
+            new ProviderRuntimeContext(
+                $"Data Source={dbPath}",
+                interceptor);
+        await db.Database.EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+
+        string transformedPattern =
+            "sensitive-like-transformed-pattern-79a1a9";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name.ToLower(),
+                        transformedPattern))
+                .ToListAsync(Ct),
+            "directly mapped, converter-free TEXT property",
+            transformedPattern);
+
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        blog.OptionalText!))
+                .ToListAsync(Ct),
+            "constant or captured string value");
+
+        string capturedEscape = "~";
+        string capturedEscapePattern =
+            "%sensitive-like-captured-escape-487c73%";
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        capturedEscapePattern,
+                        capturedEscape))
+                .ToListAsync(Ct),
+            "compile-time, non-null, one UTF-16-code-unit string literal",
+            capturedEscapePattern);
+
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        "%alpha%",
+                        string.Empty))
+                .ToListAsync(Ct),
+            "compile-time, non-null, one UTF-16-code-unit string literal");
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        "%alpha%",
+                        "!!"))
+                .ToListAsync(Ct),
+            "compile-time, non-null, one UTF-16-code-unit string literal");
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        "%alpha%",
+                        null!))
+                .ToListAsync(Ct),
+            "compile-time, non-null, one UTF-16-code-unit string literal");
+        await AssertRejected(
+            () => db.Blogs
+                .Where(blog =>
+                    EF.Functions.Like(
+                        blog.Name,
+                        "%",
+                        "%"))
+                .ToListAsync(Ct),
+            "percent wildcard cannot be used as the escape");
+
+        string convertedDbPath =
+            GetDbPath("unsupported-converted-like");
+        await using var convertedDb =
+            new ConvertedStringSearchContext(
+                $"Data Source={convertedDbPath}",
+                interceptor);
+        await convertedDb.Database
+            .EnsureCreatedAsync(Ct);
+        interceptor.Reset();
+
+        string convertedPattern =
+            "sensitive-like-converted-pattern-c43338";
+        await AssertRejected(
+            () => convertedDb.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.Converted,
+                        convertedPattern))
+                .ToListAsync(Ct),
+            "directly mapped, converter-free TEXT property",
+            convertedPattern);
+
+        Assert.Equal(
+            0,
+            interceptor.ReaderCommandCount);
+
+        async Task AssertRejected(
+            Func<Task> operation,
+            string expectedReason,
+            string? sensitiveValue = null)
+        {
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<
+                    InvalidOperationException>(
+                    operation);
+            Assert.Contains(
+                "CDBEF1001",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Microsoft.EntityFrameworkCore.DbFunctionsExtensions.Like",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "bounded LIKE surface",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                expectedReason,
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "#linq-translation",
+                exception.Message,
+                StringComparison.Ordinal);
+            if (sensitiveValue is not null)
+            {
+                Assert.DoesNotContain(
+                    sensitiveValue,
                     exception.Message,
                     StringComparison.Ordinal);
             }

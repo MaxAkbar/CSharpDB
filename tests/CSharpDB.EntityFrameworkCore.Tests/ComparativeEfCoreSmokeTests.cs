@@ -330,6 +330,140 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
     [Theory]
     [InlineData(ProviderKind.CSharpDb)]
     [InlineData(ProviderKind.Sqlite)]
+    public async Task EfFunctionsLike_MatchesForBoundedAsciiPatterns(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(
+                provider,
+                "ef-functions-like"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                TextCol = "Alpha_One%",
+                OptionalText = "Needle-here",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                TextCol = "alpha-Two",
+                OptionalText = null,
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                TextCol = "Beta%literal",
+                OptionalText = "other",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                TextCol = "Gamma",
+                OptionalText = null,
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                TextCol = string.Empty,
+                OptionalText = null,
+                Category = "Search",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string prefixPattern = "alpha%";
+        Assert.Equal(
+            [1, 2],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        prefixPattern))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [2],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        "alpha_two"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        "alpha!_one!%",
+                        "!"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+
+        string danglingEscapePattern =
+            "alpha!_one!%!";
+        Assert.Empty(
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        danglingEscapePattern,
+                        "!"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [3, 4, 5],
+            await db.Rows
+                .Where(row =>
+                    !EF.Functions.Like(
+                        row.TextCol,
+                        prefixPattern))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.OptionalText!,
+                        "%needle%"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [2, 3, 4, 5],
+            await db.Rows
+                .Where(row =>
+                    !EF.Functions.Like(
+                        row.OptionalText!,
+                        "%needle%"))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [5],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        string.Empty))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
     public async Task ScalarNumericAggregates_MatchForBoundedValuesAndNulls(ProviderKind provider)
     {
         await using var db = CreateContext(provider, GetDbPath(provider, "aggregates"));

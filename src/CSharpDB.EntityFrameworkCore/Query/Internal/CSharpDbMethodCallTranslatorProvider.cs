@@ -71,7 +71,9 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
             _ => null,
         };
         if (ordinalSearchFunction is not null &&
-            TryApplyConverterFreeTextMapping(
+            CSharpDbTextExpressionSupport
+                .TryApplyConverterFreeTextMapping(
+                _sqlExpressionFactory,
                 instance,
                 arguments[0],
                 out SqlExpression mappedInstance,
@@ -145,7 +147,31 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
         return null;
     }
 
-    private bool TryApplyConverterFreeTextMapping(
+    private static bool IsConstantOrdinalComparison(
+        IReadOnlyList<SqlExpression> arguments) =>
+        arguments.Count == 2 &&
+        arguments[1] is SqlConstantExpression
+        {
+            Value: StringComparison.Ordinal,
+        };
+
+    private SqlExpression TextFunction(
+        string functionName,
+        IReadOnlyList<SqlExpression> arguments,
+        IReadOnlyList<bool> argumentsPropagateNullability) =>
+        _sqlExpressionFactory.Function(
+            functionName,
+            arguments,
+            nullable: true,
+            argumentsPropagateNullability,
+            typeof(string),
+            arguments[0].TypeMapping);
+}
+
+internal static class CSharpDbTextExpressionSupport
+{
+    public static bool TryApplyConverterFreeTextMapping(
+        ISqlExpressionFactory sqlExpressionFactory,
         SqlExpression instance,
         SqlExpression pattern,
         out SqlExpression mappedInstance,
@@ -167,16 +193,16 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
             return false;
         }
 
-        mappedInstance = _sqlExpressionFactory.ApplyTypeMapping(
+        mappedInstance = sqlExpressionFactory.ApplyTypeMapping(
             instance,
             textMapping);
-        mappedPattern = _sqlExpressionFactory.ApplyTypeMapping(
+        mappedPattern = sqlExpressionFactory.ApplyTypeMapping(
             pattern,
             textMapping);
         return true;
     }
 
-    private static bool ContainsOnlyConverterFreeTextMappings(
+    public static bool ContainsOnlyConverterFreeTextMappings(
         SqlExpression expression)
     {
         var visitor =
@@ -185,7 +211,7 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
         return visitor.IsValid;
     }
 
-    private static bool IsConverterFreeTextMapping(
+    public static bool IsConverterFreeTextMapping(
         RelationalTypeMapping? typeMapping) =>
         typeMapping is
         {
@@ -197,14 +223,6 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
             typeMapping.StoreType,
             "TEXT",
             StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsConstantOrdinalComparison(
-        IReadOnlyList<SqlExpression> arguments) =>
-        arguments.Count == 2 &&
-        arguments[1] is SqlConstantExpression
-        {
-            Value: StringComparison.Ordinal,
-        };
 
     private sealed class ConverterFreeTextMappingValidator
         : ExpressionVisitor
@@ -232,18 +250,6 @@ internal sealed class CSharpDbStringMethodTranslator : IMethodCallTranslator
             return base.Visit(node);
         }
     }
-
-    private SqlExpression TextFunction(
-        string functionName,
-        IReadOnlyList<SqlExpression> arguments,
-        IReadOnlyList<bool> argumentsPropagateNullability) =>
-        _sqlExpressionFactory.Function(
-            functionName,
-            arguments,
-            nullable: true,
-            argumentsPropagateNullability,
-            typeof(string),
-            arguments[0].TypeMapping);
 }
 
 internal sealed class CSharpDbMathMethodTranslator : IMethodCallTranslator

@@ -522,8 +522,13 @@ internal static class ExpressionCompiler
 
         while (ti < text.Length)
         {
-            if (pi < pattern.Length && escape.HasValue && pattern[pi] == escape.Value && pi + 1 < pattern.Length)
+            if (pi < pattern.Length &&
+                escape.HasValue &&
+                pattern[pi] == escape.Value)
             {
+                if (pi + 1 >= pattern.Length)
+                    return false;
+
                 pi++;
                 if (ti < text.Length && char.ToUpperInvariant(text[ti]) == char.ToUpperInvariant(pattern[pi]))
                 {
@@ -562,8 +567,13 @@ internal static class ExpressionCompiler
             }
         }
 
-        while (pi < pattern.Length && pattern[pi] == '%')
+        while (pi < pattern.Length &&
+               pattern[pi] == '%' &&
+               (!escape.HasValue ||
+                pattern[pi] != escape.Value))
+        {
             pi++;
+        }
 
         return pi == pattern.Length;
     }

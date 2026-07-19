@@ -298,11 +298,13 @@
       "name": "String members and methods",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "String Length, parameterless ToLower/ToLowerInvariant, ToUpper/ToUpperInvariant, Trim/TrimStart/TrimEnd, Replace(string, string), and both Substring overloads translate in predicates, projections, and ordering. Converter-free TEXT also supports ordinal plain Contains(string) plus StartsWith, EndsWith, and Contains overloads whose StringComparison argument is the literal Ordinal value. Search text may be constant or parameterized and treats %, _, and backslash literally. LOWER/UPPER use invariant CSharpDB server semantics rather than CurrentCulture.",
+      "summary": "String Length, parameterless ToLower/ToLowerInvariant, ToUpper/ToUpperInvariant, Trim/TrimStart/TrimEnd, Replace(string, string), and both Substring overloads translate in predicates, projections, and ordering. Converter-free TEXT also supports ordinal plain Contains(string) plus StartsWith, EndsWith, and Contains overloads whose StringComparison argument is the literal Ordinal value. Their search text may be constant or parameterized and treats %, _, and backslash literally. The exact two- and three-string EF.Functions.Like overloads support one direct converter-free TEXT match column and one constant or captured pattern; % matches zero or more UTF-16 code units, _ matches one, CSharpDB matching is invariant case-insensitive, and the escape overload requires a compile-time one-UTF-16-code-unit string literal other than %. Positive nullable LIKE predicates exclude SQL NULL, while EF Core's normal compensation makes negated nullable predicates include it. LIKE behavior is cross-checked with SQLite over bounded ASCII patterns. LOWER/UPPER use invariant CSharpDB server semantics rather than CurrentCulture.",
       "proofTests": [
         "Queries_StringFunctionsTranslateInPredicatesProjectionsAndOrdering",
         "Queries_OrdinalStringSearchMethodsTranslateWithExpectedSemantics",
-        "PlainStringContains_MatchesForBoundedPatterns"
+        "Queries_EfFunctionsLikeTranslatesWithBoundedSemantics",
+        "PlainStringContains_MatchesForBoundedPatterns",
+        "EfFunctionsLike_MatchesForBoundedAsciiPatterns"
       ]
     },
     {
@@ -370,7 +372,7 @@
       "name": "Unsupported LINQ diagnostics",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "Unsupported CLR methods and members, recognized TakeWhile/SkipWhile, Concat/Union/Except/Intersect, Join(comparer), LeftJoin(comparer), GroupJoin/SelectMany/DefaultIfEmpty/RightJoin, and ExecuteUpdate operators, unsupported distinct/grouped/inner-join/left-join shapes, and unsafe decimal expressions retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1008 guidance before command dispatch.",
+      "summary": "Unsupported CLR methods and members, recognized TakeWhile/SkipWhile, Concat/Union/Except/Intersect, Join(comparer), LeftJoin(comparer), GroupJoin/SelectMany/DefaultIfEmpty/RightJoin, and ExecuteUpdate operators, unsupported LIKE/distinct/grouped/inner-join/left-join shapes, and unsafe decimal expressions retain EF Core's InvalidOperationException and add CDBEF1001-CDBEF1008 guidance before command dispatch.",
       "proofTests": [
         "UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch",
         "UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch",
@@ -379,7 +381,8 @@
         "UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch",
         "UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch",
         "UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch",
-        "UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch"
+        "UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch",
+        "UnsupportedLikeShapes_ReportBeforeCommandDispatch"
       ]
     },
     {
@@ -388,7 +391,7 @@
       "name": "Advanced LINQ translation",
       "status": "Planned",
       "tier": "tier2",
-      "summary": "All other string-search overloads—including default culture-sensitive StartsWith(string)/EndsWith(string), the Boolean/CultureInfo forms, non-Ordinal or captured StringComparison modes, and character overloads—plus DateTimeOffset components, broader distinct and grouped aggregate types and shapes, set operations, composite/chained/right/cross or derived-source joins, broader left-join shapes, and correlated-query coverage remain planned.",
+      "summary": "Further qualification remains planned for all other string-search overloads—including default culture-sensitive StartsWith(string)/EndsWith(string), the Boolean/CultureInfo forms, non-Ordinal or captured StringComparison modes, and character overloads—and broader LIKE shapes such as transformed or converted match expressions, row-derived patterns, and captured or invalid escapes. DateTimeOffset components, broader distinct and grouped aggregate types and shapes, set operations, composite/chained/right/cross or derived-source joins, broader left-join shapes, and correlated-query coverage also remain planned.",
       "proofTests": []
     },
     {

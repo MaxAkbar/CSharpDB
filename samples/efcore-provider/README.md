@@ -9,6 +9,7 @@ This sample shows the embedded EF Core 10 provider running against a file-backed
 - collection navigation loading with `Include(...)`
 - ordinal string predicates with plain `Contains(string)` and literal
   `StringComparison.Ordinal` for `StartsWith`, `EndsWith`, and `Contains`
+- bounded `EF.Functions.Like(...)` with a captured wildcard pattern
 - a direct two-entity `Join(...)` over nonnullable integer keys
 - a direct two-entity `LeftJoin(...)` that preserves a blog without posts
 - documented guidance for the conventional optional-relationship `ClientSetNull` pattern
@@ -31,6 +32,7 @@ JoinedPosts: 3
 LeftJoinedRows: 4
 BlogsWithoutPosts: 1
 StringPredicateMatches: 3
+LikePredicateMatches: 1
 RowVersionBytes: 8
 RowVersionAdvancedAfterRawSql: True
 Engineering|2
@@ -102,6 +104,12 @@ NULL` is not supported.
   `StringComparison.Ordinal`; all other string-search overloads remain
   unsupported, including default culture-sensitive `StartsWith`/`EndsWith`,
   the Boolean/`CultureInfo` forms, ignore-case or culture comparison modes,
-  captured comparison modes, and character overloads.
+  captured comparison modes, and character overloads. `EF.Functions.Like`
+  supports one direct converter-free `TEXT` match property and a constant or
+  captured pattern. `%` and `_` are wildcards under invariant
+  case-insensitive CSharpDB semantics; the escape overload requires a literal
+  one-UTF-16-code-unit escape other than `%`. Transformed or converted
+  matches, row-derived patterns, and captured or invalid escapes are rejected
+  before dispatch.
 
 For the full provider guide and supported-feature matrix, see the [EF Core Provider guide](https://csharpdb.com/docs/entity-framework-core.html).

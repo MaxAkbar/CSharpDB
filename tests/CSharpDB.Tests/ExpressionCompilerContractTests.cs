@@ -205,6 +205,107 @@ public class ExpressionCompilerContractTests
     }
 
     [Fact]
+    public void CompileJoinSpan_LikeWithDanglingEscapeDoesNotMatch()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "escaped_values",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "value",
+                    Type = DbType.Text,
+                    Nullable = false,
+                },
+            ],
+        };
+
+        var danglingBang = ExpressionCompiler.CompileJoinSpan(
+            new LikeExpression
+            {
+                Operand = new ColumnRefExpression
+                {
+                    ColumnName = "value",
+                },
+                Pattern = new LiteralExpression
+                {
+                    LiteralType =
+                        TokenType.StringLiteral,
+                    Value = "abc!",
+                },
+                EscapeChar = new LiteralExpression
+                {
+                    LiteralType =
+                        TokenType.StringLiteral,
+                    Value = "!",
+                },
+            },
+            schema,
+            leftColumnCount: 1);
+        Assert.False(
+            danglingBang(
+                [DbValue.FromText("abc!")],
+                []).IsTruthy);
+
+        var danglingPercent =
+            ExpressionCompiler.CompileJoinSpan(
+                new LikeExpression
+                {
+                    Operand = new ColumnRefExpression
+                    {
+                        ColumnName = "value",
+                    },
+                    Pattern = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "%",
+                    },
+                    EscapeChar = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "%",
+                    },
+                },
+                schema,
+                leftColumnCount: 1);
+        Assert.False(
+            danglingPercent(
+                [DbValue.FromText(string.Empty)],
+                []).IsTruthy);
+
+        var doubledPercent =
+            ExpressionCompiler.CompileJoinSpan(
+                new LikeExpression
+                {
+                    Operand = new ColumnRefExpression
+                    {
+                        ColumnName = "value",
+                    },
+                    Pattern = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "abc%%",
+                    },
+                    EscapeChar = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "%",
+                    },
+                },
+                schema,
+                leftColumnCount: 1);
+        Assert.True(
+            doubledPercent(
+                [DbValue.FromText("abc%")],
+                []).IsTruthy);
+    }
+
+    [Fact]
     public void CompileJoinSpan_WithRightColumnMap_EvaluatesCompactedJoinPredicate()
     {
         var schema = new TableSchema

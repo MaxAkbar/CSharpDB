@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using CSharpDB.EntityFrameworkCore.Storage.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
@@ -29,6 +30,24 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitorFactory
 public sealed class CSharpDbSqlTranslatingExpressionVisitor
     : RelationalSqlTranslatingExpressionVisitor
 {
+    private static readonly MethodInfo LikeMethod =
+        typeof(DbFunctionsExtensions).GetRuntimeMethod(
+            nameof(DbFunctionsExtensions.Like),
+            [
+                typeof(DbFunctions),
+                typeof(string),
+                typeof(string),
+            ])!;
+    private static readonly MethodInfo LikeMethodWithEscape =
+        typeof(DbFunctionsExtensions).GetRuntimeMethod(
+            nameof(DbFunctionsExtensions.Like),
+            [
+                typeof(DbFunctions),
+                typeof(string),
+                typeof(string),
+                typeof(string),
+            ])!;
+
     public CSharpDbSqlTranslatingExpressionVisitor(
         RelationalSqlTranslatingExpressionVisitorDependencies dependencies,
         QueryCompilationContext queryCompilationContext,
@@ -44,6 +63,21 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
     {
         string? previousDetails = TranslationErrorDetails;
         Expression translated = base.VisitMethodCall(methodCallExpression);
+        if (IsLikeMethod(methodCallExpression.Method) &&
+            translated is LikeExpression likeExpression &&
+            FindUnsupportedLikeShape(
+                methodCallExpression.Method,
+                likeExpression) is
+                { } likeReason)
+        {
+            AddTranslationErrorDetails(
+                CSharpDbQueryTranslationDiagnostics.ForLike(
+                    methodCallExpression.Method,
+                    likeReason));
+            return QueryCompilationContext
+                .NotTranslatedExpression;
+        }
+
         if (translated is SqlBinaryExpression sqlBinary &&
             IsDecimalComparison(sqlBinary.OperatorType) &&
             HasMixedProviderDecimalMappings(sqlBinary) &&
@@ -84,11 +118,74 @@ public sealed class CSharpDbSqlTranslatingExpressionVisitor
                 TranslationErrorDetails))
         {
             AddTranslationErrorDetails(
-                CSharpDbQueryTranslationDiagnostics.ForMethod(
-                    methodCallExpression.Method));
+                IsLikeMethod(methodCallExpression.Method)
+                    ? CSharpDbQueryTranslationDiagnostics.ForLike(
+                        methodCallExpression.Method,
+                        "The method could not be represented as a qualified SQL LIKE expression.")
+                    : CSharpDbQueryTranslationDiagnostics.ForMethod(
+                        methodCallExpression.Method));
         }
 
         return translated;
+    }
+
+    private static bool IsLikeMethod(MethodInfo method) =>
+        method == LikeMethod ||
+        method == LikeMethodWithEscape;
+
+    private static string? FindUnsupportedLikeShape(
+        MethodInfo method,
+        LikeExpression likeExpression)
+    {
+        if (likeExpression.Match is not ColumnExpression ||
+            !CSharpDbTextExpressionSupport
+                .IsConverterFreeTextMapping(
+                    likeExpression.Match.TypeMapping))
+        {
+            return
+                "The match expression must be one directly mapped, converter-free TEXT property.";
+        }
+
+        if (likeExpression.Pattern is not
+                SqlConstantExpression and not
+                SqlParameterExpression ||
+            !CSharpDbTextExpressionSupport
+                .IsConverterFreeTextMapping(
+                    likeExpression.Pattern.TypeMapping) ||
+            !CSharpDbTextExpressionSupport
+                .ContainsOnlyConverterFreeTextMappings(
+                    likeExpression.Pattern))
+        {
+            return
+                "The pattern must be one constant or captured string value.";
+        }
+
+        if (method == LikeMethodWithEscape &&
+            likeExpression.EscapeChar is not
+                SqlConstantExpression
+                {
+                    Value: string
+                    {
+                        Length: 1,
+                    },
+                })
+        {
+            return
+                "The escape must be a compile-time, non-null, one UTF-16-code-unit string literal.";
+        }
+
+        if (method == LikeMethodWithEscape &&
+            likeExpression.EscapeChar is
+                SqlConstantExpression
+                {
+                    Value: "%",
+                })
+        {
+            return
+                "The percent wildcard cannot be used as the escape because EF Core simplifies a literal percent pattern before provider SQL generation.";
+        }
+
+        return null;
     }
 
     protected override Expression VisitBinary(
@@ -357,6 +454,17 @@ internal static class CSharpDbQueryTranslationDiagnostics
 
         return
             $"CDBEF1001: The CSharpDB EF Core provider cannot translate LINQ method '{signature}' to SQL.{guidance} " +
+            $"Keep supported filters server-side, rewrite this expression, or call AsEnumerable() explicitly before the unsupported portion. See {DocumentationUrl}.";
+    }
+
+    public static string ForLike(
+        MethodInfo method,
+        string reason)
+    {
+        string signature = FormatMethod(method);
+        return
+            $"CDBEF1001: The CSharpDB EF Core provider cannot translate LINQ method '{signature}' within the bounded LIKE surface. " +
+            $"{reason} Use EF.Functions.Like with a direct converter-free TEXT property and one constant or captured pattern; the escape overload additionally requires a compile-time one-UTF-16-code-unit string literal other than the percent wildcard. " +
             $"Keep supported filters server-side, rewrite this expression, or call AsEnumerable() explicitly before the unsupported portion. See {DocumentationUrl}.";
     }
 
