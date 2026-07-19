@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using CSharpDB.Admin.Reports.Models;
 using CSharpDB.Admin.Reports.Services;
 using CSharpDB.Client.Models;
@@ -6,6 +9,24 @@ namespace CSharpDB.Admin.Reports.Tests.Services;
 
 public class DbReportSourceProviderTests
 {
+    [Fact]
+    public async Task GetSourceDefinitionAsync_Table_MapsRowVersionAsReadOnlyMetadata()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            "CREATE TABLE VersionedItems (Id INTEGER PRIMARY KEY, Version BLOB ROWVERSION NOT NULL);");
+        var provider = new DbReportSourceProvider(db.Client);
+
+        ReportSourceDefinition source = Assert.IsType<ReportSourceDefinition>(
+            await provider.GetSourceDefinitionAsync(
+                new ReportSourceReference(ReportSourceKind.Table, "VersionedItems")));
+        ReportFieldDefinition version = Assert.Single(source.Fields, field => field.Name == "Version");
+
+        Assert.Equal(DbType.Blob, version.DataType);
+        Assert.True(version.IsReadOnly);
+        Assert.Equal(true, version.Metadata!["isRowVersion"]);
+    }
+
     [Fact]
     public async Task GetSourceDefinitionAsync_Table_MapsFieldsAndSignatureChangesWhenSchemaChanges()
     {
@@ -22,6 +43,47 @@ public class DbReportSourceProviderTests
         Assert.Contains(first.Fields, field => field.Name == "Id" && field.DataType == DbType.Integer);
         Assert.Contains(first.Fields, field => field.Name == "Total" && field.DataType == DbType.Real);
         Assert.NotEqual(first.SourceSchemaSignature, second.SourceSchemaSignature);
+    }
+
+    [Fact]
+    public async Task GetSourceDefinitionAsync_LegacyTableSignatureRemainsStable()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            "CREATE TABLE LegacyItems (Id INTEGER PRIMARY KEY, Name TEXT COLLATE NOCASE);");
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await db.Client.GetTableSchemaAsync(
+                "LegacyItems",
+                TestContext.Current.CancellationToken));
+
+        string legacyJson = JsonSerializer.Serialize(new
+        {
+            Kind = "table",
+            schema.TableName,
+            Columns = schema.Columns.Select(column => new
+            {
+                column.Name,
+                Type = column.Type.ToString(),
+                column.Nullable,
+                column.IsPrimaryKey,
+                column.IsIdentity,
+                column.Collation,
+            }),
+        });
+        string legacySignature = Convert.ToHexString(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(
+                    legacyJson)));
+
+        var provider = new DbReportSourceProvider(db.Client);
+        ReportSourceDefinition source =
+            Assert.IsType<ReportSourceDefinition>(
+                await provider.GetSourceDefinitionAsync(
+                    new ReportSourceReference(
+                        ReportSourceKind.Table,
+                        "LegacyItems")));
+
+        Assert.Equal(legacySignature, source.SourceSchemaSignature);
     }
 
     [Fact]

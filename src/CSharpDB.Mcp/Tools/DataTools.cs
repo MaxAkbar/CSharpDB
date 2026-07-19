@@ -25,6 +25,7 @@ public static class DataTools
             nullable = c.Nullable,
             isPrimaryKey = c.IsPrimaryKey,
             isIdentity = c.IsIdentity,
+            isRowVersion = c.IsRowVersion,
         });
 
         return JsonHelper.Serialize(new

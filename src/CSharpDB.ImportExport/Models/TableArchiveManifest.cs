@@ -3,6 +3,7 @@ namespace CSharpDB.ImportExport.Models;
 public sealed class TableArchiveManifest
 {
     public const int CurrentFormatVersion = 3;
+    public const int RowVersionFormatVersion = 4;
 
     public int FormatVersion { get; init; } = CurrentFormatVersion;
     public required string SourceTableName { get; init; }

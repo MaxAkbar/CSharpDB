@@ -80,6 +80,40 @@ public sealed class SystemCatalogTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SystemCatalog_ColumnsExposeRowVersionMetadata()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE versioned_items (id INTEGER PRIMARY KEY, version BLOB ROWVERSION NOT NULL)",
+            ct);
+
+        await using var allColumns = await _db.ExecuteAsync(
+            "SELECT * FROM sys.columns WHERE table_name = 'versioned_items'",
+            ct);
+        Assert.Equal("collation", allColumns.Schema[7].Name);
+        Assert.Equal("column_default", allColumns.Schema[8].Name);
+        Assert.Equal("is_row_version", allColumns.Schema[9].Name);
+
+        await using var columns = await _db.ExecuteAsync(
+            "SELECT column_name, is_row_version FROM sys.columns WHERE table_name = 'versioned_items' ORDER BY ordinal_position",
+            ct);
+        IReadOnlyList<DbValue[]> rows = await columns.ToListAsync(ct);
+
+        Assert.Collection(
+            rows,
+            id =>
+            {
+                Assert.Equal("id", id[0].AsText);
+                Assert.Equal(0L, id[1].AsInteger);
+            },
+            version =>
+            {
+                Assert.Equal("version", version[0].AsText);
+                Assert.Equal(1L, version[1].AsInteger);
+            });
+    }
+
+    [Fact]
     public async Task SystemCatalog_IndexCollation_UsesEffectiveColumnCollationWhenInherited()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -136,6 +136,26 @@ public sealed class GrpcClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GrpcClient_GetTableSchemaAsync_PreservesRowVersionMetadata()
+    {
+        using var transportClient = CreateGrpcHttpClient();
+        await using var client = CreateGrpcClient(transportClient);
+
+        SqlExecutionResult create = await client.ExecuteSqlAsync(
+            "CREATE TABLE grpc_versions (id INTEGER PRIMARY KEY, version BLOB ROWVERSION NOT NULL);",
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await client.GetTableSchemaAsync("grpc_versions", Ct));
+        ColumnDefinition version = Assert.Single(schema.Columns, column => column.Name == "version");
+
+        Assert.Equal(CSharpDB.Client.Models.DbType.Blob, version.Type);
+        Assert.False(version.Nullable);
+        Assert.True(version.IsRowVersion);
+    }
+
+    [Fact]
     public async Task GrpcClient_RowCrud_RoundTripsPrimitiveValues()
     {
         using var transportClient = CreateGrpcHttpClient();

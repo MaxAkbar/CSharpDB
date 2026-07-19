@@ -96,6 +96,48 @@ public sealed class EfFoundationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteCommandAsync_RowVersionInsertAndUpdate_ExposeGeneratedRowVersion()
+    {
+        await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync(Ct);
+
+        using (var create = conn.CreateCommand())
+        {
+            create.CommandText =
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, version BLOB ROWVERSION NOT NULL);";
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+
+        await using (var insert = conn.CreateCommand())
+        {
+            insert.CommandText = "INSERT INTO items (id, name) VALUES (@id, @name);";
+            insert.Parameters.AddWithValue("@id", 1);
+            insert.Parameters.AddWithValue("@name", "alpha");
+
+            CSharpDbCommandExecutionResult execution = await insert.ExecuteCommandAsync(Ct);
+            await using var _ = execution.Result;
+
+            Assert.Equal(
+                new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 },
+                execution.GeneratedRowVersion);
+        }
+
+        await using (var update = conn.CreateCommand())
+        {
+            update.CommandText = "UPDATE items SET name = @name WHERE id = @id;";
+            update.Parameters.AddWithValue("@name", "beta");
+            update.Parameters.AddWithValue("@id", 1);
+
+            CSharpDbCommandExecutionResult execution = await update.ExecuteCommandAsync(Ct);
+            await using var _ = execution.Result;
+
+            Assert.Equal(
+                new byte[] { 0, 0, 0, 0, 0, 0, 0, 2 },
+                execution.GeneratedRowVersion);
+        }
+    }
+
+    [Fact]
     public async Task ExecuteNonQuery_WithBlobParameter_WorksForDirectStructuredExecution()
     {
         await using var conn = new CSharpDbConnection($"Data Source={_dbPath}");

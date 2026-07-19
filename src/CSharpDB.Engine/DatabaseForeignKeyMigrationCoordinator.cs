@@ -818,6 +818,7 @@ internal static class DatabaseForeignKeyMigrationCoordinator
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
+            IsRowVersion = column.IsRowVersion,
             Collation = column.Collation,
             DefaultSql = column.DefaultSql,
         }).ToArray();

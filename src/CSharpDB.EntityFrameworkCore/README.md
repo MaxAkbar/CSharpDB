@@ -19,7 +19,8 @@ embedded file-backed or private in-memory CSharpDB databases.
 - file-backed runtime and migrations
 - private `:memory:` runtime when you keep a `CSharpDbConnection` open
 - `EnsureCreated()`, `Database.Migrate()`, and standard `dotnet ef` flows
-- CRUD, change tracking, concurrency row-count checks, and a focused LINQ subset
+- CRUD, change tracking, application-managed concurrency tokens, bounded
+  database-generated rowversion, and a focused LINQ subset
 
 This package is intentionally scoped as a v1 embedded provider. It does not
 target daemon/client transports, pooled connections, or broad schema-rebuild
@@ -194,6 +195,14 @@ engine assigned generated constraint names. Before dropping one of those
 legacy constraints, query `sys.foreign_keys` for its stored name and use that
 name in a one-time migration. New 4.2.0 schemas preserve EF constraint names.
 
+Optional relationships use EF Core's conventional `ClientSetNull` behavior
+when at least one dependent foreign-key property is nullable. CSharpDB maps
+that client behavior to a restrictive database foreign key: when dependents
+are tracked, EF clears the nullable scalar or composite-key components before
+deleting the principal; when dependents are not tracked, the database rejects
+the principal delete. Required relationships configured with `ClientSetNull`
+and database-side `DeleteBehavior.SetNull` remain explicit rejections.
+
 Standalone primary-key migrations have a bounded support path:
 
 - named single-`TEXT` and composite `INTEGER`/`TEXT` logical primary keys can be
@@ -276,6 +285,43 @@ not accepted for the provider-owned mapping. Applications that call
 `IMigrationsSqlGenerator` directly with a hand-authored `AddPrimaryKeyOperation`
 must pass the target model; with `model: null`, that low-level operation does
 not carry enough column metadata to identify a decimal mapping.
+
+## Database-Generated RowVersion
+
+CSharpDB supports one nonnullable `byte[]` property per table configured with
+the standard `[Timestamp]` attribute or fluent `IsRowVersion()` API:
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+public sealed class Document
+{
+    public int Id { get; set; }
+    public string Contents { get; set; } = string.Empty;
+
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = null!;
+}
+```
+
+The provider creates the column as `BLOB ROWVERSION`. The engine initializes
+an opaque eight-byte token at revision 1, advances it on every successful
+`UPDATE`, and returns the generated value to EF after inserts and updates.
+That includes updates issued through raw SQL, triggers, and assignments that
+leave the other column values unchanged. EF uses the original token in update
+and delete predicates, so stale tracked writes throw
+`DbUpdateConcurrencyException`.
+
+Tokens are big-endian per-row revisions. Treat them as opaque equality tokens:
+unlike SQL Server `rowversion`, they are not a database-wide monotonically
+increasing counter. Explicit insert or update assignments to the rowversion
+column are rejected so every writer observes the same engine-owned lifecycle.
+Rowversion properties cannot participate in keys, foreign keys, or indexes,
+and cannot define a value converter, default, or computed SQL.
+
+Initial table creation through `EnsureCreated`, migrations, and generated
+scripts is supported. Standalone migrations that add rowversion to an existing
+table or alter a column into or out of rowversion remain explicit rejections.
 
 ## LINQ Translation
 
@@ -386,12 +432,13 @@ an entire table.
 | `dotnet ef database update` | Yes | File-backed only |
 | `dotnet ef migrations script` | Yes | Includes idempotent scripts guarded by `__EFMigrationsHistory` |
 | CRUD + change tracking | Yes | Includes affected-row concurrency checks |
+| Database-generated rowversion | Partial | One nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` per table; runtime and initial table creation are supported, standalone add/alter migrations are not |
 | Integer identity propagation | Yes | Single-column integer primary keys |
 | Composite primary keys and indexes | Yes | Composite primary keys are emitted as table constraints; composite unique and non-unique indexes preserve declared column order |
 | Index migrations | Yes | Create, drop, and root-preserving rename operations |
 | Alternate keys and unique constraints | Yes | Named create-table constraints plus standalone add/drop migrations |
 | Standalone primary-key migrations | Partial | Named logical keys add/drop; physical `INTEGER` adds can rekey validated populated rows and supported relational indexes atomically; EF drops match the exact constraint name |
-| Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, and cascade/restrict behavior |
+| Foreign keys | Partial | Named scalar/composite create/add/drop, primary or alternate-key targets, cascade/restrict behavior, and optional-relationship `ClientSetNull`; database-side `SetNull` is unsupported |
 | Literal column defaults | Partial | `HasDefaultValue(...)` values that map to INTEGER, REAL, TEXT, BLOB, or NULL; computed/default SQL expressions remain unsupported |
 | Check constraints | Partial | Create-table and standalone add/drop migrations for deterministic row-local expressions accepted by the engine |
 | `AlterColumn` | Partial | Literal default/nullability changes, exact dependency-free `INTEGER`/`REAL` rewrites, and `TEXT` collation changes with inherited ordinary/unique SQL-index rebuilding |
@@ -410,8 +457,12 @@ an entire table.
 - inner joins are limited to one direct `Join` over a nonnullable `int`, `long`,
   or `int`/`long`-backed enum key; filtered inner sources, derived/composite/chained joins,
   `GroupJoin`, outer joins, and cross joins remain unsupported
+- optional relationships support client-side `ClientSetNull`; database-side
+  `DeleteBehavior.SetNull`/`ON DELETE SET NULL` remains unsupported
 - schemas are unsupported in runtime and migrations
-- computed columns, `DefaultValueSql`, and rowversion are unsupported
+- computed columns and `DefaultValueSql` are unsupported
+- rowversion is limited to one nonnullable `byte[]` property created with its
+  table; standalone add/alter rowversion migrations are unsupported
 - string `StartsWith`, `EndsWith`, instance `Contains`, `StringComparison`
   overloads, and `DateTimeOffset` component translation are unsupported
 - integral, decimal, `MathF`, precision-argument, midpoint-mode, and

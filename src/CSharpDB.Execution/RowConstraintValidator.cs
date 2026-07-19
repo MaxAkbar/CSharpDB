@@ -76,9 +76,49 @@ internal static class RowConstraintValidator
                 $"Table '{schema.TableName}' defines more than one PRIMARY KEY.");
         }
 
+        int rowVersionCount = 0;
         for (int i = 0; i < schema.Columns.Count; i++)
         {
             ColumnDefinition column = schema.Columns[i];
+            if (column.IsRowVersion)
+            {
+                rowVersionCount++;
+                if (column.Type != DbType.Blob)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TypeMismatch,
+                        $"ROWVERSION column '{schema.TableName}.{column.Name}' must use BLOB storage.");
+                }
+
+                if (column.Nullable)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"ROWVERSION column '{schema.TableName}.{column.Name}' must be NOT NULL.");
+                }
+
+                if (column.IsPrimaryKey || column.IsIdentity)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"ROWVERSION column '{schema.TableName}.{column.Name}' cannot be a primary key or identity column.");
+                }
+
+                if (column.Collation is not null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"ROWVERSION column '{schema.TableName}.{column.Name}' cannot define a collation.");
+                }
+
+                if (column.DefaultSql is not null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        $"ROWVERSION column '{schema.TableName}.{column.Name}' cannot define a DEFAULT expression.");
+                }
+            }
+
             if (column.DefaultSql is null)
                 continue;
 
@@ -92,6 +132,57 @@ internal static class RowConstraintValidator
             Expression expression = ParseMetadataExpression(column.DefaultSql, "DEFAULT");
             ValidateDefaultExpression(expression, column.Name);
             ValidateDefaultValueType(column, EvaluateDefaultExpression(expression, schema));
+        }
+
+        if (rowVersionCount > 1)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Table '{schema.TableName}' cannot define more than one ROWVERSION column.");
+        }
+
+        if (rowVersionCount > 0)
+        {
+            for (int i = 0; i < schema.KeyConstraints.Count; i++)
+            {
+                KeyConstraintDefinition key = schema.KeyConstraints[i];
+                for (int columnIndex = 0; columnIndex < key.Columns.Count; columnIndex++)
+                {
+                    int schemaColumnIndex = schema.GetColumnIndex(key.Columns[columnIndex]);
+                    if (schemaColumnIndex < 0)
+                        continue;
+
+                    ColumnDefinition column = schema.Columns[schemaColumnIndex];
+                    if (column.IsRowVersion)
+                    {
+                        throw new CSharpDbException(
+                            ErrorCode.SyntaxError,
+                            $"ROWVERSION column '{schema.TableName}.{column.Name}' cannot participate in a key constraint.");
+                    }
+                }
+            }
+
+            for (int i = 0; i < schema.ForeignKeys.Count; i++)
+            {
+                ForeignKeyDefinition foreignKey = schema.ForeignKeys[i];
+                IReadOnlyList<string> columnNames = foreignKey.ColumnNames.Count > 0
+                    ? foreignKey.ColumnNames
+                    : [foreignKey.ColumnName];
+                for (int columnIndex = 0; columnIndex < columnNames.Count; columnIndex++)
+                {
+                    int schemaColumnIndex = schema.GetColumnIndex(columnNames[columnIndex]);
+                    if (schemaColumnIndex < 0)
+                        continue;
+
+                    ColumnDefinition column = schema.Columns[schemaColumnIndex];
+                    if (column.IsRowVersion)
+                    {
+                        throw new CSharpDbException(
+                            ErrorCode.SyntaxError,
+                            $"ROWVERSION column '{schema.TableName}.{column.Name}' cannot participate in a foreign key.");
+                    }
+                }
+            }
         }
 
         for (int i = 0; i < schema.CheckConstraints.Count; i++)

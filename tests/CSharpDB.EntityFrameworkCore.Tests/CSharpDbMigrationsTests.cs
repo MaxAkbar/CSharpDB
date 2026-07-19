@@ -166,6 +166,174 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
     }
 
     [Fact]
+    public void MigrationsSqlGenerator_RowVersion_IsLimitedToInitialCreateTable()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "rowversion-generator.db");
+
+        using var db =
+            new MigrationRuntimeContext(
+                $"Data Source={dbPath}");
+        IMigrationsSqlGenerator generator =
+            db.GetService<IMigrationsSqlGenerator>();
+
+        var createTable =
+            new CreateTableOperation
+            {
+                Name = "RowVersionItems",
+            };
+        createTable.Columns.Add(
+            new AddColumnOperation
+            {
+                Name = "Id",
+                Table = createTable.Name,
+                ClrType = typeof(int),
+                ColumnType = "INTEGER",
+                IsNullable = false,
+            });
+        createTable.Columns.Add(
+            new AddColumnOperation
+            {
+                Name = "Version",
+                Table = createTable.Name,
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = false,
+                IsRowVersion = true,
+            });
+        createTable.PrimaryKey =
+            new AddPrimaryKeyOperation
+            {
+                Name = "PK_RowVersionItems",
+                Table = createTable.Name,
+                Columns = ["Id"],
+            };
+
+        string createSql =
+            Assert.Single(
+                    generator.Generate(
+                        [createTable],
+                        model: null))
+                .CommandText;
+
+        Assert.Contains(
+            "\"Version\" BLOB ROWVERSION NOT NULL",
+            createSql,
+            StringComparison.Ordinal);
+
+        var addColumn =
+            new AddColumnOperation
+            {
+                Name = "Version",
+                Table = "ExistingItems",
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = false,
+                IsRowVersion = true,
+            };
+        var addError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [addColumn],
+                    model: null));
+        Assert.Contains(
+            "initial CREATE TABLE",
+            addError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        var alterIntoRowVersion =
+            new AlterColumnOperation
+            {
+                Name = "Version",
+                Table = "ExistingItems",
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = false,
+                IsRowVersion = true,
+                OldColumn =
+                    new AddColumnOperation
+                    {
+                        ClrType = typeof(byte[]),
+                        ColumnType = "BLOB",
+                        IsNullable = false,
+                    },
+            };
+        var alterIntoError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [alterIntoRowVersion],
+                    model: null));
+        Assert.Contains(
+            "initial CREATE TABLE",
+            alterIntoError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        var alterOutOfRowVersion =
+            new AlterColumnOperation
+            {
+                Name = "Version",
+                Table = "ExistingItems",
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = false,
+                OldColumn =
+                    new AddColumnOperation
+                    {
+                        ClrType = typeof(byte[]),
+                        ColumnType = "BLOB",
+                        IsNullable = false,
+                        IsRowVersion = true,
+                    },
+            };
+        var alterOutError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [alterOutOfRowVersion],
+                    model: null));
+        Assert.Contains(
+            "initial CREATE TABLE",
+            alterOutError.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        var multipleRowVersions =
+            new CreateTableOperation
+            {
+                Name = "InvalidItems",
+            };
+        multipleRowVersions.Columns.Add(
+            new AddColumnOperation
+            {
+                Name = "Version",
+                Table = multipleRowVersions.Name,
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = false,
+                IsRowVersion = true,
+            });
+        multipleRowVersions.Columns.Add(
+            new AddColumnOperation
+            {
+                Name = "OtherVersion",
+                Table = multipleRowVersions.Name,
+                ClrType = typeof(byte[]),
+                ColumnType = "BLOB",
+                IsNullable = false,
+                IsRowVersion = true,
+            });
+
+        var multipleError =
+            Assert.Throws<NotSupportedException>(
+                () => generator.Generate(
+                    [multipleRowVersions],
+                    model: null));
+        Assert.Contains(
+            "more than one rowversion",
+            multipleError.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MigrationsSqlGenerator_StandaloneForeignKey_CanBeAddedAndDropped()
     {
         string dbPath = Path.Combine(_workspace, "foreign-key-generator.db");
@@ -389,6 +557,78 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
         await ExecuteScriptAsync(
             dbPath,
             "INSERT INTO Children (Id, TenantId, ParentNo) VALUES (2, 7, 999);");
+    }
+
+    [Fact]
+    public async Task OptionalRelationship_DefaultClientSetNull_EmitsRestrictiveForeignKeySql()
+    {
+        string dbPath = Path.Combine(
+            _workspace,
+            "optional-client-set-null-script.db");
+        string modelCreateScript;
+        string script;
+        string idempotentScript;
+
+        using (var db =
+            new OptionalRelationshipMigrationContext(
+                $"Data Source={dbPath}"))
+        {
+            var foreignKey = db.Model
+                .FindEntityType(typeof(OptionalMigrationChild))!
+                .GetForeignKeys()
+                .Single();
+            modelCreateScript =
+                db.Database.GenerateCreateScript();
+            IMigrator migrator = db.GetService<IMigrator>();
+            script = migrator.GenerateScript();
+            idempotentScript = migrator.GenerateScript(
+                options:
+                MigrationsSqlGenerationOptions.Idempotent);
+
+            Assert.Equal(
+                DeleteBehavior.ClientSetNull,
+                foreignKey.DeleteBehavior);
+        }
+
+        foreach (string generatedSql in
+            new[]
+            {
+                modelCreateScript,
+                script,
+                idempotentScript,
+            })
+        {
+            Assert.Contains(
+                "FOREIGN KEY (\"ParentId\") REFERENCES \"OptionalParents\" (\"Id\")",
+                generatedSql,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "ON DELETE CASCADE",
+                generatedSql,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                "ON DELETE SET NULL",
+                generatedSql,
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.Contains(
+            "IF NOT EXISTS",
+            idempotentScript,
+            StringComparison.Ordinal);
+
+        await ExecuteScriptAsync(
+            dbPath,
+            idempotentScript);
+        await ExecuteScriptAsync(
+            dbPath,
+            idempotentScript);
+
+        await using var verify =
+            new OptionalRelationshipMigrationContext(
+                $"Data Source={dbPath}");
+        Assert.Single(
+            await verify.Database.GetAppliedMigrationsAsync(Ct));
     }
 
     [Fact]
@@ -2218,6 +2458,28 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
             => optionsBuilder.UseCSharpDb(connectionString);
     }
 
+    private sealed class OptionalRelationshipMigrationContext(
+        string connectionString)
+        : DbContext
+    {
+        protected override void OnConfiguring(
+            DbContextOptionsBuilder optionsBuilder) =>
+            optionsBuilder.UseCSharpDb(connectionString);
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<OptionalMigrationParent>()
+                .ToTable("OptionalParents");
+            modelBuilder.Entity<OptionalMigrationChild>(child =>
+            {
+                child.ToTable("OptionalChildren");
+                child.HasOne(item => item.Parent)
+                    .WithMany(parent => parent.Children)
+                    .HasForeignKey(item => item.ParentId);
+            });
+        }
+    }
+
     private sealed class DecimalScaleTwoMigrationContext(
         string connectionString)
         : DbContext
@@ -2345,6 +2607,22 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
         public string? Slug { get; set; }
     }
 
+    private sealed class OptionalMigrationParent
+    {
+        public int Id { get; set; }
+
+        public List<OptionalMigrationChild> Children { get; set; } = [];
+    }
+
+    private sealed class OptionalMigrationChild
+    {
+        public int Id { get; set; }
+
+        public int? ParentId { get; set; }
+
+        public OptionalMigrationParent? Parent { get; set; }
+    }
+
     private sealed class DecimalMigrationItem
     {
         public int Id { get; set; }
@@ -2357,6 +2635,57 @@ public sealed class CSharpDbMigrationsTests : IAsyncLifetime
         public int Id { get; set; }
 
         public long Amount { get; set; }
+    }
+
+    [DbContext(typeof(OptionalRelationshipMigrationContext))]
+    [Migration("202607180001_OptionalRelationship")]
+    private sealed class OptionalRelationshipInitialCreate : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.CreateTable(
+                name: "OptionalParents",
+                columns: table => new
+                {
+                    Id = table.Column<int>(
+                        type: "INTEGER",
+                        nullable: false),
+                },
+                constraints: table =>
+                    table.PrimaryKey(
+                        "PK_OptionalParents",
+                        row => row.Id));
+
+            migrationBuilder.CreateTable(
+                name: "OptionalChildren",
+                columns: table => new
+                {
+                    Id = table.Column<int>(
+                        type: "INTEGER",
+                        nullable: false),
+                    ParentId = table.Column<int>(
+                        type: "INTEGER",
+                        nullable: true),
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey(
+                        "PK_OptionalChildren",
+                        row => row.Id);
+                    table.ForeignKey(
+                        name: "FK_OptionalChildren_OptionalParents_ParentId",
+                        column: row => row.ParentId,
+                        principalTable: "OptionalParents",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.NoAction);
+                });
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable("OptionalChildren");
+            migrationBuilder.DropTable("OptionalParents");
+        }
     }
 
     [DbContext(typeof(MigrationRuntimeContext))]

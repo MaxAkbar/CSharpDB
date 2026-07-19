@@ -43,6 +43,23 @@ public sealed class HttpTransportClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HttpTransport_GetTableSchemaAsync_PreservesRowVersionMetadata()
+    {
+        SqlExecutionResult create = await _client.ExecuteSqlAsync(
+            "CREATE TABLE http_versions (id INTEGER PRIMARY KEY, version BLOB ROWVERSION NOT NULL);",
+            Ct);
+        Assert.Null(create.Error);
+
+        TableSchema schema = Assert.IsType<TableSchema>(
+            await _client.GetTableSchemaAsync("http_versions", Ct));
+        ColumnDefinition version = Assert.Single(schema.Columns, column => column.Name == "version");
+
+        Assert.Equal(DbType.Blob, version.Type);
+        Assert.False(version.Nullable);
+        Assert.True(version.IsRowVersion);
+    }
+
+    [Fact]
     public async Task HttpTransport_SupportsTransactionsCollectionsSavedQueriesAndCheckpoint()
     {
         var createTable = await _client.ExecuteSqlAsync(

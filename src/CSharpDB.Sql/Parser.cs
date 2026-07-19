@@ -1535,14 +1535,15 @@ public sealed class Parser
 
         bool isPK = false;
         bool isIdentity = false;
+        bool isRowVersion = false;
         bool isNullable = true;
         string? collation = null;
         ForeignKeyClause? foreignKey = null;
         Expression? defaultExpression = null;
         var checkConstraints = new List<CheckConstraintClause>();
 
-        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT / COLLATE /
-        // REFERENCES / DEFAULT / CHECK modifiers.
+        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT /
+        // ROWVERSION / COLLATE / REFERENCES / DEFAULT / CHECK modifiers.
         while (true)
         {
             if (Peek().Type == TokenType.Primary)
@@ -1560,6 +1561,12 @@ public sealed class Parser
                     throw Error($"IDENTITY/AUTOINCREMENT specified multiple times for column '{name}'.");
                 Advance();
                 isIdentity = true;
+            }
+            else if (TryConsumeContextualKeyword("ROWVERSION"))
+            {
+                if (isRowVersion)
+                    throw Error($"ROWVERSION specified multiple times for column '{name}'.");
+                isRowVersion = true;
             }
             else if (Peek().Type == TokenType.Not)
             {
@@ -1613,6 +1620,7 @@ public sealed class Parser
             TypeToken = typeToken,
             IsPrimaryKey = isPK,
             IsIdentity = isIdentity,
+            IsRowVersion = isRowVersion,
             IsNullable = isNullable,
             Collation = collation,
             ForeignKey = foreignKey,

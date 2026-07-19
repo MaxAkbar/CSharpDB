@@ -1075,6 +1075,8 @@
     {
         if (column.IsPrimaryKey)
             return "bi-key-fill icon-column-key";
+        if (column.IsRowVersion)
+            return "bi-arrow-repeat icon-column-blob";
 
         return column.Type switch
         {
@@ -1092,7 +1094,7 @@
             DbType.Integer => column.IsPrimaryKey ? "int pk" : "int",
             DbType.Real => "real",
             DbType.Text => "text",
-            DbType.Blob => "blob",
+            DbType.Blob => column.IsRowVersion ? "blob rv" : "blob",
             _ => column.Type.ToString().ToLowerInvariant(),
         };
 

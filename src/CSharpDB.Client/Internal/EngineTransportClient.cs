@@ -254,10 +254,15 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
 
     public async Task<int> InsertRowAsync(string tableName, Dictionary<string, object?> values, CancellationToken ct = default)
     {
-        if (values.Count == 0)
-            throw new CSharpDbClientException("Insert requires at least one value.");
-
         string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        if (values.Count == 0)
+        {
+            return await ExecuteNonQueryAsync(
+                await GetDatabaseAsync(ct),
+                $"INSERT INTO {normalizedTableName} DEFAULT VALUES",
+                ct);
+        }
+
         var assignments = values.Select(kvp => new KeyValuePair<string, object?>(RequireIdentifier(kvp.Key, nameof(values)), kvp.Value)).ToArray();
         string columns = string.Join(", ", assignments.Select(item => item.Key));
         string literals = string.Join(", ", assignments.Select(item => FormatSqlLiteral(item.Value)));
@@ -849,6 +854,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             Nullable = column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
+            IsRowVersion = column.IsRowVersion,
             Collation = column.Collation,
             DefaultSql = column.DefaultSql,
         };

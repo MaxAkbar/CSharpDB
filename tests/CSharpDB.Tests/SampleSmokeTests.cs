@@ -174,6 +174,11 @@ public sealed class SampleSmokeTests : IAsyncLifetime
             Assert.Contains("Blogs: 2", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Posts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("JoinedPosts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("RowVersionBytes: 8", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                "RowVersionAdvancedAfterRawSql: True",
+                result.StdOut,
+                StringComparison.OrdinalIgnoreCase);
 
             await using var db = await Database.OpenAsync(dbPath, Ct);
 
@@ -195,6 +200,14 @@ public sealed class SampleSmokeTests : IAsyncLifetime
             {
                 var rows = await budgetQuery.ToListAsync(Ct);
                 Assert.Equal(125050L, rows[0][0].AsInteger);
+            }
+
+            await using (var rowVersionQuery = await db.ExecuteAsync(
+                             "SELECT RowVersion FROM Blogs WHERE Name = 'Engineering';",
+                             Ct))
+            {
+                var rows = await rowVersionQuery.ToListAsync(Ct);
+                Assert.Equal(8, rows[0][0].AsBlob.Length);
             }
         }
         finally

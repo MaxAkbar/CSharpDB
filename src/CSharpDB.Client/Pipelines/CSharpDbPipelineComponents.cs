@@ -265,6 +265,11 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
         var writeRow = new Dictionary<string, object?>(_tableSchema.Columns.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var column in _tableSchema.Columns)
         {
+            if (column.IsRowVersion)
+            {
+                continue;
+            }
+
             if (!row.TryGetValue(column.Name, out var value))
             {
                 continue;
@@ -384,10 +389,10 @@ internal sealed class CSharpDbTablePipelineDestination : IPipelineDestination
 
     private static string BuildInsertSql(string tableName, IReadOnlyDictionary<string, object?> values)
     {
-        if (values.Count == 0)
-            throw new InvalidOperationException($"Destination table '{tableName}' has no writable columns for the current pipeline row.");
-
         string normalizedTableName = RequireIdentifier(tableName, nameof(tableName));
+        if (values.Count == 0)
+            return $"INSERT INTO {normalizedTableName} DEFAULT VALUES";
+
         string[] columns = values.Keys.Select(static key => RequireIdentifier(key, nameof(values))).ToArray();
         string[] literals = values.Values.Select(FormatSqlLiteral).ToArray();
         return $"INSERT INTO {normalizedTableName} ({string.Join(", ", columns)}) VALUES ({string.Join(", ", literals)})";

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 using CSharpDB.Data;
@@ -2322,6 +2323,237 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task IdentityAndDatabaseGeneratedRowVersion_ArePropagatedTogether()
+    {
+        await using var db = new RowVersionModelContext(
+            $"Data Source={GetDbPath("rowversion-insert")}");
+        await db.Database.EnsureCreatedAsync(Ct);
+
+        var entity = new RowVersionEntity
+        {
+            Name = "initial",
+        };
+        db.Items.Add(entity);
+
+        await db.SaveChangesAsync(Ct);
+
+        Assert.True(entity.Id > 0);
+        Assert.Equal(sizeof(long), entity.Version.Length);
+        Assert.Equal(
+            entity.Version,
+            await db.Items
+                .AsNoTracking()
+                .Where(item => item.Id == entity.Id)
+                .Select(item => item.Version)
+                .SingleAsync(Ct));
+    }
+
+    [Fact]
+    public async Task SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesToken()
+    {
+        await using var db = new RowVersionModelContext(
+            $"Data Source={GetDbPath("rowversion-refresh")}");
+        await db.Database.EnsureCreatedAsync(Ct);
+
+        var entity = new RowVersionEntity
+        {
+            Name = "v1",
+        };
+        db.Items.Add(entity);
+        await db.SaveChangesAsync(Ct);
+        byte[] insertedVersion = entity.Version.ToArray();
+
+        entity.Name = "v2";
+        await db.SaveChangesAsync(Ct);
+        byte[] firstUpdateVersion = entity.Version.ToArray();
+
+        Assert.False(
+            insertedVersion.AsSpan().SequenceEqual(
+                firstUpdateVersion));
+        Assert.Equal(
+            firstUpdateVersion,
+            db.Entry(entity)
+                .Property(item => item.Version)
+                .OriginalValue);
+
+        entity.Name = "v3";
+        await db.SaveChangesAsync(Ct);
+        byte[] secondUpdateVersion = entity.Version.ToArray();
+
+        Assert.False(
+            firstUpdateVersion.AsSpan().SequenceEqual(
+                secondUpdateVersion));
+        Assert.Equal(
+            secondUpdateVersion,
+            await db.Items
+                .AsNoTracking()
+                .Where(item => item.Id == entity.Id)
+                .Select(item => item.Version)
+                .SingleAsync(Ct));
+    }
+
+    [Fact]
+    public async Task SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesFinalTokenAfterTriggerUpdate()
+    {
+        await using var db = new RowVersionModelContext(
+            $"Data Source={GetDbPath("rowversion-trigger-refresh")}");
+        await db.Database.EnsureCreatedAsync(Ct);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TRIGGER normalize_rowversion_item AFTER UPDATE ON RowVersionItems
+            BEGIN
+                UPDATE RowVersionItems
+                SET Name = 'normalized'
+                WHERE Id = NEW.Id AND Name <> 'normalized';
+            END
+            """,
+            Ct);
+
+        var entity = new RowVersionEntity
+        {
+            Name = "initial",
+        };
+        db.Items.Add(entity);
+        await db.SaveChangesAsync(Ct);
+
+        entity.Name = "requires-normalization";
+        await db.SaveChangesAsync(Ct);
+        byte[] firstTriggeredVersion = entity.Version.ToArray();
+
+        RowVersionEntity stored =
+            await db.Items
+                .AsNoTracking()
+                .SingleAsync(Ct);
+        Assert.Equal("normalized", stored.Name);
+        Assert.Equal(stored.Version, firstTriggeredVersion);
+
+        entity.Name = "requires-normalization-again";
+        await db.SaveChangesAsync(Ct);
+
+        Assert.False(
+            firstTriggeredVersion.AsSpan().SequenceEqual(
+                entity.Version));
+    }
+
+    [Fact]
+    public async Task SaveChanges_WithDatabaseGeneratedRowVersion_ThrowsForStaleUpdateAndDelete()
+    {
+        string dbPath = GetDbPath("rowversion-concurrency");
+        await using (var seed =
+            new RowVersionModelContext(
+                $"Data Source={dbPath}"))
+        {
+            await seed.Database.EnsureCreatedAsync(Ct);
+            seed.Items.Add(
+                new RowVersionEntity
+                {
+                    Name = "initial",
+                });
+            await seed.SaveChangesAsync(Ct);
+        }
+
+        await using var first =
+            new RowVersionModelContext(
+                $"Data Source={dbPath}");
+        await using var staleUpdate =
+            new RowVersionModelContext(
+                $"Data Source={dbPath}");
+        await using var staleDelete =
+            new RowVersionModelContext(
+                $"Data Source={dbPath}");
+
+        RowVersionEntity current =
+            await first.Items.SingleAsync(Ct);
+        RowVersionEntity updateCandidate =
+            await staleUpdate.Items.SingleAsync(Ct);
+        RowVersionEntity deleteCandidate =
+            await staleDelete.Items.SingleAsync(Ct);
+
+        current.Name = "winner";
+        await first.SaveChangesAsync(Ct);
+
+        updateCandidate.Name = "stale";
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+            () => staleUpdate.SaveChangesAsync(Ct));
+
+        staleDelete.Items.Remove(deleteCandidate);
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+            () => staleDelete.SaveChangesAsync(Ct));
+
+        Assert.Equal(
+            "winner",
+            (await first.Items
+                .AsNoTracking()
+                .SingleAsync(Ct)).Name);
+    }
+
+    [Fact]
+    public async Task DatabaseGeneratedRowVersion_AdvancesAfterRawSqlUpdate()
+    {
+        await using var db = new RowVersionModelContext(
+            $"Data Source={GetDbPath("rowversion-raw-sql")}");
+        await db.Database.EnsureCreatedAsync(Ct);
+
+        var entity = new RowVersionEntity
+        {
+            Name = "tracked",
+        };
+        db.Items.Add(entity);
+        await db.SaveChangesAsync(Ct);
+        byte[] originalVersion = entity.Version.ToArray();
+
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             UPDATE "RowVersionItems"
+             SET "Name" = {"raw"}
+             WHERE "Id" = {entity.Id}
+             """,
+            Ct);
+
+        RowVersionEntity databaseEntity =
+            await db.Items
+                .AsNoTracking()
+                .SingleAsync(Ct);
+        Assert.Equal("raw", databaseEntity.Name);
+        Assert.False(
+            originalVersion.AsSpan().SequenceEqual(
+                databaseEntity.Version));
+
+        entity.Name = "stale-after-raw";
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+            () => db.SaveChangesAsync(Ct));
+    }
+
+    [Fact]
+    public void RowVersionModel_RejectsUnsupportedShapes()
+    {
+        AssertRowVersionModelRejected<NullableRowVersionContext>(
+            "non-nullable byte[]");
+        AssertRowVersionModelRejected<LongRowVersionContext>(
+            "CLR type");
+        AssertRowVersionModelRejected<ConvertedRowVersionContext>(
+            "value converter");
+        AssertRowVersionModelRejected<WrongStoreTypeRowVersionContext>(
+            "requires BLOB");
+        AssertRowVersionModelRejected<DefaultedRowVersionContext>(
+            "database default");
+        AssertRowVersionModelRejected<SqlDefaultedRowVersionContext>(
+            "database default");
+        AssertRowVersionModelRejected<ComputedRowVersionContext>(
+            "computed");
+        AssertRowVersionModelRejected<KeyRowVersionContext>(
+            "key");
+        AssertRowVersionModelRejected<IndexedRowVersionContext>(
+            "indexed");
+        AssertRowVersionModelRejected<ForeignKeyRowVersionContext>(
+            "foreign key");
+        AssertRowVersionModelRejected<MultipleRowVersionContext>(
+            "exactly one");
+        AssertRowVersionModelRejected<SharedColumnRowVersionContext>(
+            "exactly one");
+    }
+
+    [Fact]
     public async Task UseCSharpDb_WithPrivateMemoryConnection_SupportsRuntimeOperations()
     {
         await using var connection = new CSharpDbConnection("Data Source=:memory:");
@@ -3090,6 +3322,162 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         await Assert.ThrowsAsync<DbUpdateException>(() => invalid.SaveChangesAsync(Ct));
     }
 
+    [Fact]
+    public async Task OptionalRelationship_DefaultClientSetNull_NullsTrackedDependentBeforePrincipalDelete()
+    {
+        string dbPath = GetDbPath("optional-client-set-null-tracked");
+
+        await using (var db = new OptionalForeignKeyModelContext($"Data Source={dbPath}"))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            var parent = new OptionalForeignKeyParent();
+            parent.Children.Add(new OptionalForeignKeyChild());
+            db.Parents.Add(parent);
+            await db.SaveChangesAsync(Ct);
+            db.ChangeTracker.Clear();
+
+            OptionalForeignKeyParent trackedParent =
+                await db.Parents.SingleAsync(Ct);
+            OptionalForeignKeyChild trackedChild =
+                await db.Children.SingleAsync(Ct);
+            var foreignKey = db.Model
+                .FindEntityType(typeof(OptionalForeignKeyChild))!
+                .GetForeignKeys()
+                .Single();
+
+            Assert.Equal(DeleteBehavior.ClientSetNull, foreignKey.DeleteBehavior);
+            Assert.Same(trackedParent, trackedChild.Parent);
+
+            db.Remove(trackedParent);
+            await db.SaveChangesAsync(Ct);
+
+            Assert.Null(trackedChild.ParentId);
+            Assert.Null(trackedChild.Parent);
+        }
+
+        await using var verify =
+            new OptionalForeignKeyModelContext($"Data Source={dbPath}");
+        Assert.Empty(await verify.Parents.AsNoTracking().ToListAsync(Ct));
+        OptionalForeignKeyChild persistedChild =
+            await verify.Children.AsNoTracking().SingleAsync(Ct);
+        Assert.Null(persistedChild.ParentId);
+    }
+
+    [Fact]
+    public async Task OptionalRelationship_DefaultClientSetNull_UntrackedDependentKeepsDatabaseProtection()
+    {
+        string dbPath = GetDbPath("optional-client-set-null-untracked");
+
+        await using (var seed = new OptionalForeignKeyModelContext($"Data Source={dbPath}"))
+        {
+            await seed.Database.EnsureCreatedAsync(Ct);
+            var parent = new OptionalForeignKeyParent();
+            parent.Children.Add(new OptionalForeignKeyChild());
+            seed.Parents.Add(parent);
+            await seed.SaveChangesAsync(Ct);
+        }
+
+        await using (var delete = new OptionalForeignKeyModelContext($"Data Source={dbPath}"))
+        {
+            OptionalForeignKeyParent parent =
+                await delete.Parents.SingleAsync(Ct);
+            Assert.Empty(delete.ChangeTracker.Entries<OptionalForeignKeyChild>());
+
+            delete.Remove(parent);
+            await Assert.ThrowsAsync<DbUpdateException>(
+                () => delete.SaveChangesAsync(Ct));
+        }
+
+        await using var verify =
+            new OptionalForeignKeyModelContext($"Data Source={dbPath}");
+        OptionalForeignKeyParent persistedParent =
+            await verify.Parents.AsNoTracking().SingleAsync(Ct);
+        OptionalForeignKeyChild persistedChild =
+            await verify.Children.AsNoTracking().SingleAsync(Ct);
+        Assert.Equal(persistedParent.Id, persistedChild.ParentId);
+    }
+
+    [Fact]
+    public async Task OptionalCompositeRelationship_DefaultClientSetNull_NullsNullableForeignKeyProperty()
+    {
+        string dbPath = GetDbPath("optional-composite-client-set-null");
+
+        await using (var db =
+            new OptionalCompositeForeignKeyModelContext($"Data Source={dbPath}"))
+        {
+            await db.Database.EnsureCreatedAsync(Ct);
+            var parent = new OptionalCompositeForeignKeyParent
+            {
+                TenantId = 7,
+                ParentNo = 42,
+            };
+            parent.Children.Add(new OptionalCompositeForeignKeyChild());
+            db.Parents.Add(parent);
+            await db.SaveChangesAsync(Ct);
+            db.ChangeTracker.Clear();
+
+            OptionalCompositeForeignKeyParent trackedParent =
+                await db.Parents.SingleAsync(Ct);
+            OptionalCompositeForeignKeyChild trackedChild =
+                await db.Children.SingleAsync(Ct);
+            var foreignKey = db.Model
+                .FindEntityType(typeof(OptionalCompositeForeignKeyChild))!
+                .GetForeignKeys()
+                .Single();
+            Assert.Equal(DeleteBehavior.ClientSetNull, foreignKey.DeleteBehavior);
+
+            db.Remove(trackedParent);
+            await db.SaveChangesAsync(Ct);
+
+            Assert.Equal(7, trackedChild.TenantId);
+            Assert.Null(trackedChild.ParentNo);
+            Assert.Null(trackedChild.Parent);
+        }
+
+        await using var verify =
+            new OptionalCompositeForeignKeyModelContext($"Data Source={dbPath}");
+        OptionalCompositeForeignKeyChild persistedChild =
+            await verify.Children.AsNoTracking().SingleAsync(Ct);
+        Assert.Equal(7, persistedChild.TenantId);
+        Assert.Null(persistedChild.ParentNo);
+    }
+
+    [Fact]
+    public void ClientSetNull_RejectsForeignKeysWithNonNullableDependentProperties()
+    {
+        string dbPath = GetDbPath("required-client-set-null");
+        using var db =
+            new RequiredClientSetNullModelContext($"Data Source={dbPath}");
+
+        NotSupportedException error =
+            Assert.Throws<NotSupportedException>(() => _ = db.Model);
+
+        Assert.Contains(
+            "at least one dependent property must be nullable",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DatabaseSetNull_RemainsExplicitlyUnsupported()
+    {
+        string dbPath = GetDbPath("database-set-null");
+        using var db =
+            new DatabaseSetNullModelContext($"Data Source={dbPath}");
+
+        NotSupportedException error =
+            Assert.Throws<NotSupportedException>(() => _ = db.Model);
+
+        Assert.Contains(
+            "SetNull",
+            error.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "not supported",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("Data Source=provider.db;Pooling=true", "pooled connections")]
     [InlineData("Data Source=:memory:shared", "named shared-memory")]
@@ -3127,6 +3515,27 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
                 error.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    private void AssertRowVersionModelRejected<TContext>(
+        string expectedMessage)
+        where TContext : TestDbContext
+    {
+        string connectionString =
+            $"Data Source={GetDbPath(typeof(TContext).Name)}";
+        using var db = (TContext?)Activator.CreateInstance(
+            typeof(TContext),
+            connectionString) ??
+            throw new InvalidOperationException(
+                $"Could not create {typeof(TContext).Name}.");
+
+        NotSupportedException error =
+            Assert.Throws<NotSupportedException>(
+                () => _ = db.Model);
+        Assert.Contains(
+            expectedMessage,
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static PersonRecord CreateNumericPerson(
@@ -3235,6 +3644,194 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
             modelBuilder.Entity<Ticket>()
                 .Property(ticket => ticket.Version)
                 .IsConcurrencyToken();
+        }
+    }
+
+    private sealed class RowVersionModelContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<RowVersionEntity> Items =>
+            Set<RowVersionEntity>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<RowVersionEntity>()
+                .ToTable("RowVersionItems");
+    }
+
+    private sealed class NullableRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<NullableRowVersionEntity>()
+                .Property(item => item.Version)
+                .IsRowVersion();
+    }
+
+    private sealed class LongRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<LongRowVersionEntity>()
+                .Property(item => item.Version)
+                .IsRowVersion();
+    }
+
+    private sealed class ConvertedRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<ConvertedRowVersionEntity>()
+                .Property(item => item.Version)
+                .HasConversion(
+                    version =>
+                        Convert.ToHexString(version),
+                    version =>
+                        Convert.FromHexString(version))
+                .IsRowVersion();
+    }
+
+    private sealed class WrongStoreTypeRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<WrongStoreTypeRowVersionEntity>()
+                .Property(item => item.Version)
+                .HasColumnType("TEXT")
+                .IsRowVersion();
+    }
+
+    private sealed class DefaultedRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<DefaultedRowVersionEntity>()
+                .Property(item => item.Version)
+                .HasDefaultValue(new byte[sizeof(long)])
+                .IsRowVersion();
+    }
+
+    private sealed class SqlDefaultedRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<SqlDefaultedRowVersionEntity>()
+                .Property(item => item.Version)
+                .HasDefaultValueSql("randomblob(8)")
+                .IsRowVersion();
+    }
+
+    private sealed class ComputedRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<ComputedRowVersionEntity>()
+                .Property(item => item.Version)
+                .HasComputedColumnSql("\"Id\"")
+                .IsRowVersion();
+    }
+
+    private sealed class KeyRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<KeyRowVersionEntity>()
+                .HasKey(item => item.Version);
+            modelBuilder.Entity<KeyRowVersionEntity>()
+                .Property(item => item.Version)
+                .IsRowVersion();
+        }
+    }
+
+    private sealed class IndexedRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<IndexedRowVersionEntity>()
+                .HasIndex(item => item.Version);
+            modelBuilder.Entity<IndexedRowVersionEntity>()
+                .Property(item => item.Version)
+                .IsRowVersion();
+        }
+    }
+
+    private sealed class ForeignKeyRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<RowVersionPrincipal>()
+                .HasAlternateKey(item =>
+                    item.VersionKey);
+            modelBuilder.Entity<RowVersionDependent>()
+                .Property(item => item.Version)
+                .IsRowVersion();
+            modelBuilder.Entity<RowVersionDependent>()
+                .HasOne<RowVersionPrincipal>()
+                .WithMany()
+                .HasForeignKey(item =>
+                    item.Version)
+                .HasPrincipalKey(item =>
+                    item.VersionKey);
+        }
+    }
+
+    private sealed class MultipleRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<MultipleRowVersionEntity>()
+                .Property(item => item.Version)
+                .IsRowVersion();
+            modelBuilder.Entity<MultipleRowVersionEntity>()
+                .Property(item => item.OtherVersion)
+                .IsRowVersion();
+        }
+    }
+
+    private sealed class SharedColumnRowVersionContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<SharedRowVersionFirst>()
+                .ToTable("SharedRowVersionItems")
+                .Property(item => item.Version)
+                .HasColumnName("Version")
+                .IsRowVersion();
+            modelBuilder.Entity<SharedRowVersionSecond>()
+                .ToTable("SharedRowVersionItems")
+                .Property(item => item.Version)
+                .HasColumnName("Version")
+                .IsRowVersion();
         }
     }
 
@@ -3682,6 +4279,88 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         }
     }
 
+    private sealed class OptionalForeignKeyModelContext(string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<OptionalForeignKeyParent> Parents =>
+            Set<OptionalForeignKeyParent>();
+
+        public DbSet<OptionalForeignKeyChild> Children =>
+            Set<OptionalForeignKeyChild>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<OptionalForeignKeyParent>()
+                .ToTable("OptionalParents");
+            modelBuilder.Entity<OptionalForeignKeyChild>(child =>
+            {
+                child.ToTable("OptionalChildren");
+                child.HasOne(item => item.Parent)
+                    .WithMany(parent => parent.Children)
+                    .HasForeignKey(item => item.ParentId);
+            });
+        }
+    }
+
+    private sealed class OptionalCompositeForeignKeyModelContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        public DbSet<OptionalCompositeForeignKeyParent> Parents =>
+            Set<OptionalCompositeForeignKeyParent>();
+
+        public DbSet<OptionalCompositeForeignKeyChild> Children =>
+            Set<OptionalCompositeForeignKeyChild>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<OptionalCompositeForeignKeyParent>(parent =>
+            {
+                parent.ToTable("OptionalCompositeParents");
+                parent.HasKey(item => new { item.TenantId, item.ParentNo });
+            });
+            modelBuilder.Entity<OptionalCompositeForeignKeyChild>(child =>
+            {
+                child.ToTable("OptionalCompositeChildren");
+                child.HasOne(item => item.Parent)
+                    .WithMany(parent => parent.Children)
+                    .HasForeignKey(item => new
+                    {
+                        item.TenantId,
+                        item.ParentNo,
+                    });
+            });
+        }
+    }
+
+    private sealed class RequiredClientSetNullModelContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<RequiredClientSetNullChild>()
+                .HasOne(item => item.Parent)
+                .WithMany(parent => parent.Children)
+                .HasForeignKey(item => item.ParentId)
+                .OnDelete(DeleteBehavior.ClientSetNull);
+        }
+    }
+
+    private sealed class DatabaseSetNullModelContext(
+        string connectionString)
+        : TestDbContext(connectionString)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<OptionalForeignKeyChild>()
+                .HasOne(item => item.Parent)
+                .WithMany(parent => parent.Children)
+                .HasForeignKey(item => item.ParentId)
+                .OnDelete(DeleteBehavior.SetNull);
+        }
+    }
+
     private sealed class PersonRecord
     {
         public int Id { get; set; }
@@ -3749,6 +4428,116 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public string Name { get; set; } = string.Empty;
 
         public int Version { get; set; }
+    }
+
+    private sealed class RowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public string Name { get; set; } = string.Empty;
+
+        [Timestamp]
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class NullableRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[]? Version { get; set; }
+    }
+
+    private sealed class LongRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public long Version { get; set; }
+    }
+
+    private sealed class ConvertedRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class WrongStoreTypeRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class DefaultedRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class SqlDefaultedRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class ComputedRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class KeyRowVersionEntity
+    {
+        public byte[] Version { get; set; } = null!;
+
+        public string Name { get; set; } = string.Empty;
+    }
+
+    private sealed class IndexedRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class RowVersionPrincipal
+    {
+        public int Id { get; set; }
+
+        public byte[] VersionKey { get; set; } = null!;
+    }
+
+    private sealed class RowVersionDependent
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class MultipleRowVersionEntity
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+
+        public byte[] OtherVersion { get; set; } = null!;
+    }
+
+    private sealed class SharedRowVersionFirst
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
+    }
+
+    private sealed class SharedRowVersionSecond
+    {
+        public int Id { get; set; }
+
+        public byte[] Version { get; set; } = null!;
     }
 
     private sealed class ReaderCountingInterceptor : DbCommandInterceptor
@@ -3976,6 +4765,58 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
         public int ParentNo { get; set; }
 
         public CompositeForeignKeyParent Parent { get; set; } = null!;
+    }
+
+    private sealed class OptionalForeignKeyParent
+    {
+        public int Id { get; set; }
+
+        public List<OptionalForeignKeyChild> Children { get; set; } = [];
+    }
+
+    private sealed class OptionalForeignKeyChild
+    {
+        public int Id { get; set; }
+
+        public int? ParentId { get; set; }
+
+        public OptionalForeignKeyParent? Parent { get; set; }
+    }
+
+    private sealed class OptionalCompositeForeignKeyParent
+    {
+        public int TenantId { get; set; }
+
+        public int ParentNo { get; set; }
+
+        public List<OptionalCompositeForeignKeyChild> Children { get; set; } = [];
+    }
+
+    private sealed class OptionalCompositeForeignKeyChild
+    {
+        public int Id { get; set; }
+
+        public int TenantId { get; set; }
+
+        public int? ParentNo { get; set; }
+
+        public OptionalCompositeForeignKeyParent? Parent { get; set; }
+    }
+
+    private sealed class RequiredClientSetNullParent
+    {
+        public int Id { get; set; }
+
+        public List<RequiredClientSetNullChild> Children { get; set; } = [];
+    }
+
+    private sealed class RequiredClientSetNullChild
+    {
+        public int Id { get; set; }
+
+        public int ParentId { get; set; }
+
+        public RequiredClientSetNullParent Parent { get; set; } = null!;
     }
 
     private enum PersonStatus

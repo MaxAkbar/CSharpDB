@@ -238,10 +238,34 @@ public class DataReaderTests : IAsyncLifetime
         Assert.True((bool)schemaTable.Rows[0]["IsKey"]);
         Assert.True((bool)schemaTable.Rows[0]["IsIdentity"]);
         Assert.True((bool)schemaTable.Rows[0]["IsAutoIncrement"]);
+        Assert.False((bool)schemaTable.Rows[0]["IsRowVersion"]);
         Assert.Equal(DBNull.Value, schemaTable.Rows[0]["CollationName"]);
 
         Assert.Equal((short)15, schemaTable.Rows[2]["NumericPrecision"]);
         Assert.Equal(DBNull.Value, schemaTable.Rows[2]["NumericScale"]);
+    }
+
+    [Fact]
+    public async Task GetSchemaTable_ReportsRowVersionMetadata()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText =
+            "CREATE TABLE versioned (id INTEGER PRIMARY KEY, version BLOB ROWVERSION NOT NULL);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "INSERT INTO versioned (id) VALUES (1);";
+        await cmd.ExecuteNonQueryAsync(Ct);
+        cmd.CommandText = "SELECT version FROM versioned;";
+
+        await using var reader = await cmd.ExecuteReaderAsync(Ct);
+        DataTable schemaTable = Assert.IsType<DataTable>(reader.GetSchemaTable());
+
+        DataRow row = Assert.Single(schemaTable.Rows.Cast<DataRow>());
+        Assert.True(
+            schemaTable.Columns["IsRowVersion"]!.Ordinal >
+            schemaTable.Columns["CollationName"]!.Ordinal);
+        Assert.Equal("version", row["ColumnName"]);
+        Assert.True((bool)row["IsRowVersion"]);
+        Assert.False((bool)row["AllowDBNull"]);
     }
 
     [Fact]
@@ -317,4 +341,3 @@ public class DataReaderTests : IAsyncLifetime
         Assert.Equal("Alice", values[1]);
     }
 }
-

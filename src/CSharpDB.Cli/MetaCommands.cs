@@ -236,6 +236,7 @@ internal sealed class SchemaCommand : IMetaCommand
             string comma = hasTrailingItems ? "," : string.Empty;
 
             string type = col.Type.ToString().ToUpperInvariant();
+            string rowVersion = col.IsRowVersion ? " ROWVERSION" : string.Empty;
             string pk = col.IsPrimaryKey ? " PRIMARY KEY" : string.Empty;
             string identity = col.IsIdentity ? " IDENTITY" : string.Empty;
             string nn = !col.Nullable ? " NOT NULL" : string.Empty;
@@ -250,7 +251,7 @@ internal sealed class SchemaCommand : IMetaCommand
                     foreignKey += " ON DELETE CASCADE";
             }
 
-            sql.AppendLine($"  {col.Name} {type}{pk}{identity}{nn}{foreignKey}{comma}");
+            sql.AppendLine($"  {col.Name} {type}{rowVersion}{pk}{identity}{nn}{foreignKey}{comma}");
         }
 
         sql.Append(");");
@@ -1069,6 +1070,7 @@ internal static class MetaCommandHelpers
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
+                    IsRowVersion = column.IsRowVersion,
                 })
                 .ToArray(),
             ForeignKeys = schema.ForeignKeys

@@ -9,6 +9,7 @@ public sealed class TableArchiveColumn
     public bool Nullable { get; init; }
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
+    public bool IsRowVersion { get; init; }
     public string? Collation { get; init; }
     public string? DefaultSql { get; init; }
 
@@ -19,6 +20,7 @@ public sealed class TableArchiveColumn
         Nullable = column.Nullable,
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
+        IsRowVersion = column.IsRowVersion,
         Collation = column.Collation,
         DefaultSql = column.DefaultSql,
     };
@@ -30,6 +32,7 @@ public sealed class TableArchiveColumn
         Nullable = Nullable,
         IsPrimaryKey = IsPrimaryKey,
         IsIdentity = IsIdentity,
+        IsRowVersion = IsRowVersion,
         Collation = Collation,
         DefaultSql = DefaultSql,
     };

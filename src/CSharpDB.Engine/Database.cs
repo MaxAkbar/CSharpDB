@@ -867,7 +867,8 @@ public sealed class Database : IAsyncDisposable
     }
 
     /// <summary>
-    /// Prepare a reusable full-row insert batch for a single table.
+    /// Prepare a reusable writable-column insert batch for a single table.
+    /// Database-generated ROWVERSION columns are omitted from the required values.
     /// The batch accepts DbValue rows and executes them through the simple insert path.
     /// </summary>
     public InsertBatch PrepareInsertBatch(string tableName, int initialCapacity = 0)
@@ -880,7 +881,20 @@ public sealed class Database : IAsyncDisposable
         if (schema == null)
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
 
-        return new InsertBatch(this, tableName, schema.Columns.Count, _catalog.SchemaVersion, initialCapacity);
+        string[]? writableColumnNames = schema.Columns.Any(static column => column.IsRowVersion)
+            ? schema.Columns
+                .Where(static column => !column.IsRowVersion)
+                .Select(static column => column.Name)
+                .ToArray()
+            : null;
+        int writableColumnCount = writableColumnNames?.Length ?? schema.Columns.Count;
+        return new InsertBatch(
+            this,
+            tableName,
+            writableColumnCount,
+            writableColumnNames,
+            _catalog.SchemaVersion,
+            initialCapacity);
     }
 
     private ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
@@ -2630,6 +2644,7 @@ public sealed class Database : IAsyncDisposable
                         Nullable = sourceColumn.Nullable,
                         IsPrimaryKey = sourceColumn.IsPrimaryKey,
                         IsIdentity = sourceColumn.IsIdentity,
+                        IsRowVersion = sourceColumn.IsRowVersion,
                     }
                     : sourceColumn;
             }

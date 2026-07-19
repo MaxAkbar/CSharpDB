@@ -51,14 +51,21 @@
       "name": "Foreign keys",
       "status": "Partial",
       "tier": "tier1",
-      "summary": "Named scalar and composite foreign keys support create, standalone add/drop, primary or alternate-key targets, and cascade or restrictive delete behavior.",
+      "summary": "Named scalar and composite foreign keys support create, standalone add/drop, primary or alternate-key targets, and cascade or restrictive delete behavior. EF Core's default ClientSetNull behavior is qualified for optional scalar and composite relationships: tracked dependents have nullable FK components cleared before principal deletion, while untracked dependents remain protected by a restrictive database constraint. Database-side SetNull remains unsupported.",
       "proofTests": [
         "MigrationsSqlGenerator_StandaloneForeignKey_CanBeAddedAndDropped",
         "MigrationsSqlGenerator_StandaloneCompositeForeignKey_CanBeAddedAndDropped",
+        "OptionalRelationship_DefaultClientSetNull_EmitsRestrictiveForeignKeySql",
         "MigrationsSqlGenerator_CreateTable_PreservesForeignAndUniqueConstraintNames",
         "MigrationsSqlGenerator_AddConstraints_RejectsInvalidExistingDataWithoutPersistingMetadata",
         "AlternateKeyRelationship_SupportsEnsureCreatedAndEnforcement",
         "CompositeForeignKeyRelationship_SupportsEnsureCreatedAndEnforcement",
+        "OptionalRelationship_DefaultClientSetNull_NullsTrackedDependentBeforePrincipalDelete",
+        "OptionalRelationship_DefaultClientSetNull_UntrackedDependentKeepsDatabaseProtection",
+        "OptionalCompositeRelationship_DefaultClientSetNull_NullsNullableForeignKeyProperty",
+        "OptionalRelationship_ClientSetNull_MatchesTrackedAndUntrackedDelete",
+        "ClientSetNull_RejectsForeignKeysWithNonNullableDependentProperties",
+        "DatabaseSetNull_RemainsExplicitlyUnsupported",
         "MigrationsSqlGenerator_EmitsCompositeForeignKeysAndStandalonePrimaryKeyChanges"
       ]
     },
@@ -377,17 +384,25 @@
       "name": "Application-managed concurrency tokens",
       "status": "Supported",
       "tier": "tier1",
-      "summary": "Original concurrency-token values participate in write predicates and stale writes throw DbUpdateConcurrencyException.",
+      "summary": "Original concurrency-token values participate in update and delete predicates, affected-row mismatches throw DbUpdateConcurrencyException, and the application remains responsible for assigning each new token value.",
       "proofTests": ["SaveChanges_WithConcurrencyToken_ThrowsWhenRowWasModified"]
     },
     {
       "id": "concurrency.rowversion",
       "category": "Change tracking and concurrency",
       "name": "Database-generated rowversion",
-      "status": "Planned",
+      "status": "Partial",
       "tier": "tier1",
-      "summary": "IsRowVersion and Timestamp semantics are rejected pending database-generated token support.",
-      "proofTests": []
+      "summary": "One nonnullable byte[] property per table configured with Timestamp or IsRowVersion is stored as BLOB ROWVERSION. The engine initializes an opaque eight-byte big-endian per-row revision at 1 and advances it on every successful UPDATE, including raw SQL, trigger-issued, and no-op updates. EF refreshes generated tokens and detects stale updates and deletes. Tokens are per-row rather than SQL Server's database-wide counter. Keys, foreign keys, indexes, converters, defaults, computed SQL, multiple rowversion columns, and standalone add or alter rowversion migrations are explicitly rejected.",
+      "proofTests": [
+        "SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesToken",
+        "SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesFinalTokenAfterTriggerUpdate",
+        "SaveChanges_WithDatabaseGeneratedRowVersion_ThrowsForStaleUpdateAndDelete",
+        "DatabaseGeneratedRowVersion_AdvancesAfterRawSqlUpdate",
+        "IdentityAndDatabaseGeneratedRowVersion_ArePropagatedTogether",
+        "RowVersionModel_RejectsUnsupportedShapes",
+        "MigrationsSqlGenerator_RowVersion_IsLimitedToInitialCreateTable"
+      ]
     },
     {
       "id": "design-time.migrations",

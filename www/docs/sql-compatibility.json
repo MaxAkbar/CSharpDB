@@ -1209,6 +1209,123 @@
       "ci_executed": true
     },
     {
+      "id": "engine.rowversion.metadata",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_CreateTablePersistsMetadataAcrossReopen",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.update",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_InsertRawUpdateAndNoOpUpdate_GenerateMonotonicTokens",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.assignment_rejection",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_ExplicitInsertAndUpdateAssignmentsAreRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.rollback",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_FailedUpdateAndRollbackPreserveToken",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.trigger",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_TriggerIssuedUpdateAdvancesToken",
+      "ci_executed": true
+    },
+    {
+      "id": "storage.rowversion.metadata",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/SchemaSerializerCompatibilityTests.cs",
+      "test": "SerializeDeserialize_TableSchema_RoundTripsRowVersionMetadata",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.refresh",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesToken",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.stale_write",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "SaveChanges_WithDatabaseGeneratedRowVersion_ThrowsForStaleUpdateAndDelete",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.raw_sql",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "DatabaseGeneratedRowVersion_AdvancesAfterRawSqlUpdate",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.identity",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "IdentityAndDatabaseGeneratedRowVersion_ArePropagatedTogether",
+      "ci_executed": true
+    },
+    {
+      "id": "sample.ef.rowversion",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/SampleSmokeTests.cs",
+      "test": "EfCoreProviderSample_RunsAndCreatesExpectedTables",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.model_rejection",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "RowVersionModel_RejectsUnsupportedShapes",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.migration",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_RowVersion_IsLimitedToInitialCreateTable",
+      "ci_executed": true
+    },
+    {
       "id": "ef.migration.basic",
       "kind": "positive",
       "dimension": "provider",
@@ -1863,6 +1980,15 @@
       "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
       "source": "tests/CSharpDB.Tests/WindowFunctionTests.cs",
       "test": "InvalidWindowPlacementOrUnsupportedCombination_IsRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.trigger_refresh",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesFinalTokenAfterTriggerUpdate",
       "ci_executed": true
     }
   ],
@@ -2562,6 +2688,23 @@
       "documentation_anchor": "api-reference.html",
       "positive_proof_ids": ["ado.reader.schema.basic"],
       "negative_proof_ids": ["ado.reader.schema.lineage_limited"]
+    },
+    {
+      "id": "provider.ef_concurrency.rowversion",
+      "category": "Generated SQL",
+      "feature": "EF Core database-generated rowversion concurrency",
+      "syntax": "[Timestamp] public byte[] RowVersion { get; set; }",
+      "availability": "partial",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query", "ef_migration"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "partial"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Exactly one nonnullable byte[] property per table configured with [Timestamp] or IsRowVersion() is qualified. The provider emits BLOB ROWVERSION during initial table creation, refreshes generated values after inserts and updates, and uses original tokens to detect stale updates and deletes. The engine initializes revision 1 and advances the token for every successful UPDATE, including raw SQL, trigger-issued, and no-op updates. Explicit token assignments, nullable/non-byte-array/configured-converter shapes, keys, foreign keys, indexes, defaults, computed SQL, multiple rowversion columns, and standalone add or alter rowversion migrations are rejected."],
+      "deviations": ["The opaque eight-byte big-endian token is a per-row revision, not SQL Server's database-wide monotonically increasing rowversion counter."],
+      "documentation_anchor": "entity-framework-core.html#rowversion-concurrency",
+      "positive_proof_ids": ["engine.rowversion.metadata", "engine.rowversion.update", "engine.rowversion.rollback", "engine.rowversion.trigger", "storage.rowversion.metadata", "ef.concurrency.rowversion.refresh", "ef.concurrency.rowversion.trigger_refresh", "ef.concurrency.rowversion.stale_write", "ef.concurrency.rowversion.raw_sql", "ef.concurrency.rowversion.identity", "sample.ef.rowversion"],
+      "negative_proof_ids": ["engine.rowversion.assignment_rejection", "ef.concurrency.rowversion.model_rejection", "ef.concurrency.rowversion.migration"]
     },
     {
       "id": "provider.ef_query.decimal",

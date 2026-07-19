@@ -89,6 +89,102 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
     [Theory]
     [InlineData(ProviderKind.CSharpDb)]
     [InlineData(ProviderKind.Sqlite)]
+    public async Task OptionalRelationship_ClientSetNull_MatchesTrackedAndUntrackedDelete(
+        ProviderKind provider)
+    {
+        string dbPath = GetDbPath(provider, "optional-client-set-null");
+
+        await using (var seed = CreateContext(provider, dbPath))
+        {
+            await seed.Database.EnsureCreatedAsync(Ct);
+            seed.OptionalParents.AddRange(
+                new ComparisonOptionalParent
+                {
+                    Id = 1,
+                    Children =
+                    [
+                        new ComparisonOptionalChild
+                        {
+                            Id = 11,
+                        },
+                    ],
+                },
+                new ComparisonOptionalParent
+                {
+                    Id = 2,
+                    Children =
+                    [
+                        new ComparisonOptionalChild
+                        {
+                            Id = 12,
+                        },
+                    ],
+                });
+            await seed.SaveChangesAsync(Ct);
+        }
+
+        await using (var tracked = CreateContext(provider, dbPath))
+        {
+            ComparisonOptionalParent parent =
+                await tracked.OptionalParents.SingleAsync(
+                    item => item.Id == 1,
+                    Ct);
+            ComparisonOptionalChild child =
+                await tracked.OptionalChildren.SingleAsync(
+                    item => item.Id == 11,
+                    Ct);
+            var foreignKey = tracked.Model
+                .FindEntityType(typeof(ComparisonOptionalChild))!
+                .GetForeignKeys()
+                .Single();
+
+            Assert.Equal(DeleteBehavior.ClientSetNull, foreignKey.DeleteBehavior);
+            Assert.Same(parent, child.Parent);
+
+            tracked.Remove(parent);
+            await tracked.SaveChangesAsync(Ct);
+            Assert.Null(child.ParentId);
+        }
+
+        await using (var untracked = CreateContext(provider, dbPath))
+        {
+            ComparisonOptionalParent parent =
+                await untracked.OptionalParents.SingleAsync(
+                    item => item.Id == 2,
+                    Ct);
+            Assert.Empty(
+                untracked.ChangeTracker.Entries<ComparisonOptionalChild>());
+
+            untracked.Remove(parent);
+            await Assert.ThrowsAsync<DbUpdateException>(
+                () => untracked.SaveChangesAsync(Ct));
+        }
+
+        await using var verify = CreateContext(provider, dbPath);
+        Assert.False(
+            await verify.OptionalParents.AnyAsync(
+                item => item.Id == 1,
+                Ct));
+        Assert.Null(
+            await verify.OptionalChildren
+                .Where(item => item.Id == 11)
+                .Select(item => item.ParentId)
+                .SingleAsync(Ct));
+        Assert.True(
+            await verify.OptionalParents.AnyAsync(
+                item => item.Id == 2,
+                Ct));
+        Assert.Equal(
+            2,
+            await verify.OptionalChildren
+                .Where(item => item.Id == 12)
+                .Select(item => item.ParentId)
+                .SingleAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
     public async Task DoubleMathFunctions_MatchForFiniteNonMidpointValues(ProviderKind provider)
     {
         await using var db = CreateContext(provider, GetDbPath(provider, "double-math"));
@@ -488,6 +584,12 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
 
         public DbSet<BenchEntity> Rows => Set<BenchEntity>();
 
+        public DbSet<ComparisonOptionalParent> OptionalParents =>
+            Set<ComparisonOptionalParent>();
+
+        public DbSet<ComparisonOptionalChild> OptionalChildren =>
+            Set<ComparisonOptionalChild>();
+
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             if (_provider == ProviderKind.CSharpDb)
@@ -509,6 +611,22 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
                 entity.Property(row => row.TextCol);
                 entity.Property(row => row.Category);
             });
+
+            modelBuilder.Entity<ComparisonOptionalParent>(parent =>
+            {
+                parent.ToTable("OptionalParents");
+                parent.Property(item => item.Id)
+                    .ValueGeneratedNever();
+            });
+            modelBuilder.Entity<ComparisonOptionalChild>(child =>
+            {
+                child.ToTable("OptionalChildren");
+                child.Property(item => item.Id)
+                    .ValueGeneratedNever();
+                child.HasOne(item => item.Parent)
+                    .WithMany(parent => parent.Children)
+                    .HasForeignKey(item => item.ParentId);
+            });
         }
     }
 
@@ -525,5 +643,21 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
         public string TextCol { get; set; } = string.Empty;
 
         public string Category { get; set; } = string.Empty;
+    }
+
+    private sealed class ComparisonOptionalParent
+    {
+        public int Id { get; set; }
+
+        public List<ComparisonOptionalChild> Children { get; set; } = [];
+    }
+
+    private sealed class ComparisonOptionalChild
+    {
+        public int Id { get; set; }
+
+        public int? ParentId { get; set; }
+
+        public ComparisonOptionalParent? Parent { get; set; }
     }
 }

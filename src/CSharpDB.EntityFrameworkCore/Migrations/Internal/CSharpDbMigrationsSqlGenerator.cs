@@ -20,6 +20,14 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         ValidateNoSchema(operation.Schema, operation.Name);
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Table name");
+        int rowVersionColumnCount =
+            operation.Columns.Count(static column => column.IsRowVersion);
+        if (rowVersionColumnCount > 1)
+        {
+            throw Unsupported(
+                $"more than one rowversion column on table '{operation.Name}'");
+        }
+
         foreach (AddForeignKeyOperation foreignKey in operation.ForeignKeys)
             ValidateForeignKey(foreignKey);
 
@@ -488,7 +496,10 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         AddForeignKeyOperation? foreignKey,
         IModel? model)
     {
-        ValidateColumnOperation(operation);
+        ValidateColumnOperation(
+            operation,
+            allowInitialCreateTableRowVersion:
+                createTable is not null);
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Column name");
 
         string storeType = operation.ColumnType ?? GetColumnType(operation.Schema, operation.Table, operation.Name, operation, model: null);
@@ -503,6 +514,14 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             operation,
             storeType,
             model);
+        if (operation.IsRowVersion)
+        {
+            ValidateInitialCreateTableRowVersion(
+                createTable!,
+                operation,
+                storeType);
+        }
+
         if (isPrimaryKeyColumn &&
             TryGetProviderOwnedDecimalFacets(
                 operation,
@@ -519,6 +538,9 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
         builder.Append(QuoteIdentifier(operation.Name))
             .Append(' ')
             .Append(storeType);
+
+        if (operation.IsRowVersion)
+            builder.Append(" ROWVERSION");
 
         string? collation = NormalizeBinaryCollation(operation.Collation);
         if (collation is not null)
@@ -824,7 +846,9 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             CSharpDbProviderValidation.ValidateSimpleIdentifier(principalColumn, "Column name");
     }
 
-    private static void ValidateColumnOperation(ColumnOperation operation)
+    private static void ValidateColumnOperation(
+        ColumnOperation operation,
+        bool allowInitialCreateTableRowVersion = false)
     {
         ValidateNoSchema(operation.Schema, operation.Table);
 
@@ -832,11 +856,61 @@ public sealed class CSharpDbMigrationsSqlGenerator : MigrationsSqlGenerator
             throw Unsupported("DefaultValueSql");
         if (operation.ComputedColumnSql is not null)
             throw Unsupported("computed columns");
-        if (operation.IsRowVersion)
-            throw Unsupported("rowversion columns");
+        if (operation.IsRowVersion &&
+            !allowInitialCreateTableRowVersion)
+        {
+            throw Unsupported(
+                $"adding or altering rowversion column '{operation.Table}.{operation.Name}'. Rowversion columns are supported only as part of an initial CREATE TABLE operation");
+        }
 
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Table, "Table name");
         CSharpDbProviderValidation.ValidateSimpleIdentifier(operation.Name, "Column name");
+    }
+
+    private static void ValidateInitialCreateTableRowVersion(
+        CreateTableOperation createTable,
+        ColumnOperation operation,
+        string storeType)
+    {
+        if (operation.ClrType != typeof(byte[]) ||
+            operation.IsNullable ||
+            !IsStoreType(
+                storeType,
+                "BLOB"))
+        {
+            throw Unsupported(
+                $"rowversion column '{operation.Table}.{operation.Name}' outside the required non-nullable byte[]/BLOB shape");
+        }
+
+        if (operation.DefaultValue is not null ||
+            operation.DefaultValueSql is not null ||
+            operation.ComputedColumnSql is not null)
+        {
+            throw Unsupported(
+                $"defaults or computed SQL on rowversion column '{operation.Table}.{operation.Name}'");
+        }
+
+        if (createTable.PrimaryKey?.Columns.Contains(
+                operation.Name,
+                StringComparer.OrdinalIgnoreCase) ==
+            true ||
+            createTable.UniqueConstraints.Any(constraint =>
+                constraint.Columns.Contains(
+                    operation.Name,
+                    StringComparer.OrdinalIgnoreCase)))
+        {
+            throw Unsupported(
+                $"key or unique-constraint participation by rowversion column '{operation.Table}.{operation.Name}'");
+        }
+
+        if (createTable.ForeignKeys.Any(foreignKey =>
+                foreignKey.Columns.Contains(
+                    operation.Name,
+                    StringComparer.OrdinalIgnoreCase)))
+        {
+            throw Unsupported(
+                $"foreign-key participation by rowversion column '{operation.Table}.{operation.Name}'");
+        }
     }
 
     private static void PopulateOldColumnIdentity(

@@ -94,7 +94,10 @@ public sealed class CSharpDbCommand : DbCommand
     {
         QueryResult result = await ExecuteQueryAsync(cancellationToken);
         long? generatedIntegerKey = result.TryGetGeneratedIntegerKey(out long key) ? key : null;
-        return new CSharpDbCommandExecutionResult(result, generatedIntegerKey);
+        byte[]? generatedRowVersion = result.TryGetGeneratedRowVersion(out byte[] rowVersion)
+            ? rowVersion
+            : null;
+        return new CSharpDbCommandExecutionResult(result, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask<QueryResult> ExecuteQueryAsync(CancellationToken cancellationToken)
@@ -178,4 +181,7 @@ public sealed class CSharpDbCommand : DbCommand
     }
 }
 
-internal readonly record struct CSharpDbCommandExecutionResult(QueryResult Result, long? GeneratedIntegerKey);
+internal readonly record struct CSharpDbCommandExecutionResult(
+    QueryResult Result,
+    long? GeneratedIntegerKey,
+    byte[]? GeneratedRowVersion);

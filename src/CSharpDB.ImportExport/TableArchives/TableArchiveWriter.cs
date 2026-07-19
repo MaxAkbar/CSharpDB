@@ -126,9 +126,12 @@ public static class TableArchiveWriter
             ];
         }
 
+        int archiveFormatVersion = schema.Columns.Any(static column => column.IsRowVersion)
+            ? TableArchiveManifest.RowVersionFormatVersion
+            : TableArchiveManifest.CurrentFormatVersion;
         var manifest = new TableArchiveManifest
         {
-            FormatVersion = TableArchiveManifest.CurrentFormatVersion,
+            FormatVersion = archiveFormatVersion,
             SourceTableName = schema.TableName,
             CreatedUtc = DateTimeOffset.UtcNow,
             RowCount = rowCount,
@@ -144,7 +147,7 @@ public static class TableArchiveWriter
         await TableArchiveNativeFormat.WriteHeaderAsync(
             destination,
             new NativeTableArchiveHeader(
-                TableArchiveNativeFormat.FormatVersion,
+                archiveFormatVersion,
                 schemaOffset,
                 schemaBytes.Length,
                 manifestOffset,

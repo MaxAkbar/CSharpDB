@@ -83,7 +83,7 @@
                         <option value="window-functions">Window functions</option>
                     </select></label>
                 </div>
-                <p id="compat-visible-count" aria-live="polite">Showing 50 feature rows.</p>
+                <p id="compat-visible-count" aria-live="polite">Showing 51 feature rows.</p>
                 <article class="compat-card" id="feature-alter.add_column.defaulted" data-status="supported" data-category="alter-table" data-search="alter.add_column.defaulted alter table add a column with a literal default and backfill existing rows alter table users add column status text not null default &#39;new&#39; the default must be one of the supported typed literal or null forms. adding a required column without a value for existing rows is rejected. a failed rewrite makes either explicit transaction api rollback-only. existing rows are streamed through a shadow table root and receive the persisted default before the catalog root is swapped.">
                     <div class="compat-card-head">
                         <div>
@@ -1344,6 +1344,46 @@
                             <p><strong>Negative:</strong> <span class="compat-proof">ef.query.inner_join.unsupported_shapes, ef.query.inner_join.unsupported_operators</span></p>
                         </details>
                     <p><strong>First supported version:</strong> 4.2.0 · <a href="entity-framework-core.html#linq-translation">Related documentation</a></p>
+                </article>
+                <article class="compat-card" id="feature-provider.ef_concurrency.rowversion" data-status="partial" data-category="generated-sql" data-search="provider.ef_concurrency.rowversion generated sql ef core database-generated rowversion concurrency [timestamp] public byte[] rowversion { get; set; } exactly one nonnullable byte[] property per table configured with [timestamp] or isrowversion() is qualified. the provider emits blob rowversion during initial table creation, refreshes generated values after inserts and updates, and uses original tokens to detect stale updates and deletes. the engine initializes revision 1 and advances the token for every successful update, including raw sql, trigger-issued, and no-op updates. explicit token assignments, nullable/non-byte-array/configured-converter shapes, keys, foreign keys, indexes, defaults, computed sql, multiple rowversion columns, and standalone add or alter rowversion migrations are rejected. the opaque eight-byte big-endian token is a per-row revision, not sql server&#39;s database-wide monotonically increasing rowversion counter.">
+                    <div class="compat-card-head">
+                        <div>
+                            <h3>EF Core database-generated rowversion concurrency</h3>
+                            <div class="compat-id">provider.ef_concurrency.rowversion · Generated SQL</div>
+                        </div>
+                        <div class="compat-badges">
+                            <span class="compat-badge compat-badge-partial">partial</span>
+                            <span class="compat-badge compat-badge-roadmap">roadmap: shipped</span>
+                        </div>
+                    </div>
+                    <pre class="compat-syntax"><code>[Timestamp] public byte[] RowVersion { get; set; }</code></pre>
+                    <div class="facet-grid">
+                        <div class="facet facet-not_applicable"><span class="facet-name">Parser</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Execution</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Persistence</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Catalog</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">Embedded ADO.NET</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST stateless</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">REST session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC unary</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-not_applicable"><span class="facet-name">gRPC session</span><span class="facet-status">not applicable</span></div>
+                        <div class="facet facet-supported"><span class="facet-name">EF query</span><span class="facet-status">supported</span></div>
+                        <div class="facet facet-partial"><span class="facet-name">EF migration</span><span class="facet-status">partial</span></div>
+                    </div>
+                        <h4>Limitations</h4>
+                        <ul class="compat-list">
+                            <li>Exactly one nonnullable byte[] property per table configured with [Timestamp] or IsRowVersion() is qualified. The provider emits BLOB ROWVERSION during initial table creation, refreshes generated values after inserts and updates, and uses original tokens to detect stale updates and deletes. The engine initializes revision 1 and advances the token for every successful UPDATE, including raw SQL, trigger-issued, and no-op updates. Explicit token assignments, nullable/non-byte-array/configured-converter shapes, keys, foreign keys, indexes, defaults, computed SQL, multiple rowversion columns, and standalone add or alter rowversion migrations are rejected.</li>
+                        </ul>
+                        <h4>Intentional deviations</h4>
+                        <ul class="compat-list">
+                            <li>The opaque eight-byte big-endian token is a per-row revision, not SQL Server&#39;s database-wide monotonically increasing rowversion counter.</li>
+                        </ul>
+                        <details>
+                            <summary>Automated proof ids</summary>
+                            <p><strong>Positive:</strong> <span class="compat-proof">engine.rowversion.metadata, engine.rowversion.update, engine.rowversion.rollback, engine.rowversion.trigger, storage.rowversion.metadata, ef.concurrency.rowversion.refresh, ef.concurrency.rowversion.trigger_refresh, ef.concurrency.rowversion.stale_write, ef.concurrency.rowversion.raw_sql, ef.concurrency.rowversion.identity, sample.ef.rowversion</span></p>
+                            <p><strong>Negative:</strong> <span class="compat-proof">engine.rowversion.assignment_rejection, ef.concurrency.rowversion.model_rejection, ef.concurrency.rowversion.migration</span></p>
+                        </details>
+                    <p><strong>First supported version:</strong> 4.2.0 · <a href="entity-framework-core.html#rowversion-concurrency">Related documentation</a></p>
                 </article>
                 <article class="compat-card" id="feature-provider.ef_query.crud" data-status="partial" data-category="generated-sql" data-search="provider.ef_query.crud generated sql ef core embedded crud and bounded query translation db.users.where(u =&gt; u.id == id).tolistasync() the first-party provider is embedded/direct only. the proved query slice covers where, ordering, skip/take, scalar projection, single, simple and bounded-shape any, count/longcount, non-decimal constant/parameter collection contains, simple include, bounded direct inner joins, selected string and temporal members, finite-double math functions, bounded exact-decimal comparisons and ordering, bounded scalar numeric aggregates, direct-column integer-distinct aggregates, and direct single-table grouped numeric aggregates. distinct scalar aggregates require an optional pre-filter followed by one directly mapped nonnullable int-column projection and distinct, then count, longcount, sum, min, or max. distinct average, nullable or non-int columns, value converters, ordering, limits, predicates after distinct, intervening operators, computed/composite selectors, casts, and derived sources are rejected. groupby requires direct mapped bool, integral, enum, default-binary string, or nullable keys; composite keys must use c# anonymous types or valuetuple, and boolean keys require canonical provider-written 0/1 storage. it supports one direct-key/bare-aggregate projection, qualified non-distinct sum/average/min/max, nonnullable-int direct-column distinct count/longcount/sum/min/max, basic having, and ordering by a directly projected key or aggregate. double, transformed, non-binary-collated, or configured-converter keys; aggregate value converters; element/result selector overloads; group materialization; raw or post-projection group transforms; nested/joined grouping; predicate/case aggregates; and broader types/shapes are rejected. string startswith/endswith/instance contains and stringcomparison overloads, datetimeoffset components, integral/decimal/mathf/precision-argument/midpoint-mode/transcendental math overloads, decimal arithmetic/aggregates/contains, long- and float-valued sum/average/min/max variants and other unqualified aggregate variants, takewhile/skipwhile, concat/union/except/intersect, executeupdate, filtered-inner/composite/chained/outer/cross joins, and correlated-query shapes remain outside the qualified surface. recognized unsupported clr methods, members, operators, aggregate shapes, join shapes, and decimal expressions fail before command dispatch with provider diagnostics. tolower()/toupper() and their invariant variants map to csharpdb lower/upper and therefore use invariant server semantics rather than .net currentculture. math.round(double) uses csharpdb midpoint-to-even semantics. scalar numeric aggregate qualification is limited to bounded values and the explicitly documented clr types because engine accumulation and ef-generated conversions differ for wider variants. nullable distinct().count()/longcount() is intentionally rejected because linq counts one distinct null while sql count(distinct column) ignores null.">
                     <div class="compat-card-head">

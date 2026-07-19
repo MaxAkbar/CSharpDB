@@ -25,6 +25,7 @@ internal readonly record struct NativeTableArchiveIndexHeader(
 internal static class TableArchiveNativeFormat
 {
     public const int FormatVersion = 3;
+    public const int RowVersionFormatVersion = 4;
     public const int HeaderSize = 76;
 
     public const int PrimaryKeyIndexVersion = 1;
@@ -70,7 +71,7 @@ internal static class TableArchiveNativeFormat
             throw new InvalidDataException("The table archive is not a native CSharpDB table archive.");
 
         int version = BinaryPrimitives.ReadInt32LittleEndian(buffer.AsSpan(8));
-        if (version != FormatVersion)
+        if (!IsSupportedFormatVersion(version))
             throw new InvalidDataException($"Unsupported native table archive format version {version}.");
 
         var header = new NativeTableArchiveHeader(
@@ -91,7 +92,7 @@ internal static class TableArchiveNativeFormat
 
     public static void Validate(NativeTableArchiveHeader header)
     {
-        if (header.FormatVersion != FormatVersion ||
+        if (!IsSupportedFormatVersion(header.FormatVersion) ||
             header.SchemaOffset < HeaderSize ||
             header.SchemaLength <= 0 ||
             header.ManifestOffset < HeaderSize ||
@@ -105,6 +106,9 @@ internal static class TableArchiveNativeFormat
             throw new InvalidDataException("The native table archive header is invalid.");
         }
     }
+
+    private static bool IsSupportedFormatVersion(int version)
+        => version is FormatVersion or RowVersionFormatVersion;
 
     public static void WriteIndexHeader(
         Span<byte> destination,

@@ -11,6 +11,76 @@ namespace CSharpDB.Tests;
 public sealed class EngineTransportClientTests
 {
     [Fact]
+    public async Task GetTableSchemaAsync_MapsRowVersionMetadata()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_rowversion_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                "CREATE TABLE transport_versions (id INTEGER PRIMARY KEY, version BLOB ROWVERSION NOT NULL);",
+                TestContext.Current.CancellationToken);
+            Assert.Null(create.Error);
+
+            CSharpDB.Client.Models.TableSchema schema = Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                await client.GetTableSchemaAsync(
+                    "transport_versions",
+                    TestContext.Current.CancellationToken));
+            ColumnDefinition version = Assert.Single(schema.Columns, column => column.Name == "version");
+
+            Assert.Equal(CSharpDB.Client.Models.DbType.Blob, version.Type);
+            Assert.False(version.Nullable);
+            Assert.True(version.IsRowVersion);
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task InsertRowAsync_EmptyValuesGeneratesRowVersionDefault()
+    {
+        string dbPath = Path.Combine(
+            Path.GetTempPath(),
+            $"csharpdb_engine_transport_rowversion_insert_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = new EngineTransportClient(dbPath);
+            SqlExecutionResult create = await client.ExecuteSqlAsync(
+                "CREATE TABLE generated_rows (version BLOB ROWVERSION NOT NULL);",
+                TestContext.Current.CancellationToken);
+            Assert.Null(create.Error);
+
+            int inserted = await client.InsertRowAsync(
+                "generated_rows",
+                new Dictionary<string, object?>(),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(1, inserted);
+
+            SqlExecutionResult query = await client.ExecuteSqlAsync(
+                "SELECT version FROM generated_rows",
+                TestContext.Current.CancellationToken);
+            object?[] row = Assert.Single(query.Rows!);
+            Assert.Equal(
+                new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 },
+                Assert.IsType<byte[]>(row[0]));
+        }
+        finally
+        {
+            if (File.Exists(dbPath))
+                File.Delete(dbPath);
+            if (File.Exists(dbPath + ".wal"))
+                File.Delete(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task GetTableSchemaAsync_MapsDefaultsChecksAndLogicalKeys()
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_schema_{Guid.NewGuid():N}.db");

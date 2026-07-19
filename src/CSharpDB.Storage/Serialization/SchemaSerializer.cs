@@ -6,19 +6,22 @@ namespace CSharpDB.Storage.Serialization;
 /// <summary>
 /// Serializes/deserializes TableSchema to/from bytes for storage in the catalog B+tree.
 /// Format: [nameLen:varint][nameUtf8][colCount:varint] then per column:
-///   [nameLen:varint][nameUtf8][type:1][flags:1 (bit0=nullable, bit1=isPK, bit2=isIdentity)]
+///   [nameLen:varint][nameUtf8][type:1][flags:1
+///    (bit0=nullable, bit1=isPK, bit2=isIdentity, bit3=isRowVersion)]
 /// </summary>
 public static class SchemaSerializer
 {
     private const byte NullableFlag = 0x01;
     private const byte PrimaryKeyFlag = 0x02;
     private const byte IdentityFlag = 0x04;
-    private const ulong TableMetadataVersion = 5;
+    private const byte RowVersionFlag = 0x08;
+    private const ulong TableMetadataVersion = 6;
     private const ulong TableMetadataVersionWithCollations = 1;
     private const ulong TableMetadataVersionWithForeignKeys = 2;
     private const ulong TableMetadataVersionWithDefaultsAndChecks = 3;
     private const ulong TableMetadataVersionWithLogicalKeys = 4;
     private const ulong TableMetadataVersionWithOrderedForeignKeys = 5;
+    private const ulong TableMetadataVersionWithRowVersion = 6;
     private const ulong IndexMetadataVersion = 1;
 
     public static byte[] Serialize(TableSchema schema)
@@ -39,6 +42,7 @@ public static class SchemaSerializer
             if (col.Nullable) flags |= NullableFlag;
             if (col.IsPrimaryKey) flags |= PrimaryKeyFlag;
             if (col.IsIdentity) flags |= IdentityFlag;
+            if (col.IsRowVersion) flags |= RowVersionFlag;
             ms.WriteByte(flags);
         }
 
@@ -46,7 +50,11 @@ public static class SchemaSerializer
         // 0 means unknown/uninitialized (legacy compatibility path).
         ulong nextRowId = schema.NextRowId > 0 ? (ulong)schema.NextRowId : 0UL;
         WriteVarint(ms, nextRowId);
-        WriteVarint(ms, TableMetadataVersion);
+        WriteVarint(
+            ms,
+            schema.Columns.Any(static column => column.IsRowVersion)
+                ? TableMetadataVersionWithRowVersion
+                : TableMetadataVersionWithOrderedForeignKeys);
         WriteVarint(ms, (ulong)schema.Columns.Count);
         foreach (var col in schema.Columns)
             WriteNullableString(ms, col.Collation);
@@ -149,6 +157,7 @@ public static class SchemaSerializer
                     TableMetadataVersionWithForeignKeys or
                     TableMetadataVersionWithDefaultsAndChecks or
                     TableMetadataVersionWithLogicalKeys or
+                    TableMetadataVersionWithOrderedForeignKeys or
                     TableMetadataVersion))
                 throw new InvalidDataException($"Unsupported table schema metadata version '{metadataVersion}'.");
 
@@ -336,6 +345,9 @@ public static class SchemaSerializer
                     (metadataVersion < TableMetadataVersionWithLogicalKeys &&
                      isPrimaryKey &&
                      type == DbType.Integer),
+                IsRowVersion =
+                    metadataVersion >= TableMetadataVersionWithRowVersion &&
+                    (flags & RowVersionFlag) != 0,
                 Collation = columnCollations[i],
                 DefaultSql = columnDefaults[i],
             };

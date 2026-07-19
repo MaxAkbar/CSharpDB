@@ -118,6 +118,8 @@ public static partial class SchemaScriptRenderer
             .Append(' ')
             .Append(column.Type.ToString().ToUpperInvariant());
 
+        if (column.IsRowVersion)
+            sql.Append(" ROWVERSION");
         if (includeInlinePrimaryKey && column.IsPrimaryKey)
             sql.Append(" PRIMARY KEY");
         if (includeIdentity && column.IsIdentity)
@@ -434,6 +436,16 @@ public static partial class SchemaScriptRenderer
                 case SchemaChangeKind.Added when change.ObjectKind == SchemaObjectKind.Column
                     && change.SourceDefinition is not null
                     && !string.IsNullOrWhiteSpace(change.ParentName):
+                    if (change.Details.TryGetValue("rowVersion", out string? rowVersion) &&
+                        bool.TryParse(rowVersion, out bool isRowVersion) &&
+                        isRowVersion)
+                    {
+                        script.AppendLine("-- Standalone ROWVERSION column additions are not supported; rebuild the table instead.");
+                        AppendCommentedBlock(script, $"Desired column: {change.SourceDefinition.Trim()}");
+                        script.AppendLine();
+                        break;
+                    }
+
                     script.Append("ALTER TABLE ")
                         .Append(Identifier(change.ParentName))
                         .Append(" ADD COLUMN ")

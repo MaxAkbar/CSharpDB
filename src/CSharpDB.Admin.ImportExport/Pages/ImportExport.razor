@@ -415,7 +415,9 @@
             var result = await Task.Run(
                 () => ActiveImportExportService.RestoreTableAsync(request, ct),
                 ct);
-            _message = $"Restored {result.RowsInserted} row(s) into {result.TableName}.";
+            _message = result.RowVersionTokensRegenerated
+                ? $"Restored {result.RowsInserted} row(s) into {result.TableName}. ROWVERSION tokens were regenerated."
+                : $"Restored {result.RowsInserted} row(s) into {result.TableName}.";
             _tables = await ActiveClient.GetTableNamesAsync(ct);
         });
     }

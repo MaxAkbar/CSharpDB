@@ -53,10 +53,24 @@ var joinedPosts = await db.Blogs
     .ThenBy(item => item.Title)
     .ToListAsync();
 
+Blog engineering = blogs.Single(blog => blog.Name == "Engineering");
+byte[] rowVersionBeforeRawSql = engineering.RowVersion.ToArray();
+await db.Database.ExecuteSqlRawAsync(
+    "UPDATE \"Blogs\" SET \"Name\" = \"Name\" WHERE \"Id\" = {0}",
+    engineering.Id);
+byte[] rowVersionAfterRawSql = await db.Blogs
+    .AsNoTracking()
+    .Where(blog => blog.Id == engineering.Id)
+    .Select(blog => blog.RowVersion)
+    .SingleAsync();
+
 Console.WriteLine($"Database: {Path.GetFullPath(databasePath)}");
 Console.WriteLine($"Blogs: {blogs.Count}");
 Console.WriteLine($"Posts: {await db.Posts.CountAsync()}");
 Console.WriteLine($"JoinedPosts: {joinedPosts.Count}");
+Console.WriteLine($"RowVersionBytes: {rowVersionAfterRawSql.Length}");
+Console.WriteLine(
+    $"RowVersionAdvancedAfterRawSql: {!rowVersionBeforeRawSql.SequenceEqual(rowVersionAfterRawSql)}");
 
 foreach (Blog blog in blogs)
     Console.WriteLine($"{blog.Name}|{blog.Posts.Count}");

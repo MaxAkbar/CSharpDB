@@ -109,6 +109,35 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
                 readColumn.Value = ConvertGeneratedValue(readColumn.Property!.ClrType, generatedIntegerKey);
             }
         }
+
+        IColumnModification[] rowVersionColumns =
+            command.ColumnModifications
+                .Where(IsRowVersionColumn)
+                .ToArray();
+        if (rowVersionColumns.Length > 1)
+        {
+            throw new InvalidOperationException(
+                $"Modification command for table '{command.TableName}' contains more than one rowversion column.");
+        }
+
+        if (command.EntityState is EntityState.Added or EntityState.Modified &&
+            rowVersionColumns is [IColumnModification rowVersionColumn])
+        {
+            byte[] generatedRowVersion =
+                executionResult.GeneratedRowVersion ??
+                throw new DbUpdateException(
+                    $"The database did not return a generated rowversion for table '{command.TableName}'. Verify that the column was created as BLOB ROWVERSION NOT NULL.",
+                    command.Entries);
+
+            if (generatedRowVersion.Length != sizeof(long))
+            {
+                throw new DbUpdateException(
+                    $"The database returned a {generatedRowVersion.Length}-byte rowversion for table '{command.TableName}', but CSharpDB rowversion values must contain exactly {sizeof(long)} bytes.",
+                    command.Entries);
+            }
+
+            rowVersionColumn.Value = generatedRowVersion;
+        }
     }
 
     private static void BuildInsertCommand(
@@ -288,6 +317,18 @@ public sealed class CSharpDbModificationCommandBatch : ModificationCommandBatch
             var type when type == typeof(ulong) => true,
             _ => false,
         };
+
+    private static bool IsRowVersionColumn(
+        IColumnModification column) =>
+        column.IsRead &&
+        column.Property is
+        {
+            IsConcurrencyToken: true,
+            ValueGenerated:
+                ValueGenerated.OnAddOrUpdate,
+            ClrType: not null,
+        } property &&
+        property.ClrType == typeof(byte[]);
 
     private static object ConvertGeneratedValue(Type targetType, long generatedIntegerKey)
         => targetType == typeof(byte) ? checked((byte)generatedIntegerKey)

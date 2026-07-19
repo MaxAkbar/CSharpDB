@@ -7,6 +7,12 @@ public sealed class ColumnDefinition
     public bool Nullable { get; init; } = true;
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
+    /// <summary>
+    /// True when the column is an engine-generated row revision. Row-version
+    /// columns are non-null BLOB values generated on insert and advanced on
+    /// every persistent-table update.
+    /// </summary>
+    public bool IsRowVersion { get; init; }
     public string? Collation { get; init; }
     /// <summary>
     /// Canonical SQL for the column default expression, or null when no default

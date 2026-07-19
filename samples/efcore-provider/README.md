@@ -8,6 +8,8 @@ This sample shows the embedded EF Core 10 provider running against a file-backed
 - exact `decimal(18, 2)` mapping through provider-owned scaled-integer storage
 - collection navigation loading with `Include(...)`
 - a direct two-entity `Join(...)` over nonnullable integer keys
+- documented guidance for the conventional optional-relationship `ClientSetNull` pattern
+- database-generated `[Timestamp]`/rowversion concurrency, including raw SQL updates
 - design-time context creation for `dotnet ef`
 
 ## Run The Sample
@@ -23,6 +25,8 @@ Database: C:\...\efcore-provider.db
 Blogs: 2
 Posts: 3
 JoinedPosts: 3
+RowVersionBytes: 8
+RowVersionAdvancedAfterRawSql: True
 Engineering|2
 Operations|1
 ```
@@ -39,15 +43,50 @@ dotnet ef migrations script
 
 The sample includes `BloggingContextFactory`, so `dotnet ef` can create the context without a separate startup project or design package.
 
+## Optional Relationships
+
+Use a nullable foreign-key property and leave the delete behavior at EF Core's
+default:
+
+```csharp
+modelBuilder.Entity<Post>()
+    .HasOne(post => post.Editor)
+    .WithMany(editor => editor.Posts)
+    .HasForeignKey(post => post.EditorId);
+
+public sealed class Post
+{
+    // Other post properties...
+    public int? EditorId { get; set; }
+    public Editor? Editor { get; set; }
+}
+
+public sealed class Editor
+{
+    public int Id { get; set; }
+    public List<Post> Posts { get; set; } = [];
+}
+```
+
+The default is `DeleteBehavior.ClientSetNull`. When the editor and posts are
+tracked, EF updates `EditorId` to `null` before deleting the editor. When a
+dependent post is not tracked, CSharpDB's restrictive foreign key blocks the
+delete. Do not configure `DeleteBehavior.SetNull`; database-side `ON DELETE SET
+NULL` is not supported.
+
 ## Scope
 
 - Runtime + migrations: file-backed databases
 - Runtime only: private `:memory:` when you supply and keep open a `CSharpDbConnection`
 - Unsupported in v1: pooled connections, named shared-memory databases,
   endpoint/daemon transports, schemas, computed/default SQL columns,
-  database-generated rowversion, and decimal keys/arithmetic/aggregates or
-  precision/scale-changing migrations. Inner joins are limited to one direct
-  `Join` over nonnullable `int`, `long`, or `int`/`long`-backed enum keys; filtered inner sources,
-  composite/chained joins, and outer/cross joins remain unsupported.
+  decimal keys/arithmetic/aggregates, and precision/scale-changing migrations.
+  Rowversion supports one nonnullable `byte[]` property configured with
+  `[Timestamp]` or `IsRowVersion()` when it is created with the table; standalone
+  add/alter rowversion migrations remain unsupported. Tokens are opaque,
+  eight-byte, big-endian per-row revisions rather than SQL Server's
+  database-wide counter. Inner joins are limited to one direct `Join` over
+  nonnullable `int`, `long`, or `int`/`long`-backed enum keys; filtered inner
+  sources, composite/chained joins, and outer/cross joins remain unsupported.
 
 For the full provider guide and supported-feature matrix, see the [EF Core Provider guide](https://csharpdb.com/docs/entity-framework-core.html).

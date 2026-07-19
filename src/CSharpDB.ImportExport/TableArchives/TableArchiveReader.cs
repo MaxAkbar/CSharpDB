@@ -38,7 +38,9 @@ public static class TableArchiveReader
     {
         await using var stream = OpenRead(path);
         NativeTableArchiveHeader header = await ReadNativeHeaderAsync(stream, ct);
-        return await ReadNativeSchemaAsync(stream, header, ct);
+        TableArchiveSchema schema = await ReadNativeSchemaAsync(stream, header, ct);
+        _ = await ReadNativeManifestAsync(stream, header, ct);
+        return schema;
     }
 
     public static async ValueTask<TableSchema> ReadTableSchemaAsync(
@@ -56,6 +58,8 @@ public static class TableArchiveReader
     {
         await using var stream = OpenRead(path);
         NativeTableArchiveHeader header = await ReadNativeHeaderAsync(stream, ct);
+        _ = await ReadNativeSchemaAsync(stream, header, ct);
+        _ = await ReadNativeManifestAsync(stream, header, ct);
         await foreach (DbValue[] row in ReadNativeRowsAsync(stream, header, ct))
             yield return row;
     }
@@ -66,6 +70,8 @@ public static class TableArchiveReader
     {
         await using var stream = OpenRead(path);
         NativeTableArchiveHeader header = await ReadNativeHeaderAsync(stream, ct);
+        _ = await ReadNativeSchemaAsync(stream, header, ct);
+        _ = await ReadNativeManifestAsync(stream, header, ct);
         if (header.IndexLength <= 0)
             return false;
 
@@ -80,6 +86,8 @@ public static class TableArchiveReader
     {
         await using var stream = OpenRead(path);
         NativeTableArchiveHeader header = await ReadNativeHeaderAsync(stream, ct);
+        _ = await ReadNativeSchemaAsync(stream, header, ct);
+        _ = await ReadNativeManifestAsync(stream, header, ct);
         if (header.IndexLength <= 0)
             return new TableArchiveRowLookupResult(IsIndexed: false, Row: null);
 
@@ -151,8 +159,17 @@ public static class TableArchiveReader
         CancellationToken ct)
     {
         byte[] bytes = await ReadSectionAsync(stream, header.SchemaOffset, header.SchemaLength, ct);
-        return JsonSerializer.Deserialize<TableArchiveSchema>(bytes, TableArchiveJson.Options)
+        TableArchiveSchema schema =
+            JsonSerializer.Deserialize<TableArchiveSchema>(bytes, TableArchiveJson.Options)
             ?? throw new InvalidDataException("The table archive schema is empty.");
+        if (schema.Columns.Any(static column => column.IsRowVersion) &&
+            header.FormatVersion < TableArchiveManifest.RowVersionFormatVersion)
+        {
+            throw new InvalidDataException(
+                "ROWVERSION table archives require native archive format version 4 or later.");
+        }
+
+        return schema;
     }
 
     private static async ValueTask<TableArchiveManifest> ReadNativeManifestAsync(
@@ -163,8 +180,12 @@ public static class TableArchiveReader
         byte[] bytes = await ReadSectionAsync(stream, header.ManifestOffset, header.ManifestLength, ct);
         var manifest = JsonSerializer.Deserialize<TableArchiveManifest>(bytes, TableArchiveJson.Options)
             ?? throw new InvalidDataException("The table archive manifest is empty.");
-        if (manifest.FormatVersion != TableArchiveManifest.CurrentFormatVersion)
+        if (manifest.FormatVersion is not (
+                TableArchiveManifest.CurrentFormatVersion or
+                TableArchiveManifest.RowVersionFormatVersion))
             throw new InvalidDataException($"Unsupported native table archive format version {manifest.FormatVersion}.");
+        if (manifest.FormatVersion != header.FormatVersion)
+            throw new InvalidDataException("The table archive header and manifest format versions do not match.");
         return manifest;
     }
 

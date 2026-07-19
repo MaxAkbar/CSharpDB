@@ -234,6 +234,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "is_identity", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "collation", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "column_default", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "is_row_version", Type = DbType.Integer, Nullable = false },
     ];
 
     private static readonly ColumnDefinition[] SystemIndexesColumns =
@@ -1197,6 +1198,7 @@ public sealed class QueryPlanner
             Type = MapType(c.TypeToken),
             IsPrimaryKey = c.IsPrimaryKey,
             IsIdentity = c.IsIdentity,
+            IsRowVersion = c.IsRowVersion,
             Nullable = c.IsNullable,
             Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
             DefaultSql = CanonicalizeDefaultExpression(c),
@@ -1256,6 +1258,8 @@ public sealed class QueryPlanner
             throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support foreign keys in V1.");
         if (stmt.KeyConstraints.Count > 0)
             throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support table-level key constraints in V1.");
+        if (stmt.Columns.Any(static c => c.IsRowVersion))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support ROWVERSION columns.");
 
         var columns = stmt.Columns.Select(c => new ColumnDefinition
         {
@@ -1263,6 +1267,7 @@ public sealed class QueryPlanner
             Type = MapType(c.TypeToken),
             IsPrimaryKey = c.IsPrimaryKey,
             IsIdentity = c.IsIdentity || (c.IsPrimaryKey && c.TypeToken == TokenType.Integer),
+            IsRowVersion = false,
             Nullable = c.IsNullable,
             Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
             DefaultSql = CanonicalizeDefaultExpression(c),
@@ -1312,6 +1317,12 @@ public sealed class QueryPlanner
         {
             var metadata = await TableArchiveReader.ReadMetadataAsync(resolvedPath, ct);
             var manifest = metadata.Manifest;
+            if (metadata.Schema.Columns.Any(static column => column.IsRowVersion))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    "External tables do not support ROWVERSION columns.");
+            }
             await EnsureExternalTablesCatalogAsync(ct);
 
             var insert = new InsertStatement
@@ -1422,6 +1433,7 @@ public sealed class QueryPlanner
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
+                IsRowVersion = column.IsRowVersion,
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
             }).ToArray(),
@@ -1527,6 +1539,12 @@ public sealed class QueryPlanner
                         ErrorCode.SyntaxError,
                         "ALTER TABLE ADD COLUMN does not support PRIMARY KEY or IDENTITY columns in the first logical-key slice.");
                 }
+                if (add.Column.IsRowVersion)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        "ALTER TABLE ADD COLUMN does not support ROWVERSION columns; define the column when creating the table.");
+                }
 
                 var newCols = new List<ColumnDefinition>(schema.Columns);
                 newCols.Add(new ColumnDefinition
@@ -1535,6 +1553,7 @@ public sealed class QueryPlanner
                     Type = MapType(add.Column.TypeToken),
                     IsPrimaryKey = add.Column.IsPrimaryKey,
                     IsIdentity = add.Column.IsIdentity || (add.Column.IsPrimaryKey && add.Column.TypeToken == TokenType.Integer),
+                    IsRowVersion = false,
                     Nullable = add.Column.IsNullable,
                     Collation = ValidateAndNormalizeColumnCollation(add.Column.Name, add.Column.TypeToken, add.Column.Collation),
                     DefaultSql = CanonicalizeDefaultExpression(add.Column),
@@ -2162,7 +2181,15 @@ public sealed class QueryPlanner
             if (colIdx < 0)
                 throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnName}' not found in table '{stmt.TableName}'.");
 
-            DbType columnType = tableSchema.Columns[colIdx].Type;
+            ColumnDefinition column = tableSchema.Columns[colIdx];
+            if (column.IsRowVersion)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    $"ROWVERSION column '{stmt.TableName}.{columnName}' cannot participate in an index.");
+            }
+
+            DbType columnType = column.Type;
             if (columnType is not (DbType.Integer or DbType.Text))
                 throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER and TEXT column indexes are supported.");
 
@@ -5224,6 +5251,7 @@ public sealed class QueryPlanner
 
         int inserted = 0;
         long? generatedIntegerKey = null;
+        byte[]? generatedRowVersion = null;
         ForeignKeyMutationContext? mutationContext =
             _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0
                 ? new ForeignKeyMutationContext()
@@ -5250,7 +5278,10 @@ public sealed class QueryPlanner
                     rowIdReservationCountHint,
                     ct);
                 if (stmt.ValueRows.Count == 1)
+                {
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    generatedRowVersion = insertRow.GeneratedRowVersion;
+                }
                 inserted++;
             }
         }
@@ -5267,7 +5298,7 @@ public sealed class QueryPlanner
 
         await FinalizeInsertStatementAsync(mutationContext, stmt.TableName, inserted, persistRootChanges, ct);
 
-        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask<QueryResult> ExecuteTemporaryInsertAsync(InsertStatement stmt, CancellationToken ct)
@@ -7910,7 +7941,7 @@ public sealed class QueryPlanner
 
         ThrowIfExternalTableTarget(insert.TableName, "modified with INSERT");
         var schema = GetSchema(insert.TableName);
-        int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
+        int[]? explicitColumnIndices = insert.ColumnNames is not null
             ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
             : null;
         var tree = _catalog.GetTableTree(insert.TableName);
@@ -7926,6 +7957,7 @@ public sealed class QueryPlanner
 
         int inserted = 0;
         long? generatedIntegerKey = null;
+        byte[]? generatedRowVersion = null;
         ForeignKeyMutationContext? mutationContext =
             foreignKeys.Count > 0
                 ? new ForeignKeyMutationContext()
@@ -7959,7 +7991,10 @@ public sealed class QueryPlanner
                     rowIdReservationCountHint,
                     ct);
                 if (insert.RowCount == 1)
+                {
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    generatedRowVersion = insertRow.GeneratedRowVersion;
+                }
                 inserted++;
             }
 
@@ -7983,14 +8018,14 @@ public sealed class QueryPlanner
         }
 
         await FinalizeInsertStatementAsync(mutationContext, insert.TableName, inserted, persistRootChanges, ct);
-        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask<QueryResult> ExecuteTemporarySimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
     {
         TemporaryTableManager temporaryTables = RequireTemporaryTables();
         TableSchema schema = GetSchema(insert.TableName);
-        int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
+        int[]? explicitColumnIndices = insert.ColumnNames is not null
             ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
             : null;
         BTree tree = temporaryTables.GetTableTree(insert.TableName);
@@ -8042,6 +8077,7 @@ public sealed class QueryPlanner
     {
         int inserted = 0;
         long? generatedIntegerKey = null;
+        byte[]? generatedRowVersion = null;
         List<uint>? insertTraversalPath = null;
         HashSet<uint>? insertTraversalSet = null;
         ReusableInsertEncodingBuffer? reusableEncodingBuffer = null;
@@ -8071,7 +8107,10 @@ public sealed class QueryPlanner
                     rowIdReservationCountHint: Math.Max(1, insert.RowCount - inserted),
                     ct);
                 if (insert.RowCount == 1)
+                {
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    generatedRowVersion = insertRow.GeneratedRowVersion;
+                }
                 inserted++;
             }
         }
@@ -8092,7 +8131,7 @@ public sealed class QueryPlanner
             inserted,
             persistRootChanges,
             ct);
-        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask FinalizeInsertStatementAsync(
@@ -8132,6 +8171,7 @@ public sealed class QueryPlanner
             row,
             rowIdReservationCountHint,
             ct);
+        byte[]? generatedRowVersion = MaterializeInitialRowVersion(schema, row);
         RowConstraintValidator.ValidateRow(schema, row);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
@@ -8149,7 +8189,7 @@ public sealed class QueryPlanner
                 else
                     await tree.InsertAsync(rowId, encodedRow, ct);
                 RecordLogicalMutationWrites(tableName, schema, oldRow: null, newRow: row, newRowId: rowId);
-                return new InsertRowResult(rowId, generatedIntegerIdentity);
+                return new InsertRowResult(rowId, generatedIntegerIdentity, generatedRowVersion);
             }
             catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
             {
@@ -9910,6 +9950,15 @@ public sealed class QueryPlanner
         bool hasRemainingSubqueries = ContainsSubqueries(stmt);
 
         var schema = GetSchema(stmt.TableName);
+        foreach (SetClause set in stmt.SetClauses)
+        {
+            int columnIndex = schema.GetColumnIndex(set.ColumnName);
+            if (columnIndex < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{set.ColumnName}' not found.");
+            if (schema.Columns[columnIndex].IsRowVersion)
+                ThrowExplicitRowVersionAssignment(schema.Columns[columnIndex]);
+        }
+
         var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
         int pkIdx = schema.PrimaryKeyColumnIndex;
@@ -9951,6 +10000,7 @@ public sealed class QueryPlanner
                 newRow[pkIdx] = DbValue.FromInteger(rowId);
             if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
                 throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
+            AdvanceRowVersion(schema, oldRow, newRow);
             RowConstraintValidator.ValidateRow(schema, newRow);
             updates.Add((rowId, oldRow, newRow));
         }
@@ -9961,6 +10011,12 @@ public sealed class QueryPlanner
             {
                 // BEFORE UPDATE triggers
                 await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+                await RefreshRowVersionAfterBeforeTriggersAsync(
+                    stmt.TableName,
+                    schema,
+                    rowId,
+                    newRow,
+                    ct);
 
                 long newRowId = rowId;
                 if (hasIntegerPrimaryKey)
@@ -9993,7 +10049,16 @@ public sealed class QueryPlanner
 
             await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
-            return new QueryResult(updates.Count);
+            byte[]? generatedRowVersionWithoutForeignKeys =
+                await GetSinglePersistedGeneratedRowVersionAsync(
+                stmt.TableName,
+                schema,
+                updates,
+                hasIntegerPrimaryKey,
+                ct);
+            return QueryResult.FromRowsAffected(
+                updates.Count,
+                generatedRowVersionWithoutForeignKeys);
         }
 
         var mutationContext = new ForeignKeyMutationContext();
@@ -10001,6 +10066,12 @@ public sealed class QueryPlanner
         {
             // BEFORE UPDATE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            await RefreshRowVersionAfterBeforeTriggersAsync(
+                stmt.TableName,
+                schema,
+                rowId,
+                newRow,
+                ct);
 
             long newRowId = rowId;
             if (hasIntegerPrimaryKey)
@@ -10035,7 +10106,40 @@ public sealed class QueryPlanner
 
         await PersistForeignKeyMutationContextAsync(mutationContext, stmt.TableName, updates.Count > 0, persistRootChanges: true, ct);
 
-        return new QueryResult(updates.Count);
+        byte[]? generatedRowVersionWithForeignKeys =
+            await GetSinglePersistedGeneratedRowVersionAsync(
+            stmt.TableName,
+            schema,
+            updates,
+            hasIntegerPrimaryKey,
+            ct);
+        return QueryResult.FromRowsAffected(
+            updates.Count,
+            generatedRowVersionWithForeignKeys);
+    }
+
+    private async ValueTask<byte[]?> GetSinglePersistedGeneratedRowVersionAsync(
+        string tableName,
+        TableSchema schema,
+        List<(long rowId, DbValue[] oldRow, DbValue[] newRow)> updates,
+        bool hasIntegerPrimaryKey,
+        CancellationToken ct)
+    {
+        if (updates.Count != 1)
+            return null;
+
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex < 0)
+            return null;
+
+        (long rowId, _, DbValue[] newRow) = updates[0];
+        long persistedRowId = hasIntegerPrimaryKey
+            ? newRow[schema.PrimaryKeyColumnIndex].AsInteger
+            : rowId;
+        DbValue[]? persistedRow = await TryLoadRowAsync(tableName, schema, persistedRowId, ct);
+        return persistedRow is null
+            ? null
+            : GetRowVersionValue(schema, persistedRow, rowVersionColumnIndex);
     }
 
     private async ValueTask<List<(long rowId, DbValue[] row)>> CollectMutationTargetRowsAsync(
@@ -10643,7 +10747,15 @@ public sealed class QueryPlanner
 
         foreach (var (rowId, oldRow, newRow) in updates)
         {
+            AdvanceRowVersion(schema, oldRow, newRow);
+            RowConstraintValidator.ValidateRow(schema, newRow);
             await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            await RefreshRowVersionAfterBeforeTriggersAsync(
+                tableName,
+                schema,
+                rowId,
+                newRow,
+                ct);
 
             long newRowId = rowId;
             if (hasIntegerPrimaryKey)
@@ -18131,6 +18243,7 @@ public sealed class QueryPlanner
                 Nullable = operand.Nullable,
                 IsPrimaryKey = operand.IsPrimaryKey,
                 IsIdentity = operand.IsIdentity,
+                IsRowVersion = operand.IsRowVersion,
                 Collation = CollationSupport.NormalizeMetadataName(collate.Collation),
             };
         }
@@ -18151,6 +18264,7 @@ public sealed class QueryPlanner
                     Nullable = source.Nullable,
                     IsPrimaryKey = source.IsPrimaryKey,
                     IsIdentity = source.IsIdentity,
+                    IsRowVersion = source.IsRowVersion,
                     Collation = source.Collation,
                 };
             }
@@ -18235,6 +18349,7 @@ public sealed class QueryPlanner
                     Nullable = sourceColumn.Nullable,
                     IsPrimaryKey = sourceColumn.IsPrimaryKey,
                     IsIdentity = sourceColumn.IsIdentity,
+                    IsRowVersion = sourceColumn.IsRowVersion,
                 }
                 : sourceColumn;
         }
@@ -19636,6 +19751,7 @@ public sealed class QueryPlanner
                     DbValue.FromInteger(col.IsIdentity ? 1 : 0),
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
+                    DbValue.FromInteger(col.IsRowVersion ? 1 : 0),
                 ]);
             }
         }
@@ -19697,6 +19813,7 @@ public sealed class QueryPlanner
                     DbValue.FromInteger(col.IsIdentity ? 1 : 0),
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
+                    DbValue.FromInteger(0),
                 ]);
             }
         }
@@ -20653,6 +20770,7 @@ public sealed class QueryPlanner
                 IsPrimaryKey = isPrimaryKey,
                 IsIdentity = column.IsIdentity ||
                     (isPrimaryKey && usesPhysicalIntegerPrimaryKey && column.Type == DbType.Integer),
+                IsRowVersion = column.IsRowVersion,
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
             };
@@ -20786,6 +20904,7 @@ public sealed class QueryPlanner
                     primaryKeyColumns.Contains(column.Name)
                         ? false
                         : column.IsIdentity,
+                IsRowVersion = column.IsRowVersion,
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
             })
@@ -20934,6 +21053,7 @@ public sealed class QueryPlanner
             Nullable = nullable ?? column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
+            IsRowVersion = column.IsRowVersion,
             Collation = replaceCollation ? collation : column.Collation,
             DefaultSql = replaceDefault ? defaultSql : column.DefaultSql,
         };
@@ -22470,6 +22590,7 @@ public sealed class QueryPlanner
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
+                    IsRowVersion = column.IsRowVersion,
                     Collation = column.Collation,
                     DefaultSql = column.DefaultSql,
                 }
@@ -22805,6 +22926,7 @@ public sealed class QueryPlanner
             }
         }
 
+        RejectExplicitRowVersionInsert(schema, useDefault);
         RowConstraintValidator.ApplyDefaults(schema, row, useDefault);
         return row;
     }
@@ -22814,6 +22936,9 @@ public sealed class QueryPlanner
         if (explicitColumnIndices is null)
         {
             ValidateInsertValueCount(schema.Columns.Count, values.Length);
+            int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+            if (rowVersionColumnIndex >= 0)
+                ThrowExplicitRowVersionAssignment(schema.Columns[rowVersionColumnIndex]);
             return values;
         }
 
@@ -22827,8 +22952,108 @@ public sealed class QueryPlanner
             useDefault[explicitColumnIndices[i]] = false;
         }
 
+        RejectExplicitRowVersionInsert(schema, useDefault);
         RowConstraintValidator.ApplyDefaults(schema, row, useDefault);
         return row;
+    }
+
+    private static void RejectExplicitRowVersionInsert(TableSchema schema, bool[] useDefault)
+    {
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex >= 0 && !useDefault[rowVersionColumnIndex])
+            ThrowExplicitRowVersionAssignment(schema.Columns[rowVersionColumnIndex]);
+    }
+
+    private static void ThrowExplicitRowVersionAssignment(ColumnDefinition column)
+    {
+        throw new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"ROWVERSION column '{column.Name}' is generated by the database and cannot be assigned explicitly.");
+    }
+
+    private static int GetRowVersionColumnIndex(TableSchema schema)
+    {
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            if (schema.Columns[i].IsRowVersion)
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static byte[]? MaterializeInitialRowVersion(TableSchema schema, DbValue[] row)
+    {
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex < 0)
+            return null;
+
+        byte[] generatedRowVersion = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64BigEndian(generatedRowVersion, 1);
+        row[rowVersionColumnIndex] = DbValue.FromBlob(generatedRowVersion);
+        return generatedRowVersion;
+    }
+
+    private static byte[]? AdvanceRowVersion(TableSchema schema, DbValue[] oldRow, DbValue[] newRow)
+    {
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex < 0)
+            return null;
+
+        DbValue oldValue = oldRow[rowVersionColumnIndex];
+        if (oldValue.Type != DbType.Blob || oldValue.AsBlob.Length != sizeof(ulong))
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' contains an invalid value.");
+        }
+
+        ulong current = BinaryPrimitives.ReadUInt64BigEndian(oldValue.AsBlob);
+        if (current == ulong.MaxValue)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' has reached its maximum value.");
+        }
+
+        byte[] generatedRowVersion = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64BigEndian(generatedRowVersion, current + 1);
+        newRow[rowVersionColumnIndex] = DbValue.FromBlob(generatedRowVersion);
+        return generatedRowVersion;
+    }
+
+    private static byte[] GetRowVersionValue(
+        TableSchema schema,
+        DbValue[] row,
+        int rowVersionColumnIndex)
+    {
+        DbValue value = row[rowVersionColumnIndex];
+        if (value.Type != DbType.Blob || value.AsBlob.Length != sizeof(ulong))
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' contains an invalid value.");
+        }
+
+        return value.AsBlob;
+    }
+
+    private async ValueTask RefreshRowVersionAfterBeforeTriggersAsync(
+        string tableName,
+        TableSchema schema,
+        long rowId,
+        DbValue[] newRow,
+        CancellationToken ct)
+    {
+        if (GetRowVersionColumnIndex(schema) < 0)
+            return;
+
+        DbValue[]? persistedRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
+        if (persistedRow is null)
+            return;
+
+        AdvanceRowVersion(schema, persistedRow, newRow);
+        RowConstraintValidator.ValidateRow(schema, newRow);
     }
 
     private static int[] ResolveInsertColumnIndices(TableSchema schema, IReadOnlyList<string> columnNames)
@@ -22884,7 +23109,10 @@ public sealed class QueryPlanner
         };
     }
 
-    private readonly record struct InsertRowResult(long RowId, long? GeneratedIntegerIdentity);
+    private readonly record struct InsertRowResult(
+        long RowId,
+        long? GeneratedIntegerIdentity,
+        byte[]? GeneratedRowVersion);
 
     private async ValueTask PersistForeignKeyMutationContextAsync(
         ForeignKeyMutationContext? mutationContext,
@@ -23591,6 +23819,7 @@ public sealed class QueryPlanner
             row,
             rowIdReservationCountHint,
             ct);
+        byte[]? generatedRowVersion = MaterializeInitialRowVersion(schema, row);
         RowConstraintValidator.ValidateRow(schema, row);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
@@ -23646,7 +23875,15 @@ public sealed class QueryPlanner
         // AFTER INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Insert, null, row, schema, ct);
 
-        return new InsertRowResult(rowId, generatedIntegerIdentity);
+        if (generatedRowVersion is not null)
+        {
+            DbValue[]? persistedRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
+            int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+            if (persistedRow is not null && rowVersionColumnIndex >= 0)
+                generatedRowVersion = GetRowVersionValue(schema, persistedRow, rowVersionColumnIndex);
+        }
+
+        return new InsertRowResult(rowId, generatedIntegerIdentity, generatedRowVersion);
     }
 
     private ReadOnlyMemory<byte> EncodeRowForInsert(

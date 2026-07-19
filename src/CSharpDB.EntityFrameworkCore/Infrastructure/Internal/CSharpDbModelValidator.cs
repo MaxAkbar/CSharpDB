@@ -17,6 +17,7 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
 
     public override void Validate(IModel model, IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
     {
+        ValidateRowVersionModel(model);
         base.Validate(model, logger);
 
         if (model.GetSequences().Any())
@@ -39,6 +40,37 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
         foreach (var entityType in model.GetEntityTypes())
         {
             ValidateEntityType(entityType);
+        }
+    }
+
+    private static void ValidateRowVersionModel(IModel model)
+    {
+        foreach (IEntityType entityType in model.GetEntityTypes())
+        {
+            foreach (IProperty property in entityType.GetProperties().Where(IsRowVersion))
+                ValidateRowVersionProperty(entityType, property);
+        }
+
+        foreach (var tableGroup in model.GetEntityTypes()
+                     .Where(static entityType => entityType.GetTableName() is not null)
+                     .GroupBy(
+                         static entityType => (
+                             Schema: entityType.GetSchema(),
+                             Table: entityType.GetTableName()!)))
+        {
+            int rowVersionPropertyCount =
+                tableGroup
+                    .SelectMany(static entityType =>
+                        entityType.GetProperties())
+                    .Where(IsRowVersion)
+                    .Distinct()
+                    .Count();
+
+            if (rowVersionPropertyCount > 1)
+            {
+                throw new NotSupportedException(
+                    $"Table '{tableGroup.Key.Table}' maps {rowVersionPropertyCount} rowversion properties, but the CSharpDB EF Core provider supports exactly one rowversion property per table.");
+            }
         }
     }
 
@@ -138,12 +170,96 @@ public sealed class CSharpDbModelValidator : RelationalModelValidator
             throw new NotSupportedException(
                 $"Property '{entityType.DisplayName()}.{property.Name}' uses DefaultValueSql, but the CSharpDB EF Core provider currently supports literal DefaultValue metadata only.");
 
-        if (property.IsConcurrencyToken && property.ValueGenerated == ValueGenerated.OnAddOrUpdate)
-            throw new NotSupportedException($"Property '{entityType.DisplayName()}.{property.Name}' uses rowversion semantics, which are not supported by the CSharpDB EF Core provider.");
     }
+
+    private static void ValidateRowVersionProperty(
+        IEntityType entityType,
+        IProperty property)
+    {
+        string displayName =
+            $"{entityType.DisplayName()}.{property.Name}";
+
+        if (property.ClrType != typeof(byte[]))
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' uses rowversion semantics with CLR type '{property.ClrType.ShortDisplayName()}'. The CSharpDB EF Core provider supports only non-nullable byte[] rowversion properties.");
+        }
+
+        if (property.IsNullable)
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' uses nullable rowversion semantics. The CSharpDB EF Core provider supports only non-nullable byte[] rowversion properties.");
+        }
+
+        if (property.GetValueConverter() is not null)
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' uses a value converter with rowversion semantics, which is not supported by the CSharpDB EF Core provider.");
+        }
+
+        string storeType =
+            property.GetRelationalTypeMapping().StoreType;
+        if (!string.Equals(
+                storeType.Trim(),
+                "BLOB",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' uses rowversion store type '{storeType}', but the CSharpDB EF Core provider requires BLOB.");
+        }
+
+        if (property.FindAnnotation(
+                RelationalAnnotationNames.DefaultValue) is not null ||
+            property.GetDefaultValueSql() is not null)
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' configures a database default with rowversion semantics, which is not supported by the CSharpDB EF Core provider.");
+        }
+
+        if (property.GetComputedColumnSql() is not null)
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' combines computed-column and rowversion semantics, which is not supported by the CSharpDB EF Core provider.");
+        }
+
+        if (property.GetContainingKeys().Any())
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' is part of a key and uses rowversion semantics. CSharpDB rowversion columns cannot participate in keys.");
+        }
+
+        if (property.GetContainingForeignKeys().Any())
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' is part of a foreign key and uses rowversion semantics. CSharpDB rowversion columns cannot participate in foreign keys.");
+        }
+
+        if (property.GetContainingIndexes().Any())
+        {
+            throw new NotSupportedException(
+                $"Property '{displayName}' is indexed and uses rowversion semantics. CSharpDB rowversion columns cannot participate in indexes.");
+        }
+    }
+
+    private static bool IsRowVersion(IProperty property) =>
+        property.IsConcurrencyToken &&
+        property.ValueGenerated == ValueGenerated.OnAddOrUpdate;
 
     private static void ValidateForeignKey(IEntityType entityType, IForeignKey foreignKey)
     {
+        if (foreignKey.DeleteBehavior == DeleteBehavior.ClientSetNull)
+        {
+            if (!foreignKey.IsRequired &&
+                foreignKey.Properties.Any(static property => property.IsNullable))
+                return;
+
+            string properties = string.Join(
+                ", ",
+                foreignKey.Properties.Select(static property => property.Name));
+            throw new NotSupportedException(
+                $"Foreign key '{entityType.DisplayName()}.({properties})' uses ClientSetNull, but at least one dependent property must be nullable. CSharpDB maps ClientSetNull to a restrictive database foreign key and relies on EF Core to null tracked dependents before deleting the principal.");
+        }
+
         if (foreignKey.DeleteBehavior is not DeleteBehavior.Cascade
             and not DeleteBehavior.ClientNoAction
             and not DeleteBehavior.NoAction

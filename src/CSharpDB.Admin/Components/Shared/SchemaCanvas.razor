@@ -116,6 +116,10 @@
                                         {
                                             <i class="bi bi-key-fill" title="Primary key"></i>
                                         }
+                                        @if (column.IsRowVersion)
+                                        {
+                                            <span title="Store-generated row version">RV</span>
+                                        }
                                         @if (column.IsForeignKey)
                                         {
                                             <i class="bi bi-link-45deg" title="Foreign key"></i>

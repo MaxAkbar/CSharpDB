@@ -55,6 +55,7 @@ public sealed class ColumnDef
     public required TokenType TypeToken { get; init; } // Integer, Real, Text, Blob
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
+    public bool IsRowVersion { get; init; }
     public bool IsNullable { get; init; } = true;
     public string? Collation { get; init; }
     public ForeignKeyClause? ForeignKey { get; init; }
