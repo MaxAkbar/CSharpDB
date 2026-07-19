@@ -22,6 +22,23 @@ internal static class CSharpDbConnectionPoolRegistry
     {
         while (true)
         {
+            // An existing pool arbitrates checkout against disable/retirement with
+            // its own gate. This avoids the registry-wide gate on the steady-state
+            // path without weakening direct-lease exclusion: a direct reservation
+            // must disable this pool while idle, or fail while a checkout is active.
+            if (s_pools.TryGetValue(key, out CSharpDbConnectionPool? existingPool))
+            {
+                try
+                {
+                    return await existingPool.OpenSessionAsync(cancellationToken);
+                }
+                catch (CSharpDbConnectionPoolRetiredException)
+                {
+                    await EvictDisabledPoolAsync(existingPool);
+                    continue;
+                }
+            }
+
             CSharpDbConnectionPool pool = await GetOrCreateAsync(
                 key,
                 openDatabaseAsync,
@@ -398,6 +415,7 @@ internal sealed class CSharpDbConnectionPool
     private readonly TaskCompletionSource _retirement =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Dictionary<long, HashSet<Database.ReaderSession>> _readerSessions = new();
+    private readonly HashSet<long> _sessionsWithTemporaryState = [];
 
     private readonly PoolKey _key;
     private Database? _database;
@@ -409,6 +427,7 @@ internal sealed class CSharpDbConnectionPool
     private long? _transactionOwnerSessionId;
     private IReadOnlyDictionary<string, long>? _transactionSnapshotRowCounts;
     private bool _transactionSchemaMutated;
+    private int _temporaryCleanupCountForTest;
 
     internal CSharpDbConnectionPool(
         PoolKey key,
@@ -424,6 +443,7 @@ internal sealed class CSharpDbConnectionPool
     internal int ActiveSessionCount => Volatile.Read(ref _activeSessionCount);
     internal Task Retirement => _retirement.Task;
     internal int ActiveSnapshotReaderCountForTest => _database?.ActiveReaderCount ?? 0;
+    internal int TemporaryCleanupCountForTest => Volatile.Read(ref _temporaryCleanupCountForTest);
 
     internal int IdleCount =>
         !_disabled && _database is not null && ActiveSessionCount == 0 ? 1 : 0;
@@ -603,13 +623,22 @@ internal sealed class CSharpDbConnectionPool
                 _transactionSchemaMutated = false;
             }
 
-            if (_database is not null)
+            bool hasOutstandingReaders = _readerSessions.ContainsKey(sessionId);
+            bool hasTemporaryState = _sessionsWithTemporaryState.Remove(sessionId);
+            if (hasOutstandingReaders || hasTemporaryState)
             {
                 try
                 {
-                    DisposeReaderSessions(sessionId);
-                    using var temporaryScope = _database.EnterTemporaryTableSessionScope(sessionId);
-                    await _database.ClearTemporaryTablesAsync();
+                    if (hasOutstandingReaders)
+                        DisposeReaderSessions(sessionId);
+
+                    if (hasTemporaryState)
+                    {
+                        Database database = GetDatabase();
+                        using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
+                        Interlocked.Increment(ref _temporaryCleanupCountForTest);
+                        await database.ClearTemporaryTablesAsync();
+                    }
                 }
                 catch (Exception exception)
                 {
@@ -817,21 +846,32 @@ internal sealed class CSharpDbConnectionPool
 
             Database database = GetDatabase();
             using var temporaryScope = database.EnterTemporaryTableSessionScope(sessionId);
-            bool persistentSchemaMutation = statement is not null &&
-                IsPersistentSchemaMutation(statement);
-            if (persistentSchemaMutation)
+            try
             {
-                if (_readerSessions.Count > 0)
-                    throw new InvalidOperationException(SchemaBusyMessage);
+                bool persistentSchemaMutation = statement is not null &&
+                    IsPersistentSchemaMutation(statement);
+                if (persistentSchemaMutation)
+                {
+                    if (_readerSessions.Count > 0)
+                        throw new InvalidOperationException(SchemaBusyMessage);
 
-                // Set this before execution. A failed DDL statement can leave the
-                // live catalog changed until the explicit transaction is rolled back.
-                if (_transactionOwnerSessionId == sessionId)
-                    _transactionSchemaMutated = true;
+                    // Set this before execution. A failed DDL statement can leave the
+                    // live catalog changed until the explicit transaction is rolled back.
+                    if (_transactionOwnerSessionId == sessionId)
+                        _transactionSchemaMutated = true;
+                }
+
+                QueryResult result = await executeAsync(database);
+                return await DetachQueryResultAsync(result, cancellationToken);
             }
-
-            QueryResult result = await executeAsync(database);
-            return await DetachQueryResultAsync(result, cancellationToken);
+            finally
+            {
+                // The engine is authoritative here. In particular, a trigger or
+                // failed statement may create an otherwise invisible empty temp
+                // context, so AST classification alone is not sufficient.
+                if (database.HasTemporaryTableContextForCurrentSession)
+                    _sessionsWithTemporaryState.Add(sessionId);
+            }
         }
         finally
         {
@@ -1041,6 +1081,8 @@ internal sealed class PooledDatabaseSession : ICSharpDbSession
     public bool SupportsStructuredExecution => true;
     internal int ActiveSnapshotReaderCountForTest =>
         _ownerPool.ActiveSnapshotReaderCountForTest;
+    internal int TemporaryCleanupCountForTest =>
+        _ownerPool.TemporaryCleanupCountForTest;
 
     public ValueTask<QueryResult> ExecuteAsync(
         string sql,

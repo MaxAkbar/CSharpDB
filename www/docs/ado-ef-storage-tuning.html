@@ -203,6 +203,12 @@ connections enable it by default unless the connection string specifies
 <code>Pooling=false</code>.</li>
 <li><code>Max Pool Size</code> bounds simultaneous logical sessions over that warm
 engine rather than creating that many physical engines.</li>
+<li>Repeated opens on one connection reuse its validated embedded configuration.
+Short-lived connections using the same live connection-string instance can also
+reuse a weak prepared plan for an absolute pooled file target.</li>
+<li>Existing healthy pools use a direct checkout path. Logical close avoids
+reader and temporary-state cleanup when the session is proven clean, while
+engine-observed temporary contexts are still cleared conservatively.</li>
 <li>Pool identity is options-aware in v1.</li>
 <li>The pool key includes the normalized file target, max pool size, effective
 embedded open mode, effective preset selection, and explicit options object
@@ -212,6 +218,11 @@ their contents are equivalent.</li>
 <li><code>ClearPool(connectionString)</code> clears all pooled entries for the normalized
 file-backed target.</li>
 </ul>
+<p>For the lowest ADO.NET lifecycle overhead, keep the connection string in a
+reused variable instead of rebuilding an equivalent string for every
+connection. Relative file paths continue to follow the process working
+directory on each reopen, and explicit options objects remain isolated by
+identity.</p>
 <h2 id="unsupported-cases">Unsupported Cases</h2>
 <ul>
 <li>Remote <code>Http</code>, <code>Grpc</code>, and <code>NamedPipes</code> connections reject embedded tuning.</li>

@@ -214,6 +214,13 @@ Pooling note:
 - distinct explicit options object instances do not share a pool in v1
 - one warm embedded engine is multiplexed across pooled logical sessions
 - `Max Pool Size` limits simultaneous logical sessions over that engine
+- repeated opens on one connection reuse its validated embedded configuration;
+  short-lived connections that reuse the same live connection-string instance
+  can also share a weak prepared plan for an absolute pooled file target
+- checkout from an existing healthy pool avoids registry-wide coordination
+- logical close skips reader and temporary-state cleanup only when the session is
+  proven clean; engine-observed temporary contexts, including trigger-created or
+  failed-operation state, remain conservatively cleaned before reuse
 - persistent queries stream from committed WAL snapshots, so a reader does not
   block data-only writes and does not observe their uncommitted changes
 - persistent schema changes report the database as busy while a snapshot reader
@@ -244,6 +251,14 @@ Data Source=myapp.db;Pooling=true;Max Pool Size=16
 Provider-created EF Core file connections enable pooling by default. Add
 `Pooling=false` to the EF connection string when a physical close after each
 operation is required.
+
+For the lowest ADO.NET lifecycle overhead, keep the connection string in a
+reused variable instead of rebuilding an equivalent string for every
+connection. Reusing one `CSharpDbConnection` is the cheapest shape, while
+short-lived connection objects using that same string also reuse the prepared
+absolute-file plan. Relative file targets are deliberately resolved on every
+open when the process working directory changes, and connections with explicit
+`DatabaseOptions` or `HybridDatabaseOptions` retain options-identity isolation.
 
 To force-release pooled physical connections (for example before deleting database files):
 

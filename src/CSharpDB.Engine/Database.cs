@@ -1281,6 +1281,9 @@ public sealed class Database : IAsyncDisposable
     internal bool HasTemporaryTablesForCurrentSession =>
         _temporaryTables.GetTableNames().Count != 0;
 
+    internal bool HasTemporaryTableContextForCurrentSession =>
+        _temporaryTables.HasCurrentSessionContext;
+
     internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
     /// <summary>

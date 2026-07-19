@@ -1074,6 +1074,38 @@ A focused BenchmarkDotNet rerun of
 9.298 ms mean with pooling disabled and a 2.499 us mean for a pooled logical
 open/close cycle (10 measured iterations after 3 warmups).
 
+#### July 19, 2026 ADO.NET Lifecycle Hot-Path Follow-Up
+
+`AdoNetConnectionLifecycleBenchmarks` adds the missing matched provider
+comparison. It uses independent prepared files for every parameter set,
+explicit pooling on/off for both providers, CSharpDB
+`WriteOptimized`/`Direct`, SQLite private-cache WAL/FULL, and two lifecycle
+shapes: reopening one `DbConnection` object and constructing/opening/closing/
+disposing a new object per operation.
+
+After caching prepared absolute-file plans, adding an exact existing-pool
+checkout path, and avoiding reset work for sessions proven clean, the final
+10-iteration run after 3 warmups measured:
+
+| Provider | Pooling | Connection object | Mean | Median | Managed allocated |
+|----------|---------|-------------------|-----:|-------:|----------:|
+| CSharpDB | Off | Reused | 8.844 ms | 8.894 ms | 131,300 B |
+| CSharpDB | Off | New per operation | 9.381 ms | 9.481 ms | 136,398 B |
+| SQLite | Off | Reused | 310.582 us | 311.741 us | 248 B |
+| SQLite | Off | New per operation | 310.229 us | 311.042 us | 416 B |
+| CSharpDB | On | Reused | 0.228 us | 0.229 us | 128 B |
+| CSharpDB | On | New per operation | 0.508 us | 0.513 us | 256 B |
+| SQLite | On | Reused | 0.045 us | 0.045 us | 0 B |
+| SQLite | On | New per operation | 0.170 us | 0.172 us | 168 B |
+
+In a cross-run diagnostic comparison, the pooled short-lived CSharpDB row is
+about 4.9x faster and reports about 92% less managed allocation than the earlier
+2.499 us / 3.08 KB provider-only diagnostic. SQLite still has the leaner logical
+lifecycle, but the remaining pooled difference is about 0.18 us for a reused
+object and 0.34 us for a short-lived object. Physical non-pooled CSharpDB open
+remains the materially slower operation and is intentionally kept visible as a
+separate architectural baseline.
+
 ### CSharpDB Engine Semantics In These Comparisons
 
 - The CSharpDB engine does not carry an explicit writer-count mode on the `Database` handle. The harness creates the single-writer or multi-writer shape.

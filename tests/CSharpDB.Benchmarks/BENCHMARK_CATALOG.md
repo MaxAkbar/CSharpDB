@@ -80,6 +80,7 @@ Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurr
 | Harness | Class |
 |---|---|
 | `AdoNetBenchmarks` | `diagnostic` |
+| `AdoNetConnectionLifecycleBenchmarks` | `diagnostic` |
 | `BatchEvaluationBenchmarks` | `diagnostic` |
 | `BTreeCursorBenchmarks` | `diagnostic` |
 | `ColdLookupBenchmarks` | `diagnostic` |

@@ -84,6 +84,34 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CloseAsync_PersistentOnlySession_SkipsTemporaryStateCleanup()
+    {
+        string cs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+
+        await using var connection = new CSharpDbConnection(cs);
+        await connection.OpenAsync(Ct);
+        PooledDatabaseSession session =
+            Assert.IsType<PooledDatabaseSession>(connection.GetSession());
+
+        await ExecuteNonQueryAsync(
+            connection,
+            "CREATE TABLE clean_return_pool (id INTEGER PRIMARY KEY);");
+        await ExecuteNonQueryAsync(connection, "INSERT INTO clean_return_pool VALUES (1);");
+
+        Assert.Equal(0, session.TemporaryCleanupCountForTest);
+        await connection.CloseAsync();
+        Assert.Equal(0, session.TemporaryCleanupCountForTest);
+
+        await connection.OpenAsync(Ct);
+        Assert.Equal(
+            1L,
+            await ExecuteScalarAsync(connection, "SELECT COUNT(*) FROM clean_return_pool;"));
+        await connection.CloseAsync();
+
+        Assert.Equal(0, session.TemporaryCleanupCountForTest);
+    }
+
+    [Fact]
     public async Task CloseAsync_WithPoolingEnabled_KeepsWalUntilPoolIsCleared()
     {
         string cs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
@@ -526,15 +554,19 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
     public async Task OpenClose_WithPoolingEnabled_ClearsTemporaryTablesBeforePooling()
     {
         string cs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+        PooledDatabaseSession? firstSession = null;
 
         await using (var first = new CSharpDbConnection(cs))
         {
             await first.OpenAsync(Ct);
+            firstSession = Assert.IsType<PooledDatabaseSession>(first.GetSession());
             await ExecuteNonQueryAsync(first, "CREATE TEMP TABLE scratch (id INTEGER PRIMARY KEY);");
             await ExecuteNonQueryAsync(first, "INSERT INTO scratch VALUES (1);");
             Assert.Equal(1L, await ExecuteScalarAsync(first, "SELECT COUNT(*) FROM scratch;"));
             await first.CloseAsync();
         }
+
+        Assert.Equal(1, firstSession.TemporaryCleanupCountForTest);
 
         await using (var second = new CSharpDbConnection(cs))
         {
@@ -544,6 +576,45 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
                 async () => await ExecuteScalarAsync(second, "SELECT COUNT(*) FROM scratch;"));
             await second.CloseAsync();
         }
+    }
+
+    [Fact]
+    public async Task CloseAsync_TriggerWritesToTemporaryTable_ClearsEntireSessionContext()
+    {
+        string cs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+        PooledDatabaseSession? firstSession = null;
+
+        await using (var first = new CSharpDbConnection(cs))
+        {
+            await first.OpenAsync(Ct);
+            firstSession = Assert.IsType<PooledDatabaseSession>(first.GetSession());
+            await ExecuteNonQueryAsync(
+                first,
+                "CREATE TABLE trigger_temp_source (id INTEGER PRIMARY KEY);");
+            await ExecuteNonQueryAsync(
+                first,
+                "CREATE TEMP TABLE trigger_temp_audit (id INTEGER PRIMARY KEY);");
+            await ExecuteNonQueryAsync(
+                first,
+                """
+                CREATE TRIGGER trg_pool_temp AFTER INSERT ON trigger_temp_source
+                BEGIN
+                    INSERT INTO trigger_temp_audit VALUES (NEW.id);
+                END;
+                """);
+            await ExecuteNonQueryAsync(first, "INSERT INTO trigger_temp_source VALUES (1);");
+            Assert.Equal(
+                1L,
+                await ExecuteScalarAsync(first, "SELECT COUNT(*) FROM trigger_temp_audit;"));
+            await ExecuteNonQueryAsync(first, "DROP TEMP TABLE trigger_temp_audit;");
+            await first.CloseAsync();
+        }
+
+        Assert.Equal(1, firstSession.TemporaryCleanupCountForTest);
+
+        await using var second = new CSharpDbConnection(cs);
+        await second.OpenAsync(Ct);
+        Assert.Equal(0L, await ExecuteScalarAsync(second, "SELECT COUNT(*) FROM sys.temp_tables;"));
     }
 
     [Fact]
@@ -698,6 +769,56 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ConcurrentFastPooledCheckoutAndNonPooledReservation_NeverOverlap()
+    {
+        string pooledCs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+        string nonPooledCs = $"Data Source={_dbPath};Pooling=false";
+
+        for (int iteration = 0; iteration < 12; iteration++)
+        {
+            await using (var warm = new CSharpDbConnection(pooledCs))
+            {
+                await warm.OpenAsync(Ct);
+                await warm.CloseAsync();
+            }
+
+            await using var pooled = new CSharpDbConnection(pooledCs);
+            await using var direct = new CSharpDbConnection(nonPooledCs);
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            Task<Exception?> pooledOpen = TryOpenAfterSignalAsync(pooled, start.Task);
+            Task<Exception?> directOpen = TryOpenAfterSignalAsync(direct, start.Task);
+            start.TrySetResult();
+
+            await Task.WhenAll(pooledOpen, directOpen).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+
+            Exception? pooledError = await pooledOpen;
+            Exception? directError = await directOpen;
+            bool pooledSucceeded = pooledError is null;
+            bool directSucceeded = directError is null;
+            try
+            {
+                Assert.True(
+                    pooledSucceeded ^ directSucceeded,
+                    $"Exactly one ownership mode must win iteration {iteration}. " +
+                    $"Pooled error: {pooledError}; direct error: {directError}");
+
+                Exception? rejected = pooledError ?? directError;
+                Assert.IsType<InvalidOperationException>(rejected);
+            }
+            finally
+            {
+                if (pooledSucceeded)
+                    await pooled.CloseAsync();
+                if (directSucceeded)
+                    await direct.CloseAsync();
+            }
+
+            await CSharpDbConnection.ClearPoolAsync(pooledCs);
+        }
+    }
+
+    [Fact]
     public async Task OpenAsync_CanceledPooledOpen_DoesNotReturnLaterDatabaseToStalePool()
     {
         string pooledCs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
@@ -763,6 +884,22 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         return await command.ExecuteScalarAsync(Ct);
+    }
+
+    private static async Task<Exception?> TryOpenAfterSignalAsync(
+        CSharpDbConnection connection,
+        Task start)
+    {
+        await start;
+        try
+        {
+            await connection.OpenAsync(Ct);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
     }
 
     private sealed class CountingStorageEngineFactory : IStorageEngineFactory

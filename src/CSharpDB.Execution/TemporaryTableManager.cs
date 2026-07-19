@@ -24,6 +24,8 @@ internal sealed class TemporaryTableManager : IAsyncDisposable
 
     public bool HasAnyTableContext => Volatile.Read(ref _contextCount) != 0;
 
+    internal bool HasCurrentSessionContext => GetCurrentContextOrNull() is not null;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool HasTable(string tableName)
     {
