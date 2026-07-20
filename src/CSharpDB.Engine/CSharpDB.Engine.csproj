@@ -9,6 +9,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Client" />
     <InternalsVisibleTo Include="CSharpDB.Data" />
     <InternalsVisibleTo Include="CSharpDB.Native" />
     <InternalsVisibleTo Include="CSharpDB.Tests" />

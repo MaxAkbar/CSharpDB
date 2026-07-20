@@ -284,6 +284,12 @@ For better write-heavy numbers, start with these rules:
 - Avoid opening the same `.cdb` file twice in one process just to split "read DB" and "write DB". That duplicates engine state instead of using the intended shared-instance coordination path.
 - If you need multiple callers or transports, put one warm `Database` behind your host/service boundary and route both reads and writes through that owner.
 
+`Database.OpenAsync(...)` remains a physical engine open; disposing the
+`Database` remains its physical close. The warm transaction-handle handoff used
+by the direct `CSharpDB.Client` is implemented at the client ownership boundary
+and is not inherited by callers of the raw engine API. Retain and share the
+owning `Database` when its concurrency model fits the workload.
+
 ```csharp
 using CSharpDB.Engine;
 
@@ -332,6 +338,12 @@ catch
     throw;
 }
 ```
+
+Every `IStorageEngineFactory.OpenAsync(...)` call composes a new physical
+storage graph. Disposing its `Pager` closes that graph; the factory does not
+implicitly pool or recycle it. For repeated low-level work against one file,
+retain the opened context and pager for the intended ownership scope instead of
+opening and disposing them per operation.
 
 ## Key extension points
 

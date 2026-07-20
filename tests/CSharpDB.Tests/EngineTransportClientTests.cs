@@ -5,6 +5,9 @@ using CSharpDB.Client.Internal;
 using CSharpDB.Client.Models;
 using CSharpDB.Engine;
 using CSharpDB.ImportExport.TableArchives;
+using PrimitiveDbType = CSharpDB.Primitives.DbType;
+using PrimitiveDbValue = CSharpDB.Primitives.DbValue;
+using PrimitiveScalarFunctionOptions = CSharpDB.Primitives.DbScalarFunctionOptions;
 
 namespace CSharpDB.Tests;
 
@@ -496,6 +499,551 @@ public sealed class EngineTransportClientTests
             if (Directory.Exists(directory))
                 Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactions_ReuseOneDirectDatabaseAcrossCommitAndRollback()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_reuse_{Guid.NewGuid():N}.db");
+        int openCount = 0;
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                async (path, ct) =>
+                {
+                    Interlocked.Increment(ref openCount);
+                    return await Database.OpenAsync(path, ct);
+                });
+
+            Assert.Null((await client.ExecuteSqlAsync(
+                "CREATE TABLE transaction_reuse (id INTEGER PRIMARY KEY);",
+                TestContext.Current.CancellationToken)).Error);
+
+            TransactionSessionInfo first = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            await client.ExecuteInTransactionAsync(
+                first.TransactionId,
+                "INSERT INTO transaction_reuse VALUES (1);",
+                TestContext.Current.CancellationToken);
+            await client.CommitTransactionAsync(first.TransactionId, TestContext.Current.CancellationToken);
+
+            TransactionSessionInfo second = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            await client.ExecuteInTransactionAsync(
+                second.TransactionId,
+                "INSERT INTO transaction_reuse VALUES (2);",
+                TestContext.Current.CancellationToken);
+            await client.RollbackTransactionAsync(second.TransactionId, TestContext.Current.CancellationToken);
+
+            TransactionSessionInfo third = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            await client.ExecuteInTransactionAsync(
+                third.TransactionId,
+                "INSERT INTO transaction_reuse VALUES (3);",
+                TestContext.Current.CancellationToken);
+            await client.CommitTransactionAsync(third.TransactionId, TestContext.Current.CancellationToken);
+
+            SqlExecutionResult result = await client.ExecuteSqlAsync(
+                "SELECT id FROM transaction_reuse ORDER BY id;",
+                TestContext.Current.CancellationToken);
+
+            Assert.Null(result.Error);
+            Assert.Equal([1L, 3L], result.Rows!.Select(row => row[0]).ToArray());
+            Assert.Equal(1, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactionHandoff_ClearsTemporaryStateAtBothBoundaries()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_temp_reuse_{Guid.NewGuid():N}.db");
+        int openCount = 0;
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                async (path, ct) =>
+                {
+                    Interlocked.Increment(ref openCount);
+                    return await Database.OpenAsync(path, ct);
+                });
+
+            Assert.Null((await client.ExecuteSqlAsync(
+                "CREATE TEMP TABLE before_transaction (id INTEGER PRIMARY KEY);",
+                TestContext.Current.CancellationToken)).Error);
+
+            TransactionSessionInfo first = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<CSharpDB.Primitives.CSharpDbException>(async () =>
+                await client.ExecuteInTransactionAsync(
+                    first.TransactionId,
+                    "SELECT * FROM before_transaction;",
+                    TestContext.Current.CancellationToken));
+
+            await client.ExecuteInTransactionAsync(
+                first.TransactionId,
+                "CREATE TEMP TABLE during_transaction (id INTEGER PRIMARY KEY);",
+                TestContext.Current.CancellationToken);
+            await client.CommitTransactionAsync(first.TransactionId, TestContext.Current.CancellationToken);
+
+            TransactionSessionInfo second = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<CSharpDB.Primitives.CSharpDbException>(async () =>
+                await client.ExecuteInTransactionAsync(
+                    second.TransactionId,
+                    "SELECT * FROM during_transaction;",
+                    TestContext.Current.CancellationToken));
+            await client.RollbackTransactionAsync(second.TransactionId, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactionFailure_DoesNotRecycleUncertainDatabaseState()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_failed_reuse_{Guid.NewGuid():N}.db");
+        int openCount = 0;
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                async (path, ct) =>
+                {
+                    Interlocked.Increment(ref openCount);
+                    return await Database.OpenAsync(path, ct);
+                });
+
+            Assert.Null((await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE failed_transaction_reuse (id INTEGER PRIMARY KEY);
+                INSERT INTO failed_transaction_reuse VALUES (1);
+                """,
+                TestContext.Current.CancellationToken)).Error);
+
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<CSharpDB.Primitives.CSharpDbException>(async () =>
+                await client.ExecuteInTransactionAsync(
+                    transaction.TransactionId,
+                    "INSERT INTO failed_transaction_reuse VALUES (1);",
+                    TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<CSharpDB.Primitives.CSharpDbException>(async () =>
+                await client.CommitTransactionAsync(
+                    transaction.TransactionId,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(
+                1,
+                await client.GetRowCountAsync(
+                    "failed_transaction_reuse",
+                    TestContext.Current.CancellationToken));
+            Assert.Equal(2, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactionCompletion_PreservesCompetingOrdinaryHandle()
+    {
+        Database competingDatabase = await Database.OpenInMemoryAsync(
+            TestContext.Current.CancellationToken);
+        bool competingDatabaseHandedOff = false;
+        int openCount = 0;
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                ":memory:competing-handle",
+                async (_, ct) =>
+                {
+                    if (Interlocked.Increment(ref openCount) == 2)
+                    {
+                        competingDatabaseHandedOff = true;
+                        return competingDatabase;
+                    }
+
+                    return await Database.OpenInMemoryAsync(ct);
+                });
+
+            Assert.Null((await client.ExecuteSqlAsync(
+                "CREATE TABLE competing_handle (id INTEGER PRIMARY KEY);",
+                TestContext.Current.CancellationToken)).Error);
+
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(2, Volatile.Read(ref openCount));
+
+            await client.RollbackTransactionAsync(transaction.TransactionId, TestContext.Current.CancellationToken);
+            Assert.Same(
+                competingDatabase,
+                await client.TryGetDatabaseAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(2, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            if (!competingDatabaseHandedOff)
+                await competingDatabase.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactionCompletion_DoesNotAdoptAfterTransientOrdinaryOpen()
+    {
+        int openCount = 0;
+
+        await using var client = new EngineTransportClient(
+            ":memory:transient-ordinary-open",
+            async (_, ct) =>
+            {
+                Interlocked.Increment(ref openCount);
+                return await Database.OpenInMemoryAsync(ct);
+            });
+
+        TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
+        await client.ReleaseCachedDatabaseAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, Volatile.Read(ref openCount));
+
+        await client.RollbackTransactionAsync(transaction.TransactionId, TestContext.Current.CancellationToken);
+        Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(3, Volatile.Read(ref openCount));
+    }
+
+    [Fact]
+    public async Task OverlappingClientManagedTransactions_DoNotAdoptStaleDatabaseHandle()
+    {
+        int openCount = 0;
+
+        await using var client = new EngineTransportClient(
+            ":memory:overlapping-transactions",
+            async (_, ct) =>
+            {
+                Interlocked.Increment(ref openCount);
+                return await Database.OpenInMemoryAsync(ct);
+            });
+
+        TransactionSessionInfo first = await client.BeginTransactionAsync(
+            TestContext.Current.CancellationToken);
+        TransactionSessionInfo second = await client.BeginTransactionAsync(
+            TestContext.Current.CancellationToken);
+
+        await client.ExecuteInTransactionAsync(
+            first.TransactionId,
+            "CREATE TABLE stale_overlap_schema (id INTEGER PRIMARY KEY);",
+            TestContext.Current.CancellationToken);
+        await client.CommitTransactionAsync(first.TransactionId, TestContext.Current.CancellationToken);
+        await client.RollbackTransactionAsync(second.TransactionId, TestContext.Current.CancellationToken);
+
+        Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(3, Volatile.Read(ref openCount));
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactions_HybridDisposeTriggerPersistsBeforeCompletionReturns()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_hybrid_boundary_{Guid.NewGuid():N}.db");
+        var hybridOptions = new HybridDatabaseOptions
+        {
+            PersistenceMode = HybridPersistenceMode.Snapshot,
+            PersistenceTriggers = HybridPersistenceTriggers.Dispose,
+        };
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                hybridDatabaseOptions: hybridOptions);
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(
+                TestContext.Current.CancellationToken);
+            await client.ExecuteInTransactionAsync(
+                transaction.TransactionId,
+                "CREATE TABLE hybrid_boundary (id INTEGER PRIMARY KEY, value TEXT);",
+                TestContext.Current.CancellationToken);
+            await client.ExecuteInTransactionAsync(
+                transaction.TransactionId,
+                "INSERT INTO hybrid_boundary VALUES (1, 'persisted-on-dispose');",
+                TestContext.Current.CancellationToken);
+            await client.CommitTransactionAsync(transaction.TransactionId, TestContext.Current.CancellationToken);
+
+            await using var reopened = await Database.OpenAsync(
+                dbPath,
+                TestContext.Current.CancellationToken);
+            await using var result = await reopened.ExecuteAsync(
+                "SELECT value FROM hybrid_boundary WHERE id = 1;",
+                TestContext.Current.CancellationToken);
+            var rows = await result.ToListAsync(TestContext.Current.CancellationToken);
+            Assert.Equal("persisted-on-dispose", Assert.Single(rows)[0].AsText);
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactionCompletion_WaitsForInFlightStatementBeforeReuse()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_inflight_{Guid.NewGuid():N}.db");
+        var executeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allowExecute = new ManualResetEventSlim();
+        int openCount = 0;
+        var options = new DatabaseOptions().ConfigureFunctions(functions =>
+            functions.AddScalar(
+                "WaitForCompletion",
+                0,
+                new PrimitiveScalarFunctionOptions(PrimitiveDbType.Integer),
+                (_, _) =>
+                {
+                    executeEntered.TrySetResult();
+                    allowExecute.Wait();
+                    return PrimitiveDbValue.FromInteger(1);
+                }));
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                async (path, ct) =>
+                {
+                    Interlocked.Increment(ref openCount);
+                    return await Database.OpenAsync(path, options, ct);
+                },
+                options);
+
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            Task<SqlExecutionResult> executeTask = Task.Run(
+                async () => await client.ExecuteInTransactionAsync(
+                    transaction.TransactionId,
+                    "SELECT WaitForCompletion();",
+                    TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+            await executeEntered.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+            Task commitTask = client.CommitTransactionAsync(
+                transaction.TransactionId,
+                TestContext.Current.CancellationToken);
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+            Assert.False(commitTask.IsCompleted);
+
+            allowExecute.Set();
+            SqlExecutionResult result = await executeTask;
+            await commitTask;
+
+            Assert.Equal(1L, Assert.Single(result.Rows!)[0]);
+            Assert.Equal(1, Volatile.Read(ref openCount));
+            Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(1, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            allowExecute.Set();
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ClientManagedTransactionCompletion_CancellationWhileWaitingLeavesTransactionUsable()
+    {
+        var executeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allowExecute = new ManualResetEventSlim();
+        int openCount = 0;
+        var options = new DatabaseOptions().ConfigureFunctions(functions =>
+            functions.AddScalar(
+                "WaitForCanceledCompletion",
+                0,
+                new PrimitiveScalarFunctionOptions(PrimitiveDbType.Integer),
+                (_, _) =>
+                {
+                    executeEntered.TrySetResult();
+                    allowExecute.Wait();
+                    return PrimitiveDbValue.FromInteger(1);
+                }));
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                ":memory:canceled-transaction-completion",
+                async (_, ct) =>
+                {
+                    Interlocked.Increment(ref openCount);
+                    return await Database.OpenInMemoryAsync(options, ct);
+                },
+                options);
+
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(
+                TestContext.Current.CancellationToken);
+            Task<SqlExecutionResult> executeTask = Task.Run(
+                async () => await client.ExecuteInTransactionAsync(
+                    transaction.TransactionId,
+                    "SELECT WaitForCanceledCompletion();",
+                    TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+            await executeEntered.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+            using var cancellation = new CancellationTokenSource();
+            Task canceledCommit = client.CommitTransactionAsync(
+                transaction.TransactionId,
+                cancellation.Token);
+            Assert.False(canceledCommit.IsCompleted);
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledCommit);
+
+            allowExecute.Set();
+            Assert.Equal(1L, Assert.Single((await executeTask).Rows!)[0]);
+
+            await client.CommitTransactionAsync(
+                transaction.TransactionId,
+                TestContext.Current.CancellationToken);
+            Assert.Empty(await client.GetTableNamesAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(1, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            allowExecute.Set();
+        }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_WaitsForInFlightTransactionStatementAndIsIdempotent()
+    {
+        var executeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allowExecute = new ManualResetEventSlim();
+        int openCount = 0;
+        var options = new DatabaseOptions().ConfigureFunctions(functions =>
+            functions.AddScalar(
+                "WaitForClientDispose",
+                0,
+                new PrimitiveScalarFunctionOptions(PrimitiveDbType.Integer),
+                (_, _) =>
+                {
+                    executeEntered.TrySetResult();
+                    allowExecute.Wait();
+                    return PrimitiveDbValue.FromInteger(1);
+                }));
+        var client = new EngineTransportClient(
+            ":memory:transaction-dispose",
+            async (_, ct) =>
+            {
+                Interlocked.Increment(ref openCount);
+                return await Database.OpenInMemoryAsync(options, ct);
+            },
+            options);
+
+        try
+        {
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(
+                TestContext.Current.CancellationToken);
+            Task<SqlExecutionResult> executeTask = Task.Run(
+                async () => await client.ExecuteInTransactionAsync(
+                    transaction.TransactionId,
+                    "SELECT WaitForClientDispose();",
+                    TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+            await executeEntered.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+            Task firstDispose = client.DisposeAsync().AsTask();
+            Task secondDispose = client.DisposeAsync().AsTask();
+            Assert.Same(firstDispose, secondDispose);
+            Assert.False(firstDispose.IsCompleted);
+
+            allowExecute.Set();
+            Assert.Equal(1L, Assert.Single((await executeTask).Rows!)[0]);
+            await firstDispose;
+            await secondDispose;
+            Assert.Equal(1, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            allowExecute.Set();
+            await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task BeginTransaction_ActiveSnapshotReaderRestoresCachedDatabase()
+    {
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_engine_transport_snapshot_guard_{Guid.NewGuid():N}.db");
+        int openCount = 0;
+
+        try
+        {
+            await using var client = new EngineTransportClient(
+                dbPath,
+                async (path, ct) =>
+                {
+                    Interlocked.Increment(ref openCount);
+                    return await Database.OpenAsync(path, ct);
+                });
+
+            Database database = Assert.IsType<Database>(
+                await client.TryGetDatabaseAsync(TestContext.Current.CancellationToken));
+            using (Database.ReaderSession reader = database.CreateReaderSession())
+            {
+                CSharpDbClientException exception = await Assert.ThrowsAsync<CSharpDbClientException>(
+                    async () => await client.BeginTransactionAsync(TestContext.Current.CancellationToken));
+                Assert.Contains("snapshot readers", exception.Message, StringComparison.OrdinalIgnoreCase);
+            }
+
+            TransactionSessionInfo transaction = await client.BeginTransactionAsync(TestContext.Current.CancellationToken);
+            await client.RollbackTransactionAsync(transaction.TransactionId, TestContext.Current.CancellationToken);
+            Assert.Equal(1, Volatile.Read(ref openCount));
+        }
+        finally
+        {
+            await DeleteDatabaseFilesAsync(dbPath);
+        }
+    }
+
+    private static async ValueTask DeleteDatabaseFilesAsync(string dbPath)
+    {
+        await DeleteIfExistsAsync(dbPath);
+        await DeleteIfExistsAsync(dbPath + ".wal");
+    }
+
+    private static async ValueTask DeleteIfExistsAsync(string path)
+    {
+        if (!File.Exists(path))
+            return;
+
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        Exception? lastException = null;
+        while (true)
+        {
+            try
+            {
+                File.Delete(path);
+                return;
+            }
+            catch (IOException ex) when (timeout.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                lastException = ex;
+            }
+            catch (UnauthorizedAccessException ex) when (timeout.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                lastException = ex;
+            }
+
+            if (!File.Exists(path))
+                return;
+            if (timeout.Elapsed >= TimeSpan.FromSeconds(2))
+                break;
+
+            await Task.Delay(25);
+        }
+
+        throw new IOException(
+            $"Failed to delete temporary database file '{path}' within the cleanup timeout.",
+            lastException);
     }
 
     private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>

@@ -118,6 +118,34 @@ var client = CSharpDbClient.Create(new CSharpDbClientOptions
 API-key mode is shared-secret authentication only. It does not provide JWT,
 RBAC, mTLS, or TLS termination.
 
+## Direct Client Lifecycle
+
+Keep a direct embedded `ICSharpDbClient` alive for the lifetime of the owning
+service or unit of work. Ordinary direct operations already use its retained
+engine handle. Client-managed transactions can now temporarily take exclusive
+ownership of that same non-hybrid handle and return it to the client after
+commit or rollback. Both handoff boundaries perform a logical-session reset so
+temporary tables and other session-local state do not leak between ordinary and
+transactional work.
+
+Reuse is deliberately conditional. A failed transaction, overlapping
+client-managed transactions, or a competing ordinary handle makes the detached
+handle ineligible for reuse and restores a physical disposal/open boundary.
+Hybrid direct databases also retain physical boundaries so configured
+persistence triggers, including snapshot export on dispose, continue to run.
+Overlapping transaction completions claim their sessions under the client
+coordination lock, but commit/rollback and physical disposal run independently;
+only the short ownership/adoption transition is serialized.
+The HTTP and gRPC clients inherit the lifecycle policy of their host; this
+embedded handle reuse is an optimization of the direct transport.
+
+This does not turn lower layers into implicit pools. Each
+`Database.OpenAsync(...)` call and each
+`IStorageEngineFactory.OpenAsync(...)` call still creates a physical engine or
+storage graph whose owner must dispose it. Applications using those APIs
+directly should retain one long-lived instance when practical rather than
+repeatedly open and close the same file.
+
 ## API-Level Sharding
 
 `CSharpDB.Client` can route requests across multiple ordinary CSharpDB database

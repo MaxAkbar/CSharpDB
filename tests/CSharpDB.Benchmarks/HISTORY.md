@@ -9,6 +9,125 @@ Performance benchmarks for the CSharpDB embedded database engine.
 
 The current main README remains promoted from the May 6, 2026 release-core run and May 31 guardrail close-out. The complete July 16-17 post-fix release-core and guardrail suites now provide current compatible-runner evidence: the core run produced all 125 rows, and the guardrail compared all 187 rows with 186 passes, one warn-only durable-flush row, and no failures. The new tables are not promoted because the runner's Windows fingerprint differs from the canonical baseline and the runner ID is unset.
 
+## July 19, 2026 Client Transaction Completion Concurrency (Diagnostic, Not Promoted)
+
+This matched before/after run isolates completion of already-active direct
+Client transactions. Each cohort used one direct Client with 2, 4, 8, or 16
+independent private `:memory:` transactions. Each transaction was prepared with
+one table and one inserted row outside the measured interval, then all commits
+or rollbacks were released from a common gate. The pre-change run used commit
+`c2c6d14`; the post-change run used the current working tree. Both runs used
+BenchmarkDotNet 0.15.8, three launches, five warmups, and 25 measured cohorts
+per launch (60–72 usable samples per row after outlier handling).
+
+```powershell
+dotnet run --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-build -- --micro --filter "*ClientTransactionCompletionConcurrencyBenchmarks*"
+```
+
+The primary signal is the median makespan for the simultaneously released
+cohort:
+
+| Completion | Sessions | `c2c6d14` median | Current median | Current / baseline |
+|---|---:|---:|---:|---:|
+| Rollback | 2 | 70.40 us | 61.40 us | 0.87x |
+| Rollback | 4 | 69.30 us | 82.80 us | 1.19x |
+| Rollback | 8 | 89.35 us | 159.55 us | 1.79x |
+| Rollback | 16 | 114.35 us | 167.10 us | 1.46x |
+| Commit | 2 | 122.20 us | 172.10 us | 1.41x |
+| Commit | 4 | 157.60 us | 286.10 us | 1.81x |
+| Commit | 8 | 239.85 us | 521.85 us | 2.18x |
+| Commit | 16 | 385.80 us | 1,129.30 us | 2.93x |
+
+### Post-Lock-Narrowing Rerun
+
+The completion path was then changed to claim sessions under the client lock,
+perform commit/rollback and physical disposal outside it, and use the lock only
+for adoption and finalization bookkeeping. The same benchmark was rerun on the
+updated working tree:
+
+| Completion | Sessions | Prior current median | Narrowed-lock median | Change |
+|---|---:|---:|---:|---:|
+| Commit | 2 | 172.10 us | 122.35 us | 1.41x faster |
+| Commit | 4 | 286.10 us | 166.55 us | 1.72x faster |
+| Commit | 8 | 521.85 us | 332.35 us | 1.57x faster |
+| Commit | 16 | 1,129.30 us | 410.80 us | 2.75x faster |
+
+The narrowed-lock results are close to the independent-session baseline at
+2–16 sessions (122.20, 157.60, 239.85, and 385.80 us respectively), confirming
+that the client-level serialization bottleneck was removed for this workload.
+The benchmark still intentionally uses independent private in-memory stores; a
+shared-file/WAL concurrency benchmark remains a separate concern.
+
+Before the lock narrowing, sequential completion remained close to the baseline
+(current medians were within about 5–23% for rollback and 3–9% for commit), while
+concurrent commit completion scaled substantially worse. This was consistent
+with `EngineTransportClient` serializing finalization through its client-wide
+lock; independent pre-change sessions could finalize concurrently. The rerun
+shows that the narrowed path restores that concurrency without changing the
+physical open/close contract.
+The benchmark does not represent shared-file/WAL writer throughput, and it does
+not imply that ordinary reads or the existing concurrent writer/reader paths
+regressed. It identifies a separate client-level head-of-line concern for
+overlapping transaction completion that should be addressed before claiming
+parallel transaction-finalization improvements.
+
+BenchmarkDotNet reports its intentional sub-millisecond iteration warning because
+each sample is one freshly prepared cohort; setup is excluded so repeating a
+cohort inside the timed method would measure setup and hide the lock behavior.
+The result is diagnostic evidence only and is not promoted to release tables or
+performance thresholds.
+
+## July 19, 2026 Embedded API Lifecycle Baseline (Diagnostic, Not Promoted)
+
+This pre-optimization baseline was captured from commit `c2c6d14` plus the
+benchmark-only `EmbeddedApiLifecycleBenchmarks` working-tree addition. Every row
+used its own prepared database with durable flushing, group commit disabled,
+immediate advisory-statistics persistence, and default pager behavior.
+
+```powershell
+dotnet run --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-build -- --micro --filter "*EmbeddedApiLifecycleBenchmarks*"
+```
+
+| Lifecycle | Mean | Median | Managed allocation |
+|---|---:|---:|---:|
+| Reused direct client — access retained `Database` | 53.29 ns | 53.23 ns | 72 B |
+| Reused direct client — physical open + release | 8.657 ms | 8.614 ms | 130,364 B |
+| New direct client — construct + physical open + dispose | 8.969 ms | 9.040 ms | 131,804 B |
+| Direct client transaction — begin + rollback | 8.991 ms | 9.016 ms | 143,212 B |
+| Direct client transaction — begin + commit | 20.756 ms | 20.871 ms | 273,400 B |
+| `Database.OpenAsync` + dispose | 8.751 ms | 8.696 ms | 129,860 B |
+| `DefaultStorageEngineFactory.OpenAsync` + pager dispose | 8.827 ms | 8.840 ms | 111,866 B |
+
+The retained-client row is a logical warm access, while the client open/release,
+new-client, `Database`, and storage rows are physical lifecycles. The transaction
+rows capture the pre-optimization client behavior, where each transaction opens
+and disposes its own `Database`. These rows are diagnostic evidence only and do
+not update the release-core scorecard or performance thresholds.
+
+### Post-Optimization Same-Session Rerun
+
+The exact seven-case command was rerun after the direct Client transaction
+ownership changes, from the same `c2c6d14` base plus the Client/Engine
+transaction-reuse working-tree changes. The machine, runtime, storage policy,
+warmup count, and iteration count were unchanged.
+
+| Lifecycle | Post-change mean | Post-change median | Managed allocation | Mean latency reduction | Median latency reduction | Allocation reduction |
+|---|---:|---:|---:|---:|---:|---:|
+| Reused direct client — access retained `Database` | 61.41 ns | 60.36 ns | 72 B | — | — | — |
+| Reused direct client — physical open + release | 9.931 ms | 9.937 ms | 130,364 B | — | — | — |
+| New direct client — construct + physical open + dispose | 8.889 ms | 8.902 ms | 131,852 B | — | — | — |
+| Direct client transaction — begin + rollback | 70.939 us | 70.429 us | 13,896 B | `99.21%` (`126.74x`) | `99.22%` (`128.02x`) | `90.30%` (`10.31x`) |
+| Direct client transaction — begin + commit | 3.448 ms | 3.452 ms | 2,595 B | `83.39%` (`6.02x`) | `83.46%` (`6.05x`) | `99.05%` (`105.36x`) |
+| `Database.OpenAsync` + dispose | 8.792 ms | 8.729 ms | 129,860 B | — | — | — |
+| `DefaultStorageEngineFactory.OpenAsync` + pager dispose | 9.155 ms | 9.087 ms | 111,866 B | — | — | — |
+
+The rollback row now measures logical transaction reuse instead of a physical
+database lifecycle. Commit retains its durable commit cost, but no longer pays
+for a second physical open/close cycle. The raw `Database` and storage controls
+remain explicit physical lifecycles at roughly 9 ms, confirming that the
+optimization is scoped to direct Client ownership rather than changing the
+low-level open contract. This comparison remains diagnostic and is not promoted.
+
 ## July 16-17, 2026 Full Post-Fix Release Close-Out (Compatible Runner, Not Promoted)
 
 This close-out ran from commit `c3f0a442dfde6e41fcb0d8e6f32ac02f316949af` after the numeric relationship optimization was accepted as the supported automatic default, the inline B-tree read regressions were fixed, checkpoint reader tracking was tightened, dependency advisories were resolved, and version metadata moved to 4.0.4.

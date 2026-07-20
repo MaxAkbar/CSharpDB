@@ -1284,6 +1284,20 @@ public sealed class Database : IAsyncDisposable
     internal bool HasTemporaryTableContextForCurrentSession =>
         _temporaryTables.HasCurrentSessionContext;
 
+    internal async ValueTask ResetReusableSessionStateAsync()
+    {
+        if (_inTransaction || _explicitTransactionFailed)
+            throw new InvalidOperationException("Cannot reuse a database handle with an active or failed transaction.");
+        if (ActiveReaderCount != 0)
+            throw new InvalidOperationException("Cannot reuse a database handle while snapshot readers are active.");
+
+        // A physical close flushes deferred catalog state and destroys every
+        // temporary-table context. Warm handle handoff must preserve that
+        // boundary before the handle changes logical owners.
+        await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
+        await _temporaryTables.ClearAsync();
+    }
+
     internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
     /// <summary>
