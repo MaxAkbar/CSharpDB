@@ -68,7 +68,6 @@
                         <a href="${prefix}architecture.html">Architecture</a>
                         <a href="${prefix}docs/api-reference.html">API Reference</a>
                         <a href="${prefix}docs/entity-framework-core.html">EF Core Provider</a>
-                        <a href="${prefix}docs/ef-core-compatibility.html">EF Core Compatibility</a>
                         <a href="${prefix}docs/performance.html">Performance Guide</a>
                         <a href="${prefix}roadmap.html">Roadmap</a>
                     </div>
@@ -80,8 +79,6 @@
                     <div class="footer-col">
                         <h4>Features</h4>
                         <a href="${prefix}docs/sql.html">SQL Reference</a>
-                        <a href="${prefix}docs/sql-compatibility.html">SQL Compatibility</a>
-                        <a href="${prefix}docs/sql-compatibility-roadmap.html">SQL Roadmap</a>
                         <a href="${prefix}docs/collections.html">Collections API</a>
                         <a href="${prefix}docs/pipelines.html">ETL Pipelines</a>
                         <a href="${prefix}docs/ecosystem.html">Tools & Ecosystem</a>

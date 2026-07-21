@@ -58,7 +58,7 @@ await using var db = await Database.OpenHybridAsync("app.db");
 
 ### SQL Support
 
-A CSharpDB SQL engine with a defined DDL, DML, JOIN, aggregate, CTE, subquery, view, trigger, and stored-procedure surface. See the [SQL compatibility matrix](https://csharpdb.com/docs/sql-compatibility.html) for feature-level status and limitations.
+A CSharpDB SQL engine with a defined DDL, DML, JOIN, aggregate, CTE, subquery, view, trigger, and stored-procedure surface. See the [SQL reference](https://csharpdb.com/docs/sql.html) for supported syntax and current limitations.
 
 **DDL**
 ```csharp

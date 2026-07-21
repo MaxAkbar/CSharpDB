@@ -167,8 +167,8 @@ Root-level helpers:
 - Domain: ASP.NET Core 10 web app with users, roles, claims, lockout, and password hashing
 - Good for: cookie + JWT bearer authentication, role-based and policy-based authorization, `PasswordHasher<T>`, and an ADO.NET (`CSharpDB.Data`) custom user/role/claim store with single-column primary keys
 - EF note: this custom-store sample is separate from the provider's bounded
-  [EF Core Identity profile](../src/CSharpDB.EntityFrameworkCore/README.md#supported-surface),
-  which qualifies Identity schema v1 with integer user and role keys.
+  [EF Core Identity configuration](../src/CSharpDB.EntityFrameworkCore/README.md#supported-surface),
+  which supports Identity schema v1 with integer user and role keys.
 
 ## Running a Sample
 
@@ -292,8 +292,8 @@ dotnet run --project samples/efcore-minimal-api/EfCoreMinimalApiSample.csproj
 
 This ASP.NET Core 10 sample registers the CSharpDB EF Core provider through
 dependency injection and exposes cancellation-aware Todo CRUD endpoints. Its
-companion `sample.http` file walks through the HTTP flow, and the compatibility
-suite verifies persistence across a host restart.
+companion `sample.http` file walks through the HTTP flow, and an integration
+test verifies persistence across a host restart.
 
 ### Option 11: Run The ASP.NET Core Identity Sample
 

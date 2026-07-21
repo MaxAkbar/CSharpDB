@@ -182,16 +182,16 @@ CSharpDB is more than an embedded SQL engine. The same database can be used thro
 
 CSharpDB includes a first-party embedded EF Core 10 provider for file-backed and private in-memory databases. It supports application-managed concurrency tokens plus one engine-generated nonnullable `byte[]` `[Timestamp]`/`IsRowVersion()` property per table. The opaque eight-byte token is a per-row revision that advances for every successful update, including raw SQL and trigger-issued updates; it is not SQL Server's database-wide counter, and standalone add/alter rowversion migrations remain unsupported. Conventional optional scalar and composite relationships support EF Core's default `ClientSetNull`: EF clears nullable FK components for tracked dependents, while a restrictive database constraint protects unloaded dependents. Database-side `DeleteBehavior.SetNull` remains unsupported.
 
-The qualified ASP.NET Core Identity profile is deliberately bounded to Identity
+The supported ASP.NET Core Identity configuration is deliberately bounded to Identity
 schema v1 with `IdentityUser<int>` and `IdentityRole<int>`. Its standard
 user, role, claim, login, token, role-membership, concurrency, transaction,
-cancellation, persistence, and cascade workflows are covered by application
-compatibility tests. The default string-key `IdentityDbContext<TUser>`,
-Identity schema versions 2 and 3, passkeys, and unlisted store APIs are not
-qualified. Explicit EF Core transactions support `SaveChanges`, commit, and
+cancellation, persistence, and cascade workflows are covered by integration
+tests. The default string-key `IdentityDbContext<TUser>`, Identity schema
+versions 2 and 3, passkeys, and unlisted store APIs are not supported. Explicit
+EF Core transactions support `SaveChanges`, commit, and
 rollback; transaction savepoints are explicitly unsupported.
 
-Its qualified LINQ surface includes ordinary filtering, ordering, pagination, projections, selected string/temporal/math translations, bounded scalar numeric aggregates, bounded direct inner and left joins, terminal direct-integer set operations, and several deliberately constrained extensions:
+Its supported LINQ surface includes ordinary filtering, ordering, pagination, projections, selected string/temporal/math translations, bounded scalar numeric aggregates, bounded direct inner and left joins, terminal direct-integer set operations, and several deliberately constrained extensions:
 
 - Ordinal string search for plain `string.Contains(string)` and for `StartsWith`, `EndsWith`, or `Contains` when the `StringComparison` argument is the literal `StringComparison.Ordinal`.
 - Bounded `EF.Functions.Like` over a direct converter-free `TEXT` property,
@@ -201,18 +201,18 @@ Its qualified LINQ surface includes ordinary filtering, ordering, pagination, pr
   whose two branches each select one compatible, converter-free
   `INTEGER`-backed `int`, `long`, or nullable equivalent from a direct mapped
   entity root with optional filtering.
-- One explicit `Join` between direct entity roots over a nonnullable `int`, `long`, or `int`/`long`-backed enum key, with qualified scalar or entity result projection and post-join filtering, ordering, and pagination.
+- One explicit `Join` between direct entity roots over a nonnullable `int`, `long`, or `int`/`long`-backed enum key, with supported scalar or entity result projection and post-join filtering, ordering, and pagination.
 - One explicit no-comparer `Queryable.LeftJoin` over the same direct-root and key surface. Unmatched inner entities and reference members materialize as `null`; project unmatched inner value-type members to nullable CLR types, such as `(int?)inner.Id`.
-- Direct single-table `GroupBy` over mapped scalar or anonymous-type/`ValueTuple` composite keys, with optional pre-filtering, qualified bare numeric aggregates, basic `HAVING`, and ordering by directly projected keys or aggregates.
+- Direct single-table `GroupBy` over mapped scalar or anonymous-type/`ValueTuple` composite keys, with optional pre-filtering, supported bare numeric aggregates, basic `HAVING`, and ordering by directly projected keys or aggregates.
 - `Where` (optional) → selection of one directly mapped nonnullable `int` column → `Distinct` → `Count`, `LongCount`, `Sum`, `Min`, or `Max`.
 
 Distinct `Average`, nullable or non-`int` columns, value-converted columns, predicates after `Distinct`, and transformed or derived distinct shapes are intentionally rejected. In particular, nullable distinct `Count`/`LongCount` cannot preserve LINQ's rule that a distinct `null` is counted once because SQL `COUNT(DISTINCT ...)` ignores it.
 
-Grouped keys may be direct mapped Boolean, integral, enum, default-`BINARY` string, or nullable values; Boolean columns must contain canonical provider-written `0`/`1` storage. Configured key converters and `double` keys are outside the qualified surface. Grouped projections may contain the direct key plus bare `Count`/`LongCount`, qualified non-distinct `Sum`/`Average`/`Min`/`Max`, and the same nonnullable-`int` distinct variants listed above. Transformed keys or results, group materialization, post-projection filters or projections, raw group transforms, nested or joined grouping, predicate aggregates, and unsupported aggregate types or value converters fail before command dispatch with provider diagnostics. See the [rowversion contract](https://csharpdb.com/docs/entity-framework-core.html#rowversion-concurrency), [EF Core provider guide](https://csharpdb.com/docs/entity-framework-core.html#linq-translation), and [generated compatibility manifest](docs/ef-core-compatibility.md) for the complete boundary.
+Grouped keys may be direct mapped Boolean, integral, enum, default-`BINARY` string, or nullable values; Boolean columns must contain canonical provider-written `0`/`1` storage. Configured key converters and `double` keys are outside the supported surface. Grouped projections may contain the direct key plus bare `Count`/`LongCount`, supported non-distinct `Sum`/`Average`/`Min`/`Max`, and the same nonnullable-`int` distinct variants listed above. Transformed keys or results, group materialization, post-projection filters or projections, raw group transforms, nested or joined grouping, predicate aggregates, and unsupported aggregate types or value converters fail before command dispatch with provider diagnostics. See the [rowversion contract](https://csharpdb.com/docs/entity-framework-core.html#rowversion-concurrency) and [EF Core provider guide](https://csharpdb.com/docs/entity-framework-core.html#linq-translation) for the complete boundary.
 
 For both direct join forms, the inner source must be unfiltered; filtered inner roots, prior ordering or row limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/transformed/composite keys, and chained joins remain explicitly unsupported. Unsupported direct inner-join shapes report `CDBEF1007`, and unsupported direct left-join shapes report `CDBEF1008`. Comparer overloads, the classic `GroupJoin`/`SelectMany`/`DefaultIfEmpty` left-join pattern, `RightJoin`, and cross-join forms remain unsupported and report the general query-operator diagnostic `CDBEF1003`.
 
-The qualified set operation must be the terminal server-side query. `Concat`
+The supported set operation must be the terminal server-side query. `Concat`
 preserves duplicates; `Union`, `Intersect`, and `Except` use distinct set
 semantics, including one `null` for nullable projections where appropriate.
 Ordering is unspecified unless applied after materialization. Entity,
@@ -314,7 +314,6 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [Architecture Guide](https://csharpdb.com/architecture.html) | Engine design deep dive |
 | [Tools & Ecosystem](https://csharpdb.com/docs/ecosystem.html) | APIs, hosts, designers, and integrations |
 | [EF Core Provider](https://csharpdb.com/docs/entity-framework-core.html) | Embedded EF Core 10 provider guide |
-| [EF Core Compatibility Matrix](https://csharpdb.com/docs/ef-core-compatibility.html) | Evidence-backed provider maturity, support tiers, exact feature contracts, and proof tests |
 | [Trusted C# Callbacks](https://csharpdb.com/docs/trusted-csharp-functions.html) | Register in-process C# functions, commands, and validation rules for SQL, forms, reports, and pipelines |
 | [Trusted C# Host Sample](samples/trusted-csharp-host/README.md) | VS Code-ready C# host project for trusted functions, commands, validation rules, and form actions |
 | [Admin UI Guide](https://csharpdb.com/docs/admin-ui.html) | Querying, schema, pipelines, forms, reports, and storage |
@@ -328,8 +327,6 @@ The native library exports 20 C functions. See the [Native Library Reference](ht
 | [VS Code Extension](vscode-extension/README.md) | Local NativeAOT-backed extension |
 | [Benchmark Suite](tests/CSharpDB.Benchmarks/README.md) | Full results and comparisons |
 | [SQL Reference](https://csharpdb.com/docs/sql.html) | Supported SQL syntax |
-| [SQL Compatibility Matrix](https://csharpdb.com/docs/sql-compatibility.html) | Feature-level availability, limitations, roadmap state, and test evidence |
-| [SQL Compatibility Roadmap](https://csharpdb.com/docs/sql-compatibility-roadmap.html) | The 11 staged SQL implementation and qualification milestones |
 | [Internals & Contributing](https://csharpdb.com/docs/internals.html) | Project structure and concurrency model |
 | [FAQ](https://csharpdb.com/docs/faq.html) | Common questions |
 | [Roadmap](https://csharpdb.com/roadmap.html) | Project goals |

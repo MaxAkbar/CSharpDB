@@ -100,9 +100,8 @@ blog.Property(item => item.MonthlyBudget)
 
 Precision 1–18 and scale 0–precision are supported for exact round trips,
 parameters, comparisons, ordering, and ordinary indexes. Excess fractional
-digits and overflow fail instead of rounding. Keep arithmetic and aggregates
-outside the server query until those shapes are listed in the compatibility
-matrix.
+digits and overflow fail instead of rounding. Arithmetic and aggregates over
+this mapping are not currently supported in server queries.
 
 ## Optimistic Concurrency and Conflict Resolution
 
@@ -137,7 +136,7 @@ SQL Server's database-wide rowversion counter.
 ## Composite Relationships
 
 Composite primary and foreign keys are supported when every key component has
-a qualified scalar mapping:
+a supported scalar mapping:
 
 ```csharp
 modelBuilder.Entity<OrderLine>()
@@ -154,9 +153,9 @@ and migration boundaries.
 
 ## Query Cookbook and Troubleshooting
 
-Start with direct entity roots and compose only operators listed in the
-generated compatibility matrix. Provider diagnostics fail before command
-dispatch:
+Start with direct entity roots and compose only operators documented in the
+[EF Core provider guide](../../src/CSharpDB.EntityFrameworkCore/README.md#linq-translation).
+Provider diagnostics fail before command dispatch:
 
 - `CDBEF1001`/`CDBEF1002` identify unsupported CLR methods and members.
 - `CDBEF1003` identifies unsupported query operators.

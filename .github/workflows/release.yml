@@ -41,17 +41,17 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-NuGetPackageClosure.ps1
 
-      - name: Guard qualified EF Core patch version
+      - name: Guard EF Core package version consistency
         shell: pwsh
         run: ./scripts/Test-EfCoreVersionConsistency.ps1
 
-      - name: Validate SQL compatibility release metadata
+      - name: Validate release tag
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          ./scripts/Test-SqlCompatibilityRelease.ps1 `
+          ./scripts/Test-ReleaseTag.ps1 `
             -Version $env:RELEASE_TAG `
             -TagCommit $env:RELEASE_COMMIT
 

@@ -32,27 +32,21 @@ The release and local workflow notes are grouped by audience:
 
 Use this path before tagging or when validating release packaging locally.
 
-1. Prepare the qualified release state before creating a tag.
+1. Prepare the release state before creating a tag.
 
-- Update `Directory.Build.props` to the release version.
-- Update the canonical `www/docs/sql-compatibility.json` metadata, including
-  `package_version`, `generated_at`, and `state`, and audit each
-  `first_supported_version`.
-- Regenerate and validate the compatibility matrix.
+- Update `src/Directory.Build.props` to the release version.
+- Update the public documentation and release notes.
+- Validate EF Core package alignment and public documentation.
 
 ```powershell
-.\scripts\Build-EfCoreCompatibility.ps1
-.\scripts\Build-EfCoreCompatibility.ps1 -Check
-.\scripts\Build-SqlCompatibilityMatrix.ps1
-.\scripts\Build-SqlCompatibilityMatrix.ps1 -Check
+.\scripts\Test-EfCoreVersionConsistency.ps1
 .\scripts\Test-Documentation.ps1
 ```
 
-Commit all implementation, proof, version, canonical manifest, generated HTML,
-roadmap, and release-note changes together. The release tag is the immutable
-record of that qualified source state.
+Commit implementation, version, documentation, roadmap, and release-note
+changes together. The release tag is the immutable record of that source state.
 
-2. Build and test the qualified commit.
+2. Build and test the release commit.
 
 ```powershell
 dotnet build CSharpDB.slnx -c Release
@@ -76,9 +70,7 @@ Get-Content artifacts\daemon-release-local\archives\SHA256SUMS.txt
 ```
 
 5. After the pull request is merged, update local `main`, create the tag at the
-   merge commit, and run release validation before pushing the tag. The tag
-   preserves the versioned compatibility contract; no duplicate release-copy
-   files are required.
+   merge commit, and run release validation before pushing the tag.
 
 ```powershell
 git switch main
@@ -88,7 +80,7 @@ $Tag = "v$Version"
 $TagCommit = (git rev-parse 'HEAD^{commit}').Trim()
 git tag $Tag $TagCommit
 
-.\scripts\Test-SqlCompatibilityRelease.ps1 `
+.\scripts\Test-ReleaseTag.ps1 `
   -Version $Tag `
   -TagCommit $TagCommit
 

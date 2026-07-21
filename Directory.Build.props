@@ -3,7 +3,7 @@
     <!-- Keep ignored/generated local outputs out of SDK-style default item globs. -->
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**;**/artifacts/**;.tmp/**;**/.tmp/**;tmp/**;**/tmp/**;temp/**;**/temp/**;publish/**;**/publish/**</DefaultItemExcludes>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <!-- Keep the provider, its qualification tests, and adoption samples on one EF Core patch. -->
+    <!-- Keep the provider, its tests, and adoption samples on one EF Core patch. -->
     <CSharpDbQualifiedEfCoreVersion>10.0.10</CSharpDbQualifiedEfCoreVersion>
   </PropertyGroup>
 </Project>

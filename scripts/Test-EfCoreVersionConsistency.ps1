@@ -8,8 +8,7 @@ Set-StrictMode -Version Latest
 
 $repositoryRootPath = [System.IO.Path]::GetFullPath($RepositoryRoot)
 $buildPropsPath = Join-Path $repositoryRootPath "Directory.Build.props"
-$manifestPath = Join-Path $repositoryRootPath "docs/ef-core-compatibility.json"
-$toolManifestPath = Join-Path $repositoryRootPath ".config/dotnet-tools.json"
+$dotnetToolsPath = Join-Path $repositoryRootPath ".config/dotnet-tools.json"
 $qualifiedVersionProperty = "CSharpDbQualifiedEfCoreVersion"
 $qualifiedVersionExpression = '$(CSharpDbQualifiedEfCoreVersion)'
 
@@ -55,12 +54,8 @@ if (-not (Test-Path -LiteralPath $buildPropsPath -PathType Leaf)) {
     throw "Shared build properties were not found at '$buildPropsPath'."
 }
 
-if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-    throw "EF Core compatibility manifest was not found at '$manifestPath'."
-}
-
-if (-not (Test-Path -LiteralPath $toolManifestPath -PathType Leaf)) {
-    throw "Repository-local dotnet tool manifest was not found at '$toolManifestPath'."
+if (-not (Test-Path -LiteralPath $dotnetToolsPath -PathType Leaf)) {
+    throw "Repository-local dotnet tool configuration was not found at '$dotnetToolsPath'."
 }
 
 [xml]$buildProps = Get-Content -LiteralPath $buildPropsPath -Raw
@@ -74,14 +69,8 @@ if ([string]::IsNullOrWhiteSpace($qualifiedVersion)) {
     throw "$qualifiedVersionProperty must not be empty."
 }
 
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$manifestVersion = [string]$manifest.efCoreVersion
-if ($manifestVersion -ne $qualifiedVersion) {
-    throw "EF Core version mismatch: Directory.Build.props declares '$qualifiedVersion', but the compatibility manifest declares '$manifestVersion'."
-}
-
-$toolManifest = Get-Content -LiteralPath $toolManifestPath -Raw | ConvertFrom-Json
-$dotnetEfVersion = [string]$toolManifest.tools.'dotnet-ef'.version
+$dotnetTools = Get-Content -LiteralPath $dotnetToolsPath -Raw | ConvertFrom-Json
+$dotnetEfVersion = [string]$dotnetTools.tools.'dotnet-ef'.version
 if ($dotnetEfVersion -ne $qualifiedVersion) {
     throw "EF Core version mismatch: Directory.Build.props declares '$qualifiedVersion', but .config/dotnet-tools.json pins dotnet-ef '$dotnetEfVersion'."
 }
@@ -151,7 +140,7 @@ foreach ($projectFile in $projectFiles) {
 }
 
 if ($qualifiedReferences.Count -eq 0) {
-    throw "No qualified EF Core package references were found under src, tests, or samples."
+    throw "No EF Core package references were found under src, tests, or samples."
 }
 
 if ($validationErrors.Count -gt 0) {
@@ -159,9 +148,8 @@ if ($validationErrors.Count -gt 0) {
 }
 
 Write-Host (
-    "EF Core version validation passed: {0} qualified package references use {1} ({2}), matching {3} and dotnet-ef." -f
+    "EF Core version validation passed: {0} package references use {1} ({2}), matching dotnet-ef." -f
     $qualifiedReferences.Count,
     $qualifiedVersionExpression,
-    $qualifiedVersion,
-    [System.IO.Path]::GetRelativePath($repositoryRootPath, $manifestPath)
+    $qualifiedVersion
 )

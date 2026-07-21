@@ -14,14 +14,21 @@ $ErrorActionPreference = 'Stop'
 
 $releaseVersion = $Version.TrimStart('v')
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$docsRoot = Join-Path $repoRoot 'www/docs'
-$manifestPath = Join-Path $docsRoot 'sql-compatibility.json'
-$schemaPath = Join-Path $docsRoot 'sql-compatibility.schema.json'
+$buildPropsPath = Join-Path $repoRoot 'src/Directory.Build.props'
 
-foreach ($requiredPath in @($manifestPath, $schemaPath)) {
-    if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
-        throw "Required SQL compatibility artifact is missing: $requiredPath"
-    }
+if (-not (Test-Path -LiteralPath $buildPropsPath -PathType Leaf)) {
+    throw "Shared package properties were not found at '$buildPropsPath'."
+}
+
+[xml]$buildProps = [IO.File]::ReadAllText($buildPropsPath)
+$versionNodes = @($buildProps.SelectNodes('/Project/PropertyGroup/Version'))
+if ($versionNodes.Count -ne 1) {
+    throw "Expected exactly one Version property in '$buildPropsPath'; found $($versionNodes.Count)."
+}
+
+$packageVersion = $versionNodes[0].InnerText.Trim()
+if ($packageVersion -cne $releaseVersion) {
+    throw "Release tag version '$releaseVersion' does not match package version '$packageVersion' in '$buildPropsPath'."
 }
 
 & git -C $repoRoot cat-file -e "$TagCommit^{commit}"
@@ -57,38 +64,6 @@ if ($workingTreeChanges.Count -gt 0) {
 }
 
 & (Join-Path $PSScriptRoot 'Test-Documentation.ps1')
-
-$manifestJson = [IO.File]::ReadAllText($manifestPath)
-if (-not ($manifestJson | Test-Json -SchemaFile $schemaPath -ErrorAction Stop)) {
-    throw "SQL compatibility manifest does not satisfy its schema: $manifestPath"
-}
-$manifest = $manifestJson | ConvertFrom-Json -Depth 100
-
-if ([string]$manifest.verified_against.package_version -cne $releaseVersion) {
-    throw "Canonical SQL compatibility version '$($manifest.verified_against.package_version)' does not match tag version '$releaseVersion'."
-}
-
-$generatedAt = [DateTimeOffset]::MinValue
-if (-not [DateTimeOffset]::TryParse(
-        [string]$manifest.verified_against.generated_at,
-        [Globalization.CultureInfo]::InvariantCulture,
-        [Globalization.DateTimeStyles]::AssumeUniversal,
-        [ref]$generatedAt)) {
-    throw 'SQL compatibility generated_at is not a valid timestamp.'
-}
-if ($generatedAt.ToUniversalTime() -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) {
-    throw 'SQL compatibility generated_at cannot be in the future.'
-}
-
-$verifiedCommit = [string]$manifest.verified_against.commit
-& git -C $repoRoot cat-file -e "$verifiedCommit^{commit}"
-if ($LASTEXITCODE -ne 0) {
-    throw "SQL compatibility verified commit '$verifiedCommit' is not available in repository history."
-}
-& git -C $repoRoot merge-base --is-ancestor $verifiedCommit $resolvedTagCommit
-if ($LASTEXITCODE -ne 0) {
-    throw "SQL compatibility verified commit '$verifiedCommit' is not an ancestor of tag commit '$resolvedTagCommit'."
-}
 
 $semanticReleaseTagPattern = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$'
 $validReleaseTags = @(
@@ -132,4 +107,4 @@ if (-not [string]::IsNullOrWhiteSpace($previousTag)) {
     }
 }
 
-Write-Host "SQL compatibility release validation passed for v$releaseVersion at $resolvedTagCommit."
+Write-Host "Release tag validation passed for v$releaseVersion at $resolvedTagCommit."

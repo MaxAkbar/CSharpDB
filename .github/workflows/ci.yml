@@ -40,15 +40,13 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-NuGetPackageClosure.ps1
 
-      - name: Guard qualified EF Core patch version
+      - name: Guard EF Core package version consistency
         shell: pwsh
         run: ./scripts/Test-EfCoreVersionConsistency.ps1
 
       - name: Validate public documentation
         shell: pwsh
-        run: |
-          ./scripts/Build-SqlCompatibilityMatrix.ps1 -Check
-          ./scripts/Test-Documentation.ps1
+        run: ./scripts/Test-Documentation.ps1
 
       - name: Restore
         run: dotnet restore CSharpDB.slnx

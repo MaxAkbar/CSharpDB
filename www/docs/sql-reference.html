@@ -95,7 +95,7 @@
             </aside>
 
             <div class="doc-content source-ref-body">
-                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/sql-reference.md</code>. For the shorter curated page, see <a href="sql.html">SQL Reference</a>. For feature-level support and limitations, see the <a href="sql-compatibility.html">SQL Compatibility Matrix</a>.</div>
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/sql-reference.md</code>. For the shorter curated page, see <a href="sql.html">SQL Reference</a>.</div>
                 <h1 id="sql-reference">SQL Reference</h1>
                 <p class="lead">Complete reference for the SQL dialect supported by CSharpDB.</p>
                 <hr/>
@@ -511,7 +511,7 @@
                 select_statement INTERSECT select_statement
                 select_statement EXCEPT    select_statement
                 </code></pre></div>
-                <p><code>UNION</code> removes duplicates while <code>UNION ALL</code> preserves duplicates and NULL rows. Compound queries support trailing <code>ORDER BY</code>, <code>LIMIT</code>, and <code>OFFSET</code> applied to the combined result. See the compatibility matrix for branch-type and transport qualifications.</p>
+                <p><code>UNION</code> removes duplicates while <code>UNION ALL</code> preserves duplicates and NULL rows. Compound queries support trailing <code>ORDER BY</code>, <code>LIMIT</code>, and <code>OFFSET</code> applied to the combined result.</p>
                 <hr/>
                 <h2 id="expressions-and-operators">Expressions and Operators</h2>
                 <h3 id="arithmetic">Arithmetic</h3>
@@ -806,7 +806,7 @@
                 <li>Stored procedures</li>
                 <li><code>ON UPDATE</code> foreign-key actions, deferred constraints, and <code>MATCH FULL</code>/<code>MATCH PARTIAL</code></li>
                 </ul>
-                <p>Current <code>DEFAULT</code> support is limited to typed literals and NULL. <code>CHECK</code> expressions must be deterministic and row-local; parameters, functions, subqueries, qualified references, and cross-column references from a column-scoped CHECK are rejected. See the <a href="sql-compatibility.html">SQL Compatibility Matrix</a> for the tested surfaces.</p>
+                <p>Current <code>DEFAULT</code> support is limited to typed literals and NULL. <code>CHECK</code> expressions must be deterministic and row-local; parameters, functions, subqueries, qualified references, and cross-column references from a column-scoped CHECK are rejected.</p>
             </div>
         </div>
     </main>

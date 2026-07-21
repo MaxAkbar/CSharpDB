@@ -9,10 +9,6 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "README.md"
-      - "docs/ef-core-compatibility.json"
-      - "docs/ef-core-compatibility.schema.json"
-      - "scripts/Build-EfCoreCompatibility.ps1"
-      - "scripts/Build-SqlCompatibilityMatrix.ps1"
       - "scripts/Test-Documentation.ps1"
       - "www/**"
   workflow_dispatch:
@@ -40,9 +36,7 @@ jobs:
 
       - name: Validate public documentation
         shell: pwsh
-        run: |
-          ./scripts/Build-SqlCompatibilityMatrix.ps1 -Check
-          ./scripts/Test-Documentation.ps1
+        run: ./scripts/Test-Documentation.ps1
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

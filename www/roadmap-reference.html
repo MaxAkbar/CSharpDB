@@ -62,9 +62,9 @@
             </aside>
 
             <div class="doc-content source-ref-body">
-                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/roadmap.md</code>. For the shorter curated page, see <a href="roadmap.html">Roadmap</a>. Current SQL availability is tracked independently in the <a href="docs/sql-compatibility.html">SQL Compatibility Matrix</a>.</div>
+                <div class="callout callout-info"><strong>Source reference.</strong> This page preserves the original long-form markdown content that previously lived at <code>docs/roadmap.md</code>. For the shorter curated page, see <a href="roadmap.html">Roadmap</a>. Current SQL behavior and limitations are documented in the <a href="docs/sql.html">SQL Reference</a>.</div>
                 <h1 id="csharpdb-roadmap">CSharpDB Roadmap</h1>
-                <p class="lead">This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier; current SQL behavior is qualified independently in the compatibility matrix.</p>
+                <p class="lead">This document outlines the planned direction for CSharpDB, organized by timeframe and priority. Items are roughly ordered by expected impact within each tier; current SQL behavior is documented independently in the SQL Reference.</p>
                 <hr/>
                 <h2 id="near-term">Near-Term</h2>
                 <p>Recently completed improvements to query performance, storage/runtime behavior, maintenance workflows, and developer ergonomics.</p>
@@ -212,8 +212,8 @@
                 </thead>
                 <tbody>
                 <tr>
-                <td><strong>SQL compatibility program</strong></td>
-                <td>The public dialect contract and proof-backed compatibility matrix are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys, Tier-1 windows, transactional shadow-root rewrites including exact INTEGER/REAL and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers additional referential actions, nonnumeric and indexed-numeric rewrites, broader physical-rekey ALTER operations, deeper generated-SQL qualification, normalized metadata, physical explain/profile output, and release qualification. See the <a href="docs/sql-compatibility-roadmap.html">implementation roadmap</a>.</td>
+                <td><strong>SQL feature coverage</strong></td>
+                <td>The public <a href="docs/sql.html">SQL Reference</a> and automated regression coverage are in place. Core development slices cover quoted identifiers, SQL three-valued logic, <code>UNION ALL</code>, literal <code>DEFAULT</code>/<code>CHECK</code>, logical composite keys, standalone primary-key add/drop with bounded populated single-INTEGER rekeying, table-level/composite foreign keys, Tier-1 windows, transactional shadow-root rewrites including exact INTEGER/REAL and indexed TEXT-collation ALTER COLUMN operations, constraint metadata transport, EF-generated defaults/checks/composite keys/named relationships/column rewrites, richer ADO.NET metadata, and a central function catalog. The remaining staged work covers additional referential actions, nonnumeric and indexed-numeric rewrites, broader physical-rekey ALTER operations, deeper generated-SQL testing, normalized metadata, physical explain/profile output, and release validation.</td>
                 <td>In Progress</td>
                 </tr>
                 <tr>
@@ -478,11 +478,11 @@
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td><code>UNION</code>, <code>UNION ALL</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are implemented in the core engine; feature-specific ADO.NET, REST, gRPC, and EF qualification is still being expanded, and <code>INTERSECT ALL</code>/<code>EXCEPT ALL</code> are unsupported</td>
+                <td><code>UNION</code>, <code>UNION ALL</code>, <code>INTERSECT</code>, and <code>EXCEPT</code> are implemented in the core engine; feature-specific ADO.NET, REST, gRPC, and EF integration coverage is still being expanded, and <code>INTERSECT ALL</code>/<code>EXCEPT ALL</code> are unsupported</td>
                 </tr>
                 <tr>
                 <td><strong>Query</strong></td>
-                <td>Tier-1 windows have parser, logical-phase, peer/default-frame, prepared execution, rejection, and cancellation coverage, but remain a bounded in-memory development preview. Advanced functions, explicit frames, incompatible window groups, and spill-backed large partitions are not yet qualified</td>
+                <td>Tier-1 windows have parser, logical-phase, peer/default-frame, prepared execution, rejection, and cancellation coverage, but remain a bounded in-memory development preview. Advanced functions, explicit frames, incompatible window groups, and spill-backed large partitions are unsupported</td>
                 </tr>
                 <tr>
                 <td><strong>Schema</strong></td>
