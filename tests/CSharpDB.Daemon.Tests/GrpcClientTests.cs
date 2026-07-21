@@ -584,7 +584,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
             string masterDbPath = Path.Combine(directory, "master.db");
             await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
 
-            using (var factory = new TestDaemonFactory(masterDbPath))
+            await using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -654,7 +654,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Single(pending.History);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
+            await using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(reloadedFactory);
                 await using var grpcAdmin = CreateGrpcShardAdmin(grpcTransportClient);
@@ -706,7 +706,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
             ];
             await SeedMasterCatalogAsync(masterDbPath, seedOptions);
 
-            using (var factory = new TestDaemonFactory(masterDbPath))
+            await using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -748,7 +748,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal(3, activated.PendingMapVersion);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
+            await using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(reloadedFactory);
                 await using var grpcDirectory = CreateGrpcShardDirectory(grpcTransportClient);
@@ -796,7 +796,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
             string masterDbPath = Path.Combine(directory, "master.db");
             await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
 
-            using (var factory = new TestDaemonFactory(masterDbPath))
+            await using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -892,7 +892,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal("s1", grpcHistory.DestinationShardId);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
+            await using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var httpTransportClient = reloadedFactory.CreateClient(new WebApplicationFactoryClientOptions
                 {
@@ -939,7 +939,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
             string masterDbPath = Path.Combine(directory, "master.db");
             await SeedMasterCatalogAsync(masterDbPath, CreateSeedShardingOptions(directory));
 
-            using (var factory = new TestDaemonFactory(masterDbPath))
+            await using (var factory = new TestDaemonFactory(masterDbPath))
             {
                 using var grpcTransportClient = CreateGrpcHttpClient(factory);
                 using var httpTransportClient = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -1025,7 +1025,7 @@ public sealed class GrpcClientTests : IAsyncLifetime
                 Assert.Equal("bucket-range:[0,1)", history.RouteKey);
             }
 
-            using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
+            await using (var reloadedFactory = new TestDaemonFactory(masterDbPath))
             {
                 using var httpTransportClient = reloadedFactory.CreateClient(new WebApplicationFactoryClientOptions
                 {
