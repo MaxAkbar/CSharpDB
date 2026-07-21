@@ -53,10 +53,14 @@ public sealed class CSharpDbRelationalDatabaseCreator : RelationalDatabaseCreato
         cancellationToken.ThrowIfCancellationRequested();
 
         // A logically closed pooled connection can still own the embedded database
-        // and its WAL. Close this context's logical connection first, then retire
-        // the matching warm pool before removing either file.
+        // and its WAL. Close this context's logical connection first, then reserve
+        // exclusive ADO.NET ownership while retiring idle pools and deleting both files.
         await Dependencies.Connection.CloseAsync();
-        await CSharpDbConnection.ClearPoolAsync(GetConnectionString());
+
+        await using IAsyncDisposable deletionReservation =
+            await CSharpDbConnection.AcquireFileDeletionReservationForPathAsync(
+                filePath,
+                cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
 

@@ -14,6 +14,8 @@ internal static class CSharpDbConnectionPoolRegistry
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private static readonly Dictionary<string, Task> s_retiringPools = new(s_pathComparer);
     private static readonly Dictionary<string, int> s_directLeaseCounts = new(s_pathComparer);
+    private static readonly Dictionary<string, FileDeletionReservation> s_fileDeletionReservations =
+        new(s_pathComparer);
 
     internal static async ValueTask<PooledDatabaseSession> OpenPooledSessionAsync(
         PoolKey key,
@@ -67,6 +69,8 @@ internal static class CSharpDbConnectionPoolRegistry
             await s_gate.WaitAsync(cancellationToken);
             try
             {
+                ThrowIfFileDeletionReserved(key.DataSource);
+
                 if (s_directLeaseCounts.TryGetValue(key.DataSource, out int directLeaseCount) &&
                     directLeaseCount > 0)
                 {
@@ -254,6 +258,76 @@ internal static class CSharpDbConnectionPoolRegistry
         ThrowDisableErrors(errors);
     }
 
+    internal static async ValueTask<IAsyncDisposable> AcquireFileDeletionReservationAsync(
+        string dataSource,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataSource);
+        var reservation = new FileDeletionReservation(dataSource);
+
+        await s_gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (s_fileDeletionReservations.ContainsKey(dataSource))
+            {
+                throw new InvalidOperationException(
+                    "The embedded database for the same data source is already being deleted.");
+            }
+
+            if (s_directLeaseCounts.TryGetValue(dataSource, out int directLeaseCount) &&
+                directLeaseCount > 0)
+            {
+                throw CreateActiveConnectionsException();
+            }
+
+            if (s_retiringPools.TryGetValue(dataSource, out Task? retiringPool))
+            {
+                if (!retiringPool.IsCompleted)
+                    throw CreateActiveConnectionsException();
+
+                await retiringPool;
+                s_retiringPools.Remove(dataSource);
+            }
+
+            KeyValuePair<PoolKey, CSharpDbConnectionPool>[] matches = s_pools
+                .Where(pair => s_pathComparer.Equals(pair.Key.DataSource, dataSource))
+                .ToArray();
+
+            // Avoid retiring idle pool variants when another matching variant is
+            // already known to have a checked-out session.
+            if (matches.Any(pair => pair.Value.ActiveSessionCount > 0))
+                throw CreateActiveConnectionsException();
+
+            foreach (KeyValuePair<PoolKey, CSharpDbConnectionPool> pair in matches)
+            {
+                bool retired;
+                try
+                {
+                    retired = await pair.Value.TryDisableIfIdleImmediatelyAsync();
+                }
+                catch
+                {
+                    s_pools.TryRemove(pair);
+                    RegisterRetirement(pair.Key.DataSource, pair.Value.Retirement);
+                    throw;
+                }
+
+                // A checkout or physical open won the pool gate after the preflight.
+                if (!retired)
+                    throw CreateActiveConnectionsException();
+
+                s_pools.TryRemove(pair);
+            }
+
+            s_fileDeletionReservations.Add(dataSource, reservation);
+            return reservation;
+        }
+        finally
+        {
+            s_gate.Release();
+        }
+    }
+
     internal static int GetPoolCountForTest() => s_pools.Count;
 
     internal static int GetIdleCountForTest(PoolKey key)
@@ -270,6 +344,8 @@ internal static class CSharpDbConnectionPoolRegistry
         await s_gate.WaitAsync(cancellationToken);
         try
         {
+            ThrowIfFileDeletionReserved(dataSource);
+
             if (s_retiringPools.TryGetValue(dataSource, out Task? retiring))
             {
                 if (!retiring.IsCompleted)
@@ -375,6 +451,38 @@ internal static class CSharpDbConnectionPoolRegistry
         }
     }
 
+    private static InvalidOperationException CreateActiveConnectionsException()
+        => new(
+            "Cannot delete the embedded database while connections for the same data source are open.");
+
+    private static void ThrowIfFileDeletionReserved(string dataSource)
+    {
+        if (s_fileDeletionReservations.ContainsKey(dataSource))
+        {
+            throw new InvalidOperationException(
+                "Cannot open an embedded connection while the database for the same data source is being deleted.");
+        }
+    }
+
+    private static async ValueTask ReleaseFileDeletionReservationAsync(
+        string dataSource,
+        FileDeletionReservation reservation)
+    {
+        await s_gate.WaitAsync();
+        try
+        {
+            if (s_fileDeletionReservations.TryGetValue(dataSource, out FileDeletionReservation? current) &&
+                ReferenceEquals(current, reservation))
+            {
+                s_fileDeletionReservations.Remove(dataSource);
+            }
+        }
+        finally
+        {
+            s_gate.Release();
+        }
+    }
+
     private static void RegisterRetirement(string dataSource, Task retirement)
     {
         if (retirement.IsCompletedSuccessfully)
@@ -384,6 +492,19 @@ internal static class CSharpDbConnectionPoolRegistry
             s_retiringPools[dataSource] = Task.WhenAll(existing, retirement);
         else
             s_retiringPools.Add(dataSource, retirement);
+    }
+
+    private sealed class FileDeletionReservation(string dataSource) : IAsyncDisposable
+    {
+        private string? _dataSource = dataSource;
+
+        public ValueTask DisposeAsync()
+        {
+            string? releasedDataSource = Interlocked.Exchange(ref _dataSource, null);
+            return releasedDataSource is null
+                ? ValueTask.CompletedTask
+                : ReleaseFileDeletionReservationAsync(releasedDataSource, this);
+        }
     }
 }
 
@@ -737,6 +858,40 @@ internal sealed class CSharpDbConnectionPool
         if (startRetirement)
             await DisposeRetiredDatabaseAsync(databaseToDispose);
         else
+            await retirementToAwait;
+
+        return true;
+    }
+
+    internal async ValueTask<bool> TryDisableIfIdleImmediatelyAsync()
+    {
+        Database? databaseToDispose = null;
+        bool startRetirement = false;
+        Task? retirementToAwait = null;
+
+        // Deletion must not wait behind a checkout or a physical open. Whichever
+        // operation obtains the pool gate first owns the path for this attempt.
+        if (!_gate.Wait(0))
+            return false;
+
+        try
+        {
+            if (ActiveSessionCount > 0 || (_disabled && !Retirement.IsCompleted))
+                return false;
+
+            _disabled = true;
+            startRetirement = TryStartRetirement(out databaseToDispose);
+            if (!startRetirement)
+                retirementToAwait = Retirement;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        if (startRetirement)
+            await DisposeRetiredDatabaseAsync(databaseToDispose);
+        else if (retirementToAwait is not null)
             await retirementToAwait;
 
         return true;

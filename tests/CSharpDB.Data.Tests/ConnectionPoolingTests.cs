@@ -841,6 +841,99 @@ public sealed class ConnectionPoolingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task FileDeletionReservation_RejectsPooledAndNonPooledOpensUntilReleased()
+    {
+        string pooledCs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+        string nonPooledCs = $"Data Source={_dbPath};Pooling=false";
+
+        await using (var warm = new CSharpDbConnection(pooledCs))
+        {
+            await warm.OpenAsync(Ct);
+            await ExecuteNonQueryAsync(
+                warm,
+                "CREATE TABLE deletion_reservation (id INTEGER PRIMARY KEY);");
+            await ExecuteNonQueryAsync(warm, "INSERT INTO deletion_reservation VALUES (1);");
+            await warm.CloseAsync();
+        }
+
+        Assert.Equal(1, CSharpDbConnection.GetIdlePoolSizeForTest(pooledCs));
+
+        IAsyncDisposable reservation =
+            await CSharpDbConnection.AcquireFileDeletionReservationForPathAsync(_dbPath, Ct);
+
+        try
+        {
+            Assert.Equal(0, CSharpDbConnection.GetIdlePoolSizeForTest(pooledCs));
+            Assert.Equal(0, CSharpDbConnection.GetPoolCountForTest());
+
+            await using var pooled = new CSharpDbConnection(pooledCs);
+            InvalidOperationException pooledError = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => pooled.OpenAsync(Ct));
+            Assert.Contains("being deleted", pooledError.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(System.Data.ConnectionState.Closed, pooled.State);
+
+            await using var nonPooled = new CSharpDbConnection(nonPooledCs);
+            InvalidOperationException nonPooledError = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => nonPooled.OpenAsync(Ct));
+            Assert.Contains("being deleted", nonPooledError.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(System.Data.ConnectionState.Closed, nonPooled.State);
+        }
+        finally
+        {
+            await reservation.DisposeAsync();
+        }
+
+        await using (var pooled = new CSharpDbConnection(pooledCs))
+        {
+            await pooled.OpenAsync(Ct);
+            Assert.Equal(System.Data.ConnectionState.Open, pooled.State);
+            Assert.Equal(
+                1L,
+                await ExecuteScalarAsync(pooled, "SELECT COUNT(*) FROM deletion_reservation;"));
+            await pooled.CloseAsync();
+        }
+
+        await using var reopenedNonPooled = new CSharpDbConnection(nonPooledCs);
+        await reopenedNonPooled.OpenAsync(Ct);
+        Assert.Equal(System.Data.ConnectionState.Open, reopenedNonPooled.State);
+    }
+
+    [Fact]
+    public async Task FileDeletionReservation_RejectsWhilePooledPhysicalOpenIsInProgress()
+    {
+        string pooledCs = $"Data Source={_dbPath};Pooling=true;Max Pool Size=1";
+        var factory = new BlockingOpenStorageEngineFactory();
+        var options = new DatabaseOptions
+        {
+            StorageEngineFactory = factory,
+        };
+
+        await using var connection = new CSharpDbConnection(pooledCs, options);
+        Task open = connection.OpenAsync(Ct);
+        await factory.OpenStarted.WaitAsync(TimeSpan.FromSeconds(2), Ct);
+
+        try
+        {
+            InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => CSharpDbConnection
+                    .AcquireFileDeletionReservationForPathAsync(_dbPath, Ct)
+                    .AsTask());
+            Assert.Contains(
+                "connections for the same data source",
+                error.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            factory.AllowOpen();
+        }
+
+        await open.WaitAsync(TimeSpan.FromSeconds(2), Ct);
+        Assert.Equal(System.Data.ConnectionState.Open, connection.State);
+        await connection.CloseAsync();
+    }
+
+    [Fact]
     public void ConnectionStringBuilder_ParsesPoolingOptions()
     {
         var csb = new CSharpDbConnectionStringBuilder("Data Source=my.db;Pooling=true;Max Pool Size=7");

@@ -257,6 +257,18 @@ public sealed class CSharpDbConnection : DbConnection
         }
     }
 
+    internal static ValueTask<IAsyncDisposable> AcquireFileDeletionReservationForPathAsync(
+        string filePath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            throw new InvalidOperationException("A file data source is required for database deletion.");
+
+        return CSharpDbConnectionPoolRegistry.AcquireFileDeletionReservationAsync(
+            NormalizeDataSourcePath(filePath),
+            cancellationToken);
+    }
+
     public static void ClearAllPools()
         => ClearAllPoolsAsync().GetAwaiter().GetResult();
 

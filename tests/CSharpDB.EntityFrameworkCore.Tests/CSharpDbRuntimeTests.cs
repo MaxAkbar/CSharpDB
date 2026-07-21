@@ -183,6 +183,134 @@ public sealed class CSharpDbRuntimeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EnsureDeleted_ActivePooledContext_ThrowsAndPreservesDatabaseUntilClosed()
+    {
+        string dbPath = GetDbPath("ensure-deleted-active-pool");
+        string connectionString = $"Data Source={dbPath}";
+
+        await using var holder = new ProviderRuntimeContext(connectionString);
+        Assert.True(await holder.Database.EnsureCreatedAsync(Ct));
+        holder.Widgets.Add(new ManualWidget
+        {
+            Id = 1,
+            Name = "retained",
+        });
+        await holder.SaveChangesAsync(Ct);
+        await holder.Database.OpenConnectionAsync(Ct);
+
+        Assert.True(File.Exists(dbPath));
+        Assert.True(File.Exists(dbPath + ".wal"));
+
+        await using var deleter = new ProviderRuntimeContext(connectionString);
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => deleter.Database.EnsureDeletedAsync(Ct));
+
+        Assert.Contains(
+            "connections for the same data source",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(dbPath));
+        Assert.True(File.Exists(dbPath + ".wal"));
+        Assert.Equal(
+            "retained",
+            await holder.Widgets
+                .Where(widget => widget.Id == 1)
+                .Select(widget => widget.Name)
+                .SingleAsync(Ct));
+
+        await holder.Database.CloseConnectionAsync();
+
+        Assert.True(await deleter.Database.EnsureDeletedAsync(Ct));
+        Assert.False(File.Exists(dbPath));
+        Assert.False(File.Exists(dbPath + ".wal"));
+    }
+
+    [Fact]
+    public async Task EnsureDeleted_ClearedPoolWithActiveContext_ThrowsUntilRetirementCompletes()
+    {
+        string dbPath = GetDbPath("ensure-deleted-retiring-pool");
+        string connectionString = $"Data Source={dbPath}";
+
+        await using var holder = new ProviderRuntimeContext(connectionString);
+        Assert.True(await holder.Database.EnsureCreatedAsync(Ct));
+        holder.Widgets.Add(new ManualWidget
+        {
+            Id = 1,
+            Name = "retiring",
+        });
+        await holder.SaveChangesAsync(Ct);
+        await holder.Database.OpenConnectionAsync(Ct);
+
+        await CSharpDbConnection.ClearPoolAsync(connectionString);
+
+        await using var deleter = new ProviderRuntimeContext(connectionString);
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => deleter.Database.EnsureDeletedAsync(Ct));
+
+        Assert.Contains(
+            "connections for the same data source",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(dbPath));
+        Assert.True(File.Exists(dbPath + ".wal"));
+        Assert.Equal(
+            "retiring",
+            await holder.Widgets
+                .Where(widget => widget.Id == 1)
+                .Select(widget => widget.Name)
+                .SingleAsync(Ct));
+
+        await holder.Database.CloseConnectionAsync();
+
+        Assert.True(await deleter.Database.EnsureDeletedAsync(Ct));
+        Assert.False(File.Exists(dbPath));
+        Assert.False(File.Exists(dbPath + ".wal"));
+    }
+
+    [Fact]
+    public async Task EnsureDeleted_ActiveNonPooledContext_ThrowsAndPreservesDatabaseUntilClosed()
+    {
+        string dbPath = GetDbPath("ensure-deleted-active-direct");
+        string connectionString = $"Data Source={dbPath};Pooling=false";
+
+        await using var holder = new ProviderRuntimeContext(connectionString);
+        Assert.True(await holder.Database.EnsureCreatedAsync(Ct));
+        await holder.Database.OpenConnectionAsync(Ct);
+        holder.Widgets.Add(new ManualWidget
+        {
+            Id = 1,
+            Name = "retained",
+        });
+        await holder.SaveChangesAsync(Ct);
+
+        Assert.True(File.Exists(dbPath));
+        Assert.True(File.Exists(dbPath + ".wal"));
+
+        await using var deleter = new ProviderRuntimeContext(connectionString);
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => deleter.Database.EnsureDeletedAsync(Ct));
+
+        Assert.Contains(
+            "connections for the same data source",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(dbPath));
+        Assert.True(File.Exists(dbPath + ".wal"));
+        Assert.Equal(
+            "retained",
+            await holder.Widgets
+                .Where(widget => widget.Id == 1)
+                .Select(widget => widget.Name)
+                .SingleAsync(Ct));
+
+        await holder.Database.CloseConnectionAsync();
+
+        Assert.True(await deleter.Database.EnsureDeletedAsync(Ct));
+        Assert.False(File.Exists(dbPath));
+        Assert.False(File.Exists(dbPath + ".wal"));
+    }
+
+    [Fact]
     public async Task Queries_IncludePaginationAndContainsOverConstantsAndParameters_Succeed()
     {
         string dbPath = GetDbPath("queries");
