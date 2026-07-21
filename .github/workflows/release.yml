@@ -452,9 +452,65 @@ jobs:
             artifacts/daemon-release/archives/*.tar.gz
           if-no-files-found: error
 
+  admin-desktop-archive:
+    name: Admin Desktop Archive (win-x64)
+    needs: build-and-test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Publish Admin desktop archive
+        shell: pwsh
+        run: ./scripts/Publish-CSharpDbAdminRelease.ps1 -Runtime win-x64 -OutputRoot artifacts/admin-release
+
+      - name: Verify Admin desktop archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $archiveName = "csharpdb-admin-desktop-v$version-win-x64.zip"
+          $archivePath = Join-Path 'artifacts/admin-release/archives' $archiveName
+          $checksumPath = 'artifacts/admin-release/archives/ADMIN-SHA256SUMS.txt'
+
+          if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+            throw "Expected Admin desktop archive was not created: $archivePath"
+          }
+
+          if (-not (Select-String -Path $checksumPath -Pattern ([regex]::Escape($archiveName)) -Quiet)) {
+            throw "Admin checksum file does not contain $archiveName."
+          }
+
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'csharpdb-admin-desktop-extract'
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
+
+          foreach ($requiredPath in @(
+              (Join-Path $extractRoot 'CSharpDB.Admin.Desktop.exe'),
+              (Join-Path $extractRoot 'admin/CSharpDB.Admin.exe'),
+              (Join-Path $extractRoot 'admin/wwwroot/help/index.html'))) {
+            if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+              throw "Required Admin desktop release file is missing: $requiredPath"
+            }
+          }
+
+      - name: Upload Admin desktop archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-desktop-win-x64
+          path: |
+            artifacts/admin-release/archives/*.zip
+            artifacts/admin-release/archives/ADMIN-SHA256SUMS.txt
+          if-no-files-found: error
+
   create-release:
     name: Create GitHub Release
-    needs: [publish-nuget, native-aot, daemon-archives]
+    needs: [publish-nuget, native-aot, daemon-archives, admin-desktop-archive]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -482,6 +538,12 @@ jobs:
           pattern: daemon-*
           path: artifacts/daemon
           merge-multiple: true
+
+      - name: Download Admin desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-desktop-win-x64
+          path: artifacts/admin-desktop
 
       - name: Generate daemon checksums
         shell: bash
@@ -525,6 +587,7 @@ jobs:
             artifacts/nuget/*.nupkg
             artifacts/native/*
             artifacts/daemon/*
+            artifacts/admin-desktop/*
 
       - name: Create release (auto-generated notes)
         if: steps.notes.outputs.has_notes == 'false'
@@ -536,3 +599,4 @@ jobs:
             artifacts/nuget/*.nupkg
             artifacts/native/*
             artifacts/daemon/*
+            artifacts/admin-desktop/*

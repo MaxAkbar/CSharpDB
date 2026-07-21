@@ -285,6 +285,23 @@ The package identity starts as `MaxAkbar.CSharpDBStudio` with publisher
 `CN=MaxAkbar`; associate the package with Partner Center before submission so
 the final Store identity and publisher are applied.
 
+### `Publish-CSharpDbAdminRelease.ps1`
+
+Use this to create the portable Windows Admin desktop archive published with a
+GitHub Release. It publishes `CSharpDB.Admin.Desktop.exe` and the self-contained
+`CSharpDB.Admin` host, places the host under the shell's required `admin/`
+folder, and creates:
+
+`csharpdb-admin-desktop-v{version}-win-x64.zip`
+
+The archive can be extracted anywhere and launched with
+`CSharpDB.Admin.Desktop.exe`. A matching entry is written to
+`ADMIN-SHA256SUMS.txt`.
+
+```powershell
+.\scripts\Publish-CSharpDbAdminRelease.ps1 -Version 4.3.0
+```
+
 ## Daemon Service Installers
 
 Release archives include OS service assets under `service/`:
