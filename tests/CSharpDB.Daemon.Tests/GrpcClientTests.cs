@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Paging;
 
@@ -1738,6 +1739,10 @@ public sealed class GrpcClientTests : IAsyncLifetime
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            builder.ConfigureServices(services =>
+            {
+                services.AddHostedService<TestDaemonClientShutdown>();
+            });
             builder.ConfigureAppConfiguration((_, config) =>
             {
                 var values = new Dictionary<string, string?>
@@ -1753,6 +1758,19 @@ public sealed class GrpcClientTests : IAsyncLifetime
 
                 config.AddInMemoryCollection(values);
             });
+        }
+    }
+
+    private sealed class TestDaemonClientShutdown(ICSharpDbClient client) : IHostedService
+    {
+        private int _stopped;
+
+        public Task StartAsync(CancellationToken _) => Task.CompletedTask;
+
+        public async Task StopAsync(CancellationToken _)
+        {
+            if (Interlocked.Exchange(ref _stopped, 1) == 0)
+                await client.DisposeAsync().ConfigureAwait(false);
         }
     }
 
