@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "dialect": "CSharpDB SQL",
   "title": "CSharpDB SQL Compatibility",
-  "description": "Feature-level compatibility for the CSharpDB SQL dialect. This development snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.",
+  "description": "Feature-level compatibility for the CSharpDB SQL dialect. This development assessment separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.",
   "verified_against": {
     "commit": "d2cad70e202b1792a4fc313e5b5576849104a3ad",
     "package_version": "4.2.0",
@@ -2751,7 +2751,7 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "partial", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["Dependency repair is implemented for current indexes, keys, checks, and foreign keys. Stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release snapshot."],
+      "limitations": ["Dependency repair is implemented for current indexes, keys, checks, and foreign keys. Stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release qualification."],
       "deviations": [],
       "documentation_anchor": "sql-reference.html#alter-table",
       "positive_proof_ids": ["parser.alter.rename_column", "engine.alter.rename_column", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session", "ef.migration.basic"],

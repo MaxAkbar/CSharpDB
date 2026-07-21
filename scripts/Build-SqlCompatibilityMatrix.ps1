@@ -93,7 +93,7 @@ $facetLabels = @{
 $features = @($manifest.features | Sort-Object category, feature, id)
 $categories = @($features | ForEach-Object { $_.category } | Sort-Object -Unique)
 $state = [string]$manifest.verified_against.state
-$stateLabel = if ($state -eq 'released') { 'Released snapshot' } else { 'Development preview' }
+$stateLabel = if ($state -eq 'released') { 'Released' } else { 'Development preview' }
 $shortCommit = ([string]$manifest.verified_against.commit).Substring(0, 7)
 
 $builder = [Text.StringBuilder]::new(131072)
@@ -157,15 +157,15 @@ Add-HtmlLine $builder "                <h1>$(ConvertTo-HtmlText $manifest.title)
 Add-HtmlLine $builder "                <p class=`"lead`">$(ConvertTo-HtmlText $manifest.description)</p>"
 if ($state -eq 'development') {
     Add-HtmlLine $builder '                <div class="callout callout-warning">'
-    Add-HtmlLine $builder '                    <strong>Development preview.</strong> This page describes the audited development snapshot below, not the latest released package. Released snapshots remain available in the per-version archives.'
+    Add-HtmlLine $builder '                    <strong>Development preview.</strong> This page describes the current audited development state. Each release tag preserves the corresponding compatibility contract.'
     Add-HtmlLine $builder '                </div>'
 }
 else {
-    Add-HtmlLine $builder '                <div class="callout callout-info"><strong>Released snapshot.</strong> This matrix describes the package version shown below.</div>'
+    Add-HtmlLine $builder '                <div class="callout callout-info"><strong>Released compatibility.</strong> This matrix describes the package version shown below.</div>'
 }
 Add-HtmlLine $builder '                <p>Availability and roadmap intent are independent. A planned row may still be unavailable today. Partial rows state their exact limitations. No aggregate compatibility percentage is published.</p>'
 Add-HtmlLine $builder '                <div class="compat-meta">'
-Add-HtmlLine $builder "                    <div><span>Snapshot</span>$(ConvertTo-HtmlText $stateLabel)</div>"
+Add-HtmlLine $builder "                    <div><span>Status</span>$(ConvertTo-HtmlText $stateLabel)</div>"
 Add-HtmlLine $builder "                    <div><span>Package</span>$(ConvertTo-HtmlText $manifest.verified_against.package_version)</div>"
 Add-HtmlLine $builder "                    <div><span>Commit</span><code>$(ConvertTo-HtmlText $shortCommit)</code></div>"
 Add-HtmlLine $builder "                    <div><span>Generated</span>$(ConvertTo-HtmlText $manifest.verified_against.generated_at)</div>"

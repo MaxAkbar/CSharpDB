@@ -55,13 +55,13 @@
         <div class="container doc-container">
             <div class="doc-content full-width">
                 <h1>CSharpDB SQL Compatibility</h1>
-                <p class="lead">Feature-level compatibility for the CSharpDB SQL dialect. This development snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.</p>
+                <p class="lead">Feature-level compatibility for the CSharpDB SQL dialect. This development assessment separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.</p>
                 <div class="callout callout-warning">
-                    <strong>Development preview.</strong> This page describes the audited development snapshot below, not the latest released package. Released snapshots remain available in the per-version archives.
+                    <strong>Development preview.</strong> This page describes the current audited development state. Each release tag preserves the corresponding compatibility contract.
                 </div>
                 <p>Availability and roadmap intent are independent. A planned row may still be unavailable today. Partial rows state their exact limitations. No aggregate compatibility percentage is published.</p>
                 <div class="compat-meta">
-                    <div><span>Snapshot</span>Development preview</div>
+                    <div><span>Status</span>Development preview</div>
                     <div><span>Package</span>4.2.0</div>
                     <div><span>Commit</span><code>d2cad70</code></div>
                     <div><span>Generated</span>07/18/2026 03:51:39</div>
@@ -393,7 +393,7 @@
                         </details>
                     <p><strong>First supported version:</strong> 4.0.4 · <a href="sql-reference.html#alter-table">Related documentation</a></p>
                 </article>
-                <article class="compat-card" id="feature-alter.rename_column" data-status="partial" data-category="alter-table" data-search="alter.rename_column alter table rename a column alter table users rename column old_name to new_name dependency repair is implemented for current indexes, keys, checks, and foreign keys. stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release snapshot. ">
+                <article class="compat-card" id="feature-alter.rename_column" data-status="partial" data-category="alter-table" data-search="alter.rename_column alter table rename a column alter table users rename column old_name to new_name dependency repair is implemented for current indexes, keys, checks, and foreign keys. stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release qualification. ">
                     <div class="compat-card-head">
                         <div>
                             <h3>Rename a column</h3>
@@ -420,7 +420,7 @@
                     </div>
                         <h4>Limitations</h4>
                         <ul class="compat-list">
-                            <li>Dependency repair is implemented for current indexes, keys, checks, and foreign keys. Stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release snapshot.</li>
+                            <li>Dependency repair is implemented for current indexes, keys, checks, and foreign keys. Stored-view, trigger, and applicable validation-rule dependencies are rejected until their definitions can be rewritten atomically; a dedicated successful-rename reopen proof is not yet linked in the 4.1.0 release qualification.</li>
                         </ul>
                         <details>
                             <summary>Automated proof ids</summary>

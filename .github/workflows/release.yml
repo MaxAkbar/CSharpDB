@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-EfCoreVersionConsistency.ps1
 
-      - name: Qualify SQL compatibility release snapshot
+      - name: Validate SQL compatibility release metadata
         shell: pwsh
         env:
           RELEASE_TAG: ${{ github.ref_name }}

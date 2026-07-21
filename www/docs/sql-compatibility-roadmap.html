@@ -50,7 +50,7 @@
                     limitations, applicable surfaces, and proof IDs of a specific feature.
                 </div>
 
-                <p><strong>CSharpDB 4.1.0 release snapshot:</strong> July 18, 2026. A milestone is complete only when its required behavior, persistence, metadata, negative cases, and applicable surface tests pass. A partial milestone can contain useful supported rows while adjacent rows remain unsupported.</p>
+                <p><strong>CSharpDB 4.1.0 release qualification:</strong> July 18, 2026. A milestone is complete only when its required behavior, persistence, metadata, negative cases, and applicable surface tests pass. A partial milestone can contain useful supported rows while adjacent rows remain unsupported.</p>
 
                 <h2 id="status">Milestone Status</h2>
                 <table class="doc-table">
@@ -122,7 +122,7 @@
                         <td>11</td>
                         <td>Compatibility release qualification</td>
                         <td><strong>In progress</strong></td>
-                        <td>Snapshot tooling and a tagged-release gate now require a clean version-aligned tag, strict SemVer progression, and a schema-valid, newly tracked immutable manifest snapshot; the gate also checks canonical proof/feature parity, verified-commit ancestry, and protects prior release snapshots from modification. Full legacy-fixture, transport/provider replay, performance-budget, rollback/upgrade, and crash-recovery qualification remain.</td>
+                        <td>A tagged-release gate requires a clean version-aligned tag, strict SemVer progression, a schema-valid canonical manifest, matching package metadata, generated documentation, and verified-commit ancestry. The Git tag itself preserves the versioned compatibility contract; no duplicate release-copy files are needed. Full legacy-fixture, transport/provider replay, performance-budget, rollback/upgrade, and crash-recovery qualification remain.</td>
                     </tr>
                     </tbody>
                 </table>
@@ -139,7 +139,7 @@
                     <li><code>UNION ALL</code> bag semantics with lazy branch concatenation, type checks, collations, outer pagination, and cancellation cleanup.</li>
                     <li>ALTER dependency preflight for stored views, triggers, and validation rules, plus rollback-only parity for both explicit transaction APIs.</li>
                     <li>Window star/mixed projections that preserve public column shape, and read-only/prepared-parameter prerequisites for future physical EXPLAIN work.</li>
-                    <li>Immutable compatibility snapshot creation and tagged-release validation scripts wired into the release workflow.</li>
+                    <li>Canonical compatibility validation and tagged-release checks wired into the release workflow.</li>
                     <li>EF Core identifier quoting plus literal-default, CHECK, zero-writable-column <code>DEFAULT VALUES</code>, composite-key/index, alternate-key, named scalar/composite relationship, exact numeric AlterColumn, and indexed TEXT collation migration support.</li>
                 </ul>
 
@@ -173,8 +173,7 @@ dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
 pwsh -File scripts\Build-SqlCompatibilityMatrix.ps1 -Check
 pwsh -File scripts\Test-Documentation.ps1
 
-# Release preparation and tag gate
-pwsh -File scripts\New-SqlCompatibilityReleaseSnapshot.ps1 -Version &lt;version&gt; -VerifiedCommit &lt;sha&gt;
+# Release tag gate
 pwsh -File scripts\Test-SqlCompatibilityRelease.ps1 -Version &lt;version&gt; -TagCommit &lt;sha&gt;</code></pre></div>
 
                 <div class="next-steps">

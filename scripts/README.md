@@ -34,7 +34,7 @@ Use this path before tagging or when validating release packaging locally.
 
 1. Prepare the qualified release state before creating a tag.
 
-- Update `src/Directory.Build.props` to the release version.
+- Update `Directory.Build.props` to the release version.
 - Update the canonical `www/docs/sql-compatibility.json` metadata, including
   `package_version`, `generated_at`, and `state`, and audit each
   `first_supported_version`.
@@ -49,8 +49,8 @@ Use this path before tagging or when validating release packaging locally.
 ```
 
 Commit all implementation, proof, version, canonical manifest, generated HTML,
-roadmap, and release-note changes together. This is the qualified commit that
-the immutable snapshot will reference.
+roadmap, and release-note changes together. The release tag is the immutable
+record of that qualified source state.
 
 2. Build and test the qualified commit.
 
@@ -59,36 +59,7 @@ dotnet build CSharpDB.slnx -c Release
 dotnet test tests\CSharpDB.Daemon.Tests\CSharpDB.Daemon.Tests.csproj -c Release
 ```
 
-3. From a clean working tree, create the immutable compatibility snapshot. Use
-   the same UTC timestamp already recorded in the canonical manifest, then
-   commit exactly the two generated snapshot files.
-
-```powershell
-$Version = '4.1.0'
-$QualifiedCommit = (git rev-parse 'HEAD^{commit}').Trim()
-$GeneratedAt = [DateTimeOffset]::Parse(
-  (Get-Content www\docs\sql-compatibility.json -Raw |
-    ConvertFrom-Json).verified_against.generated_at)
-
-.\scripts\New-SqlCompatibilityReleaseSnapshot.ps1 `
-  -Version $Version `
-  -VerifiedCommit $QualifiedCommit `
-  -GeneratedAt $GeneratedAt
-
-git add "www/docs/sql-compatibility/releases/$Version/sql-compatibility.json" `
-        "www/docs/sql-compatibility/releases/$Version/sql-compatibility.schema.json"
-git commit -m "Add SQL compatibility snapshot for $Version"
-```
-
-The snapshot embeds the qualified commit. Merge its pull request with a normal
-merge commit so that commit remains in the tagged commit's ancestry. Squash and
-rebase merges invalidate release qualification. Before merging, also confirm
-that the target branch has not introduced changes under the qualification
-paths reported by `Test-SqlCompatibilityRelease.ps1`. If it has, rebuild the
-qualified commit on the updated target and regenerate the snapshot; a normal
-merge alone does not qualify changes made after the embedded commit.
-
-4. Publish one local archive for a fast packaging check.
+3. Publish one local archive for a fast packaging check.
 
 ```powershell
 .\scripts\Publish-CSharpDbDaemonRelease.ps1 `
@@ -97,19 +68,22 @@ merge alone does not qualify changes made after the embedded commit.
   -OutputRoot artifacts\daemon-release-local
 ```
 
-5. Confirm the archive and checksum exist.
+4. Confirm the archive and checksum exist.
 
 ```powershell
 Get-ChildItem artifacts\daemon-release-local\archives
 Get-Content artifacts\daemon-release-local\archives\SHA256SUMS.txt
 ```
 
-6. After the pull request is merged, update local `main`, create the tag at the
-   merge commit, and run release qualification before pushing the tag.
+5. After the pull request is merged, update local `main`, create the tag at the
+   merge commit, and run release validation before pushing the tag. The tag
+   preserves the versioned compatibility contract; no duplicate release-copy
+   files are required.
 
 ```powershell
 git switch main
 git pull --ff-only
+$Version = '4.2.0'
 $Tag = "v$Version"
 $TagCommit = (git rev-parse 'HEAD^{commit}').Trim()
 git tag $Tag $TagCommit
