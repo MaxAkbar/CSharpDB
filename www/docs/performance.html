@@ -229,7 +229,6 @@
                             <div class="perf-label">ops/sec &mdash; hot-cache collection gets</div>
                         </div>
                     </div>
-
                     <div class="perf-do">
                         <h4>Do</h4>
                         <ul>
@@ -305,7 +304,6 @@
                             <div class="perf-label">faster &mdash; reused session vs per-query session</div>
                         </div>
                     </div>
-
                     <div class="perf-do">
                         <h4>Do</h4>
                         <ul>
@@ -1184,16 +1182,16 @@ sw.Stop();
                      ═══════════════════════════════════════════════════════════ -->
                 <div class="perf-scenario">
                     <h2 id="s11-adonet">Scenario 11: ADO.NET Apps</h2>
-                    <p>The integration scenario: existing .NET data-access code, ORMs, utilities, or apps that open and close connections frequently.</p>
+                    <p>The integration scenario: existing .NET data-access code, ORMs, utilities, or apps that open and close connections frequently. Standalone ADO.NET callers enable pooling explicitly; provider-created CSharpDB EF Core file connections enable it by default.</p>
 
                     <div class="perf-stat-grid">
                         <div class="perf-stat muted">
-                            <div class="perf-big">8.9 ms</div>
-                            <div class="perf-label">open+close &mdash; pooling OFF</div>
+                            <div class="perf-big">9.38 ms</div>
+                            <div class="perf-label">new connection &mdash; pooling OFF</div>
                         </div>
                         <div class="perf-stat">
-                            <div class="perf-big">1.9 &mu;s</div>
-                            <div class="perf-label">open+close &mdash; pooling ON</div>
+                            <div class="perf-big">0.51 &mu;s</div>
+                            <div class="perf-label">new connection &mdash; pooling ON</div>
                         </div>
                         <div class="perf-stat">
                             <div class="perf-big">239 ns</div>
@@ -1204,11 +1202,15 @@ sw.Stop();
                             <div class="perf-label">Insert &mdash; private :memory:</div>
                         </div>
                     </div>
+                    <p><small>Lifecycle figures are diagnostic, non-promoted rows from
+                    <code>AdoNetConnectionLifecycleBenchmarks</code> on July 19, 2026.
+                    Reusing one pooled CSharpDB connection object measured 0.228 &mu;s.</small></p>
 
                     <div class="perf-do">
                         <h4>Do</h4>
                         <ul>
-                            <li>Turn pooling on explicitly if you open and close connections often</li>
+                            <li>Turn pooling on explicitly for standalone ADO.NET code that opens and closes connections often; EF-created file connections already default to pooling</li>
+                            <li>Keep the pooled connection string in a reused variable so short-lived connections can share its prepared absolute-file plan</li>
                             <li>Use private <code>:memory:</code> when you do not need cross-connection sharing</li>
                             <li>Use named shared <code>:memory:name</code> only when you actually need multiple connections against the same in-process memory database</li>
                         </ul>
@@ -1225,7 +1227,7 @@ sw.Stop();
 <span class="kw">if</span> (<span class="tp">File</span>.Exists(<span class="str">"ado-app.db"</span>))
     <span class="tp">File</span>.Delete(<span class="str">"ado-app.db"</span>);
 
-<span class="cm">// --- Pooled connections: open+close drops from ~8.9ms to ~1.9us ---</span>
+<span class="cm">// --- Current matched run: physical new-connection cycle ~9.38ms; pooled ~0.51us ---</span>
 <span class="kw">var</span> pooledConnStr = <span class="str">"Data Source=ado-app.db;Pooling=true;Max Pool Size=16"</span>;
 
 <span class="kw">await using</span> (<span class="kw">var</span> conn = <span class="kw">new</span> <span class="tp">CSharpDbConnection</span>(pooledConnStr))

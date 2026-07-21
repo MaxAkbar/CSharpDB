@@ -62,6 +62,43 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
 
     internal static string ComputeSourceSchemaSignature(TableSchema schema)
     {
+        if (!schema.Columns.Any(static column => column.IsRowVersion))
+        {
+            var legacyPayload = JsonSerializer.Serialize(new
+            {
+                schema.TableName,
+                Columns = schema.Columns.Select(column => new
+                {
+                    column.Name,
+                    Type = column.Type.ToString(),
+                    column.Nullable,
+                    column.IsPrimaryKey,
+                    column.IsIdentity,
+                    column.Collation,
+                }),
+                ForeignKeys = schema.ForeignKeys.Select(foreignKey => new
+                {
+                    foreignKey.ConstraintName,
+                    foreignKey.ColumnName,
+                    ColumnNames = foreignKey.ColumnNames.Count > 0
+                        ? foreignKey.ColumnNames
+                        : [foreignKey.ColumnName],
+                    foreignKey.ReferencedTableName,
+                    foreignKey.ReferencedColumnName,
+                    ReferencedColumnNames = foreignKey.ReferencedColumnNames.Count > 0
+                        ? foreignKey.ReferencedColumnNames
+                        : [foreignKey.ReferencedColumnName],
+                    OnDelete = foreignKey.OnDelete.ToString(),
+                    foreignKey.SupportingIndexName,
+                }),
+            });
+
+            return Convert.ToHexString(
+                SHA256.HashData(
+                    Encoding.UTF8.GetBytes(
+                        legacyPayload)));
+        }
+
         var payload = JsonSerializer.Serialize(new
         {
             schema.TableName,
@@ -72,6 +109,7 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
                 column.Nullable,
                 column.IsPrimaryKey,
                 column.IsIdentity,
+                column.IsRowVersion,
                 column.Collation,
             }),
             ForeignKeys = schema.ForeignKeys.Select(foreignKey => new
@@ -130,13 +168,14 @@ public sealed class DbSchemaProvider(ICSharpDbClient dbClient) : ISchemaProvider
             column.Name,
             MapFieldType(column.Type),
             column.Nullable,
-            column.IsIdentity,
+            column.IsIdentity || column.IsRowVersion,
             ToDisplayName(column.Name),
             Metadata: new Dictionary<string, object?>
             {
                 ["dbType"] = column.Type.ToString(),
                 ["isPrimaryKey"] = column.IsPrimaryKey,
                 ["isIdentity"] = column.IsIdentity,
+                ["isRowVersion"] = column.IsRowVersion,
                 ["collation"] = column.Collation,
             });
     }

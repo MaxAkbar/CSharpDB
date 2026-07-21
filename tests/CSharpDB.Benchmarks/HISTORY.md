@@ -9,6 +9,125 @@ Performance benchmarks for the CSharpDB embedded database engine.
 
 The current main README remains promoted from the May 6, 2026 release-core run and May 31 guardrail close-out. The complete July 16-17 post-fix release-core and guardrail suites now provide current compatible-runner evidence: the core run produced all 125 rows, and the guardrail compared all 187 rows with 186 passes, one warn-only durable-flush row, and no failures. The new tables are not promoted because the runner's Windows fingerprint differs from the canonical baseline and the runner ID is unset.
 
+## July 19, 2026 Client Transaction Completion Concurrency (Diagnostic, Not Promoted)
+
+This matched before/after run isolates completion of already-active direct
+Client transactions. Each cohort used one direct Client with 2, 4, 8, or 16
+independent private `:memory:` transactions. Each transaction was prepared with
+one table and one inserted row outside the measured interval, then all commits
+or rollbacks were released from a common gate. The pre-change run used commit
+`c2c6d14`; the post-change run used the current working tree. Both runs used
+BenchmarkDotNet 0.15.8, three launches, five warmups, and 25 measured cohorts
+per launch (60–72 usable samples per row after outlier handling).
+
+```powershell
+dotnet run --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-build -- --micro --filter "*ClientTransactionCompletionConcurrencyBenchmarks*"
+```
+
+The primary signal is the median makespan for the simultaneously released
+cohort:
+
+| Completion | Sessions | `c2c6d14` median | Current median | Current / baseline |
+|---|---:|---:|---:|---:|
+| Rollback | 2 | 70.40 us | 61.40 us | 0.87x |
+| Rollback | 4 | 69.30 us | 82.80 us | 1.19x |
+| Rollback | 8 | 89.35 us | 159.55 us | 1.79x |
+| Rollback | 16 | 114.35 us | 167.10 us | 1.46x |
+| Commit | 2 | 122.20 us | 172.10 us | 1.41x |
+| Commit | 4 | 157.60 us | 286.10 us | 1.81x |
+| Commit | 8 | 239.85 us | 521.85 us | 2.18x |
+| Commit | 16 | 385.80 us | 1,129.30 us | 2.93x |
+
+### Post-Lock-Narrowing Rerun
+
+The completion path was then changed to claim sessions under the client lock,
+perform commit/rollback and physical disposal outside it, and use the lock only
+for adoption and finalization bookkeeping. The same benchmark was rerun on the
+updated working tree:
+
+| Completion | Sessions | Prior current median | Narrowed-lock median | Change |
+|---|---:|---:|---:|---:|
+| Commit | 2 | 172.10 us | 122.35 us | 1.41x faster |
+| Commit | 4 | 286.10 us | 166.55 us | 1.72x faster |
+| Commit | 8 | 521.85 us | 332.35 us | 1.57x faster |
+| Commit | 16 | 1,129.30 us | 410.80 us | 2.75x faster |
+
+The narrowed-lock results are close to the independent-session baseline at
+2–16 sessions (122.20, 157.60, 239.85, and 385.80 us respectively), confirming
+that the client-level serialization bottleneck was removed for this workload.
+The benchmark still intentionally uses independent private in-memory stores; a
+shared-file/WAL concurrency benchmark remains a separate concern.
+
+Before the lock narrowing, sequential completion remained close to the baseline
+(current medians were within about 5–23% for rollback and 3–9% for commit), while
+concurrent commit completion scaled substantially worse. This was consistent
+with `EngineTransportClient` serializing finalization through its client-wide
+lock; independent pre-change sessions could finalize concurrently. The rerun
+shows that the narrowed path restores that concurrency without changing the
+physical open/close contract.
+The benchmark does not represent shared-file/WAL writer throughput, and it does
+not imply that ordinary reads or the existing concurrent writer/reader paths
+regressed. It identifies a separate client-level head-of-line concern for
+overlapping transaction completion that should be addressed before claiming
+parallel transaction-finalization improvements.
+
+BenchmarkDotNet reports its intentional sub-millisecond iteration warning because
+each sample is one freshly prepared cohort; setup is excluded so repeating a
+cohort inside the timed method would measure setup and hide the lock behavior.
+The result is diagnostic evidence only and is not promoted to release tables or
+performance thresholds.
+
+## July 19, 2026 Embedded API Lifecycle Baseline (Diagnostic, Not Promoted)
+
+This pre-optimization baseline was captured from commit `c2c6d14` plus the
+benchmark-only `EmbeddedApiLifecycleBenchmarks` working-tree addition. Every row
+used its own prepared database with durable flushing, group commit disabled,
+immediate advisory-statistics persistence, and default pager behavior.
+
+```powershell
+dotnet run --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -c Release --no-build -- --micro --filter "*EmbeddedApiLifecycleBenchmarks*"
+```
+
+| Lifecycle | Mean | Median | Managed allocation |
+|---|---:|---:|---:|
+| Reused direct client — access retained `Database` | 53.29 ns | 53.23 ns | 72 B |
+| Reused direct client — physical open + release | 8.657 ms | 8.614 ms | 130,364 B |
+| New direct client — construct + physical open + dispose | 8.969 ms | 9.040 ms | 131,804 B |
+| Direct client transaction — begin + rollback | 8.991 ms | 9.016 ms | 143,212 B |
+| Direct client transaction — begin + commit | 20.756 ms | 20.871 ms | 273,400 B |
+| `Database.OpenAsync` + dispose | 8.751 ms | 8.696 ms | 129,860 B |
+| `DefaultStorageEngineFactory.OpenAsync` + pager dispose | 8.827 ms | 8.840 ms | 111,866 B |
+
+The retained-client row is a logical warm access, while the client open/release,
+new-client, `Database`, and storage rows are physical lifecycles. The transaction
+rows capture the pre-optimization client behavior, where each transaction opens
+and disposes its own `Database`. These rows are diagnostic evidence only and do
+not update the release-core scorecard or performance thresholds.
+
+### Post-Optimization Same-Session Rerun
+
+The exact seven-case command was rerun after the direct Client transaction
+ownership changes, from the same `c2c6d14` base plus the Client/Engine
+transaction-reuse working-tree changes. The machine, runtime, storage policy,
+warmup count, and iteration count were unchanged.
+
+| Lifecycle | Post-change mean | Post-change median | Managed allocation | Mean latency reduction | Median latency reduction | Allocation reduction |
+|---|---:|---:|---:|---:|---:|---:|
+| Reused direct client — access retained `Database` | 61.41 ns | 60.36 ns | 72 B | — | — | — |
+| Reused direct client — physical open + release | 9.931 ms | 9.937 ms | 130,364 B | — | — | — |
+| New direct client — construct + physical open + dispose | 8.889 ms | 8.902 ms | 131,852 B | — | — | — |
+| Direct client transaction — begin + rollback | 70.939 us | 70.429 us | 13,896 B | `99.21%` (`126.74x`) | `99.22%` (`128.02x`) | `90.30%` (`10.31x`) |
+| Direct client transaction — begin + commit | 3.448 ms | 3.452 ms | 2,595 B | `83.39%` (`6.02x`) | `83.46%` (`6.05x`) | `99.05%` (`105.36x`) |
+| `Database.OpenAsync` + dispose | 8.792 ms | 8.729 ms | 129,860 B | — | — | — |
+| `DefaultStorageEngineFactory.OpenAsync` + pager dispose | 9.155 ms | 9.087 ms | 111,866 B | — | — | — |
+
+The rollback row now measures logical transaction reuse instead of a physical
+database lifecycle. Commit retains its durable commit cost, but no longer pays
+for a second physical open/close cycle. The raw `Database` and storage controls
+remain explicit physical lifecycles at roughly 9 ms, confirming that the
+optimization is scoped to direct Client ownership rather than changing the
+low-level open contract. This comparison remains diagnostic and is not promoted.
+
 ## July 16-17, 2026 Full Post-Fix Release Close-Out (Compatible Runner, Not Promoted)
 
 This close-out ran from commit `c3f0a442dfde6e41fcb0d8e6f32ac02f316949af` after the numeric relationship optimization was accepted as the supported automatic default, the inline B-tree read regressions were fixed, checkpoint reader tracking was tightened, dependency advisories were resolved, and version metadata moved to 4.0.4.
@@ -1024,7 +1143,7 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 | `--concurrent-adonet-compare` | CSharpDB ADO.NET vs SQLite ADO.NET | Shared-memory, non-durable | `4` or `8` concurrent writer tasks | Provider-host overhead comparison without file durability costs |
 | `--efcore-compare` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | Steady-state ORM-layer insert comparison with one open connection per timed run |
 | `--efcore-compare-hybrid-shared-connection` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | Short-lived `DbContext` comparison with one externally-owned open connection reused for the timed run |
-| `--efcore-compare-auto-open-close` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL` | Single writer | EF-managed connection-lifecycle comparison where each `SaveChangesAsync` can auto-open/close |
+| `--efcore-compare-auto-open-close` | CSharpDB EF Core vs SQLite EF Core | File-backed, CSharpDB `WriteOptimized` durable direct mode; SQLite `WAL + FULL`; pooling enabled for both | Single writer | EF-managed logical connection-lifecycle comparison including pool checkout, session reset, and return |
 | `--native-aot-insert-compare` | CSharpDB ADO.NET vs CSharpDB NativeAOT FFI vs SQLite ADO.NET | File-backed, durable | Single writer | Isolates managed-provider overhead versus direct native FFI on the CSharpDB side |
 
 ### Single Writer vs Multi Writer
@@ -1045,7 +1164,66 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 - The EF Core comparison is currently single-writer only. It is a `SaveChangesAsync` insert benchmark, not a concurrent writer benchmark.
 - The EF Core harness opens one connection per provider/context for the timed run so it measures steady-state `SaveChangesAsync` cost instead of repeated per-save connection open/close cost.
 - The separate `--efcore-compare-hybrid-shared-connection` harness keeps one externally-owned open connection alive for the timed run while creating a fresh `DbContext` for each save. That isolates `DbContext` lifetime cost from physical connection open cost.
-- The separate `--efcore-compare-auto-open-close` harness keeps the same single-writer durable workload but leaves connection lifetime under EF's default management so repeated auto-open/close cost stays in the measurement.
+- The separate `--efcore-compare-auto-open-close` harness keeps the same single-writer durable workload but leaves connection lifetime under EF's default management. Both providers enable pooling, so it measures logical open/close, pool checkout/return, and session-reset cost rather than repeated physical database reopen.
+
+#### July 19, 2026 EF Auto-Open/Close Pooling Diagnosis
+
+The physical-reopen baseline
+`efcore-compare-auto-open-close-20260719-162725.csv` used
+`Pooling=false` for both providers. After CSharpDB adopted a warm embedded-engine
+pool, the final repeat-three run enabled pooling for both providers and wrote
+`efcore-compare-auto-open-close-20260719-180133-median-of-3.csv`.
+The build-output CSV files are not committed; this table is the durable result
+record:
+
+| Provider and workload | Physical-reopen P50 | Final pooled P50 | Final pooled throughput |
+|-----------------------|--------------------:|-----------------:|------------------------:|
+| CSharpDB single insert | 31.4129 ms | 3.5798 ms | 269.3 ops/sec |
+| SQLite single insert | 17.4332 ms | 3.4126 ms | 288.1 ops/sec |
+| CSharpDB batch 100 | 33.1151 ms | 4.0749 ms | 23,348.9 rows/sec |
+| SQLite batch 100 | 18.9045 ms | 4.2992 ms | 22,445.7 rows/sec |
+
+The final pooled workloads are near parity: CSharpDB trails the tested SQLite
+single-insert throughput by 6.5% and leads batch-100 throughput by 4.0%. The
+remaining visible tail target is CSharpDB batch P99.9 (36.4038 ms versus
+SQLite's 10.9271 ms).
+
+A focused BenchmarkDotNet rerun of
+`AdoNetBenchmarks.ConnectionOpenClose_*` after the lifecycle rewrite measured a
+9.298 ms mean with pooling disabled and a 2.499 us mean for a pooled logical
+open/close cycle (10 measured iterations after 3 warmups).
+
+#### July 19, 2026 ADO.NET Lifecycle Hot-Path Follow-Up
+
+`AdoNetConnectionLifecycleBenchmarks` adds the missing matched provider
+comparison. It uses independent prepared files for every parameter set,
+explicit pooling on/off for both providers, CSharpDB
+`WriteOptimized`/`Direct`, SQLite private-cache WAL/FULL, and two lifecycle
+shapes: reopening one `DbConnection` object and constructing/opening/closing/
+disposing a new object per operation.
+
+After caching prepared absolute-file plans, adding an exact existing-pool
+checkout path, and avoiding reset work for sessions proven clean, the final
+10-iteration run after 3 warmups measured:
+
+| Provider | Pooling | Connection object | Mean | Median | Managed allocated |
+|----------|---------|-------------------|-----:|-------:|----------:|
+| CSharpDB | Off | Reused | 8.844 ms | 8.894 ms | 131,300 B |
+| CSharpDB | Off | New per operation | 9.381 ms | 9.481 ms | 136,398 B |
+| SQLite | Off | Reused | 310.582 us | 311.741 us | 248 B |
+| SQLite | Off | New per operation | 310.229 us | 311.042 us | 416 B |
+| CSharpDB | On | Reused | 0.228 us | 0.229 us | 128 B |
+| CSharpDB | On | New per operation | 0.508 us | 0.513 us | 256 B |
+| SQLite | On | Reused | 0.045 us | 0.045 us | 0 B |
+| SQLite | On | New per operation | 0.170 us | 0.172 us | 168 B |
+
+In a cross-run diagnostic comparison, the pooled short-lived CSharpDB row is
+about 4.9x faster and reports about 92% less managed allocation than the earlier
+2.499 us / 3.08 KB provider-only diagnostic. SQLite still has the leaner logical
+lifecycle, but the remaining pooled difference is about 0.18 us for a reused
+object and 0.34 us for a short-lived object. Physical non-pooled CSharpDB open
+remains the materially slower operation and is intentionally kept visible as a
+separate architectural baseline.
 
 ### CSharpDB Engine Semantics In These Comparisons
 
@@ -1064,7 +1242,7 @@ The benchmark suite now has several distinct comparison harnesses. They are not 
 - `--concurrent-adonet-compare` answers "how much concurrency overhead comes from the provider layer itself when durability is removed?"
 - `--efcore-compare` answers "what is the steady-state ORM-layer delta for `SaveChangesAsync` inserts on the two providers when the connection is already open?"
 - `--efcore-compare-hybrid-shared-connection` answers "what is the ORM-layer delta when each unit of work gets a short-lived `DbContext`, but the underlying connection stays open?"
-- `--efcore-compare-auto-open-close` answers "what is the ORM-layer delta when EF owns the connection lifetime and each save may pay open/close cost?"
+- `--efcore-compare-auto-open-close` answers "what is the ORM-layer delta when EF owns the logical connection lifetime and each provider reuses its warm pooled database resources?"
 - `--native-aot-insert-compare` answers "how much managed ADO.NET overhead remains versus a native CSharpDB call surface?"
 
 ### Validation Coverage

@@ -1957,14 +1957,16 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             foreach (Dictionary<string, object?> row in sourceRows.Rows)
             {
                 object pkValue = GetRequiredRowValue(row, sourceRows.PrimaryKeyColumn, tableName);
+                Dictionary<string, object?> writableRow =
+                    ExcludeRowVersionValues(row, sourceRows.Schema.Columns);
                 Dictionary<string, object?>? existing = overwriteDestinationRows
                     ? await destinationClient.GetRowByPkAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, ct).ConfigureAwait(false)
                     : null;
 
                 if (existing is null)
-                    copied += await destinationClient.InsertRowAsync(tableName, row, ct).ConfigureAwait(false);
+                    copied += await destinationClient.InsertRowAsync(tableName, writableRow, ct).ConfigureAwait(false);
                 else
-                    copied += await destinationClient.UpdateRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, row, ct).ConfigureAwait(false);
+                    copied += await destinationClient.UpdateRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, writableRow, ct).ConfigureAwait(false);
             }
 
             var destinationRows = await ReadRouteTableRowsAsync(destinationClient, manifest, routeKey, pageSize, ct).ConfigureAwait(false);
@@ -2102,14 +2104,16 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
             foreach (Dictionary<string, object?> row in sourceRows.Rows)
             {
                 object pkValue = GetRequiredRowValue(row, sourceRows.PrimaryKeyColumn, tableName);
+                Dictionary<string, object?> writableRow =
+                    ExcludeRowVersionValues(row, sourceRows.Schema.Columns);
                 Dictionary<string, object?>? existing = overwriteDestinationRows
                     ? await destinationClient.GetRowByPkAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, ct).ConfigureAwait(false)
                     : null;
 
                 if (existing is null)
-                    copied += await destinationClient.InsertRowAsync(tableName, row, ct).ConfigureAwait(false);
+                    copied += await destinationClient.InsertRowAsync(tableName, writableRow, ct).ConfigureAwait(false);
                 else
-                    copied += await destinationClient.UpdateRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, row, ct).ConfigureAwait(false);
+                    copied += await destinationClient.UpdateRowAsync(tableName, sourceRows.PrimaryKeyColumn, pkValue, writableRow, ct).ConfigureAwait(false);
             }
 
             var destinationRows = await ReadBucketRangeTableRowsAsync(
@@ -3373,10 +3377,27 @@ public sealed class CSharpDbShardedClient : ICSharpDbClient, ICSharpDbShardAdmin
     {
         var projected = rows
             .OrderBy(row => CanonicalValue(row.TryGetValue(primaryKeyColumn, out object? value) ? value : null), StringComparer.Ordinal)
-            .Select(row => columns.Select(column => row.TryGetValue(column.Name, out object? value) ? NormalizeChecksumValue(value) : null).ToArray())
+            .Select(row => columns
+                .Where(static column => !column.IsRowVersion)
+                .Select(column => row.TryGetValue(column.Name, out object? value) ? NormalizeChecksumValue(value) : null)
+                .ToArray())
             .ToArray();
 
         return ComputeJsonChecksum(projected);
+    }
+
+    private static Dictionary<string, object?> ExcludeRowVersionValues(
+        IReadOnlyDictionary<string, object?> row,
+        IReadOnlyList<ColumnDefinition> columns)
+    {
+        var writable = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (ColumnDefinition column in columns)
+        {
+            if (!column.IsRowVersion && row.TryGetValue(column.Name, out object? value))
+                writable[column.Name] = value;
+        }
+
+        return writable;
     }
 
     private static string ComputeCollectionChecksum(IReadOnlyList<CollectionDocument> documents)

@@ -1,5 +1,8 @@
 using System.Buffers.Binary;
 using System.Text;
+using CSharpDB.Admin.ImportExport.Contracts;
+using CSharpDB.Admin.ImportExport.Services;
+using CSharpDB.Client.Internal;
 using CSharpDB.ImportExport.Models;
 using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Primitives;
@@ -8,6 +11,174 @@ namespace CSharpDB.Tests;
 
 public class TableArchiveTests
 {
+    [Fact]
+    public async Task Archive_RoundTripsRowVersionMetadataAndValue()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(Path.GetTempPath(), $"rowversion_{Guid.NewGuid():N}.csdbtable");
+        var schema = new TableSchema
+        {
+            TableName = "items",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "id",
+                    Type = DbType.Integer,
+                    Nullable = false,
+                    IsPrimaryKey = true,
+                },
+                new ColumnDefinition
+                {
+                    Name = "version",
+                    Type = DbType.Blob,
+                    Nullable = false,
+                    IsRowVersion = true,
+                },
+            ],
+        };
+        byte[] token = [0, 0, 0, 0, 0, 0, 0, 7];
+        DbValue[][] rows =
+        [
+            [DbValue.FromInteger(1), DbValue.FromBlob(token)],
+        ];
+
+        try
+        {
+            TableArchiveManifest manifest = await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(rows, ct),
+                ct);
+
+            Assert.Equal(TableArchiveManifest.RowVersionFormatVersion, manifest.FormatVersion);
+            byte[] header = File.ReadAllBytes(path);
+            Assert.Equal(
+                TableArchiveManifest.RowVersionFormatVersion,
+                BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(8, sizeof(int))));
+            TableSchema restoredSchema =
+                await TableArchiveReader.ReadTableSchemaAsync(path, ct: ct);
+            Assert.True(restoredSchema.Columns[1].IsRowVersion);
+            Assert.Equal(DbType.Blob, restoredSchema.Columns[1].Type);
+            Assert.False(restoredSchema.Columns[1].Nullable);
+
+            var restoredRows = new List<DbValue[]>();
+            await foreach (DbValue[] row in TableArchiveReader.ReadRowsAsync(path, ct))
+                restoredRows.Add(row);
+
+            Assert.Equal(token, Assert.Single(restoredRows)[1].AsBlob);
+
+            string databasePath = Path.Combine(Path.GetTempPath(), $"rowversion_restore_{Guid.NewGuid():N}.db");
+            try
+            {
+                await using var client = new EngineTransportClient(databasePath);
+                var service = new TableImportExportService(client, new TableArchiveDownloadStore());
+
+                RestoreTableResult restore = await service.RestoreTableAsync(
+                    new RestoreTableRequest
+                    {
+                        ArchivePath = path,
+                        TargetTableName = "restored_items",
+                    },
+                    ct);
+
+                Assert.Equal(1, restore.RowsInserted);
+                Assert.True(restore.RowVersionTokensRegenerated);
+                CSharpDB.Client.Models.TableSchema restoredTable = Assert.IsType<CSharpDB.Client.Models.TableSchema>(
+                    await client.GetTableSchemaAsync("restored_items", ct));
+                Assert.True(Assert.Single(restoredTable.Columns, column => column.Name == "version").IsRowVersion);
+
+                CSharpDB.Client.Models.SqlExecutionResult query =
+                    await client.ExecuteSqlAsync("SELECT id, version FROM restored_items;", ct);
+                Assert.Null(query.Error);
+                object?[] restoredRow = Assert.Single(query.Rows!);
+                byte[] regeneratedToken = Assert.IsType<byte[]>(restoredRow[1]);
+                Assert.Equal([0, 0, 0, 0, 0, 0, 0, 1], regeneratedToken);
+                Assert.NotEqual(token, regeneratedToken);
+            }
+            finally
+            {
+                if (File.Exists(databasePath))
+                    File.Delete(databasePath);
+                if (File.Exists(databasePath + ".wal"))
+                    File.Delete(databasePath + ".wal");
+            }
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Archive_RowVersionHeaderAndManifestVersionsMustMatchOnEveryReadPath()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"rowversion_version_mismatch_{Guid.NewGuid():N}.csdbtable");
+        var schema = new TableSchema
+        {
+            TableName = "items",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "version",
+                    Type = DbType.Blob,
+                    Nullable = false,
+                    IsRowVersion = true,
+                },
+            ],
+        };
+
+        try
+        {
+            await TableArchiveWriter.WriteAsync(
+                path,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    [
+                        [DbValue.FromBlob([0, 0, 0, 0, 0, 0, 0, 1])],
+                    ],
+                    ct),
+                ct);
+
+            byte[] archive = await File.ReadAllBytesAsync(path, ct);
+            byte[] versionFour =
+                Encoding.UTF8.GetBytes("\"formatVersion\": 4");
+            int versionOffset = archive.AsSpan().IndexOf(versionFour);
+            Assert.True(versionOffset >= 0);
+            archive[versionOffset + versionFour.Length - 1] = (byte)'3';
+            await File.WriteAllBytesAsync(path, archive, ct);
+
+            await Assert.ThrowsAsync<InvalidDataException>(
+                async () =>
+                    await TableArchiveReader.ReadArchiveSchemaAsync(
+                        path,
+                        ct));
+            await Assert.ThrowsAsync<InvalidDataException>(
+                async () =>
+                {
+                    await foreach (DbValue[] _ in
+                        TableArchiveReader.ReadRowsAsync(path, ct))
+                    {
+                    }
+                });
+            await Assert.ThrowsAsync<InvalidDataException>(
+                async () =>
+                    await TableArchiveReader.HasIntegerPrimaryKeyIndexAsync(
+                        path,
+                        ct));
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
     [Fact]
     public async Task Archive_RoundtripsSchemaAndRows()
     {

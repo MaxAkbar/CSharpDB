@@ -94,7 +94,10 @@ public sealed class CSharpDbCommand : DbCommand
     {
         QueryResult result = await ExecuteQueryAsync(cancellationToken);
         long? generatedIntegerKey = result.TryGetGeneratedIntegerKey(out long key) ? key : null;
-        return new CSharpDbCommandExecutionResult(result, generatedIntegerKey);
+        byte[]? generatedRowVersion = result.TryGetGeneratedRowVersion(out byte[] rowVersion)
+            ? rowVersion
+            : null;
+        return new CSharpDbCommandExecutionResult(result, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask<QueryResult> ExecuteQueryAsync(CancellationToken cancellationToken)
@@ -105,6 +108,16 @@ public sealed class CSharpDbCommand : DbCommand
 
         try
         {
+            string normalizedCommand = CommandText.Trim().TrimEnd(';').Trim();
+            if (normalizedCommand.Equals("START TRANSACTION", StringComparison.OrdinalIgnoreCase)
+                || normalizedCommand.Equals("BEGIN TRANSACTION", StringComparison.OrdinalIgnoreCase)
+                || normalizedCommand.Equals("COMMIT", StringComparison.OrdinalIgnoreCase)
+                || normalizedCommand.Equals("ROLLBACK", StringComparison.OrdinalIgnoreCase))
+            {
+                await connection.ExecuteTransactionControlAsync(normalizedCommand, cancellationToken);
+                return new QueryResult(0);
+            }
+
             if (!session.SupportsStructuredExecution)
             {
                 string sql = SqlParameterBinder.Bind(CommandText, _parameters);
@@ -168,4 +181,7 @@ public sealed class CSharpDbCommand : DbCommand
     }
 }
 
-internal readonly record struct CSharpDbCommandExecutionResult(QueryResult Result, long? GeneratedIntegerKey);
+internal readonly record struct CSharpDbCommandExecutionResult(
+    QueryResult Result,
+    long? GeneratedIntegerKey,
+    byte[]? GeneratedRowVersion);

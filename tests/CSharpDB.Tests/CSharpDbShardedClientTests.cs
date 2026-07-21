@@ -836,7 +836,7 @@ public sealed class CSharpDbShardedClientTests
             {
                 IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
                     await client.ExecuteSqlOnAllShardsAsync(
-                        "CREATE TABLE orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER);",
+                        "CREATE TABLE orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER, version BLOB ROWVERSION NOT NULL);",
                         Ct);
                 Assert.All(schemaResults, result => Assert.Null(result.Error));
 
@@ -869,6 +869,9 @@ public sealed class CSharpDbShardedClientTests
                     ["tenant_id"] = "tenant-b",
                     ["total"] = 7L,
                 }, Ct));
+                SqlExecutionResult sourceUpdate =
+                    await tenantA.ExecuteSqlAsync("UPDATE orders SET total = 43 WHERE id = 1;", Ct);
+                Assert.Null(sourceUpdate.Error);
 
                 using JsonDocument sourceDocument = JsonDocument.Parse("""{"tenantId":"tenant-a","status":"paid"}""");
                 await tenantA.PutDocumentAsync("order_documents", "doc-1", sourceDocument.RootElement, Ct);
@@ -926,6 +929,7 @@ public sealed class CSharpDbShardedClientTests
                 Dictionary<string, object?>? copied = await client.ForShardId("s1").GetRowByPkAsync("orders", "id", 1L, Ct);
                 Assert.NotNull(copied);
                 Assert.Equal("tenant-a", Assert.IsType<string>(copied!["tenant_id"]));
+                Assert.Equal(8, Assert.IsType<byte[]>(copied["version"]).Length);
 
                 CSharpDbShardCatalogState pending = await client.GetShardCatalogAsync(Ct);
                 Assert.Equal(1, pending.ActiveMap.MapVersion);
@@ -1030,7 +1034,7 @@ public sealed class CSharpDbShardedClientTests
             {
                 IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
                     await client.ExecuteSqlOnAllShardsAsync(
-                        "CREATE TABLE bucket_orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER);",
+                        "CREATE TABLE bucket_orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER, version BLOB ROWVERSION NOT NULL);",
                         Ct);
                 Assert.All(schemaResults, result => Assert.Null(result.Error));
 
@@ -1087,6 +1091,7 @@ public sealed class CSharpDbShardedClientTests
                 Dictionary<string, object?>? copied = await client.ForShardId("s1").GetRowByPkAsync("bucket_orders", "id", 20L, Ct);
                 Assert.NotNull(copied);
                 Assert.Equal(routeKey, Assert.IsType<string>(copied!["tenant_id"]));
+                Assert.Equal(8, Assert.IsType<byte[]>(copied["version"]).Length);
 
                 CSharpDbShardCatalogState pending = await client.GetShardCatalogAsync(Ct);
                 Assert.Equal(1, pending.ActiveMap.MapVersion);
@@ -1299,7 +1304,7 @@ public sealed class CSharpDbShardedClientTests
             await using var client = await CSharpDbShardedClient.CreateAsync(options, ct: Ct);
             IReadOnlyList<CSharpDbShardSqlExecutionResult> schemaResults =
                 await client.ExecuteSqlOnAllShardsAsync(
-                    "CREATE TABLE retry_orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER);",
+                    "CREATE TABLE retry_orders (id INTEGER PRIMARY KEY, tenant_id TEXT, total INTEGER, version BLOB ROWVERSION NOT NULL);",
                     Ct);
             Assert.All(schemaResults, result => Assert.Null(result.Error));
 
@@ -1374,6 +1379,7 @@ public sealed class CSharpDbShardedClientTests
                 await client.ForShardId("s1").GetRowByPkAsync("retry_orders", "id", 40L, Ct);
             Assert.NotNull(destination);
             Assert.Equal(100L, Assert.IsType<long>(destination!["total"]));
+            Assert.Equal(8, Assert.IsType<byte[]>(destination["version"]).Length);
 
             IReadOnlyList<CSharpDbShardMigrationHistoryEntry> history =
                 await client.GetShardMigrationHistoryAsync(Ct);

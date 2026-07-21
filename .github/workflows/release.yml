@@ -41,6 +41,10 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-NuGetPackageClosure.ps1
 
+      - name: Guard qualified EF Core patch version
+        shell: pwsh
+        run: ./scripts/Test-EfCoreVersionConsistency.ps1
+
       - name: Qualify SQL compatibility release snapshot
         shell: pwsh
         env:
@@ -140,6 +144,14 @@ jobs:
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget -p:Version="$version"
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget -p:Version="$version"
+
+      - name: Qualify packed EF Core provider
+        shell: pwsh
+        run: |
+          ./scripts/Test-EfCoreNuGetPackage.ps1 `
+            -FeedPath artifacts/nuget `
+            -Version "${{ steps.version.outputs.version }}"
+
       - name: NuGet login through Trusted Publishing
         id: nuget-login
         uses: NuGet/login@v1

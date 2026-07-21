@@ -4178,6 +4178,9 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
             case CollateExpression collate:
                 CollectAggregates(collate.Operand);
                 break;
+            case IsNullExpression isNull:
+                CollectAggregates(isNull.Operand);
+                break;
         }
     }
 
@@ -4287,6 +4290,7 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
             BinaryExpression bin => EvalBinaryWithAgg(bin, group),
             UnaryExpression un => EvalUnaryWithAgg(un, group),
             CollateExpression collate => EvalWithAggregates(collate.Operand, group),
+            IsNullExpression isNull => EvalIsNullWithAgg(isNull, group),
             _ => group.FirstRow != null
                 ? ExpressionEvaluator.Evaluate(expr, group.FirstRow, _inputSchema, _functions)
                 : DbValue.Null,
@@ -4308,14 +4312,14 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
 
         return bin.Op switch
         {
-            BinaryOp.Equals => BoolToDb(DbValue.Compare(left, right) == 0),
-            BinaryOp.NotEquals => BoolToDb(DbValue.Compare(left, right) != 0),
-            BinaryOp.LessThan => BoolToDb(DbValue.Compare(left, right) < 0),
-            BinaryOp.GreaterThan => BoolToDb(DbValue.Compare(left, right) > 0),
-            BinaryOp.LessOrEqual => BoolToDb(DbValue.Compare(left, right) <= 0),
-            BinaryOp.GreaterOrEqual => BoolToDb(DbValue.Compare(left, right) >= 0),
-            BinaryOp.And => BoolToDb(left.IsTruthy && right.IsTruthy),
-            BinaryOp.Or => BoolToDb(left.IsTruthy || right.IsTruthy),
+            BinaryOp.Equals => CompareOrNull(left, right, static comparison => comparison == 0),
+            BinaryOp.NotEquals => CompareOrNull(left, right, static comparison => comparison != 0),
+            BinaryOp.LessThan => CompareOrNull(left, right, static comparison => comparison < 0),
+            BinaryOp.GreaterThan => CompareOrNull(left, right, static comparison => comparison > 0),
+            BinaryOp.LessOrEqual => CompareOrNull(left, right, static comparison => comparison <= 0),
+            BinaryOp.GreaterOrEqual => CompareOrNull(left, right, static comparison => comparison >= 0),
+            BinaryOp.And => SqlAnd(left, right),
+            BinaryOp.Or => SqlOr(left, right),
             BinaryOp.Plus => ArithOp(left, right, (a, b) => a + b, (a, b) => a + b),
             BinaryOp.Minus => ArithOp(left, right, (a, b) => a - b, (a, b) => a - b),
             BinaryOp.Multiply => ArithOp(left, right, (a, b) => a * b, (a, b) => a * b),
@@ -4324,12 +4328,51 @@ public sealed class HashAggregateOperator : IOperator, IEstimatedRowCountProvide
         };
     }
 
+    private DbValue EvalIsNullWithAgg(IsNullExpression isNull, GroupState group)
+    {
+        bool result = EvalWithAggregates(isNull.Operand, group).IsNull;
+        return BoolToDb(isNull.Negated ? !result : result);
+    }
+
+    private static DbValue CompareOrNull(
+        DbValue left,
+        DbValue right,
+        Func<int, bool> predicate)
+    {
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(predicate(DbValue.Compare(left, right)));
+    }
+
+    private static DbValue SqlAnd(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && !left.IsTruthy) || (!right.IsNull && !right.IsTruthy))
+            return BoolToDb(false);
+
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(true);
+    }
+
+    private static DbValue SqlOr(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && left.IsTruthy) || (!right.IsNull && right.IsTruthy))
+            return BoolToDb(true);
+
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(false);
+    }
+
     private DbValue EvalUnaryWithAgg(UnaryExpression un, GroupState group)
     {
         var operand = EvalWithAggregates(un.Operand, group);
         return un.Op switch
         {
-            TokenType.Not => BoolToDb(!operand.IsTruthy),
+            TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
             TokenType.Minus when operand.Type == DbType.Integer => DbValue.FromInteger(-operand.AsInteger),
             TokenType.Minus when operand.Type == DbType.Real => DbValue.FromReal(-operand.AsReal),
             _ => DbValue.Null,
@@ -4933,6 +4976,9 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
             case CollateExpression collate:
                 CollectAggregates(collate.Operand);
                 break;
+            case IsNullExpression isNull:
+                CollectAggregates(isNull.Operand);
+                break;
         }
     }
 
@@ -4946,6 +4992,7 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
             BinaryExpression bin => EvalBinaryWithAgg(bin, firstRow),
             UnaryExpression un => EvalUnaryWithAgg(un, firstRow),
             CollateExpression collate => EvalWithAggregates(collate.Operand, firstRow),
+            IsNullExpression isNull => EvalIsNullWithAgg(isNull, firstRow),
             _ => firstRow != null
                 ? ExpressionEvaluator.Evaluate(expr, firstRow, _inputSchema, _functions)
                 : DbValue.Null,
@@ -4967,14 +5014,14 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
 
         return bin.Op switch
         {
-            BinaryOp.Equals => BoolToDb(DbValue.Compare(left, right) == 0),
-            BinaryOp.NotEquals => BoolToDb(DbValue.Compare(left, right) != 0),
-            BinaryOp.LessThan => BoolToDb(DbValue.Compare(left, right) < 0),
-            BinaryOp.GreaterThan => BoolToDb(DbValue.Compare(left, right) > 0),
-            BinaryOp.LessOrEqual => BoolToDb(DbValue.Compare(left, right) <= 0),
-            BinaryOp.GreaterOrEqual => BoolToDb(DbValue.Compare(left, right) >= 0),
-            BinaryOp.And => BoolToDb(left.IsTruthy && right.IsTruthy),
-            BinaryOp.Or => BoolToDb(left.IsTruthy || right.IsTruthy),
+            BinaryOp.Equals => CompareOrNull(left, right, static comparison => comparison == 0),
+            BinaryOp.NotEquals => CompareOrNull(left, right, static comparison => comparison != 0),
+            BinaryOp.LessThan => CompareOrNull(left, right, static comparison => comparison < 0),
+            BinaryOp.GreaterThan => CompareOrNull(left, right, static comparison => comparison > 0),
+            BinaryOp.LessOrEqual => CompareOrNull(left, right, static comparison => comparison <= 0),
+            BinaryOp.GreaterOrEqual => CompareOrNull(left, right, static comparison => comparison >= 0),
+            BinaryOp.And => SqlAnd(left, right),
+            BinaryOp.Or => SqlOr(left, right),
             BinaryOp.Plus => ArithOp(left, right, (a, b) => a + b, (a, b) => a + b),
             BinaryOp.Minus => ArithOp(left, right, (a, b) => a - b, (a, b) => a - b),
             BinaryOp.Multiply => ArithOp(left, right, (a, b) => a * b, (a, b) => a * b),
@@ -4983,12 +5030,51 @@ public sealed class ScalarAggregateOperator : IOperator, IEstimatedRowCountProvi
         };
     }
 
+    private DbValue EvalIsNullWithAgg(IsNullExpression isNull, DbValue[]? firstRow)
+    {
+        bool result = EvalWithAggregates(isNull.Operand, firstRow).IsNull;
+        return BoolToDb(isNull.Negated ? !result : result);
+    }
+
+    private static DbValue CompareOrNull(
+        DbValue left,
+        DbValue right,
+        Func<int, bool> predicate)
+    {
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(predicate(DbValue.Compare(left, right)));
+    }
+
+    private static DbValue SqlAnd(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && !left.IsTruthy) || (!right.IsNull && !right.IsTruthy))
+            return BoolToDb(false);
+
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(true);
+    }
+
+    private static DbValue SqlOr(DbValue left, DbValue right)
+    {
+        if ((!left.IsNull && left.IsTruthy) || (!right.IsNull && right.IsTruthy))
+            return BoolToDb(true);
+
+        if (left.IsNull || right.IsNull)
+            return DbValue.Null;
+
+        return BoolToDb(false);
+    }
+
     private DbValue EvalUnaryWithAgg(UnaryExpression un, DbValue[]? firstRow)
     {
         var operand = EvalWithAggregates(un.Operand, firstRow);
         return un.Op switch
         {
-            TokenType.Not => BoolToDb(!operand.IsTruthy),
+            TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
             TokenType.Minus when operand.Type == DbType.Integer => DbValue.FromInteger(-operand.AsInteger),
             TokenType.Minus when operand.Type == DbType.Real => DbValue.FromReal(-operand.AsReal),
             _ => DbValue.Null,

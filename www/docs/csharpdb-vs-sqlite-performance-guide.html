@@ -159,6 +159,8 @@ the same time against the same database?</p>
 <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/StrictInsertComparisonBenchmark.cs">StrictInsertComparisonBenchmark.cs</a></li>
 <li>Harness:
 <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Macro/ConcurrentAdoNetComparisonBenchmark.cs">ConcurrentAdoNetComparisonBenchmark.cs</a></li>
+<li>Lifecycle harness:
+<a href="https://github.com/MaxAkbar/CSharpDB/blob/main/tests/CSharpDB.Benchmarks/Micro/AdoNetConnectionLifecycleBenchmarks.cs">AdoNetConnectionLifecycleBenchmarks.cs</a></li>
 </ul>
 <p>Controls:</p>
 <ul>
@@ -172,6 +174,8 @@ the same time against the same database?</p>
 <li>same explicit key patterns</li>
 <li>CSharpDB through <code>CSharpDB.Data</code></li>
 <li>SQLite through <code>Microsoft.Data.Sqlite</code></li>
+<li>the lifecycle harness uses independent durable files, explicit pooling on/off,
+and both reused and construct/open/close/dispose connection-object shapes</li>
 </ul>
 <p>Important limitation:</p>
 <ul>
@@ -179,6 +183,33 @@ the same time against the same database?</p>
 non-durable on both sides, so it does not use the new CSharpDB embedded
 tuning surface</li>
 </ul>
+<p>The July 19, 2026 lifecycle hot-path run measured the following diagnostic,
+non-promoted rows:</p>
+<table class="doc-table">
+<thead>
+<tr>
+  <th>Provider</th>
+  <th>Pooling</th>
+  <th>Connection object</th>
+  <th style="text-align:right">Mean</th>
+  <th style="text-align:right">Managed allocated</th>
+</tr>
+</thead>
+<tbody>
+<tr><td>CSharpDB</td><td>Off</td><td>Reused</td><td style="text-align:right">8.844 ms</td><td style="text-align:right">131,300 B</td></tr>
+<tr><td>CSharpDB</td><td>Off</td><td>New per operation</td><td style="text-align:right">9.381 ms</td><td style="text-align:right">136,398 B</td></tr>
+<tr><td>SQLite</td><td>Off</td><td>Reused</td><td style="text-align:right">310.582 us</td><td style="text-align:right">248 B</td></tr>
+<tr><td>SQLite</td><td>Off</td><td>New per operation</td><td style="text-align:right">310.229 us</td><td style="text-align:right">416 B</td></tr>
+<tr><td>CSharpDB</td><td>On</td><td>Reused</td><td style="text-align:right">0.228 us</td><td style="text-align:right">128 B</td></tr>
+<tr><td>CSharpDB</td><td>On</td><td>New per operation</td><td style="text-align:right">0.508 us</td><td style="text-align:right">256 B</td></tr>
+<tr><td>SQLite</td><td>On</td><td>Reused</td><td style="text-align:right">0.045 us</td><td style="text-align:right">0 B</td></tr>
+<tr><td>SQLite</td><td>On</td><td>New per operation</td><td style="text-align:right">0.170 us</td><td style="text-align:right">168 B</td></tr>
+</tbody>
+</table>
+<p>SQLite retains the leaner logical lifecycle, but the remaining pooled
+difference is measured in tenths of a microsecond. The much larger CSharpDB
+physical-open row is why standalone ADO.NET callers should explicitly use
+<code>Pooling=true</code> for repeated file-backed open/close cycles.</p>
 <p>This surface answers:</p>
 <p>How much provider overhead and contention behavior comes from the ADO.NET layer
 rather than the durable storage engine?</p>
@@ -196,7 +227,8 @@ open connection held for the timed run</li>
 one externally-owned open connection reused across short-lived <code>DbContext</code>
 instances</li>
 <li><code>--efcore-compare-auto-open-close</code>: the same insert shapes with EF-managed
-auto-open/close left in the measurement</li>
+logical auto-open/close, pool checkout, session reset, and return left in the
+measurement; both providers enable pooling</li>
 <li>CSharpDB EF Core provider versus SQLite EF Core provider in both cases</li>
 </ul>
 <p>Important limitation:</p>
@@ -332,7 +364,8 @@ question again. It is isolating provider-layer overhead.</p>
 <li>one open connection held for the whole timed run in <code>--efcore-compare</code>, or</li>
 <li>one externally-owned open connection reused across short-lived contexts in
 <code>--efcore-compare-hybrid-shared-connection</code>, or</li>
-<li>EF-managed auto-open/close in <code>--efcore-compare-auto-open-close</code></li>
+<li>EF-managed logical auto-open/close with pooling enabled for both providers in
+<code>--efcore-compare-auto-open-close</code></li>
 </ul>
 </li>
 <li>one <code>SaveChangesAsync()</code> loop</li>

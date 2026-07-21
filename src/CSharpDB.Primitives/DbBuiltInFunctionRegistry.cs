@@ -81,6 +81,9 @@ public static class DbBuiltInFunctionRegistry
         Scalar("UPPER", ["UCASE"], 1, 1, "text", DbType.Text, "text", DbFunctionNullBehavior.Propagates, "invariant casing"),
         Scalar("LOWER", ["LCASE"], 1, 1, "text", DbType.Text, "text", DbFunctionNullBehavior.Propagates, "invariant casing"),
         Scalar("INSTR", [], 2, 3, "text[, text], text", DbType.Integer, "integer", DbFunctionNullBehavior.Propagates, "Access-like case-insensitive search"),
+        Scalar("ORDINAL_STARTS_WITH", [], 2, 2, "text, text", DbType.Integer, "boolean integer", DbFunctionNullBehavior.Propagates, "ordinal case-sensitive prefix search"),
+        Scalar("ORDINAL_ENDS_WITH", [], 2, 2, "text, text", DbType.Integer, "boolean integer", DbFunctionNullBehavior.Propagates, "ordinal case-sensitive suffix search"),
+        Scalar("ORDINAL_CONTAINS", [], 2, 2, "text, text", DbType.Integer, "boolean integer", DbFunctionNullBehavior.Propagates, "ordinal case-sensitive substring search"),
         Scalar("REPLACE", [], 3, 3, "text, text, text", DbType.Text, "text", DbFunctionNullBehavior.Propagates, "ordinal replacement"),
         Scalar("STRCOMP", [], 2, 3, "text, text[, mode]", DbType.Integer, "integer", DbFunctionNullBehavior.Propagates, "Access-like comparison"),
         Scalar("VAL", [], 1, 1, "any", DbType.Real, "real", DbFunctionNullBehavior.HandlesNull, "Access-like leading-number conversion"),
@@ -104,7 +107,7 @@ public static class DbBuiltInFunctionRegistry
 
         Scalar("ABS", [], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "numeric"),
         Scalar("ROUND", [], 1, 2, "numeric[, integer]", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "numeric"),
-        Scalar("INT", [], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "floor"),
+        Scalar("INT", ["FLOOR"], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "floor"),
         Scalar("FIX", [], 1, 1, "numeric", DbType.Real, "real", DbFunctionNullBehavior.Propagates, "truncate toward zero"),
         Scalar("SGN", [], 1, 1, "numeric", DbType.Integer, "integer", DbFunctionNullBehavior.Propagates, "numeric sign"),
         Scalar("CSTR", [], 1, 1, "any", DbType.Text, "text", DbFunctionNullBehavior.HandlesNull, "invariant conversion"),

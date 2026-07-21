@@ -248,6 +248,7 @@
                                     <th>Collation</th>
                                     <th>Primary Key</th>
                                     <th>Identity</th>
+                                    <th>RowVersion</th>
                                     <th>Nullable</th>
                                     <th style="width:96px;">Actions</th>
                                 </tr>
@@ -272,6 +273,7 @@
                                         <td class="mono-cell">@GetColumnCollationLabel(col)</td>
                                         <td>@(col.IsPrimaryKey ? "Yes" : "")</td>
                                         <td>@(col.IsIdentity ? "Yes" : "No")</td>
+                                        <td>@(col.IsRowVersion ? "Yes" : "No")</td>
                                         <td>@(col.Nullable ? "Yes" : "No")</td>
                                         <td>
                                             <div class="schema-column-actions">
@@ -801,7 +803,7 @@
 
     private IReadOnlyList<ColumnDefinition> BulkEditableColumns
         => _schema?.Columns
-            .Where(static column => !column.IsPrimaryKey && !column.IsIdentity)
+            .Where(static column => !column.IsPrimaryKey && !column.IsIdentity && !column.IsRowVersion)
             .ToArray()
            ?? Array.Empty<ColumnDefinition>();
 
@@ -1550,7 +1552,16 @@
             return;
         }
 
-        string sql = BuildInsertStatements(ObjectName, snapshot.Columns, snapshot.Rows);
+        int[] includedColumnIndexes = snapshot.Columns
+            .Select(static (column, index) => (column, index))
+            .Where(pair => GetColumn(pair.column)?.IsRowVersion != true)
+            .Select(static pair => pair.index)
+            .ToArray();
+        string[] includedColumns = includedColumnIndexes.Select(index => snapshot.Columns[index]).ToArray();
+        object?[][] includedRows = snapshot.Rows
+            .Select(row => includedColumnIndexes.Select(index => index < row.Length ? row[index] : null).ToArray())
+            .ToArray();
+        string sql = BuildInsertStatements(ObjectName, includedColumns, includedRows);
         await JS.InvokeVoidAsync("clipboardInterop.writeText", sql);
         Toast.Success($"Copied {snapshot.Rows.Count} INSERT statement(s).");
     }
@@ -1652,6 +1663,9 @@
 
     private static string BuildInsertStatements(string tableName, string[] columns, IReadOnlyList<object?[]> rows)
     {
+        if (columns.Length == 0)
+            return string.Concat(rows.Select(_ => $"INSERT INTO {FormatSqlIdentifier(tableName)} DEFAULT VALUES;{Environment.NewLine}"));
+
         string columnList = string.Join(", ", columns.Select(FormatSqlIdentifier));
         var builder = new System.Text.StringBuilder();
 

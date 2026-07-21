@@ -171,21 +171,52 @@ public sealed class SampleSmokeTests : IAsyncLifetime
 
             Assert.Equal(0, result.ExitCode);
             Assert.True(File.Exists(dbPath), "The EF Core sample did not produce the expected database file.");
-            Assert.Contains("Blogs: 2", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Blogs: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Posts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("JoinedPosts: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("LeftJoinedRows: 4", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("BlogsWithoutPosts: 1", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("StringPredicateMatches: 3", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("LikePredicateMatches: 1", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                "TerminalExceptBlogsWithoutPosts: 1",
+                result.StdOut,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Research|0", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("RowVersionBytes: 8", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                "RowVersionAdvancedAfterRawSql: True",
+                result.StdOut,
+                StringComparison.OrdinalIgnoreCase);
 
             await using var db = await Database.OpenAsync(dbPath, Ct);
 
             await using (var blogCountQuery = await db.ExecuteAsync("SELECT COUNT(*) FROM Blogs;", Ct))
             {
                 var rows = await blogCountQuery.ToListAsync(Ct);
-                Assert.Equal(2L, rows[0][0].AsInteger);
+                Assert.Equal(3L, rows[0][0].AsInteger);
             }
 
             await using (var postCountQuery = await db.ExecuteAsync("SELECT COUNT(*) FROM Posts;", Ct))
             {
                 var rows = await postCountQuery.ToListAsync(Ct);
                 Assert.Equal(3L, rows[0][0].AsInteger);
+            }
+
+            await using (var budgetQuery = await db.ExecuteAsync(
+                             "SELECT MonthlyBudget FROM Blogs WHERE Name = 'Engineering';",
+                             Ct))
+            {
+                var rows = await budgetQuery.ToListAsync(Ct);
+                Assert.Equal(125050L, rows[0][0].AsInteger);
+            }
+
+            await using (var rowVersionQuery = await db.ExecuteAsync(
+                             "SELECT RowVersion FROM Blogs WHERE Name = 'Engineering';",
+                             Ct))
+            {
+                var rows = await rowVersionQuery.ToListAsync(Ct);
+                Assert.Equal(8, rows[0][0].AsBlob.Length);
             }
         }
         finally

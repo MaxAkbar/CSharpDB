@@ -178,6 +178,7 @@ internal static class CSharpDbSchemaProvider
         table.Columns.Add("IS_PRIMARY_KEY", typeof(bool));
         table.Columns.Add("IS_IDENTITY", typeof(bool));
         table.Columns.Add("COLLATION_NAME", typeof(string));
+        table.Columns.Add("IS_ROW_VERSION", typeof(bool));
 
         string catalog = connection.DataSource;
         string? catalogRestriction = GetRestrictionValue(restrictionValues, 0);
@@ -223,7 +224,8 @@ internal static class CSharpDbSchemaProvider
                     DBNull.Value,
                     column.IsPrimaryKey,
                     column.IsIdentity,
-                    column.Collation is null ? DBNull.Value : column.Collation);
+                    column.Collation is null ? DBNull.Value : column.Collation,
+                    column.IsRowVersion);
             }
         }
 

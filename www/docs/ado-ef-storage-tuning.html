@@ -69,10 +69,13 @@
 embedded storage-engine tuning surface that already existed at the engine
 level. That lets ADO.NET and EF Core callers opt into the read, write, and
 hybrid performance presets documented in <code>src/CSharpDB.Storage/README.md</code>
-without changing default behavior for existing applications.</p>
+without changing the default storage-tuning profile. The connection-pooling
+lifecycle is documented separately below.</p>
 <h2 id="summary">Summary</h2>
 <ul>
-<li>No behavior changes unless you opt in.</li>
+<li>Storage tuning remains opt-in. Provider-created EF Core file connections
+enable pooling by default; ADO.NET callers still opt in with
+<code>Pooling=true</code>.</li>
 <li>Connection strings expose a small convenience surface:
 <code>Storage Preset</code> and <code>Embedded Open Mode</code>.</li>
 <li>Full engine composition still lives on <code>DatabaseOptions</code> and
@@ -194,7 +197,18 @@ existing connection object.</p>
 <li>Explicit <code>HybridDatabaseOptions</code> override <code>Embedded Open Mode</code>.</li>
 <li>Connection-string preset and open-mode keywords only fill gaps when the
 corresponding explicit options object is absent.</li>
-<li>Pooling remains supported for file-backed embedded opens.</li>
+<li>File-backed embedded pooling keeps one warm engine alive across logical
+open/close cycles. ADO.NET enables it explicitly; provider-created EF Core
+connections enable it by default unless the connection string specifies
+<code>Pooling=false</code>.</li>
+<li><code>Max Pool Size</code> bounds simultaneous logical sessions over that warm
+engine rather than creating that many physical engines.</li>
+<li>Repeated opens on one connection reuse its validated embedded configuration.
+Short-lived connections using the same live connection-string instance can also
+reuse a weak prepared plan for an absolute pooled file target.</li>
+<li>Existing healthy pools use a direct checkout path. Logical close avoids
+reader and temporary-state cleanup when the session is proven clean, while
+engine-observed temporary contexts are still cleared conservatively.</li>
 <li>Pool identity is options-aware in v1.</li>
 <li>The pool key includes the normalized file target, max pool size, effective
 embedded open mode, effective preset selection, and explicit options object
@@ -204,14 +218,19 @@ their contents are equivalent.</li>
 <li><code>ClearPool(connectionString)</code> clears all pooled entries for the normalized
 file-backed target.</li>
 </ul>
+<p>For the lowest ADO.NET lifecycle overhead, keep the connection string in a
+reused variable instead of rebuilding an equivalent string for every
+connection. Relative file paths continue to follow the process working
+directory on each reopen, and explicit options objects remain isolated by
+identity.</p>
 <h2 id="unsupported-cases">Unsupported Cases</h2>
 <ul>
 <li>Remote <code>Http</code>, <code>Grpc</code>, and <code>NamedPipes</code> connections reject embedded tuning.</li>
 <li>Named shared-memory databases reject embedded tuning.</li>
 <li>Private <code>:memory:</code> databases support direct tuning, but not hybrid open
 modes.</li>
-<li>EF Core still rejects pooled connections, endpoint connections, non-direct
-transports, and named shared-memory databases.</li>
+<li>EF Core rejects endpoint connections, non-direct transports, and named
+shared-memory databases.</li>
 </ul>
 <h2 id="practical-preset-guidance">Practical Preset Guidance</h2>
 <p>Use these as the first measurement targets:</p>

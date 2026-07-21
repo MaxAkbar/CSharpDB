@@ -19,6 +19,10 @@ public sealed class BuiltInFunctionCatalogTests
         Assert.True(length.IsDeterministic);
         Assert.True(length.AllowedInChecks);
 
+        Assert.True(DbBuiltInFunctionRegistry.TryGet("floor", out var floor));
+        Assert.Equal("INT", floor.Name);
+        Assert.Equal(DbType.Real, floor.ReturnType);
+
         Assert.True(DbBuiltInFunctionRegistry.TryGet("count", out var count));
         Assert.Equal(DbBuiltInFunctionKind.Aggregate, count.Kind);
         Assert.False(count.AllowedInDefaults);
@@ -26,6 +30,97 @@ public sealed class BuiltInFunctionCatalogTests
 
         Assert.Throws<ArgumentException>(() => DbFunctionRegistry.Create(functions =>
             functions.AddScalar("datetime", 0, static (_, _) => DbValue.Null)));
+    }
+
+    [Fact]
+    public void Registry_DescribesOrdinalStringSearchFunctions()
+    {
+        string[] names = ["ORDINAL_STARTS_WITH", "ORDINAL_ENDS_WITH", "ORDINAL_CONTAINS"];
+
+        foreach (string name in names)
+        {
+            Assert.True(DbBuiltInFunctionRegistry.TryGet(name, out var function));
+            Assert.Equal(name, function.Name);
+            Assert.Empty(function.Aliases);
+            Assert.Equal(DbBuiltInFunctionKind.Scalar, function.Kind);
+            Assert.Equal(2, function.MinimumArity);
+            Assert.Equal(2, function.MaximumArity);
+            Assert.Equal("text, text", function.AcceptedTypes);
+            Assert.Equal(DbType.Integer, function.ReturnType);
+            Assert.Equal("boolean integer", function.ReturnTypeRule);
+            Assert.Equal(DbFunctionNullBehavior.Propagates, function.NullBehavior);
+            Assert.Equal(DbFunctionVolatility.Immutable, function.Volatility);
+            Assert.True(function.IsDeterministic);
+            Assert.False(function.SupportsBatch);
+            Assert.True(function.AllowedInDefaults);
+            Assert.True(function.AllowedInChecks);
+            Assert.Equal("function-defined", function.CollationBehavior);
+        }
+    }
+
+    [Fact]
+    public async Task OrdinalStringSearchFunctions_UseLiteralCaseSensitiveSemantics()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await using var result = await db.ExecuteAsync(
+            """
+            SELECT ORDINAL_STARTS_WITH('Alpha', 'Al'),
+                   ORDINAL_STARTS_WITH('Alpha', 'al'),
+                   ORDINAL_ENDS_WITH('Alpha', 'pha'),
+                   ORDINAL_ENDS_WITH('Alpha', 'PHA'),
+                   ORDINAL_CONTAINS('Alpha', 'ph'),
+                   ORDINAL_CONTAINS('Alpha', 'PH'),
+                   ORDINAL_STARTS_WITH('Alpha', ''),
+                   ORDINAL_ENDS_WITH('Alpha', ''),
+                   ORDINAL_CONTAINS('Alpha', ''),
+                   ORDINAL_STARTS_WITH('short', 'longer'),
+                   ORDINAL_ENDS_WITH('short', 'longer'),
+                   ORDINAL_CONTAINS('short', 'longer'),
+                   ORDINAL_CONTAINS('a%_b', '%_'),
+                   ORDINAL_CONTAINS('alphabet', '%_'),
+                   ORDINAL_ENDS_WITH('folder\file', '\file'),
+                   ORDINAL_STARTS_WITH(NULL, 'a'),
+                   ORDINAL_STARTS_WITH('a', NULL),
+                   ORDINAL_ENDS_WITH(NULL, 'a'),
+                   ORDINAL_ENDS_WITH('a', NULL),
+                   ORDINAL_CONTAINS(NULL, 'a'),
+                   ORDINAL_CONTAINS('a', NULL),
+                   ORDINAL_CONTAINS('A😀B', '😀'),
+                   ORDINAL_CONTAINS('café', 'café')
+            """,
+            Ct);
+
+        DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
+        Assert.Equal(
+            [1L, 0L, 1L, 0L, 1L, 0L, 1L, 1L, 1L, 0L, 0L, 0L, 1L, 0L, 1L],
+            row[..15].Select(static value => value.AsInteger).ToArray());
+        Assert.All(row[15..21], static value => Assert.True(value.IsNull));
+        Assert.Equal(1, row[21].AsInteger);
+        Assert.Equal(0, row[22].AsInteger);
+    }
+
+    [Fact]
+    public void OrdinalStringSearchFunctions_CompareUtf16CodeUnits()
+    {
+        Assert.True(DbBuiltInScalarFunctions.TryEvaluate(
+            "ORDINAL_CONTAINS",
+            [DbValue.FromText("😀"), DbValue.FromText("\uD83D")],
+            out DbValue result));
+
+        Assert.Equal(1, result.AsInteger);
+    }
+
+    [Fact]
+    public async Task FloorAlias_ExecutesThroughSql()
+    {
+        await using var db = await Database.OpenInMemoryAsync(Ct);
+        await using var result = await db.ExecuteAsync(
+            "SELECT FLOOR(-12.55), FLOOR(NULL)",
+            Ct);
+
+        DbValue[] row = Assert.Single(await result.ToListAsync(Ct));
+        Assert.Equal(-13, row[0].AsReal);
+        Assert.True(row[1].IsNull);
     }
 
     [Fact]

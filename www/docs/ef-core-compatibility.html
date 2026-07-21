@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
+    <title>EF Core Compatibility - CSharpDB</title>
+    <meta name="description" content="Evidence-backed EF Core provider compatibility matrix for CSharpDB, including support tiers, exact feature contracts, and automated proof tests.">
+    <link rel="canonical" href="https://csharpdb.com/docs/ef-core-compatibility.html">
+    <meta property="og:title" content="CSharpDB EF Core Compatibility">
+    <meta property="og:description" content="Evidence-backed compatibility contracts for the CSharpDB EF Core provider.">
+    <meta property="og:url" content="https://csharpdb.com/docs/ef-core-compatibility.html">
+    <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
+    <link rel="icon" type="image/png" href="../favicon.png">
+    <style>
+        .ef-maturity { margin: 24px 0; padding: 22px; border: 1px solid rgba(34, 197, 94, .45); border-radius: var(--radius-md); background: rgba(34, 197, 94, .08); }
+        .ef-maturity h2 { margin: 0 0 10px; color: #22c55e; }
+        .ef-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 18px 0; }
+        .ef-meta > div { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+        .ef-meta span { display: block; color: var(--text-muted); font-size: .74rem; }
+        .ef-tier-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 18px 0; }
+        .ef-tier-card { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); }
+        .ef-tier-card h3 { margin: 0 0 8px; }
+        .ef-toolbar { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(160px, 1fr) minmax(140px, 1fr); gap: 12px; margin: 28px 0 16px; }
+        .ef-toolbar input, .ef-toolbar select { width: 100%; padding: 10px 12px; color: var(--text-primary); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+        .ef-category { margin-top: 32px; }
+        .ef-category[hidden], .ef-feature-row[hidden] { display: none; }
+        .ef-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-md); }
+        .ef-table { width: 100%; min-width: 880px; margin: 0; border-collapse: collapse; }
+        .ef-table th, .ef-table td { padding: 14px; vertical-align: top; border-bottom: 1px solid var(--border); text-align: left; }
+        .ef-table tbody tr:last-child td { border-bottom: 0; }
+        .ef-feature-name { display: block; margin-bottom: 4px; font-weight: 700; }
+        .ef-feature-id { color: var(--text-muted); font-family: var(--font-mono); font-size: .75rem; }
+        .ef-badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+        .ef-badge-supported { color: #22c55e; background: rgba(34, 197, 94, .13); }
+        .ef-badge-partial { color: #f59e0b; background: rgba(245, 158, 11, .13); }
+        .ef-badge-unsupported { color: #ef4444; background: rgba(239, 68, 68, .13); }
+        .ef-badge-planned { color: var(--info); background: rgba(59, 130, 246, .13); }
+        .ef-tier { font-family: var(--font-mono); white-space: nowrap; }
+        .ef-proof-list { margin: 8px 0 0; padding-left: 18px; }
+        .ef-proof-list code { overflow-wrap: anywhere; }
+        @media (max-width: 720px) { .ef-toolbar { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <script>
+        window.currentPage = 'docs'; window.pagePathPrefix = '../';
+        window.pageConfig = { title: 'CSharpDB EF Core Compatibility', description: 'Evidence-backed compatibility contracts for the CSharpDB EF Core provider.', keywords: 'CSharpDB EF Core compatibility, provider support matrix, Entity Framework Core', canonicalPath: 'docs/ef-core-compatibility.html', ogType: 'article' };
+    </script>
+    <div id="site-nav"></div>
+    <main class="page">
+        <div class="container doc-container">
+            <div class="doc-content full-width">
+                <h1>EF Core Compatibility</h1>
+                <p class="lead">Evidence-backed feature contracts for <code>CSharpDB.EntityFrameworkCore</code> against EF Core 10.0.10.</p>
+                <div class="ef-maturity">
+                    <h2>Production-ready for the documented embedded tier-1 surface</h2>
+                    <p>This designation applies only to embedded tier-1 features at their exact documented status and boundaries. Partial rows are production-ready only within their listed contract.</p>
+                    <p><strong>Tier 2:</strong> Tier-2 behavior is qualified only when explicitly listed in this manifest and is not part of the overall production-ready designation.</p>
+                    <p><strong>Tier 3:</strong> Tier-3 behavior is excluded from the production-ready designation.</p>
+                </div>
+                <p>The designation is deliberately scoped: every row retains its own status and exact contract. A <strong>Partial</strong> row is qualified only inside its stated boundary, and a <strong>Planned</strong> row is not available today.</p>
+                <div class="ef-meta">
+                    <div><span>Provider</span><code>CSharpDB.EntityFrameworkCore</code></div>
+                    <div><span>Qualified EF Core version</span>10.0.10</div>
+                    <div><span>Manifest rows</span>41</div>
+                </div>
+                <p>Read the <a href="entity-framework-core.html">provider guide</a> for setup and usage, then use this generated matrix as the authoritative public support boundary. The versioned <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/docs/ef-core-compatibility.json">manifest JSON</a> and <a href="https://github.com/MaxAkbar/CSharpDB/blob/main/docs/ef-core-compatibility.schema.json">JSON Schema</a> remain the machine-readable sources.</p>
+                <h2>Support tiers</h2>
+                <div class="ef-tier-grid">
+                    <div class="ef-tier-card">
+                        <h3>Tier 1</h3>
+                        <p>Common application patterns that form the primary production support target.</p>
+                    </div>
+                    <div class="ef-tier-card">
+                        <h3>Tier 2</h3>
+                        <p>Advanced patterns that are supported when explicitly listed.</p>
+                    </div>
+                    <div class="ef-tier-card">
+                        <h3>Tier 3</h3>
+                        <p>Experimental, planned, or explicitly unsupported behavior.</p>
+                    </div>
+                </div>
+                <div class="ef-toolbar" aria-label="EF Core compatibility filters">
+                    <label><span class="sr-only">Search features</span><input id="ef-search" type="search" placeholder="Search feature, contract, or proof test"></label>
+                    <label><span class="sr-only">Filter status</span><select id="ef-status"><option value="">All statuses</option><option value="supported">Supported</option><option value="partial">Partial</option><option value="unsupported">Unsupported</option><option value="planned">Planned</option></select></label>
+                    <label><span class="sr-only">Filter tier</span><select id="ef-tier"><option value="">All tiers</option><option value="tier1">Tier 1</option><option value="tier2">Tier 2</option><option value="tier3">Tier 3</option></select></label>
+                </div>
+                <p id="ef-visible-count" aria-live="polite">Showing 41 feature rows.</p>
+                <section class="ef-category">
+                    <h2>Application compatibility</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-application.identity-integer-key-schema-v1" data-status="partial" data-tier="tier2" data-search="application.identity-integer-key-schema-v1 application compatibility asp.net core identity integer-key schema v1 partial tier2 asp.net core identity&#39;s schema-v1 model is qualified with int user and role keys for the seven standard tables, user and role creation, role membership, claims, external logins, tokens, reopen persistence, cascade cleanup, concurrency stamps, transaction rollback, and pre-canceled reads. the default string-key role-membership join reports cdbef1007; identity schema versions 2 and 3, passkeys, and unlisted store apis remain unqualified. identityschemav1_withintegerkeys_storeworkflowpersistsandreopens identityschemav1_withintegerkeys_concurrencystamprejectsstaleupdate identityschemav1_withintegerkeys_storewriteshonortransactionrollback identityschemav1_withintegerkeys_precanceledstorereadiscanceled identityschemav1_withdefaultstringkeys_rolejoinreportsproviderdiagnostic">
+                                    <td><span class="ef-feature-name">ASP.NET Core Identity integer-key schema v1</span><span class="ef-feature-id">application.identity-integer-key-schema-v1</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 2</span></td>
+                                    <td>
+                                        <p>ASP.NET Core Identity&#39;s schema-v1 model is qualified with int user and role keys for the seven standard tables, user and role creation, role membership, claims, external logins, tokens, reopen persistence, cascade cleanup, concurrency stamps, transaction rollback, and pre-canceled reads. The default string-key role-membership join reports CDBEF1007; Identity schema versions 2 and 3, passkeys, and unlisted store APIs remain unqualified.</p>
+                                        <details><summary>5 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>IdentitySchemaV1_WithIntegerKeys_StoreWorkflowPersistsAndReopens</code></li>
+                                                <li><code>IdentitySchemaV1_WithIntegerKeys_ConcurrencyStampRejectsStaleUpdate</code></li>
+                                                <li><code>IdentitySchemaV1_WithIntegerKeys_StoreWritesHonorTransactionRollback</code></li>
+                                                <li><code>IdentitySchemaV1_WithIntegerKeys_PreCanceledStoreReadIsCanceled</code></li>
+                                                <li><code>IdentitySchemaV1_WithDefaultStringKeys_RoleJoinReportsProviderDiagnostic</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-application.aspnet-core-minimal-api" data-status="supported" data-tier="tier1" data-search="application.aspnet-core-minimal-api application compatibility asp.net core minimal api with scoped dbcontext supported tier1 the runnable asp.net core minimal api sample qualifies adddbcontext and usecsharpdb dependency injection, startup ensurecreated, cancellation-aware http crud, generated integer keys, scoped contexts, and file-backed persistence across host restart. aspnetcoreminimalapi_crudpersistsacrosshostrestart">
+                                    <td><span class="ef-feature-name">ASP.NET Core minimal API with scoped DbContext</span><span class="ef-feature-id">application.aspnet-core-minimal-api</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>The runnable ASP.NET Core minimal API sample qualifies AddDbContext and UseCSharpDb dependency injection, startup EnsureCreated, cancellation-aware HTTP CRUD, generated integer keys, scoped contexts, and file-backed persistence across host restart.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>AspNetCoreMinimalApi_CrudPersistsAcrossHostRestart</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="ef-category">
+                    <h2>Change tracking and concurrency</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-concurrency.application-token" data-status="supported" data-tier="tier1" data-search="concurrency.application-token change tracking and concurrency application-managed concurrency tokens supported tier1 original concurrency-token values participate in update and delete predicates, affected-row mismatches throw dbupdateconcurrencyexception, and the application remains responsible for assigning each new token value. savechanges_withconcurrencytoken_throwswhenrowwasmodified">
+                                    <td><span class="ef-feature-name">Application-managed concurrency tokens</span><span class="ef-feature-id">concurrency.application-token</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Original concurrency-token values participate in update and delete predicates, affected-row mismatches throw DbUpdateConcurrencyException, and the application remains responsible for assigning each new token value.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>SaveChanges_WithConcurrencyToken_ThrowsWhenRowWasModified</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-tracking.crud" data-status="supported" data-tier="tier1" data-search="tracking.crud change tracking and concurrency crud and change tracking supported tier1 tracked insert, update, delete, generated integer keys, and affected-row checks are supported. ensurecreated_filebackedcrudandtyperoundtrip_succeeds identityonlyentity_usesdefaultvaluesandreturnsgeneratedkey">
+                                    <td><span class="ef-feature-name">CRUD and change tracking</span><span class="ef-feature-id">tracking.crud</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Tracked insert, update, delete, generated integer keys, and affected-row checks are supported.</p>
+                                        <details><summary>2 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds</code></li>
+                                                <li><code>IdentityOnlyEntity_UsesDefaultValuesAndReturnsGeneratedKey</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-concurrency.rowversion" data-status="partial" data-tier="tier1" data-search="concurrency.rowversion change tracking and concurrency database-generated rowversion partial tier1 one nonnullable byte[] property per table configured with timestamp or isrowversion is stored as blob rowversion. the engine initializes an opaque eight-byte big-endian per-row revision at 1 and advances it on every successful update, including raw sql, trigger-issued, and no-op updates. ef refreshes generated tokens and detects stale updates and deletes. tokens are per-row rather than sql server&#39;s database-wide counter. keys, foreign keys, indexes, converters, defaults, computed sql, multiple rowversion columns, and standalone add or alter rowversion migrations are explicitly rejected. savechanges_withdatabasegeneratedrowversion_refreshestoken savechanges_withdatabasegeneratedrowversion_refreshesfinaltokenaftertriggerupdate savechanges_withdatabasegeneratedrowversion_throwsforstaleupdateanddelete databasegeneratedrowversion_advancesafterrawsqlupdate identityanddatabasegeneratedrowversion_arepropagatedtogether rowversionmodel_rejectsunsupportedshapes migrationssqlgenerator_rowversion_islimitedtoinitialcreatetable">
+                                    <td><span class="ef-feature-name">Database-generated rowversion</span><span class="ef-feature-id">concurrency.rowversion</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>One nonnullable byte[] property per table configured with Timestamp or IsRowVersion is stored as BLOB ROWVERSION. The engine initializes an opaque eight-byte big-endian per-row revision at 1 and advances it on every successful UPDATE, including raw SQL, trigger-issued, and no-op updates. EF refreshes generated tokens and detects stale updates and deletes. Tokens are per-row rather than SQL Server&#39;s database-wide counter. Keys, foreign keys, indexes, converters, defaults, computed SQL, multiple rowversion columns, and standalone add or alter rowversion migrations are explicitly rejected.</p>
+                                        <details><summary>7 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesToken</code></li>
+                                                <li><code>SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesFinalTokenAfterTriggerUpdate</code></li>
+                                                <li><code>SaveChanges_WithDatabaseGeneratedRowVersion_ThrowsForStaleUpdateAndDelete</code></li>
+                                                <li><code>DatabaseGeneratedRowVersion_AdvancesAfterRawSqlUpdate</code></li>
+                                                <li><code>IdentityAndDatabaseGeneratedRowVersion_ArePropagatedTogether</code></li>
+                                                <li><code>RowVersionModel_RejectsUnsupportedShapes</code></li>
+                                                <li><code>MigrationsSqlGenerator_RowVersion_IsLimitedToInitialCreateTable</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="ef-category">
+                    <h2>Data types</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-types.core" data-status="supported" data-tier="tier1" data-search="types.core data types core clr type mappings supported tier1 boolean, integral, enum, floating-point, string, guid, temporal, and byte-array values round-trip. ensurecreated_filebackedcrudandtyperoundtrip_succeeds">
+                                    <td><span class="ef-feature-name">Core CLR type mappings</span><span class="ef-feature-id">types.core</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Boolean, integral, enum, floating-point, string, GUID, temporal, and byte-array values round-trip.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-types.decimal" data-status="partial" data-tier="tier1" data-search="types.decimal data types exact decimal mapping partial tier1 decimal and nullable decimal use provider-owned scaled integer storage without an application converter. the default is decimal(18,2); precision 1-18 and scale 0-precision support exact round trips, parameters used with one facet mapping, comparisons, ordering, and ordinary indexes. excess fractional digits and overflow are rejected rather than rounded. keys, defaults, generated values, custom store types, computed decimal expressions (including arithmetic, numeric casts, conditionals/coalescing, and aggregates), decimal collection/subquery contains, cross-facet parameter reuse, comparisons with application-converter decimal mappings, model-mapped decimal functions, and precision/scale-changing migrations remain unsupported and fail explicitly. complex properties are rejected until flattened mappings are qualified. decimalscaledintegermapping_roundtripsandsupportsparameterscomparisonsandordering decimalscaledintegermapping_rejectslossyandoverflowingvalues decimalmodelvalidation_rejectsunsupportedfacetsdefaultsandkeys unsupporteddecimalexpressions_reportbeforecommanddispatch migrationssqlgenerator_decimalscalechange_remainsexplicitlyrejected">
+                                    <td><span class="ef-feature-name">Exact decimal mapping</span><span class="ef-feature-id">types.decimal</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Decimal and nullable decimal use provider-owned scaled INTEGER storage without an application converter. The default is decimal(18,2); precision 1-18 and scale 0-precision support exact round trips, parameters used with one facet mapping, comparisons, ordering, and ordinary indexes. Excess fractional digits and overflow are rejected rather than rounded. Keys, defaults, generated values, custom store types, computed decimal expressions (including arithmetic, numeric casts, conditionals/coalescing, and aggregates), decimal collection/subquery Contains, cross-facet parameter reuse, comparisons with application-converter decimal mappings, model-mapped decimal functions, and precision/scale-changing migrations remain unsupported and fail explicitly. Complex properties are rejected until flattened mappings are qualified.</p>
+                                        <details><summary>5 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>DecimalScaledIntegerMapping_RoundTripsAndSupportsParametersComparisonsAndOrdering</code></li>
+                                                <li><code>DecimalScaledIntegerMapping_RejectsLossyAndOverflowingValues</code></li>
+                                                <li><code>DecimalModelValidation_RejectsUnsupportedFacetsDefaultsAndKeys</code></li>
+                                                <li><code>UnsupportedDecimalExpressions_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>MigrationsSqlGenerator_DecimalScaleChange_RemainsExplicitlyRejected</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="ef-category">
+                    <h2>Design-time tooling</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-design-time.migrations" data-status="supported" data-tier="tier1" data-search="design-time.migrations design-time tooling ef core design-time migrations supported tier1 the provider registers design-time services for migrations add, script, and database update workflows. migrator_generatescript_producessupportedsql">
+                                    <td><span class="ef-feature-name">EF Core design-time migrations</span><span class="ef-feature-id">design-time.migrations</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>The provider registers design-time services for migrations add, script, and database update workflows.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Migrator_GenerateScript_ProducesSupportedSql</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="ef-category">
+                    <h2>Migrations and DDL</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-migrations.database-migrate" data-status="supported" data-tier="tier1" data-search="migrations.database-migrate migrations and ddl database.migrate and migration history supported tier1 compiled migrations apply to file-backed databases and can be safely rerun. databasemigrate_appliescompiledmigrations_andcanbererun">
+                                    <td><span class="ef-feature-name">Database.Migrate and migration history</span><span class="ef-feature-id">migrations.database-migrate</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Compiled migrations apply to file-backed databases and can be safely rerun.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>DatabaseMigrate_AppliesCompiledMigrations_AndCanBeReRun</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-migrations.ensure-created" data-status="supported" data-tier="tier1" data-search="migrations.ensure-created migrations and ddl ensurecreated supported tier1 ensurecreated supports file-backed and private in-memory databases. ensurecreated_filebackedcrudandtyperoundtrip_succeeds usecsharpdb_withprivatememoryconnection_supportsruntimeoperations">
+                                    <td><span class="ef-feature-name">EnsureCreated</span><span class="ef-feature-id">migrations.ensure-created</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>EnsureCreated supports file-backed and private in-memory databases.</p>
+                                        <details><summary>2 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds</code></li>
+                                                <li><code>UseCSharpDb_WithPrivateMemoryConnection_SupportsRuntimeOperations</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-migrations.idempotent-scripts" data-status="supported" data-tier="tier1" data-search="migrations.idempotent-scripts migrations and ddl idempotent migration scripts supported tier1 conditional migration-history blocks can be generated and rerun against empty, partial, and current databases. migrator_generateidempotentscript_producesconditionalmigrationblocks migrator_generateidempotentscript_canrunrepeatedlyfromemptydatabase migrator_generateidempotentscript_appliesonlymissingmigration">
+                                    <td><span class="ef-feature-name">Idempotent migration scripts</span><span class="ef-feature-id">migrations.idempotent-scripts</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Conditional migration-history blocks can be generated and rerun against empty, partial, and current databases.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Migrator_GenerateIdempotentScript_ProducesConditionalMigrationBlocks</code></li>
+                                                <li><code>Migrator_GenerateIdempotentScript_CanRunRepeatedlyFromEmptyDatabase</code></li>
+                                                <li><code>Migrator_GenerateIdempotentScript_AppliesOnlyMissingMigration</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-migrations.scripts" data-status="supported" data-tier="tier1" data-search="migrations.scripts migrations and ddl non-idempotent migration scripts supported tier1 imigrator generates executable sql for the supported migration operation set. migrator_generatescript_producessupportedsql">
+                                    <td><span class="ef-feature-name">Non-idempotent migration scripts</span><span class="ef-feature-id">migrations.scripts</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>IMigrator generates executable SQL for the supported migration operation set.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Migrator_GenerateScript_ProducesSupportedSql</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-migrations.numeric-type-rewrites" data-status="partial" data-tier="tier1" data-search="migrations.numeric-type-rewrites migrations and ddl numeric column type changes partial tier1 altercolumn supports dependency-free integer-to-real and real-to-integer shadow-root rewrites. integer values must be exactly representable as real; real values must be finite, integral, and within int64 range. text/blob conversions and columns used by keys, indexes, or foreign keys remain unsupported. a view on the table, a table-owned trigger, a cross-table trigger that references the column, or an applicable validation rule must be removed first. migrationssqlgenerator_altercolumnnumerictype_executesupanddownandpersists migrationssqlgenerator_altercolumnnumerictype_failurerollsbackcompoundtransaction migrationssqlgenerator_altercolumn_infersoldstoretypewithoutusingtargetmodelcolumn migrationssqlgenerator_altercolumnnumerictype_rejectsdependentindexwithoutchangingschema migrationssqlgenerator_nonnumericaltercolumntypechange_remainsexplicitlyrejected">
+                                    <td><span class="ef-feature-name">Numeric column type changes</span><span class="ef-feature-id">migrations.numeric-type-rewrites</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>AlterColumn supports dependency-free INTEGER-to-REAL and REAL-to-INTEGER shadow-root rewrites. INTEGER values must be exactly representable as REAL; REAL values must be finite, integral, and within Int64 range. TEXT/BLOB conversions and columns used by keys, indexes, or foreign keys remain unsupported. A view on the table, a table-owned trigger, a cross-table trigger that references the column, or an applicable validation rule must be removed first.</p>
+                                        <details><summary>5 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>MigrationsSqlGenerator_AlterColumnNumericType_ExecutesUpAndDownAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnNumericType_FailureRollsBackCompoundTransaction</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumn_InfersOldStoreTypeWithoutUsingTargetModelColumn</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnNumericType_RejectsDependentIndexWithoutChangingSchema</code></li>
+                                                <li><code>MigrationsSqlGenerator_NonNumericAlterColumnTypeChange_RemainsExplicitlyRejected</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-migrations.schema-alterations" data-status="partial" data-tier="tier1" data-search="migrations.schema-alterations migrations and ddl practical schema alterations partial tier1 add, drop, and rename columns; table rename; create/drop/rename index operations; named check, unique, foreign-key, and bounded primary-key add/drop; populated single-integer primary-key rekeying with relational-index rebuilding; altercolumn literal-default/nullability changes; dependency-free exact integer/real rewrites; and text-collation rewrites with inherited ordinary/unique sql-index rebuilding are supported. broader primary-key rekeys, indexed numeric changes, key/fk/full-text/collection-dependent column rewrites, and text/blob type conversions remain unsupported. migrationssqlgenerator_altercolumndefaultandnullability_executesandpersists migrationssqlgenerator_altercolumnsetnotnull_rejectsexistingnullswithoutchangingschema migrationssqlgenerator_altercolumnnumerictype_executesupanddownandpersists migrationssqlgenerator_altercolumnnumerictype_failurerollsbackcompoundtransaction migrationssqlgenerator_altercolumn_infersoldstoretypewithoutusingtargetmodelcolumn migrationssqlgenerator_altercolumncollation_executesupanddownandpersists migrationssqlgenerator_altercolumncollation_rebuiltindexrollsbackwithcompoundmigration migrationssqlgenerator_altercolumnnumerictype_rejectsdependentindexwithoutchangingschema migrationssqlgenerator_nonnumericaltercolumntypechange_remainsexplicitlyrejected migrationssqlgenerator_renameindex_executesandpersists migrationssqlgenerator_standalonecheckconstraint_canbeaddedanddropped migrationssqlgenerator_standaloneforeignkey_canbeaddedanddropped migrationssqlgenerator_standalonecompositeforeignkey_canbeaddedanddropped migrationssqlgenerator_standaloneuniqueconstraint_canbeaddedanddropped migrationssqlgenerator_addconstraints_rejectsinvalidexistingdatawithoutpersistingmetadata migrationssqlgenerator_standalonecompositeprimarykey_canbeaddedanddropped migrationssqlgenerator_standalonetextprimarykey_preservesnotnullafterdrop migrationssqlgenerator_standaloneintegerprimarykey_rekeysunalignedrowsandpersists migrationssqlgenerator_standaloneintegerprimarykey_rekeyrollsbackmigrationtransaction migrationssqlgenerator_addprimarykey_rejectsinvalidrowswithoutresidualmetadata migrationssqlgenerator_dropprimarykey_requiresalternatecandidateforforeignkeys">
+                                    <td><span class="ef-feature-name">Practical schema alterations</span><span class="ef-feature-id">migrations.schema-alterations</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Add, drop, and rename columns; table rename; create/drop/rename index operations; named check, unique, foreign-key, and bounded primary-key add/drop; populated single-INTEGER primary-key rekeying with relational-index rebuilding; AlterColumn literal-default/nullability changes; dependency-free exact INTEGER/REAL rewrites; and TEXT-collation rewrites with inherited ordinary/unique SQL-index rebuilding are supported. Broader primary-key rekeys, indexed numeric changes, key/FK/full-text/collection-dependent column rewrites, and TEXT/BLOB type conversions remain unsupported.</p>
+                                        <details><summary>21 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>MigrationsSqlGenerator_AlterColumnDefaultAndNullability_ExecutesAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnSetNotNull_RejectsExistingNullsWithoutChangingSchema</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnNumericType_ExecutesUpAndDownAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnNumericType_FailureRollsBackCompoundTransaction</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumn_InfersOldStoreTypeWithoutUsingTargetModelColumn</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnCollation_ExecutesUpAndDownAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnCollation_RebuiltIndexRollsBackWithCompoundMigration</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnNumericType_RejectsDependentIndexWithoutChangingSchema</code></li>
+                                                <li><code>MigrationsSqlGenerator_NonNumericAlterColumnTypeChange_RemainsExplicitlyRejected</code></li>
+                                                <li><code>MigrationsSqlGenerator_RenameIndex_ExecutesAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneCheckConstraint_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneForeignKey_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneCompositeForeignKey_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneUniqueConstraint_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_AddConstraints_RejectsInvalidExistingDataWithoutPersistingMetadata</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneCompositePrimaryKey_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneTextPrimaryKey_PreservesNotNullAfterDrop</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeysUnalignedRowsAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeyRollsBackMigrationTransaction</code></li>
+                                                <li><code>MigrationsSqlGenerator_AddPrimaryKey_RejectsInvalidRowsWithoutResidualMetadata</code></li>
+                                                <li><code>MigrationsSqlGenerator_DropPrimaryKey_RequiresAlternateCandidateForForeignKeys</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-migrations.primary-key-alterations" data-status="partial" data-tier="tier1" data-search="migrations.primary-key-alterations migrations and ddl standalone primary-key migrations partial tier1 named single-text and composite integer/text logical primary keys support standalone add/drop migrations. a physical single-integer primary key can also be added to populated data: validated non-null unique values become the physical row ids while ready ordinary/unique sql, constraint-owned, and foreign-key-support indexes are rebuilt atomically. full-text, collection, and non-ready indexes remain unsupported. ef drops require the exact constraint name, raw alter table drop primary key remains available for legacy unnamed keys, and dropping a key preserves not null. migrationssqlgenerator_emitscompositeforeignkeysandstandaloneprimarykeychanges migrationssqlgenerator_standalonecompositeprimarykey_canbeaddedanddropped migrationssqlgenerator_standalonetextprimarykey_preservesnotnullafterdrop migrationssqlgenerator_standaloneintegerprimarykey_rekeysunalignedrowsandpersists migrationssqlgenerator_standaloneintegerprimarykey_rekeyrollsbackmigrationtransaction altertable_dropprimarykey_rawsyntaxhandlesunnamedprimarykey migrationssqlgenerator_addprimarykey_rejectsinvalidrowswithoutresidualmetadata migrationssqlgenerator_dropprimarykey_requiresalternatecandidateforforeignkeys">
+                                    <td><span class="ef-feature-name">Standalone primary-key migrations</span><span class="ef-feature-id">migrations.primary-key-alterations</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Named single-TEXT and composite INTEGER/TEXT logical primary keys support standalone add/drop migrations. A physical single-INTEGER primary key can also be added to populated data: validated non-NULL unique values become the physical row IDs while ready ordinary/unique SQL, constraint-owned, and foreign-key-support indexes are rebuilt atomically. Full-text, collection, and non-ready indexes remain unsupported. EF drops require the exact constraint name, raw ALTER TABLE DROP PRIMARY KEY remains available for legacy unnamed keys, and dropping a key preserves NOT NULL.</p>
+                                        <details><summary>8 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>MigrationsSqlGenerator_EmitsCompositeForeignKeysAndStandalonePrimaryKeyChanges</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneCompositePrimaryKey_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneTextPrimaryKey_PreservesNotNullAfterDrop</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeysUnalignedRowsAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeyRollsBackMigrationTransaction</code></li>
+                                                <li><code>AlterTable_DropPrimaryKey_RawSyntaxHandlesUnnamedPrimaryKey</code></li>
+                                                <li><code>MigrationsSqlGenerator_AddPrimaryKey_RejectsInvalidRowsWithoutResidualMetadata</code></li>
+                                                <li><code>MigrationsSqlGenerator_DropPrimaryKey_RequiresAlternateCandidateForForeignKeys</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-migrations.collation-rewrites" data-status="partial" data-tier="tier1" data-search="migrations.collation-rewrites migrations and ddl text column collation changes partial tier1 altercolumn supports text collation changes through an atomic table-and-index shadow-root rewrite, including return to the default binary collation. ready ordinary and unique sql indexes that inherit the column collation are rebuilt; explicit-collation and unrelated indexes retain their roots. checks and uniqueness are revalidated, and a failure restores every original root. key constraints, foreign keys, full-text/collection dependencies, views on the table, table-owned triggers, cross-table triggers that reference the column, and applicable validation rules remain unsupported. migrationssqlgenerator_altercolumncollation_executesupanddownandpersists migrationssqlgenerator_altercolumncollation_rebuiltindexrollsbackwithcompoundmigration">
+                                    <td><span class="ef-feature-name">Text column collation changes</span><span class="ef-feature-id">migrations.collation-rewrites</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>AlterColumn supports TEXT collation changes through an atomic table-and-index shadow-root rewrite, including return to the default BINARY collation. Ready ordinary and unique SQL indexes that inherit the column collation are rebuilt; explicit-collation and unrelated indexes retain their roots. Checks and uniqueness are revalidated, and a failure restores every original root. Key constraints, foreign keys, full-text/collection dependencies, views on the table, table-owned triggers, cross-table triggers that reference the column, and applicable validation rules remain unsupported.</p>
+                                        <details><summary>2 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>MigrationsSqlGenerator_AlterColumnCollation_ExecutesUpAndDownAndPersists</code></li>
+                                                <li><code>MigrationsSqlGenerator_AlterColumnCollation_RebuiltIndexRollsBackWithCompoundMigration</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="ef-category">
+                    <h2>Model features</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-model.alternate-keys" data-status="supported" data-tier="tier1" data-search="model.alternate-keys model features alternate keys and unique constraints supported tier1 single and composite alternate keys are created as named unique constraints and support standalone add/drop migrations. migrationssqlgenerator_standaloneuniqueconstraint_canbeaddedanddropped migrationssqlgenerator_createtable_preservesforeignanduniqueconstraintnames alternatekeyrelationship_supportsensurecreatedandenforcement">
+                                    <td><span class="ef-feature-name">Alternate keys and unique constraints</span><span class="ef-feature-id">model.alternate-keys</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Single and composite alternate keys are created as named unique constraints and support standalone add/drop migrations.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>MigrationsSqlGenerator_StandaloneUniqueConstraint_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_CreateTable_PreservesForeignAndUniqueConstraintNames</code></li>
+                                                <li><code>AlternateKeyRelationship_SupportsEnsureCreatedAndEnforcement</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-model.check-constraints" data-status="partial" data-tier="tier1" data-search="model.check-constraints model features check constraints partial tier1 create-table checks and standalone add/drop migrations are supported for deterministic row-local expressions accepted by the engine. literaldefaultsandcreatetablechecks_areapplied migrationssqlgenerator_emitsliteraldefaultandcreatetablecheck migrationssqlgenerator_standalonecheckconstraint_canbeaddedanddropped">
+                                    <td><span class="ef-feature-name">Check constraints</span><span class="ef-feature-id">model.check-constraints</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Create-table checks and standalone add/drop migrations are supported for deterministic row-local expressions accepted by the engine.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>LiteralDefaultsAndCreateTableChecks_AreApplied</code></li>
+                                                <li><code>MigrationsSqlGenerator_EmitsLiteralDefaultAndCreateTableCheck</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneCheckConstraint_CanBeAddedAndDropped</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-model.composite-primary-keys" data-status="supported" data-tier="tier1" data-search="model.composite-primary-keys model features composite primary keys and indexes supported tier1 composite primary keys and ordered composite indexes are supported. compositekeyentity_supportscrudindexesandduplicaterejection">
+                                    <td><span class="ef-feature-name">Composite primary keys and indexes</span><span class="ef-feature-id">model.composite-primary-keys</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Composite primary keys and ordered composite indexes are supported.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>CompositeKeyEntity_SupportsCrudIndexesAndDuplicateRejection</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-model.computed-columns" data-status="planned" data-tier="tier3" data-search="model.computed-columns model features computed columns planned tier3 computed column metadata is rejected pending engine and catalog support. ">
+                                    <td><span class="ef-feature-name">Computed columns</span><span class="ef-feature-id">model.computed-columns</span></td>
+                                    <td><span class="ef-badge ef-badge-planned">Planned</span></td>
+                                    <td><span class="ef-tier">Tier 3</span></td>
+                                    <td>
+                                        <p>Computed column metadata is rejected pending engine and catalog support.</p>
+                                        <p><em>No automated proof is claimed for this unavailable or planned row.</em></p>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-model.foreign-keys" data-status="partial" data-tier="tier1" data-search="model.foreign-keys model features foreign keys partial tier1 named scalar and composite foreign keys support create, standalone add/drop, primary or alternate-key targets, and cascade or restrictive delete behavior. ef core&#39;s default clientsetnull behavior is qualified for optional scalar and composite relationships: tracked dependents have nullable fk components cleared before principal deletion, while untracked dependents remain protected by a restrictive database constraint. database-side setnull remains unsupported. migrationssqlgenerator_standaloneforeignkey_canbeaddedanddropped migrationssqlgenerator_standalonecompositeforeignkey_canbeaddedanddropped optionalrelationship_defaultclientsetnull_emitsrestrictiveforeignkeysql migrationssqlgenerator_createtable_preservesforeignanduniqueconstraintnames migrationssqlgenerator_addconstraints_rejectsinvalidexistingdatawithoutpersistingmetadata alternatekeyrelationship_supportsensurecreatedandenforcement compositeforeignkeyrelationship_supportsensurecreatedandenforcement optionalrelationship_defaultclientsetnull_nullstrackeddependentbeforeprincipaldelete optionalrelationship_defaultclientsetnull_untrackeddependentkeepsdatabaseprotection optionalcompositerelationship_defaultclientsetnull_nullsnullableforeignkeyproperty optionalrelationship_clientsetnull_matchestrackedanduntrackeddelete clientsetnull_rejectsforeignkeyswithnonnullabledependentproperties databasesetnull_remainsexplicitlyunsupported migrationssqlgenerator_emitscompositeforeignkeysandstandaloneprimarykeychanges">
+                                    <td><span class="ef-feature-name">Foreign keys</span><span class="ef-feature-id">model.foreign-keys</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Named scalar and composite foreign keys support create, standalone add/drop, primary or alternate-key targets, and cascade or restrictive delete behavior. EF Core&#39;s default ClientSetNull behavior is qualified for optional scalar and composite relationships: tracked dependents have nullable FK components cleared before principal deletion, while untracked dependents remain protected by a restrictive database constraint. Database-side SetNull remains unsupported.</p>
+                                        <details><summary>14 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>MigrationsSqlGenerator_StandaloneForeignKey_CanBeAddedAndDropped</code></li>
+                                                <li><code>MigrationsSqlGenerator_StandaloneCompositeForeignKey_CanBeAddedAndDropped</code></li>
+                                                <li><code>OptionalRelationship_DefaultClientSetNull_EmitsRestrictiveForeignKeySql</code></li>
+                                                <li><code>MigrationsSqlGenerator_CreateTable_PreservesForeignAndUniqueConstraintNames</code></li>
+                                                <li><code>MigrationsSqlGenerator_AddConstraints_RejectsInvalidExistingDataWithoutPersistingMetadata</code></li>
+                                                <li><code>AlternateKeyRelationship_SupportsEnsureCreatedAndEnforcement</code></li>
+                                                <li><code>CompositeForeignKeyRelationship_SupportsEnsureCreatedAndEnforcement</code></li>
+                                                <li><code>OptionalRelationship_DefaultClientSetNull_NullsTrackedDependentBeforePrincipalDelete</code></li>
+                                                <li><code>OptionalRelationship_DefaultClientSetNull_UntrackedDependentKeepsDatabaseProtection</code></li>
+                                                <li><code>OptionalCompositeRelationship_DefaultClientSetNull_NullsNullableForeignKeyProperty</code></li>
+                                                <li><code>OptionalRelationship_ClientSetNull_MatchesTrackedAndUntrackedDelete</code></li>
+                                                <li><code>ClientSetNull_RejectsForeignKeysWithNonNullableDependentProperties</code></li>
+                                                <li><code>DatabaseSetNull_RemainsExplicitlyUnsupported</code></li>
+                                                <li><code>MigrationsSqlGenerator_EmitsCompositeForeignKeysAndStandalonePrimaryKeyChanges</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-model.literal-defaults" data-status="partial" data-tier="tier1" data-search="model.literal-defaults model features literal column defaults partial tier1 literal integer, real, text, blob, and null defaults are supported; defaultvaluesql is not. literaldefaultsandcreatetablechecks_areapplied migrationssqlgenerator_emitsliteraldefaultandcreatetablecheck">
+                                    <td><span class="ef-feature-name">Literal column defaults</span><span class="ef-feature-id">model.literal-defaults</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Literal INTEGER, REAL, TEXT, BLOB, and NULL defaults are supported; DefaultValueSql is not.</p>
+                                        <details><summary>2 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>LiteralDefaultsAndCreateTableChecks_AreApplied</code></li>
+                                                <li><code>MigrationsSqlGenerator_EmitsLiteralDefaultAndCreateTableCheck</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="ef-category">
+                    <h2>Query operators and methods</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-query.advanced" data-status="planned" data-tier="tier2" data-search="query.advanced query operators and methods advanced linq translation planned tier2 further qualification remains planned for all other string-search overloads—including default culture-sensitive startswith(string)/endswith(string), the boolean/cultureinfo forms, non-ordinal or captured stringcomparison modes, and character overloads—and broader like shapes such as transformed or converted match expressions, row-derived patterns, and captured or invalid escapes. datetimeoffset components, broader distinct and grouped aggregate types and shapes, broader set-operation projections, mappings, nesting, chaining, and post-set composition, composite/chained/right/cross or derived-source joins, broader left-join shapes, and correlated-query coverage also remain planned. ">
+                                    <td><span class="ef-feature-name">Advanced LINQ translation</span><span class="ef-feature-id">query.advanced</span></td>
+                                    <td><span class="ef-badge ef-badge-planned">Planned</span></td>
+                                    <td><span class="ef-tier">Tier 2</span></td>
+                                    <td>
+                                        <p>Further qualification remains planned for all other string-search overloads—including default culture-sensitive StartsWith(string)/EndsWith(string), the Boolean/CultureInfo forms, non-Ordinal or captured StringComparison modes, and character overloads—and broader LIKE shapes such as transformed or converted match expressions, row-derived patterns, and captured or invalid escapes. DateTimeOffset components, broader distinct and grouped aggregate types and shapes, broader set-operation projections, mappings, nesting, chaining, and post-set composition, composite/chained/right/cross or derived-source joins, broader left-join shapes, and correlated-query coverage also remain planned.</p>
+                                        <p><em>No automated proof is claimed for this unavailable or planned row.</em></p>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.basic" data-status="supported" data-tier="tier1" data-search="query.basic query operators and methods basic linq queries supported tier1 where, ordering, skip/take pagination, scalar projection, single, any, count, non-decimal constant/parameter collection contains, and simple include queries are supported. queries_includepaginationandcontainsoverconstantsandparameters_succeed">
+                                    <td><span class="ef-feature-name">Basic LINQ queries</span><span class="ef-feature-id">query.basic</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Where, ordering, Skip/Take pagination, scalar projection, Single, Any, Count, non-decimal constant/parameter collection Contains, and simple Include queries are supported.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_IncludePaginationAndContainsOverConstantsAndParameters_Succeed</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.direct-inner-joins" data-status="supported" data-tier="tier1" data-search="query.direct-inner-joins query operators and methods bounded direct inner joins supported tier1 one explicit queryable.join between sources that normalize to direct mapped entity roots supports a filtered outer source, one direct nonnullable integer-backed int, long, or int/long-backed enum key per side, qualified scalar or entity result projections, and post-join filtering, ordering, and skip/take pagination. integer-key behavior is cross-checked with sqlite, and enum, long-key, and self-join aliases are covered. filtered inner sources, prior ordering or row limits, source shapes that remain projected or derived after ef normalization, nullable/text/decimal/configured-converter/transformed/composite keys, custom comparers, chained joins, groupjoin, selectmany, defaultifempty, rightjoin, and cross joins are rejected before command dispatch with cdbef1007 or cdbef1003. queries_directinnerjointranslatesandexecutes directinnerjoin_matchesforboundedintegerkeys unsupportedinnerjoinshapes_reportbeforecommanddispatch unsupportedgroupcrossrightandcomparerjoinoperators_reportbeforecommanddispatch">
+                                    <td><span class="ef-feature-name">Bounded direct inner joins</span><span class="ef-feature-id">query.direct-inner-joins</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>One explicit Queryable.Join between sources that normalize to direct mapped entity roots supports a filtered outer source, one direct nonnullable INTEGER-backed int, long, or int/long-backed enum key per side, qualified scalar or entity result projections, and post-join filtering, ordering, and Skip/Take pagination. Integer-key behavior is cross-checked with SQLite, and enum, long-key, and self-join aliases are covered. Filtered inner sources, prior ordering or row limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/configured-converter/transformed/composite keys, custom comparers, chained joins, GroupJoin, SelectMany, DefaultIfEmpty, RightJoin, and cross joins are rejected before command dispatch with CDBEF1007 or CDBEF1003.</p>
+                                        <details><summary>4 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_DirectInnerJoinTranslatesAndExecutes</code></li>
+                                                <li><code>DirectInnerJoin_MatchesForBoundedIntegerKeys</code></li>
+                                                <li><code>UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.direct-left-joins" data-status="supported" data-tier="tier1" data-search="query.direct-left-joins query operators and methods bounded direct left joins supported tier1 one explicit no-comparer queryable.leftjoin between sources that normalize to direct mapped entity roots supports a filtered outer source, an unfiltered inner source, one compatible direct nonnullable integer-backed int, long, or int/long-backed enum key per side, duplicate matches, unmatched outer rows, nullable inner entity/reference/explicitly-nullable scalar projections, and post-join filtering, ordering, and skip/take pagination. navigation-generated left joins used by include remain supported. filtered inner sources, prior ordering or row limits, derived/projected sources, nullable/text/configured-converter/transformed/composite keys, chained joins, custom comparers, the classic groupjoin/selectmany/defaultifempty pattern, rightjoin, and cross joins are rejected before command dispatch with cdbef1008 or cdbef1003. queries_directleftjointranslatesandexecutes directleftjoin_preservesunmatchedrowsforboundedintegerkeys unsupportedleftjoinshapes_reportbeforecommanddispatch unsupportedgroupcrossrightandcomparerjoinoperators_reportbeforecommanddispatch optionalrelationship_includeusesnavigationleftjoinandmaterializesnullprincipal optionalcompositerelationship_includeusesnavigationleftjoinandmaterializesnullprincipal">
+                                    <td><span class="ef-feature-name">Bounded direct left joins</span><span class="ef-feature-id">query.direct-left-joins</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>One explicit no-comparer Queryable.LeftJoin between sources that normalize to direct mapped entity roots supports a filtered outer source, an unfiltered inner source, one compatible direct nonnullable INTEGER-backed int, long, or int/long-backed enum key per side, duplicate matches, unmatched outer rows, nullable inner entity/reference/explicitly-nullable scalar projections, and post-join filtering, ordering, and Skip/Take pagination. Navigation-generated left joins used by Include remain supported. Filtered inner sources, prior ordering or row limits, derived/projected sources, nullable/text/configured-converter/transformed/composite keys, chained joins, custom comparers, the classic GroupJoin/SelectMany/DefaultIfEmpty pattern, RightJoin, and cross joins are rejected before command dispatch with CDBEF1008 or CDBEF1003.</p>
+                                        <details><summary>6 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_DirectLeftJoinTranslatesAndExecutes</code></li>
+                                                <li><code>DirectLeftJoin_PreservesUnmatchedRowsForBoundedIntegerKeys</code></li>
+                                                <li><code>UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>OptionalRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal</code></li>
+                                                <li><code>OptionalCompositeRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.like" data-status="supported" data-tier="tier2" data-search="query.like query operators and methods bounded ef.functions.like predicates supported tier2 the exact two- and three-string ef.functions.like overloads support one direct converter-free text match column and one constant or captured pattern. percent matches zero or more utf-16 code units, underscore matches one, csharpdb matching is invariant case-insensitive, and the escape overload requires a compile-time non-null one-utf-16-code-unit string literal other than percent. positive nullable like predicates exclude sql null, while ef core&#39;s normal compensation makes negated nullable predicates include it. bounded ascii behavior is cross-checked with sqlite. transformed or converted matches, row-derived patterns, captured or invalid escapes, and other overloads fail before command dispatch with cdbef1001. queries_effunctionsliketranslateswithboundedsemantics effunctionslike_matchesforboundedasciipatterns unsupportedlikeshapes_reportbeforecommanddispatch">
+                                    <td><span class="ef-feature-name">Bounded EF.Functions.Like predicates</span><span class="ef-feature-id">query.like</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 2</span></td>
+                                    <td>
+                                        <p>The exact two- and three-string EF.Functions.Like overloads support one direct converter-free TEXT match column and one constant or captured pattern. Percent matches zero or more UTF-16 code units, underscore matches one, CSharpDB matching is invariant case-insensitive, and the escape overload requires a compile-time non-null one-UTF-16-code-unit string literal other than percent. Positive nullable LIKE predicates exclude SQL NULL, while EF Core&#39;s normal compensation makes negated nullable predicates include it. Bounded ASCII behavior is cross-checked with SQLite. Transformed or converted matches, row-derived patterns, captured or invalid escapes, and other overloads fail before command dispatch with CDBEF1001.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_EfFunctionsLikeTranslatesWithBoundedSemantics</code></li>
+                                                <li><code>EfFunctionsLike_MatchesForBoundedAsciiPatterns</code></li>
+                                                <li><code>UnsupportedLikeShapes_ReportBeforeCommandDispatch</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.ordinal-string-search" data-status="supported" data-tier="tier1" data-search="query.ordinal-string-search query operators and methods bounded ordinal string predicates supported tier1 converter-free text supports ordinal plain contains(string) plus startswith, endswith, and contains overloads whose stringcomparison argument is the literal ordinal value. search text may be constant or parameterized and treats %, _, and backslash literally. default culture-sensitive startswith/endswith, boolean/cultureinfo forms, non-ordinal or captured comparison modes, character overloads, and configured value converters fail before command dispatch with cdbef1001. queries_ordinalstringsearchmethodstranslatewithexpectedsemantics plainstringcontains_matchesforboundedpatterns unsupportedstringsearchoverloads_reportbeforecommanddispatch">
+                                    <td><span class="ef-feature-name">Bounded ordinal string predicates</span><span class="ef-feature-id">query.ordinal-string-search</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Converter-free TEXT supports ordinal plain Contains(string) plus StartsWith, EndsWith, and Contains overloads whose StringComparison argument is the literal Ordinal value. Search text may be constant or parameterized and treats %, _, and backslash literally. Default culture-sensitive StartsWith/EndsWith, Boolean/CultureInfo forms, non-Ordinal or captured comparison modes, character overloads, and configured value converters fail before command dispatch with CDBEF1001.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_OrdinalStringSearchMethodsTranslateWithExpectedSemantics</code></li>
+                                                <li><code>PlainStringContains_MatchesForBoundedPatterns</code></li>
+                                                <li><code>UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.direct-integer-set-operations" data-status="supported" data-tier="tier2" data-search="query.direct-integer-set-operations query operators and methods bounded terminal integer set operations supported tier2 exactly one terminal no-comparer queryable.concat, union, intersect, or except is supported when both branches remain direct mapped entity tables with optional filtering and each projects one compatible converter-free integer-backed int, long, or nullable equivalent. concat preserves duplicates; union, intersect, and except apply distinct set semantics, including one null where appropriate. result order is unspecified. entity, composite, constant, converted, transformed, mixed-mapping, non-integer, ordered, limited, distinct, grouped, joined, derived/value-source, nested, chained, comparer, and post-set composition shapes are rejected before command dispatch with cdbef1009 or cdbef1003. queries_directintegersetoperationstranslatewithexpectedsemantics directintegersetoperations_match unsupporteddirectintegersetoperationshapes_reportbeforecommanddispatch">
+                                    <td><span class="ef-feature-name">Bounded terminal integer set operations</span><span class="ef-feature-id">query.direct-integer-set-operations</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 2</span></td>
+                                    <td>
+                                        <p>Exactly one terminal no-comparer Queryable.Concat, Union, Intersect, or Except is supported when both branches remain direct mapped entity tables with optional filtering and each projects one compatible converter-free INTEGER-backed int, long, or nullable equivalent. Concat preserves duplicates; Union, Intersect, and Except apply distinct set semantics, including one NULL where appropriate. Result order is unspecified. Entity, composite, constant, converted, transformed, mixed-mapping, non-integer, ordered, limited, distinct, grouped, joined, derived/value-source, nested, chained, comparer, and post-set composition shapes are rejected before command dispatch with CDBEF1009 or CDBEF1003.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_DirectIntegerSetOperationsTranslateWithExpectedSemantics</code></li>
+                                                <li><code>DirectIntegerSetOperations_Match</code></li>
+                                                <li><code>UnsupportedDirectIntegerSetOperationShapes_ReportBeforeCommandDispatch</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.temporal-components" data-status="supported" data-tier="tier1" data-search="query.temporal-components query operators and methods date and time components supported tier1 datetime year/month/day/hour/minute/second, dateonly year/month/day, and timeonly hour/minute/second translate in predicates and projections. queries_dateandtimecomponentstranslateinpredicatesandprojections">
+                                    <td><span class="ef-feature-name">Date and time components</span><span class="ef-feature-id">query.temporal-components</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>DateTime Year/Month/Day/Hour/Minute/Second, DateOnly Year/Month/Day, and TimeOnly Hour/Minute/Second translate in predicates and projections.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_DateAndTimeComponentsTranslateInPredicatesAndProjections</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.numeric-functions" data-status="supported" data-tier="tier1" data-search="query.numeric-functions query operators and methods double-precision math functions supported tier1 for finite real-mapped values, math.abs(double), round(double), floor(double), ceiling(double), truncate(double), and sign(double) translate in predicates, projections, and ordering with sql null propagation. round uses midpoint-to-even semantics. integral, decimal, mathf, precision-argument, midpoint-mode, and transcendental overloads remain outside the qualified surface. queries_doublemathfunctionstranslateinpredicatesprojectionsandordering doublemathfunctions_matchforfinitenonmidpointvalues">
+                                    <td><span class="ef-feature-name">Double-precision math functions</span><span class="ef-feature-id">query.numeric-functions</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>For finite REAL-mapped values, Math.Abs(double), Round(double), Floor(double), Ceiling(double), Truncate(double), and Sign(double) translate in predicates, projections, and ordering with SQL null propagation. Round uses midpoint-to-even semantics. Integral, decimal, MathF, precision-argument, midpoint-mode, and transcendental overloads remain outside the qualified surface.</p>
+                                        <details><summary>2 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_DoubleMathFunctionsTranslateInPredicatesProjectionsAndOrdering</code></li>
+                                                <li><code>DoubleMathFunctions_MatchForFiniteNonMidpointValues</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.grouped-aggregates" data-status="supported" data-tier="tier1" data-search="query.grouped-aggregates query operators and methods grouped numeric aggregates supported tier1 direct single-table groupby supports optional pre-filtering; direct mapped bool, integral, enum, default-binary string, and nullable keys; c# anonymous-type or valuetuple composite keys; one projection containing direct keys with bare count/longcount, qualified non-distinct sum/average/min/max, and nonnullable-int direct-column distinct count/longcount/sum/min/max; basic having including aggregate is null; and ordering by a directly projected key or aggregate. boolean keys require canonical provider-written 0/1 storage. double, transformed, non-binary-collated, or configured-converter keys; aggregate value converters; distinct average; element/result selector overloads; group materialization; raw or post-projection group transforms; nested or joined grouping; predicate/case aggregates; casts; and broader types or shapes are rejected with cdbef1005 before command dispatch. queries_groupedanddistinctaggregatestranslatewithexpectedsemantics groupedanddistinctaggregates_matchforboundedvalues unsupportedgroupedaggregateshapes_reportbeforecommanddispatch">
+                                    <td><span class="ef-feature-name">Grouped numeric aggregates</span><span class="ef-feature-id">query.grouped-aggregates</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Direct single-table GroupBy supports optional pre-filtering; direct mapped bool, integral, enum, default-BINARY string, and nullable keys; C# anonymous-type or ValueTuple composite keys; one projection containing direct keys with bare Count/LongCount, qualified non-distinct Sum/Average/Min/Max, and nonnullable-int direct-column Distinct Count/LongCount/Sum/Min/Max; basic HAVING including aggregate IS NULL; and ordering by a directly projected key or aggregate. Boolean keys require canonical provider-written 0/1 storage. Double, transformed, non-BINARY-collated, or configured-converter keys; aggregate value converters; Distinct Average; element/result selector overloads; group materialization; raw or post-projection group transforms; nested or joined grouping; predicate/CASE aggregates; casts; and broader types or shapes are rejected with CDBEF1005 before command dispatch.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics</code></li>
+                                                <li><code>GroupedAndDistinctAggregates_MatchForBoundedValues</code></li>
+                                                <li><code>UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.scalar-distinct-aggregates" data-status="supported" data-tier="tier1" data-search="query.scalar-distinct-aggregates query operators and methods scalar distinct numeric aggregates supported tier1 an optional where followed by selection of one directly mapped nonnullable int column and distinct supports count, longcount, sum, min, and max. distinct average, nullable or non-int columns, value-converted columns, ordering, limits, predicates after distinct, computed or composite selectors, casts, intervening operators, and derived sources are rejected with cdbef1004 before command dispatch. nullable distinct count/longcount cannot preserve linq&#39;s rule that null is counted once because sql count(distinct) ignores null. queries_groupedanddistinctaggregatestranslatewithexpectedsemantics groupedanddistinctaggregates_matchforboundedvalues unsupporteddistinctaggregateshapes_reportbeforecommanddispatch">
+                                    <td><span class="ef-feature-name">Scalar distinct numeric aggregates</span><span class="ef-feature-id">query.scalar-distinct-aggregates</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>An optional Where followed by selection of one directly mapped nonnullable int column and Distinct supports Count, LongCount, Sum, Min, and Max. Distinct Average, nullable or non-int columns, value-converted columns, ordering, limits, predicates after Distinct, computed or composite selectors, casts, intervening operators, and derived sources are rejected with CDBEF1004 before command dispatch. Nullable distinct Count/LongCount cannot preserve LINQ&#39;s rule that NULL is counted once because SQL COUNT(DISTINCT) ignores NULL.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics</code></li>
+                                                <li><code>GroupedAndDistinctAggregates_MatchForBoundedValues</code></li>
+                                                <li><code>UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.scalar-numeric-aggregates" data-status="supported" data-tier="tier1" data-search="query.scalar-numeric-aggregates query operators and methods scalar numeric aggregates supported tier1 count, longcount, simple and bounded-shape any, sum over int/double/nullable double, average over double/nullable double, and min/max over int/double/nullable double are qualified for filtered, empty, and all-null scalar queries. long- and float-valued sum/average/min/max variants, integer average, text min/max, and other unqualified aggregate types and shapes remain outside the qualified surface. queries_scalarnumericaggregatestranslatewithexpectedemptyandnullablesemantics scalarnumericaggregates_matchforboundedvaluesandnulls">
+                                    <td><span class="ef-feature-name">Scalar numeric aggregates</span><span class="ef-feature-id">query.scalar-numeric-aggregates</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Count, LongCount, simple and bounded-shape Any, Sum over int/double/nullable double, Average over double/nullable double, and Min/Max over int/double/nullable double are qualified for filtered, empty, and all-null scalar queries. Long- and float-valued Sum/Average/Min/Max variants, integer Average, text Min/Max, and other unqualified aggregate types and shapes remain outside the qualified surface.</p>
+                                        <details><summary>2 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_ScalarNumericAggregatesTranslateWithExpectedEmptyAndNullableSemantics</code></li>
+                                                <li><code>ScalarNumericAggregates_MatchForBoundedValuesAndNulls</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.string-functions" data-status="supported" data-tier="tier1" data-search="query.string-functions query operators and methods string members and methods supported tier1 string length, parameterless tolower/tolowerinvariant, toupper/toupperinvariant, trim/trimstart/trimend, replace(string, string), and both substring overloads translate in predicates, projections, and ordering. lower/upper use invariant csharpdb server semantics rather than currentculture. queries_stringfunctionstranslateinpredicatesprojectionsandordering">
+                                    <td><span class="ef-feature-name">String members and methods</span><span class="ef-feature-id">query.string-functions</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>String Length, parameterless ToLower/ToLowerInvariant, ToUpper/ToUpperInvariant, Trim/TrimStart/TrimEnd, Replace(string, string), and both Substring overloads translate in predicates, projections, and ordering. LOWER/UPPER use invariant CSharpDB server semantics rather than CurrentCulture.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>Queries_StringFunctionsTranslateInPredicatesProjectionsAndOrdering</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-query.unsupported-diagnostics" data-status="supported" data-tier="tier1" data-search="query.unsupported-diagnostics query operators and methods unsupported linq diagnostics supported tier1 unsupported clr methods and members, recognized takewhile/skipwhile, set-operation comparer overloads, join(comparer), leftjoin(comparer), groupjoin/selectmany/defaultifempty/rightjoin, and executeupdate operators, unsupported like/distinct/grouped/inner-join/left-join/direct-integer-set-operation shapes, and unsafe decimal expressions retain ef core&#39;s invalidoperationexception and add cdbef1001-cdbef1009 guidance before command dispatch. unsupportedlinq_reportsproviderdiagnosticsbeforecommanddispatch unsupporteddistinctaggregateshapes_reportbeforecommanddispatch unsupportedgroupedaggregateshapes_reportbeforecommanddispatch unsupporteddecimalexpressions_reportbeforecommanddispatch unsupportedinnerjoinshapes_reportbeforecommanddispatch unsupportedleftjoinshapes_reportbeforecommanddispatch unsupportedgroupcrossrightandcomparerjoinoperators_reportbeforecommanddispatch unsupportedstringsearchoverloads_reportbeforecommanddispatch unsupportedlikeshapes_reportbeforecommanddispatch unsupporteddirectintegersetoperationshapes_reportbeforecommanddispatch">
+                                    <td><span class="ef-feature-name">Unsupported LINQ diagnostics</span><span class="ef-feature-id">query.unsupported-diagnostics</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Unsupported CLR methods and members, recognized TakeWhile/SkipWhile, set-operation comparer overloads, Join(comparer), LeftJoin(comparer), GroupJoin/SelectMany/DefaultIfEmpty/RightJoin, and ExecuteUpdate operators, unsupported LIKE/distinct/grouped/inner-join/left-join/direct-integer-set-operation shapes, and unsafe decimal expressions retain EF Core&#39;s InvalidOperationException and add CDBEF1001-CDBEF1009 guidance before command dispatch.</p>
+                                        <details><summary>10 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedDecimalExpressions_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedLikeShapes_ReportBeforeCommandDispatch</code></li>
+                                                <li><code>UnsupportedDirectIntegerSetOperationShapes_ReportBeforeCommandDispatch</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="ef-category">
+                    <h2>Runtime and connections</h2>
+                    <div class="ef-table-wrap">
+                        <table class="ef-table">
+                            <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Tier</th><th scope="col">Contract and evidence</th></tr></thead>
+                            <tbody>
+                                <tr class="ef-feature-row" id="feature-runtime.explicit-transactions" data-status="partial" data-tier="tier1" data-search="runtime.explicit-transactions runtime and connections explicit transactions and savepoint boundary partial tier1 explicit ef core transactions support savechanges plus commit and rollback. the provider advertises supportssavepoints as false so ef core does not issue automatic savepoints inside an explicit transaction; manual savepoint apis report notsupportedexception without dispatching unsupported sql. explicittransaction_savechangescancommitandrollback explicitsavepointapis_reportunsupportedcapability">
+                                    <td><span class="ef-feature-name">Explicit transactions and savepoint boundary</span><span class="ef-feature-id">runtime.explicit-transactions</span></td>
+                                    <td><span class="ef-badge ef-badge-partial">Partial</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Explicit EF Core transactions support SaveChanges plus commit and rollback. The provider advertises SupportsSavepoints as false so EF Core does not issue automatic savepoints inside an explicit transaction; manual savepoint APIs report NotSupportedException without dispatching unsupported SQL.</p>
+                                        <details><summary>2 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>ExplicitTransaction_SaveChangesCanCommitAndRollback</code></li>
+                                                <li><code>ExplicitSavepointApis_ReportUnsupportedCapability</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-runtime.connection-pooling" data-status="supported" data-tier="tier1" data-search="runtime.connection-pooling runtime and connections file connection pooling supported tier1 provider-created file connections enable pooling by default and reuse one warm embedded engine across ef-managed logical open/close cycles. explicit pooling=false remains supported. ensuredeleted retires the matching pool before file deletion and supports recreating the database afterward. the lower-level logical-session lifecycle and concurrency boundaries are documented by csharpdb.data. providercreatedfileconnection_usespoolingandreuseswarmdatabase providercreatedfileconnection_respectsexplicitpoolingfalse ensuredeleted_defaultpooledfile_retirespoolandsupportsrecreation">
+                                    <td><span class="ef-feature-name">File connection pooling</span><span class="ef-feature-id">runtime.connection-pooling</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>Provider-created file connections enable pooling by default and reuse one warm embedded engine across EF-managed logical open/close cycles. Explicit Pooling=false remains supported. EnsureDeleted retires the matching pool before file deletion and supports recreating the database afterward. The lower-level logical-session lifecycle and concurrency boundaries are documented by CSharpDB.Data.</p>
+                                        <details><summary>3 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>ProviderCreatedFileConnection_UsesPoolingAndReusesWarmDatabase</code></li>
+                                                <li><code>ProviderCreatedFileConnection_RespectsExplicitPoolingFalse</code></li>
+                                                <li><code>EnsureDeleted_DefaultPooledFile_RetiresPoolAndSupportsRecreation</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-runtime.file-backed" data-status="supported" data-tier="tier1" data-search="runtime.file-backed runtime and connections file-backed embedded databases supported tier1 usecsharpdb supports direct embedded file-backed databases. ensurecreated_filebackedcrudandtyperoundtrip_succeeds">
+                                    <td><span class="ef-feature-name">File-backed embedded databases</span><span class="ef-feature-id">runtime.file-backed</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>UseCSharpDb supports direct embedded file-backed databases.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>EnsureCreated_FileBackedCrudAndTypeRoundTrip_Succeeds</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-runtime.private-memory" data-status="supported" data-tier="tier1" data-search="runtime.private-memory runtime and connections private in-memory databases supported tier1 a private :memory: database is supported while its supplied connection remains open. usecsharpdb_withprivatememoryconnection_supportsruntimeoperations">
+                                    <td><span class="ef-feature-name">Private in-memory databases</span><span class="ef-feature-id">runtime.private-memory</span></td>
+                                    <td><span class="ef-badge ef-badge-supported">Supported</span></td>
+                                    <td><span class="ef-tier">Tier 1</span></td>
+                                    <td>
+                                        <p>A private :memory: database is supported while its supplied connection remains open.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>UseCSharpDb_WithPrivateMemoryConnection_SupportsRuntimeOperations</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                                <tr class="ef-feature-row" id="feature-runtime.remote-and-named-shared-memory" data-status="unsupported" data-tier="tier3" data-search="runtime.remote-and-named-shared-memory runtime and connections remote transports and named shared memory unsupported tier3 the provider rejects endpoint, non-direct, and named shared-memory configurations. providervalidation_rejectsunsupportedconnectionconfigurations">
+                                    <td><span class="ef-feature-name">Remote transports and named shared memory</span><span class="ef-feature-id">runtime.remote-and-named-shared-memory</span></td>
+                                    <td><span class="ef-badge ef-badge-unsupported">Unsupported</span></td>
+                                    <td><span class="ef-tier">Tier 3</span></td>
+                                    <td>
+                                        <p>The provider rejects endpoint, non-direct, and named shared-memory configurations.</p>
+                                        <details><summary>1 automated proof test(s)</summary>
+                                            <ul class="ef-proof-list">
+                                                <li><code>ProviderValidation_RejectsUnsupportedConnectionConfigurations</code></li>
+                                            </ul>
+                                        </details>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+    <div id="site-footer"></div>
+    <script>
+        (() => {
+            const rows = [...document.querySelectorAll('.ef-feature-row')];
+            const sections = [...document.querySelectorAll('.ef-category')];
+            const search = document.getElementById('ef-search');
+            const status = document.getElementById('ef-status');
+            const tier = document.getElementById('ef-tier');
+            const count = document.getElementById('ef-visible-count');
+            const apply = () => {
+                const query = search.value.trim().toLowerCase();
+                let visible = 0;
+                for (const row of rows) {
+                    const show = (!query || row.dataset.search.includes(query)) && (!status.value || row.dataset.status === status.value) && (!tier.value || row.dataset.tier === tier.value);
+                    row.hidden = !show;
+                    if (show) visible++;
+                }
+                for (const section of sections) section.hidden = !section.querySelector('.ef-feature-row:not([hidden])');
+                count.textContent = `Showing ${visible} feature row${visible === 1 ? '' : 's'}.`;
+            };
+            search.addEventListener('input', apply);
+            status.addEventListener('change', apply);
+            tier.addEventListener('change', apply);
+        })();
+    </script>
+    <script src="../js/csharpdb.bundle.js" defer></script>
+</body>
+</html>

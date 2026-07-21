@@ -57,6 +57,8 @@ public static class SqlScriptSplitter
         bool createSeen = false;
         bool createTrigger = false;
         int triggerBeginDepth = 0;
+        bool conditionalStatement = false;
+        int conditionalBeginDepth = 0;
 
         foreach (var token in tokens)
         {
@@ -75,6 +77,8 @@ public static class SqlScriptSplitter
                 createSeen = token.Type == TokenType.Create;
                 createTrigger = false;
                 triggerBeginDepth = 0;
+                conditionalStatement = token.Type == TokenType.If;
+                conditionalBeginDepth = 0;
             }
             else if (createSeen && !createTrigger && token.Type == TokenType.Trigger)
             {
@@ -88,10 +92,19 @@ public static class SqlScriptSplitter
                 else if (token.Type == TokenType.End && triggerBeginDepth > 0)
                     triggerBeginDepth--;
             }
+            else if (conditionalStatement)
+            {
+                if (token.Type == TokenType.Begin)
+                    conditionalBeginDepth++;
+                else if (token.Type == TokenType.End && conditionalBeginDepth > 0)
+                    conditionalBeginDepth--;
+            }
 
             if (token.Type == TokenType.Semicolon)
             {
-                bool isStatementTerminator = !createTrigger || triggerBeginDepth == 0;
+                bool isStatementTerminator =
+                    (!createTrigger || triggerBeginDepth == 0)
+                    && (!conditionalStatement || conditionalBeginDepth == 0);
                 if (!isStatementTerminator)
                     continue;
 
@@ -108,6 +121,8 @@ public static class SqlScriptSplitter
                 createSeen = false;
                 createTrigger = false;
                 triggerBeginDepth = 0;
+                conditionalStatement = false;
+                conditionalBeginDepth = 0;
             }
         }
 

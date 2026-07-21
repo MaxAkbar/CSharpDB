@@ -102,7 +102,7 @@ public sealed class SchemaComparisonService
         {
             if (!targetByName.TryGetValue(sourceColumn.Name, out ClientColumnDefinition? targetColumn))
             {
-                bool risky = !sourceColumn.Nullable;
+                bool risky = !sourceColumn.Nullable || sourceColumn.IsRowVersion;
                 changes.Add(new SchemaDiffChange
                 {
                     ObjectKind = SchemaObjectKind.Column,
@@ -110,7 +110,14 @@ public sealed class SchemaComparisonService
                     Name = $"{sourceTable.TableName}.{sourceColumn.Name}",
                     ParentName = sourceTable.TableName,
                     SourceDefinition = SchemaScriptRenderer.RenderColumn(sourceColumn),
-                    Warning = risky
+                    IsDestructive = sourceColumn.IsRowVersion,
+                    Details = new Dictionary<string, string>
+                    {
+                        ["rowVersion"] = sourceColumn.IsRowVersion.ToString(),
+                    },
+                    Warning = sourceColumn.IsRowVersion
+                        ? $"ROWVERSION column '{sourceTable.TableName}.{sourceColumn.Name}' requires a table rebuild and cannot be added as a standalone column."
+                        : risky
                         ? $"Column '{sourceTable.TableName}.{sourceColumn.Name}' is NOT NULL and may require a table rebuild or data backfill."
                         : null,
                 });
@@ -416,6 +423,7 @@ public sealed class SchemaComparisonService
            && left.Nullable == right.Nullable
            && left.IsPrimaryKey == right.IsPrimaryKey
            && left.IsIdentity == right.IsIdentity
+           && left.IsRowVersion == right.IsRowVersion
            && string.Equals(left.Collation ?? string.Empty, right.Collation ?? string.Empty, StringComparison.OrdinalIgnoreCase)
            && string.Equals(
                NormalizeOptionalSql(left.DefaultSql),
@@ -426,7 +434,8 @@ public sealed class SchemaComparisonService
         => source.Type != target.Type
            || !source.Nullable && target.Nullable
            || source.IsPrimaryKey != target.IsPrimaryKey
-           || source.IsIdentity != target.IsIdentity;
+           || source.IsIdentity != target.IsIdentity
+           || source.IsRowVersion != target.IsRowVersion;
 
     private static IReadOnlyDictionary<string, string> DiffColumnDetails(ClientColumnDefinition source, ClientColumnDefinition target)
     {
@@ -435,6 +444,7 @@ public sealed class SchemaComparisonService
         AddIfDifferent(details, "nullable", source.Nullable.ToString(), target.Nullable.ToString(), StringComparison.Ordinal);
         AddIfDifferent(details, "primaryKey", source.IsPrimaryKey.ToString(), target.IsPrimaryKey.ToString(), StringComparison.Ordinal);
         AddIfDifferent(details, "identity", source.IsIdentity.ToString(), target.IsIdentity.ToString(), StringComparison.Ordinal);
+        AddIfDifferent(details, "rowVersion", source.IsRowVersion.ToString(), target.IsRowVersion.ToString(), StringComparison.Ordinal);
         AddIfDifferent(details, "collation", source.Collation ?? string.Empty, target.Collation ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         AddIfDifferent(
             details,

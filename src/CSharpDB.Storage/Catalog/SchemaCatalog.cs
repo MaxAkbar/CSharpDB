@@ -3,6 +3,10 @@ using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Storage.Catalog;
 
+internal readonly record struct TableAndIndexStorageReplacement(
+    uint PreviousTableRootPage,
+    IReadOnlyDictionary<string, IIndexStore> PreviousIndexStores);
+
 /// <summary>
 /// Public schema-catalog facade that preserves the existing API surface.
 /// Internal behavior is delegated to CatalogService.
@@ -169,6 +173,26 @@ public sealed class SchemaCatalog
         long exactRowCount,
         CancellationToken ct = default) =>
         _service.ReplaceTableStorageAsync(tableName, newSchema, replacementRootPage, exactRowCount, ct);
+
+    internal ValueTask<IIndexStore> CreateDetachedIndexStoreAsync(
+        IndexSchema schema,
+        CancellationToken ct = default) =>
+        _service.CreateDetachedIndexStoreAsync(schema, ct);
+
+    internal ValueTask<TableAndIndexStorageReplacement> ReplaceTableAndIndexStorageAsync(
+        string tableName,
+        TableSchema newSchema,
+        uint replacementTableRootPage,
+        long exactRowCount,
+        IReadOnlyDictionary<string, IIndexStore> replacementIndexes,
+        CancellationToken ct = default) =>
+        _service.ReplaceTableAndIndexStorageAsync(
+            tableName,
+            newSchema,
+            replacementTableRootPage,
+            exactRowCount,
+            replacementIndexes,
+            ct);
 
     public ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default) =>
         _service.SetTableRowCountAsync(tableName, rowCount, ct);

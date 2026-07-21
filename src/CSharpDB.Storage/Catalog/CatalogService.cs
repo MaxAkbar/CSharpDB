@@ -1007,7 +1007,65 @@ internal sealed class CatalogService
         long exactRowCount,
         CancellationToken ct = default)
     {
+        TableAndIndexStorageReplacement replacement =
+            await ReplaceTableAndIndexStorageAsync(
+                tableName,
+                newSchema,
+                replacementRootPage,
+                exactRowCount,
+                new Dictionary<string, IIndexStore>(StringComparer.OrdinalIgnoreCase),
+                ct);
+        return replacement.PreviousTableRootPage;
+    }
+
+    /// <summary>
+    /// Creates an index store that is not yet present in the catalog. The
+    /// caller owns the returned store until it is adopted by
+    /// <see cref="ReplaceTableAndIndexStorageAsync"/>.
+    /// </summary>
+    public async ValueTask<IIndexStore> CreateDetachedIndexStoreAsync(
+        IndexSchema schema,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+
+        uint rootPage = await BTree.CreateNewAsync(_pager, ct);
+        try
+        {
+            return CreateIndexStore(_pager, schema, rootPage);
+        }
+        catch
+        {
+            try
+            {
+                await new BTree(_pager, rootPage).ReclaimAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // The active transaction remains the final cleanup boundary.
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Replaces a table root and selected index roots in the active pager
+    /// transaction. All inputs are validated and serialized before any root
+    /// becomes authoritative; in-memory caches are updated only after every
+    /// catalog replacement succeeds.
+    /// </summary>
+    public async ValueTask<TableAndIndexStorageReplacement> ReplaceTableAndIndexStorageAsync(
+        string tableName,
+        TableSchema newSchema,
+        uint replacementTableRootPage,
+        long exactRowCount,
+        IReadOnlyDictionary<string, IIndexStore> replacementIndexes,
+        CancellationToken ct = default)
+    {
         ArgumentOutOfRangeException.ThrowIfNegative(exactRowCount);
+        ArgumentNullException.ThrowIfNull(newSchema);
+        ArgumentNullException.ThrowIfNull(replacementIndexes);
 
         if (!_tableRootPages.TryGetValue(tableName, out uint persistedRootPage) ||
             !_cache.TryGetValue(tableName, out TableSchema? oldSchema))
@@ -1018,13 +1076,105 @@ internal sealed class CatalogService
         if (!string.Equals(tableName, newSchema.TableName, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Replacing table storage cannot rename the table.");
 
+        if (replacementTableRootPage == PageConstants.NullPageId)
+            throw new ArgumentOutOfRangeException(nameof(replacementTableRootPage));
+
         uint previousRootPage = _tableTrees.TryGetValue(tableName, out BTree? existingTree)
             ? existingTree.RootPageId
             : persistedRootPage;
         var storedSchema = NormalizeUpdatedTableSchema(newSchema, oldSchema.NextRowId);
         byte[] schemaBytes = _schemaSerializer.Serialize(storedSchema);
-        byte[] payload = _catalogStore.WriteRootPayload(replacementRootPage, schemaBytes);
-        long key = _schemaSerializer.TableNameToKey(tableName);
+        byte[] tablePayload = _catalogStore.WriteRootPayload(replacementTableRootPage, schemaBytes);
+        long tableKey = _schemaSerializer.TableNameToKey(tableName);
+
+        var liveRoots = new HashSet<uint>();
+        foreach ((string liveTableName, uint persistedTableRoot) in _tableRootPages)
+        {
+            uint liveRoot = _tableTrees.TryGetValue(liveTableName, out BTree? liveTree)
+                ? liveTree.RootPageId
+                : persistedTableRoot;
+            liveRoots.Add(liveRoot);
+        }
+
+        foreach ((string liveIndexName, uint persistedIndexRoot) in _indexRootPages)
+        {
+            uint liveRoot = _indexStores.TryGetValue(liveIndexName, out IIndexStore? liveStore)
+                ? liveStore.RootPageId
+                : persistedIndexRoot;
+            liveRoots.Add(liveRoot);
+        }
+
+        var replacementRoots = new HashSet<uint> { replacementTableRootPage };
+        if (liveRoots.Contains(replacementTableRootPage))
+        {
+            throw new InvalidOperationException(
+                "Replacement table storage must use a detached root.");
+        }
+
+        var preparedIndexes = new List<(
+            string IndexName,
+            IndexSchema Schema,
+            IIndexStore ReplacementStore,
+            IIndexStore PreviousStore,
+            long CatalogKey,
+            byte[] Payload)>(replacementIndexes.Count);
+        var seenIndexNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach ((string replacementName, IIndexStore replacementStore) in replacementIndexes)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(replacementName);
+            ArgumentNullException.ThrowIfNull(replacementStore);
+
+            if (!seenIndexNames.Add(replacementName))
+            {
+                throw new InvalidOperationException(
+                    $"Replacement index '{replacementName}' was specified more than once.");
+            }
+
+            if (!_indexCache.TryGetValue(replacementName, out IndexSchema? indexSchema) ||
+                !_indexRootPages.TryGetValue(replacementName, out uint persistedIndexRoot))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TableNotFound,
+                    $"Index '{replacementName}' not found.");
+            }
+
+            if (!string.Equals(indexSchema.TableName, tableName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Replacement index '{replacementName}' does not belong to table '{tableName}'.");
+            }
+
+            if (indexSchema.State != IndexState.Ready)
+            {
+                throw new InvalidOperationException(
+                    $"Replacement index '{replacementName}' is not ready.");
+            }
+
+            uint replacementRoot = replacementStore.RootPageId;
+            if (replacementRoot == PageConstants.NullPageId ||
+                !replacementRoots.Add(replacementRoot) ||
+                liveRoots.Contains(replacementRoot))
+            {
+                throw new InvalidOperationException(
+                    $"Replacement index '{replacementName}' must use a distinct detached root.");
+            }
+
+            IIndexStore previousStore =
+                _indexStores.TryGetValue(replacementName, out IIndexStore? cachedStore)
+                    ? cachedStore
+                    : CreateIndexStore(_pager, indexSchema, persistedIndexRoot);
+            byte[] indexBytes = _schemaSerializer.SerializeIndex(indexSchema);
+            byte[] indexPayload = _catalogStore.WriteRootPayload(replacementRoot, indexBytes);
+            long indexKey = _schemaSerializer.IndexNameToKey(replacementName);
+            preparedIndexes.Add((
+                replacementName,
+                indexSchema,
+                replacementStore,
+                previousStore,
+                indexKey,
+                indexPayload));
+        }
 
         // Schema-specific statistics cannot survive a physical rewrite. Clear
         // them before the root swap so no fallible catalog work follows the
@@ -1033,17 +1183,49 @@ internal sealed class CatalogService
         await DeleteColumnDistributionStatisticsAsync(tableName, ct);
         await DeleteIndexPrefixStatisticsForTableAsync(tableName, ct);
 
-        if (!await _catalogTree!.ReplaceAsync(key, payload, ct))
+        if (preparedIndexes.Count > 0)
+            await EnsureIndexCatalogTreeAsync(ct);
+
+        for (int i = 0; i < preparedIndexes.Count; i++)
+        {
+            var prepared = preparedIndexes[i];
+            if (!await _indexCatalogTree!.ReplaceAsync(
+                    prepared.CatalogKey,
+                    prepared.Payload,
+                    ct))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.TableNotFound,
+                    $"Index '{prepared.IndexName}' not found.");
+            }
+        }
+
+        // Replace the table payload last. A failure before this point leaves
+        // the write transaction rollback-only and no cache points at a shadow
+        // root.
+        if (!await _catalogTree!.ReplaceAsync(tableKey, tablePayload, ct))
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
 
         _pager.SchemaRootPage = _catalogTree.RootPageId;
         _cache[tableName] = storedSchema;
-        _tableRootPages[tableName] = replacementRootPage;
+        _tableRootPages[tableName] = replacementTableRootPage;
         _persistedTableNextRowIds[tableName] = storedSchema.NextRowId;
 
-        var replacementTree = new BTree(_pager, replacementRootPage, tableName);
+        var replacementTree = new BTree(_pager, replacementTableRootPage, tableName);
         replacementTree.SetCachedEntryCount(exactRowCount);
         _tableTrees[tableName] = replacementTree;
+
+        var previousIndexStores =
+            new Dictionary<string, IIndexStore>(
+                preparedIndexes.Count,
+                StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < preparedIndexes.Count; i++)
+        {
+            var prepared = preparedIndexes[i];
+            _indexRootPages[prepared.IndexName] = prepared.ReplacementStore.RootPageId;
+            _indexStores[prepared.IndexName] = prepared.ReplacementStore;
+            previousIndexStores[prepared.IndexName] = prepared.PreviousStore;
+        }
 
         uint lastPersistedChangeCounter = _tableStatsCache.TryGetValue(tableName, out TableStatistics? stats)
             ? stats.LastPersistedChangeCounter
@@ -1061,7 +1243,7 @@ internal sealed class CatalogService
 
         RebuildForeignKeyCaches();
         IncrementSchemaVersion();
-        return previousRootPage;
+        return new TableAndIndexStorageReplacement(previousRootPage, previousIndexStores);
     }
 
     public async ValueTask SetTableRowCountAsync(string tableName, long rowCount, CancellationToken ct = default)

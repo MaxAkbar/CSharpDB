@@ -80,6 +80,7 @@ Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurr
 | Harness | Class |
 |---|---|
 | `AdoNetBenchmarks` | `diagnostic` |
+| `AdoNetConnectionLifecycleBenchmarks` | `diagnostic` |
 | `BatchEvaluationBenchmarks` | `diagnostic` |
 | `BTreeCursorBenchmarks` | `diagnostic` |
 | `ColdLookupBenchmarks` | `diagnostic` |
@@ -101,6 +102,8 @@ Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurr
 | `InMemorySqlBenchmarks` / `InMemoryCollectionBenchmarks` / `InMemoryAdoNetBenchmarks` | `diagnostic` |
 | `InMemorySqlBatchBenchmarks` / `InMemoryCollectionBatchBenchmarks` | `diagnostic` |
 | `InMemoryPersistenceBenchmarks` | `diagnostic` |
+| `EmbeddedApiLifecycleBenchmarks` | `diagnostic` |
+| `ClientTransactionCompletionConcurrencyBenchmarks` | `diagnostic` |
 | `LayerComparisonLookupBenchmarks` / `LayerComparisonInsertBenchmarks` | `diagnostic` |
 | `NumericRelationshipJoinBenchmarks` / `NumericRelationshipSqlJoinBenchmarks` | `diagnostic` |
 | `OrderByIndexBenchmarks` | `diagnostic` |
@@ -124,6 +127,18 @@ Scenario-specific commands such as `--durable-sql-batching-scenario`, `--concurr
 | `TriggerDispatchBenchmarks` | `diagnostic` |
 | `WalCoreBenchmarks` / `WalReadCacheBenchmarks` | `diagnostic` |
 | `WideRowSortBenchmarks` | `diagnostic` |
+
+`EmbeddedApiLifecycleBenchmarks` separates retained direct-client access from
+physical client, `Database`, and storage open/close lifecycles. Its transaction
+rows diagnose the current client transaction ownership path after warmup.
+
+`ClientTransactionCompletionConcurrencyBenchmarks` prepares overlapping private
+in-memory direct Client transactions outside the measured interval, then compares
+sequential and simultaneously released commit/rollback completion at 2, 4, 8,
+and 16 active sessions. Its iteration setup deliberately creates fresh
+transactions, so every measured sample is one completion cohort rather than a
+reused artificial loop. It isolates Client completion coordination from physical
+file I/O and transaction setup.
 
 ## Adding A New Benchmark
 

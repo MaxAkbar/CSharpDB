@@ -27,6 +27,7 @@ public sealed class DataComparisonService
 
         IReadOnlyList<string> keyColumns = ResolveKeyColumns(sourceSchema, options.KeyColumns);
         ValidateCompatibleSchemas(sourceSchema, targetSchema, keyColumns);
+        bool hasRowVersion = sourceSchema.Columns.Any(static column => column.IsRowVersion);
 
         Dictionary<RowKey, IReadOnlyDictionary<string, object?>> sourceRows =
             await LoadRowsByKeyAsync(source, sourceSchema, keyColumns, ct);
@@ -91,6 +92,9 @@ public sealed class DataComparisonService
             TableName = sourceSchema.TableName,
             KeyColumns = keyColumns,
             Rows = changes,
+            Warnings = hasRowVersion
+                ? ["ROWVERSION columns are store-generated. Token values are excluded from comparison and sync SQL, and target tokens will be regenerated."]
+                : [],
             Summary = new DataDiffSummary
             {
                 SourceRowCount = sourceRows.Count,
@@ -117,6 +121,8 @@ public sealed class DataComparisonService
         script.AppendLine($"-- Table: {report.TableName}");
         script.AppendLine($"-- Generated UTC: {report.GeneratedUtc:O}");
         script.AppendLine("-- Review before executing this script.");
+        foreach (string warning in report.Warnings)
+            script.AppendLine($"-- WARNING: {warning}");
         script.AppendLine();
 
         foreach (DataDiffRow row in report.Rows)
@@ -158,8 +164,12 @@ public sealed class DataComparisonService
         {
             foreach (string key in requestedKeys)
             {
-                if (!schema.Columns.Any(column => column.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
+                ColumnDefinition? keyColumn = schema.Columns.FirstOrDefault(
+                    column => column.Name.Equals(key, StringComparison.OrdinalIgnoreCase));
+                if (keyColumn is null)
                     throw new InvalidOperationException($"Key column '{key}' was not found on table '{schema.TableName}'.");
+                if (keyColumn.IsRowVersion)
+                    throw new InvalidOperationException($"ROWVERSION column '{keyColumn.Name}' cannot be used as a data compare key because its value is store-generated.");
             }
 
             return requestedKeys.Select(key => ResolveColumnName(schema, key)).ToArray();
@@ -168,12 +178,30 @@ public sealed class DataComparisonService
         ColumnDefinition? primaryKey = schema.Columns.FirstOrDefault(column => column.IsPrimaryKey);
         if (primaryKey is null)
             throw new InvalidOperationException($"Table '{schema.TableName}' has no primary key. Supply --key <columns>.");
+        if (primaryKey.IsRowVersion)
+            throw new InvalidOperationException($"ROWVERSION column '{primaryKey.Name}' cannot be used as a data compare key because its value is store-generated.");
 
         return [primaryKey.Name];
     }
 
     private static void ValidateCompatibleSchemas(TableSchema source, TableSchema target, IReadOnlyList<string> keyColumns)
     {
+        string[] sourceRowVersions = source.Columns
+            .Where(static column => column.IsRowVersion)
+            .Select(static column => column.Name)
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        string[] targetRowVersions = target.Columns
+            .Where(static column => column.IsRowVersion)
+            .Select(static column => column.Name)
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (!sourceRowVersions.SequenceEqual(targetRowVersions, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"ROWVERSION columns differ between source and target table '{source.TableName}'. Run schema compare first.");
+        }
+
         foreach (ColumnDefinition sourceColumn in source.Columns)
         {
             ColumnDefinition? targetColumn = target.Columns.FirstOrDefault(column => column.Name.Equals(sourceColumn.Name, StringComparison.OrdinalIgnoreCase));
@@ -181,6 +209,8 @@ public sealed class DataComparisonService
                 throw new InvalidOperationException($"Target table '{target.TableName}' is missing source column '{sourceColumn.Name}'. Run schema compare first.");
             if (targetColumn.Type != sourceColumn.Type)
                 throw new InvalidOperationException($"Column '{sourceColumn.Name}' type differs between source and target. Run schema compare first.");
+            if (targetColumn.IsRowVersion != sourceColumn.IsRowVersion)
+                throw new InvalidOperationException($"Column '{sourceColumn.Name}' ROWVERSION metadata differs between source and target. Run schema compare first.");
         }
 
         foreach (string keyColumn in keyColumns)
@@ -202,7 +232,8 @@ public sealed class DataComparisonService
         await foreach (IReadOnlyDictionary<string, object?> row in target.ReadRowsAsync(schema, ct))
         {
             RowKey key = RowKey.Create(schema, keyColumns, row);
-            if (!rows.TryAdd(key, row))
+            IReadOnlyDictionary<string, object?> comparableRow = ExcludeRowVersionValues(schema, row);
+            if (!rows.TryAdd(key, comparableRow))
                 duplicateKeys.Add(key);
         }
 
@@ -221,7 +252,7 @@ public sealed class DataComparisonService
         var changed = new List<string>();
         foreach (ColumnDefinition column in schema.Columns)
         {
-            if (keyColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
+            if (column.IsRowVersion || keyColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
                 continue;
 
             object? sourceValue = GetValue(sourceRow, column.Name);
@@ -231,6 +262,20 @@ public sealed class DataComparisonService
         }
 
         return changed;
+    }
+
+    private static IReadOnlyDictionary<string, object?> ExcludeRowVersionValues(
+        TableSchema schema,
+        IReadOnlyDictionary<string, object?> row)
+    {
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (ColumnDefinition column in schema.Columns)
+        {
+            if (!column.IsRowVersion)
+                values[column.Name] = GetValue(row, column.Name);
+        }
+
+        return values;
     }
 
     private static string RenderInsert(string tableName, IReadOnlyDictionary<string, object?> row)

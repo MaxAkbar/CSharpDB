@@ -6,10 +6,10 @@
     <link rel="stylesheet" href="../css/style.css">
     <link rel="preload" href="../js/csharpdb.bundle.js" as="script">
     <title>ASP.NET Core Authentication and Authorization with CSharpDB &mdash; Blog &mdash; CSharpDB</title>
-    <meta name="description" content="Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.">
+    <meta name="description" content="Use CSharpDB for ASP.NET Core authentication with a qualified EF Core Identity schema-v1 integer-key profile or the runnable custom ADO.NET store.">
     <link rel="canonical" href="https://csharpdb.com/blog/csharpdb-aspnet-core-identity.html">
     <meta property="og:title" content="ASP.NET Core Authentication and Authorization with CSharpDB">
-    <meta property="og:description" content="Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.">
+    <meta property="og:description" content="Use CSharpDB for ASP.NET Core authentication with a qualified EF Core Identity schema-v1 integer-key profile or the runnable custom ADO.NET store.">
     <meta property="og:url" content="https://csharpdb.com/blog/csharpdb-aspnet-core-identity.html">
     <meta property="og:image" content="https://csharpdb.com/images/og-banner.png">
     <link rel="icon" type="image/png" href="../favicon.png">
@@ -18,7 +18,7 @@
         "@context": "https://schema.org",
         "@type": "BlogPosting",
         "headline": "ASP.NET Core Authentication and Authorization with CSharpDB",
-        "description": "Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.",
+        "description": "Use CSharpDB for ASP.NET Core authentication with a qualified EF Core Identity schema-v1 integer-key profile or the runnable custom ADO.NET store.",
         "url": "https://csharpdb.com/blog/csharpdb-aspnet-core-identity.html",
         "datePublished": "2026-05-03",
         "author": { "@type": "Organization", "name": "CSharpDB" },
@@ -81,7 +81,7 @@
     window.currentPage = 'blog'; window.pagePathPrefix = '../';
     window.pageConfig = {
         title: 'ASP.NET Core Authentication and Authorization with CSharpDB',
-        description: 'Use CSharpDB as the identity store for ASP.NET Core. EF Core provider with Identity, cookie and JWT bearer schemes, role and policy authorization, and Data Protection persistence — all in a single .db file.',
+        description: 'Use CSharpDB for ASP.NET Core authentication with a qualified EF Core Identity schema-v1 integer-key profile or the runnable custom ADO.NET store.',
         keywords: 'CSharpDB ASP.NET Core, ASP.NET Identity, EF Core identity provider, JWT bearer, role authorization, policy authorization, Data Protection, embedded database',
         canonicalPath: 'blog/csharpdb-aspnet-core-identity.html',
         ogType: 'article',
@@ -101,11 +101,11 @@
 
                 <div class="blog-post-content">
                     <p>ASP.NET Core ships with a battle-tested security stack: ASP.NET Core Identity for users, roles, claims, and tokens; pluggable authentication schemes for cookies and JWT bearer tokens; and a flexible authorization system built on roles and policies. All of it is database-agnostic — it asks the application to plug in a store.</p>
-                    <p>CSharpDB is a natural fit for that store. It is embedded, ACID, single-file, and ships with a real EF Core 10 provider, an ADO.NET provider, and a typed Collection API. For single-node web apps, internal tools, desktop apps, and dev or CI environments, you get a complete identity solution that lives entirely inside your application directory.</p>
-                    <p>This post walks through three integration patterns: ASP.NET Core Identity over the EF Core provider, JWT bearer with the same store, and a lightweight custom <code>IUserStore</code> when you do not want the full Identity surface. It closes with Data Protection key persistence so cookies survive process restarts.</p>
+                    <p>CSharpDB is an embedded, ACID, single-file option for that store. It ships with an EF Core 10 provider, an ADO.NET provider, and a typed Collection API. For single-node web apps, internal tools, desktop apps, and dev or CI environments, identity data can live inside the application directory.</p>
+                    <p>This post shows the provider's bounded EF Core Identity profile, JWT bearer configuration around the same model, and a lightweight custom <code>IUserStore</code>. It closes with Data Protection key persistence so cookies survive process restarts. Treat the EF snippets as a starting point whose exact supported boundary is defined by the compatibility manifest; the custom ADO.NET sample is the runnable end-to-end authentication path.</p>
 
                     <div class="callout callout-info" style="margin: 24px 0; padding: 16px 20px; border-left: 4px solid var(--accent); background: var(--bg-card);">
-                        <strong>v1 EF Core caveat.</strong> The CSharpDB EF Core provider in v1 does not support composite primary keys, and ASP.NET Core Identity's standard schema uses composite keys on <code>AspNetUserRoles</code>, <code>AspNetUserLogins</code>, and <code>AspNetUserTokens</code>. Until that lands, the runnable path is the lightweight custom store described later in this post — a small ADO.NET-backed user/role/claim store that uses the same <code>PasswordHasher</code>, cookie, and JWT pipeline shown for the EF Core flow. The companion sample at <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/aspnet-core-identity">samples/aspnet-core-identity</a> implements that path end-to-end.
+                        <strong>Qualified EF profile.</strong> The provider compatibility suite covers Identity schema v1 with <code>IdentityUser&lt;int&gt;</code> and <code>IdentityRole&lt;int&gt;</code>. It verifies the seven standard tables plus explicitly listed user, role, membership, claim, login, token, persistence, cascade, concurrency, transaction, and cancellation workflows. The default string-key context, Identity schema versions 2 and 3, passkeys, and unlisted store APIs remain unqualified. See the <a href="../docs/entity-framework-core.html#aspnet-identity">provider guide</a> and generated compatibility matrix for the authoritative boundary. The companion <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/aspnet-core-identity">custom-store sample</a> remains the runnable cookie, JWT, role, policy, and lockout demonstration.
                     </div>
 
                     <h2>When CSharpDB Fits Your Auth Stack</h2>
@@ -119,7 +119,7 @@
                     <p>For multi-node web farms you typically want a shared identity store on a server database. In those cases CSharpDB is still useful for local concerns: per-node refresh-token caches, audit logs, or rate-limit counters.</p>
 
                     <h2>Approach 1: ASP.NET Core Identity on the EF Core Provider</h2>
-                    <p>This is the path most teams will take. ASP.NET Core Identity is built on EF Core, and <code>CSharpDB.EntityFrameworkCore</code> is a standard EF Core 10 provider, so the integration is a one-line connection-string change.</p>
+                    <p>ASP.NET Core Identity is built on EF Core, but the qualified CSharpDB profile is more specific than a connection-string swap: use integer user and role keys and pin the Identity model to schema v1 as shown below.</p>
 
                     <h3>Step 1: Install the Packages</h3>
                     <div class="code-block" data-title="Terminal">
@@ -130,36 +130,39 @@ dotnet add package Microsoft.EntityFrameworkCore.Design</code></pre>
                     <p><code>CSharpDB.EntityFrameworkCore</code> brings in <code>CSharpDB.Data</code> (the ADO.NET provider) and the engine. The Identity package adds the <code>IdentityDbContext</code> base class and stores. The design package lets <code>dotnet ef</code> generate migrations.</p>
 
                     <h3>Step 2: Define the Identity DbContext</h3>
-                    <p>You can use the built-in <code>IdentityUser</code> or extend it. Most apps add a few profile fields, so a custom user is shown below.</p>
+                    <p>Extend the integer-key Identity user while retaining the exact qualified key and schema profile.</p>
                     <div class="code-block" data-title="AppUser.cs and AppDbContext.cs">
                         <pre><code><span class="kw">using</span> CSharpDB.EntityFrameworkCore;
 <span class="kw">using</span> Microsoft.AspNetCore.Identity;
 <span class="kw">using</span> Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 <span class="kw">using</span> Microsoft.EntityFrameworkCore;
 
-<span class="kw">public sealed class</span> <span class="tp">AppUser</span> : <span class="tp">IdentityUser</span>
+<span class="kw">public sealed class</span> <span class="tp">AppUser</span> : <span class="tp">IdentityUser</span>&lt;<span class="kw">int</span>&gt;
 {
     <span class="kw">public string</span>? DisplayName { <span class="kw">get</span>; <span class="kw">set</span>; }
     <span class="kw">public</span> <span class="tp">DateTime</span> CreatedUtc { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="tp">DateTime</span>.UtcNow;
 }
 
-<span class="kw">public sealed class</span> <span class="tp">AppDbContext</span> : <span class="tp">IdentityDbContext</span>&lt;<span class="tp">AppUser</span>&gt;
+<span class="kw">public sealed class</span> <span class="tp">AppDbContext</span>
+    : <span class="tp">IdentityDbContext</span>&lt;<span class="tp">AppUser</span>, <span class="tp">IdentityRole</span>&lt;<span class="kw">int</span>&gt;, <span class="kw">int</span>&gt;
 {
     <span class="kw">public</span> <span class="tp">AppDbContext</span>(<span class="tp">DbContextOptions</span>&lt;<span class="tp">AppDbContext</span>&gt; options)
         : <span class="kw">base</span>(options) { }
 
     <span class="kw">public</span> <span class="tp">DbSet</span>&lt;<span class="tp">AuditEntry</span>&gt; AuditLog =&gt; Set&lt;<span class="tp">AuditEntry</span>&gt;();
+
+    <span class="kw">protected override</span> <span class="tp">Version</span> SchemaVersion =&gt; <span class="kw">new</span>(<span class="num">1</span>, <span class="num">0</span>);
 }
 
 <span class="kw">public sealed class</span> <span class="tp">AuditEntry</span>
 {
     <span class="kw">public int</span> Id { <span class="kw">get</span>; <span class="kw">set</span>; }
-    <span class="kw">public string</span> UserId { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
+    <span class="kw">public int</span> UserId { <span class="kw">get</span>; <span class="kw">set</span>; }
     <span class="kw">public string</span> Action { <span class="kw">get</span>; <span class="kw">set</span>; } = <span class="str">""</span>;
     <span class="kw">public</span> <span class="tp">DateTime</span> AtUtc { <span class="kw">get</span>; <span class="kw">set</span>; }
 }</code></pre>
                     </div>
-                    <p>Inheriting <code>IdentityDbContext&lt;AppUser&gt;</code> brings in the standard tables: users, roles, user-roles, user-claims, role-claims, user-logins, and user-tokens. You can add your own <code>DbSet&lt;T&gt;</code> properties alongside them, and they all live in the same database file.</p>
+                    <p>The three-generic-argument <code>IdentityDbContext</code> keeps users, roles, and relationship rows on integer keys. Overriding <code>SchemaVersion</code> prevents .NET 10 from selecting newer schema-v3/passkey metadata outside the qualified surface. The model contains users, roles, user-roles, user-claims, role-claims, user-logins, and user-tokens; application tables can live beside them.</p>
 
                     <h3>Step 3: Wire It Up in <code>Program.cs</code></h3>
                     <div class="code-block" data-title="Program.cs">
@@ -175,7 +178,7 @@ builder.Services.AddDbContext&lt;<span class="tp">AppDbContext</span>&gt;(opt =&
     opt.UseCSharpDb(<span class="str">$"Data Source={dbPath}"</span>));
 
 builder.Services
-    .AddIdentity&lt;<span class="tp">AppUser</span>, <span class="tp">IdentityRole</span>&gt;(opt =&gt;
+    .AddIdentity&lt;<span class="tp">AppUser</span>, <span class="tp">IdentityRole</span>&lt;<span class="kw">int</span>&gt;&gt;(opt =&gt;
     {
         opt.Password.RequiredLength = <span class="num">10</span>;
         opt.Password.RequireNonAlphanumeric = <span class="kw">true</span>;
@@ -197,7 +200,7 @@ builder.Services.AddAuthorization(opt =&gt;
 <span class="kw">using</span> (<span class="kw">var</span> scope = app.Services.CreateScope())
 {
     <span class="kw">var</span> db = scope.ServiceProvider.GetRequiredService&lt;<span class="tp">AppDbContext</span>&gt;();
-    <span class="kw">await</span> db.Database.MigrateAsync();
+    <span class="kw">await</span> db.Database.EnsureCreatedAsync();
 }
 
 app.UseAuthentication();
@@ -208,17 +211,16 @@ app.MapControllers();
 
 app.Run();</code></pre>
                     </div>
-                    <p>That is the full integration. <code>UseCSharpDb</code> tells EF Core where the file lives. <code>AddIdentity</code> registers <code>UserManager&lt;AppUser&gt;</code>, <code>SignInManager&lt;AppUser&gt;</code>, role manager, password hasher, and token providers. <code>AddEntityFrameworkStores&lt;AppDbContext&gt;</code> points the user and role stores at our context, which means they read and write through CSharpDB.</p>
+                    <p><code>UseCSharpDb</code> selects the database file, while <code>AddEntityFrameworkStores&lt;AppDbContext&gt;</code> registers Identity's EF stores over the qualified integer-key model. The compatibility designation applies only to the workflows named in the manifest; validate any additional manager, token-provider, two-factor, or UI flow your application enables.</p>
 
-                    <h3>Step 4: Generate the Identity Tables</h3>
-                    <div class="code-block" data-title="Terminal">
-                        <pre><code>dotnet ef migrations add InitialIdentity
-dotnet ef database update</code></pre>
+                    <h3>Step 4: Create the Qualified Schema</h3>
+                    <div class="code-block" data-title="Startup">
+                        <pre><code><span class="kw">await</span> db.Database.EnsureCreatedAsync();</code></pre>
                     </div>
-                    <p>The migration creates <code>AspNetUsers</code>, <code>AspNetRoles</code>, <code>AspNetUserRoles</code>, <code>AspNetUserClaims</code>, <code>AspNetRoleClaims</code>, <code>AspNetUserLogins</code>, <code>AspNetUserTokens</code>, plus your <code>AuditLog</code> table — all inside <code>app.db</code>. <code>db.Database.MigrateAsync()</code> at startup is fine for single-node apps.</p>
+                    <p>The qualified compatibility fixture uses <code>EnsureCreatedAsync</code> and verifies reopen persistence for <code>AspNetUsers</code>, <code>AspNetRoles</code>, <code>AspNetUserRoles</code>, <code>AspNetUserClaims</code>, <code>AspNetRoleClaims</code>, <code>AspNetUserLogins</code>, and <code>AspNetUserTokens</code>. General EF migrations are supported by the provider, but an Identity-specific generated-migration deployment is not part of this bounded application profile; validate that rollout against your exact model before using it in production.</p>
 
                     <h3>Step 5: Register and Sign In</h3>
-                    <p>From here, every Identity API works the way it does on any other provider. The example below uses minimal-API endpoints, but the same calls work in MVC controllers, Razor Pages, or Blazor.</p>
+                    <p>The following minimal-API endpoints illustrate normal Identity composition. They exercise manager and sign-in flows beyond the manifest's exact store-level qualification, so add end-to-end tests for the enabled password, lockout, cookie, token, and UI paths before adopting them.</p>
                     <div class="code-block" data-title="Auth endpoints">
                         <pre><code>app.MapPost(<span class="str">"/auth/register"</span>, <span class="kw">async</span> (
     <span class="tp">RegisterDto</span> dto,
@@ -256,10 +258,10 @@ app.MapPost(<span class="str">"/auth/logout"</span>, <span class="kw">async</spa
 <span class="kw">public record</span> <span class="tp">RegisterDto</span>(<span class="kw">string</span> Email, <span class="kw">string</span> DisplayName, <span class="kw">string</span> Password);
 <span class="kw">public record</span> <span class="tp">LoginDto</span>(<span class="kw">string</span> Email, <span class="kw">string</span> Password, <span class="kw">bool</span> RememberMe);</code></pre>
                     </div>
-                    <p>Behind the scenes <code>UserManager.CreateAsync</code> hashes the password with PBKDF2, writes the user row to CSharpDB, and emits any default tokens. <code>SignInManager.PasswordSignInAsync</code> verifies the hash, increments the lockout counter on failure, and issues the auth cookie on success.</p>
+                    <p>ASP.NET Core's managers own password hashing, verification, lockout policy, and cookie issuance. The CSharpDB qualification currently proves the listed persistence-store operations underneath that layer; manager-level behavior should be covered by the application's authentication tests.</p>
 
                     <h2>Authorization: Roles and Policies</h2>
-                    <p>Role data lives in <code>AspNetUserRoles</code>, claim data in <code>AspNetUserClaims</code>. Every standard authorization attribute reads from those tables through the EF Core stores.</p>
+                    <p>Role data lives in <code>AspNetUserRoles</code>, and claim data in <code>AspNetUserClaims</code>. Integer-key membership and claim persistence are in the qualified store workflow; authorization-policy behavior belongs in the application's end-to-end test suite.</p>
 
                     <h3>Seeding Roles and a First Admin</h3>
                     <div class="code-block" data-title="Seed.cs">
@@ -270,12 +272,12 @@ app.MapPost(<span class="str">"/auth/logout"</span>, <span class="kw">async</spa
     <span class="kw">public static async</span> <span class="tp">Task</span> EnsureRolesAndAdminAsync(<span class="tp">IServiceProvider</span> sp)
     {
         <span class="kw">using var</span> scope = sp.CreateScope();
-        <span class="kw">var</span> roles = scope.ServiceProvider.GetRequiredService&lt;<span class="tp">RoleManager</span>&lt;<span class="tp">IdentityRole</span>&gt;&gt;();
+        <span class="kw">var</span> roles = scope.ServiceProvider.GetRequiredService&lt;<span class="tp">RoleManager</span>&lt;<span class="tp">IdentityRole</span>&lt;<span class="kw">int</span>&gt;&gt;&gt;();
         <span class="kw">var</span> users = scope.ServiceProvider.GetRequiredService&lt;<span class="tp">UserManager</span>&lt;<span class="tp">AppUser</span>&gt;&gt;();
 
         <span class="kw">foreach</span> (<span class="kw">var</span> role <span class="kw">in</span> <span class="kw">new</span>[] { <span class="str">"Admin"</span>, <span class="str">"Editor"</span>, <span class="str">"Viewer"</span> })
             <span class="kw">if</span> (!<span class="kw">await</span> roles.RoleExistsAsync(role))
-                <span class="kw">await</span> roles.CreateAsync(<span class="kw">new</span> <span class="tp">IdentityRole</span>(role));
+                <span class="kw">await</span> roles.CreateAsync(<span class="kw">new</span> <span class="tp">IdentityRole</span>&lt;<span class="kw">int</span>&gt;(role));
 
         <span class="kw">var</span> admin = <span class="kw">await</span> users.FindByEmailAsync(<span class="str">"admin@example.com"</span>);
         <span class="kw">if</span> (admin <span class="kw">is null</span>)
@@ -288,26 +290,26 @@ app.MapPost(<span class="str">"/auth/logout"</span>, <span class="kw">async</spa
     }
 }</code></pre>
                     </div>
-                    <p>Call <code>await Seed.EnsureRolesAndAdminAsync(app.Services);</code> after <code>MigrateAsync()</code>. The seed runs idempotently against CSharpDB and gives you a working admin on first boot.</p>
+                    <p>Call <code>await Seed.EnsureRolesAndAdminAsync(app.Services);</code> after schema creation. This is illustrative manager-level code; the runnable custom-store sample provides the repository's end-to-end seeded-admin proof.</p>
 
                     <h3>Protecting Endpoints</h3>
                     <div class="code-block" data-title="Authorization examples">
                         <pre><code><span class="cm">// Role-based</span>
-app.MapDelete(<span class="str">"/api/users/{id}"</span>, (<span class="kw">string</span> id) =&gt; <span class="tp">Results</span>.Ok())
+app.MapDelete(<span class="str">"/api/users/{id:int}"</span>, (<span class="kw">int</span> id) =&gt; <span class="tp">Results</span>.Ok())
    .RequireAuthorization(<span class="kw">new</span> <span class="tp">AuthorizeAttribute</span> { Roles = <span class="str">"Admin"</span> });
 
 <span class="cm">// Policy-based (claim)</span>
-app.MapPost(<span class="str">"/api/users/{id}/lock"</span>, (<span class="kw">string</span> id) =&gt; <span class="tp">Results</span>.Ok())
+app.MapPost(<span class="str">"/api/users/{id:int}/lock"</span>, (<span class="kw">int</span> id) =&gt; <span class="tp">Results</span>.Ok())
    .RequireAuthorization(<span class="str">"CanManageUsers"</span>);
 
 <span class="cm">// Multiple requirements</span>
 [<span class="tp">Authorize</span>(Roles = <span class="str">"Editor,Admin"</span>, Policy = <span class="str">"CanManageUsers"</span>)]
 <span class="kw">public class</span> <span class="tp">UsersController</span> : <span class="tp">ControllerBase</span> { <span class="cm">/* ... */</span> }</code></pre>
                     </div>
-                    <p>Each attribute resolves through the standard <code>IAuthorizationService</code>. The role and claim lookups go through Identity's <code>UserManager</code>, which reads from CSharpDB through the EF Core stores. There is nothing CSharpDB-specific in your authorization code — that is the point.</p>
+                    <p>Each attribute resolves through the standard <code>IAuthorizationService</code>. Keep authorization code provider-neutral, and qualify the exact role and claim lookups your application triggers.</p>
 
                     <h2>Approach 2: JWT Bearer for APIs and SPAs</h2>
-                    <p>For APIs and single-page apps you typically issue JWTs instead of cookies. Identity still owns user creation, password verification, and refresh-token storage. CSharpDB is the durable store under all of it.</p>
+                    <p>For APIs and single-page apps you typically issue JWTs instead of cookies. Identity can still own user creation and password verification while CSharpDB persists the qualified model. JWT issuance, refresh-token rotation, and the manager APIs used by your application need their own end-to-end coverage.</p>
 
                     <div class="code-block" data-title="JWT setup in Program.cs">
                         <pre><code><span class="kw">using</span> Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -338,7 +340,7 @@ builder.Services.AddIdentityCore&lt;<span class="tp">AppUser</span>&gt;(opt =&gt
         opt.Password.RequiredLength = <span class="num">10</span>;
         opt.User.RequireUniqueEmail = <span class="kw">true</span>;
     })
-    .AddRoles&lt;<span class="tp">IdentityRole</span>&gt;()
+    .AddRoles&lt;<span class="tp">IdentityRole</span>&lt;<span class="kw">int</span>&gt;&gt;()
     .AddEntityFrameworkStores&lt;<span class="tp">AppDbContext</span>&gt;()
     .AddSignInManager()
     .AddDefaultTokenProviders();</code></pre>
@@ -448,7 +450,7 @@ builder.Services
     .AddIdentityCore&lt;<span class="tp">SimpleUser</span>&gt;()
     .AddDefaultTokenProviders();</code></pre>
                     </div>
-                    <p>Two reasons to take this path: collection point reads are sub-microsecond, and there is no migration step. The trade-off is that you implement the <code>IUserStore</code> surface yourself for any feature you want — claims, lockout, two-factor, external logins. For most apps, the EF Core path is the right default. Reach for the Collection API when you specifically want minimal moving parts and can live with a smaller feature set.</p>
+                    <p>This path avoids an EF migration model and keeps the enabled store behavior directly inspectable. The trade-off is that you implement the <code>IUserStore</code> surface yourself for every feature you want—claims, lockout, two-factor, or external logins. Choose between the custom store and the bounded EF profile based on the exact interfaces and workflows your application can test.</p>
 
                     <h2>Persisting Data Protection Keys</h2>
                     <p>ASP.NET Core encrypts auth cookies and antiforgery tokens with a rotating key ring managed by the Data Protection system. By default that ring is written to <code>%LOCALAPPDATA%</code> on Windows or a profile directory on Linux. On a clean container or a fresh deploy, the keys are gone — and every existing cookie becomes invalid.</p>
@@ -500,16 +502,16 @@ builder.Services
                     <h2>Operations Notes</h2>
                     <p>A few things worth knowing when you take this to production on a single node:</p>
                     <ul>
-                        <li><strong>Concurrency.</strong> The Identity pipeline opens many short EF Core scopes per request. The CSharpDB EF Core provider handles the concurrent reader/writer story; just keep the connection lifetime owned by EF Core's scoped <code>DbContext</code>.</li>
+                        <li><strong>Concurrency.</strong> Keep connection lifetime owned by EF Core's scoped <code>DbContext</code>. The qualification suite covers a stale concurrency-stamp update and persistence across reopen; load-test the reader/writer mix and request volume of your application.</li>
                         <li><strong>Backups.</strong> Because everything lives in one file, a backup is a copy. Use the engine's online backup API or stop the app and copy <code>app.db</code> plus its WAL.</li>
                         <li><strong>Admin UI.</strong> The CSharpDB Admin app can open the same file (read-only or read-write) so ops can unlock an account or rotate a claim without writing screens.</li>
-                        <li><strong>Migrations on deploy.</strong> <code>db.Database.MigrateAsync()</code> at startup is fine for single-node deploys. The provider serializes concurrent migrations across processes with <code>__EFMigrationsLock</code>.</li>
-                        <li><strong>Storage tuning.</strong> For login-heavy workloads, <code>UseStoragePreset(CSharpDbStoragePreset.WriteOptimized)</code> on the EF Core builder noticeably improves lockout-counter and token-write throughput.</li>
+                        <li><strong>Migrations on deploy.</strong> General provider migrations and migration locking are supported, but the bounded Identity profile currently proves <code>EnsureCreated</code>, not an Identity-specific generated-migration rollout. Test the exact migration bundle and rollback procedure before deployment.</li>
+                        <li><strong>Storage tuning.</strong> <code>UseStoragePreset(CSharpDbStoragePreset.WriteOptimized)</code> is available for write-heavy embedded workloads; benchmark it against your actual login, lockout, and token traffic.</li>
                     </ul>
 
                     <h2>What You Get</h2>
-                    <p>With one EF Core provider swap and a normal Identity setup, your application gets PBKDF2-hashed passwords, lockout, two-factor scaffolding, external login slots, role and claim authorization, refresh-token storage, and a Data Protection key ring — all backed by a single ACID file you can copy, ship, and back up. The Identity code in your app stays the standard, well-documented surface, and CSharpDB is the part that goes away.</p>
-                    <p>If you are starting a new internal tool, a desktop Blazor app, or a self-hosted edge service, this is a complete identity story without a database server.</p>
+                    <p>The qualified EF profile gives a tested persistence foundation for schema-v1 integer-key users, roles, memberships, claims, logins, and tokens in a single ACID file. ASP.NET Core still supplies the password, cookie, JWT, and authorization layers, but features outside the manifest—such as broader manager APIs, two-factor flows, passkeys, and newer Identity schemas—must be qualified by the application.</p>
+                    <p>For an internal tool, desktop Blazor app, or self-hosted edge service, use this bounded profile as a starting point, or run the custom-store sample when its explicitly implemented cookie, JWT, role, policy, and lockout surface better matches the application.</p>
 
                     <h2>Try the Runnable Sample</h2>
                     <p>The repo includes a runnable companion at <a href="https://github.com/MaxAkbar/CSharpDB/tree/main/samples/aspnet-core-identity">samples/aspnet-core-identity</a>. It implements the v1-friendly variant of this post — a small custom user store over the <code>CSharpDB.Data</code> ADO.NET provider, with the same cookie + JWT pipeline, role and policy authorization, lockout, and a seeded admin.</p>

@@ -268,7 +268,7 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
         }
 
         string pkColumn = GetPrimaryKeyColumn(table);
-        if (TryGetCaseInsensitive(values, pkColumn, out object? pkValue) && pkValue is not null)
+        if (TryGetCaseInsensitive(writeValues, pkColumn, out object? pkValue) && pkValue is not null)
         {
             return await GetRecordAsync(table, pkValue, ct)
                 ?? throw new InvalidOperationException("The inserted record could not be reloaded.");
@@ -460,6 +460,15 @@ public sealed class DbFormRecordService(ICSharpDbClient dbClient) : IFormRecordS
 
         foreach (var field in table.Fields)
         {
+            if (field.Metadata?.TryGetValue(
+                    "isRowVersion",
+                    out object? isRowVersion) ==
+                true &&
+                isRowVersion is true)
+            {
+                continue;
+            }
+
             if (!includePrimaryKey && string.Equals(field.Name, pkColumn, StringComparison.OrdinalIgnoreCase))
                 continue;
 

@@ -3,12 +3,12 @@
   "manifest_version": 1,
   "dialect": "CSharpDB SQL",
   "title": "CSharpDB SQL Compatibility",
-  "description": "Feature-level compatibility for the CSharpDB SQL dialect in CSharpDB 4.1.0. This released snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.",
+  "description": "Feature-level compatibility for the CSharpDB SQL dialect. This development snapshot separates current availability from roadmap intent and does not imply compatibility with another vendor dialect.",
   "verified_against": {
     "commit": "d2cad70e202b1792a4fc313e5b5576849104a3ad",
-    "package_version": "4.1.0",
+    "package_version": "4.2.0",
     "generated_at": "2026-07-18T03:51:39Z",
-    "state": "released"
+    "state": "development"
   },
   "proofs": [
     {
@@ -102,6 +102,15 @@
       "ci_executed": true
     },
     {
+      "id": "parser.alter.drop_primary_key",
+      "kind": "positive",
+      "dimension": "parser",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/ParserTests.cs",
+      "test": "Parse_AlterTable_DropPrimaryKey",
+      "ci_executed": true
+    },
+    {
       "id": "parser.alter.rename_table",
       "kind": "positive",
       "dimension": "parser",
@@ -117,6 +126,15 @@
       "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
       "source": "tests/CSharpDB.Tests/ParserTests.cs",
       "test": "Parse_AlterTable_RenameColumn",
+      "ci_executed": true
+    },
+    {
+      "id": "parser.alter.rename_index",
+      "kind": "positive",
+      "dimension": "parser",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/ParserTests.cs",
+      "test": "Parse_AlterTable_RenameIndex",
       "ci_executed": true
     },
     {
@@ -480,6 +498,24 @@
       "ci_executed": true
     },
     {
+      "id": "parser.alter.column_shape",
+      "kind": "positive",
+      "dimension": "parser",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/ParserTests.cs",
+      "test": "Parse_AlterTable_ColumnShapeChanges",
+      "ci_executed": true
+    },
+    {
+      "id": "parser.alter.column_type.unsupported",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/ParserTests.cs",
+      "test": "Parse_AlterTable_RejectsUnsupportedTypeTargets",
+      "ci_executed": true
+    },
+    {
       "id": "engine.alter.column_default",
       "kind": "positive",
       "dimension": "persistence",
@@ -516,6 +552,96 @@
       "ci_executed": true
     },
     {
+      "id": "engine.alter.column_numeric_type",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnNumericType_UsesShadowRootAndPreservesRowsChecksAndUnchangedIndexes",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_numeric_inexact.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnNumericType_RejectsInexactValuesWithoutChangingStorage",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_numeric_default.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnNumericType_WithIncompatibleDefault_ExplainsRecoveryBeforeRewrite",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_collation",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnCollation_RoundTripsThroughShadowRootsAndReopen",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_collation_indexed",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnCollation_RebuildsInheritedSqlIndexesAtomicallyAndPersists",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_collation_explicit_index",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnCollation_ExplicitIndexCollationKeepsIndexRoot",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_collation_rollback",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnCollation_PublicWriteTransactionRollbackRestoresAllRoots",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_collation_collision.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnCollation_UniqueIndexCollisionLeavesOriginalRootsUsable",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_collation_check.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnCollation_RevalidatesChecksAndRollsBackOnFailure",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.column_shape_dependency.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AlterColumnShape_RejectsUnsupportedDependenciesBeforeRewrite",
+      "ci_executed": true
+    },
+    {
       "id": "catalog.core",
       "kind": "positive",
       "dimension": "catalog",
@@ -549,6 +675,42 @@
       "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
       "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
       "test": "SystemFunctions_ExposesBuiltInsAliasesAndUserCallbacksWithMetadata",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.functions.floor_alias",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
+      "test": "FloorAlias_ExecutesThroughSql",
+      "ci_executed": true
+    },
+    {
+      "id": "catalog.functions.ordinal_string_search",
+      "kind": "positive",
+      "dimension": "catalog",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
+      "test": "Registry_DescribesOrdinalStringSearchFunctions",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.functions.ordinal_string_search",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
+      "test": "OrdinalStringSearchFunctions_UseLiteralCaseSensitiveSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.functions.ordinal_string_search.utf16",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/BuiltInFunctionCatalogTests.cs",
+      "test": "OrdinalStringSearchFunctions_CompareUtf16CodeUnits",
       "ci_executed": true
     },
     {
@@ -849,6 +1011,339 @@
       "ci_executed": true
     },
     {
+      "id": "ef.types.decimal",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "DecimalScaledIntegerMapping_RoundTripsAndSupportsParametersComparisonsAndOrdering",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.types.decimal.value_rejections",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "DecimalScaledIntegerMapping_RejectsLossyAndOverflowingValues",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.types.decimal.model_rejections",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "DecimalModelValidation_RejectsUnsupportedFacetsDefaultsAndKeys",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.types.decimal.query_rejections",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedDecimalExpressions_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.types.decimal.migration_rejection",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_DecimalScaleChange_RemainsExplicitlyRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.basic",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_IncludePaginationAndContainsOverConstantsAndParameters_Succeed",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.inner_join",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_DirectInnerJoinTranslatesAndExecutes",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.inner_join.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "DirectInnerJoin_MatchesForBoundedIntegerKeys",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.inner_join.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedInnerJoinShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.left_join",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_DirectLeftJoinTranslatesAndExecutes",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.left_join.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "DirectLeftJoin_PreservesUnmatchedRowsForBoundedIntegerKeys",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.left_join.navigation",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "OptionalRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.left_join.composite_navigation",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "OptionalCompositeRelationship_IncludeUsesNavigationLeftJoinAndMaterializesNullPrincipal",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.left_join.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedLeftJoinShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.join.unsupported_operators",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedGroupCrossRightAndComparerJoinOperators_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.string_functions",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_StringFunctionsTranslateInPredicatesProjectionsAndOrdering",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.ordinal_string_search",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_OrdinalStringSearchMethodsTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.ordinal_string_search.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "PlainStringContains_MatchesForBoundedPatterns",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.ordinal_string_search.unsupported_overloads",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedStringSearchOverloads_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.like",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_EfFunctionsLikeTranslatesWithBoundedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.like.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "EfFunctionsLike_MatchesForBoundedAsciiPatterns",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.like.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedLikeShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.direct_integer_set_operations",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_DirectIntegerSetOperationsTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.direct_integer_set_operations.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "DirectIntegerSetOperations_Match",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.direct_integer_set_operations.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedDirectIntegerSetOperationShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.temporal_components",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_DateAndTimeComponentsTranslateInPredicatesAndProjections",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.numeric_functions",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_DoubleMathFunctionsTranslateInPredicatesProjectionsAndOrdering",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.numeric_functions.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "DoubleMathFunctions_MatchForFiniteNonMidpointValues",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.scalar_numeric_aggregates",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_ScalarNumericAggregatesTranslateWithExpectedEmptyAndNullableSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.scalar_numeric_aggregates.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "ScalarNumericAggregates_MatchForBoundedValuesAndNulls",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.scalar_distinct_aggregates",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.scalar_distinct_aggregates.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "GroupedAndDistinctAggregates_MatchForBoundedValues",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.scalar_distinct_aggregates.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedDistinctAggregateShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.grouped_aggregates",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "Queries_GroupedAndDistinctAggregatesTranslateWithExpectedSemantics",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.grouped_aggregates.compatibility",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/ComparativeEfCoreSmokeTests.cs",
+      "test": "GroupedAndDistinctAggregates_MatchForBoundedValues",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.grouped_aggregates.unsupported_shapes",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedGroupedAggregateShapes_ReportBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.query.unsupported_diagnostics",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "UnsupportedLinq_ReportsProviderDiagnosticsBeforeCommandDispatch",
+      "ci_executed": true
+    },
+    {
       "id": "ef.schema.literal_defaults_checks",
       "kind": "positive",
       "dimension": "provider",
@@ -867,12 +1362,210 @@
       "ci_executed": true
     },
     {
+      "id": "engine.rowversion.metadata",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_CreateTablePersistsMetadataAcrossReopen",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.update",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_InsertRawUpdateAndNoOpUpdate_GenerateMonotonicTokens",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.assignment_rejection",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_ExplicitInsertAndUpdateAssignmentsAreRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.rollback",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_FailedUpdateAndRollbackPreserveToken",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.rowversion.trigger",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/RowVersionIntegrationTests.cs",
+      "test": "RowVersion_TriggerIssuedUpdateAdvancesToken",
+      "ci_executed": true
+    },
+    {
+      "id": "storage.rowversion.metadata",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/SchemaSerializerCompatibilityTests.cs",
+      "test": "SerializeDeserialize_TableSchema_RoundTripsRowVersionMetadata",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.refresh",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesToken",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.stale_write",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "SaveChanges_WithDatabaseGeneratedRowVersion_ThrowsForStaleUpdateAndDelete",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.raw_sql",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "DatabaseGeneratedRowVersion_AdvancesAfterRawSqlUpdate",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.identity",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "IdentityAndDatabaseGeneratedRowVersion_ArePropagatedTogether",
+      "ci_executed": true
+    },
+    {
+      "id": "sample.ef.rowversion",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/SampleSmokeTests.cs",
+      "test": "EfCoreProviderSample_RunsAndCreatesExpectedTables",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.model_rejection",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "RowVersionModel_RejectsUnsupportedShapes",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.migration",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_RowVersion_IsLimitedToInitialCreateTable",
+      "ci_executed": true
+    },
+    {
       "id": "ef.migration.basic",
       "kind": "positive",
       "dimension": "provider",
       "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
       "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
       "test": "DatabaseMigrate_AppliesCompiledMigrations_AndCanBeReRun",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AlterColumnDefaultAndNullability_ExecutesAndPersists",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column_numeric_type",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AlterColumnNumericType_ExecutesUpAndDownAndPersists",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column_collation",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AlterColumnCollation_ExecutesUpAndDownAndPersists",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column_collation_rollback",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AlterColumnCollation_RebuiltIndexRollsBackWithCompoundMigration",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column_nonnumeric.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_NonNumericAlterColumnTypeChange_RemainsExplicitlyRejected",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column_old_type_inference.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AlterColumn_InfersOldStoreTypeWithoutUsingTargetModelColumn",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column_compound_rollback",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AlterColumnNumericType_FailureRollsBackCompoundTransaction",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.alter_column_dependent_index.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AlterColumnNumericType_RejectsDependentIndexWithoutChangingSchema",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.check_constraint",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneCheckConstraint_CanBeAddedAndDropped",
       "ci_executed": true
     },
     {
@@ -894,30 +1587,192 @@
       "ci_executed": true
     },
     {
-      "id": "ef.composite_fk.rejected",
-      "kind": "negative",
-      "dimension": "rejection",
+      "id": "ef.composite_fk",
+      "kind": "positive",
+      "dimension": "provider",
       "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
-      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
-      "test": "MigrationsSqlGenerator_KeepsCompositeForeignKeysAndStandaloneKeyChangesRejected",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "CompositeForeignKeyRelationship_SupportsEnsureCreatedAndEnforcement",
       "ci_executed": true
     },
     {
-      "id": "ef.migration.idempotent.rejected",
-      "kind": "negative",
-      "dimension": "rejection",
+      "id": "ef.alternate_key",
+      "kind": "positive",
+      "dimension": "provider",
       "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
-      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
-      "test": "Migrator_GenerateIdempotentScript_ThrowsClearly",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "AlternateKeyRelationship_SupportsEnsureCreatedAndEnforcement",
       "ci_executed": true
     },
     {
-      "id": "ef.fk.standalone.rejected",
+      "id": "ef.migration.foreign_key",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneForeignKey_CanBeAddedAndDropped",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.composite_foreign_key",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneCompositeForeignKey_CanBeAddedAndDropped",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.unique_constraint",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneUniqueConstraint_CanBeAddedAndDropped",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.generated_sql",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_EmitsCompositeForeignKeysAndStandalonePrimaryKeyChanges",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.logical",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneCompositePrimaryKey_CanBeAddedAndDropped",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.text",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneTextPrimaryKey_PreservesNotNullAfterDrop",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.primary_key.integer_rekey",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AddPhysicalIntegerPrimaryKey_RekeysRowsAndRebuildsRelationalIndexes",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.primary_key.integer_duplicate.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AddPhysicalIntegerPrimaryKey_DuplicateValuesLeaveOriginalRootsUsable",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.primary_key.unsupported_index.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.Tests/CSharpDB.Tests.csproj",
+      "source": "tests/CSharpDB.Tests/AlterTableRewriteTests.cs",
+      "test": "AddPhysicalIntegerPrimaryKey_FullTextIndexRejectsBeforeChangingRoots",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.integer_rekey",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeysUnalignedRowsAndPersists",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.integer_rekey_rollback",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneIntegerPrimaryKey_RekeyRollsBackMigrationTransaction",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.drop_primary_key.raw",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "AlterTable_DropPrimaryKey_RawSyntaxHandlesUnnamedPrimaryKey",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.exact_name.rejected",
       "kind": "negative",
       "dimension": "rejection",
       "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
       "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
-      "test": "MigrationsSqlGenerator_RejectsStandaloneForeignKeyChanges",
+      "test": "MigrationsSqlGenerator_StandaloneCompositePrimaryKey_CanBeAddedAndDropped",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.second_key.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_StandaloneCompositePrimaryKey_CanBeAddedAndDropped",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.invalid_data.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_AddPrimaryKey_RejectsInvalidRowsWithoutResidualMetadata",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.primary_key.dependency.rejected",
+      "kind": "negative",
+      "dimension": "rejection",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_DropPrimaryKey_RequiresAlternateCandidateForForeignKeys",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.rename_index",
+      "kind": "positive",
+      "dimension": "persistence",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_RenameIndex_ExecutesAndPersists",
+      "ci_executed": true
+    },
+    {
+      "id": "engine.alter.rename_index",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "MigrationsSqlGenerator_RenameIndex_ExecutesAndPersists",
+      "ci_executed": true
+    },
+    {
+      "id": "ef.migration.idempotent",
+      "kind": "positive",
+      "dimension": "execution",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbMigrationsTests.cs",
+      "test": "Migrator_GenerateIdempotentScript_CanRunRepeatedlyFromEmptyDatabase",
       "ci_executed": true
     },
     {
@@ -1279,6 +2134,15 @@
       "source": "tests/CSharpDB.Tests/WindowFunctionTests.cs",
       "test": "InvalidWindowPlacementOrUnsupportedCombination_IsRejected",
       "ci_executed": true
+    },
+    {
+      "id": "ef.concurrency.rowversion.trigger_refresh",
+      "kind": "positive",
+      "dimension": "provider",
+      "project": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj",
+      "source": "tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDbRuntimeTests.cs",
+      "test": "SaveChanges_WithDatabaseGeneratedRowVersion_RefreshesFinalTokenAfterTriggerUpdate",
+      "ci_executed": true
     }
   ],
   "features": [
@@ -1514,7 +2378,7 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "supported", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.1.0",
-      "limitations": ["This row covers PRIMARY KEY declarations inside CREATE TABLE. A composite key is a logical constraint and does not infer integer identity behavior; standalone ADD/DROP PRIMARY KEY remains outside this feature."],
+      "limitations": ["This row covers PRIMARY KEY declarations inside CREATE TABLE. A composite key is a logical constraint and does not infer integer identity behavior; the separately qualified standalone ADD/DROP behavior starts in 4.2.0."],
       "deviations": ["One primary key is allowed per table and every participating value must be non-NULL."],
       "documentation_anchor": "sql-reference.html#create-table",
       "positive_proof_ids": ["parser.key.composite", "schema.key.serialization", "engine.key.composite_primary", "catalog.key_constraints", "ado.schema.defaults_checks_keys", "direct.schema.constraints", "rest.schema.constraints", "grpc.schema.constraints", "archive.schema.constraints", "ef.schema.composite_keys", "ef.runtime.composite_keys"],
@@ -1527,14 +2391,14 @@
       "syntax": "CONSTRAINT uq_tenant_email UNIQUE (tenant_id, email)",
       "availability": "supported",
       "roadmap": "shipped",
-      "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session"],
-      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "not_applicable"},
+      "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.1.0",
-      "limitations": ["This row covers UNIQUE declarations inside CREATE TABLE. Standalone ADD UNIQUE remains outside this feature; named UNIQUE constraints can be removed with DROP CONSTRAINT when no foreign key depends on them."],
+      "limitations": ["SQL and EF migrations support named UNIQUE declarations during CREATE TABLE plus standalone ADD/DROP CONSTRAINT. A unique constraint cannot be dropped while a foreign key depends on it."],
       "deviations": ["Rows containing NULL in any participating column do not collide with one another."],
       "documentation_anchor": "sql-reference.html#create-table",
-      "positive_proof_ids": ["parser.key.composite", "schema.key.serialization", "engine.key.composite_unique", "catalog.key_constraints", "ado.schema.defaults_checks_keys", "direct.schema.constraints", "rest.schema.constraints", "grpc.schema.constraints", "archive.schema.constraints"],
+      "positive_proof_ids": ["parser.key.composite", "schema.key.serialization", "engine.key.composite_unique", "catalog.key_constraints", "ado.schema.defaults_checks_keys", "direct.schema.constraints", "rest.schema.constraints", "grpc.schema.constraints", "archive.schema.constraints", "ef.alternate_key", "ef.migration.unique_constraint"],
       "negative_proof_ids": []
     },
     {
@@ -1572,89 +2436,106 @@
       "negative_proof_ids": ["engine.three_valued.unknown_cases"]
     },
     {
+      "id": "expressions.ordinal_string_search",
+      "category": "Expressions",
+      "feature": "Ordinal string search functions",
+      "syntax": "ORDINAL_STARTS_WITH(text, prefix); ORDINAL_ENDS_WITH(text, suffix); ORDINAL_CONTAINS(text, search)",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["parser", "execution", "catalog"],
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "not_applicable", "catalog": "supported", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "not_applicable", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": [],
+      "deviations": ["These functions use .NET ordinal UTF-16 code-unit semantics independently of SQL collation. Percent, underscore, and backslash are literal characters rather than pattern syntax. Either NULL argument produces NULL."],
+      "documentation_anchor": "sql.html#built-in-functions",
+      "positive_proof_ids": ["catalog.functions.ordinal_string_search", "engine.functions.ordinal_string_search", "engine.functions.ordinal_string_search.utf16"],
+      "negative_proof_ids": []
+    },
+    {
       "id": "schema.foreign_key.column_single",
       "category": "Foreign keys",
       "feature": "Single-column column-level foreign key",
       "syntax": "parent_id INTEGER REFERENCES parents(id)",
-      "availability": "partial",
+      "availability": "supported",
       "roadmap": "shipped",
       "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
-      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "partial"},
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["The referenced column must be an ordered primary or unique candidate key with a compatible type and collation. EF supports inline single-column create-table relationships but rejects standalone foreign-key changes."],
+      "limitations": ["The referenced column must be an ordered primary or unique candidate key with a compatible type and collation. EF emits named table-level declarations and supports standalone add/drop migrations."],
       "deviations": ["Enforcement is immediate; deferred validation is not supported."],
       "documentation_anchor": "sql-reference.html#create-table",
-      "positive_proof_ids": ["parser.fk.column", "engine.fk.enforcement", "schema.fk.serialization", "catalog.fk", "ado.schema.fk", "direct.fk.composite_metadata", "rest.sql", "rest.session", "grpc.fk.metadata", "grpc.session"],
-      "negative_proof_ids": ["ef.fk.standalone.rejected"]
+      "positive_proof_ids": ["parser.fk.column", "engine.fk.enforcement", "schema.fk.serialization", "catalog.fk", "ado.schema.fk", "direct.fk.composite_metadata", "rest.sql", "rest.session", "grpc.fk.metadata", "grpc.session", "ef.alternate_key", "ef.migration.foreign_key"],
+      "negative_proof_ids": []
     },
     {
       "id": "schema.foreign_key.on_delete_restrict",
       "category": "Foreign keys",
       "feature": "Immediate ON DELETE RESTRICT behavior",
       "syntax": "parent_id INTEGER REFERENCES parents(id)",
-      "availability": "partial",
+      "availability": "supported",
       "roadmap": "shipped",
       "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
-      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "partial"},
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["RESTRICT is immediate for scalar and composite keys. Deferred constraints and standalone EF foreign-key changes are not supported."],
+      "limitations": ["RESTRICT is immediate for scalar and composite keys; deferred constraints are a separate unsupported feature."],
       "deviations": ["Omitting ON DELETE selects immediate RESTRICT."],
       "documentation_anchor": "sql-reference.html#create-table",
-      "positive_proof_ids": ["parser.fk.column", "parser.fk.table_composite", "engine.fk.restrict", "engine.fk.composite", "schema.fk.composite_reopen", "catalog.fk.composite_pairs", "ado.fk.composite_metadata", "rest.sql", "rest.session", "grpc.fk.composite_metadata", "grpc.session"],
-      "negative_proof_ids": ["ef.fk.standalone.rejected"]
+      "positive_proof_ids": ["parser.fk.column", "parser.fk.table_composite", "engine.fk.restrict", "engine.fk.composite", "schema.fk.composite_reopen", "catalog.fk.composite_pairs", "ado.fk.composite_metadata", "rest.sql", "rest.session", "grpc.fk.composite_metadata", "grpc.session", "ef.migration.foreign_key"],
+      "negative_proof_ids": []
     },
     {
       "id": "schema.foreign_key.on_delete_cascade",
       "category": "Foreign keys",
       "feature": "Immediate ON DELETE CASCADE behavior",
       "syntax": "parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE",
-      "availability": "partial",
+      "availability": "supported",
       "roadmap": "shipped",
       "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
-      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "partial"},
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["CASCADE is immediate for scalar and composite keys. Deferred constraints and standalone EF foreign-key changes are not supported."],
+      "limitations": ["CASCADE is immediate for scalar and composite keys; deferred constraints are a separate unsupported feature."],
       "deviations": [],
       "documentation_anchor": "sql-reference.html#create-table",
-      "positive_proof_ids": ["parser.fk.column", "parser.fk.table_composite", "engine.fk.cascade", "engine.fk.composite", "schema.fk.composite_reopen", "catalog.fk.composite_pairs", "ado.fk.composite_metadata", "rest.fk.composite_metadata", "rest.session", "grpc.fk.composite_metadata", "grpc.session"],
-      "negative_proof_ids": ["ef.fk.standalone.rejected"]
+      "positive_proof_ids": ["parser.fk.column", "parser.fk.table_composite", "engine.fk.cascade", "engine.fk.composite", "schema.fk.composite_reopen", "catalog.fk.composite_pairs", "ado.fk.composite_metadata", "rest.fk.composite_metadata", "rest.session", "grpc.fk.composite_metadata", "grpc.session", "ef.migration.foreign_key"],
+      "negative_proof_ids": []
     },
     {
       "id": "schema.foreign_key.table_level",
       "category": "Foreign keys",
       "feature": "Table-level FOREIGN KEY clause",
       "syntax": "FOREIGN KEY (parent_id) REFERENCES parents(id)",
-      "availability": "partial",
+      "availability": "supported",
       "roadmap": "shipped",
       "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
-      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "partial"},
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.1.0",
-      "limitations": ["SQL supports table-level scalar and composite declarations. The EF provider generates inline scalar relationships but still rejects composite and standalone foreign-key operations."],
+      "limitations": ["SQL and the EF provider support named table-level scalar and composite declarations plus standalone add/drop migrations."],
       "deviations": ["Constraint validation is immediate and uses MATCH SIMPLE for nullable composite child keys."],
       "documentation_anchor": "sql-reference.html#create-table",
-      "positive_proof_ids": ["parser.fk.table_composite", "engine.fk.composite", "schema.fk.composite_reopen", "catalog.fk.composite_pairs", "ado.fk.composite_metadata", "direct.fk.composite_metadata", "rest.fk.composite_metadata", "grpc.fk.composite_metadata"],
-      "negative_proof_ids": ["ef.composite_fk.rejected"]
+      "positive_proof_ids": ["parser.fk.table_composite", "engine.fk.composite", "schema.fk.composite_reopen", "catalog.fk.composite_pairs", "ado.fk.composite_metadata", "direct.fk.composite_metadata", "rest.fk.composite_metadata", "grpc.fk.composite_metadata", "ef.composite_fk", "ef.migration.foreign_key", "ef.migration.composite_foreign_key"],
+      "negative_proof_ids": []
     },
     {
       "id": "schema.foreign_key.composite",
       "category": "Foreign keys",
       "feature": "Composite foreign key",
       "syntax": "FOREIGN KEY (order_id, line_no) REFERENCES lines(order_id, line_no)",
-      "availability": "partial",
+      "availability": "supported",
       "roadmap": "shipped",
       "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
-      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "unsupported"},
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.1.0",
-      "limitations": ["The referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. MATCH FULL, MATCH PARTIAL, deferred validation, ON UPDATE actions, and EF composite-FK generation are not supported."],
+      "limitations": ["The referenced columns must exactly match the order, types, and collations of a primary or unique candidate key. MATCH FULL, MATCH PARTIAL, deferred validation, and ON UPDATE actions are not supported."],
       "deviations": ["MATCH SIMPLE is used: any NULL child component suppresses the parent lookup."],
       "documentation_anchor": "sql-reference.html#create-table",
-      "positive_proof_ids": ["parser.fk.table_composite", "engine.fk.composite", "schema.fk.composite_reopen", "schema.fk.composite_vacuum", "catalog.fk.composite_pairs", "engine.fk.composite_dependencies", "ado.fk.composite_metadata", "direct.fk.composite_metadata", "rest.fk.composite_metadata", "grpc.fk.composite_metadata", "archive.schema.constraints", "devops.fk.composite_metadata"],
-      "negative_proof_ids": ["engine.fk.composite_validation", "ef.composite_fk.rejected"]
+      "positive_proof_ids": ["parser.fk.table_composite", "engine.fk.composite", "schema.fk.composite_reopen", "schema.fk.composite_vacuum", "catalog.fk.composite_pairs", "engine.fk.composite_dependencies", "ado.fk.composite_metadata", "direct.fk.composite_metadata", "rest.fk.composite_metadata", "grpc.fk.composite_metadata", "archive.schema.constraints", "devops.fk.composite_metadata", "ef.composite_fk", "ef.migration.composite_foreign_key"],
+      "negative_proof_ids": ["engine.fk.composite_validation"]
     },
     {
       "id": "schema.foreign_key.on_update_cascade",
@@ -1751,11 +2632,45 @@
       "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "not_applicable"},
       "persistent_ddl": true,
       "first_supported_version": "4.1.0",
-      "limitations": ["SET NOT NULL scans existing rows and refuses the metadata change if any value is NULL. Type and collation changes are not part of this feature."],
+      "limitations": ["SET NOT NULL scans existing rows and refuses the metadata change if any value is NULL. Bounded numeric type and TEXT collation rewrites are qualified in separate rows."],
       "deviations": [],
       "documentation_anchor": "sql-reference.html#alter-table",
       "positive_proof_ids": ["parser.alter.column_metadata", "engine.alter.column_not_null", "engine.alter.add.reopen", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
       "negative_proof_ids": []
+    },
+    {
+      "id": "alter.column.numeric_type",
+      "category": "ALTER TABLE",
+      "feature": "Convert a dependency-free column between INTEGER and REAL",
+      "syntax": "ALTER TABLE measurements ALTER COLUMN amount TYPE REAL",
+      "availability": "partial",
+      "roadmap": "shipped",
+      "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
+      "facets": {"parser": "supported", "execution": "partial", "persistence": "partial", "catalog": "supported", "embedded_ado_net": "partial", "rest_stateless": "partial", "rest_session": "partial", "grpc_unary": "partial", "grpc_session": "partial", "ef_query": "not_applicable", "ef_migration": "partial"},
+      "persistent_ddl": true,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Only INTEGER-to-REAL and REAL-to-INTEGER are accepted. INTEGER values must remain within the exactly representable inclusive range -2^53 through 2^53; REAL values must be finite, integral, and within the signed 64-bit INTEGER range. An incompatible stored value leaves the original root and schema unchanged. The altered column cannot participate in a primary/unique key, ordinary index, or incoming/outgoing foreign key. The conservative preflight also rejects any view that references the table, any trigger owned by the table, a cross-table trigger that references the column, and an applicable validation rule. Affected-index rebuild and dependency rewriting are not implemented. TEXT/BLOB conversions remain unsupported. A persisted default must validate for the target type, so DROP DEFAULT and a later compatible SET DEFAULT may be required. The generated multi-command default/type/nullability sequence must execute in one migration transaction so a conversion failure restores every facet."],
+      "deviations": ["Successful conversion streams rows through a transactional shadow root, preserves each physical row ID and indexes on other columns, revalidates CHECK constraints, swaps the catalog root atomically, and persists across reopen. EF Core infers the old store type independently of the target model column and orders DROP DEFAULT, TYPE, SET DEFAULT, and nullability changes when those facets change together."],
+      "documentation_anchor": "sql-reference.html#alter-table",
+      "positive_proof_ids": ["parser.alter.column_shape", "engine.alter.column_numeric_type", "ef.migration.alter_column_numeric_type", "ef.migration.alter_column_compound_rollback", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "negative_proof_ids": ["parser.alter.column_type.unsupported", "engine.alter.column_numeric_inexact.rejected", "engine.alter.column_numeric_default.rejected", "engine.alter.column_shape_dependency.rejected", "ef.migration.alter_column_nonnumeric.rejected", "ef.migration.alter_column_old_type_inference.rejected", "ef.migration.alter_column_dependent_index.rejected"]
+    },
+    {
+      "id": "alter.column.collation",
+      "category": "ALTER TABLE",
+      "feature": "Set or drop a TEXT column collation",
+      "syntax": "ALTER TABLE customers ALTER COLUMN code SET COLLATION NOCASE",
+      "availability": "partial",
+      "roadmap": "shipped",
+      "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
+      "facets": {"parser": "supported", "execution": "partial", "persistence": "partial", "catalog": "supported", "embedded_ado_net": "partial", "rest_stateless": "partial", "rest_session": "partial", "grpc_unary": "partial", "grpc_session": "partial", "ef_query": "not_applicable", "ef_migration": "partial"},
+      "persistent_ddl": true,
+      "first_supported_version": "4.2.0",
+      "limitations": ["SET COLLATION and DROP COLLATION apply only to TEXT columns. Ready ordinary and unique SQL indexes that inherit the column collation are rebuilt; indexes with an explicit collation and indexes on other columns retain their roots. Primary/unique key constraints, incoming/outgoing foreign keys, full-text or collection dependencies, and non-ready indexes remain unsupported. The conservative preflight also rejects any view that references the table, any trigger owned by the table, a cross-table trigger that references the column, and an applicable validation rule. Existing rows are rechecked under the target collation, so a CHECK failure or newly colliding unique-index values reject the rewrite and leave every original root unchanged."],
+      "deviations": ["The metadata change builds detached table and affected-index roots, swaps their catalog payloads atomically in the active transaction, preserves each physical row ID, reclaims the replaced roots only after adoption, and persists across reopen. DROP COLLATION restores the default binary comparison behavior."],
+      "documentation_anchor": "sql-reference.html#alter-table",
+      "positive_proof_ids": ["parser.alter.column_shape", "engine.alter.column_collation", "engine.alter.column_collation_indexed", "engine.alter.column_collation_explicit_index", "engine.alter.column_collation_rollback", "ef.migration.alter_column_collation", "ef.migration.alter_column_collation_rollback", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "negative_proof_ids": ["engine.alter.column_collation_check.rejected", "engine.alter.column_collation_collision.rejected", "engine.alter.column_shape_dependency.rejected"]
     },
     {
       "id": "alter.constraint.check",
@@ -1773,6 +2688,40 @@
       "documentation_anchor": "sql-reference.html#alter-table",
       "positive_proof_ids": ["parser.alter.column_metadata", "engine.alter.named_check", "schema.default_check.serialization", "catalog.default_check", "ado.schema.defaults_checks_keys", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
       "negative_proof_ids": ["parser.default_check.unsupported"]
+    },
+    {
+      "id": "alter.constraint.primary_key.add",
+      "category": "ALTER TABLE",
+      "feature": "Add a named primary-key constraint",
+      "syntax": "ALTER TABLE items ADD CONSTRAINT pk_items PRIMARY KEY (tenant_id, code)",
+      "availability": "partial",
+      "roadmap": "shipped",
+      "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
+      "facets": {"parser": "supported", "execution": "partial", "persistence": "partial", "catalog": "supported", "embedded_ado_net": "partial", "rest_stateless": "partial", "rest_session": "partial", "grpc_unary": "partial", "grpc_session": "partial", "ef_query": "not_applicable", "ef_migration": "partial"},
+      "persistent_ddl": true,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Logical single-column and composite keys are added without a table rewrite after all existing rows pass non-NULL and uniqueness validation. One primary key is allowed per table. A single INTEGER primary key uses the physical row key: populated tables are rekeyed from validated non-NULL unique column values while every ready ordinary/unique SQL, constraint-internal, and foreign-key-internal index is rebuilt atomically. Full-text, collection, and non-ready indexes remain unsupported and reject the operation before mutation."],
+      "deviations": ["Logical keys use an engine-owned unique backing index. Adding any primary key makes its columns NOT NULL; a physical single INTEGER key also gains identity/default-value generation. Its high-water mark is not reduced and advances past the largest existing nonnegative key when that successor is representable."],
+      "documentation_anchor": "sql-reference.html#alter-table",
+      "positive_proof_ids": ["ef.migration.primary_key.generated_sql", "ef.migration.primary_key.logical", "ef.migration.primary_key.text", "engine.alter.primary_key.integer_rekey", "ef.migration.primary_key.integer_rekey", "ef.migration.primary_key.integer_rekey_rollback", "catalog.key_constraints", "ado.schema.defaults_checks_keys", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "negative_proof_ids": ["engine.alter.primary_key.integer_duplicate.rejected", "engine.alter.primary_key.unsupported_index.rejected", "ef.migration.primary_key.second_key.rejected", "ef.migration.primary_key.invalid_data.rejected"]
+    },
+    {
+      "id": "alter.constraint.primary_key.drop",
+      "category": "ALTER TABLE",
+      "feature": "Drop a named or current primary-key constraint",
+      "syntax": "ALTER TABLE items DROP CONSTRAINT pk_items; ALTER TABLE items DROP PRIMARY KEY",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
+      "persistent_ddl": true,
+      "first_supported_version": "4.2.0",
+      "limitations": ["DROP CONSTRAINT requires the stored constraint name and is the normal EF Core generated form. DROP PRIMARY KEY targets the current key without a name and also handles legacy unnamed keys. A referenced key cannot be dropped unless an equivalent ordered UNIQUE candidate key remains for every dependent foreign key."],
+      "deviations": ["Dropping a logical key removes its engine-owned backing index. Dropping a physical single INTEGER key removes identity/default-value generation. Primary-key columns remain NOT NULL after either form."],
+      "documentation_anchor": "sql-reference.html#alter-table",
+      "positive_proof_ids": ["parser.alter.drop_primary_key", "ef.migration.primary_key.generated_sql", "ef.migration.primary_key.logical", "ef.migration.primary_key.text", "ef.migration.primary_key.integer_rekey", "engine.alter.drop_primary_key.raw", "catalog.key_constraints", "ado.schema.defaults_checks_keys", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "negative_proof_ids": ["ef.migration.primary_key.exact_name.rejected", "ef.migration.primary_key.dependency.rejected"]
     },
     {
       "id": "alter.rename_table.standalone",
@@ -1797,7 +2746,7 @@
       "feature": "Rename a column",
       "syntax": "ALTER TABLE users RENAME COLUMN old_name TO new_name",
       "availability": "partial",
-      "roadmap": "planned",
+      "roadmap": "shipped",
       "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
       "facets": {"parser": "supported", "execution": "supported", "persistence": "partial", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
@@ -1809,21 +2758,38 @@
       "negative_proof_ids": ["engine.alter.rename_old.rejected", "engine.alter.rename_column_dependency_preflight"]
     },
     {
+      "id": "alter.rename_index",
+      "category": "ALTER TABLE",
+      "feature": "Rename an ordinary SQL index",
+      "syntax": "ALTER TABLE users RENAME INDEX ix_users_name TO ix_users_full_name",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
+      "persistent_ddl": true,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Only ordinary SQL indexes can be renamed directly. Constraint-, foreign-key-, full-text-, and collection-owned indexes retain engine-managed names."],
+      "deviations": ["The physical index root and uniqueness behavior are preserved; existing prefix statistics for the old name are invalidated."],
+      "documentation_anchor": "sql-reference.html#alter-table",
+      "positive_proof_ids": ["parser.alter.rename_index", "engine.alter.rename_index", "ef.migration.rename_index", "catalog.core", "ado.schema.core", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "negative_proof_ids": []
+    },
+    {
       "id": "alter.drop_constraint.foreign_key",
       "category": "ALTER TABLE",
       "feature": "Drop a foreign-key constraint by name",
       "syntax": "ALTER TABLE children DROP CONSTRAINT fk_children_parent",
-      "availability": "partial",
+      "availability": "supported",
       "roadmap": "planned",
       "applies_to": ["parser", "execution", "persistence", "catalog", "embedded_ado_net", "rest_stateless", "rest_session", "grpc_unary", "grpc_session", "ef_migration"],
-      "facets": {"parser": "supported", "execution": "supported", "persistence": "partial", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "unsupported"},
+      "facets": {"parser": "supported", "execution": "supported", "persistence": "supported", "catalog": "supported", "embedded_ado_net": "supported", "rest_stateless": "supported", "rest_session": "supported", "grpc_unary": "supported", "grpc_session": "supported", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": true,
       "first_supported_version": "4.0.4",
-      "limitations": ["Only existing foreign-key constraints are handled. Other constraint kinds do not yet exist, and the EF provider rejects standalone foreign-key changes."],
+      "limitations": ["The named constraint must exist. Provider versions before 4.2.0 may have generated engine-owned names for create-time foreign keys; those stored names must be used in one-time drop migrations."],
       "deviations": [],
       "documentation_anchor": "sql-reference.html#alter-table",
-      "positive_proof_ids": ["parser.alter.drop", "engine.fk.drop_constraint", "catalog.fk", "ado.schema.fk", "rest.sql", "rest.session", "grpc.fk.metadata", "grpc.session"],
-      "negative_proof_ids": ["engine.fk.drop_missing.rejected", "ef.fk.standalone.rejected"]
+      "positive_proof_ids": ["parser.alter.drop", "engine.fk.drop_constraint", "catalog.fk", "ado.schema.fk", "rest.sql", "rest.session", "grpc.fk.metadata", "grpc.session", "ef.migration.foreign_key", "ef.migration.composite_foreign_key"],
+      "negative_proof_ids": ["engine.fk.drop_missing.rejected"]
     },
     {
       "id": "metadata.catalog.core",
@@ -1856,7 +2822,7 @@
       "limitations": ["The registry centralizes names, aliases, kinds, arity, return metadata, determinism, and registered callbacks. Rich binder type signatures, generated documentation tables, and a broader conformance corpus remain follow-on work."],
       "deviations": ["CSharpDB exposes this metadata through sys.functions and the sys_functions alias."],
       "documentation_anchor": "sql.html",
-      "positive_proof_ids": ["catalog.functions", "engine.functions.catalog_query", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
+      "positive_proof_ids": ["catalog.functions", "catalog.functions.ordinal_string_search", "engine.functions.catalog_query", "engine.functions.floor_alias", "rest.sql", "rest.session", "grpc.sql", "grpc.session"],
       "negative_proof_ids": []
     },
     {
@@ -1894,21 +2860,143 @@
       "negative_proof_ids": ["ado.reader.schema.lineage_limited"]
     },
     {
-      "id": "provider.ef_query.crud",
+      "id": "provider.ef_concurrency.rowversion",
       "category": "Generated SQL",
-      "feature": "EF Core embedded CRUD and basic query translation",
-      "syntax": "db.Users.Where(u => u.Id == id).ToListAsync()",
+      "feature": "EF Core database-generated rowversion concurrency",
+      "syntax": "[Timestamp] public byte[] RowVersion { get; set; }",
+      "availability": "partial",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query", "ef_migration"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "partial"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Exactly one nonnullable byte[] property per table configured with [Timestamp] or IsRowVersion() is qualified. The provider emits BLOB ROWVERSION during initial table creation, refreshes generated values after inserts and updates, and uses original tokens to detect stale updates and deletes. The engine initializes revision 1 and advances the token for every successful UPDATE, including raw SQL, trigger-issued, and no-op updates. Explicit token assignments, nullable/non-byte-array/configured-converter shapes, keys, foreign keys, indexes, defaults, computed SQL, multiple rowversion columns, and standalone add or alter rowversion migrations are rejected."],
+      "deviations": ["The opaque eight-byte big-endian token is a per-row revision, not SQL Server's database-wide monotonically increasing rowversion counter."],
+      "documentation_anchor": "entity-framework-core.html#rowversion-concurrency",
+      "positive_proof_ids": ["engine.rowversion.metadata", "engine.rowversion.update", "engine.rowversion.rollback", "engine.rowversion.trigger", "storage.rowversion.metadata", "ef.concurrency.rowversion.refresh", "ef.concurrency.rowversion.trigger_refresh", "ef.concurrency.rowversion.stale_write", "ef.concurrency.rowversion.raw_sql", "ef.concurrency.rowversion.identity", "sample.ef.rowversion"],
+      "negative_proof_ids": ["engine.rowversion.assignment_rejection", "ef.concurrency.rowversion.model_rejection", "ef.concurrency.rowversion.migration"]
+    },
+    {
+      "id": "provider.ef_query.decimal",
+      "category": "Generated SQL",
+      "feature": "EF Core exact scaled-integer decimal foundation",
+      "syntax": "modelBuilder.Entity<Invoice>().Property(i => i.Amount).HasPrecision(18, 4)",
+      "availability": "partial",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query", "ef_migration"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "partial", "ef_migration": "partial"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["The provider maps decimal and nullable decimal to signed scaled INTEGER storage. The default is decimal(18,2); precision must be 1-18 and scale 0-precision. Exact round trips, parameters used with one facet mapping, equality/range comparisons, ordering, nullable values, and ordinary indexes are qualified. Excess fractional digits and precision overflow are rejected rather than rounded. Decimal keys, database defaults, generated values, custom store types, computed decimal expressions (including arithmetic, numeric casts, conditionals/coalescing, and aggregates), decimal collection/subquery Contains, cross-facet parameter reuse, comparisons with application-converter decimal mappings, model-mapped decimal functions, and precision/scale-changing migrations remain unsupported and fail explicitly. Complex properties are rejected until flattened mappings are qualified. Direct IMigrationsSqlGenerator calls with hand-authored AddPrimaryKeyOperation instances must pass the target model; model:null does not carry enough column metadata to identify a decimal mapping."],
+      "deviations": ["Raw SQL observes the scaled INTEGER representation rather than a native DECIMAL storage class."],
+      "documentation_anchor": "entity-framework-core.html#decimal-mapping",
+      "positive_proof_ids": ["ef.types.decimal"],
+      "negative_proof_ids": ["ef.types.decimal.value_rejections", "ef.types.decimal.model_rejections", "ef.types.decimal.query_rejections", "ef.types.decimal.migration_rejection"]
+    },
+    {
+      "id": "provider.ef_query.inner_join",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded direct inner joins",
+      "syntax": "db.Parents.Join(db.Children, p => p.Id, c => c.ParentId, (p, c) => new { p.Name, c.Value })",
       "availability": "supported",
       "roadmap": "shipped",
       "applies_to": ["ef_query"],
       "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
       "persistent_ddl": false,
-      "first_supported_version": "4.0.4",
-      "limitations": ["The first-party provider is embedded/direct only and supports a deliberately bounded EF Core 10 relational subset."],
+      "first_supported_version": "4.2.0",
+      "limitations": ["Exactly one explicit Queryable.Join without a custom comparer is qualified between sources that normalize to direct mapped entity roots. The outer root may have a pre-filter; the inner root must be unfiltered because EF Core otherwise emits a derived JOIN target not accepted by CSharpDB's current table-reference grammar. Each side must use one direct nonnullable INTEGER-backed int, long, or int/long-backed enum property with compatible provider mappings. Qualified scalar or entity result projection plus post-join filtering, ordering, and Skip/Take are supported. Prior ordering or limits, source shapes that remain projected or derived after EF normalization, nullable/text/decimal/configured-converter/transformed/composite keys, custom comparers, chained joins, GroupJoin, SelectMany, DefaultIfEmpty, RightJoin, and cross joins fail before command dispatch."],
       "deviations": [],
-      "documentation_anchor": "entity-framework-core.html#supported-surface",
-      "positive_proof_ids": ["ef.crud"],
-      "negative_proof_ids": []
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.inner_join", "ef.query.inner_join.compatibility"],
+      "negative_proof_ids": ["ef.query.inner_join.unsupported_shapes", "ef.query.join.unsupported_operators"]
+    },
+    {
+      "id": "provider.ef_query.left_join",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded direct left joins",
+      "syntax": "db.Parents.LeftJoin(db.Children, p => p.Id, c => c.ParentId, (p, c) => new { p.Name, Child = c })",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Exactly one explicit no-comparer Queryable.LeftJoin is qualified between sources that normalize to direct mapped entity roots. The outer root may have a pre-filter; the inner root must remain unfiltered. Each side must use one compatible direct nonnullable INTEGER-backed int, long, or int/long-backed enum property. Duplicate matches, unmatched outer rows, nullable inner entity/reference/explicitly-nullable scalar projections, and post-join filtering, ordering, and Skip/Take are supported; inner value-type projections must be explicitly nullable or coalesced. Navigation-generated left joins used by Include remain supported. Prior ordering or limits, derived or projected sources, filtered inner sources, nullable/text/decimal/configured-converter/transformed/composite keys, custom comparers, chained joins, the classic GroupJoin/SelectMany/DefaultIfEmpty pattern, RightJoin, and cross joins fail before command dispatch with CDBEF1008 or CDBEF1003 diagnostics."],
+      "deviations": [],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.left_join", "ef.query.left_join.compatibility", "ef.query.left_join.navigation", "ef.query.left_join.composite_navigation"],
+      "negative_proof_ids": ["ef.query.left_join.unsupported_shapes", "ef.query.join.unsupported_operators"]
+    },
+    {
+      "id": "provider.ef_query.ordinal_string_search",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded ordinal string predicates",
+      "ef_core_feature_id": "query.ordinal-string-search",
+      "syntax": "db.Rows.Where(row => row.Text.Contains(pattern) || row.Text.StartsWith(prefix, StringComparison.Ordinal))",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Converter-free TEXT mappings support plain Contains(string) with ordinal semantics and StartsWith, EndsWith, or Contains when the StringComparison argument is the compile-time constant Ordinal value. Constant and captured string search text, empty and longer search text, literal percent/underscore/backslash characters, case-sensitive Unicode, nullable sources, and negation are qualified. All other string-search overloads—including default culture-sensitive StartsWith(string)/EndsWith(string), the Boolean/CultureInfo forms, non-Ordinal or captured comparison modes, and character overloads—plus configured value converters fail before command dispatch with CDBEF1001."],
+      "deviations": [],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.ordinal_string_search", "ef.query.ordinal_string_search.compatibility"],
+      "negative_proof_ids": ["ef.query.ordinal_string_search.unsupported_overloads"]
+    },
+    {
+      "id": "provider.ef_query.like",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded LIKE predicates",
+      "ef_core_feature_id": "query.like",
+      "syntax": "db.Rows.Where(row => EF.Functions.Like(row.Text, pattern, \"!\"))",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["The exact two- and three-string EF.Functions.Like overloads are qualified when the match expression is one direct converter-free TEXT property and the pattern is constant or captured. Percent matches zero or more UTF-16 code units, underscore matches one, and CSharpDB matching is invariant case-insensitive. The escape overload requires a compile-time non-null one-UTF-16-code-unit string literal other than percent. Transformed or converted match expressions, row-derived patterns, captured or invalid escapes, and other overloads fail before command dispatch with CDBEF1001."],
+      "deviations": ["CSharpDB LIKE uses invariant case-insensitive matching; SQLite parity proofs are intentionally limited to bounded ASCII cases where semantics are comparable."],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.like", "ef.query.like.compatibility"],
+      "negative_proof_ids": ["ef.query.like.unsupported_shapes"]
+    },
+    {
+      "id": "provider.ef_query.direct_integer_set_operations",
+      "category": "Generated SQL",
+      "feature": "EF Core bounded terminal integer set operations",
+      "ef_core_feature_id": "query.direct-integer-set-operations",
+      "syntax": "db.Active.Select(row => row.Id).Union(db.Archived.Select(row => row.Id))",
+      "availability": "supported",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "supported", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.2.0",
+      "limitations": ["Exactly one terminal no-comparer Queryable.Concat, Union, Intersect, or Except is qualified when each branch remains one direct mapped entity table with optional filtering and selects one compatible converter-free INTEGER-backed int, long, or nullable equivalent. Concat preserves duplicates; the other operators apply distinct set semantics, including one NULL where appropriate. Entity, composite, constant, converted, transformed, mixed-mapping, non-integer, ordered, limited, distinct, grouped, joined, derived, nested, chained, comparer, and post-set composition shapes fail before command dispatch with CDBEF1009 or CDBEF1003."],
+      "deviations": ["Result order is unspecified; materialize the terminal set operation before client-side ordering or transformation."],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.query.direct_integer_set_operations", "ef.query.direct_integer_set_operations.compatibility"],
+      "negative_proof_ids": ["ef.query.direct_integer_set_operations.unsupported_shapes"]
+    },
+    {
+      "id": "provider.ef_query.crud",
+      "category": "Generated SQL",
+      "feature": "EF Core embedded CRUD and bounded query translation",
+      "syntax": "db.Users.Where(u => u.Id == id).ToListAsync()",
+      "availability": "partial",
+      "roadmap": "shipped",
+      "applies_to": ["ef_query"],
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "partial", "ef_migration": "not_applicable"},
+      "persistent_ddl": false,
+      "first_supported_version": "4.0.4",
+      "limitations": ["The first-party provider is embedded/direct only, and its overall LINQ surface remains deliberately partial. The authoritative feature-by-feature contract, support tier, limitations, and proof-test names are maintained in docs/ef-core-compatibility.json and published in the generated EF Core compatibility matrix. Focused SQL-matrix rows describe major translated surfaces without duplicating that exhaustive contract. Unsupported methods, members, operators, aggregate, join, LIKE, set-operation, and decimal shapes fail before command dispatch with provider diagnostics."],
+      "deviations": ["ToLower()/ToUpper() and their invariant variants map to CSharpDB LOWER/UPPER and therefore use invariant server semantics rather than .NET CurrentCulture.", "Math.Round(double) uses CSharpDB midpoint-to-even semantics. Scalar numeric aggregate qualification is limited to bounded values and the explicitly documented CLR types because engine accumulation and EF-generated conversions differ for wider variants.", "Nullable Distinct().Count()/LongCount() is intentionally rejected because LINQ counts one distinct NULL while SQL COUNT(DISTINCT column) ignores NULL."],
+      "documentation_anchor": "entity-framework-core.html#linq-translation",
+      "positive_proof_ids": ["ef.crud", "ef.query.basic", "ef.query.inner_join", "ef.query.inner_join.compatibility", "ef.query.left_join", "ef.query.left_join.compatibility", "ef.query.left_join.navigation", "ef.query.left_join.composite_navigation", "ef.query.string_functions", "ef.query.ordinal_string_search", "ef.query.ordinal_string_search.compatibility", "ef.query.like", "ef.query.like.compatibility", "ef.query.direct_integer_set_operations", "ef.query.direct_integer_set_operations.compatibility", "ef.query.temporal_components", "ef.query.numeric_functions", "ef.query.numeric_functions.compatibility", "ef.query.scalar_numeric_aggregates", "ef.query.scalar_numeric_aggregates.compatibility", "ef.query.scalar_distinct_aggregates", "ef.query.scalar_distinct_aggregates.compatibility", "ef.query.grouped_aggregates", "ef.query.grouped_aggregates.compatibility"],
+      "negative_proof_ids": ["ef.query.unsupported_diagnostics", "ef.query.ordinal_string_search.unsupported_overloads", "ef.query.like.unsupported_shapes", "ef.query.direct_integer_set_operations.unsupported_shapes", "ef.query.inner_join.unsupported_shapes", "ef.query.left_join.unsupported_shapes", "ef.query.join.unsupported_operators", "ef.query.scalar_distinct_aggregates.unsupported_shapes", "ef.query.grouped_aggregates.unsupported_shapes"]
     },
     {
       "id": "provider.ef_migration.basic",
@@ -1921,27 +3009,28 @@
       "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": false,
       "first_supported_version": "4.0.4",
-      "limitations": ["The supported operation set is create/drop table, add/drop/rename column, rename table, and create/drop index within the provider's schema restrictions."],
+      "limitations": ["The supported operation set is create/drop table, add/drop/rename column, rename table, create/drop/rename index, add/drop named check, unique, foreign-key, and qualified primary-key constraints, plus AlterColumn changes to literal defaults, nullability, exact dependency-free INTEGER/REAL types, and TEXT collations. TEXT collation changes atomically rebuild affected ready ordinary/unique SQL indexes that inherit the column collation; key/FK/full-text/collection dependencies remain unsupported. For numeric type changes the generator drops an old default before TYPE and reapplies a compatible target default afterward; indexed numeric changes remain unsupported because REAL index keys are not implemented. Compound AlterColumn command sequences must execute in one migration transaction. Adding a single INTEGER primary key rekeys validated populated rows and atomically rebuilds ready ordinary/unique SQL, constraint-internal, and foreign-key-internal indexes; full-text, collection, and non-ready indexes remain unsupported. TEXT/BLOB type conversions and broader dependency rewriting remain unsupported."],
       "deviations": [],
       "documentation_anchor": "entity-framework-core.html#migrations",
-      "positive_proof_ids": ["ef.migration.basic"],
-      "negative_proof_ids": []
+      "positive_proof_ids": ["ef.migration.basic", "ef.migration.alter_column", "ef.migration.alter_column_numeric_type", "ef.migration.alter_column_compound_rollback", "ef.migration.alter_column_collation", "ef.migration.alter_column_collation_rollback", "ef.migration.rename_index", "ef.migration.check_constraint", "ef.migration.foreign_key", "ef.migration.composite_foreign_key", "ef.migration.unique_constraint", "ef.migration.primary_key.generated_sql", "ef.migration.primary_key.logical", "ef.migration.primary_key.text", "ef.migration.primary_key.integer_rekey", "ef.migration.primary_key.integer_rekey_rollback"],
+      "negative_proof_ids": ["ef.migration.alter_column_nonnumeric.rejected", "ef.migration.alter_column_old_type_inference.rejected", "ef.migration.alter_column_dependent_index.rejected", "ef.migration.primary_key.invalid_data.rejected", "ef.migration.primary_key.dependency.rejected"]
     },
     {
       "id": "provider.ef_migration.idempotent",
       "category": "Generated SQL",
       "feature": "Idempotent EF migration scripts",
       "syntax": "IMigrator.GenerateScript(options: Idempotent)",
-      "availability": "unsupported",
-      "roadmap": "out_of_scope",
+      "availability": "supported",
+      "roadmap": "shipped",
       "applies_to": ["ef_migration"],
-      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "not_applicable", "ef_migration": "unsupported"},
+      "facets": {"parser": "not_applicable", "execution": "not_applicable", "persistence": "not_applicable", "catalog": "not_applicable", "embedded_ado_net": "not_applicable", "rest_stateless": "not_applicable", "rest_session": "not_applicable", "grpc_unary": "not_applicable", "grpc_session": "not_applicable", "ef_query": "not_applicable", "ef_migration": "supported"},
       "persistent_ddl": false,
-      "limitations": ["The provider throws a clear NotSupportedException for idempotent scripts; a migration-history and locking design is not part of the first compatibility release."],
+      "first_supported_version": "4.2.0",
+      "limitations": ["Scripts target file-backed embedded databases and the migration operations supported by the provider."],
       "deviations": [],
-      "documentation_anchor": "entity-framework-core.html#limitations",
-      "positive_proof_ids": [],
-      "negative_proof_ids": ["ef.migration.idempotent.rejected"]
+      "documentation_anchor": "entity-framework-core.html#migrations",
+      "positive_proof_ids": ["ef.migration.idempotent"],
+      "negative_proof_ids": []
     },
     {
       "id": "diagnostics.analyze.statistics",

@@ -121,12 +121,13 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
             column.Name,
             column.Type,
             column.Nullable,
-            column.IsIdentity,
+            column.IsIdentity || column.IsRowVersion,
             ToDisplayName(column.Name),
             new Dictionary<string, object?>
             {
                 ["isPrimaryKey"] = column.IsPrimaryKey,
                 ["isIdentity"] = column.IsIdentity,
+                ["isRowVersion"] = column.IsRowVersion,
                 ["collation"] = column.Collation,
             });
 
@@ -179,7 +180,26 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
     }
 
     private static string ComputeTableSignature(TableSchema schema)
-        => ReportSql.ComputeSignature(new
+    {
+        if (!schema.Columns.Any(static column => column.IsRowVersion))
+        {
+            return ReportSql.ComputeSignature(new
+            {
+                Kind = "table",
+                schema.TableName,
+                Columns = schema.Columns.Select(column => new
+                {
+                    column.Name,
+                    Type = column.Type.ToString(),
+                    column.Nullable,
+                    column.IsPrimaryKey,
+                    column.IsIdentity,
+                    column.Collation,
+                }),
+            });
+        }
+
+        return ReportSql.ComputeSignature(new
         {
             Kind = "table",
             schema.TableName,
@@ -190,9 +210,11 @@ public sealed class DbReportSourceProvider(ICSharpDbClient dbClient) : IReportSo
                 column.Nullable,
                 column.IsPrimaryKey,
                 column.IsIdentity,
+                column.IsRowVersion,
                 column.Collation,
             }),
         });
+    }
 
     private static string ComputeViewSignature(ViewDefinition view, IReadOnlyList<ReportFieldDefinition> fields)
         => ReportSql.ComputeSignature(new

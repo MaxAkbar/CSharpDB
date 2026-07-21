@@ -8,6 +8,7 @@ public sealed record ColumnResponse(
     bool Nullable,
     bool IsPrimaryKey,
     bool IsIdentity,
+    bool IsRowVersion,
     string? Collation,
     string? DefaultSql);
 public sealed record ForeignKeyResponse(

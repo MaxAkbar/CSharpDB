@@ -32,9 +32,6 @@ internal static class CSharpDbProviderValidation
             throw new NotSupportedException("The EF Core provider only supports direct embedded transports in v1.");
         }
 
-        if (builder.Pooling)
-            throw new NotSupportedException("The EF Core provider does not support pooled connections in v1.");
-
         if (IsNamedSharedMemory(builder.DataSource))
         {
             throw new NotSupportedException(

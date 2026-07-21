@@ -86,6 +86,967 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
         Assert.Equal(4, await db.Rows.CountAsync(row => row.Category == "Even", Ct));
     }
 
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task OptionalRelationship_ClientSetNull_MatchesTrackedAndUntrackedDelete(
+        ProviderKind provider)
+    {
+        string dbPath = GetDbPath(provider, "optional-client-set-null");
+
+        await using (var seed = CreateContext(provider, dbPath))
+        {
+            await seed.Database.EnsureCreatedAsync(Ct);
+            seed.OptionalParents.AddRange(
+                new ComparisonOptionalParent
+                {
+                    Id = 1,
+                    Children =
+                    [
+                        new ComparisonOptionalChild
+                        {
+                            Id = 11,
+                        },
+                    ],
+                },
+                new ComparisonOptionalParent
+                {
+                    Id = 2,
+                    Children =
+                    [
+                        new ComparisonOptionalChild
+                        {
+                            Id = 12,
+                        },
+                    ],
+                });
+            await seed.SaveChangesAsync(Ct);
+        }
+
+        await using (var tracked = CreateContext(provider, dbPath))
+        {
+            ComparisonOptionalParent parent =
+                await tracked.OptionalParents.SingleAsync(
+                    item => item.Id == 1,
+                    Ct);
+            ComparisonOptionalChild child =
+                await tracked.OptionalChildren.SingleAsync(
+                    item => item.Id == 11,
+                    Ct);
+            var foreignKey = tracked.Model
+                .FindEntityType(typeof(ComparisonOptionalChild))!
+                .GetForeignKeys()
+                .Single();
+
+            Assert.Equal(DeleteBehavior.ClientSetNull, foreignKey.DeleteBehavior);
+            Assert.Same(parent, child.Parent);
+
+            tracked.Remove(parent);
+            await tracked.SaveChangesAsync(Ct);
+            Assert.Null(child.ParentId);
+        }
+
+        await using (var untracked = CreateContext(provider, dbPath))
+        {
+            ComparisonOptionalParent parent =
+                await untracked.OptionalParents.SingleAsync(
+                    item => item.Id == 2,
+                    Ct);
+            Assert.Empty(
+                untracked.ChangeTracker.Entries<ComparisonOptionalChild>());
+
+            untracked.Remove(parent);
+            await Assert.ThrowsAsync<DbUpdateException>(
+                () => untracked.SaveChangesAsync(Ct));
+        }
+
+        await using var verify = CreateContext(provider, dbPath);
+        Assert.False(
+            await verify.OptionalParents.AnyAsync(
+                item => item.Id == 1,
+                Ct));
+        Assert.Null(
+            await verify.OptionalChildren
+                .Where(item => item.Id == 11)
+                .Select(item => item.ParentId)
+                .SingleAsync(Ct));
+        Assert.True(
+            await verify.OptionalParents.AnyAsync(
+                item => item.Id == 2,
+                Ct));
+        Assert.Equal(
+            2,
+            await verify.OptionalChildren
+                .Where(item => item.Id == 12)
+                .Select(item => item.ParentId)
+                .SingleAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task DoubleMathFunctions_MatchForFiniteNonMidpointValues(ProviderKind provider)
+    {
+        await using var db = CreateContext(provider, GetDbPath(provider, "double-math"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 1,
+                Number = -12.55,
+                OptionalNumber = null,
+                TextCol = "negative",
+                Category = "Math",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 2,
+                Number = 3.25,
+                OptionalNumber = -3.25,
+                TextCol = "positive",
+                Category = "Math",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        var result = await db.Rows
+            .Where(row => Math.Abs(row.Number) > 10)
+            .Select(row => new
+            {
+                Absolute = Math.Abs(row.Number),
+                Rounded = Math.Round(Math.Abs(row.Number)),
+                Floor = Math.Floor(row.Number),
+                Ceiling = Math.Ceiling(row.Number),
+                Truncated = Math.Truncate(row.Number),
+                Sign = Math.Sign(row.Number),
+            })
+            .SingleAsync(Ct);
+
+        Assert.Equal(12.55, result.Absolute, precision: 10);
+        Assert.Equal(13, result.Rounded);
+        Assert.Equal(-13, result.Floor);
+        Assert.Equal(-12, result.Ceiling);
+        Assert.Equal(-12, result.Truncated);
+        Assert.Equal(-1, result.Sign);
+
+        Assert.Equal(
+            "positive",
+            await db.Rows
+                .Where(row => Math.Abs(row.OptionalNumber!.Value) > 0)
+                .Select(row => row.TextCol)
+                .SingleAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task PlainStringContains_MatchesForBoundedPatterns(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "plain-string-contains"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                TextCol = @"alpha%_\omega",
+                OptionalText = "needle-here",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                TextCol = "literal_percent_%",
+                OptionalText = null,
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                TextCol = "literal_under_score",
+                OptionalText = "other",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                TextCol = "plain",
+                OptionalText = null,
+                Category = "Search",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string specialPattern = "%_\\";
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    row.TextCol.Contains(specialPattern))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1, 2],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("%"))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1, 2, 3],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("_"))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("\\"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row => row.TextCol.Contains("omega"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            4,
+            await db.Rows.CountAsync(
+                row => row.TextCol.Contains(string.Empty),
+                Ct));
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    row.OptionalText!.Contains("needle"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task EfFunctionsLike_MatchesForBoundedAsciiPatterns(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(
+                provider,
+                "ef-functions-like"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                TextCol = "Alpha_One%",
+                OptionalText = "Needle-here",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                TextCol = "alpha-Two",
+                OptionalText = null,
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                TextCol = "Beta%literal",
+                OptionalText = "other",
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                TextCol = "Gamma",
+                OptionalText = null,
+                Category = "Search",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                TextCol = string.Empty,
+                OptionalText = null,
+                Category = "Search",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string prefixPattern = "alpha%";
+        Assert.Equal(
+            [1, 2],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        prefixPattern))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [2],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        "alpha_two"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        "alpha!_one!%",
+                        "!"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+
+        string danglingEscapePattern =
+            "alpha!_one!%!";
+        Assert.Empty(
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        danglingEscapePattern,
+                        "!"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [3, 4, 5],
+            await db.Rows
+                .Where(row =>
+                    !EF.Functions.Like(
+                        row.TextCol,
+                        prefixPattern))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+
+        Assert.Equal(
+            [1],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.OptionalText!,
+                        "%needle%"))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [2, 3, 4, 5],
+            await db.Rows
+                .Where(row =>
+                    !EF.Functions.Like(
+                        row.OptionalText!,
+                        "%needle%"))
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [5],
+            await db.Rows
+                .Where(row =>
+                    EF.Functions.Like(
+                        row.TextCol,
+                        string.Empty))
+                .Select(row => row.Id)
+                .ToListAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task ScalarNumericAggregates_MatchForBoundedValuesAndNulls(ProviderKind provider)
+    {
+        await using var db = CreateContext(provider, GetDbPath(provider, "aggregates"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 2,
+                Number = 2.5,
+                OptionalNumber = 2.5,
+                TextCol = "active-one",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 4,
+                Number = 7.5,
+                OptionalNumber = null,
+                TextCol = "active-two",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 8,
+                Number = -3,
+                OptionalNumber = null,
+                TextCol = "inactive",
+                Category = "Inactive",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        IQueryable<BenchEntity> active =
+            db.Rows.Where(row => row.Category == "Active");
+        IQueryable<BenchEntity> empty =
+            db.Rows.Where(row => row.Number > 100);
+        IQueryable<BenchEntity> allNull =
+            db.Rows.Where(row => row.Category == "Inactive");
+
+        Assert.Equal(2, await active.CountAsync(Ct));
+        Assert.Equal(2L, await active.LongCountAsync(Ct));
+        Assert.True(await active.OrderBy(row => row.Id).Take(1).AnyAsync(Ct));
+        Assert.False(await empty.AnyAsync(Ct));
+        Assert.Equal(6, await active.SumAsync(row => row.Value, Ct));
+        Assert.Equal(10, await active.SumAsync(row => row.Number, Ct));
+        Assert.Equal(5, await active.AverageAsync(row => row.Number, Ct));
+        Assert.Equal(2, await active.MinAsync(row => row.Value, Ct));
+        Assert.Equal(4, await active.MaxAsync(row => row.Value, Ct));
+        Assert.Equal(2.5, await active.MinAsync(row => row.Number, Ct));
+        Assert.Equal(7.5, await active.MaxAsync(row => row.Number, Ct));
+        Assert.Equal(0, await empty.SumAsync(row => row.Value, Ct));
+        Assert.Equal(0, await empty.SumAsync(row => row.Number, Ct));
+        Assert.Equal(2.5, await active.SumAsync(row => row.OptionalNumber, Ct));
+        Assert.Equal(2.5, await active.AverageAsync(row => row.OptionalNumber, Ct));
+        Assert.Equal(0, await empty.CountAsync(Ct));
+        Assert.Equal(0L, await empty.LongCountAsync(Ct));
+        Assert.Equal(0, await allNull.SumAsync(row => row.OptionalNumber, Ct));
+        Assert.Equal(0, await empty.SumAsync(row => row.OptionalNumber, Ct));
+        Assert.Null(await empty.AverageAsync(row => row.OptionalNumber, Ct));
+        Assert.Null(await empty.MinAsync(row => row.OptionalNumber, Ct));
+        Assert.Null(await empty.MaxAsync(row => row.OptionalNumber, Ct));
+        InvalidOperationException emptyAverageException =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+            () => empty.AverageAsync(row => row.Number, Ct));
+        Assert.Contains(
+            "Nullable object",
+            emptyAverageException.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException emptyMinException =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+            () => empty.MinAsync(row => row.Value, Ct));
+        Assert.Contains(
+            "Nullable object",
+            emptyMinException.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException emptyMaxException =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+            () => empty.MaxAsync(row => row.Number, Ct));
+        Assert.Contains(
+            "Nullable object",
+            emptyMaxException.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Null(await allNull.AverageAsync(row => row.OptionalNumber, Ct));
+        Assert.Null(await allNull.MinAsync(row => row.OptionalNumber, Ct));
+        Assert.Null(await allNull.MaxAsync(row => row.OptionalNumber, Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task GroupedAndDistinctAggregates_MatchForBoundedValues(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "grouped-distinct-aggregates"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 2,
+                Number = 2.5,
+                OptionalNumber = 2.5,
+                TextCol = "active-one",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 4,
+                Number = 7.5,
+                OptionalNumber = null,
+                TextCol = "active-two",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 4,
+                Number = 7.5,
+                OptionalNumber = 2.5,
+                TextCol = "active-duplicate",
+                Category = "Active",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                Value = 8,
+                Number = -3,
+                OptionalNumber = 1,
+                TextCol = "inactive-one",
+                Category = "Inactive",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                Value = 8,
+                Number = -3,
+                OptionalNumber = null,
+                TextCol = "inactive-duplicate",
+                Category = "Inactive",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        var grouped = await db.Rows
+            .GroupBy(row => row.Category)
+            .Where(group => group.Count() >= 2)
+            .Select(group => new
+            {
+                Category = group.Key,
+                Count = group.Count(),
+                IntegerSum = group.Sum(row => row.Value),
+                IntegerMin = group.Min(row => row.Value),
+                IntegerMax = group.Max(row => row.Value),
+                Sum = group.Sum(row => row.Number),
+                Average = group.Average(row => row.Number),
+                Min = group.Min(row => row.Number),
+                Max = group.Max(row => row.Number),
+                DistinctIntegerCount = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Count(),
+                DistinctIntegerSum = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Sum(),
+                DistinctIntegerMin = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Min(),
+                DistinctIntegerMax = group
+                    .Select(row => row.Value)
+                    .Distinct()
+                    .Max(),
+            })
+            .OrderByDescending(row => row.Count)
+            .ThenBy(row => row.Category)
+            .ToListAsync(Ct);
+
+        Assert.Equal(2, grouped.Count);
+        Assert.Equal("Active", grouped[0].Category);
+        Assert.Equal(3, grouped[0].Count);
+        Assert.Equal(10, grouped[0].IntegerSum);
+        Assert.Equal(2, grouped[0].IntegerMin);
+        Assert.Equal(4, grouped[0].IntegerMax);
+        Assert.Equal(17.5, grouped[0].Sum);
+        Assert.Equal(17.5 / 3, grouped[0].Average, precision: 10);
+        Assert.Equal(2.5, grouped[0].Min);
+        Assert.Equal(7.5, grouped[0].Max);
+        Assert.Equal(2, grouped[0].DistinctIntegerCount);
+        Assert.Equal(6, grouped[0].DistinctIntegerSum);
+        Assert.Equal(2, grouped[0].DistinctIntegerMin);
+        Assert.Equal(4, grouped[0].DistinctIntegerMax);
+        Assert.Equal("Inactive", grouped[1].Category);
+        Assert.Equal(2, grouped[1].Count);
+        Assert.Equal(16, grouped[1].IntegerSum);
+        Assert.Equal(8, grouped[1].IntegerMin);
+        Assert.Equal(8, grouped[1].IntegerMax);
+        Assert.Equal(-6, grouped[1].Sum);
+        Assert.Equal(-3, grouped[1].Average);
+        Assert.Equal(-3, grouped[1].Min);
+        Assert.Equal(-3, grouped[1].Max);
+        Assert.Equal(1, grouped[1].DistinctIntegerCount);
+        Assert.Equal(8, grouped[1].DistinctIntegerSum);
+        Assert.Equal(8, grouped[1].DistinctIntegerMin);
+        Assert.Equal(8, grouped[1].DistinctIntegerMax);
+
+        IQueryable<int> distinctValues =
+            db.Rows.Select(row => row.Value).Distinct();
+
+        Assert.Equal(3, await distinctValues.CountAsync(Ct));
+        Assert.Equal(3L, await distinctValues.LongCountAsync(Ct));
+        Assert.Equal(14, await distinctValues.SumAsync(Ct));
+        Assert.Equal(2, await distinctValues.MinAsync(Ct));
+        Assert.Equal(8, await distinctValues.MaxAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task DirectIntegerSetOperations_Match(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "direct-integer-set-operations"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 1,
+                LongValue = 3_000_000_001,
+                OptionalValue = null,
+                Category = "Left",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 2,
+                LongValue = 3_000_000_002,
+                OptionalValue = 2,
+                Category = "Left",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 2,
+                LongValue = 3_000_000_002,
+                OptionalValue = null,
+                Category = "Left",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                Value = 2,
+                LongValue = 3_000_000_002,
+                OptionalValue = null,
+                Category = "Right",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                Value = 3,
+                LongValue = 3_000_000_003,
+                OptionalValue = 3,
+                Category = "Right",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        string leftCategory = "Left";
+        string rightCategory = "Right";
+        string missingCategory = "Missing";
+        IQueryable<int> left = db.Rows
+            .Where(row => row.Category == leftCategory)
+            .Select(row => row.Value);
+        IQueryable<int> right = db.Rows
+            .Where(row => row.Category == rightCategory)
+            .Select(row => row.Value);
+        IQueryable<int> empty = db.Rows
+            .Where(row => row.Category == missingCategory)
+            .Select(row => row.Value);
+
+        Assert.Equal(
+            [1, 2, 3],
+            (await left
+                .Union(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [1, 2, 2, 2, 3],
+            (await left
+                .Concat(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [2],
+            (await left
+                .Intersect(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [1],
+            (await left
+                .Except(right)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+
+        IQueryable<int?> nullableLeft = db.Rows
+            .Where(row => row.Category == leftCategory)
+            .Select(row => row.OptionalValue);
+        IQueryable<int?> nullableRight = db.Rows
+            .Where(row => row.Category == rightCategory)
+            .Select(row => row.OptionalValue);
+
+        Assert.Equal(
+            [null, 2, 3],
+            (await nullableLeft
+                .Union(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+        Assert.Equal(
+            [null, null, null, 2, 3],
+            (await nullableLeft
+                .Concat(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+        Assert.Equal(
+            [null],
+            (await nullableLeft
+                .Intersect(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+        Assert.Equal(
+            [2],
+            (await nullableLeft
+                .Except(nullableRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value.HasValue)
+                .ThenBy(value => value));
+
+        Assert.Equal(
+            [1, 2],
+            (await left
+                .Union(empty)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [1, 2, 2],
+            (await left
+                .Concat(empty)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Empty(
+            await left
+                .Intersect(empty)
+                .ToListAsync(Ct));
+        Assert.Equal(
+            [1, 2],
+            (await left
+                .Except(empty)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+
+        IQueryable<long> longLeft = db.Rows
+            .Where(row => row.Category == leftCategory)
+            .Select(row => row.LongValue);
+        IQueryable<long> longRight = db.Rows
+            .Where(row => row.Category == rightCategory)
+            .Select(row => row.LongValue);
+
+        Assert.Equal(
+            [3_000_000_001L, 3_000_000_002L, 3_000_000_003L],
+            (await longLeft
+                .Union(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [
+                3_000_000_001L,
+                3_000_000_002L,
+                3_000_000_002L,
+                3_000_000_002L,
+                3_000_000_003L,
+            ],
+            (await longLeft
+                .Concat(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [3_000_000_002L],
+            (await longLeft
+                .Intersect(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+        Assert.Equal(
+            [3_000_000_001L],
+            (await longLeft
+                .Except(longRight)
+                .ToListAsync(Ct))
+                .OrderBy(value => value));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task DirectInnerJoin_MatchesForBoundedIntegerKeys(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "direct-inner-join"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 2,
+                TextCol = "outer-one",
+                Category = "Outer",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 3,
+                TextCol = "lookup-two",
+                Category = "Lookup",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 99,
+                TextCol = "lookup-three",
+                Category = "Lookup",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                Value = 2,
+                TextCol = "outer-four",
+                Category = "Outer",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                Value = 88,
+                TextCol = "unmatched",
+                Category = "Outer",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        int minimumInnerId = 2;
+        var results = await db.Rows
+            .Where(outer =>
+                outer.Category == "Outer")
+            .Join(
+                db.Rows,
+                outer => outer.Value,
+                inner => inner.Id,
+                (outer, inner) => new
+                {
+                    OuterId = outer.Id,
+                    InnerId = inner.Id,
+                    InnerText = inner.TextCol,
+                })
+            .Where(result =>
+                result.InnerId >= minimumInnerId)
+            .OrderBy(result => result.OuterId)
+            .Skip(0)
+            .Take(10)
+            .ToListAsync(Ct);
+
+        Assert.Equal(
+            [1, 4],
+            results.Select(result =>
+                result.OuterId));
+        Assert.All(
+            results,
+            result =>
+            {
+                Assert.Equal(2, result.InnerId);
+                Assert.Equal(
+                    "lookup-two",
+                    result.InnerText);
+            });
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.CSharpDb)]
+    [InlineData(ProviderKind.Sqlite)]
+    public async Task DirectLeftJoin_PreservesUnmatchedRowsForBoundedIntegerKeys(
+        ProviderKind provider)
+    {
+        await using var db = CreateContext(
+            provider,
+            GetDbPath(provider, "direct-left-join"));
+        await db.Database.EnsureCreatedAsync(Ct);
+        db.Rows.AddRange(
+            new BenchEntity
+            {
+                Id = 1,
+                Value = 2,
+                TextCol = "outer-one",
+                Category = "Outer",
+            },
+            new BenchEntity
+            {
+                Id = 2,
+                Value = 3,
+                TextCol = "lookup-two",
+                Category = "Lookup",
+            },
+            new BenchEntity
+            {
+                Id = 3,
+                Value = 99,
+                TextCol = "lookup-three",
+                Category = "Lookup",
+            },
+            new BenchEntity
+            {
+                Id = 4,
+                Value = 2,
+                TextCol = "outer-four",
+                Category = "Outer",
+            },
+            new BenchEntity
+            {
+                Id = 5,
+                Value = 88,
+                TextCol = "unmatched",
+                Category = "Outer",
+            });
+        await db.SaveChangesAsync(Ct);
+
+        int minimumInnerId = 2;
+        var results = await db.Rows
+            .Where(outer =>
+                outer.Category == "Outer")
+            .LeftJoin(
+                db.Rows,
+                outer => outer.Value,
+                inner => inner.Id,
+                (outer, inner) => new
+                {
+                    OuterId = outer.Id,
+                    InnerId = (int?)inner!.Id,
+                    InnerText = (string?)inner!.TextCol,
+                })
+            .Where(result =>
+                result.InnerId == null ||
+                result.InnerId >= minimumInnerId)
+            .OrderBy(result => result.OuterId)
+            .Skip(1)
+            .Take(10)
+            .ToListAsync(Ct);
+
+        Assert.Collection(
+            results,
+            result =>
+            {
+                Assert.Equal(4, result.OuterId);
+                Assert.Equal(2, result.InnerId);
+                Assert.Equal(
+                    "lookup-two",
+                    result.InnerText);
+            },
+            result =>
+            {
+                Assert.Equal(5, result.OuterId);
+                Assert.Null(result.InnerId);
+                Assert.Null(result.InnerText);
+            });
+    }
+
     private ComparisonDbContext CreateContext(ProviderKind provider, string dbPath)
         => new(provider, provider switch
         {
@@ -123,6 +1084,12 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
 
         public DbSet<BenchEntity> Rows => Set<BenchEntity>();
 
+        public DbSet<ComparisonOptionalParent> OptionalParents =>
+            Set<ComparisonOptionalParent>();
+
+        public DbSet<ComparisonOptionalChild> OptionalChildren =>
+            Set<ComparisonOptionalChild>();
+
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             if (_provider == ProviderKind.CSharpDb)
@@ -139,8 +1106,29 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
                 entity.HasKey(row => row.Id);
                 entity.Property(row => row.Id).ValueGeneratedNever();
                 entity.Property(row => row.Value);
+                entity.Property(row => row.LongValue);
+                entity.Property(row => row.OptionalValue);
+                entity.Property(row => row.Number);
+                entity.Property(row => row.OptionalNumber);
                 entity.Property(row => row.TextCol);
+                entity.Property(row => row.OptionalText);
                 entity.Property(row => row.Category);
+            });
+
+            modelBuilder.Entity<ComparisonOptionalParent>(parent =>
+            {
+                parent.ToTable("OptionalParents");
+                parent.Property(item => item.Id)
+                    .ValueGeneratedNever();
+            });
+            modelBuilder.Entity<ComparisonOptionalChild>(child =>
+            {
+                child.ToTable("OptionalChildren");
+                child.Property(item => item.Id)
+                    .ValueGeneratedNever();
+                child.HasOne(item => item.Parent)
+                    .WithMany(parent => parent.Children)
+                    .HasForeignKey(item => item.ParentId);
             });
         }
     }
@@ -151,8 +1139,34 @@ public sealed class ComparativeEfCoreSmokeTests : IAsyncLifetime
 
         public int Value { get; set; }
 
+        public long LongValue { get; set; }
+
+        public int? OptionalValue { get; set; }
+
+        public double Number { get; set; }
+
+        public double? OptionalNumber { get; set; }
+
         public string TextCol { get; set; } = string.Empty;
 
+        public string? OptionalText { get; set; }
+
         public string Category { get; set; } = string.Empty;
+    }
+
+    private sealed class ComparisonOptionalParent
+    {
+        public int Id { get; set; }
+
+        public List<ComparisonOptionalChild> Children { get; set; } = [];
+    }
+
+    private sealed class ComparisonOptionalChild
+    {
+        public int Id { get; set; }
+
+        public int? ParentId { get; set; }
+
+        public ComparisonOptionalParent? Parent { get; set; }
     }
 }

@@ -109,6 +109,13 @@ public sealed class SchemaComparisonServiceTests
                         Collation = "NOCASE",
                         DefaultSql = "'anonymous'",
                     },
+                    new PrimitiveColumnDefinition
+                    {
+                        Name = "version",
+                        Type = PrimitiveDbType.Blob,
+                        Nullable = false,
+                        IsRowVersion = true,
+                    },
                 ],
                 CheckConstraints =
                 [
@@ -160,6 +167,7 @@ public sealed class SchemaComparisonServiceTests
             Assert.Equal("archive_customers", table.TableName);
             Assert.Equal("NOCASE", table.Columns[1].Collation);
             Assert.Equal("'anonymous'", table.Columns[1].DefaultSql);
+            Assert.True(table.Columns[2].IsRowVersion);
             Assert.Equal("ck_archive_customers_name", Assert.Single(table.CheckConstraints).ConstraintName);
             ClientForeignKeyDefinition tableForeignKey = Assert.Single(table.ForeignKeys);
             Assert.Equal(["id", "name"], tableForeignKey.ColumnNames);
@@ -173,6 +181,7 @@ public sealed class SchemaComparisonServiceTests
             ClientTableSchema? dataSchema = await dataTarget.GetTableSchemaAsync("archive_customers", ct);
             Assert.NotNull(dataSchema);
             Assert.Equal("'anonymous'", dataSchema!.Columns[1].DefaultSql);
+            Assert.True(dataSchema.Columns[2].IsRowVersion);
             Assert.Single(dataSchema.CheckConstraints);
             Assert.Equal(2, dataSchema.KeyConstraints.Count);
             ClientForeignKeyDefinition dataForeignKey = Assert.Single(dataSchema.ForeignKeys);
@@ -187,6 +196,7 @@ public sealed class SchemaComparisonServiceTests
             Assert.Equal(SchemaChangeKind.Added, change.ChangeKind);
             Assert.Equal("archive_customers", change.Name);
             Assert.Contains("DEFAULT 'anonymous'", change.SourceDefinition, StringComparison.Ordinal);
+            Assert.Contains("version BLOB ROWVERSION NOT NULL", change.SourceDefinition, StringComparison.Ordinal);
             Assert.Contains("CONSTRAINT ck_archive_customers_name CHECK (name <> '')", change.SourceDefinition, StringComparison.Ordinal);
             Assert.Contains("CONSTRAINT uq_archive_customers_name UNIQUE (name)", change.SourceDefinition, StringComparison.Ordinal);
             Assert.Contains(
@@ -199,6 +209,113 @@ public sealed class SchemaComparisonServiceTests
             if (File.Exists(path))
                 File.Delete(path);
         }
+    }
+
+    [Fact]
+    public void CompareAndRender_RowVersionChangesRequireTableRebuild()
+    {
+        var source = new SchemaSnapshot
+        {
+            Target = Target("source"),
+            Tables =
+            [
+                Table(
+                    "items",
+                    Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true),
+                    Column("version", ClientDbType.Blob, nullable: false, isRowVersion: true)),
+            ],
+        };
+        var target = new SchemaSnapshot
+        {
+            Target = Target("target"),
+            Tables =
+            [
+                Table(
+                    "items",
+                    Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true),
+                    Column("version", ClientDbType.Blob, nullable: false)),
+            ],
+        };
+
+        SchemaDiffReport report = new SchemaComparisonService().Compare(source, target);
+
+        SchemaDiffChange change = Assert.Single(report.Changes);
+        Assert.True(change.IsDestructive);
+        Assert.Equal("False -> True", change.Details["rowVersion"]);
+        Assert.Contains("version BLOB ROWVERSION NOT NULL", change.SourceDefinition, StringComparison.Ordinal);
+        Assert.Contains(
+            "version BLOB ROWVERSION NOT NULL",
+            SchemaScriptRenderer.RenderCreateTable(source.Tables[0]),
+            StringComparison.Ordinal);
+
+        var addedReport = new SchemaComparisonService().Compare(
+            new SchemaSnapshot
+            {
+                Target = Target("source"),
+                Tables =
+                [
+                    Table(
+                        "items",
+                        Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true),
+                        Column("version", ClientDbType.Blob, nullable: false, isRowVersion: true)),
+                ],
+            },
+            new SchemaSnapshot
+            {
+                Target = Target("target"),
+                Tables = [Table("items", Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true))],
+            });
+        SchemaDiffChange added = Assert.Single(addedReport.Changes);
+        Assert.True(added.IsDestructive);
+
+        string deployScript = SchemaScriptRenderer.RenderDeployScript(addedReport);
+        Assert.Contains("rebuild the table", deployScript, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ALTER TABLE items ADD COLUMN version", deployScript, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RenderDeployScript_DoesNotMistakeDefaultTextForRowVersionMetadata()
+    {
+        var source = new SchemaSnapshot
+        {
+            Target = Target("source"),
+            Tables =
+            [
+                Table(
+                    "items",
+                    Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true),
+                    Column(
+                        "note",
+                        ClientDbType.Text,
+                        defaultSql: "' ROWVERSION'")),
+            ],
+        };
+        var target = new SchemaSnapshot
+        {
+            Target = Target("target"),
+            Tables =
+            [
+                Table(
+                    "items",
+                    Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true)),
+            ],
+        };
+
+        SchemaDiffReport report =
+            new SchemaComparisonService().Compare(source, target);
+        SchemaDiffChange change = Assert.Single(report.Changes);
+        Assert.Equal("False", change.Details["rowVersion"]);
+
+        string deployScript =
+            SchemaScriptRenderer.RenderDeployScript(report);
+        Assert.Contains(
+            "ALTER TABLE items ADD COLUMN note TEXT DEFAULT ' ROWVERSION';",
+            deployScript,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Standalone ROWVERSION",
+            deployScript,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -672,6 +789,80 @@ public sealed class SchemaComparisonServiceTests
     }
 
     [Fact]
+    public async Task DataCompare_ExcludesRowVersionValuesAndAssignments()
+    {
+        var schema = Table(
+            "items",
+            Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true),
+            Column("name", ClientDbType.Text, nullable: false),
+            Column("version", ClientDbType.Blob, nullable: false, isRowVersion: true));
+        var source = new StaticDataCompareTarget(
+            "source",
+            schema,
+            [
+                Row(("id", 1L), ("name", "same"), ("version", new byte[] { 1 })),
+                Row(("id", 2L), ("name", "source"), ("version", new byte[] { 2 })),
+                Row(("id", 3L), ("name", "insert"), ("version", new byte[] { 3 })),
+            ]);
+        var target = new StaticDataCompareTarget(
+            "target",
+            schema,
+            [
+                Row(("id", 1L), ("name", "same"), ("version", new byte[] { 9 })),
+                Row(("id", 2L), ("name", "target"), ("version", new byte[] { 8 })),
+            ]);
+
+        var service = new DataComparisonService();
+        DataDiffReport report = await service.CompareAsync(
+            source,
+            target,
+            new DataCompareOptions { TableName = "items" },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, report.Summary.SourceOnlyRows);
+        Assert.Equal(1, report.Summary.ChangedRows);
+        Assert.Contains(report.Warnings, warning => warning.Contains("regenerated", StringComparison.OrdinalIgnoreCase));
+        Assert.All(
+            report.Rows,
+            row =>
+            {
+                Assert.DoesNotContain("version", row.SourceValues?.Keys ?? [], StringComparer.OrdinalIgnoreCase);
+                Assert.DoesNotContain("version", row.TargetValues?.Keys ?? [], StringComparer.OrdinalIgnoreCase);
+                Assert.DoesNotContain("version", row.ChangedColumns, StringComparer.OrdinalIgnoreCase);
+            });
+
+        string script = service.RenderSyncScript(report);
+        Assert.Contains("INSERT INTO items (id, name) VALUES (3, 'insert');", script, StringComparison.Ordinal);
+        Assert.Contains("UPDATE items SET name = 'source' WHERE id = 2;", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("version =", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("(id, name, version)", script, StringComparison.OrdinalIgnoreCase);
+
+        InvalidOperationException keyError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.CompareAsync(
+                source,
+                target,
+                new DataCompareOptions { TableName = "items", KeyColumns = ["version"] },
+                TestContext.Current.CancellationToken));
+        Assert.Contains("cannot be used", keyError.Message, StringComparison.OrdinalIgnoreCase);
+
+        var mismatchedTarget = new StaticDataCompareTarget(
+            "target",
+            Table(
+                "items",
+                Column("id", ClientDbType.Integer, nullable: false, isPrimaryKey: true),
+                Column("name", ClientDbType.Text, nullable: false),
+                Column("version", ClientDbType.Blob, nullable: false)),
+            []);
+        InvalidOperationException markerError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.CompareAsync(
+                source,
+                mismatchedTarget,
+                new DataCompareOptions { TableName = "items" },
+                TestContext.Current.CancellationToken));
+        Assert.Contains("ROWVERSION", markerError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task DriftReport_IncludesSchemaAndOptionalDataDifferences()
     {
         var baselineSchema = new StaticSchemaCompareTarget(
@@ -714,6 +905,7 @@ public sealed class SchemaComparisonServiceTests
         bool nullable = true,
         bool isPrimaryKey = false,
         bool isIdentity = false,
+        bool isRowVersion = false,
         string? collation = null,
         string? defaultSql = null)
         => new()
@@ -723,6 +915,7 @@ public sealed class SchemaComparisonServiceTests
             Nullable = nullable,
             IsPrimaryKey = isPrimaryKey,
             IsIdentity = isIdentity,
+            IsRowVersion = isRowVersion,
             Collation = collation,
             DefaultSql = defaultSql,
         };

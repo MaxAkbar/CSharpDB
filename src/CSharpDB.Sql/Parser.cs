@@ -209,6 +209,7 @@ public sealed class Parser
             TokenType.Merge => ParseMergeDuplicates(),
             TokenType.Persist => ParsePersist(),
             TokenType.Validate => ParseValidateTable(),
+            TokenType.If => ParseConditional(),
             _ => throw Error($"Unexpected token '{token.Value}', expected a statement."),
         };
 
@@ -217,6 +218,29 @@ public sealed class Parser
             Advance();
 
         return stmt;
+    }
+
+    private ConditionalStatement ParseConditional()
+    {
+        Expect(TokenType.If);
+        bool negated = TryConsume(TokenType.Not);
+        Expect(TokenType.Exists);
+        Expect(TokenType.LeftParen);
+        QueryStatement existsQuery = ParseQueryExpression();
+        Expect(TokenType.RightParen);
+        Expect(TokenType.Begin);
+
+        var body = new List<Statement>();
+        while (Peek().Type != TokenType.End && Peek().Type != TokenType.Eof)
+            body.Add(ParseStatement());
+
+        Expect(TokenType.End);
+        return new ConditionalStatement
+        {
+            ExistsQuery = existsQuery,
+            Negated = negated,
+            Body = body,
+        };
     }
 
     private ref struct FastSimpleSelectParser
@@ -1511,14 +1535,15 @@ public sealed class Parser
 
         bool isPK = false;
         bool isIdentity = false;
+        bool isRowVersion = false;
         bool isNullable = true;
         string? collation = null;
         ForeignKeyClause? foreignKey = null;
         Expression? defaultExpression = null;
         var checkConstraints = new List<CheckConstraintClause>();
 
-        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT / COLLATE /
-        // REFERENCES / DEFAULT / CHECK modifiers.
+        // Check for PRIMARY KEY / NOT NULL / IDENTITY / AUTOINCREMENT /
+        // ROWVERSION / COLLATE / REFERENCES / DEFAULT / CHECK modifiers.
         while (true)
         {
             if (Peek().Type == TokenType.Primary)
@@ -1536,6 +1561,12 @@ public sealed class Parser
                     throw Error($"IDENTITY/AUTOINCREMENT specified multiple times for column '{name}'.");
                 Advance();
                 isIdentity = true;
+            }
+            else if (TryConsumeContextualKeyword("ROWVERSION"))
+            {
+                if (isRowVersion)
+                    throw Error($"ROWVERSION specified multiple times for column '{name}'.");
+                isRowVersion = true;
             }
             else if (Peek().Type == TokenType.Not)
             {
@@ -1589,6 +1620,7 @@ public sealed class Parser
             TypeToken = typeToken,
             IsPrimaryKey = isPK,
             IsIdentity = isIdentity,
+            IsRowVersion = isRowVersion,
             IsNullable = isNullable,
             Collation = collation,
             ForeignKey = foreignKey,
@@ -1934,20 +1966,36 @@ public sealed class Parser
             if (TryConsume(TokenType.Constraint))
             {
                 string constraintName = ExpectIdentifier();
-                if (!IsContextualKeyword(Peek(), "CHECK"))
+                if (Peek().Type == TokenType.Foreign)
+                {
+                    action = new AddForeignKeyConstraintAction
+                    {
+                        ForeignKey = ParseTableForeignKeyClause(constraintName),
+                    };
+                }
+                else if (Peek().Type is TokenType.Primary or TokenType.Unique)
+                {
+                    action = new AddKeyConstraintAction
+                    {
+                        Key = ParseKeyConstraintClause(constraintName),
+                    };
+                }
+                else if (IsContextualKeyword(Peek(), "CHECK"))
+                {
+                    CheckConstraintClause check = ParseCheckConstraintClause(
+                        constraintName,
+                        constraintPrefixConsumed: true);
+                    action = new AddCheckConstraintAction
+                    {
+                        ConstraintName = constraintName,
+                        Expression = check.Expression,
+                    };
+                }
+                else
                 {
                     throw Error(
-                        "ALTER TABLE ADD CONSTRAINT currently supports named CHECK constraints only.");
+                        "ALTER TABLE ADD CONSTRAINT supports CHECK, FOREIGN KEY, PRIMARY KEY, and UNIQUE constraints.");
                 }
-
-                CheckConstraintClause check = ParseCheckConstraintClause(
-                    constraintName,
-                    constraintPrefixConsumed: true);
-                action = new AddCheckConstraintAction
-                {
-                    ConstraintName = constraintName,
-                    Expression = check.Expression,
-                };
             }
             else
             {
@@ -1964,6 +2012,11 @@ public sealed class Parser
             {
                 string colName = ExpectIdentifier();
                 action = new DropColumnAction { ColumnName = colName };
+            }
+            else if (TryConsume(TokenType.Primary))
+            {
+                Expect(TokenType.Key);
+                action = new DropPrimaryKeyAction();
             }
             else if (TryConsume(TokenType.Constraint))
             {
@@ -1997,10 +2050,18 @@ public sealed class Parser
                     Expect(TokenType.Null);
                     action = new AlterColumnSetNotNullAction { ColumnName = columnName };
                 }
+                else if (TryConsumeContextualKeyword("COLLATION"))
+                {
+                    action = new AlterColumnSetCollationAction
+                    {
+                        ColumnName = columnName,
+                        Collation = ParseRequiredCollationName(),
+                    };
+                }
                 else
                 {
                     throw Error(
-                        "ALTER COLUMN SET supports only SET DEFAULT <literal> and SET NOT NULL.");
+                        "ALTER COLUMN SET supports SET DEFAULT <literal>, SET NOT NULL, and SET COLLATION <name>.");
                 }
             }
             else if (TryConsume(TokenType.Drop))
@@ -2014,16 +2075,36 @@ public sealed class Parser
                     Expect(TokenType.Null);
                     action = new AlterColumnDropNotNullAction { ColumnName = columnName };
                 }
+                else if (TryConsumeContextualKeyword("COLLATION"))
+                {
+                    action = new AlterColumnDropCollationAction { ColumnName = columnName };
+                }
                 else
                 {
                     throw Error(
-                        "ALTER COLUMN DROP supports only DROP DEFAULT and DROP NOT NULL.");
+                        "ALTER COLUMN DROP supports DROP DEFAULT, DROP NOT NULL, and DROP COLLATION.");
                 }
+            }
+            else if (TryConsumeContextualKeyword("TYPE"))
+            {
+                TokenType targetType = Peek().Type;
+                if (targetType is not (TokenType.Integer or TokenType.Real))
+                {
+                    throw Error(
+                        $"ALTER COLUMN TYPE supports only INTEGER and REAL in the first conversion slice; got '{Peek().Value}'.");
+                }
+
+                Advance();
+                action = new AlterColumnSetTypeAction
+                {
+                    ColumnName = columnName,
+                    TypeToken = targetType,
+                };
             }
             else
             {
                 throw Error(
-                    "ALTER COLUMN supports SET DEFAULT, DROP DEFAULT, SET NOT NULL, and DROP NOT NULL; changing a column type or collation requires a table rewrite and is not supported.");
+                    "ALTER COLUMN supports TYPE INTEGER/REAL, SET/DROP DEFAULT, SET/DROP NOT NULL, and SET/DROP COLLATION.");
             }
         }
         else if (t == TokenType.Rename)
@@ -2044,6 +2125,19 @@ public sealed class Parser
                 Expect(TokenType.To);
                 string newCol = ExpectIdentifier();
                 action = new RenameColumnAction { OldColumnName = oldCol, NewColumnName = newCol };
+            }
+            else if (Peek().Type == TokenType.Index)
+            {
+                // ALTER TABLE x RENAME INDEX old TO new
+                Advance();
+                string oldIndex = ExpectIdentifier();
+                Expect(TokenType.To);
+                string newIndex = ExpectIdentifier();
+                action = new RenameIndexAction
+                {
+                    OldIndexName = oldIndex,
+                    NewIndexName = newIndex,
+                };
             }
             else
             {

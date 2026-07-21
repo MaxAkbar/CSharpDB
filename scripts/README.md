@@ -41,6 +41,8 @@ Use this path before tagging or when validating release packaging locally.
 - Regenerate and validate the compatibility matrix.
 
 ```powershell
+.\scripts\Build-EfCoreCompatibility.ps1
+.\scripts\Build-EfCoreCompatibility.ps1 -Check
 .\scripts\Build-SqlCompatibilityMatrix.ps1
 .\scripts\Build-SqlCompatibilityMatrix.ps1 -Check
 .\scripts\Test-Documentation.ps1

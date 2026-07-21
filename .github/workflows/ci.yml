@@ -40,6 +40,10 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-NuGetPackageClosure.ps1
 
+      - name: Guard qualified EF Core patch version
+        shell: pwsh
+        run: ./scripts/Test-EfCoreVersionConsistency.ps1
+
       - name: Validate public documentation
         shell: pwsh
         run: |
@@ -175,8 +179,7 @@ jobs:
           if-no-files-found: error
 
   pack:
-    name: Pack NuGet Artifacts
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Pack and Qualify NuGet Artifacts
     needs: build-and-test
     runs-on: ubuntu-latest
 
@@ -229,6 +232,10 @@ jobs:
           dotnet pack src/CSharpDB.Data/CSharpDB.Data.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB.EntityFrameworkCore/CSharpDB.EntityFrameworkCore.csproj -c Release -o artifacts/nuget
           dotnet pack src/CSharpDB/CSharpDB.csproj -c Release -o artifacts/nuget
+
+      - name: Qualify packed EF Core provider
+        shell: pwsh
+        run: ./scripts/Test-EfCoreNuGetPackage.ps1 -FeedPath artifacts/nuget
 
       - name: Upload NuGet artifacts
         uses: actions/upload-artifact@v4

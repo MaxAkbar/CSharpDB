@@ -4,4 +4,5 @@ public sealed class RestoreTableResult
 {
     public required string TableName { get; init; }
     public long RowsInserted { get; init; }
+    public bool RowVersionTokensRegenerated { get; init; }
 }

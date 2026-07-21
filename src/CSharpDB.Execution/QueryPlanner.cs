@@ -234,6 +234,7 @@ public sealed class QueryPlanner
         new ColumnDefinition { Name = "is_identity", Type = DbType.Integer, Nullable = false },
         new ColumnDefinition { Name = "collation", Type = DbType.Text, Nullable = true },
         new ColumnDefinition { Name = "column_default", Type = DbType.Text, Nullable = true },
+        new ColumnDefinition { Name = "is_row_version", Type = DbType.Integer, Nullable = false },
     ];
 
     private static readonly ColumnDefinition[] SystemIndexesColumns =
@@ -839,6 +840,7 @@ public sealed class QueryPlanner
     {
         return stmt switch
         {
+            ConditionalStatement conditional => await ExecuteConditionalAsync(conditional, ct),
             CreateTableStatement create => await ExecuteSchemaMutationAsync(
                 token => ExecuteCreateTableAsync(create, token),
                 ct),
@@ -892,6 +894,24 @@ public sealed class QueryPlanner
             ExplainEstimateStatement explain => ExecuteExplainEstimate(explain),
             _ => throw new CSharpDbException(ErrorCode.Unknown, $"Unknown statement type: {stmt.GetType().Name}"),
         };
+    }
+
+    private async ValueTask<QueryResult> ExecuteConditionalAsync(
+        ConditionalStatement statement,
+        CancellationToken ct)
+    {
+        bool exists = await ExecuteExistsSubqueryAsync(statement.ExistsQuery, ct);
+        if (statement.Negated ? exists : !exists)
+            return new QueryResult(0);
+
+        int rowsAffected = 0;
+        foreach (Statement bodyStatement in statement.Body)
+        {
+            await using QueryResult result = await ExecuteCoreAsync(bodyStatement, ct);
+            rowsAffected = checked(rowsAffected + result.RowsAffected);
+        }
+
+        return new QueryResult(rowsAffected);
     }
 
     private async ValueTask<QueryResult> ExecuteSchemaMutationAsync(
@@ -1178,6 +1198,7 @@ public sealed class QueryPlanner
             Type = MapType(c.TypeToken),
             IsPrimaryKey = c.IsPrimaryKey,
             IsIdentity = c.IsIdentity,
+            IsRowVersion = c.IsRowVersion,
             Nullable = c.IsNullable,
             Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
             DefaultSql = CanonicalizeDefaultExpression(c),
@@ -1237,6 +1258,8 @@ public sealed class QueryPlanner
             throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support foreign keys in V1.");
         if (stmt.KeyConstraints.Count > 0)
             throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support table-level key constraints in V1.");
+        if (stmt.Columns.Any(static c => c.IsRowVersion))
+            throw new CSharpDbException(ErrorCode.SyntaxError, "Temporary tables do not support ROWVERSION columns.");
 
         var columns = stmt.Columns.Select(c => new ColumnDefinition
         {
@@ -1244,6 +1267,7 @@ public sealed class QueryPlanner
             Type = MapType(c.TypeToken),
             IsPrimaryKey = c.IsPrimaryKey,
             IsIdentity = c.IsIdentity || (c.IsPrimaryKey && c.TypeToken == TokenType.Integer),
+            IsRowVersion = false,
             Nullable = c.IsNullable,
             Collation = ValidateAndNormalizeColumnCollation(c.Name, c.TypeToken, c.Collation),
             DefaultSql = CanonicalizeDefaultExpression(c),
@@ -1293,6 +1317,12 @@ public sealed class QueryPlanner
         {
             var metadata = await TableArchiveReader.ReadMetadataAsync(resolvedPath, ct);
             var manifest = metadata.Manifest;
+            if (metadata.Schema.Columns.Any(static column => column.IsRowVersion))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    "External tables do not support ROWVERSION columns.");
+            }
             await EnsureExternalTablesCatalogAsync(ct);
 
             var insert = new InsertStatement
@@ -1403,6 +1433,7 @@ public sealed class QueryPlanner
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
+                IsRowVersion = column.IsRowVersion,
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
             }).ToArray(),
@@ -1508,6 +1539,12 @@ public sealed class QueryPlanner
                         ErrorCode.SyntaxError,
                         "ALTER TABLE ADD COLUMN does not support PRIMARY KEY or IDENTITY columns in the first logical-key slice.");
                 }
+                if (add.Column.IsRowVersion)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.SyntaxError,
+                        "ALTER TABLE ADD COLUMN does not support ROWVERSION columns; define the column when creating the table.");
+                }
 
                 var newCols = new List<ColumnDefinition>(schema.Columns);
                 newCols.Add(new ColumnDefinition
@@ -1516,6 +1553,7 @@ public sealed class QueryPlanner
                     Type = MapType(add.Column.TypeToken),
                     IsPrimaryKey = add.Column.IsPrimaryKey,
                     IsIdentity = add.Column.IsIdentity || (add.Column.IsPrimaryKey && add.Column.TypeToken == TokenType.Integer),
+                    IsRowVersion = false,
                     Nullable = add.Column.IsNullable,
                     Collation = ValidateAndNormalizeColumnCollation(add.Column.Name, add.Column.TypeToken, add.Column.Collation),
                     DefaultSql = CanonicalizeDefaultExpression(add.Column),
@@ -1586,6 +1624,132 @@ public sealed class QueryPlanner
                 RowConstraintValidator.ValidateSchemaDefinitions(newSchema);
                 await ValidateExistingRowsAgainstSchemaAsync(schema, newSchema, ct);
                 await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                break;
+            }
+
+            case AddForeignKeyConstraintAction addForeignKey:
+            {
+                ForeignKeyDefinition[] newForeignKeys = await BuildForeignKeysAsync(
+                    stmt.TableName,
+                    schema.Columns.ToArray(),
+                    Array.Empty<ColumnDef>(),
+                    [addForeignKey.ForeignKey],
+                    schema.ForeignKeys,
+                    schema.KeyConstraints,
+                    ct);
+                var newSchema = new TableSchema
+                {
+                    TableName = stmt.TableName,
+                    Columns = schema.Columns,
+                    ForeignKeys = newForeignKeys,
+                    CheckConstraints = schema.CheckConstraints,
+                    KeyConstraints = schema.KeyConstraints,
+                    NextRowId = schema.NextRowId,
+                };
+
+                RowConstraintValidator.ValidateSchemaDefinitions(newSchema);
+                await ValidateExistingRowsAgainstForeignKeysAsync(schema, newSchema, ct);
+                ForeignKeyDefinition addedForeignKey = newForeignKeys[^1];
+                await CreateForeignKeySupportIndexAsync(newSchema, addedForeignKey, ct);
+                await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                break;
+            }
+
+            case AddKeyConstraintAction addKey:
+            {
+                if (addKey.Key.Kind == KeyConstraintKind.PrimaryKey &&
+                    ResolvePrimaryKeyDefinition(schema) is not null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Table '{stmt.TableName}' already has a PRIMARY KEY.");
+                }
+
+                KeyConstraintClause[] keyClauses = schema.KeyConstraints
+                    .Select(key => new KeyConstraintClause
+                    {
+                        ConstraintName = key.ConstraintName,
+                        Kind = key.Kind,
+                        Columns = key.Columns.ToList(),
+                    })
+                    .Append(addKey.Key)
+                    .ToArray();
+                KeyConstraintDefinition[] newKeys = MaterializeKeyConstraints(
+                    stmt.TableName,
+                    schema.Columns,
+                    Array.Empty<ColumnDef>(),
+                    keyClauses);
+                ColumnDefinition[] newColumns = addKey.Key.Kind == KeyConstraintKind.PrimaryKey
+                    ? ApplyPrimaryKeyColumnMetadata(schema.Columns, newKeys)
+                    : schema.Columns.ToArray();
+                var newSchema = new TableSchema
+                {
+                    TableName = stmt.TableName,
+                    Columns = newColumns,
+                    ForeignKeys = schema.ForeignKeys,
+                    CheckConstraints = schema.CheckConstraints,
+                    KeyConstraints = newKeys,
+                    NextRowId = schema.NextRowId,
+                };
+
+                RowConstraintValidator.ValidateSchemaDefinitions(newSchema);
+                KeyConstraintDefinition addedKey = newKeys.Single(key =>
+                    string.Equals(
+                        key.ConstraintName,
+                        addKey.Key.ConstraintName,
+                        StringComparison.OrdinalIgnoreCase));
+
+                if (addedKey.Kind == KeyConstraintKind.PrimaryKey)
+                {
+                    if (UsesPhysicalIntegerPrimaryKey(newSchema, addedKey))
+                    {
+                        IndexSchema[] indexesToRebuild =
+                            GetIndexesForPhysicalIntegerPrimaryKeyRekey(
+                                stmt.TableName);
+                        long nextRowId =
+                            await ValidatePhysicalIntegerPrimaryKeyValuesAsync(
+                            schema,
+                            addedKey.Columns[0],
+                            ct);
+
+                        var rekeyedSchema = new TableSchema
+                        {
+                            TableName = newSchema.TableName,
+                            Columns = newSchema.Columns,
+                            ForeignKeys = newSchema.ForeignKeys,
+                            CheckConstraints = newSchema.CheckConstraints,
+                            KeyConstraints = newSchema.KeyConstraints,
+                            NextRowId = nextRowId,
+                        };
+                        var mappings =
+                            new TableRewriteColumnMapping[schema.Columns.Count];
+                        for (int i = 0; i < mappings.Length; i++)
+                            mappings[i] = TableRewriteColumnMapping.FromSource(i);
+
+                        int primaryKeyColumnIndex =
+                            schema.GetColumnIndex(addedKey.Columns[0]);
+                        await ExecuteTableRewriteAsync(
+                            new TableRewritePlan(
+                                schema,
+                                rekeyedSchema,
+                                mappings,
+                                targetRowIdSourceOrdinal: primaryKeyColumnIndex),
+                            indexesToRebuild,
+                            ct);
+                        InvalidateRowIdCache(stmt.TableName);
+                        break;
+                    }
+
+                    await ValidateExistingRowsAgainstSchemaAsync(
+                        schema,
+                        newSchema,
+                        ct);
+                }
+
+                await CreateKeyConstraintBackingIndexAsync(newSchema, addedKey, ct);
+                await _catalog.UpdateTableSchemaAsync(stmt.TableName, newSchema, ct);
+                if (UsesPhysicalIntegerPrimaryKey(newSchema, addedKey))
+                    InvalidateRowIdCache(stmt.TableName);
                 break;
             }
 
@@ -1784,6 +1948,39 @@ public sealed class QueryPlanner
                 break;
             }
 
+            case AlterColumnSetTypeAction setType:
+            {
+                await ExecuteAlterColumnTypeRewriteAsync(
+                    stmt.TableName,
+                    schema,
+                    setType.ColumnName,
+                    setType.TypeToken,
+                    ct);
+                break;
+            }
+
+            case AlterColumnSetCollationAction setCollation:
+            {
+                await ExecuteAlterColumnCollationRewriteAsync(
+                    stmt.TableName,
+                    schema,
+                    setCollation.ColumnName,
+                    setCollation.Collation,
+                    ct);
+                break;
+            }
+
+            case AlterColumnDropCollationAction dropCollation:
+            {
+                await ExecuteAlterColumnCollationRewriteAsync(
+                    stmt.TableName,
+                    schema,
+                    dropCollation.ColumnName,
+                    targetCollation: null,
+                    ct);
+                break;
+            }
+
             case DropConstraintAction dropConstraint:
             {
                 ForeignKeyDefinition? foreignKey = schema.ForeignKeys.FirstOrDefault(fk =>
@@ -1800,9 +1997,8 @@ public sealed class QueryPlanner
                 }
                 if (keyConstraint?.Kind == KeyConstraintKind.PrimaryKey)
                 {
-                    throw new CSharpDbException(
-                        ErrorCode.SyntaxError,
-                        "Dropping a PRIMARY KEY requires a table rewrite and is not supported in the first logical-key slice.");
+                    await DropPrimaryKeyAsync(stmt.TableName, schema, keyConstraint, ct);
+                    break;
                 }
 
                 if (keyConstraint?.BackingIndexName is { Length: > 0 } keyBackingIndexName)
@@ -1839,6 +2035,20 @@ public sealed class QueryPlanner
                     await _catalog.DropForeignKeyOwnedIndexAsync(foreignKey.SupportingIndexName, ct);
                 if (keyConstraint?.BackingIndexName is { Length: > 0 } backingIndexName)
                     await _catalog.DropConstraintOwnedIndexAsync(backingIndexName, ct);
+                break;
+            }
+
+            case DropPrimaryKeyAction:
+            {
+                KeyConstraintDefinition? primaryKey = ResolvePrimaryKeyDefinition(schema);
+                if (primaryKey is null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Table '{stmt.TableName}' does not have a PRIMARY KEY.");
+                }
+
+                await DropPrimaryKeyAsync(stmt.TableName, schema, primaryKey, ct);
                 break;
             }
 
@@ -1887,6 +2097,52 @@ public sealed class QueryPlanner
                 break;
             }
 
+            case RenameIndexAction renameIndex:
+            {
+                IndexSchema? index = _catalog.GetIndex(renameIndex.OldIndexName);
+                if (index is null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TableNotFound,
+                        $"Index '{renameIndex.OldIndexName}' not found.");
+                }
+
+                if (!string.Equals(index.TableName, stmt.TableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TableNotFound,
+                        $"Index '{renameIndex.OldIndexName}' does not belong to table '{stmt.TableName}'.");
+                }
+
+                if (index.Kind != IndexKind.Sql)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Only ordinary SQL indexes can be renamed directly. Index '{renameIndex.OldIndexName}' has kind '{index.Kind}'.");
+                }
+
+                if (!string.Equals(
+                        renameIndex.OldIndexName,
+                        renameIndex.NewIndexName,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    _catalog.GetIndex(renameIndex.NewIndexName) is not null)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.TableAlreadyExists,
+                        $"Index '{renameIndex.NewIndexName}' already exists.");
+                }
+
+                await _catalog.UpdateIndexSchemaAsync(
+                    renameIndex.OldIndexName,
+                    CloneIndexSchema(
+                        index,
+                        renameIndex.NewIndexName,
+                        index.TableName,
+                        index.Columns),
+                    ct);
+                break;
+            }
+
             default:
                 throw new CSharpDbException(ErrorCode.Unknown, $"Unknown alter action: {stmt.Action.GetType().Name}");
         }
@@ -1925,7 +2181,15 @@ public sealed class QueryPlanner
             if (colIdx < 0)
                 throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{columnName}' not found in table '{stmt.TableName}'.");
 
-            DbType columnType = tableSchema.Columns[colIdx].Type;
+            ColumnDefinition column = tableSchema.Columns[colIdx];
+            if (column.IsRowVersion)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.SyntaxError,
+                    $"ROWVERSION column '{stmt.TableName}.{columnName}' cannot participate in an index.");
+            }
+
+            DbType columnType = column.Type;
             if (columnType is not (DbType.Integer or DbType.Text))
                 throw new CSharpDbException(ErrorCode.TypeMismatch, "Only INTEGER and TEXT column indexes are supported.");
 
@@ -4987,6 +5251,7 @@ public sealed class QueryPlanner
 
         int inserted = 0;
         long? generatedIntegerKey = null;
+        byte[]? generatedRowVersion = null;
         ForeignKeyMutationContext? mutationContext =
             _catalog.GetForeignKeysForTable(stmt.TableName).Count > 0
                 ? new ForeignKeyMutationContext()
@@ -5013,7 +5278,10 @@ public sealed class QueryPlanner
                     rowIdReservationCountHint,
                     ct);
                 if (stmt.ValueRows.Count == 1)
+                {
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    generatedRowVersion = insertRow.GeneratedRowVersion;
+                }
                 inserted++;
             }
         }
@@ -5030,7 +5298,7 @@ public sealed class QueryPlanner
 
         await FinalizeInsertStatementAsync(mutationContext, stmt.TableName, inserted, persistRootChanges, ct);
 
-        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask<QueryResult> ExecuteTemporaryInsertAsync(InsertStatement stmt, CancellationToken ct)
@@ -5222,7 +5490,16 @@ public sealed class QueryPlanner
             if (stmt.IsDistinct)
                 op = new DistinctOperator(op, useOrderedDistinctSingleColumnFastPath);
 
-            op = ApplyOrdering(op, stmt.OrderBy, aggregateSchema, orderByTopN);
+            List<OrderByClause>? aggregateOrderBy =
+                RewriteAggregateOrderByToOutputColumns(
+                    stmt.OrderBy,
+                    stmt.Columns,
+                    outputCols);
+            op = ApplyOrdering(
+                op,
+                aggregateOrderBy,
+                aggregateSchema,
+                orderByTopN);
         }
         else
         {
@@ -6346,7 +6623,16 @@ public sealed class QueryPlanner
             if (stmt.IsDistinct)
                 op = new DistinctOperator(op, useOrderedDistinctSingleColumnFastPath);
 
-            op = ApplyOrdering(op, stmt.OrderBy, aggSchema, orderByTopN);
+            List<OrderByClause>? aggregateOrderBy =
+                RewriteAggregateOrderByToOutputColumns(
+                    stmt.OrderBy,
+                    stmt.Columns,
+                    outputCols);
+            op = ApplyOrdering(
+                op,
+                aggregateOrderBy,
+                aggSchema,
+                orderByTopN);
         }
         else
         {
@@ -6557,6 +6843,295 @@ public sealed class QueryPlanner
             return new TopNSortOperator(source, orderBy, schema, topN.Value, _functions);
 
         return new SortOperator(source, orderBy, schema, _functions);
+    }
+
+    private static List<OrderByClause>?
+        RewriteAggregateOrderByToOutputColumns(
+            List<OrderByClause>? orderBy,
+            List<SelectColumn> columns,
+            IReadOnlyList<ColumnDefinition> outputColumns)
+    {
+        if (orderBy is not { Count: > 0 })
+            return orderBy;
+
+        string? duplicateOutputName = outputColumns
+            .GroupBy(
+                static column => column.Name,
+                StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(
+                static group => group.Count() > 1)?
+            .Key;
+        if (duplicateOutputName is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.SyntaxError,
+                $"Aggregate ORDER BY requires unique output names; duplicate output column name '{duplicateOutputName}' is ambiguous.");
+        }
+
+        var outputSlots = new Dictionary<string, string>(
+            StringComparer.Ordinal);
+        for (int i = 0; i < columns.Count; i++)
+        {
+            Expression? expression = columns[i].Expression;
+            if (expression is null)
+                continue;
+
+            outputSlots.TryAdd(
+                WindowExpressionSupport.GetExpressionKey(expression),
+                outputColumns[i].Name);
+        }
+
+        List<OrderByClause>? rewritten = null;
+        for (int i = 0; i < orderBy.Count; i++)
+        {
+            OrderByClause clause = orderBy[i];
+            Expression rewrittenExpression =
+                RewriteAggregateOrderByExpression(
+                    clause.Expression,
+                    outputSlots,
+                    out bool changed);
+            if (!changed)
+            {
+                if (rewritten is not null)
+                    rewritten.Add(clause);
+                continue;
+            }
+
+            rewritten ??= new List<OrderByClause>(orderBy.Count);
+            while (rewritten.Count < i)
+                rewritten.Add(orderBy[rewritten.Count]);
+            rewritten.Add(new OrderByClause
+            {
+                Expression = rewrittenExpression,
+                Descending = clause.Descending,
+            });
+        }
+
+        return rewritten ?? orderBy;
+    }
+
+    private static Expression RewriteAggregateOrderByExpression(
+        Expression expression,
+        IReadOnlyDictionary<string, string> outputSlots,
+        out bool changed)
+    {
+        string expressionKey =
+            WindowExpressionSupport.GetExpressionKey(expression);
+        if (outputSlots.TryGetValue(
+                expressionKey,
+                out string? outputName))
+        {
+            changed = true;
+            return new ColumnRefExpression
+            {
+                ColumnName = outputName,
+            };
+        }
+
+        changed = false;
+        switch (expression)
+        {
+            case BinaryExpression binary:
+            {
+                Expression left =
+                    RewriteAggregateOrderByExpression(
+                        binary.Left,
+                        outputSlots,
+                        out bool leftChanged);
+                Expression right =
+                    RewriteAggregateOrderByExpression(
+                        binary.Right,
+                        outputSlots,
+                        out bool rightChanged);
+                changed = leftChanged || rightChanged;
+                return changed
+                    ? new BinaryExpression
+                    {
+                        Op = binary.Op,
+                        Left = left,
+                        Right = right,
+                    }
+                    : expression;
+            }
+
+            case UnaryExpression unary:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        unary.Operand,
+                        outputSlots,
+                        out changed);
+                return changed
+                    ? new UnaryExpression
+                    {
+                        Op = unary.Op,
+                        Operand = operand,
+                    }
+                    : expression;
+            }
+
+            case CollateExpression collate:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        collate.Operand,
+                        outputSlots,
+                        out changed);
+                return changed
+                    ? new CollateExpression
+                    {
+                        Operand = operand,
+                        Collation = collate.Collation,
+                    }
+                    : expression;
+            }
+
+            case IsNullExpression isNull:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        isNull.Operand,
+                        outputSlots,
+                        out changed);
+                return changed
+                    ? new IsNullExpression
+                    {
+                        Operand = operand,
+                        Negated = isNull.Negated,
+                    }
+                    : expression;
+            }
+
+            case FunctionCallExpression function:
+            {
+                var arguments =
+                    new List<Expression>(function.Arguments.Count);
+                bool anyChanged = false;
+                foreach (Expression argument in function.Arguments)
+                {
+                    arguments.Add(
+                        RewriteAggregateOrderByExpression(
+                            argument,
+                            outputSlots,
+                            out bool argumentChanged));
+                    anyChanged |= argumentChanged;
+                }
+
+                changed = anyChanged;
+                return changed
+                    ? new FunctionCallExpression
+                    {
+                        FunctionName = function.FunctionName,
+                        Arguments = arguments,
+                        IsDistinct = function.IsDistinct,
+                        IsStarArg = function.IsStarArg,
+                    }
+                    : expression;
+            }
+
+            case BetweenExpression between:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        between.Operand,
+                        outputSlots,
+                        out bool operandChanged);
+                Expression low =
+                    RewriteAggregateOrderByExpression(
+                        between.Low,
+                        outputSlots,
+                        out bool lowChanged);
+                Expression high =
+                    RewriteAggregateOrderByExpression(
+                        between.High,
+                        outputSlots,
+                        out bool highChanged);
+                changed =
+                    operandChanged || lowChanged || highChanged;
+                return changed
+                    ? new BetweenExpression
+                    {
+                        Operand = operand,
+                        Low = low,
+                        High = high,
+                        Negated = between.Negated,
+                    }
+                    : expression;
+            }
+
+            case LikeExpression like:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        like.Operand,
+                        outputSlots,
+                        out bool operandChanged);
+                Expression pattern =
+                    RewriteAggregateOrderByExpression(
+                        like.Pattern,
+                        outputSlots,
+                        out bool patternChanged);
+                Expression? escape = null;
+                bool escapeChanged = false;
+                if (like.EscapeChar is not null)
+                {
+                    escape =
+                        RewriteAggregateOrderByExpression(
+                        like.EscapeChar,
+                        outputSlots,
+                        out escapeChanged);
+                }
+                changed =
+                    operandChanged ||
+                    patternChanged ||
+                    escapeChanged;
+                return changed
+                    ? new LikeExpression
+                    {
+                        Operand = operand,
+                        Pattern = pattern,
+                        EscapeChar = escape,
+                        Negated = like.Negated,
+                    }
+                    : expression;
+            }
+
+            case InExpression inExpression:
+            {
+                Expression operand =
+                    RewriteAggregateOrderByExpression(
+                        inExpression.Operand,
+                        outputSlots,
+                        out bool operandChanged);
+                var values =
+                    new List<Expression>(
+                        inExpression.Values.Count);
+                bool anyValueChanged = false;
+                foreach (Expression value in
+                         inExpression.Values)
+                {
+                    values.Add(
+                        RewriteAggregateOrderByExpression(
+                            value,
+                            outputSlots,
+                            out bool valueChanged));
+                    anyValueChanged |= valueChanged;
+                }
+
+                changed = operandChanged || anyValueChanged;
+                return changed
+                    ? new InExpression
+                    {
+                        Operand = operand,
+                        Values = values,
+                        Negated = inExpression.Negated,
+                    }
+                    : expression;
+            }
+
+            default:
+                return expression;
+        }
     }
 
     private IOperator BuildWindowSelectPipeline(
@@ -7366,7 +7941,7 @@ public sealed class QueryPlanner
 
         ThrowIfExternalTableTarget(insert.TableName, "modified with INSERT");
         var schema = GetSchema(insert.TableName);
-        int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
+        int[]? explicitColumnIndices = insert.ColumnNames is not null
             ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
             : null;
         var tree = _catalog.GetTableTree(insert.TableName);
@@ -7382,6 +7957,7 @@ public sealed class QueryPlanner
 
         int inserted = 0;
         long? generatedIntegerKey = null;
+        byte[]? generatedRowVersion = null;
         ForeignKeyMutationContext? mutationContext =
             foreignKeys.Count > 0
                 ? new ForeignKeyMutationContext()
@@ -7415,7 +7991,10 @@ public sealed class QueryPlanner
                     rowIdReservationCountHint,
                     ct);
                 if (insert.RowCount == 1)
+                {
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    generatedRowVersion = insertRow.GeneratedRowVersion;
+                }
                 inserted++;
             }
 
@@ -7439,14 +8018,14 @@ public sealed class QueryPlanner
         }
 
         await FinalizeInsertStatementAsync(mutationContext, insert.TableName, inserted, persistRootChanges, ct);
-        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask<QueryResult> ExecuteTemporarySimpleInsertAsync(SimpleInsertSql insert, CancellationToken ct)
     {
         TemporaryTableManager temporaryTables = RequireTemporaryTables();
         TableSchema schema = GetSchema(insert.TableName);
-        int[]? explicitColumnIndices = insert.ColumnNames is { Length: > 0 }
+        int[]? explicitColumnIndices = insert.ColumnNames is not null
             ? ResolveInsertColumnIndices(schema, insert.ColumnNames)
             : null;
         BTree tree = temporaryTables.GetTableTree(insert.TableName);
@@ -7498,6 +8077,7 @@ public sealed class QueryPlanner
     {
         int inserted = 0;
         long? generatedIntegerKey = null;
+        byte[]? generatedRowVersion = null;
         List<uint>? insertTraversalPath = null;
         HashSet<uint>? insertTraversalSet = null;
         ReusableInsertEncodingBuffer? reusableEncodingBuffer = null;
@@ -7527,7 +8107,10 @@ public sealed class QueryPlanner
                     rowIdReservationCountHint: Math.Max(1, insert.RowCount - inserted),
                     ct);
                 if (insert.RowCount == 1)
+                {
                     generatedIntegerKey = insertRow.GeneratedIntegerIdentity;
+                    generatedRowVersion = insertRow.GeneratedRowVersion;
+                }
                 inserted++;
             }
         }
@@ -7548,7 +8131,7 @@ public sealed class QueryPlanner
             inserted,
             persistRootChanges,
             ct);
-        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey);
+        return QueryResult.FromRowsAffected(inserted, generatedIntegerKey, generatedRowVersion);
     }
 
     private async ValueTask FinalizeInsertStatementAsync(
@@ -7588,6 +8171,7 @@ public sealed class QueryPlanner
             row,
             rowIdReservationCountHint,
             ct);
+        byte[]? generatedRowVersion = MaterializeInitialRowVersion(schema, row);
         RowConstraintValidator.ValidateRow(schema, row);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
@@ -7605,7 +8189,7 @@ public sealed class QueryPlanner
                 else
                     await tree.InsertAsync(rowId, encodedRow, ct);
                 RecordLogicalMutationWrites(tableName, schema, oldRow: null, newRow: row, newRowId: rowId);
-                return new InsertRowResult(rowId, generatedIntegerIdentity);
+                return new InsertRowResult(rowId, generatedIntegerIdentity, generatedRowVersion);
             }
             catch (CSharpDbException ex) when (autoGeneratedRowId && ex.Code == ErrorCode.DuplicateKey)
             {
@@ -9366,6 +9950,15 @@ public sealed class QueryPlanner
         bool hasRemainingSubqueries = ContainsSubqueries(stmt);
 
         var schema = GetSchema(stmt.TableName);
+        foreach (SetClause set in stmt.SetClauses)
+        {
+            int columnIndex = schema.GetColumnIndex(set.ColumnName);
+            if (columnIndex < 0)
+                throw new CSharpDbException(ErrorCode.ColumnNotFound, $"Column '{set.ColumnName}' not found.");
+            if (schema.Columns[columnIndex].IsRowVersion)
+                ThrowExplicitRowVersionAssignment(schema.Columns[columnIndex]);
+        }
+
         var tree = _catalog.GetTableTree(stmt.TableName, _pager);
         var indexes = _catalog.GetIndexesForTable(stmt.TableName);
         int pkIdx = schema.PrimaryKeyColumnIndex;
@@ -9407,6 +10000,7 @@ public sealed class QueryPlanner
                 newRow[pkIdx] = DbValue.FromInteger(rowId);
             if (hasIntegerPrimaryKey && newRow[pkIdx].Type != DbType.Integer)
                 throw new CSharpDbException(ErrorCode.TypeMismatch, "INTEGER PRIMARY KEY must remain an integer value.");
+            AdvanceRowVersion(schema, oldRow, newRow);
             RowConstraintValidator.ValidateRow(schema, newRow);
             updates.Add((rowId, oldRow, newRow));
         }
@@ -9417,6 +10011,12 @@ public sealed class QueryPlanner
             {
                 // BEFORE UPDATE triggers
                 await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+                await RefreshRowVersionAfterBeforeTriggersAsync(
+                    stmt.TableName,
+                    schema,
+                    rowId,
+                    newRow,
+                    ct);
 
                 long newRowId = rowId;
                 if (hasIntegerPrimaryKey)
@@ -9449,7 +10049,16 @@ public sealed class QueryPlanner
 
             await _catalog.PersistRootPageChangesAsync(stmt.TableName, ct);
 
-            return new QueryResult(updates.Count);
+            byte[]? generatedRowVersionWithoutForeignKeys =
+                await GetSinglePersistedGeneratedRowVersionAsync(
+                stmt.TableName,
+                schema,
+                updates,
+                hasIntegerPrimaryKey,
+                ct);
+            return QueryResult.FromRowsAffected(
+                updates.Count,
+                generatedRowVersionWithoutForeignKeys);
         }
 
         var mutationContext = new ForeignKeyMutationContext();
@@ -9457,6 +10066,12 @@ public sealed class QueryPlanner
         {
             // BEFORE UPDATE triggers
             await FireTriggersAsync(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            await RefreshRowVersionAfterBeforeTriggersAsync(
+                stmt.TableName,
+                schema,
+                rowId,
+                newRow,
+                ct);
 
             long newRowId = rowId;
             if (hasIntegerPrimaryKey)
@@ -9491,7 +10106,40 @@ public sealed class QueryPlanner
 
         await PersistForeignKeyMutationContextAsync(mutationContext, stmt.TableName, updates.Count > 0, persistRootChanges: true, ct);
 
-        return new QueryResult(updates.Count);
+        byte[]? generatedRowVersionWithForeignKeys =
+            await GetSinglePersistedGeneratedRowVersionAsync(
+            stmt.TableName,
+            schema,
+            updates,
+            hasIntegerPrimaryKey,
+            ct);
+        return QueryResult.FromRowsAffected(
+            updates.Count,
+            generatedRowVersionWithForeignKeys);
+    }
+
+    private async ValueTask<byte[]?> GetSinglePersistedGeneratedRowVersionAsync(
+        string tableName,
+        TableSchema schema,
+        List<(long rowId, DbValue[] oldRow, DbValue[] newRow)> updates,
+        bool hasIntegerPrimaryKey,
+        CancellationToken ct)
+    {
+        if (updates.Count != 1)
+            return null;
+
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex < 0)
+            return null;
+
+        (long rowId, _, DbValue[] newRow) = updates[0];
+        long persistedRowId = hasIntegerPrimaryKey
+            ? newRow[schema.PrimaryKeyColumnIndex].AsInteger
+            : rowId;
+        DbValue[]? persistedRow = await TryLoadRowAsync(tableName, schema, persistedRowId, ct);
+        return persistedRow is null
+            ? null
+            : GetRowVersionValue(schema, persistedRow, rowVersionColumnIndex);
     }
 
     private async ValueTask<List<(long rowId, DbValue[] row)>> CollectMutationTargetRowsAsync(
@@ -10099,7 +10747,15 @@ public sealed class QueryPlanner
 
         foreach (var (rowId, oldRow, newRow) in updates)
         {
+            AdvanceRowVersion(schema, oldRow, newRow);
+            RowConstraintValidator.ValidateRow(schema, newRow);
             await FireTriggersAsync(tableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow, schema, ct);
+            await RefreshRowVersionAfterBeforeTriggersAsync(
+                tableName,
+                schema,
+                rowId,
+                newRow,
+                ct);
 
             long newRowId = rowId;
             if (hasIntegerPrimaryKey)
@@ -17587,6 +18243,7 @@ public sealed class QueryPlanner
                 Nullable = operand.Nullable,
                 IsPrimaryKey = operand.IsPrimaryKey,
                 IsIdentity = operand.IsIdentity,
+                IsRowVersion = operand.IsRowVersion,
                 Collation = CollationSupport.NormalizeMetadataName(collate.Collation),
             };
         }
@@ -17607,6 +18264,7 @@ public sealed class QueryPlanner
                     Nullable = source.Nullable,
                     IsPrimaryKey = source.IsPrimaryKey,
                     IsIdentity = source.IsIdentity,
+                    IsRowVersion = source.IsRowVersion,
                     Collation = source.Collation,
                 };
             }
@@ -17691,6 +18349,7 @@ public sealed class QueryPlanner
                     Nullable = sourceColumn.Nullable,
                     IsPrimaryKey = sourceColumn.IsPrimaryKey,
                     IsIdentity = sourceColumn.IsIdentity,
+                    IsRowVersion = sourceColumn.IsRowVersion,
                 }
                 : sourceColumn;
         }
@@ -19092,6 +19751,7 @@ public sealed class QueryPlanner
                     DbValue.FromInteger(col.IsIdentity ? 1 : 0),
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
+                    DbValue.FromInteger(col.IsRowVersion ? 1 : 0),
                 ]);
             }
         }
@@ -19153,6 +19813,7 @@ public sealed class QueryPlanner
                     DbValue.FromInteger(col.IsIdentity ? 1 : 0),
                     col.Collation is null ? DbValue.Null : DbValue.FromText(col.Collation),
                     col.DefaultSql is null ? DbValue.Null : DbValue.FromText(col.DefaultSql),
+                    DbValue.FromInteger(0),
                 ]);
             }
         }
@@ -20109,10 +20770,164 @@ public sealed class QueryPlanner
                 IsPrimaryKey = isPrimaryKey,
                 IsIdentity = column.IsIdentity ||
                     (isPrimaryKey && usesPhysicalIntegerPrimaryKey && column.Type == DbType.Integer),
+                IsRowVersion = column.IsRowVersion,
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
             };
         }).ToArray();
+    }
+
+    private static KeyConstraintDefinition? ResolvePrimaryKeyDefinition(TableSchema schema)
+    {
+        KeyConstraintDefinition? declaredPrimaryKey = schema.KeyConstraints.FirstOrDefault(
+            static key => key.Kind == KeyConstraintKind.PrimaryKey);
+        if (declaredPrimaryKey is not null)
+            return declaredPrimaryKey;
+
+        string[] legacyPrimaryKeyColumns = schema.Columns
+            .Where(static column => column.IsPrimaryKey)
+            .Select(static column => column.Name)
+            .ToArray();
+        if (legacyPrimaryKeyColumns.Length == 0)
+            return null;
+
+        return new KeyConstraintDefinition
+        {
+            ConstraintName = null,
+            Kind = KeyConstraintKind.PrimaryKey,
+            Columns = legacyPrimaryKeyColumns,
+            BackingIndexName = null,
+        };
+    }
+
+    private static bool UsesPhysicalIntegerPrimaryKey(
+        TableSchema schema,
+        KeyConstraintDefinition primaryKey)
+    {
+        if (primaryKey.Kind != KeyConstraintKind.PrimaryKey ||
+            primaryKey.BackingIndexName is not null ||
+            primaryKey.Columns.Count != 1)
+        {
+            return false;
+        }
+
+        int columnIndex = schema.GetColumnIndex(primaryKey.Columns[0]);
+        return columnIndex >= 0 && schema.Columns[columnIndex].Type == DbType.Integer;
+    }
+
+    private IndexSchema[] GetIndexesForPhysicalIntegerPrimaryKeyRekey(
+        string tableName)
+    {
+        IndexSchema[] indexes = _catalog.GetIndexesForTable(tableName).ToArray();
+        for (int i = 0; i < indexes.Length; i++)
+        {
+            IndexSchema index = indexes[i];
+            if (index.State != IndexState.Ready ||
+                index.Kind is not (
+                    IndexKind.Sql or
+                    IndexKind.ConstraintInternal or
+                    IndexKind.ForeignKeyInternal))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot physically rekey table '{tableName}' while index '{index.IndexName}' of kind {index.Kind} is present.");
+            }
+        }
+
+        return indexes;
+    }
+
+    private async ValueTask<long> ValidatePhysicalIntegerPrimaryKeyValuesAsync(
+        TableSchema storageSchema,
+        string columnName,
+        CancellationToken ct)
+    {
+        int columnIndex = storageSchema.GetColumnIndex(columnName);
+        if (columnIndex < 0)
+            throw new InvalidOperationException($"Primary-key column '{columnName}' was not found.");
+
+        BTree tree = _catalog.GetTableTree(storageSchema.TableName, _pager);
+        await using var scan = new TableScanOperator(
+            tree,
+            storageSchema,
+            GetReadSerializer(storageSchema),
+            TryGetCachedTreeRowCountCapacityHint(tree));
+        await scan.OpenAsync(ct);
+        var seenValues = new HashSet<long>();
+        long nextRowId = Math.Max(1, storageSchema.NextRowId);
+        while (await scan.MoveNextAsync(ct))
+        {
+            DbValue value = scan.Current[columnIndex];
+            if (value.Type != DbType.Integer)
+            {
+                string valueDisplay = value.IsNull ? "NULL" : value.ToString();
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot add PRIMARY KEY on '{storageSchema.TableName}.{columnName}': existing value {valueDisplay} is not a non-NULL INTEGER.");
+            }
+
+            long rowId = value.AsInteger;
+            if (!seenValues.Add(rowId))
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot add PRIMARY KEY on '{storageSchema.TableName}.{columnName}': duplicate value {rowId} exists.");
+            }
+
+            if (rowId >= 0 && rowId < long.MaxValue)
+                nextRowId = Math.Max(nextRowId, checked(rowId + 1));
+        }
+
+        return nextRowId;
+    }
+
+    private async ValueTask DropPrimaryKeyAsync(
+        string tableName,
+        TableSchema schema,
+        KeyConstraintDefinition primaryKey,
+        CancellationToken ct)
+    {
+        ValidatePrimaryKeyCanBeDropped(schema, primaryKey);
+
+        bool usesPhysicalIntegerPrimaryKey = UsesPhysicalIntegerPrimaryKey(schema, primaryKey);
+        var primaryKeyColumns = new HashSet<string>(
+            primaryKey.Columns,
+            StringComparer.OrdinalIgnoreCase);
+        ColumnDefinition[] newColumns = schema.Columns
+            .Select(column => new ColumnDefinition
+            {
+                Name = column.Name,
+                Type = column.Type,
+                Nullable = column.Nullable,
+                IsPrimaryKey = false,
+                IsIdentity = usesPhysicalIntegerPrimaryKey &&
+                    primaryKeyColumns.Contains(column.Name)
+                        ? false
+                        : column.IsIdentity,
+                IsRowVersion = column.IsRowVersion,
+                Collation = column.Collation,
+                DefaultSql = column.DefaultSql,
+            })
+            .ToArray();
+        KeyConstraintDefinition[] remainingKeys = schema.KeyConstraints
+            .Where(static key => key.Kind != KeyConstraintKind.PrimaryKey)
+            .ToArray();
+        var newSchema = new TableSchema
+        {
+            TableName = tableName,
+            Columns = newColumns,
+            ForeignKeys = schema.ForeignKeys,
+            CheckConstraints = schema.CheckConstraints,
+            KeyConstraints = remainingKeys,
+            NextRowId = schema.NextRowId,
+        };
+
+        RowConstraintValidator.ValidateSchemaDefinitions(newSchema);
+        await _catalog.UpdateTableSchemaAsync(tableName, newSchema, ct);
+        if (primaryKey.BackingIndexName is { Length: > 0 } backingIndexName)
+            await _catalog.DropConstraintOwnedIndexAsync(backingIndexName, ct);
+        if (usesPhysicalIntegerPrimaryKey)
+            InvalidateRowIdCache(tableName);
     }
 
     private async ValueTask CreateKeyConstraintBackingIndexAsync(
@@ -20227,15 +21042,19 @@ public sealed class QueryPlanner
         ColumnDefinition column,
         bool? nullable = null,
         string? defaultSql = null,
-        bool replaceDefault = false) =>
+        bool replaceDefault = false,
+        DbType? type = null,
+        string? collation = null,
+        bool replaceCollation = false) =>
         new()
         {
             Name = column.Name,
-            Type = column.Type,
+            Type = type ?? column.Type,
             Nullable = nullable ?? column.Nullable,
             IsPrimaryKey = column.IsPrimaryKey,
             IsIdentity = column.IsIdentity,
-            Collation = column.Collation,
+            IsRowVersion = column.IsRowVersion,
+            Collation = replaceCollation ? collation : column.Collation,
             DefaultSql = replaceDefault ? defaultSql : column.DefaultSql,
         };
 
@@ -20253,6 +21072,263 @@ public sealed class QueryPlanner
             NextRowId = schema.NextRowId,
         };
 
+    private async ValueTask ExecuteAlterColumnTypeRewriteAsync(
+        string tableName,
+        TableSchema schema,
+        string columnName,
+        TokenType targetTypeToken,
+        CancellationToken ct)
+    {
+        int columnIndex = RequireAlterColumnIndex(schema, columnName);
+        ColumnDefinition current = schema.Columns[columnIndex];
+        DbType targetType = MapType(targetTypeToken);
+        if (targetType == current.Type)
+            return;
+
+        if (current.Type is not (DbType.Integer or DbType.Real) ||
+            targetType is not (DbType.Integer or DbType.Real))
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"ALTER COLUMN TYPE supports only INTEGER-to-REAL and REAL-to-INTEGER conversions; column '{tableName}.{current.Name}' uses {current.Type}.");
+        }
+
+        await EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
+            tableName,
+            schema,
+            current,
+            allowReadySqlIndexes: false,
+            ct);
+
+        ColumnDefinition[] newColumns = schema.Columns.ToArray();
+        newColumns[columnIndex] = CopyColumnDefinition(
+            current,
+            type: targetType,
+            collation: null,
+            replaceCollation: true);
+        TableSchema targetSchema = CopyTableSchema(schema, columns: newColumns);
+
+        try
+        {
+            RowConstraintValidator.ValidateSchemaDefinitions(targetSchema);
+        }
+        catch (CSharpDbException ex) when (
+            current.DefaultSql is not null &&
+            ex.Code is ErrorCode.TypeMismatch or ErrorCode.SyntaxError)
+        {
+            throw new CSharpDbException(
+                ex.Code,
+                $"Cannot change column '{tableName}.{current.Name}' from {current.Type} to {targetType} while DEFAULT {current.DefaultSql} remains incompatible. DROP DEFAULT or set a compatible default before changing the type.",
+                ex);
+        }
+
+        var mappings = new TableRewriteColumnMapping[newColumns.Length];
+        for (int i = 0; i < mappings.Length; i++)
+            mappings[i] = TableRewriteColumnMapping.FromSource(i);
+
+        TableRewriteValueConversion conversion = current.Type == DbType.Integer
+            ? TableRewriteValueConversion.IntegerToReal
+            : TableRewriteValueConversion.RealToInteger;
+        mappings[columnIndex] =
+            TableRewriteColumnMapping.ConvertFromSource(columnIndex, conversion);
+
+        await ExecuteTableRewriteAsync(
+            new TableRewritePlan(schema, targetSchema, mappings),
+            ct);
+    }
+
+    private async ValueTask ExecuteAlterColumnCollationRewriteAsync(
+        string tableName,
+        TableSchema schema,
+        string columnName,
+        string? targetCollation,
+        CancellationToken ct)
+    {
+        int columnIndex = RequireAlterColumnIndex(schema, columnName);
+        ColumnDefinition current = schema.Columns[columnIndex];
+        if (current.Type != DbType.Text)
+        {
+            throw new CSharpDbException(
+                ErrorCode.TypeMismatch,
+                $"COLLATION can only be changed on TEXT columns; column '{tableName}.{current.Name}' uses {current.Type}.");
+        }
+
+        string? normalizedCollation = NormalizeCollationName(targetCollation);
+        if (CollationSupport.SemanticallyEquals(current.Collation, normalizedCollation))
+            return;
+
+        IndexSchema[] dependentIndexes =
+            await EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
+            tableName,
+            schema,
+            current,
+            allowReadySqlIndexes: true,
+            ct);
+
+        ColumnDefinition[] newColumns = schema.Columns.ToArray();
+        newColumns[columnIndex] = CopyColumnDefinition(
+            current,
+            collation: normalizedCollation,
+            replaceCollation: true);
+        TableSchema targetSchema = CopyTableSchema(schema, columns: newColumns);
+        RowConstraintValidator.ValidateSchemaDefinitions(targetSchema);
+
+        var mappings = new TableRewriteColumnMapping[newColumns.Length];
+        for (int i = 0; i < mappings.Length; i++)
+            mappings[i] = TableRewriteColumnMapping.FromSource(i);
+
+        IndexSchema[] indexesToRebuild = dependentIndexes
+            .Where(index => IndexCollationChanges(
+                index,
+                schema,
+                targetSchema,
+                current.Name))
+            .ToArray();
+
+        await ExecuteTableRewriteAsync(
+            new TableRewritePlan(schema, targetSchema, mappings),
+            indexesToRebuild,
+            ct);
+    }
+
+    private async ValueTask<IndexSchema[]> EnsureAlterColumnRewriteHasNoUnsupportedDependenciesAsync(
+        string tableName,
+        TableSchema schema,
+        ColumnDefinition column,
+        bool allowReadySqlIndexes,
+        CancellationToken ct)
+    {
+        string qualifiedColumn = $"{tableName}.{column.Name}";
+        if (column.IsPrimaryKey || column.IsIdentity)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot alter column '{qualifiedColumn}' because primary-key or identity storage depends on its current shape.");
+        }
+
+        ForeignKeyDefinition? outgoingForeignKey = schema.ForeignKeys.FirstOrDefault(
+            foreignKey => GetForeignKeyColumnNames(foreignKey).Any(childColumn =>
+                string.Equals(childColumn, column.Name, StringComparison.OrdinalIgnoreCase)));
+        if (outgoingForeignKey is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot alter column '{qualifiedColumn}' because foreign key '{outgoingForeignKey.ConstraintName}' depends on it.");
+        }
+
+        TableForeignKeyReference? incomingForeignKey = _catalog
+            .GetReferencingForeignKeys(tableName)
+            .FirstOrDefault(reference =>
+                GetForeignKeyReferencedColumnNames(reference.ForeignKey).Any(parentColumn =>
+                    string.Equals(parentColumn, column.Name, StringComparison.OrdinalIgnoreCase)));
+        if (incomingForeignKey is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot alter column '{qualifiedColumn}' because foreign key '{incomingForeignKey.ForeignKey.ConstraintName}' references it.");
+        }
+
+        KeyConstraintDefinition? keyConstraint = schema.KeyConstraints.FirstOrDefault(
+            key => key.Columns.Any(keyColumn =>
+                string.Equals(keyColumn, column.Name, StringComparison.OrdinalIgnoreCase)));
+        if (keyConstraint is not null)
+        {
+            string keyDisplay = keyConstraint.ConstraintName is { Length: > 0 } keyName
+                ? $"constraint '{keyName}'"
+                : FormatKeyConstraintKind(keyConstraint.Kind);
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot alter column '{qualifiedColumn}' because {keyDisplay} depends on it.");
+        }
+
+        IndexSchema[] dependentIndexes = _catalog.GetIndexesForTable(tableName)
+            .Where(candidate => candidate.Columns.Any(indexColumn =>
+                string.Equals(indexColumn, column.Name, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        for (int i = 0; i < dependentIndexes.Length; i++)
+        {
+            IndexSchema index = dependentIndexes[i];
+            if (!allowReadySqlIndexes ||
+                index.Kind != IndexKind.Sql ||
+                index.State != IndexState.Ready)
+            {
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot alter column '{qualifiedColumn}' because index '{index.IndexName}' depends on it and cannot be rebuilt safely.");
+            }
+        }
+
+        EnsureNoDependentView(
+            tableName,
+            $"alter column '{column.Name}' on table '{tableName}'");
+
+        TriggerSchema? trigger = FindTriggerDependingOnColumn(
+            tableName,
+            column.Name,
+            includePositionalInsertShapeDependency: false);
+        if (trigger is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot alter column '{qualifiedColumn}' while trigger '{trigger.TriggerName}' depends on it. Drop or rewrite the trigger first.");
+        }
+
+        ValidationRule? validationRule = (await LoadValidationRulesAsync(ct))
+            .FirstOrDefault(rule =>
+                string.Equals(rule.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                ValidationRuleReferencesColumn(rule, column.Name));
+        if (validationRule is not null)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"Cannot alter column '{qualifiedColumn}' while validation rule '{validationRule.RuleName}' depends on it. Drop or rewrite the validation rule first.");
+        }
+
+        return dependentIndexes;
+    }
+
+    private static bool IndexCollationChanges(
+        IndexSchema index,
+        TableSchema sourceSchema,
+        TableSchema targetSchema,
+        string alteredColumnName)
+    {
+        for (int indexColumnPosition = 0;
+             indexColumnPosition < index.Columns.Count;
+             indexColumnPosition++)
+        {
+            string indexColumnName = index.Columns[indexColumnPosition];
+            if (!string.Equals(
+                    indexColumnName,
+                    alteredColumnName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            int sourceColumnIndex = sourceSchema.GetColumnIndex(indexColumnName);
+            int targetColumnIndex = targetSchema.GetColumnIndex(indexColumnName);
+            if (sourceColumnIndex < 0 || targetColumnIndex < 0)
+                return true;
+
+            string? sourceCollation = CollationSupport.GetEffectiveIndexColumnCollation(
+                index,
+                sourceSchema,
+                indexColumnPosition,
+                sourceColumnIndex);
+            string? targetCollation = CollationSupport.GetEffectiveIndexColumnCollation(
+                index,
+                targetSchema,
+                indexColumnPosition,
+                targetColumnIndex);
+            return !CollationSupport.SemanticallyEquals(
+                sourceCollation,
+                targetCollation);
+        }
+
+        return false;
+    }
+
     private async ValueTask ValidateExistingRowsAgainstSchemaAsync(
         TableSchema storageSchema,
         TableSchema validationSchema,
@@ -20267,6 +21343,29 @@ public sealed class QueryPlanner
         await scan.OpenAsync(ct);
         while (await scan.MoveNextAsync(ct))
             RowConstraintValidator.ValidateRow(validationSchema, scan.Current);
+    }
+
+    private async ValueTask ValidateExistingRowsAgainstForeignKeysAsync(
+        TableSchema storageSchema,
+        TableSchema validationSchema,
+        CancellationToken ct)
+    {
+        BTree tree = _catalog.GetTableTree(storageSchema.TableName, _pager);
+        await using var scan = new TableScanOperator(
+            tree,
+            storageSchema,
+            GetReadSerializer(storageSchema),
+            TryGetCachedTreeRowCountCapacityHint(tree));
+        await scan.OpenAsync(ct);
+        while (await scan.MoveNextAsync(ct))
+        {
+            await ValidateOutgoingForeignKeysAsync(
+                validationSchema.TableName,
+                validationSchema,
+                oldRow: null,
+                scan.Current,
+                ct);
+        }
     }
 
     private async ValueTask ValidateAddedColumnAgainstExistingRowsAsync(
@@ -20300,13 +21399,24 @@ public sealed class QueryPlanner
         }
     }
 
+    private ValueTask ExecuteTableRewriteAsync(
+        TableRewritePlan plan,
+        CancellationToken ct) =>
+        ExecuteTableRewriteAsync(
+            plan,
+            Array.Empty<IndexSchema>(),
+            ct);
+
     private async ValueTask ExecuteTableRewriteAsync(
         TableRewritePlan plan,
+        IReadOnlyList<IndexSchema> indexesToRebuild,
         CancellationToken ct)
     {
         BTree sourceTree = _catalog.GetTableTree(plan.SourceSchema.TableName, _pager);
         uint shadowRootPage = await BTree.CreateNewAsync(_pager, ct);
         var shadowTree = new BTree(_pager, shadowRootPage);
+        var shadowIndexStores =
+            new Dictionary<string, IIndexStore>(StringComparer.OrdinalIgnoreCase);
         bool catalogSwapCompleted = false;
         long rowCount = 0;
 
@@ -20332,8 +21442,11 @@ public sealed class QueryPlanner
                         rewrittenRow,
                         ct);
 
-                    await shadowTree.InsertAsync(
+                    long targetRowId = plan.RewriteRowId(
                         scan.CurrentRowId,
+                        scan.Current);
+                    await shadowTree.InsertAsync(
+                        targetRowId,
                         _recordSerializer.Encode(rewrittenRow),
                         traversalPath,
                         traversalSet,
@@ -20342,24 +21455,57 @@ public sealed class QueryPlanner
                 }
             }
 
+            for (int i = 0; i < indexesToRebuild.Count; i++)
+            {
+                IndexSchema index = indexesToRebuild[i];
+                IIndexStore shadowIndexStore =
+                    await _catalog.CreateDetachedIndexStoreAsync(index, ct);
+                shadowIndexStores.Add(index.IndexName, shadowIndexStore);
+                await IndexMaintenanceHelper.BackfillIndexAsync(
+                    shadowTree,
+                    plan.TargetSchema,
+                    index,
+                    shadowIndexStore,
+                    GetReadSerializer(plan.TargetSchema),
+                    ct);
+            }
+
             ct.ThrowIfCancellationRequested();
-            uint previousRootPage = await _catalog.ReplaceTableStorageAsync(
+            TableAndIndexStorageReplacement previousStorage =
+                await _catalog.ReplaceTableAndIndexStorageAsync(
                 plan.SourceSchema.TableName,
                 plan.TargetSchema,
                 shadowTree.RootPageId,
                 rowCount,
-                ct);
+                shadowIndexStores,
+                CancellationToken.None);
             catalogSwapCompleted = true;
 
             // Reclamation is intentionally non-cancellable after the catalog
             // swap. Cancellation is honored while copying, where the original
             // root is still authoritative.
-            await new BTree(_pager, previousRootPage).ReclaimAsync(CancellationToken.None);
+            foreach (IIndexStore previousIndexStore in previousStorage.PreviousIndexStores.Values)
+                await ReclaimIndexStoreAsync(previousIndexStore);
+
+            await new BTree(_pager, previousStorage.PreviousTableRootPage)
+                .ReclaimAsync(CancellationToken.None);
         }
         catch
         {
             if (!catalogSwapCompleted)
             {
+                foreach (IIndexStore shadowIndexStore in shadowIndexStores.Values)
+                {
+                    try
+                    {
+                        await ReclaimIndexStoreAsync(shadowIndexStore);
+                    }
+                    catch
+                    {
+                        // The active transaction remains the final cleanup boundary.
+                    }
+                }
+
                 try
                 {
                     await shadowTree.ReclaimAsync(CancellationToken.None);
@@ -20373,6 +21519,11 @@ public sealed class QueryPlanner
             throw;
         }
     }
+
+    private static ValueTask ReclaimIndexStoreAsync(IIndexStore store) =>
+        store is IReclaimableIndexStore reclaimable
+            ? reclaimable.ReclaimAsync(CancellationToken.None)
+            : ValueTask.CompletedTask;
 
     private static bool CheckConstraintReferencesColumn(
         CheckConstraintDefinition check,
@@ -21061,7 +22212,8 @@ public sealed class QueryPlanner
         TableSchema parentSchema,
         IReadOnlyList<int> parentColumnIndices,
         IReadOnlyList<string?> expectedTextCollations,
-        string? excludedIndexName)
+        string? excludedIndexName,
+        bool excludePrimaryKey = false)
     {
         if (parentColumnIndices.Count == 0 ||
             parentColumnIndices.Count != expectedTextCollations.Count)
@@ -21086,7 +22238,8 @@ public sealed class QueryPlanner
             }
         }
 
-        if (parentColumnIndices.Count == 1 &&
+        if (!excludePrimaryKey &&
+            parentColumnIndices.Count == 1 &&
             parentSchema.PrimaryKeyColumnIndex == parentColumnIndices[0] &&
             columnCollationsMatch)
         {
@@ -21094,6 +22247,7 @@ public sealed class QueryPlanner
         }
 
         if (parentSchema.KeyConstraints.Any(key =>
+                (!excludePrimaryKey || key.Kind != KeyConstraintKind.PrimaryKey) &&
                 OrderedColumnNamesEqual(key.Columns, parentColumnNames) &&
                 columnCollationsMatch &&
                 (excludedIndexName is null ||
@@ -21276,6 +22430,65 @@ public sealed class QueryPlanner
         }
     }
 
+    private void ValidatePrimaryKeyCanBeDropped(
+        TableSchema parentSchema,
+        KeyConstraintDefinition primaryKey)
+    {
+        foreach (TableForeignKeyReference reference in _catalog.GetReferencingForeignKeys(parentSchema.TableName))
+        {
+            IReadOnlyList<string> referencedColumns =
+                GetForeignKeyReferencedColumnNames(reference.ForeignKey);
+            if (!OrderedColumnNamesEqual(referencedColumns, primaryKey.Columns))
+                continue;
+
+            TableSchema? childSchema = _catalog.GetTable(reference.TableName);
+            if (childSchema is null)
+                continue;
+
+            IReadOnlyList<string> childColumns = GetForeignKeyColumnNames(reference.ForeignKey);
+            if (childColumns.Count != referencedColumns.Count)
+                continue;
+
+            var parentColumnIndices = new int[referencedColumns.Count];
+            var expectedCollations = new string?[referencedColumns.Count];
+            bool validColumns = true;
+            for (int columnIndex = 0; columnIndex < referencedColumns.Count; columnIndex++)
+            {
+                parentColumnIndices[columnIndex] =
+                    parentSchema.GetColumnIndex(referencedColumns[columnIndex]);
+                int childColumnIndex = childSchema.GetColumnIndex(childColumns[columnIndex]);
+                if (parentColumnIndices[columnIndex] < 0 || childColumnIndex < 0)
+                {
+                    validColumns = false;
+                    break;
+                }
+
+                expectedCollations[columnIndex] =
+                    childSchema.Columns[childColumnIndex].Type == DbType.Text
+                        ? CollationSupport.NormalizeMetadataName(
+                            childSchema.Columns[childColumnIndex].Collation)
+                        : null;
+            }
+
+            if (validColumns &&
+                !CanUseParentColumnsForForeignKey(
+                    parentSchema,
+                    parentColumnIndices,
+                    expectedCollations,
+                    excludedIndexName: primaryKey.BackingIndexName,
+                    excludePrimaryKey: true))
+            {
+                string primaryKeyDisplay =
+                    primaryKey.ConstraintName is { Length: > 0 } primaryKeyName
+                        ? $"'{primaryKeyName}'"
+                        : $"on '{parentSchema.TableName}'";
+                throw new CSharpDbException(
+                    ErrorCode.ConstraintViolation,
+                    $"Cannot drop PRIMARY KEY {primaryKeyDisplay} because foreign key '{reference.ForeignKey.ConstraintName}' depends on it and no equivalent UNIQUE candidate key remains.");
+            }
+        }
+    }
+
     private async ValueTask RenameTableWithDependenciesAsync(
         string oldTableName,
         string newTableName,
@@ -21377,6 +22590,7 @@ public sealed class QueryPlanner
                     Nullable = column.Nullable,
                     IsPrimaryKey = column.IsPrimaryKey,
                     IsIdentity = column.IsIdentity,
+                    IsRowVersion = column.IsRowVersion,
                     Collation = column.Collation,
                     DefaultSql = column.DefaultSql,
                 }
@@ -21712,6 +22926,7 @@ public sealed class QueryPlanner
             }
         }
 
+        RejectExplicitRowVersionInsert(schema, useDefault);
         RowConstraintValidator.ApplyDefaults(schema, row, useDefault);
         return row;
     }
@@ -21721,6 +22936,9 @@ public sealed class QueryPlanner
         if (explicitColumnIndices is null)
         {
             ValidateInsertValueCount(schema.Columns.Count, values.Length);
+            int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+            if (rowVersionColumnIndex >= 0)
+                ThrowExplicitRowVersionAssignment(schema.Columns[rowVersionColumnIndex]);
             return values;
         }
 
@@ -21734,8 +22952,108 @@ public sealed class QueryPlanner
             useDefault[explicitColumnIndices[i]] = false;
         }
 
+        RejectExplicitRowVersionInsert(schema, useDefault);
         RowConstraintValidator.ApplyDefaults(schema, row, useDefault);
         return row;
+    }
+
+    private static void RejectExplicitRowVersionInsert(TableSchema schema, bool[] useDefault)
+    {
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex >= 0 && !useDefault[rowVersionColumnIndex])
+            ThrowExplicitRowVersionAssignment(schema.Columns[rowVersionColumnIndex]);
+    }
+
+    private static void ThrowExplicitRowVersionAssignment(ColumnDefinition column)
+    {
+        throw new CSharpDbException(
+            ErrorCode.ConstraintViolation,
+            $"ROWVERSION column '{column.Name}' is generated by the database and cannot be assigned explicitly.");
+    }
+
+    private static int GetRowVersionColumnIndex(TableSchema schema)
+    {
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            if (schema.Columns[i].IsRowVersion)
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static byte[]? MaterializeInitialRowVersion(TableSchema schema, DbValue[] row)
+    {
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex < 0)
+            return null;
+
+        byte[] generatedRowVersion = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64BigEndian(generatedRowVersion, 1);
+        row[rowVersionColumnIndex] = DbValue.FromBlob(generatedRowVersion);
+        return generatedRowVersion;
+    }
+
+    private static byte[]? AdvanceRowVersion(TableSchema schema, DbValue[] oldRow, DbValue[] newRow)
+    {
+        int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+        if (rowVersionColumnIndex < 0)
+            return null;
+
+        DbValue oldValue = oldRow[rowVersionColumnIndex];
+        if (oldValue.Type != DbType.Blob || oldValue.AsBlob.Length != sizeof(ulong))
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' contains an invalid value.");
+        }
+
+        ulong current = BinaryPrimitives.ReadUInt64BigEndian(oldValue.AsBlob);
+        if (current == ulong.MaxValue)
+        {
+            throw new CSharpDbException(
+                ErrorCode.ConstraintViolation,
+                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' has reached its maximum value.");
+        }
+
+        byte[] generatedRowVersion = new byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64BigEndian(generatedRowVersion, current + 1);
+        newRow[rowVersionColumnIndex] = DbValue.FromBlob(generatedRowVersion);
+        return generatedRowVersion;
+    }
+
+    private static byte[] GetRowVersionValue(
+        TableSchema schema,
+        DbValue[] row,
+        int rowVersionColumnIndex)
+    {
+        DbValue value = row[rowVersionColumnIndex];
+        if (value.Type != DbType.Blob || value.AsBlob.Length != sizeof(ulong))
+        {
+            throw new CSharpDbException(
+                ErrorCode.CorruptDatabase,
+                $"ROWVERSION column '{schema.Columns[rowVersionColumnIndex].Name}' contains an invalid value.");
+        }
+
+        return value.AsBlob;
+    }
+
+    private async ValueTask RefreshRowVersionAfterBeforeTriggersAsync(
+        string tableName,
+        TableSchema schema,
+        long rowId,
+        DbValue[] newRow,
+        CancellationToken ct)
+    {
+        if (GetRowVersionColumnIndex(schema) < 0)
+            return;
+
+        DbValue[]? persistedRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
+        if (persistedRow is null)
+            return;
+
+        AdvanceRowVersion(schema, persistedRow, newRow);
+        RowConstraintValidator.ValidateRow(schema, newRow);
     }
 
     private static int[] ResolveInsertColumnIndices(TableSchema schema, IReadOnlyList<string> columnNames)
@@ -21791,7 +23109,10 @@ public sealed class QueryPlanner
         };
     }
 
-    private readonly record struct InsertRowResult(long RowId, long? GeneratedIntegerIdentity);
+    private readonly record struct InsertRowResult(
+        long RowId,
+        long? GeneratedIntegerIdentity,
+        byte[]? GeneratedRowVersion);
 
     private async ValueTask PersistForeignKeyMutationContextAsync(
         ForeignKeyMutationContext? mutationContext,
@@ -22498,6 +23819,7 @@ public sealed class QueryPlanner
             row,
             rowIdReservationCountHint,
             ct);
+        byte[]? generatedRowVersion = MaterializeInitialRowVersion(schema, row);
         RowConstraintValidator.ValidateRow(schema, row);
         long? generatedIntegerIdentity = autoGeneratedRowId &&
             schema.PrimaryKeyColumnIndex >= 0 &&
@@ -22553,7 +23875,15 @@ public sealed class QueryPlanner
         // AFTER INSERT triggers
         await FireTriggersAsync(tableName, TriggerTiming.After, TriggerEvent.Insert, null, row, schema, ct);
 
-        return new InsertRowResult(rowId, generatedIntegerIdentity);
+        if (generatedRowVersion is not null)
+        {
+            DbValue[]? persistedRow = await TryLoadRowAsync(tableName, schema, rowId, ct);
+            int rowVersionColumnIndex = GetRowVersionColumnIndex(schema);
+            if (persistedRow is not null && rowVersionColumnIndex >= 0)
+                generatedRowVersion = GetRowVersionValue(schema, persistedRow, rowVersionColumnIndex);
+        }
+
+        return new InsertRowResult(rowId, generatedIntegerIdentity, generatedRowVersion);
     }
 
     private ReadOnlyMemory<byte> EncodeRowForInsert(

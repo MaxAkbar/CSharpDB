@@ -8,6 +8,7 @@ public sealed class QueryResult : IAsyncDisposable
     private static readonly QueryResult ZeroRowsAffectedResult = new(0);
     private static readonly QueryResult OneRowAffectedResult = new(1);
     private static readonly ConditionalWeakTable<QueryResult, GeneratedIntegerKeyMetadata> s_generatedIntegerKeys = new();
+    private static readonly ConditionalWeakTable<QueryResult, GeneratedRowVersionMetadata> s_generatedRowVersions = new();
 
     private readonly IOperator? _operator;
     private readonly IBatchOperator? _batchOperator;
@@ -133,16 +134,28 @@ public sealed class QueryResult : IAsyncDisposable
         };
 
     internal static QueryResult FromRowsAffected(int rowsAffected, long? generatedIntegerKey)
+        => FromRowsAffected(rowsAffected, generatedIntegerKey, generatedRowVersion: null);
+
+    internal static QueryResult FromRowsAffected(
+        int rowsAffected,
+        long? generatedIntegerKey,
+        byte[]? generatedRowVersion)
     {
-        if (generatedIntegerKey.HasValue)
+        if (generatedIntegerKey.HasValue || generatedRowVersion is not null)
         {
             var result = new QueryResult(rowsAffected);
-            s_generatedIntegerKeys.Add(result, new GeneratedIntegerKeyMetadata(generatedIntegerKey.Value));
+            if (generatedIntegerKey.HasValue)
+                s_generatedIntegerKeys.Add(result, new GeneratedIntegerKeyMetadata(generatedIntegerKey.Value));
+            if (generatedRowVersion is not null)
+                s_generatedRowVersions.Add(result, new GeneratedRowVersionMetadata(generatedRowVersion));
             return result;
         }
 
         return FromRowsAffected(rowsAffected);
     }
+
+    internal static QueryResult FromRowsAffected(int rowsAffected, byte[]? generatedRowVersion)
+        => FromRowsAffected(rowsAffected, generatedIntegerKey: null, generatedRowVersion);
 
     internal bool TryGetGeneratedIntegerKey(out long generatedIntegerKey)
     {
@@ -156,9 +169,26 @@ public sealed class QueryResult : IAsyncDisposable
         return false;
     }
 
+    internal bool TryGetGeneratedRowVersion(out byte[] generatedRowVersion)
+    {
+        if (s_generatedRowVersions.TryGetValue(this, out GeneratedRowVersionMetadata? metadata))
+        {
+            generatedRowVersion = (byte[])metadata.Value.Clone();
+            return true;
+        }
+
+        generatedRowVersion = Array.Empty<byte>();
+        return false;
+    }
+
     private sealed class GeneratedIntegerKeyMetadata(long value)
     {
         internal long Value { get; } = value;
+    }
+
+    private sealed class GeneratedRowVersionMetadata(byte[] value)
+    {
+        internal byte[] Value { get; } = (byte[])value.Clone();
     }
 
     public static QueryResult FromMaterializedRows(ColumnDefinition[] schema, List<DbValue[]> rows)
@@ -172,6 +202,16 @@ public sealed class QueryResult : IAsyncDisposable
             throw new InvalidOperationException("A dispose callback is already registered for this QueryResult.");
 
         _disposeCallback = disposeCallback;
+    }
+
+    internal void AppendDisposeCallback(Func<ValueTask> disposeCallback)
+    {
+        ArgumentNullException.ThrowIfNull(disposeCallback);
+
+        Func<ValueTask>? existing = _disposeCallback;
+        _disposeCallback = existing is null
+            ? disposeCallback
+            : () => InvokeDisposeCallbacksAsync(existing, disposeCallback);
     }
 
     internal void SetExecutionScopeFactory(Func<IDisposable> executionScopeFactory)
@@ -532,26 +572,50 @@ public sealed class QueryResult : IAsyncDisposable
 
     private async ValueTask DisposeOperatorAsync()
     {
-        if (_operator != null)
+        try
         {
-            using IDisposable? scope = EnterExecutionScope();
-            await _operator.DisposeAsync();
+            if (_operator != null)
+            {
+                using IDisposable? scope = EnterExecutionScope();
+                await _operator.DisposeAsync();
+            }
         }
-
-        if (_disposeCallback != null)
-            await _disposeCallback();
+        finally
+        {
+            if (_disposeCallback != null)
+                await _disposeCallback();
+        }
     }
 
     private async ValueTask DisposeBatchOperatorAsync()
     {
-        if (_batchOperator != null)
+        try
         {
-            using IDisposable? scope = EnterExecutionScope();
-            await _batchOperator.DisposeAsync();
+            if (_batchOperator != null)
+            {
+                using IDisposable? scope = EnterExecutionScope();
+                await _batchOperator.DisposeAsync();
+            }
         }
+        finally
+        {
+            if (_disposeCallback != null)
+                await _disposeCallback();
+        }
+    }
 
-        if (_disposeCallback != null)
-            await _disposeCallback();
+    private static async ValueTask InvokeDisposeCallbacksAsync(
+        Func<ValueTask> first,
+        Func<ValueTask> second)
+    {
+        try
+        {
+            await first();
+        }
+        finally
+        {
+            await second();
+        }
     }
 
     private sealed class MaterializedRowsOperator : IOperator, IMaterializedRowsProvider, IEstimatedRowCountProvider

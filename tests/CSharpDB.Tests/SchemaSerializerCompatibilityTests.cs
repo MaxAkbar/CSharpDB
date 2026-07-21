@@ -7,6 +7,39 @@ namespace CSharpDB.Tests;
 public sealed class SchemaSerializerCompatibilityTests
 {
     [Fact]
+    public void SerializeDeserialize_TableSchema_RoundTripsRowVersionMetadata()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "items",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "id",
+                    Type = DbType.Integer,
+                    IsPrimaryKey = true,
+                    Nullable = false,
+                },
+                new ColumnDefinition
+                {
+                    Name = "version",
+                    Type = DbType.Blob,
+                    Nullable = false,
+                    IsRowVersion = true,
+                },
+            ],
+        };
+
+        TableSchema decoded = SchemaSerializer.Deserialize(SchemaSerializer.Serialize(schema));
+
+        Assert.False(decoded.Columns[0].IsRowVersion);
+        Assert.True(decoded.Columns[1].IsRowVersion);
+        Assert.Equal(DbType.Blob, decoded.Columns[1].Type);
+        Assert.False(decoded.Columns[1].Nullable);
+    }
+
+    [Fact]
     public void SerializeDeserialize_TableSchema_RoundTripsNextRowId()
     {
         var schema = new TableSchema

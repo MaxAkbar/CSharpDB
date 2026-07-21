@@ -11,15 +11,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\samples\efcore-minimal-api\EfCoreMinimalApiSample.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.EntityFrameworkCore\CSharpDB.EntityFrameworkCore.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="$(CSharpDbQualifiedEfCoreVersion)" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="$(CSharpDbQualifiedEfCoreVersion)">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(CSharpDbQualifiedEfCoreVersion)" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageReference Update="coverlet.collector" Version="10.0.1" />
     <PackageReference Update="Microsoft.NET.Test.Sdk" Version="18.8.1" />

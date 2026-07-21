@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CSharpDbPackageVersion Condition="'$(CSharpDbPackageVersion)' == ''">0.0.0-package-version-required</CSharpDbPackageVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CSharpDB.EntityFrameworkCore" Version="$(CSharpDbPackageVersion)" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="$(CSharpDbQualifiedEfCoreVersion)">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

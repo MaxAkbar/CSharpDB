@@ -157,6 +157,7 @@ public static class GrpcModelMapper
             Nullable = value.Nullable,
             IsPrimaryKey = value.IsPrimaryKey,
             IsIdentity = value.IsIdentity,
+            IsRowVersion = value.IsRowVersion,
             Collation = value.Collation ?? string.Empty,
             DefaultSql = value.DefaultSql ?? string.Empty,
         };
@@ -169,6 +170,7 @@ public static class GrpcModelMapper
             Nullable = value.Nullable,
             IsPrimaryKey = value.IsPrimaryKey,
             IsIdentity = value.IsIdentity,
+            IsRowVersion = value.IsRowVersion,
             Collation = string.IsNullOrEmpty(value.Collation) ? null : value.Collation,
             DefaultSql = string.IsNullOrEmpty(value.DefaultSql) ? null : value.DefaultSql,
         };

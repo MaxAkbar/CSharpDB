@@ -867,7 +867,8 @@ public sealed class Database : IAsyncDisposable
     }
 
     /// <summary>
-    /// Prepare a reusable full-row insert batch for a single table.
+    /// Prepare a reusable writable-column insert batch for a single table.
+    /// Database-generated ROWVERSION columns are omitted from the required values.
     /// The batch accepts DbValue rows and executes them through the simple insert path.
     /// </summary>
     public InsertBatch PrepareInsertBatch(string tableName, int initialCapacity = 0)
@@ -880,7 +881,20 @@ public sealed class Database : IAsyncDisposable
         if (schema == null)
             throw new CSharpDbException(ErrorCode.TableNotFound, $"Table '{tableName}' not found.");
 
-        return new InsertBatch(this, tableName, schema.Columns.Count, _catalog.SchemaVersion, initialCapacity);
+        string[]? writableColumnNames = schema.Columns.Any(static column => column.IsRowVersion)
+            ? schema.Columns
+                .Where(static column => !column.IsRowVersion)
+                .Select(static column => column.Name)
+                .ToArray()
+            : null;
+        int writableColumnCount = writableColumnNames?.Length ?? schema.Columns.Count;
+        return new InsertBatch(
+            this,
+            tableName,
+            writableColumnCount,
+            writableColumnNames,
+            _catalog.SchemaVersion,
+            initialCapacity);
     }
 
     private ValueTask<QueryResult> ExecuteStatementAsync(Statement stmt, CancellationToken ct)
@@ -1216,9 +1230,17 @@ public sealed class Database : IAsyncDisposable
     /// Caller must dispose the returned ReaderSession when done.
     /// </summary>
     public ReaderSession CreateReaderSession()
+        => CreateReaderSession(
+            CaptureSnapshotRowCounts(),
+            allowCurrentCatalogRowCounts: true);
+
+    internal ReaderSession CreateReaderSession(
+        IReadOnlyDictionary<string, long> snapshotRowCounts,
+        bool allowCurrentCatalogRowCounts)
     {
+        ArgumentNullException.ThrowIfNull(snapshotRowCounts);
+
         var snapshot = _pager.AcquireReaderSnapshot();
-        var snapshotRowCounts = CaptureSnapshotRowCounts();
         return new ReaderSession(
             _pager,
             _catalog,
@@ -1227,8 +1249,12 @@ public sealed class Database : IAsyncDisposable
             _statementCache,
             _functions,
             _planner.AdaptiveQueryReoptimization,
-            snapshotRowCounts);
+            snapshotRowCounts,
+            allowCurrentCatalogRowCounts);
     }
+
+    internal IReadOnlyDictionary<string, long> CaptureReaderSnapshotRowCounts() =>
+        CaptureSnapshotRowCounts();
 
     private Dictionary<string, long> CaptureSnapshotRowCounts()
     {
@@ -1251,6 +1277,26 @@ public sealed class Database : IAsyncDisposable
 
     internal IDisposable EnterTemporaryTableSessionScope(object sessionKey) =>
         _temporaryTables.EnterSessionScope(sessionKey);
+
+    internal bool HasTemporaryTablesForCurrentSession =>
+        _temporaryTables.GetTableNames().Count != 0;
+
+    internal bool HasTemporaryTableContextForCurrentSession =>
+        _temporaryTables.HasCurrentSessionContext;
+
+    internal async ValueTask ResetReusableSessionStateAsync()
+    {
+        if (_inTransaction || _explicitTransactionFailed)
+            throw new InvalidOperationException("Cannot reuse a database handle with an active or failed transaction.");
+        if (ActiveReaderCount != 0)
+            throw new InvalidOperationException("Cannot reuse a database handle while snapshot readers are active.");
+
+        // A physical close flushes deferred catalog state and destroys every
+        // temporary-table context. Warm handle handoff must preserve that
+        // boundary before the handle changes logical owners.
+        await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
+        await _temporaryTables.ClearAsync();
+    }
 
     internal uint GetTableRootPage(string tableName) => _catalog.GetTableRootPage(tableName);
 
@@ -2219,6 +2265,7 @@ public sealed class Database : IAsyncDisposable
         private readonly StatementCache _statementCache;
         private readonly WalSnapshot _snapshot;
         private readonly IReadOnlyDictionary<string, long> _snapshotRowCounts;
+        private readonly bool _allowCurrentCatalogRowCounts;
         private readonly AdaptiveQueryReoptimizationOptions _adaptiveQueryReoptimization;
         private Pager? _snapshotPager;
         private QueryPlanner? _planner;
@@ -2235,7 +2282,8 @@ public sealed class Database : IAsyncDisposable
             StatementCache statementCache,
             DbFunctionRegistry functions,
             AdaptiveQueryReoptimizationOptions adaptiveQueryReoptimization,
-            IReadOnlyDictionary<string, long> snapshotRowCounts)
+            IReadOnlyDictionary<string, long> snapshotRowCounts,
+            bool allowCurrentCatalogRowCounts)
         {
             _pager = pager;
             _catalog = catalog;
@@ -2249,6 +2297,7 @@ public sealed class Database : IAsyncDisposable
             _snapshot = snapshot;
             _adaptiveQueryReoptimization = adaptiveQueryReoptimization;
             _snapshotRowCounts = snapshotRowCounts;
+            _allowCurrentCatalogRowCounts = allowCurrentCatalogRowCounts;
         }
 
         /// <summary>
@@ -2437,7 +2486,8 @@ public sealed class Database : IAsyncDisposable
                 return true;
             }
 
-            if (_catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
+            if (_allowCurrentCatalogRowCounts &&
+                _catalog.TryGetExactTableRowCount(simpleRef.TableName, out rowCount))
             {
                 result = QueryResult.FromSyncScalar(DbValue.FromInteger(rowCount), outputSchema);
                 return true;
@@ -2630,6 +2680,7 @@ public sealed class Database : IAsyncDisposable
                         Nullable = sourceColumn.Nullable,
                         IsPrimaryKey = sourceColumn.IsPrimaryKey,
                         IsIdentity = sourceColumn.IsIdentity,
+                        IsRowVersion = sourceColumn.IsRowVersion,
                     }
                     : sourceColumn;
             }

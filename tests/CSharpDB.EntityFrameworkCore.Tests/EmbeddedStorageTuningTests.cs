@@ -125,6 +125,39 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
         Assert.Contains("EmbeddedOpenMode", error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task UseCSharpDb_WithOpenTunedPooledConnection_EnsureCreatedPreservesTuning()
+    {
+        string dbPath = GetDbPath("open_tuned_pooled_connection");
+        var interceptor = new TrackingPageOperationInterceptor();
+        DatabaseOptions directOptions = CreateObservedDirectDatabaseOptions(interceptor);
+        var hybridOptions = new HybridDatabaseOptions();
+
+        await using var connection = new CSharpDbConnection(
+            $"Data Source={dbPath};Pooling=true",
+            directOptions,
+            hybridOptions);
+        var options = new DbContextOptionsBuilder<ObservedRuntimeContext>()
+            .UseCSharpDb(connection)
+            .Options;
+
+        await using var db = new ObservedRuntimeContext(options);
+        await db.Database.OpenConnectionAsync(Ct);
+
+        Assert.Same(directOptions, connection.DirectDatabaseOptions);
+        Assert.Same(hybridOptions, connection.HybridDatabaseOptions);
+        Assert.True(await db.Database.EnsureCreatedAsync(Ct));
+
+        db.Items.Add(new ObservedItem { Value = 73 });
+        await db.SaveChangesAsync(Ct);
+
+        Assert.False(await db.Database.EnsureCreatedAsync(Ct));
+        Assert.Equal(73, await db.Items.Select(item => item.Value).SingleAsync(Ct));
+        Assert.True(
+            interceptor.TotalReads > 0 || interceptor.TotalWrites > 0,
+            "Expected metadata and runtime operations to retain the supplied storage options.");
+    }
+
     private string GetDbPath(string name)
         => Path.Combine(_workspace, $"{name}.db");
 

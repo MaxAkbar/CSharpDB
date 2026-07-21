@@ -27,6 +27,12 @@ public sealed class CSharpDbRelationalConnection : RelationalConnection
         string validatedConnectionString = GetValidatedConnectionString();
         var builder = new CSharpDbConnectionStringBuilder(validatedConnectionString);
 
+        if (!builder.ContainsKey("Pooling")
+            && !CSharpDbProviderValidation.IsPrivateMemory(builder.DataSource))
+        {
+            builder.Pooling = true;
+        }
+
         if (_optionsExtension.StoragePreset is not null)
             builder.StoragePreset = _optionsExtension.StoragePreset;
 

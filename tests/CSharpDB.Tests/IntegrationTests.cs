@@ -1119,6 +1119,57 @@ public class IntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Like_WithDanglingEscape_DoesNotMatch()
+    {
+        await _db.ExecuteAsync(
+            "CREATE TABLE escaped_values (id INTEGER, value TEXT)",
+            TestContext.Current.CancellationToken);
+        await _db.ExecuteAsync(
+            "INSERT INTO escaped_values VALUES (1, 'abc!'), (2, 'abc%'), (3, '')",
+            TestContext.Current.CancellationToken);
+
+        await using (var bangResult = await _db.ExecuteAsync(
+                         "SELECT id FROM escaped_values WHERE value LIKE 'abc!' ESCAPE '!'",
+                         TestContext.Current.CancellationToken))
+        {
+            Assert.Empty(
+                await bangResult.ToListAsync(
+                    TestContext.Current.CancellationToken));
+        }
+
+        await using (var percentResult = await _db.ExecuteAsync(
+                         "SELECT id FROM escaped_values WHERE value LIKE '%' ESCAPE '%'",
+                         TestContext.Current.CancellationToken))
+        {
+            Assert.Empty(
+                await percentResult.ToListAsync(
+                    TestContext.Current.CancellationToken));
+        }
+
+        await using var doubledEscapeResult =
+            await _db.ExecuteAsync(
+                "SELECT id FROM escaped_values WHERE value LIKE 'abc%%' ESCAPE '%'",
+                TestContext.Current.CancellationToken);
+        var rows = await doubledEscapeResult.ToListAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Single(rows);
+        Assert.Equal(
+            2,
+            rows[0][0].AsInteger);
+
+        await using var emptyPatternResult =
+            await _db.ExecuteAsync(
+                "SELECT id FROM escaped_values WHERE value LIKE ''",
+                TestContext.Current.CancellationToken);
+        var emptyRows = await emptyPatternResult.ToListAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Single(emptyRows);
+        Assert.Equal(
+            3,
+            emptyRows[0][0].AsInteger);
+    }
+
+    [Fact]
     public async Task In_Integers()
     {
         await _db.ExecuteAsync("CREATE TABLE nums (id INTEGER, val INTEGER)", TestContext.Current.CancellationToken);
@@ -1623,6 +1674,111 @@ public class IntegrationTests : IAsyncLifetime
         Assert.Equal(2L, rows[0][1].AsInteger);
         Assert.Equal(70L, rows[0][2].AsInteger);
         Assert.Equal(35d, rows[0][3].AsReal);
+    }
+
+    [Theory]
+    [InlineData("AVG")]
+    [InlineData("MIN")]
+    [InlineData("MAX")]
+    public async Task GroupedAllNullAggregate_HavingComparisonIsUnknown_AndIsNullRemainsQueryable(
+        string aggregateName)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE aggregate_null_having (id INTEGER PRIMARY KEY, category TEXT NOT NULL, score REAL)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO aggregate_null_having VALUES (1, 'all-null', NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO aggregate_null_having VALUES (2, 'all-null', NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO aggregate_null_having VALUES (3, 'valued', 5)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO aggregate_null_having VALUES (4, 'valued', NULL)",
+            ct);
+
+        await using (var comparisonResult = await _db.ExecuteAsync(
+                         $"SELECT category FROM aggregate_null_having " +
+                         $"GROUP BY category HAVING {aggregateName}(score) < 10",
+                         ct))
+        {
+            DbValue[] row = Assert.Single(await comparisonResult.ToListAsync(ct));
+            Assert.Equal("valued", row[0].AsText);
+        }
+
+        await using (var isNullResult = await _db.ExecuteAsync(
+                         $"SELECT category FROM aggregate_null_having " +
+                         $"GROUP BY category HAVING {aggregateName}(score) IS NULL",
+                         ct))
+        {
+            DbValue[] row = Assert.Single(await isNullResult.ToListAsync(ct));
+            Assert.Equal("all-null", row[0].AsText);
+        }
+
+        await using var isNotNullResult = await _db.ExecuteAsync(
+            $"SELECT category FROM aggregate_null_having " +
+            $"GROUP BY category HAVING {aggregateName}(score) IS NOT NULL",
+            ct);
+        DbValue[] nonNullRow = Assert.Single(await isNotNullResult.ToListAsync(ct));
+        Assert.Equal("valued", nonNullRow[0].AsText);
+    }
+
+    [Fact]
+    public async Task AggregateBooleanExpressions_UseSqlThreeValuedLogicInGroupedAndScalarPaths()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE aggregate_boolean_having (id INTEGER PRIMARY KEY, category TEXT NOT NULL, score REAL)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO aggregate_boolean_having VALUES (1, 'all-null', NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO aggregate_boolean_having VALUES (2, 'all-null', NULL)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO aggregate_boolean_having VALUES (3, 'valued', 20)",
+            ct);
+
+        const string threeValuedProjection =
+            "SELECT " +
+            "(NOT (AVG(score) < 10)) IS NULL, " +
+            "((AVG(score) < 10) AND (1 = 1)) IS NULL, " +
+            "((AVG(score) < 10) AND (1 = 0)), " +
+            "((AVG(score) < 10) OR (1 = 0)) IS NULL, " +
+            "((AVG(score) < 10) OR (1 = 1)) " +
+            "FROM aggregate_boolean_having WHERE category = 'all-null'";
+
+        foreach (string groupByClause in new[] { string.Empty, " GROUP BY category" })
+        {
+            await using var result = await _db.ExecuteAsync(
+                threeValuedProjection + groupByClause,
+                ct);
+            DbValue[] row = Assert.Single(await result.ToListAsync(ct));
+            Assert.Equal(1, row[0].AsInteger); // NOT UNKNOWN is UNKNOWN.
+            Assert.Equal(1, row[1].AsInteger); // UNKNOWN AND TRUE is UNKNOWN.
+            Assert.Equal(0, row[2].AsInteger); // UNKNOWN AND FALSE is FALSE.
+            Assert.Equal(1, row[3].AsInteger); // UNKNOWN OR FALSE is UNKNOWN.
+            Assert.Equal(1, row[4].AsInteger); // UNKNOWN OR TRUE is TRUE.
+        }
+
+        await using (var groupedHavingResult = await _db.ExecuteAsync(
+                         "SELECT category FROM aggregate_boolean_having " +
+                         "GROUP BY category HAVING NOT (AVG(score) < 10)",
+                         ct))
+        {
+            DbValue[] row = Assert.Single(await groupedHavingResult.ToListAsync(ct));
+            Assert.Equal("valued", row[0].AsText);
+        }
+
+        await using var scalarHavingResult = await _db.ExecuteAsync(
+            "SELECT COUNT(*) FROM aggregate_boolean_having " +
+            "WHERE category = 'all-null' HAVING NOT (AVG(score) < 10)",
+            ct);
+        Assert.Empty(await scalarHavingResult.ToListAsync(ct));
     }
 
     [Fact]
@@ -4948,6 +5104,108 @@ public class IntegrationTests : IAsyncLifetime
         Assert.NotNull(groupB);
         Assert.Equal(40, groupA[1].AsInteger);
         Assert.Equal(60, groupB[1].AsInteger);
+    }
+
+    [Fact]
+    public async Task GroupBy_OrderByProjectedKeyAndAggregate_UsesOutputColumns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE grouped_order (id INTEGER, category TEXT)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO grouped_order VALUES (1, 'A'), (2, 'A'), (3, 'B'), (4, 'C'), (5, 'C'), (6, 'C')",
+            ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT category AS group_key, COUNT(*) AS total " +
+            "FROM grouped_order GROUP BY category " +
+            "ORDER BY COUNT(*) DESC, category ASC",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(("C", 3L), (rows[0][0].AsText, rows[0][1].AsInteger));
+        Assert.Equal(("A", 2L), (rows[1][0].AsText, rows[1][1].AsInteger));
+        Assert.Equal(("B", 1L), (rows[2][0].AsText, rows[2][1].AsInteger));
+
+        await using var nestedResult = await _db.ExecuteAsync(
+            "SELECT category AS group_key, COUNT(*) AS total " +
+            "FROM grouped_order GROUP BY category " +
+            "ORDER BY COUNT(*) + 1 DESC, category ASC LIMIT 2",
+            ct);
+        var nestedRows = await nestedResult.ToListAsync(ct);
+
+        Assert.Equal(2, nestedRows.Count);
+        Assert.Equal(
+            ("C", 3L),
+            (nestedRows[0][0].AsText, nestedRows[0][1].AsInteger));
+        Assert.Equal(
+            ("A", 2L),
+            (nestedRows[1][0].AsText, nestedRows[1][1].AsInteger));
+    }
+
+    [Fact]
+    public async Task GroupBy_OrderByAggregate_RejectsDuplicateOutputAliases()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE grouped_duplicate_alias (id INTEGER, category TEXT)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO grouped_duplicate_alias VALUES (1, 'A'), (2, 'A'), (3, 'B')",
+            ct);
+
+        CSharpDbException exception =
+            await Assert.ThrowsAsync<CSharpDbException>(
+                async () =>
+                {
+                    await using var result =
+                        await _db.ExecuteAsync(
+                            "SELECT category AS x, COUNT(*) AS x " +
+                            "FROM grouped_duplicate_alias " +
+                            "GROUP BY category ORDER BY COUNT(*)",
+                            ct);
+                    _ = await result.ToListAsync(ct);
+                });
+
+        Assert.Contains(
+            "duplicate output column name 'x'",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GroupBy_WithCorrelatedFilter_OrdersByProjectedKeyAndAggregate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _db.ExecuteAsync(
+            "CREATE TABLE grouped_corr_order (id INTEGER, category TEXT)",
+            ct);
+        await _db.ExecuteAsync(
+            "CREATE TABLE grouped_corr_filter (category TEXT, enabled INTEGER)",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO grouped_corr_order VALUES (1, 'A'), (2, 'A'), (3, 'B'), (4, 'C'), (5, 'C'), (6, 'C')",
+            ct);
+        await _db.ExecuteAsync(
+            "INSERT INTO grouped_corr_filter VALUES ('A', 1), ('B', 0), ('C', 1)",
+            ct);
+
+        await using var result = await _db.ExecuteAsync(
+            "SELECT o.category AS group_key, COUNT(*) AS total " +
+            "FROM grouped_corr_order o " +
+            "WHERE EXISTS (" +
+            "SELECT f.category FROM grouped_corr_filter f " +
+            "WHERE f.category = o.category AND f.enabled = 1) " +
+            "GROUP BY o.category " +
+            "ORDER BY COUNT(*) DESC, o.category ASC",
+            ct);
+        var rows = await result.ToListAsync(ct);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(("C", 3L), (rows[0][0].AsText, rows[0][1].AsInteger));
+        Assert.Equal(("A", 2L), (rows[1][0].AsText, rows[1][1].AsInteger));
     }
 
     [Fact]

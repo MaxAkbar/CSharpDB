@@ -4,7 +4,7 @@ using CSharpDB.Sql;
 namespace CSharpDB.Engine;
 
 /// <summary>
-/// Reusable engine-level batch insert helper for full-row inserts into a single table.
+/// Reusable engine-level batch insert helper for writable-column inserts into a single table.
 /// The batch retains row buffers across executions to avoid per-row SQL parsing and object churn.
 /// </summary>
 public sealed class InsertBatch
@@ -12,15 +12,23 @@ public sealed class InsertBatch
     private readonly Database _database;
     private readonly string _tableName;
     private readonly int _columnCount;
+    private readonly string[]? _columnNames;
     private readonly long _preparedSchemaVersion;
     private DbValue[][] _rows;
     private int _count;
 
-    internal InsertBatch(Database database, string tableName, int columnCount, long schemaVersion, int initialCapacity)
+    internal InsertBatch(
+        Database database,
+        string tableName,
+        int columnCount,
+        string[]? columnNames,
+        long schemaVersion,
+        int initialCapacity)
     {
         _database = database;
         _tableName = tableName;
         _columnCount = columnCount;
+        _columnNames = columnNames;
         _preparedSchemaVersion = schemaVersion;
         _rows = initialCapacity > 0 ? new DbValue[initialCapacity][] : Array.Empty<DbValue[]>();
     }
@@ -88,7 +96,10 @@ public sealed class InsertBatch
         if (_count == 0)
             return 0;
 
-        await using var result = await _database.ExecuteAsync(new SimpleInsertSql(_tableName, _rows, _count), ct);
+        SimpleInsertSql insert = _columnNames is null
+            ? new SimpleInsertSql(_tableName, _rows, _count)
+            : new SimpleInsertSql(_tableName, _columnNames, _rows, _count);
+        await using var result = await _database.ExecuteAsync(insert, ct);
         int rowsAffected = result.RowsAffected;
         _count = 0;
         return rowsAffected;

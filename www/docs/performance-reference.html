@@ -582,7 +582,8 @@
                 <p>This is the integration scenario: existing .NET data-access code, ORMs, utilities, or apps that open and close connections frequently.</p>
                 <h3 id="what-to-do-11">What to do</h3>
                 <ul>
-                <li>Turn pooling on explicitly if you open and close connections often.</li>
+                <li>Turn pooling on explicitly for standalone ADO.NET callers that open and close connections often. Provider-created CSharpDB EF Core file connections already enable it by default.</li>
+                <li>Keep the pooled connection string in a reused variable so short-lived connections can share its prepared absolute-file plan.</li>
                 <li>Use private <code>:memory:</code> when you do not need cross-connection sharing.</li>
                 <li>Use named shared <code>:memory:name</code> only when you actually need multiple live connections against the same in-process memory database.</li>
                 <li>Reuse command objects when it keeps your application code cleaner, but do not expect command preparation alone to be your biggest win.</li>
@@ -594,12 +595,16 @@
                 <div class="code-block" data-title="Text"><pre><code class="language-text">Data Source=:memory:shared-cache
                 </code></pre></div>
                 <h3 id="why-11">Why</h3>
-                <p>The current ADO.NET benchmark results are clear:</p>
+                <p>The current diagnostic, non-promoted ADO.NET lifecycle results are clear:</p>
                 <ul>
-                <li>open+close with pooling off: about <code>8.9 ms</code></li>
-                <li>open+close with pooling on: about <code>1.9 us</code></li>
+                <li>new connection object with pooling off: about <code>9.38 ms</code></li>
+                <li>reused connection object with pooling on: about <code>0.228 us</code></li>
+                <li>new connection object with pooling on: about <code>0.508 us</code></li>
                 </ul>
-                <p>That is the main provider-level lever.</p>
+                <p>These figures come from the focused July 19, 2026
+                <code>AdoNetConnectionLifecycleBenchmarks</code> matched-provider run after the
+                pooled lifecycle hot-path rewrite. Pooling remains the main provider-level
+                lever.</p>
                 <p>For in-memory ADO.NET:</p>
                 <ul>
                 <li><code>ExecuteScalar</code> on private <code>:memory:</code>: <code>238.7 ns</code></li>

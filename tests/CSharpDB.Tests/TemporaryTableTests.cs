@@ -29,6 +29,7 @@ public sealed class TemporaryTableTests
         Assert.Equal(0, await ExecuteCountAsync(db, "SELECT COUNT(*) FROM sys.tables WHERE table_name = 'scratch'"));
         Assert.Equal(1, await ExecuteCountAsync(db, "SELECT COUNT(*) FROM sys.temp_tables WHERE table_name = 'scratch'"));
         Assert.Equal(3, await ExecuteCountAsync(db, "SELECT COUNT(*) FROM sys.temp_columns WHERE table_name = 'scratch'"));
+        Assert.Equal(0, await ExecuteCountAsync(db, "SELECT COUNT(*) FROM sys.temp_columns WHERE is_row_version = 1"));
 
         await db.ExecuteAsync("DROP TEMP TABLE scratch", Ct);
         Assert.Equal(0, await ExecuteCountAsync(db, "SELECT COUNT(*) FROM sys.temp_tables"));

@@ -38,6 +38,7 @@ public static class SchemaTools
             nullable = c.Nullable,
             isPrimaryKey = c.IsPrimaryKey,
             isIdentity = c.IsIdentity,
+            isRowVersion = c.IsRowVersion,
         });
 
         var foreignKeys = schema.ForeignKeys.Select(fk => new

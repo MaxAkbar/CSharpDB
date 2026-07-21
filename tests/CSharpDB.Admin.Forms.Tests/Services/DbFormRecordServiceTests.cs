@@ -330,6 +330,58 @@ public class DbFormRecordServiceTests
     }
 
     [Fact]
+    public async Task CreateAndUpdateRecordAsync_ExcludeGeneratedRowVersionValues()
+    {
+        await using var db = await TestDatabaseScope.CreateAsync();
+        await db.ExecuteAsync(
+            """
+            CREATE TABLE VersionedItems (
+                Id INTEGER PRIMARY KEY IDENTITY,
+                Name TEXT NOT NULL,
+                Version BLOB ROWVERSION NOT NULL
+            );
+            """);
+
+        var provider = new DbSchemaProvider(db.Client);
+        var service = new DbFormRecordService(db.Client);
+        FormTableDefinition table =
+            (await provider.GetTableDefinitionAsync("VersionedItems"))!;
+
+        Dictionary<string, object?> created = await service.CreateRecordAsync(
+            table,
+            new Dictionary<string, object?>
+            {
+                ["Name"] = "initial",
+                ["Version"] = new byte[sizeof(long)],
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1L, created["Id"]);
+        Assert.Equal(
+            new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 },
+            Assert.IsType<byte[]>(created["Version"]));
+
+        var loadedValues =
+            new Dictionary<string, object?>(
+                created,
+                StringComparer.OrdinalIgnoreCase)
+            {
+                ["Name"] = "updated",
+            };
+        Dictionary<string, object?> updated =
+            await service.UpdateRecordAsync(
+                table,
+                created["Id"]!,
+                loadedValues,
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal("updated", updated["Name"]);
+        Assert.Equal(
+            new byte[] { 0, 0, 0, 0, 0, 0, 0, 2 },
+            Assert.IsType<byte[]>(updated["Version"]));
+    }
+
+    [Fact]
     public async Task CreateUpdateReloadAndClear_BlobValues()
     {
         await using var db = await TestDatabaseScope.CreateAsync();

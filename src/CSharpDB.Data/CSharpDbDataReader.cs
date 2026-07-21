@@ -201,6 +201,7 @@ public sealed class CSharpDbDataReader : DbDataReader
         table.Columns.Add("IsIdentity", typeof(bool));
         table.Columns.Add("IsAutoIncrement", typeof(bool));
         table.Columns.Add("CollationName", typeof(string));
+        table.Columns.Add("IsRowVersion", typeof(bool));
 
         for (int i = 0; i < _schema.Length; i++)
         {
@@ -218,7 +219,8 @@ public sealed class CSharpDbDataReader : DbDataReader
                 column.IsPrimaryKey,
                 column.IsIdentity,
                 column.IsIdentity,
-                column.Collation is null ? DBNull.Value : column.Collation);
+                column.Collation is null ? DBNull.Value : column.Collation,
+                column.IsRowVersion);
         }
 
         return table;

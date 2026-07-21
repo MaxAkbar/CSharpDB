@@ -104,6 +104,7 @@ public static class ExpressionEvaluator
             TokenType.Not => operand.IsNull ? DbValue.Null : BoolToDb(!operand.IsTruthy),
             TokenType.Minus => operand.Type switch
             {
+                DbType.Null => DbValue.Null,
                 DbType.Integer => DbValue.FromInteger(-operand.AsInteger),
                 DbType.Real => DbValue.FromReal(-operand.AsReal),
                 _ => throw new CSharpDbException(ErrorCode.TypeMismatch, "Cannot negate non-numeric value."),
@@ -239,7 +240,7 @@ public static class ExpressionEvaluator
         return BoolToDb(isNull.Negated ? !result : result);
     }
 
-    /// <summary>SQL LIKE pattern matcher. % matches any sequence, _ matches any single char.</summary>
+    /// <summary>SQL LIKE pattern matcher. % matches any sequence, _ matches one UTF-16 code unit.</summary>
     internal static bool SqlLikeMatch(string text, string pattern, char? escape)
     {
         int ti = 0, pi = 0;
@@ -247,8 +248,13 @@ public static class ExpressionEvaluator
 
         while (ti < text.Length)
         {
-            if (pi < pattern.Length && escape.HasValue && pattern[pi] == escape.Value && pi + 1 < pattern.Length)
+            if (pi < pattern.Length &&
+                escape.HasValue &&
+                pattern[pi] == escape.Value)
             {
+                if (pi + 1 >= pattern.Length)
+                    return false;
+
                 // Escaped character — must match literally
                 pi++;
                 if (ti < text.Length && char.ToUpperInvariant(text[ti]) == char.ToUpperInvariant(pattern[pi]))
@@ -277,7 +283,14 @@ public static class ExpressionEvaluator
             }
         }
 
-        while (pi < pattern.Length && pattern[pi] == '%') pi++;
+        while (pi < pattern.Length &&
+               pattern[pi] == '%' &&
+               (!escape.HasValue ||
+                pattern[pi] != escape.Value))
+        {
+            pi++;
+        }
+
         return pi == pattern.Length;
     }
 }

@@ -45,6 +45,7 @@ public sealed class DataModelColumn
     public string TypeLabel { get; set; } = "";
     public bool IsPrimaryKey { get; set; }
     public bool IsIdentity { get; set; }
+    public bool IsRowVersion { get; set; }
     public bool Nullable { get; set; } = true;
     public string? Collation { get; set; }
     public bool IsForeignKey { get; set; }
@@ -148,6 +149,7 @@ public sealed class DataModelColumnMetadata
     public required string TypeLabel { get; init; }
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
+    public bool IsRowVersion { get; init; }
     public bool Nullable { get; init; } = true;
     public string? Collation { get; init; }
 }

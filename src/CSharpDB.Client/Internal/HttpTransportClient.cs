@@ -1010,6 +1010,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
             Nullable = payload.Nullable,
             IsPrimaryKey = payload.IsPrimaryKey,
             IsIdentity = payload.IsIdentity,
+            IsRowVersion = payload.IsRowVersion,
             Collation = payload.Collation,
             DefaultSql = payload.DefaultSql,
         };
@@ -1235,6 +1236,7 @@ internal sealed partial class HttpTransportClient : ICSharpDbClient, ICSharpDbSh
         bool Nullable,
         bool IsPrimaryKey,
         bool IsIdentity,
+        bool IsRowVersion,
         string? Collation,
         string? DefaultSql);
     private sealed record ApiForeignKeyResponse(string ConstraintName, string ColumnName, string ReferencedTableName, string ReferencedColumnName, string OnDelete, string SupportingIndexName, IReadOnlyList<string>? ColumnNames = null, IReadOnlyList<string>? ReferencedColumnNames = null);

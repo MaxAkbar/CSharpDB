@@ -85,6 +85,147 @@ public sealed class ClientPipelineRunnerTests
     }
 
     [Fact]
+    public async Task RunPackageAsync_TableDestinationRegeneratesRowVersion()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pipeline_rowversion_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE items_src (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    version BLOB ROWVERSION NOT NULL
+                );
+                CREATE TABLE items_dest (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    version BLOB ROWVERSION NOT NULL
+                );
+                INSERT INTO items_src (id, name) VALUES (1, 'alpha');
+                UPDATE items_src SET name = name WHERE id = 1;
+                """,
+                ct);
+
+            var runner = new CSharpDbPipelineRunner(client);
+            PipelineRunResult result = await runner.RunPackageAsync(
+                new PipelinePackageDefinition
+                {
+                    Name = "copy-rowversion-items",
+                    Version = "1.0.0",
+                    Source = new PipelineSourceDefinition
+                    {
+                        Kind = PipelineSourceKind.CSharpDbTable,
+                        TableName = "items_src",
+                    },
+                    Destination = new PipelineDestinationDefinition
+                    {
+                        Kind = PipelineDestinationKind.CSharpDbTable,
+                        TableName = "items_dest",
+                    },
+                    Options = new PipelineExecutionOptions
+                    {
+                        BatchSize = 10,
+                        CheckpointInterval = 1,
+                        ErrorMode = PipelineErrorMode.FailFast,
+                        MaxRejects = 0,
+                    },
+                },
+                ct: ct);
+
+            Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
+            Assert.Equal(1, result.Metrics.RowsWritten);
+
+            var sourceQuery = await client.ExecuteSqlAsync(
+                "SELECT version FROM items_src WHERE id = 1",
+                ct);
+            var destinationQuery = await client.ExecuteSqlAsync(
+                "SELECT name, version FROM items_dest WHERE id = 1",
+                ct);
+            object?[] sourceRow = Assert.Single(sourceQuery.Rows!);
+            object?[] destinationRow = Assert.Single(destinationQuery.Rows!);
+            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 2 }, Assert.IsType<byte[]>(sourceRow[0]));
+            Assert.Equal("alpha", destinationRow[0]);
+            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 }, Assert.IsType<byte[]>(destinationRow[1]));
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
+    public async Task RunPackageAsync_RowVersionOnlyDestinationUsesDefaultValues()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string dbPath = Path.Combine(Path.GetTempPath(), $"csharpdb_pipeline_rowversion_only_{Guid.NewGuid():N}.db");
+
+        try
+        {
+            await using var client = CSharpDbClient.Create(new CSharpDbClientOptions
+            {
+                DataSource = dbPath,
+            });
+
+            await client.ExecuteSqlAsync(
+                """
+                CREATE TABLE versions_src (version BLOB ROWVERSION NOT NULL);
+                CREATE TABLE versions_dest (version BLOB ROWVERSION NOT NULL);
+                INSERT INTO versions_src DEFAULT VALUES;
+                """,
+                ct);
+
+            var runner = new CSharpDbPipelineRunner(client);
+            PipelineRunResult result = await runner.RunPackageAsync(
+                new PipelinePackageDefinition
+                {
+                    Name = "copy-generated-only-row",
+                    Version = "1.0.0",
+                    Source = new PipelineSourceDefinition
+                    {
+                        Kind = PipelineSourceKind.CSharpDbTable,
+                        TableName = "versions_src",
+                    },
+                    Destination = new PipelineDestinationDefinition
+                    {
+                        Kind = PipelineDestinationKind.CSharpDbTable,
+                        TableName = "versions_dest",
+                    },
+                    Options = new PipelineExecutionOptions
+                    {
+                        BatchSize = 10,
+                        CheckpointInterval = 1,
+                        ErrorMode = PipelineErrorMode.FailFast,
+                        MaxRejects = 0,
+                    },
+                },
+                ct: ct);
+
+            Assert.Equal(PipelineRunStatus.Succeeded, result.Status);
+            Assert.Equal(1, result.Metrics.RowsWritten);
+
+            var query = await client.ExecuteSqlAsync(
+                "SELECT version FROM versions_dest",
+                ct);
+            object?[] row = Assert.Single(query.Rows!);
+            Assert.Equal(new byte[] { 0, 0, 0, 0, 0, 0, 0, 1 }, Assert.IsType<byte[]>(row[0]));
+        }
+        finally
+        {
+            DeleteIfExists(dbPath);
+            DeleteIfExists(dbPath + ".wal");
+        }
+    }
+
+    [Fact]
     public async Task RunPackageAsync_AutoCastsCsvTextValues_ToDestinationSchema()
     {
         var ct = TestContext.Current.CancellationToken;

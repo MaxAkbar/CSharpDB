@@ -102,8 +102,9 @@
                 <div class="code-block" data-title="SQL">
                     <pre><code><span class="kw">ALTER TABLE</span> Employees <span class="kw">ADD COLUMN</span> Title <span class="tp">TEXT</span>;
 <span class="kw">ALTER TABLE</span> Employees <span class="kw">DROP CONSTRAINT</span> fk_employees_deptid_a1b2c3d4;
+<span class="kw">ALTER TABLE</span> Employees <span class="kw">RENAME INDEX</span> idx_emp_dept <span class="kw">TO</span> idx_employees_department;
 <span class="kw">DROP TABLE</span> Employees;
-<span class="kw">DROP INDEX</span> idx_emp_dept;
+<span class="kw">DROP INDEX</span> idx_employees_department;
 <span class="kw">DROP VIEW</span> HighEarners;</code></pre>
                 </div>
 
@@ -196,7 +197,7 @@
 
                 <p>Hygiene commands return normal query rows, so they work through embedded SQL, ADO.NET, Admin query tabs, the CLI, HTTP, and gRPC. Validation rules are stored in a hidden internal table and exposed through <code>sys.validation_rules</code> and <code>sys_validation_rules</code>.</p>
 
-                <h2>Built-in Functions</h2>
+                <h2 id="built-in-functions">Built-in Functions</h2>
 
                 <h3>String Functions</h3>
                 <table class="doc-table">
@@ -209,8 +210,12 @@
                         <tr><td><code>TRIM(text)</code></td><td>Remove leading/trailing whitespace</td></tr>
                         <tr><td><code>REPLACE(text, from, to)</code></td><td>String replacement</td></tr>
                         <tr><td><code>INSTR(text, search)</code></td><td>Find position of substring</td></tr>
+                        <tr><td><code>ORDINAL_STARTS_WITH(text, prefix)</code></td><td>Case-sensitive ordinal prefix test; returns 1, 0, or NULL</td></tr>
+                        <tr><td><code>ORDINAL_ENDS_WITH(text, suffix)</code></td><td>Case-sensitive ordinal suffix test; returns 1, 0, or NULL</td></tr>
+                        <tr><td><code>ORDINAL_CONTAINS(text, search)</code></td><td>Case-sensitive ordinal substring test; returns 1, 0, or NULL</td></tr>
                     </tbody>
                 </table>
+                <p>The ordinal search functions use .NET ordinal UTF-16 code-unit semantics and do not apply SQL collation, wildcard, or escape rules. In particular, <code>%</code>, <code>_</code>, and backslash are ordinary characters.</p>
 
                 <h3>Math Functions</h3>
                 <table class="doc-table">
@@ -219,7 +224,7 @@
                         <tr><td><code>ABS(value)</code></td><td>Absolute value</td></tr>
                         <tr><td><code>ROUND(value, digits)</code></td><td>Round to N decimal places</td></tr>
                         <tr><td><code>SGN(value)</code></td><td>Sign of a number (-1, 0, 1)</td></tr>
-                        <tr><td><code>INT(value)</code></td><td>Floor a numeric value</td></tr>
+                        <tr><td><code>INT(value)</code> / <code>FLOOR(value)</code></td><td>Floor a numeric value</td></tr>
                         <tr><td><code>FIX(value)</code></td><td>Truncate a numeric value toward zero</td></tr>
                     </tbody>
                 </table>

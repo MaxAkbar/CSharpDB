@@ -731,6 +731,7 @@ public static class DatabaseMaintenanceCoordinator
                 Nullable = column.Nullable,
                 IsPrimaryKey = column.IsPrimaryKey,
                 IsIdentity = column.IsIdentity,
+                IsRowVersion = column.IsRowVersion,
                 Collation = column.Collation,
                 DefaultSql = column.DefaultSql,
             }).ToArray(),

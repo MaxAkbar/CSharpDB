@@ -801,6 +801,7 @@ message ColumnDefinitionMessage {
   bool is_identity = 5;
   string collation = 6;
   string default_sql = 7;
+  bool is_row_version = 8;
 }
 
 enum ForeignKeyOnDeleteActionEnum {

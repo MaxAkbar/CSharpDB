@@ -225,7 +225,7 @@ public class ConnectionTests : IDisposable
         await conn.OpenAsync(Ct);
 
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT COLLATE NOCASE, age INTEGER);";
+        cmd.CommandText = "CREATE TABLE users (id INTEGER PRIMARY KEY IDENTITY, name TEXT COLLATE NOCASE, age INTEGER, version BLOB ROWVERSION NOT NULL);";
         await cmd.ExecuteNonQueryAsync(Ct);
 
         DataTable schema = conn.GetSchema("Columns");
@@ -234,15 +234,22 @@ public class ConnectionTests : IDisposable
             .OrderBy(row => (int)row["ORDINAL_POSITION"])
             .ToArray();
 
-        Assert.Equal(3, rows.Length);
+        Assert.Equal(4, rows.Length);
+        Assert.True(
+            schema.Columns["IS_ROW_VERSION"]!.Ordinal >
+            schema.Columns["COLLATION_NAME"]!.Ordinal);
         Assert.Equal("id", rows[0]["COLUMN_NAME"]);
         Assert.Equal(1, rows[0]["ORDINAL_POSITION"]);
         Assert.Equal("INTEGER", rows[0]["DATA_TYPE"]);
         Assert.Equal("NO", rows[0]["IS_NULLABLE"]);
         Assert.True((bool)rows[0]["IS_PRIMARY_KEY"]);
         Assert.True((bool)rows[0]["IS_IDENTITY"]);
+        Assert.False((bool)rows[0]["IS_ROW_VERSION"]);
         Assert.Equal(DBNull.Value, rows[0]["COLLATION_NAME"]);
         Assert.Equal("NOCASE", rows[1]["COLLATION_NAME"]);
+        Assert.Equal("version", rows[3]["COLUMN_NAME"]);
+        Assert.Equal("BLOB", rows[3]["DATA_TYPE"]);
+        Assert.True((bool)rows[3]["IS_ROW_VERSION"]);
 
         DataTable filtered = conn.GetSchema("Columns", [null, null, "users", "name"]);
         DataRow filteredRow = Assert.Single(filtered.Rows.Cast<DataRow>());

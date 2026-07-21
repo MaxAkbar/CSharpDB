@@ -194,7 +194,7 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Pooling_DoesNotShareAcrossDistinctExplicitOptionsInstances()
+    public async Task Pooling_ReplacesIdlePoolAcrossDistinctExplicitOptionsInstances()
     {
         string dbPath = NewTempDbPath("pool_distinct_options");
         string connectionString = $"Data Source={dbPath};Pooling=true;Max Pool Size=1";
@@ -213,13 +213,32 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
             await second.CloseAsync();
         }
 
-        Assert.Equal(2, CSharpDbConnection.GetPoolCountForTest());
-        Assert.Equal(1, CSharpDbConnection.GetIdlePoolSizeForTest(connectionString, firstOptions, hybridDatabaseOptions: null));
+        Assert.Equal(1, CSharpDbConnection.GetPoolCountForTest());
+        Assert.Equal(0, CSharpDbConnection.GetIdlePoolSizeForTest(connectionString, firstOptions, hybridDatabaseOptions: null));
         Assert.Equal(1, CSharpDbConnection.GetIdlePoolSizeForTest(connectionString, secondOptions, hybridDatabaseOptions: null));
     }
 
     [Fact]
-    public async Task ClearPoolAsync_ClearsAllPoolsForSameFileTarget()
+    public async Task Pooling_RejectsConfigurationChangeWhilePriorSessionIsOpen()
+    {
+        string dbPath = NewTempDbPath("pool_active_options");
+        string connectionString = $"Data Source={dbPath};Pooling=true;Max Pool Size=1";
+        DatabaseOptions firstOptions = CreateEquivalentPooledDirectDatabaseOptions();
+        DatabaseOptions secondOptions = CreateEquivalentPooledDirectDatabaseOptions();
+
+        await using var first = new CSharpDbConnection(connectionString, firstOptions);
+        await using var second = new CSharpDbConnection(connectionString, secondOptions);
+        await first.OpenAsync(Ct);
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(() => second.OpenAsync(Ct));
+
+        Assert.Contains("configuration", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, CSharpDbConnection.GetPoolCountForTest());
+    }
+
+    [Fact]
+    public async Task ClearPoolAsync_ClearsCurrentPoolForFileTarget()
     {
         string dbPath = NewTempDbPath("pool_clear");
         string connectionString = $"Data Source={dbPath};Pooling=true;Max Pool Size=1";
@@ -237,7 +256,9 @@ public sealed class EmbeddedStorageTuningTests : IAsyncLifetime
             await tuned.CloseAsync();
         }
 
-        Assert.Equal(2, CSharpDbConnection.GetPoolCountForTest());
+        Assert.Equal(1, CSharpDbConnection.GetPoolCountForTest());
+        Assert.Equal(0, CSharpDbConnection.GetIdlePoolSizeForTest(connectionString));
+        Assert.Equal(1, CSharpDbConnection.GetIdlePoolSizeForTest(connectionString, directOptions, hybridDatabaseOptions: null));
 
         await CSharpDbConnection.ClearPoolAsync(connectionString);
 

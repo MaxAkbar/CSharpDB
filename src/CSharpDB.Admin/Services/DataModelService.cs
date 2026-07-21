@@ -234,6 +234,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                     .Append(' ')
                     .Append(column.TypeLabel);
 
+                if (column.IsRowVersion)
+                    sb.Append(" ROWVERSION");
                 if (column.IsPrimaryKey)
                     sb.Append(" PRIMARY KEY");
                 if (column.IsIdentity)
@@ -518,6 +520,8 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
                 .Append(FormatIdentifier(column.Name))
                 .Append(' ')
                 .Append(NormalizeTypeLabel(column.TypeLabel));
+            if (column.IsRowVersion)
+                sb.Append(" ROWVERSION");
             if (column.IsPrimaryKey)
                 sb.Append(" PRIMARY KEY");
             if (column.IsIdentity)
@@ -679,6 +683,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         TypeLabel = column.Type.ToString().ToUpperInvariant(),
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
+        IsRowVersion = column.IsRowVersion,
         Nullable = column.Nullable,
         Collation = column.Collation,
     };
@@ -689,6 +694,7 @@ public sealed class DataModelService(ICSharpDbClient client) : IDataModelService
         TypeLabel = column.Type.ToString().ToUpperInvariant(),
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
+        IsRowVersion = column.IsRowVersion,
         Nullable = column.Nullable,
         Collation = column.Collation,
     };

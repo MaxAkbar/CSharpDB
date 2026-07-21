@@ -6,6 +6,13 @@ public abstract class Statement { }
 
 public abstract class QueryStatement : Statement { }
 
+public sealed class ConditionalStatement : Statement
+{
+    public required QueryStatement ExistsQuery { get; init; }
+    public bool Negated { get; init; }
+    public required List<Statement> Body { get; init; }
+}
+
 public sealed class CreateTableStatement : Statement
 {
     public required string TableName { get; init; }
@@ -48,6 +55,7 @@ public sealed class ColumnDef
     public required TokenType TypeToken { get; init; } // Integer, Real, Text, Blob
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
+    public bool IsRowVersion { get; init; }
     public bool IsNullable { get; init; } = true;
     public string? Collation { get; init; }
     public ForeignKeyClause? ForeignKey { get; init; }
@@ -215,6 +223,16 @@ public sealed class AddCheckConstraintAction : AlterAction
     public required Expression Expression { get; init; }
 }
 
+public sealed class AddForeignKeyConstraintAction : AlterAction
+{
+    public required ForeignKeyConstraintClause ForeignKey { get; init; }
+}
+
+public sealed class AddKeyConstraintAction : AlterAction
+{
+    public required KeyConstraintClause Key { get; init; }
+}
+
 public sealed class DropColumnAction : AlterAction
 {
     public required string ColumnName { get; init; }
@@ -223,6 +241,10 @@ public sealed class DropColumnAction : AlterAction
 public sealed class DropConstraintAction : AlterAction
 {
     public required string ConstraintName { get; init; }
+}
+
+public sealed class DropPrimaryKeyAction : AlterAction
+{
 }
 
 public sealed class RenameTableAction : AlterAction
@@ -234,6 +256,12 @@ public sealed class RenameColumnAction : AlterAction
 {
     public required string OldColumnName { get; init; }
     public required string NewColumnName { get; init; }
+}
+
+public sealed class RenameIndexAction : AlterAction
+{
+    public required string OldIndexName { get; init; }
+    public required string NewIndexName { get; init; }
 }
 
 public sealed class AlterColumnSetDefaultAction : AlterAction
@@ -253,6 +281,23 @@ public sealed class AlterColumnSetNotNullAction : AlterAction
 }
 
 public sealed class AlterColumnDropNotNullAction : AlterAction
+{
+    public required string ColumnName { get; init; }
+}
+
+public sealed class AlterColumnSetTypeAction : AlterAction
+{
+    public required string ColumnName { get; init; }
+    public required TokenType TypeToken { get; init; }
+}
+
+public sealed class AlterColumnSetCollationAction : AlterAction
+{
+    public required string ColumnName { get; init; }
+    public required string Collation { get; init; }
+}
+
+public sealed class AlterColumnDropCollationAction : AlterAction
 {
     public required string ColumnName { get; init; }
 }

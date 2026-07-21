@@ -224,6 +224,8 @@ public sealed class TableImportExportService(
             throw new ArgumentException("Archive path is required.", nameof(request.ArchivePath));
 
         PrimitiveTableSchema archiveSchema = await TableArchiveReader.ReadTableSchemaAsync(request.ArchivePath, ct: ct);
+        bool regeneratesRowVersionTokens = archiveSchema.Columns.Any(static column => column.IsRowVersion);
+
         string targetTableName = string.IsNullOrWhiteSpace(request.TargetTableName)
             ? RequireIdentifier(archiveSchema.TableName, nameof(request.TargetTableName))
             : RequireIdentifier(request.TargetTableName, nameof(request.TargetTableName));
@@ -257,6 +259,7 @@ public sealed class TableImportExportService(
         {
             TableName = targetTableName,
             RowsInserted = inserted,
+            RowVersionTokensRegenerated = regeneratesRowVersionTokens,
         };
     }
 
@@ -343,13 +346,32 @@ public sealed class TableImportExportService(
         if (rows.Count == 0)
             return 0;
 
+        int[] insertColumnIndexes = columns
+            .Select(static (column, index) => (column, index))
+            .Where(static pair => !pair.column.IsRowVersion)
+            .Select(static pair => pair.index)
+            .ToArray();
+        if (insertColumnIndexes.Length == 0)
+        {
+            long inserted = 0;
+            foreach (PrimitiveDbValue[] _ in rows)
+            {
+                var insertResult = await client.ExecuteSqlAsync($"INSERT INTO {tableName} DEFAULT VALUES;", ct);
+                if (!string.IsNullOrWhiteSpace(insertResult.Error))
+                    throw new InvalidOperationException(insertResult.Error);
+                inserted += insertResult.RowsAffected;
+            }
+
+            return inserted;
+        }
+
         var sql = new StringBuilder();
         sql.Append("INSERT INTO ").Append(tableName).Append(" (");
-        for (int i = 0; i < columns.Count; i++)
+        for (int i = 0; i < insertColumnIndexes.Length; i++)
         {
             if (i > 0)
                 sql.Append(", ");
-            sql.Append(columns[i].Name);
+            sql.Append(columns[insertColumnIndexes[i]].Name);
         }
 
         sql.Append(") VALUES ");
@@ -358,11 +380,12 @@ public sealed class TableImportExportService(
             if (rowIndex > 0)
                 sql.Append(", ");
             sql.Append('(');
-            for (int columnIndex = 0; columnIndex < columns.Count; columnIndex++)
+            for (int insertIndex = 0; insertIndex < insertColumnIndexes.Length; insertIndex++)
             {
-                if (columnIndex > 0)
+                if (insertIndex > 0)
                     sql.Append(", ");
 
+                int columnIndex = insertColumnIndexes[insertIndex];
                 PrimitiveDbValue value = columnIndex < rows[rowIndex].Length
                     ? rows[rowIndex][columnIndex]
                     : PrimitiveDbValue.Null;
@@ -402,7 +425,9 @@ public sealed class TableImportExportService(
         Nullable = column.Nullable,
         IsPrimaryKey = column.IsPrimaryKey,
         IsIdentity = column.IsIdentity,
+        IsRowVersion = column.IsRowVersion,
         Collation = column.Collation,
+        DefaultSql = column.DefaultSql,
     };
 
     private static PrimitiveForeignKeyDefinition MapForeignKey(ClientForeignKeyDefinition foreignKey) => new()
@@ -513,6 +538,8 @@ public sealed class TableImportExportService(
                 .Append(' ')
                 .Append(column.Type.ToString().ToUpperInvariant());
 
+            if (column.IsRowVersion)
+                sql.Append(" ROWVERSION");
             if (column.IsPrimaryKey)
                 sql.Append(" PRIMARY KEY");
             if (column.IsIdentity)

@@ -91,10 +91,10 @@ public sealed class CSharpDbHistoryRepository : HistoryRepository
     }
 
     public override string GetBeginIfExistsScript(string migrationId)
-        => throw new NotSupportedException("Idempotent migration scripts are not supported by the CSharpDB EF Core provider.");
+        => $"IF EXISTS (SELECT 1 FROM {TableName} WHERE {MigrationIdColumnName} = {QuoteLiteral(migrationId)}) BEGIN{Environment.NewLine}";
 
     public override string GetBeginIfNotExistsScript(string migrationId)
-        => throw new NotSupportedException("Idempotent migration scripts are not supported by the CSharpDB EF Core provider.");
+        => $"IF NOT EXISTS (SELECT 1 FROM {TableName} WHERE {MigrationIdColumnName} = {QuoteLiteral(migrationId)}) BEGIN{Environment.NewLine}";
 
     public override string GetCreateIfNotExistsScript()
         => $"""
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS {TableName} (
 """;
 
     public override string GetEndIfScript()
-        => throw new NotSupportedException("Idempotent migration scripts are not supported by the CSharpDB EF Core provider.");
+        => $"END;{Environment.NewLine}";
 
     protected override bool InterpretExistsResult(object? value)
         => value switch
@@ -144,6 +144,9 @@ CREATE TABLE IF NOT EXISTS {TableName} (
 
         return new CSharpDbConnection(Dependencies.Connection.ConnectionString ?? string.Empty);
     }
+
+    private static string QuoteLiteral(string value)
+        => $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
 
     private async Task<TResult> WithOpenConnectionAsync<TResult>(
         Func<CSharpDbConnection, CSharpDbHistoryRepository, CancellationToken, Task<TResult>> action,

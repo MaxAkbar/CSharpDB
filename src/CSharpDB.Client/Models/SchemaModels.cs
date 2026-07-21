@@ -15,6 +15,7 @@ public sealed class ColumnDefinition
     public bool Nullable { get; init; } = true;
     public bool IsPrimaryKey { get; init; }
     public bool IsIdentity { get; init; }
+    public bool IsRowVersion { get; init; }
     public string? Collation { get; init; }
     public string? DefaultSql { get; init; }
 }

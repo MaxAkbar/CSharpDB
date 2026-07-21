@@ -1,0 +1,31 @@
+@host = http://localhost:5291
+
+### Discover the API
+GET {{host}}/
+
+### List todos
+GET {{host}}/todos
+
+### Create a todo
+# @name createTodo
+POST {{host}}/todos
+Content-Type: application/json
+
+{
+  "title": "Ship the next CSharpDB release"
+}
+
+### Read the created todo
+GET {{host}}{{createTodo.response.headers.Location}}
+
+### Complete the created todo
+PUT {{host}}{{createTodo.response.headers.Location}}
+Content-Type: application/json
+
+{
+  "title": "Ship the next CSharpDB release",
+  "isComplete": true
+}
+
+### Delete the created todo
+DELETE {{host}}{{createTodo.response.headers.Location}}

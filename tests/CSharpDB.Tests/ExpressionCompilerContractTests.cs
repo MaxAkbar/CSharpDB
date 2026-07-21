@@ -68,6 +68,28 @@ public class ExpressionCompilerContractTests
     }
 
     [Fact]
+    public void UnaryMinus_PropagatesNullInCompiledAndFallbackEvaluation()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "nullable_number",
+            Columns =
+            [
+                new ColumnDefinition { Name = "value", Type = DbType.Real, Nullable = true },
+            ],
+        };
+        Expression expression = new UnaryExpression
+        {
+            Op = TokenType.Minus,
+            Operand = new ColumnRefExpression { ColumnName = "value" },
+        };
+        DbValue[] row = [DbValue.Null];
+
+        Assert.True(ExpressionCompiler.CompileSpan(expression, schema)(row).IsNull);
+        Assert.True(ExpressionEvaluator.Evaluate(expression, row, schema).IsNull);
+    }
+
+    [Fact]
     public void CompileJoinSpan_EvaluatesArithmeticAndTextFunctionPredicate()
     {
         var schema = new TableSchema
@@ -180,6 +202,107 @@ public class ExpressionCompilerContractTests
 
         Assert.True(matches.IsTruthy);
         Assert.False(misses.IsTruthy);
+    }
+
+    [Fact]
+    public void CompileJoinSpan_LikeWithDanglingEscapeDoesNotMatch()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "escaped_values",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "value",
+                    Type = DbType.Text,
+                    Nullable = false,
+                },
+            ],
+        };
+
+        var danglingBang = ExpressionCompiler.CompileJoinSpan(
+            new LikeExpression
+            {
+                Operand = new ColumnRefExpression
+                {
+                    ColumnName = "value",
+                },
+                Pattern = new LiteralExpression
+                {
+                    LiteralType =
+                        TokenType.StringLiteral,
+                    Value = "abc!",
+                },
+                EscapeChar = new LiteralExpression
+                {
+                    LiteralType =
+                        TokenType.StringLiteral,
+                    Value = "!",
+                },
+            },
+            schema,
+            leftColumnCount: 1);
+        Assert.False(
+            danglingBang(
+                [DbValue.FromText("abc!")],
+                []).IsTruthy);
+
+        var danglingPercent =
+            ExpressionCompiler.CompileJoinSpan(
+                new LikeExpression
+                {
+                    Operand = new ColumnRefExpression
+                    {
+                        ColumnName = "value",
+                    },
+                    Pattern = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "%",
+                    },
+                    EscapeChar = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "%",
+                    },
+                },
+                schema,
+                leftColumnCount: 1);
+        Assert.False(
+            danglingPercent(
+                [DbValue.FromText(string.Empty)],
+                []).IsTruthy);
+
+        var doubledPercent =
+            ExpressionCompiler.CompileJoinSpan(
+                new LikeExpression
+                {
+                    Operand = new ColumnRefExpression
+                    {
+                        ColumnName = "value",
+                    },
+                    Pattern = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "abc%%",
+                    },
+                    EscapeChar = new LiteralExpression
+                    {
+                        LiteralType =
+                            TokenType.StringLiteral,
+                        Value = "%",
+                    },
+                },
+                schema,
+                leftColumnCount: 1);
+        Assert.True(
+            doubledPercent(
+                [DbValue.FromText("abc%")],
+                []).IsTruthy);
     }
 
     [Fact]
