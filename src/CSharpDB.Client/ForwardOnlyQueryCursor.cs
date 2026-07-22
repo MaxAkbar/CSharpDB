@@ -1,5 +1,6 @@
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
+using System.Runtime.ExceptionServices;
 
 namespace CSharpDB.Client;
 
@@ -9,11 +10,13 @@ namespace CSharpDB.Client;
 public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
 {
     private readonly QueryResult _result;
+    private readonly Func<ValueTask>? _onDispose;
     private int _disposed;
 
-    internal ForwardOnlyQueryCursor(QueryResult result)
+    internal ForwardOnlyQueryCursor(QueryResult result, Func<ValueTask>? onDispose = null)
     {
         _result = result;
+        _onDispose = onDispose;
         ColumnNames = result.Schema.Select(column => column.Name).ToArray();
     }
 
@@ -33,8 +36,31 @@ public sealed class ForwardOnlyQueryCursor : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        Exception? resultDisposeException = null;
+        try
+        {
             await _result.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            resultDisposeException = ex;
+        }
+
+        try
+        {
+            if (_onDispose is not null)
+                await _onDispose();
+        }
+        catch (Exception releaseException) when (resultDisposeException is not null)
+        {
+            throw new AggregateException(resultDisposeException, releaseException);
+        }
+
+        if (resultDisposeException is not null)
+            ExceptionDispatchInfo.Capture(resultDisposeException).Throw();
     }
 
     private void ThrowIfDisposed()

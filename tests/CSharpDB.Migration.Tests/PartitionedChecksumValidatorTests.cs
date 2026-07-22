@@ -8,6 +8,28 @@ namespace CSharpDB.Migration.Tests;
 public sealed class PartitionedChecksumValidatorTests
 {
     [Fact]
+    public async Task SpillRootAcceptsTrailingDirectorySeparator()
+    {
+        string root = CreateRoot() + Path.DirectorySeparatorChar;
+        try
+        {
+            var validator = new PartitionedChecksumValidator();
+            PartitionedChecksumValidationResult result = await validator.ValidateAsync(
+                UnkeyedContract(),
+                Rows([Row(DbValue.FromInteger(1))]),
+                Rows([Row(DbValue.FromInteger(1))]),
+                Options(root),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(MigrationValidationStatus.Passed, result.Status);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
     public async Task UnkeyedValidationIsOrderIndependentAndPreservesDuplicates()
     {
         string root = CreateRoot();
@@ -74,6 +96,32 @@ public sealed class PartitionedChecksumValidatorTests
             Assert.Equal(64, mismatch.SourceRowHash!.Length);
             Assert.Equal(1, mismatch.SourceMultiplicity);
             Assert.Equal(0, mismatch.TargetMultiplicity);
+            Assert.Empty(Directory.GetDirectories(root));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task UnkeyedValidationRejectsDifferentMultiplicityWithEqualCountsAndDistinctValues()
+    {
+        string root = CreateRoot();
+        try
+        {
+            PartitionedChecksumValidationResult result = await new PartitionedChecksumValidator().ValidateAsync(
+                UnkeyedContract(),
+                Rows([Row(DbValue.FromInteger(7)), Row(DbValue.FromInteger(7)), Row(DbValue.FromInteger(8))]),
+                Rows([Row(DbValue.FromInteger(7)), Row(DbValue.FromInteger(8)), Row(DbValue.FromInteger(8))]),
+                Options(root),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(MigrationValidationStatus.Different, result.Status);
+            Assert.Equal(3, result.SourceRowCount);
+            Assert.Equal(3, result.TargetRowCount);
+            Assert.NotEqual(result.SourceChecksum, result.TargetChecksum);
+            Assert.Contains(result.Partitions, partition => partition.Status == MigrationValidationStatus.Different);
             Assert.Empty(Directory.GetDirectories(root));
         }
         finally

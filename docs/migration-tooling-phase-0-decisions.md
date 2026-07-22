@@ -243,14 +243,19 @@ Implemented in the Phase 2 slice:
   complete scan-only archive above the bound;
 - staged restore activation, exact 64-bit count and normalized-schema
   validation, caught-failure cleanup, and a durable lease/ownership journal
-  that reclaims matching abandoned staging after process restart.
+  that reclaims matching abandoned staging after process restart;
+- an immutable per-restore archive snapshot that binds metadata and rows to one
+  file version; and
+- a post-load, duplicate-preserving canonical row comparison using the
+  versioned `csharpdb-canon-v1` contract and bounded Phase 3 spill algorithm,
+  with a transaction-bound schema recheck, forward-only target scan, and
+  activation for direct/local transports; and
+- a durable activation receipt committed with the rename so a lost commit
+  acknowledgment can be reconciled to the exact restore operation.
 
-Still required before the archive is a complete safety boundary:
-
-- a post-load canonical row hash using the versioned `csharpdb-canon-v1`
-  contract and bounded spill algorithm defined in Phase 3. Raw archive section
-  digests protect the archive bytes but do not replace logical source/target
-  equality validation.
+The portable direct/local archive safety boundary is complete. Remote restore
+remains unsupported until a transport exposes equivalent transaction-bound
+schema and streaming-row reads.
 
 ## Immediate Implementation Backlog
 

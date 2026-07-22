@@ -7,6 +7,233 @@ namespace CSharpDB.Migration.Tests;
 public sealed class CanonicalRowProjectorTests
 {
     [Fact]
+    public void CSharpDbTableContractMapsNativeTypesExcludesRowVersionAndPreservesKeyOrder()
+    {
+        TableSchema schema = NativeSchema("archived_items");
+
+        CanonicalRowContract contract = CanonicalRowProjector.CreateCSharpDbTableContract(schema);
+
+        Assert.True(contract.IsKeyed);
+        Assert.Equal([1, 0], contract.KeyFieldOrdinals);
+        Assert.Equal(
+            [CanonicalType.Int64, CanonicalType.Text, CanonicalType.Binary64, CanonicalType.Blob, CanonicalType.Blob],
+            contract.Fields.Select(field => field.CanonicalType));
+        Assert.Equal(
+            CanonicalExclusionReason.RegeneratedRowVersion,
+            contract.Fields[4].ExclusionReason);
+
+        CanonicalValue[] first = CanonicalRowProjector.ProjectRow(
+            contract,
+            [
+                DbValue.FromInteger(7),
+                DbValue.FromText("A-1"),
+                DbValue.FromReal(1.5),
+                DbValue.FromBlob([0x10, 0x20]),
+                DbValue.FromBlob([0x01]),
+            ]);
+        CanonicalValue[] second = CanonicalRowProjector.ProjectRow(
+            contract,
+            [
+                DbValue.FromInteger(7),
+                DbValue.FromText("A-1"),
+                DbValue.FromReal(1.5),
+                DbValue.FromBlob([0x10, 0x20]),
+                DbValue.FromBlob([0xff, 0xee]),
+            ]);
+
+        Assert.Equal(CanonicalFieldState.Excluded, first[4].State);
+        Assert.Equal(
+            CanonicalRowCodec.ComputeRowHash(first),
+            CanonicalRowCodec.ComputeRowHash(second));
+        Assert.Equal(
+            CanonicalRowCodec.ComputeKeyHash([CanonicalValue.Text("A-1"), CanonicalValue.Int64(7)]),
+            CanonicalRowCodec.ComputeKeyHash(CanonicalRowProjector.ProjectKey(contract, first)));
+    }
+
+    [Fact]
+    public void CSharpDbTableContractDigestIgnoresTableIdentityButBindsRowLayout()
+    {
+        CanonicalRowContract archived = CanonicalRowProjector.CreateCSharpDbTableContract(
+            NativeSchema("archived_items"));
+        CanonicalRowContract staging = CanonicalRowProjector.CreateCSharpDbTableContract(
+            NativeSchema("__csharpdb_restore_stage_v1_deadbeef"));
+        TableSchema changedSchema = NativeSchema("archived_items", payloadColumnName: "content");
+        CanonicalRowContract changed = CanonicalRowProjector.CreateCSharpDbTableContract(changedSchema);
+
+        Assert.Equal(archived.ObjectContractDigest, staging.ObjectContractDigest);
+        Assert.NotEqual(archived.ObjectContractDigest, changed.ObjectContractDigest);
+        Assert.Equal(64, archived.ObjectContractDigest.Length);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CSharpDbTableContractRejectsMissingTableIdentity(string? tableName)
+    {
+        TableSchema schema = NativeSchema(tableName!);
+
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(schema));
+    }
+
+    [Fact]
+    public void CSharpDbTableContractUsesLegacyPrimaryKeyFlagsWithoutLogicalConstraint()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "legacy_items",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "tenant_id",
+                    Type = DbType.Integer,
+                    Nullable = false,
+                    IsPrimaryKey = true,
+                },
+                new ColumnDefinition { Name = "value", Type = DbType.Text },
+                new ColumnDefinition
+                {
+                    Name = "code",
+                    Type = DbType.Text,
+                    Nullable = false,
+                    IsPrimaryKey = true,
+                },
+            ],
+        };
+
+        CanonicalRowContract contract = CanonicalRowProjector.CreateCSharpDbTableContract(schema);
+
+        Assert.Equal([0, 2], contract.KeyFieldOrdinals);
+    }
+
+    [Fact]
+    public void CSharpDbTableContractRejectsNonPersistentAndInvalidRowVersionColumns()
+    {
+        var nullType = new TableSchema
+        {
+            TableName = "invalid",
+            Columns = [new ColumnDefinition { Name = "value", Type = DbType.Null }],
+        };
+        var textRowVersion = new TableSchema
+        {
+            TableName = "invalid",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "version",
+                    Type = DbType.Text,
+                    Nullable = false,
+                    IsRowVersion = true,
+                },
+            ],
+        };
+        TableSchema nullableRowVersion = NativeSchema("invalid", rowVersionNullable: true);
+        TableSchema identityRowVersion = NativeSchema("invalid", rowVersionIdentity: true);
+        TableSchema validRowVersion = NativeSchema("invalid");
+        var multipleRowVersions = new TableSchema
+        {
+            TableName = validRowVersion.TableName,
+            Columns =
+            [
+                .. validRowVersion.Columns,
+                new ColumnDefinition
+                {
+                    Name = "second_version",
+                    Type = DbType.Blob,
+                    Nullable = false,
+                    IsRowVersion = true,
+                },
+            ],
+            KeyConstraints = validRowVersion.KeyConstraints,
+        };
+
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(nullType));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(textRowVersion));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(nullableRowVersion));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(identityRowVersion));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(multipleRowVersions));
+    }
+
+    [Fact]
+    public void CSharpDbTableContractRejectsMalformedKeyConstraints()
+    {
+        TableSchema baseline = NativeSchema("invalid");
+        TableSchema WithKeys(IReadOnlyList<KeyConstraintDefinition> keys) => new()
+        {
+            TableName = baseline.TableName,
+            Columns = baseline.Columns,
+            KeyConstraints = keys,
+        };
+
+        TableSchema nullCollection = WithKeys(null!);
+        TableSchema nullEntry = WithKeys([null!]);
+        TableSchema unknownKind = WithKeys(
+        [
+            new KeyConstraintDefinition
+            {
+                Kind = (KeyConstraintKind)int.MaxValue,
+                Columns = ["code"],
+            },
+        ]);
+        TableSchema emptyUnique = WithKeys(
+        [
+            new KeyConstraintDefinition
+            {
+                Kind = KeyConstraintKind.Unique,
+                Columns = [],
+            },
+        ]);
+        TableSchema missingUniqueColumn = WithKeys(
+        [
+            new KeyConstraintDefinition
+            {
+                Kind = KeyConstraintKind.Unique,
+                Columns = ["missing"],
+            },
+        ]);
+
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(nullCollection));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(nullEntry));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(unknownKind));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(emptyUnique));
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(missingUniqueColumn));
+    }
+
+    [Fact]
+    public void CSharpDbTableContractRejectsNullablePrimaryKey()
+    {
+        var schema = new TableSchema
+        {
+            TableName = "invalid",
+            Columns =
+            [
+                new ColumnDefinition
+                {
+                    Name = "id",
+                    Type = DbType.Integer,
+                    IsPrimaryKey = true,
+                },
+            ],
+        };
+
+        Assert.Throws<InvalidDataException>(
+            () => CanonicalRowProjector.CreateCSharpDbTableContract(schema));
+    }
+
+    [Fact]
     public async Task SyntheticContractUsesLogicalTypesAndPrimaryKeyOrder()
     {
         (MigrationCatalog catalog, MigrationPlan plan) = await ReadyPlanAsync();
@@ -104,6 +331,52 @@ public sealed class CanonicalRowProjectorTests
         ConversionId = conversionId,
         ConversionParameters = parameter is null ? [] : [parameter],
         ExclusionReason = exclusion,
+    };
+
+    private static TableSchema NativeSchema(
+        string tableName,
+        string payloadColumnName = "payload",
+        bool rowVersionNullable = false,
+        bool rowVersionIdentity = false) => new()
+    {
+        TableName = tableName,
+        Columns =
+        [
+            new ColumnDefinition
+            {
+                Name = "tenant_id",
+                Type = DbType.Integer,
+                Nullable = false,
+                IsPrimaryKey = true,
+            },
+            new ColumnDefinition
+            {
+                Name = "code",
+                Type = DbType.Text,
+                Nullable = false,
+                IsPrimaryKey = true,
+            },
+            new ColumnDefinition { Name = "score", Type = DbType.Real },
+            new ColumnDefinition { Name = payloadColumnName, Type = DbType.Blob },
+            new ColumnDefinition
+            {
+                Name = "row_version",
+                Type = DbType.Blob,
+                Nullable = rowVersionNullable,
+                IsIdentity = rowVersionIdentity,
+                IsRowVersion = true,
+            },
+        ],
+        KeyConstraints =
+        [
+            new KeyConstraintDefinition
+            {
+                ConstraintName = "pk_items",
+                Kind = KeyConstraintKind.PrimaryKey,
+                Columns = ["code", "tenant_id"],
+                BackingIndexName = "__constraint_items_pk",
+            },
+        ],
     };
 
     private static async Task<(MigrationCatalog Catalog, MigrationPlan Plan)> ReadyPlanAsync()

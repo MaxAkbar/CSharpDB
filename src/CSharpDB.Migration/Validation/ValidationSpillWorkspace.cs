@@ -26,7 +26,7 @@ public sealed class ValidationSpillWorkspace : IAsyncDisposable
         if (maximumLiveSpillBytes < 0)
             throw new ArgumentOutOfRangeException(nameof(maximumLiveSpillBytes));
 
-        RootDirectory = Path.GetFullPath(rootDirectory);
+        RootDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootDirectory));
         Directory.CreateDirectory(RootDirectory);
         MaximumLiveSpillBytes = maximumLiveSpillBytes;
 

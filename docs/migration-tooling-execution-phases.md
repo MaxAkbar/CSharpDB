@@ -85,7 +85,7 @@ boundaries:
 | [`InsertBatch`](../src/CSharpDB.Engine/InsertBatch.cs) | Use as the first typed, transactional, local staged-target writer. | `ICSharpDbClient` has no remote prepared-batch surface yet, so remote bulk migration is not part of the first target implementation. |
 | [`CSharpDB.Pipelines`](../src/CSharpDB.Pipelines/Runtime/PipelineOrchestrator.cs) | Reuse useful checkpoint, reject, metrics, and history concepts through adapters. | Current batches commit before checkpoint persistence; CSV reads physical lines; JSON paths buffer whole inputs/outputs. These cannot be treated as migration-grade unchanged. |
 | [`CSharpDB.DevOps`](../src/CSharpDB.DevOps/DataComparisonService.cs) | Reuse presentation and target-catalog ideas where appropriate. | Its schema model is CSharpDB-specific, data comparison materializes both sides, public summaries use `int`, and some numeric normalization passes through `double`. It is not the source-neutral migration IR or strong streaming validator. |
-| [`CSharpDB.ImportExport`](../src/CSharpDB.ImportExport/TableArchives/TableArchiveReader.cs) and [Admin restore](../src/CSharpDB.Admin.ImportExport/Services/TableImportExportService.cs) | Repair archive restore as an independent Phase 2 safety workstream. | Current restore does not reconstruct the full archived schema, and archive index metadata is not a complete representation of secondary indexes. |
+| [`CSharpDB.ImportExport`](../src/CSharpDB.ImportExport/TableArchives/TableArchiveReader.cs) and [Admin restore](../src/CSharpDB.Admin.ImportExport/Services/TableImportExportService.cs) | Archive restore is the independent Phase 2 safety workstream. | Archive v5 separates logical secondary-index metadata from its bounded physical lookup index; safe restore activation requires a direct/local transaction snapshot capability. |
 | [`CSharpDB.EntityFrameworkCore`](../src/CSharpDB.EntityFrameworkCore/Storage/Internal/CSharpDbTypeMappingSource.cs) | Reuse the provider's validator, mappings, SQL generator, and execution tests. | Exact decimal/date/identifier storage rules should move to a shared codec before migration adapters duplicate them. |
 | Existing count surfaces | Retain engine/archive `long` counts and introduce 64-bit migration contracts. | Several public client, browse, and diff surfaces currently use `int`; validation must not inherit those limits. |
 
@@ -198,8 +198,9 @@ artifact contains a credential or raw secret.
 **Goal:** prove that data can be written efficiently and resumed after a crash
 without corruption.
 
-**Status:** in progress. The synthetic staged-target `apply --resume` vertical
-slice now has a versioned deterministic fail-fast contract, bounded prepared
+**Status:** complete for the synthetic staged target and direct/local archive
+restore. The `apply --resume` vertical slice now has a versioned deterministic
+fail-fast contract, bounded prepared
 batches, transactional row-and-receipt commits, identity and digest
 verification, safe existing-target refusal, staged lifecycle/run reports, and
 true child-process kill/restart coverage at every commit boundary. The real
@@ -218,8 +219,20 @@ Restore now uses a deterministic, journal-owned staging table, validates its
 64-bit count and normalized schema, and atomically activates it by rename.
 Caught failures clean up immediately; a new process can safely reclaim an
 expired, ownership-matched staging lease without touching an unrelated table.
-The only remaining archive safety-net gate is the post-load canonical row hash,
-which depends on the `csharpdb-canon-v1` contract scheduled in Phase 3.
+Before activation, restore now also compares the integrity-checked archive rows
+with the staged rows through the frozen `csharpdb-canon-v1` contract. The
+duplicate-preserving, order-independent comparison uses the Phase 3 bounded
+partition/spill validator, excludes regenerated rowversion values, and performs
+its schema recheck, forward-only target scan, and activation in one transaction.
+The archive is first copied from one locked source handle to an immutable
+private snapshot, so metadata, rows, and the activation token cannot come from
+different file versions. Same-count row corruption, archive replacement,
+schema races, multi-page unkeyed duplicates, cleanup, retry, and rowversion
+regeneration are covered by integration tests. A durable activation receipt in
+the rename transaction resolves a lost commit acknowledgment. Snapshot and
+validation-spill usage have independently configurable 4-GiB default limits. Remote restore remains
+unsupported until its transport can provide the same transaction-bound schema
+and cursor capability.
 
 ### Work
 
@@ -241,7 +254,7 @@ which depends on the `csharpdb-canon-v1` contract scheduled in Phase 3.
 - [x] Validate every streamed value against the planned mapping; block or
   deterministically reject values that contradict profile-derived assumptions
   rather than coercing them silently.
-- [ ] Repair the archive-restore fidelity gaps identified in Phase 0.
+- [x] Repair the archive-restore fidelity gaps identified in Phase 0.
   - [x] Add v5 logical secondary-index metadata while preserving v3/v4 reads.
   - [x] Enforce strict rows, bounded/canonical sections, atomic path writes,
     exact identity reseeding, staged activation, cleanup, and count validation.
@@ -250,7 +263,7 @@ which depends on the `csharpdb-canon-v1` contract scheduled in Phase 3.
   - [x] Replace the O(N) physical PK-index build with a documented bounded
     no-index mode, and make staging cleanup crash-resumable through a durable
     ownership journal.
-  - [ ] Validate the post-load canonical row hash after Phase 3 defines and
+  - [x] Validate the post-load canonical row hash after Phase 3 defines and
     freezes `csharpdb-canon-v1`.
 - [x] Add fault injection immediately before, during, and after target commit
   and receipt persistence.
@@ -274,11 +287,10 @@ cannot be activated. A golden archive round trip must also prove restoration of
 every constraint and secondary index represented by the archive format before
 archives are described as a complete safety net.
 
-The staged migration target satisfies its portion of this gate. Archive v5 now
-has golden constraint/index restoration, required section-digest validation,
-a bounded physical-index policy, and durable abandoned-staging recovery. It is
-not yet described as a complete safety net because the canonical post-load row
-hash remains gated on the Phase 3 canonicalization contract.
+The staged migration target and native archive restore both satisfy this gate.
+Archive v5 has golden constraint/index restoration, required section-digest
+validation, a bounded physical-index policy, durable abandoned-staging
+recovery, and transactional post-load canonical row validation before rename.
 
 ## Phase 3: Validation And Reporting Core
 
@@ -598,6 +610,8 @@ still explicit non-goals.
 
 ## Definition Of Done For Every Implementation Phase
 
+This is a reusable per-phase review template; completion evidence is recorded
+in each phase's status, work list, exit gate, and linked qualification reports.
 Apply the relevant items in the same phase as the feature:
 
 - [ ] Versioned source capability matrix and supported-version policy.

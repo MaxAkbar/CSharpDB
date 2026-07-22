@@ -33,6 +33,18 @@ public static class TableArchiveReader
         CancellationToken ct = default)
     {
         await using var stream = OpenRead(path);
+        return await ReadMetadataAsync(stream, ct);
+    }
+
+    /// <summary>
+    /// Reads archive metadata from a readable, seekable stream without closing
+    /// it. The stream position is not preserved.
+    /// </summary>
+    public static async ValueTask<(TableArchiveSchema Schema, TableArchiveManifest Manifest)> ReadMetadataAsync(
+        Stream stream,
+        CancellationToken ct = default)
+    {
+        ValidateInputStream(stream);
         NativeTableArchiveHeader header = await ReadNativeHeaderAsync(stream, ct);
         TableArchiveSchema schema = await ReadNativeSchemaAsync(stream, header, ct);
         TableArchiveManifest manifest = await ReadNativeManifestAsync(stream, header, ct);
@@ -66,6 +78,19 @@ public static class TableArchiveReader
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         await using var stream = OpenRead(path);
+        await foreach (DbValue[] row in ReadRowsAsync(stream, ct))
+            yield return row;
+    }
+
+    /// <summary>
+    /// Streams archive rows from a readable, seekable stream without closing
+    /// it. The stream must not be used concurrently while enumeration is live.
+    /// </summary>
+    public static async IAsyncEnumerable<DbValue[]> ReadRowsAsync(
+        Stream stream,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ValidateInputStream(stream);
         NativeTableArchiveHeader header = await ReadNativeHeaderAsync(stream, ct);
         TableArchiveSchema archiveSchema = await ReadNativeSchemaAsync(stream, header, ct);
         TableArchiveManifest manifest = await ReadNativeManifestAsync(stream, header, ct);
@@ -148,6 +173,17 @@ public static class TableArchiveReader
 
     internal static FileStream OpenRead(string path)
         => new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+    private static void ValidateInputStream(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!stream.CanRead || !stream.CanSeek)
+        {
+            throw new ArgumentException(
+                "A table archive stream must be readable and seekable.",
+                nameof(stream));
+        }
+    }
 
     private static async ValueTask<NativeTableArchiveHeader> ReadNativeHeaderAsync(
         Stream stream,

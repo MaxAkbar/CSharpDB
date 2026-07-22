@@ -170,7 +170,8 @@ public sealed class TableArchiveRestoreRecoveryTests
         {
             await WriteSimpleArchiveAsync(archivePath, ct);
             await using var inner = new EngineTransportClient(databasePath);
-            ICSharpDbClient proxy = DispatchProxy.Create<ICSharpDbClient, TamperingClientProxy>();
+            ITransactionalTamperingClient proxy =
+                DispatchProxy.Create<ITransactionalTamperingClient, TamperingClientProxy>();
             ((TamperingClientProxy)(object)proxy).Inner = inner;
             var service = new TableImportExportService(proxy, new TableArchiveDownloadStore());
 
@@ -200,6 +201,10 @@ public sealed class TableArchiveRestoreRecoveryTests
             DeleteDatabaseFiles(databasePath);
         }
     }
+
+    public interface ITransactionalTamperingClient :
+        ICSharpDbClient,
+        ICSharpDbTransactionalSnapshotReader;
 
     public class TamperingClientProxy : DispatchProxy
     {

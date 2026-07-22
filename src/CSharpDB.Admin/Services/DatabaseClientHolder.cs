@@ -14,7 +14,7 @@ namespace CSharpDB.Admin.Services;
 /// at runtime (e.g. when the user opens a different database file).
 /// Registered as a singleton; all Blazor circuits share the same instance.
 /// </summary>
-public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
+public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader, ICSharpDbShardAdminClient, ICSharpDbShardDirectoryClient
 {
     private ICSharpDbClient _inner;
     private ICSharpDbShardAdminClient? _shardAdmin;
@@ -105,6 +105,8 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
         => _inner is CSharpDbShardedClient || _baseClientOptions is not null;
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
+    public bool SupportsTransactionalSnapshotReads
+        => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads;
 
     public ICSharpDbClient CreateRouteBoundClient(CSharpDbRouteContext routeContext)
     {
@@ -222,6 +224,14 @@ public sealed class DatabaseClientHolder : ICSharpDbClient, ICSharpDbTableArchiv
     public ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct = default)
         => _inner is CSharpDbClient client
             ? client.TryOpenForwardOnlyQueryCursorAsync(sql, ct)
+            : ValueTask.FromResult<ForwardOnlyQueryCursor?>(null);
+    public ValueTask<TransactionTableSnapshot?> ReadTableSnapshotAsync(string transactionId, string tableName, CancellationToken ct = default)
+        => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads
+            ? reader.ReadTableSnapshotAsync(transactionId, tableName, ct)
+            : ValueTask.FromResult<TransactionTableSnapshot?>(null);
+    public ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string transactionId, string sql, CancellationToken ct = default)
+        => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads
+            ? reader.TryOpenForwardOnlyQueryCursorAsync(transactionId, sql, ct)
             : ValueTask.FromResult<ForwardOnlyQueryCursor?>(null);
     public Task<TransactionSessionInfo> BeginTransactionAsync(CancellationToken ct = default) => _inner.BeginTransactionAsync(ct);
     public Task<SqlExecutionResult> ExecuteInTransactionAsync(string transactionId, string sql, CancellationToken ct = default) => _inner.ExecuteInTransactionAsync(transactionId, sql, ct);

@@ -132,6 +132,22 @@ Typed NULL retains the field's planned logical tag. Projection rejects a
 stored tag, value domain, decimal syntax, text codec, temporal precision, or
 non-finite real that contradicts the object contract.
 
+## Native CSharpDB row-layout digest
+
+Native archive restore validation uses a separate SHA-256 aggregate contract
+domain, `ASCII("CSDBNAT1")`. The digest binds the raw `csharpdb-canon-v1`
+contract hash, the ordered field count, and each field's name, stored type,
+canonical type, and optional exclusion reason. It also binds the primary-key
+field ordinals in their declared order. Changing a hash-relevant column name,
+field order, type, exclusion, or key order therefore changes the digest.
+
+`CSDBNAT1` deliberately omits the table name and source/target object identity.
+An archive table and the temporary staging table created for it consequently
+share a digest even though staging has a generated name. This rename stability
+does not make the digest a row encoding, an archive-integrity checksum, or a
+replacement for full schema validation. Nullability, defaults, identity state,
+indexes, and other schema facts are checked separately during restore.
+
 ## Streaming requirement
 
 Hashing implementations must stream the exact envelope and payload bytes into

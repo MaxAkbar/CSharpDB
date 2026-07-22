@@ -5,7 +5,7 @@ using CSharpDB.Storage.Diagnostics;
 
 namespace CSharpDB.Client;
 
-public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter
+public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSharpDbTableArchiveProgressExporter, ICSharpDbTransactionalSnapshotReader
 {
     private readonly ICSharpDbClient _inner;
 
@@ -49,6 +49,8 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSha
     public string DataSource => _inner.DataSource;
     public bool SupportsTableArchiveExport
         => _inner is ICSharpDbTableArchiveExporter exporter && exporter.SupportsTableArchiveExport;
+    public bool SupportsTransactionalSnapshotReads
+        => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads;
 
     public Task<DatabaseInfo> GetInfoAsync(CancellationToken ct = default) => _inner.GetInfoAsync(ct);
     public Task<IReadOnlyList<string>> GetTableNamesAsync(CancellationToken ct = default) => _inner.GetTableNamesAsync(ct);
@@ -131,6 +133,23 @@ public sealed class CSharpDbClient : ICSharpDbClient, IEngineBackedClient, ICSha
             : ExportTableArchiveAsync(tableName, path, ct);
 
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+    public ValueTask<TransactionTableSnapshot?> ReadTableSnapshotAsync(
+        string transactionId,
+        string tableName,
+        CancellationToken ct = default)
+        => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads
+            ? reader.ReadTableSnapshotAsync(transactionId, tableName, ct)
+            : ValueTask.FromResult<TransactionTableSnapshot?>(null);
+
+    public ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(
+        string transactionId,
+        string sql,
+        CancellationToken ct = default)
+        => _inner is ICSharpDbTransactionalSnapshotReader reader && reader.SupportsTransactionalSnapshotReads
+            ? reader.TryOpenForwardOnlyQueryCursorAsync(transactionId, sql, ct)
+            : ValueTask.FromResult<ForwardOnlyQueryCursor?>(null);
+
     public async ValueTask<ForwardOnlyQueryCursor?> TryOpenForwardOnlyQueryCursorAsync(string sql, CancellationToken ct = default)
     {
         if (_inner is not IEngineBackedClient engineBacked)

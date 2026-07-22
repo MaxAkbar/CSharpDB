@@ -5,12 +5,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>CSharpDB.Admin.ImportExport</RootNamespace>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\CSharpDB.Client\CSharpDB.Client.csproj" />
     <ProjectReference Include="..\CSharpDB.ImportExport\CSharpDB.ImportExport.csproj" />
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
     <ProjectReference Include="..\CSharpDB.Primitives\CSharpDB.Primitives.csproj" />
   </ItemGroup>
 

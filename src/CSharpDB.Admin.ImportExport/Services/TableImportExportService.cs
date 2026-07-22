@@ -7,6 +7,9 @@ using CSharpDB.Admin.ImportExport.Contracts;
 using CSharpDB.Client;
 using CSharpDB.ImportExport.Models;
 using CSharpDB.ImportExport.TableArchives;
+using CSharpDB.Migration;
+using CSharpDB.Migration.Canonicalization;
+using CSharpDB.Migration.Validation;
 using TableArchiveExportProgress = CSharpDB.Client.Models.TableArchiveExportProgress;
 using ClientCheckConstraintDefinition = CSharpDB.Client.Models.CheckConstraintDefinition;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
@@ -33,16 +36,21 @@ namespace CSharpDB.Admin.ImportExport.Services;
 
 public sealed class TableImportExportService(
     ICSharpDbClient client,
-    ITableArchiveDownloadStore downloads) : ITableImportExportService
+    ITableArchiveDownloadStore downloads,
+    TableArchiveRestoreOptions? restoreOptions = null) : ITableImportExportService
 {
     private const int ExportPageSize = 1_000;
     private const int RestoreInsertBatchSize = 100;
     private const string RestoreJournalTableName = "__csharpdb_restore_journal_v1";
     private const string RestoreJournalContractConstraintName = "__csharpdb_restore_journal_contract_v1";
+    private const string RestoreReceiptTableName = "__csharpdb_restore_receipts_v1";
+    private const string RestoreReceiptContractConstraintName = "__csharpdb_restore_receipt_contract_v1";
     private const string RestoreStagingTablePrefix = "__csharpdb_restore_stage_v1_";
     private const string RestoreOwnerConstraintPrefix = "__csharpdb_restore_owner_v1_";
     private const string RestoreContractCheckExpression = "(1 = 1)";
     private static readonly TimeSpan RestoreLeaseTimeout = TimeSpan.FromMinutes(30);
+    private readonly TableArchiveRestoreOptions _restoreOptions = ValidateRestoreOptions(
+        restoreOptions ?? new TableArchiveRestoreOptions());
 
     public Task<string> GetDefaultServerExportPathAsync(string tableName, CancellationToken ct = default)
     {
@@ -245,9 +253,32 @@ public sealed class TableImportExportService(
         if (string.IsNullOrWhiteSpace(request.ArchivePath))
             throw new ArgumentException("Archive path is required.", nameof(request.ArchivePath));
 
-        string archivePath = ResolveArchivePath(request.ArchivePath);
+        if (client is not ICSharpDbTransactionalSnapshotReader
+            {
+                SupportsTransactionalSnapshotReads: true,
+            } transactionalReader)
+        {
+            throw new NotSupportedException(
+                "Safe table archive restore requires a direct CSharpDB transport with transactional snapshot reads.");
+        }
+
+        string sourceArchivePath = ResolveArchivePath(request.ArchivePath);
+        await using ArchiveRestoreSnapshot archive = await ArchiveRestoreSnapshot.CreateAsync(
+            sourceArchivePath,
+            _restoreOptions.ScratchDirectory!,
+            _restoreOptions.MaxArchiveSnapshotBytes,
+            ct);
+        return await RestoreTableSnapshotAsync(request, archive, transactionalReader, ct);
+    }
+
+    private async Task<RestoreTableResult> RestoreTableSnapshotAsync(
+        RestoreTableRequest request,
+        ArchiveRestoreSnapshot archive,
+        ICSharpDbTransactionalSnapshotReader transactionalReader,
+        CancellationToken ct)
+    {
         (TableArchiveSchema archivedSchema, TableArchiveManifest manifest) =
-            await TableArchiveReader.ReadMetadataAsync(archivePath, ct);
+            await TableArchiveReader.ReadMetadataAsync(archive.Stream, ct);
         bool regeneratesRowVersionTokens = archivedSchema.Columns.Any(static column => column.IsRowVersion);
 
         string targetTableName = string.IsNullOrWhiteSpace(request.TargetTableName)
@@ -264,11 +295,12 @@ public sealed class TableImportExportService(
             throw new InvalidOperationException($"Table '{targetTableName}' already exists.");
 
         string targetKey = ComputeTargetKey(targetTableName);
-        string archiveToken = await ComputeArchiveTokenAsync(archivePath, targetTableName, ct);
+        string archiveToken = ComputeArchiveToken(archive.Digest, targetTableName);
         string stagingTableName = RestoreStagingTablePrefix + targetKey;
         PrimitiveTableSchema restoreSchema = archivedSchema.ToTableSchema(stagingTableName);
         IReadOnlyList<PrimitiveIndexSchema> secondaryIndexes = archivedSchema.ToSecondaryIndexes(stagingTableName);
         await EnsureRestoreJournalAsync(ct);
+        await EnsureRestoreReceiptTableAsync(ct);
         await RecoverAbandonedRestoreAsync(
             targetKey,
             targetTableName,
@@ -293,68 +325,102 @@ public sealed class TableImportExportService(
         long inserted = 0;
         try
         {
-            await ExecuteCheckedAsync(BuildCreateTableSql(restoreSchema, ownerConstraintName), ct);
-            stagingCreated = true;
-            await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
-
-            var batch = new List<PrimitiveDbValue[]>(RestoreInsertBatchSize);
-            await foreach (PrimitiveDbValue[] row in TableArchiveReader.ReadRowsAsync(archivePath, ct))
-            {
-                batch.Add(row);
-                if (batch.Count >= RestoreInsertBatchSize)
-                {
-                    inserted += await InsertBatchAsync(stagingTableName, restoreSchema.Columns, batch, ct);
-                    batch.Clear();
-                    await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
-                }
-            }
-
-            if (batch.Count > 0)
-            {
-                inserted += await InsertBatchAsync(stagingTableName, restoreSchema.Columns, batch, ct);
-                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
-            }
-
-            foreach (PrimitiveForeignKeyDefinition foreignKey in restoreSchema.ForeignKeys)
-            {
-                await ExecuteCheckedAsync(BuildAddForeignKeySql(stagingTableName, foreignKey), ct);
-                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
-            }
-
-            foreach (PrimitiveIndexSchema index in secondaryIndexes)
-            {
-                await ExecuteCheckedAsync(BuildCreateIndexSql(index), ct);
-                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
-            }
-
-            if (archivedSchema.NextRowId > 0)
+            await using var loadHeartbeat = new RestoreLeaseHeartbeat(
+                heartbeatCt => RefreshRestoreLeaseAsync(targetKey, ownerToken, heartbeatCt),
+                ct);
+            try
             {
                 await ExecuteCheckedAsync(
-                    $"ALTER TABLE {QuoteIdentifier(stagingTableName)} RESEED {archivedSchema.NextRowId.ToString(CultureInfo.InvariantCulture)};",
-                    ct);
-                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
-            }
+                    BuildCreateTableSql(restoreSchema, ownerConstraintName),
+                    loadHeartbeat.Token);
+                stagingCreated = true;
+                await RefreshRestoreLeaseAsync(targetKey, ownerToken, loadHeartbeat.Token);
 
-            long restoredCount = await ExecuteScalarInt64Async(
-                $"SELECT COUNT(*) FROM {QuoteIdentifier(stagingTableName)};",
-                ct);
-            if (inserted != manifest.RowCount || restoredCount != manifest.RowCount)
+                var batch = new List<PrimitiveDbValue[]>(RestoreInsertBatchSize);
+                await foreach (PrimitiveDbValue[] row in TableArchiveReader.ReadRowsAsync(
+                                   archive.Stream,
+                                   loadHeartbeat.Token))
+                {
+                    batch.Add(row);
+                    if (batch.Count >= RestoreInsertBatchSize)
+                    {
+                        inserted += await InsertBatchAsync(
+                            stagingTableName,
+                            restoreSchema.Columns,
+                            batch,
+                            loadHeartbeat.Token);
+                        batch.Clear();
+                        await RefreshRestoreLeaseAsync(targetKey, ownerToken, loadHeartbeat.Token);
+                    }
+                }
+
+                if (batch.Count > 0)
+                {
+                    inserted += await InsertBatchAsync(
+                        stagingTableName,
+                        restoreSchema.Columns,
+                        batch,
+                        loadHeartbeat.Token);
+                    await RefreshRestoreLeaseAsync(targetKey, ownerToken, loadHeartbeat.Token);
+                }
+
+                foreach (PrimitiveForeignKeyDefinition foreignKey in restoreSchema.ForeignKeys)
+                {
+                    await ExecuteCheckedAsync(
+                        BuildAddForeignKeySql(stagingTableName, foreignKey),
+                        loadHeartbeat.Token);
+                    await RefreshRestoreLeaseAsync(targetKey, ownerToken, loadHeartbeat.Token);
+                }
+
+                foreach (PrimitiveIndexSchema index in secondaryIndexes)
+                {
+                    await ExecuteCheckedAsync(BuildCreateIndexSql(index), loadHeartbeat.Token);
+                    await RefreshRestoreLeaseAsync(targetKey, ownerToken, loadHeartbeat.Token);
+                }
+
+                if (archivedSchema.NextRowId > 0)
+                {
+                    await ExecuteCheckedAsync(
+                        $"ALTER TABLE {QuoteIdentifier(stagingTableName)} RESEED {archivedSchema.NextRowId.ToString(CultureInfo.InvariantCulture)};",
+                        loadHeartbeat.Token);
+                    await RefreshRestoreLeaseAsync(targetKey, ownerToken, loadHeartbeat.Token);
+                }
+
+                long restoredCount = await ExecuteScalarInt64Async(
+                    $"SELECT COUNT(*) FROM {QuoteIdentifier(stagingTableName)};",
+                    loadHeartbeat.Token);
+                if (inserted != manifest.RowCount || restoredCount != manifest.RowCount)
+                {
+                    throw new InvalidDataException(
+                        $"Archive restore count mismatch: expected {manifest.RowCount}, inserted {inserted}, found {restoredCount}.");
+                }
+
+                await ValidateRestoredSchemaAsync(
+                    restoreSchema,
+                    secondaryIndexes,
+                    ownerConstraintName,
+                    loadHeartbeat.Token);
+                await RefreshRestoreLeaseAsync(targetKey, ownerToken, loadHeartbeat.Token);
+            }
+            catch (OperationCanceledException) when (loadHeartbeat.HasFailed)
             {
-                throw new InvalidDataException(
-                    $"Archive restore count mismatch: expected {manifest.RowCount}, inserted {inserted}, found {restoredCount}.");
+                loadHeartbeat.ThrowIfFailed();
+                throw;
             }
 
-            await ValidateRestoredSchemaAsync(
+            await loadHeartbeat.StopAsync();
+            await ValidateRowsAndActivateRestoreAsync(
+                archive,
                 restoreSchema,
                 secondaryIndexes,
-                ownerConstraintName,
-                ct);
-            await ActivateRestoreAsync(
+                manifest.RowCount,
+                archiveToken,
                 targetKey,
                 ownerToken,
                 ownerConstraintName,
                 stagingTableName,
                 targetTableName,
+                transactionalReader,
                 ct);
             activated = true;
         }
@@ -646,17 +712,43 @@ public sealed class TableImportExportService(
         return values;
     }
 
+    private static PrimitiveDbValue[] MapRow(
+        IReadOnlyList<PrimitiveColumnDefinition> columns,
+        object?[] row)
+    {
+        if (row.Length != columns.Count)
+            throw new InvalidDataException("A restored validation row has an invalid field count.");
+
+        var values = new PrimitiveDbValue[columns.Count];
+        for (int i = 0; i < values.Length; i++)
+            values[i] = MapValue(columns[i].Type, row[i]);
+        return values;
+    }
+
     private static PrimitiveDbValue MapValue(ClientDbType columnType, object? value)
+    {
+        PrimitiveDbType primitiveType = columnType switch
+        {
+            ClientDbType.Integer => PrimitiveDbType.Integer,
+            ClientDbType.Real => PrimitiveDbType.Real,
+            ClientDbType.Text => PrimitiveDbType.Text,
+            ClientDbType.Blob => PrimitiveDbType.Blob,
+            _ => throw new InvalidOperationException($"Unsupported column type '{columnType}'."),
+        };
+        return MapValue(primitiveType, value);
+    }
+
+    private static PrimitiveDbValue MapValue(PrimitiveDbType columnType, object? value)
     {
         if (value is null)
             return PrimitiveDbValue.Null;
 
         return columnType switch
         {
-            ClientDbType.Integer => PrimitiveDbValue.FromInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
-            ClientDbType.Real => PrimitiveDbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
-            ClientDbType.Text => PrimitiveDbValue.FromText(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty),
-            ClientDbType.Blob => PrimitiveDbValue.FromBlob(ConvertToBytes(value)),
+            PrimitiveDbType.Integer => PrimitiveDbValue.FromInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
+            PrimitiveDbType.Real => PrimitiveDbValue.FromReal(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
+            PrimitiveDbType.Text => PrimitiveDbValue.FromText(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty),
+            PrimitiveDbType.Blob => PrimitiveDbValue.FromBlob(ConvertToBytes(value)),
             _ => throw new InvalidOperationException($"Unsupported column type '{columnType}'."),
         };
     }
@@ -710,8 +802,22 @@ public sealed class TableImportExportService(
         return Path.GetFullPath(Path.Combine(ResolveDatabaseFolder(client.DataSource), trimmed));
     }
 
+    private static TableArchiveRestoreOptions ValidateRestoreOptions(
+        TableArchiveRestoreOptions options)
+    {
+        if (options.MaxArchiveSnapshotBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.MaxArchiveSnapshotBytes));
+        if (options.MaxValidationSpillBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.MaxValidationSpillBytes));
+
+        string scratchDirectory = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(options.ScratchDirectory ?? Path.GetTempPath()));
+        return options with { ScratchDirectory = scratchDirectory };
+    }
+
     private static bool IsReservedRestoreTableName(string tableName) =>
         string.Equals(tableName, RestoreJournalTableName, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(tableName, RestoreReceiptTableName, StringComparison.OrdinalIgnoreCase) ||
         tableName.StartsWith(RestoreStagingTablePrefix, StringComparison.OrdinalIgnoreCase);
 
     private static string ComputeTargetKey(string targetTableName)
@@ -721,22 +827,23 @@ public sealed class TableImportExportService(
     }
 
     private static async Task<string> ComputeArchiveTokenAsync(
-        string archivePath,
+        Stream archiveStream,
         string targetTableName,
         CancellationToken ct)
     {
-        await using var stream = new FileStream(
-            archivePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 64 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        byte[] archiveDigest = await SHA256.HashDataAsync(stream, ct);
+        archiveStream.Position = 0;
+        byte[] archiveDigest = await SHA256.HashDataAsync(archiveStream, ct);
+        return ComputeArchiveToken(archiveDigest, targetTableName);
+    }
+
+    private static string ComputeArchiveToken(
+        ReadOnlySpan<byte> archiveDigest,
+        string targetTableName)
+    {
         byte[] targetBytes = Encoding.UTF8.GetBytes(targetTableName.ToUpperInvariant());
         byte[] identity = new byte[targetBytes.Length + 1 + archiveDigest.Length];
         targetBytes.CopyTo(identity, 0);
-        archiveDigest.CopyTo(identity, targetBytes.Length + 1);
+        archiveDigest.CopyTo(identity.AsSpan(targetBytes.Length + 1));
         byte[] operationDigest = SHA256.HashData(identity);
         return Convert.ToHexString(operationDigest.AsSpan(0, 16)).ToLowerInvariant();
     }
@@ -793,6 +900,62 @@ public sealed class TableImportExportService(
         {
             throw new InvalidDataException(
                 $"Table '{RestoreJournalTableName}' exists but does not match the archive restore journal v1 contract; " +
+                $"columns=[{string.Join(",", actualColumns)}], " +
+                $"checks=[{string.Join(",", actualChecks)}], keys=[{string.Join(",", actualKeys)}]. " +
+                "No restore tables were changed.");
+        }
+    }
+
+    private async Task EnsureRestoreReceiptTableAsync(CancellationToken ct)
+    {
+        await ExecuteCheckedAsync(
+            $"""
+            CREATE TABLE IF NOT EXISTS {QuoteIdentifier(RestoreReceiptTableName)} (
+                "target_key" TEXT PRIMARY KEY,
+                "target_name" TEXT NOT NULL,
+                "archive_token" TEXT NOT NULL,
+                "receipt_token" TEXT NOT NULL,
+                "completed_unix_ms" INTEGER NOT NULL,
+                CONSTRAINT {QuoteIdentifier(RestoreReceiptContractConstraintName)}
+                    CHECK ({RestoreContractCheckExpression})
+            );
+            """,
+            ct);
+
+        ClientTableSchema schema = await client.GetTableSchemaAsync(RestoreReceiptTableName, ct)
+            ?? throw new InvalidDataException("Archive restore receipt table was not created.");
+        string[] expectedColumns =
+        [
+            ColumnSignature("target_key", "Text", false, true, false, false, null, null),
+            ColumnSignature("target_name", "Text", false, false, false, false, null, null),
+            ColumnSignature("archive_token", "Text", false, false, false, false, null, null),
+            ColumnSignature("receipt_token", "Text", false, false, false, false, null, null),
+            ColumnSignature("completed_unix_ms", "Integer", false, false, false, false, null, null),
+        ];
+        string[] actualColumns = schema.Columns.Select(ActualColumnSignature).ToArray();
+        string expectedContractMarker = CheckSignature(
+            RestoreReceiptContractConstraintName,
+            RestoreContractCheckExpression,
+            columnName: null);
+        string[] actualChecks = schema.CheckConstraints.Select(ActualCheckSignature).ToArray();
+        string expectedPrimaryKey = KeySignature(
+            name: null,
+            ClientKeyConstraintKind.PrimaryKey.ToString(),
+            ["target_key"]);
+        string[] actualKeys = schema.KeyConstraints.Select(ActualKeySignature).ToArray();
+        ClientIndexSchema[] receiptIndexes = (await client.GetIndexesAsync(ct))
+            .Where(index => string.Equals(index.TableName, RestoreReceiptTableName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (!expectedColumns.SequenceEqual(actualColumns, StringComparer.Ordinal) ||
+            actualChecks.Length != 1 ||
+            !string.Equals(actualChecks[0], expectedContractMarker, StringComparison.Ordinal) ||
+            actualKeys.Length != 1 ||
+            !string.Equals(actualKeys[0], expectedPrimaryKey, StringComparison.Ordinal) ||
+            schema.ForeignKeys.Count != 0 ||
+            receiptIndexes.Length != 0)
+        {
+            throw new InvalidDataException(
+                $"Table '{RestoreReceiptTableName}' exists but does not match the archive restore receipt v1 contract; " +
                 $"columns=[{string.Join(",", actualColumns)}], " +
                 $"checks=[{string.Join(",", actualChecks)}], keys=[{string.Join(",", actualKeys)}]. " +
                 "No restore tables were changed.");
@@ -996,6 +1159,32 @@ public sealed class TableImportExportService(
             Convert.ToInt64(row[4], CultureInfo.InvariantCulture));
     }
 
+    private async Task<RestoreActivationReceipt?> ReadRestoreActivationReceiptAsync(
+        string targetKey,
+        CancellationToken ct)
+    {
+        var result = await client.ExecuteSqlAsync(
+            $"""
+            SELECT "target_name", "archive_token", "receipt_token", "completed_unix_ms"
+            FROM {QuoteIdentifier(RestoreReceiptTableName)}
+            WHERE "target_key" = {FormatStringLiteral(targetKey)};
+            """,
+            ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+        if (result.Rows is not { Count: > 0 })
+            return null;
+        if (result.Rows.Count != 1 || result.Rows[0].Length != 4 || result.Rows[0].Any(static value => value is null))
+            throw new InvalidDataException("Archive restore receipt table contains an invalid activation row.");
+
+        object?[] row = result.Rows[0];
+        return new RestoreActivationReceipt(
+            Convert.ToString(row[0], CultureInfo.InvariantCulture)!,
+            Convert.ToString(row[1], CultureInfo.InvariantCulture)!,
+            Convert.ToString(row[2], CultureInfo.InvariantCulture)!,
+            Convert.ToInt64(row[3], CultureInfo.InvariantCulture));
+    }
+
     private async Task DeleteRestoreJournalClaimAsync(
         string targetKey,
         string ownerToken,
@@ -1034,49 +1223,138 @@ public sealed class TableImportExportService(
             allowIncompletePostLoadObjects: false);
     }
 
-    private async Task ActivateRestoreAsync(
+    private async Task ValidateRowsAndActivateRestoreAsync(
+        ArchiveRestoreSnapshot archive,
+        PrimitiveTableSchema restoreSchema,
+        IReadOnlyList<PrimitiveIndexSchema> expectedIndexes,
+        long expectedRowCount,
+        string expectedArchiveToken,
         string targetKey,
         string ownerToken,
         string ownerConstraintName,
         string stagingTableName,
         string targetTableName,
+        ICSharpDbTransactionalSnapshotReader transactionalReader,
         CancellationToken ct)
     {
-        var transaction = await client.BeginTransactionAsync(ct);
+        CanonicalRowContract contract = CanonicalRowProjector.CreateCSharpDbTableContract(restoreSchema);
+        var validator = new PartitionedChecksumValidator();
+        var transaction = new RestoreValidationTransaction(client);
+        string activationReceiptToken = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         bool committed = false;
         try
         {
+            PartitionedChecksumValidationResult validation = await validator.ValidateAsync(
+                contract,
+                EnumerateArchiveValidationRowsAsync(
+                    archive,
+                    targetKey,
+                    ownerToken,
+                    ct),
+                EnumerateRestoredValidationRowsAsync(
+                    transaction,
+                    restoreSchema,
+                    expectedIndexes,
+                    ownerConstraintName,
+                    transactionalReader,
+                    ct),
+                new PartitionedChecksumValidatorOptions
+                {
+                    SpillRootDirectory = _restoreOptions.ScratchDirectory!,
+                    MaxSpillBytes = _restoreOptions.MaxValidationSpillBytes,
+                    MaxMismatchDetailsPerPartition = 1,
+                },
+                ct);
+            if (validation.Status != MigrationValidationStatus.Passed ||
+                validation.SourceRowCount != expectedRowCount ||
+                validation.TargetRowCount != expectedRowCount)
+            {
+                throw new InvalidDataException(
+                    "Archive restore canonical row validation failed before activation.");
+            }
+
+            string transactionId = transaction.TransactionId
+                ?? throw new InvalidOperationException("Archive restore target validation did not open a transaction.");
+            string currentArchiveToken = await ComputeArchiveTokenAsync(archive.Stream, targetTableName, ct);
+            if (!string.Equals(currentArchiveToken, expectedArchiveToken, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "The table archive changed while its staged restore was being validated.");
+            }
+
             await ExecuteInTransactionCheckedAsync(
-                transaction.TransactionId,
+                transactionId,
                 $"ALTER TABLE {QuoteIdentifier(stagingTableName)} DROP CONSTRAINT {QuoteIdentifier(ownerConstraintName)};",
-                ct);
+                CancellationToken.None);
             await ExecuteInTransactionCheckedAsync(
-                transaction.TransactionId,
+                transactionId,
                 $"ALTER TABLE {QuoteIdentifier(stagingTableName)} RENAME TO {QuoteIdentifier(targetTableName)};",
-                ct);
+                CancellationToken.None);
+            await ExecuteInTransactionCheckedAsync(
+                transactionId,
+                $"""
+                DELETE FROM {QuoteIdentifier(RestoreReceiptTableName)}
+                WHERE "target_key" = {FormatStringLiteral(targetKey)};
+                """,
+                CancellationToken.None);
+            var receipt = await client.ExecuteInTransactionAsync(
+                transactionId,
+                $"""
+                INSERT INTO {QuoteIdentifier(RestoreReceiptTableName)}
+                    ("target_key", "target_name", "archive_token", "receipt_token", "completed_unix_ms")
+                VALUES (
+                    {FormatStringLiteral(targetKey)},
+                    {FormatStringLiteral(targetTableName)},
+                    {FormatStringLiteral(expectedArchiveToken)},
+                    {FormatStringLiteral(activationReceiptToken)},
+                    {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)}
+                );
+                """,
+                CancellationToken.None);
+            if (!string.IsNullOrWhiteSpace(receipt.Error))
+                throw new InvalidOperationException(receipt.Error);
+            if (receipt.RowsAffected != 1)
+                throw new InvalidOperationException("Archive restore activation receipt was not recorded.");
+
             var delete = await client.ExecuteInTransactionAsync(
-                transaction.TransactionId,
+                transactionId,
                 $"""
                 DELETE FROM {QuoteIdentifier(RestoreJournalTableName)}
                 WHERE "target_key" = {FormatStringLiteral(targetKey)}
                   AND "owner_token" = {FormatStringLiteral(ownerToken)};
                 """,
-                ct);
+                CancellationToken.None);
             if (!string.IsNullOrWhiteSpace(delete.Error))
                 throw new InvalidOperationException(delete.Error);
             if (delete.RowsAffected != 1)
                 throw new InvalidOperationException("Archive restore ownership changed before activation.");
 
-            await client.CommitTransactionAsync(transaction.TransactionId, ct);
-            committed = true;
+            try
+            {
+                await client.CommitTransactionAsync(transactionId, CancellationToken.None);
+                committed = true;
+            }
+            catch
+            {
+                if (!await IsRestoreActivationCommittedAsync(
+                        targetKey,
+                        targetTableName,
+                        expectedArchiveToken,
+                        activationReceiptToken))
+                {
+                    throw;
+                }
+
+                committed = true;
+            }
         }
         finally
         {
-            if (!committed)
+            if (!committed && transaction.TransactionId is string transactionId)
             {
                 try
                 {
-                    await client.RollbackTransactionAsync(transaction.TransactionId, CancellationToken.None);
+                    await client.RollbackTransactionAsync(transactionId, CancellationToken.None);
                 }
                 catch
                 {
@@ -1084,6 +1362,113 @@ public sealed class TableImportExportService(
                     // staging table for the outer cleanup path to remove.
                 }
             }
+        }
+    }
+
+    private async IAsyncEnumerable<MigrationValidationRow> EnumerateArchiveValidationRowsAsync(
+        ArchiveRestoreSnapshot archive,
+        string targetKey,
+        string ownerToken,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        await using var heartbeat = new RestoreLeaseHeartbeat(
+            heartbeatCt => RefreshRestoreLeaseAsync(targetKey, ownerToken, heartbeatCt),
+            ct);
+        await using IAsyncEnumerator<PrimitiveDbValue[]> rows = TableArchiveReader
+            .ReadRowsAsync(archive.Stream, heartbeat.Token)
+            .GetAsyncEnumerator(heartbeat.Token);
+        while (true)
+        {
+            bool hasNext;
+            try
+            {
+                hasNext = await rows.MoveNextAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (heartbeat.HasFailed)
+            {
+                heartbeat.ThrowIfFailed();
+                throw;
+            }
+
+            if (!hasNext)
+                break;
+
+            yield return new MigrationValidationRow { Values = rows.Current };
+        }
+
+        await heartbeat.StopAsync();
+    }
+
+    private async IAsyncEnumerable<MigrationValidationRow> EnumerateRestoredValidationRowsAsync(
+        RestoreValidationTransaction transaction,
+        PrimitiveTableSchema schema,
+        IReadOnlyList<PrimitiveIndexSchema> expectedIndexes,
+        string ownerConstraintName,
+        ICSharpDbTransactionalSnapshotReader transactionalReader,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        string transactionId = await transaction.EnsureStartedAsync(ct);
+        TransactionTableSnapshot snapshot = await transactionalReader.ReadTableSnapshotAsync(
+                transactionId,
+                schema.TableName,
+                ct)
+            ?? throw new InvalidDataException(
+                "Archive restore staging table disappeared before transactional validation.");
+        ValidateNormalizedSchema(
+            snapshot.Schema,
+            snapshot.Indexes,
+            schema,
+            expectedIndexes,
+            ownerConstraintName,
+            allowIncompletePostLoadObjects: false);
+
+        string projection = string.Join(", ", schema.Columns.Select(column => QuoteIdentifier(column.Name)));
+        await using ForwardOnlyQueryCursor cursor =
+            await transactionalReader.TryOpenForwardOnlyQueryCursorAsync(
+                transactionId,
+                $"SELECT {projection} FROM {QuoteIdentifier(schema.TableName)};",
+                ct)
+            ?? throw new InvalidOperationException(
+                "The direct CSharpDB transport could not open a transactional restore-validation cursor.");
+        if (cursor.ColumnNames.Length != schema.Columns.Count ||
+            !cursor.ColumnNames.SequenceEqual(
+                schema.Columns.Select(static column => column.Name),
+                StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Archive restore canonical validation returned an invalid target projection.");
+        }
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            List<object?[]> rows = await cursor.ReadNextAsync(1, ct);
+            if (rows.Count == 0)
+                yield break;
+
+            object?[] row = rows[0];
+            if (row.Length != schema.Columns.Count)
+            {
+                throw new InvalidDataException(
+                    "Archive restore canonical validation returned a target row with an invalid field count.");
+            }
+
+            yield return new MigrationValidationRow
+            {
+                Values = MapRow(schema.Columns, row),
+            };
+        }
+    }
+
+    private sealed class RestoreValidationTransaction(ICSharpDbClient client)
+    {
+        public string? TransactionId { get; private set; }
+
+        public async ValueTask<string> EnsureStartedAsync(CancellationToken ct)
+        {
+            if (TransactionId is null)
+                TransactionId = (await client.BeginTransactionAsync(ct)).TransactionId;
+            return TransactionId;
         }
     }
 
@@ -1095,6 +1480,28 @@ public sealed class TableImportExportService(
         var result = await client.ExecuteInTransactionAsync(transactionId, sql, ct);
         if (!string.IsNullOrWhiteSpace(result.Error))
             throw new InvalidOperationException(result.Error);
+    }
+
+    private async Task<bool> IsRestoreActivationCommittedAsync(
+        string targetKey,
+        string targetTableName,
+        string archiveToken,
+        string receiptToken)
+    {
+        try
+        {
+            RestoreActivationReceipt? receipt = await ReadRestoreActivationReceiptAsync(
+                targetKey,
+                CancellationToken.None);
+            return receipt is not null &&
+                   string.Equals(receipt.TargetTableName, targetTableName, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(receipt.ArchiveToken, archiveToken, StringComparison.Ordinal) &&
+                   string.Equals(receipt.ReceiptToken, receiptToken, StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task TryReleaseRestoreAsync(
@@ -1149,7 +1556,7 @@ public sealed class TableImportExportService(
         IReadOnlyList<ClientIndexSchema> actualIndexes,
         PrimitiveTableSchema expectedSchema,
         IReadOnlyList<PrimitiveIndexSchema> expectedIndexes,
-        string ownerConstraintName,
+        string? ownerConstraintName,
         bool allowIncompletePostLoadObjects)
     {
         var differences = new List<string>();
@@ -1169,8 +1576,12 @@ public sealed class TableImportExportService(
             preserveOrder: false,
             differences);
 
-        IEnumerable<string> expectedChecks = expectedSchema.CheckConstraints.Select(ExpectedCheckSignature)
-            .Append(CheckSignature(ownerConstraintName, RestoreContractCheckExpression, columnName: null));
+        IEnumerable<string> expectedChecks = expectedSchema.CheckConstraints.Select(ExpectedCheckSignature);
+        if (ownerConstraintName is not null)
+        {
+            expectedChecks = expectedChecks.Append(
+                CheckSignature(ownerConstraintName, RestoreContractCheckExpression, columnName: null));
+        }
         CompareExact(
             "check constraints",
             expectedChecks,
@@ -1374,6 +1785,226 @@ public sealed class TableImportExportService(
         string ArchiveToken,
         string OwnerToken,
         long HeartbeatUnixMilliseconds);
+
+    private sealed record RestoreActivationReceipt(
+        string TargetTableName,
+        string ArchiveToken,
+        string ReceiptToken,
+        long CompletedUnixMilliseconds);
+
+    private sealed class RestoreLeaseHeartbeat : IAsyncDisposable
+    {
+        private static readonly TimeSpan s_interval = TimeSpan.FromMinutes(1);
+
+        private readonly CancellationTokenSource _work;
+        private readonly CancellationTokenSource _stop;
+        private readonly Task _background;
+        private Exception? _failure;
+        private int _stopped;
+
+        public RestoreLeaseHeartbeat(
+            Func<CancellationToken, Task> refresh,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(refresh);
+            _work = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _background = RunAsync(refresh, _stop.Token);
+        }
+
+        public CancellationToken Token => _work.Token;
+
+        public bool HasFailed => Volatile.Read(ref _failure) is not null;
+
+        public void ThrowIfFailed()
+        {
+            Exception? failure = Volatile.Read(ref _failure);
+            if (failure is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+
+        public async ValueTask StopAsync()
+        {
+            RequestStop();
+            await _background.ConfigureAwait(false);
+            ThrowIfFailed();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            RequestStop();
+            try
+            {
+                await _background.ConfigureAwait(false);
+            }
+            catch
+            {
+                // StopAsync reports heartbeat failures on the success path. On
+                // exceptional paths, preserve the original restore failure.
+            }
+            finally
+            {
+                _work.Dispose();
+                _stop.Dispose();
+            }
+        }
+
+        private async Task RunAsync(
+            Func<CancellationToken, Task> refresh,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(s_interval, cancellationToken).ConfigureAwait(false);
+                    await refresh(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Normal caller cancellation or explicit shutdown.
+            }
+            catch (Exception exception)
+            {
+                _failure = exception;
+                _work.Cancel();
+            }
+        }
+
+        private void RequestStop()
+        {
+            if (Interlocked.Exchange(ref _stopped, 1) == 0)
+                _stop.Cancel();
+        }
+    }
+
+    private sealed class ArchiveRestoreSnapshot : IAsyncDisposable
+    {
+        private FileStream? _lease;
+
+        private ArchiveRestoreSnapshot(string path, byte[] digest, FileStream lease)
+        {
+            Path = path;
+            Digest = digest;
+            _lease = lease;
+        }
+
+        public string Path { get; }
+
+        public byte[] Digest { get; }
+
+        public FileStream Stream => _lease
+            ?? throw new ObjectDisposedException(nameof(ArchiveRestoreSnapshot));
+
+        public static async Task<ArchiveRestoreSnapshot> CreateAsync(
+            string sourcePath,
+            string scratchDirectory,
+            long maximumBytes,
+            CancellationToken ct)
+        {
+            Directory.CreateDirectory(scratchDirectory);
+            string snapshotPath = System.IO.Path.Combine(
+                scratchDirectory,
+                $"csharpdb-restore-archive-{Guid.NewGuid():N}.snapshot");
+            FileStream? snapshot = null;
+            try
+            {
+                await using var source = new FileStream(
+                    sourcePath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 64 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                if (source.Length > maximumBytes)
+                {
+                    throw new InvalidDataException(
+                        $"The table archive is {source.Length.ToString(CultureInfo.InvariantCulture)} bytes, " +
+                        $"which exceeds the configured {maximumBytes.ToString(CultureInfo.InvariantCulture)}-byte " +
+                        "restore snapshot limit.");
+                }
+
+                snapshot = new FileStream(
+                    snapshotPath,
+                    FileMode.CreateNew,
+                    FileAccess.ReadWrite,
+                    FileShare.Read,
+                    bufferSize: 64 * 1024,
+                    FileOptions.Asynchronous);
+                using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[64 * 1024];
+                long copiedBytes = 0;
+                while (true)
+                {
+                    int read = await source.ReadAsync(buffer, ct).ConfigureAwait(false);
+                    if (read == 0)
+                        break;
+
+                    copiedBytes = checked(copiedBytes + read);
+                    if (copiedBytes > maximumBytes)
+                    {
+                        throw new InvalidDataException(
+                            $"The table archive exceeds the configured " +
+                            $"{maximumBytes.ToString(CultureInfo.InvariantCulture)}-byte restore snapshot limit.");
+                    }
+
+                    hasher.AppendData(buffer, 0, read);
+                    await snapshot.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                }
+
+                await snapshot.FlushAsync(ct).ConfigureAwait(false);
+                snapshot.Flush(flushToDisk: true);
+                byte[] digest = hasher.GetHashAndReset();
+                snapshot.Position = 0;
+                var result = new ArchiveRestoreSnapshot(snapshotPath, digest, snapshot);
+                snapshot = null;
+                return result;
+            }
+            catch
+            {
+                if (snapshot is not null)
+                    await snapshot.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    File.Delete(snapshotPath);
+                }
+                catch (Exception cleanupException) when (
+                    cleanupException is IOException or UnauthorizedAccessException)
+                {
+                    // Preserve the snapshot/copy failure.
+                }
+
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            FileStream? lease = Interlocked.Exchange(ref _lease, null);
+            if (lease is null)
+                return;
+
+            try
+            {
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Cleanup must not turn an already committed activation into a
+                // reported restore failure.
+            }
+
+            try
+            {
+                File.Delete(Path);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // The private snapshot can be reclaimed by normal temp cleanup.
+            }
+        }
+    }
 
     private static string BuildCreateTableSql(
         PrimitiveTableSchema schema,

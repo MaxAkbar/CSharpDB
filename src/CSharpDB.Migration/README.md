@@ -39,7 +39,8 @@ part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
 - a bounded streaming apply coordinator with transactional-receipt resume
   verification and ordered schema-stage orchestration;
 - the versioned `csharpdb-canon-v1` logical row codec, cross-platform golden
-  vectors, and plan-bound row/key projections;
+  vectors, plan-bound row/key projections, and a rename-stable native CSharpDB
+  table contract used by archive restore;
 - deterministic normalized-schema, 64-bit count, and 256-partition SHA-256
   validation with duplicate preservation and bounded spill/sort;
 - self-digesting JSON and deterministic text validation reports containing

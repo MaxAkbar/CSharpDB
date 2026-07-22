@@ -48,6 +48,107 @@ public sealed record CanonicalRowContract
 public static class CanonicalRowProjector
 {
     private static readonly byte[] s_objectDomain = Encoding.ASCII.GetBytes("CSDBOBJ1");
+    private static readonly byte[] s_csharpDbTableDomain = Encoding.ASCII.GetBytes("CSDBNAT1");
+
+    /// <summary>
+    /// Creates a canonical row contract for a native CSharpDB table. The
+    /// contract describes the stored row layout but deliberately excludes the
+    /// table identity, allowing the same archive contract to validate a
+    /// staging table whose table name has changed during restore. Its object
+    /// digest uses the rename-stable <c>CSDBNAT1</c> native row-layout
+    /// aggregate domain.
+    /// </summary>
+    public static CanonicalRowContract CreateCSharpDbTableContract(TableSchema schema)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        if (string.IsNullOrWhiteSpace(schema.TableName))
+            throw new InvalidDataException("A native CSharpDB canonical contract requires a table name.");
+        if (schema.Columns is null || schema.Columns.Count == 0)
+            throw new InvalidDataException("A native CSharpDB canonical contract requires at least one column.");
+
+        var columnOrdinals = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var fields = new CanonicalFieldContract[schema.Columns.Count];
+        int rowVersionCount = 0;
+        for (int ordinal = 0; ordinal < schema.Columns.Count; ordinal++)
+        {
+            ColumnDefinition column = schema.Columns[ordinal]
+                ?? throw new InvalidDataException("The native CSharpDB schema contains a null column.");
+            if (string.IsNullOrWhiteSpace(column.Name))
+                throw new InvalidDataException("A native CSharpDB schema column has no name.");
+            if (!columnOrdinals.TryAdd(column.Name, ordinal))
+                throw new InvalidDataException($"The native CSharpDB schema repeats column '{column.Name}'.");
+
+            CanonicalType canonicalType = column.Type switch
+            {
+                DbType.Integer => CanonicalType.Int64,
+                DbType.Real => CanonicalType.Binary64,
+                DbType.Text => CanonicalType.Text,
+                DbType.Blob => CanonicalType.Blob,
+                _ => throw new InvalidDataException(
+                    $"Native CSharpDB column '{column.Name}' has no persistent canonical type."),
+            };
+            if (column.IsRowVersion)
+            {
+                if (column.Type != DbType.Blob)
+                {
+                    throw new InvalidDataException(
+                        $"Native CSharpDB ROWVERSION column '{column.Name}' must use BLOB storage.");
+                }
+                if (column.Nullable)
+                {
+                    throw new InvalidDataException(
+                        $"Native CSharpDB ROWVERSION column '{column.Name}' must be non-nullable.");
+                }
+                if (column.IsIdentity)
+                {
+                    throw new InvalidDataException(
+                        $"Native CSharpDB ROWVERSION column '{column.Name}' cannot be an identity column.");
+                }
+                if (++rowVersionCount > 1)
+                {
+                    throw new InvalidDataException(
+                        "A native CSharpDB schema cannot contain more than one ROWVERSION column.");
+                }
+            }
+
+            fields[ordinal] = new CanonicalFieldContract
+            {
+                SourceColumnObjectId = $"csharpdb:native-column:{ordinal}",
+                TargetColumnName = column.Name,
+                StoredType = column.Type,
+                CanonicalType = canonicalType,
+                ExclusionReason = column.IsRowVersion
+                    ? CanonicalExclusionReason.RegeneratedRowVersion
+                    : null,
+            };
+        }
+
+        int[] keyOrdinals = ResolveCSharpDbPrimaryKeyOrdinals(schema, columnOrdinals);
+        foreach (int ordinal in keyOrdinals)
+        {
+            ColumnDefinition keyColumn = schema.Columns[ordinal];
+            if (keyColumn.IsRowVersion)
+                throw new InvalidDataException("A native CSharpDB ROWVERSION column cannot be a primary-key field.");
+            if (keyColumn.Nullable)
+            {
+                throw new InvalidDataException(
+                    $"Native CSharpDB primary-key column '{keyColumn.Name}' must be non-nullable.");
+            }
+        }
+
+        var contract = new CanonicalRowContract
+        {
+            SourceObjectId = "csharpdb:native-table",
+            TargetObjectId = "csharpdb:native-table",
+            Fields = fields,
+            KeyFieldOrdinals = keyOrdinals,
+            ObjectContractDigest = string.Empty,
+        };
+        return contract with
+        {
+            ObjectContractDigest = ComputeCSharpDbTableContractDigest(contract),
+        };
+    }
 
     public static CanonicalRowContract CreateContract(
         MigrationPlan plan,
@@ -376,6 +477,101 @@ public static class CanonicalRowProjector
         return members.Length > 0
             ? members.Select(item => item.ObjectId).ToArray()
             : key.DependsOn.Count == 1 ? key.DependsOn : [];
+    }
+
+    private static int[] ResolveCSharpDbPrimaryKeyOrdinals(
+        TableSchema schema,
+        IReadOnlyDictionary<string, int> columnOrdinals)
+    {
+        if (schema.KeyConstraints is null)
+            throw new InvalidDataException("The native CSharpDB key-constraint collection is null.");
+
+        int[]? primaryKeyOrdinals = null;
+        foreach (KeyConstraintDefinition key in schema.KeyConstraints)
+        {
+            if (key is null)
+                throw new InvalidDataException("The native CSharpDB key-constraint collection contains a null entry.");
+            if (key.Kind is not (KeyConstraintKind.PrimaryKey or KeyConstraintKind.Unique))
+            {
+                throw new InvalidDataException(
+                    $"The native CSharpDB schema contains unsupported key-constraint kind '{(int)key.Kind}'.");
+            }
+
+            int[] keyOrdinals = ResolveCSharpDbKeyOrdinals(key, columnOrdinals);
+            foreach (int ordinal in keyOrdinals)
+            {
+                if (schema.Columns[ordinal].IsRowVersion)
+                {
+                    throw new InvalidDataException(
+                        "A native CSharpDB ROWVERSION column cannot participate in a key constraint.");
+                }
+            }
+
+            if (key.Kind != KeyConstraintKind.PrimaryKey)
+                continue;
+            if (primaryKeyOrdinals is not null)
+                throw new InvalidDataException("The native CSharpDB schema contains more than one primary key.");
+            primaryKeyOrdinals = keyOrdinals;
+        }
+
+        if (primaryKeyOrdinals is null)
+        {
+            return schema.Columns
+                .Select(static (column, ordinal) => (column, ordinal))
+                .Where(static item => item.column.IsPrimaryKey)
+                .Select(static item => item.ordinal)
+                .ToArray();
+        }
+
+        return primaryKeyOrdinals;
+    }
+
+    private static int[] ResolveCSharpDbKeyOrdinals(
+        KeyConstraintDefinition key,
+        IReadOnlyDictionary<string, int> columnOrdinals)
+    {
+        if (key.Columns is null || key.Columns.Count == 0)
+            throw new InvalidDataException("A native CSharpDB key constraint has no columns.");
+
+        var seen = new HashSet<int>();
+        var ordinals = new int[key.Columns.Count];
+        for (int index = 0; index < key.Columns.Count; index++)
+        {
+            string columnName = key.Columns[index];
+            if (string.IsNullOrWhiteSpace(columnName) ||
+                !columnOrdinals.TryGetValue(columnName, out int ordinal))
+            {
+                throw new InvalidDataException(
+                    $"A native CSharpDB key constraint references missing column '{columnName}'.");
+            }
+            if (!seen.Add(ordinal))
+            {
+                throw new InvalidDataException(
+                    $"A native CSharpDB key constraint repeats column '{columnName}'.");
+            }
+            ordinals[index] = ordinal;
+        }
+        return ordinals;
+    }
+
+    private static string ComputeCSharpDbTableContractDigest(CanonicalRowContract contract)
+    {
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(s_csharpDbTableDomain);
+        hash.AppendData(Convert.FromHexString(CanonicalRowCodec.ContractHashHex));
+        AppendUInt32(hash, checked((uint)contract.Fields.Count));
+        foreach (CanonicalFieldContract field in contract.Fields)
+        {
+            AppendString(hash, field.TargetColumnName);
+            hash.AppendData([(byte)field.StoredType, (byte)field.CanonicalType]);
+            hash.AppendData(field.ExclusionReason is null
+                ? [0]
+                : [1, (byte)field.ExclusionReason.Value]);
+        }
+        AppendUInt32(hash, checked((uint)contract.KeyFieldOrdinals.Count));
+        foreach (int ordinal in contract.KeyFieldOrdinals)
+            AppendUInt32(hash, checked((uint)ordinal));
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
     private static string ComputeObjectContractDigest(CanonicalRowContract contract)
