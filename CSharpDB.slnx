@@ -43,6 +43,7 @@
     <Project Path="src/CSharpDB.ImportExport/CSharpDB.ImportExport.csproj" />
     <Project Path="src/CSharpDB.Migration/CSharpDB.Migration.csproj" />
     <Project Path="src/CSharpDB.Migration.CSharpDb/CSharpDB.Migration.CSharpDb.csproj" />
+    <Project Path="src/CSharpDB.Migration.Files/CSharpDB.Migration.Files.csproj" />
     <Project Path="src/CSharpDB.Sql/CSharpDB.Sql.csproj" />
     <Project Path="src/CSharpDB.Storage/CSharpDB.Storage.csproj" />
     <Project Path="src/CSharpDB.Storage.Diagnostics/CSharpDB.Storage.Diagnostics.csproj" />
@@ -66,6 +67,7 @@
     <Project Path="tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj" />
     <Project Path="tests/CSharpDB.Migration.CrashHarness/CSharpDB.Migration.CrashHarness.csproj" />
     <Project Path="tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj" />
+    <Project Path="tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj" />
     <Project Path="tests/CSharpDB.Api.Tests/CSharpDB.Api.Tests.csproj" />
     <Project Path="tests/CSharpDB.Daemon.Tests/CSharpDB.Daemon.Tests.csproj" />
     <Project Path="tests/CSharpDB.Admin.Forms.Tests/CSharpDB.Admin.Forms.Tests.csproj" />

@@ -371,7 +371,23 @@ macOS in CI.
 The two adapter tracks can proceed in parallel after the Phase 1-3 contracts
 are stable.
 
+**Status:** in progress. The isolated `CSharpDB.Migration.Files` package now
+contains the strict Phase 4A CSV reader foundation. It is forward-only,
+RFC 4180-capable, BOM-aware, explicitly bounded, and preserves null, empty,
+missing, and trailing-empty fields. Inspection/inference, tolerant rejects,
+migration-source adaptation, prepared writes/resume, manifests, and export are
+not yet complete; see
+[`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md).
+
 ### Track 4A: CSV
+
+- [x] Isolate CsvHelper 33.1.0 in `CSharpDB.Migration.Files` and expose only
+  adapter-owned public contracts.
+- [x] Add a strict bounded logical-record reader with multiline/escaped quote,
+  CRLF/LF/CR, strict BOM/encoding, header, explicit delimiter, exact
+  culture-looking text, and null/empty/missing/trailing-empty coverage.
+- [x] Add stable value-free parser diagnostics, forward-only/cancellation
+  coverage, hostile field/record/column limit tests, and CI integration.
 
 - [ ] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [ ] Support quoted multiline fields, escaped quotes, explicit/detected

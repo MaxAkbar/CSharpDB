@@ -68,6 +68,7 @@ jobs:
             tests/CSharpDB.Data.Tests/CSharpDB.Data.Tests.csproj
             tests/CSharpDB.DevOps.Tests/CSharpDB.DevOps.Tests.csproj
             tests/CSharpDB.EntityFrameworkCore.Tests/CSharpDB.EntityFrameworkCore.Tests.csproj
+            tests/CSharpDB.Migration.Files.Tests/CSharpDB.Migration.Files.Tests.csproj
             tests/CSharpDB.Migration.Tests/CSharpDB.Migration.Tests.csproj
             tests/CSharpDB.Pipelines.Tests/CSharpDB.Pipelines.Tests.csproj
           )
