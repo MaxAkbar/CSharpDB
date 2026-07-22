@@ -239,6 +239,8 @@ public sealed class CsvSchemaInferenceResult
 
     public ReadOnlyCollection<MigrationDiagnostic> Diagnostics { get; }
 
+    internal CsvSourceBinding Binding => binding;
+
     public MigrationCatalog CreateCatalog(string targetCSharpDbVersion) =>
         CsvMigrationCatalogBuilder.Build(this, targetCSharpDbVersion);
 

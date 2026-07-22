@@ -116,10 +116,13 @@ algorithm versions, original-header facts, and override compatibility are all
 bound into the catalog digest. `MigrationContractValidator.ValidateCatalog`
 runs before the catalog is returned.
 
-This slice does not implement `IMigrationDataSource`, target writes, resume, or
-reject files. Those next steps must reuse scalar policy v1 against every value
-from the same snapshot before a batch commits. Until that adapter exists, a
-sample is preview evidence only, not proof of the unseen tail.
+`CsvMigrationDataSource` now implements the next strict full-stream boundary.
+It reuses scalar policy v1 against every projected value from the same snapshot
+before emitting a batch, so sampled evidence never excuses an incompatible
+tail value. See
+[`migration-csv-data-source.md`](migration-csv-data-source.md).
+
+Tolerant reject files, target orchestration, and export remain separate slices.
 
 Binary intent is also deferred: base64- or hex-looking text is never inferred
 as a BLOB, and v1 does not expose a binary override without an explicit

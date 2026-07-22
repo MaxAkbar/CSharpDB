@@ -376,11 +376,15 @@ contains the strict Phase 4A CSV reader plus immutable raw-byte snapshots,
 bounded delimiter/BOM inspection with explicit ambiguity, and deterministic
 content/format source binding. It now also provides bounded confidence-bearing
 schema inference, explicit ordinal overrides, and validated migration catalogs.
-Full-stream migration-source adaptation, tolerant rejects, prepared
-writes/resume, manifests, and export are not yet complete; see
+Strict full-stream migration-source adaptation now validates the entire
+projected stream, preserves projection order, bounds batches by rows and
+canonical bytes, and supplies deterministic snapshot/policy-bound cursors.
+Tolerant rejects, CLI prepared-write orchestration, manifests, and export are
+not yet complete; see
 [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md),
 [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md),
-and [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md).
+[`migration-csv-schema-inference.md`](migration-csv-schema-inference.md), and
+[`migration-csv-data-source.md`](migration-csv-data-source.md).
 
 ### Track 4A: CSV
 
@@ -400,6 +404,10 @@ and [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md).
 - [x] Add bounded confidence-bearing schema inference, exact value-free
   evidence, ordinal overrides, conservative `Text` fallback, honest
   sample/full coverage, and validated migration catalogs.
+- [x] Adapt the immutable schema-bound snapshot to `IMigrationDataSource` with
+  full-stream scalar validation, strict missing/null behavior, arbitrary
+  projection order, row/byte-bounded batches, replay, and opaque resume
+  cursors.
 
 - [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [x] Support quoted multiline fields, escaped quotes, explicit/detected

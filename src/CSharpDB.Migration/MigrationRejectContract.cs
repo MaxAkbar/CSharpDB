@@ -62,6 +62,51 @@ public sealed class MigrationRowRejectedException : Exception
     public long BatchOrdinal { get; }
 
     public long SourceRowOrdinal { get; }
+
+    /// <summary>
+    /// Creates a rejection reported by a migration source adapter without a
+    /// free-form message or inner exception. Providers must pass stable rule
+    /// and catalog object identifiers; this API bounds their token shape.
+    /// </summary>
+    public static MigrationRowRejectedException CreateForSource(
+        string code,
+        string sourceObjectId,
+        string columnObjectId,
+        long batchOrdinal,
+        long sourceRowOrdinal)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceObjectId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(columnObjectId);
+        ArgumentOutOfRangeException.ThrowIfNegative(batchOrdinal);
+        ArgumentOutOfRangeException.ThrowIfNegative(sourceRowOrdinal);
+        if (!IsBoundedRuleId(code))
+            throw new ArgumentException("The rejection code is not a bounded migration rule ID.", nameof(code));
+        if (!IsBoundedIdentifier(sourceObjectId))
+            throw new ArgumentException("The source object ID is not a bounded identifier.", nameof(sourceObjectId));
+        if (!IsBoundedIdentifier(columnObjectId))
+            throw new ArgumentException("The column object ID is not a bounded identifier.", nameof(columnObjectId));
+
+        return new MigrationRowRejectedException(
+            code,
+            sourceObjectId,
+            columnObjectId,
+            batchOrdinal,
+            sourceRowOrdinal,
+            new InvalidDataException(
+                "The source adapter rejected a value under the deterministic fail-fast contract."));
+    }
+
+    private static bool IsBoundedRuleId(string value) =>
+        value.Length <= 128 &&
+        value.StartsWith("MIG-", StringComparison.Ordinal) &&
+        value.All(character =>
+            character is >= 'A' and <= 'Z' or
+                >= '0' and <= '9' or
+                '-');
+
+    private static bool IsBoundedIdentifier(string value) =>
+        value.Length <= 512 && value.All(character => !char.IsControl(character));
 }
 
 /// <summary>

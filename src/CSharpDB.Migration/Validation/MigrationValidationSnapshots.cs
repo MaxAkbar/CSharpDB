@@ -97,6 +97,12 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
         if (source.Source != plan.Source)
             throw new InvalidDataException("Validation data source identity does not match the bound plan source.");
+        if (source is IMigrationCatalogBoundDataSource catalogBoundSource &&
+            !string.Equals(catalogBoundSource.CatalogDigest, plan.CatalogDigest, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "Validation data source catalog policy does not match the bound plan catalog.");
+        }
         if (string.IsNullOrWhiteSpace(source.SnapshotIdentity))
             throw new InvalidDataException("Validation data source snapshot identity is required.");
 
@@ -203,6 +209,8 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
         SourceObjectId = objectId,
         ColumnObjectIds = columnIds,
         BatchSize = _plan.Load.BatchSize,
+        MaxBatchBytes = _plan.Load.MaxBatchBytes,
+        MaxValueBytes = _plan.Load.MaxValueBytes,
         SnapshotToken = SnapshotIdentity,
     };
 

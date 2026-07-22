@@ -5,9 +5,6 @@ namespace CSharpDB.Migration.Files.Csv;
 
 internal static class CsvMigrationCatalogBuilder
 {
-    private const string NamespaceId = "csv:namespace:main";
-    private const string TableId = "csv:table:0";
-
     public static MigrationCatalog Build(
         CsvSchemaInferenceResult result,
         string targetCSharpDbVersion)
@@ -24,16 +21,16 @@ internal static class CsvMigrationCatalogBuilder
         {
             new()
             {
-                ObjectId = NamespaceId,
+                ObjectId = CsvMigrationObjectIds.MainNamespace,
                 Kind = MigrationObjectKind.Namespace,
                 SourceName = "main",
                 Facets = [Facet("isDefault", "true")],
             },
             new()
             {
-                ObjectId = TableId,
+                ObjectId = CsvMigrationObjectIds.Table,
                 Kind = MigrationObjectKind.Table,
-                ParentObjectId = NamespaceId,
+                ParentObjectId = CsvMigrationObjectIds.MainNamespace,
                 SourceNamespace = "main",
                 SourceName = result.TableName,
                 Facets =
@@ -114,9 +111,9 @@ internal static class CsvMigrationCatalogBuilder
 
         return new MigrationCatalogObject
         {
-            ObjectId = $"csv:column:{column.ColumnIndex}",
+            ObjectId = CsvMigrationObjectIds.Column(column.ColumnIndex),
             Kind = MigrationObjectKind.Column,
-            ParentObjectId = TableId,
+            ParentObjectId = CsvMigrationObjectIds.Table,
             SourceName = column.SourceName,
             NativeType = NativeType(column.LogicalType),
             Facets = facets,

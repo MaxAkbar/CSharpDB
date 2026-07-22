@@ -84,6 +84,15 @@ public sealed record MigrationReadRequest
 
     public int BatchSize { get; init; } = 1_000;
 
+    /// <summary>
+    /// Maximum combined canonical payload retained for a single batch.
+    /// Sources must split earlier when this limit would be exceeded.
+    /// </summary>
+    public long MaxBatchBytes { get; init; } = 64L * 1024 * 1024;
+
+    /// <summary>Maximum canonical size of one scalar value, including BLOBs.</summary>
+    public int MaxValueBytes { get; init; } = 16 * 1024 * 1024;
+
     public string? ResumeCursor { get; init; }
 
     public string? SnapshotToken { get; init; }
@@ -102,6 +111,16 @@ public interface IMigrationDataSource : IAsyncDisposable
     IAsyncEnumerable<MigrationDataBatch> ReadAsync(
         MigrationReadRequest request,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Optional stronger binding for sources whose runtime scalar policy depends
+/// on the exact inspected catalog. Coordinators reject a different plan
+/// catalog before reading.
+/// </summary>
+public interface IMigrationCatalogBoundDataSource
+{
+    string CatalogDigest { get; }
 }
 
 public sealed record MigrationTypeMappingRequest

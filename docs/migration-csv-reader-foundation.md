@@ -62,9 +62,10 @@ Bounded schema inference, ordinal overrides, and migration catalog adaptation
 are also complete; see
 [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md).
 
-1. Adapt logical records into `IMigrationDataSource`, including a deliberate
-   missing-field policy and deterministic cursors.
-2. Reuse staged prepared writes, transactional receipts, validation, and
+1. The strict `IMigrationDataSource` adapter, missing-field policy,
+   byte-bounded batches, and deterministic cursors are complete; see
+   [`migration-csv-data-source.md`](migration-csv-data-source.md).
+2. Wire the adapter into staged prepared writes, transactional receipts, validation, and
    activation from Phases 2-3.
 3. Add deterministic tolerant rejects only after their durable transaction
    contract is complete.

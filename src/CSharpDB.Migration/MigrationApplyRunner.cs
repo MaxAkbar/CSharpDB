@@ -78,6 +78,12 @@ public sealed class MigrationApplyRunner
         MigrationApplyPolicyValidator.ValidateForExecution(plan);
         if (request.Source.Source != plan.Source)
             throw new InvalidDataException("Migration data source identity does not match the bound plan source.");
+        if (request.Source is IMigrationCatalogBoundDataSource catalogBoundSource &&
+            !string.Equals(catalogBoundSource.CatalogDigest, plan.CatalogDigest, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "Migration data source catalog policy does not match the bound plan catalog.");
+        }
         if (string.IsNullOrWhiteSpace(request.Source.SnapshotIdentity))
             throw new InvalidDataException("Migration data source snapshot identity is required.");
         if (string.IsNullOrWhiteSpace(request.Target.TargetIdentity))
@@ -128,6 +134,8 @@ public sealed class MigrationApplyRunner
                 SourceObjectId = sourceObject.ObjectId,
                 ColumnObjectIds = columnObjectIds,
                 BatchSize = plan.Load.BatchSize,
+                MaxBatchBytes = plan.Load.MaxBatchBytes,
+                MaxValueBytes = plan.Load.MaxValueBytes,
                 SnapshotToken = snapshotIdentity,
             };
 

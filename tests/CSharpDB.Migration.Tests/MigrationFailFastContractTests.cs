@@ -8,6 +8,38 @@ public sealed class MigrationFailFastContractTests
     private const string RejectedSourceValue = "TOP-SECRET-ROW-VALUE";
 
     [Fact]
+    public void SourceRejectionFactoryAcceptsOnlyBoundedStableMetadata()
+    {
+        MigrationRowRejectedException error = MigrationRowRejectedException.CreateForSource(
+            "MIG-SOURCE-VALUE-001",
+            "source:table",
+            "source:column",
+            batchOrdinal: 2,
+            sourceRowOrdinal: 3);
+
+        Assert.Equal("MIG-SOURCE-VALUE-001", error.Code);
+        Assert.IsType<InvalidDataException>(error.InnerException);
+        Assert.Throws<ArgumentException>(() => MigrationRowRejectedException.CreateForSource(
+            "MIG-source-value",
+            "source:table",
+            "source:column",
+            0,
+            0));
+        Assert.Throws<ArgumentException>(() => MigrationRowRejectedException.CreateForSource(
+            "MIG-SOURCE-VALUE-001",
+            new string('x', 513),
+            "source:column",
+            0,
+            0));
+        Assert.Throws<ArgumentException>(() => MigrationRowRejectedException.CreateForSource(
+            "MIG-SOURCE-VALUE-001",
+            "source:table\r\nraw",
+            "source:column",
+            0,
+            0));
+    }
+
+    [Fact]
     public async Task FailFast_ReplaysTheSameSafeFirstErrorAndNeverSubmitsItsBatch()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
