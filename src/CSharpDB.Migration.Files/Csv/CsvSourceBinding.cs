@@ -1,4 +1,5 @@
 using CSharpDB.Migration;
+using System.Globalization;
 
 namespace CSharpDB.Migration.Files.Csv;
 
@@ -39,6 +40,8 @@ public sealed class CsvSourceBinding
     public CsvResolvedFormat Format { get; }
 
     public string OptionsDigest { get; }
+
+    internal CultureInfo Culture => readerOptions.Culture;
 
     public static async ValueTask<CsvSourceBinding> CreateAsync(
         CsvSourceSnapshot snapshot,

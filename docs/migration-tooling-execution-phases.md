@@ -374,10 +374,13 @@ are stable.
 **Status:** in progress. The isolated `CSharpDB.Migration.Files` package now
 contains the strict Phase 4A CSV reader plus immutable raw-byte snapshots,
 bounded delimiter/BOM inspection with explicit ambiguity, and deterministic
-content/format source binding. Schema inference, tolerant rejects,
-migration-source adaptation, prepared writes/resume, manifests, and export are
-not yet complete; see [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md)
-and [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md).
+content/format source binding. It now also provides bounded confidence-bearing
+schema inference, explicit ordinal overrides, and validated migration catalogs.
+Full-stream migration-source adaptation, tolerant rejects, prepared
+writes/resume, manifests, and export are not yet complete; see
+[`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md),
+[`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md),
+and [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md).
 
 ### Track 4A: CSV
 
@@ -394,15 +397,18 @@ and [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-
   ambiguity, explicit selection, and culture/candidate-order invariance.
 - [x] Bind normalized parsing semantics and exact culture policy into the CSV
   source fingerprint so later readers cannot drift from inspection.
+- [x] Add bounded confidence-bearing schema inference, exact value-free
+  evidence, ordinal overrides, conservative `Text` fallback, honest
+  sample/full coverage, and validated migration catalogs.
 
-- [ ] Replace physical-line parsing with an RFC 4180-capable streaming parser.
-- [ ] Support quoted multiline fields, escaped quotes, explicit/detected
+- [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
+- [x] Support quoted multiline fields, escaped quotes, explicit/detected
   delimiters, encoding/BOM, headers, newline, culture, quote, and null policy.
-- [ ] Keep null, empty string, missing field, and an empty final column
+- [x] Keep null, empty string, missing field, and an empty final column
   distinct.
 - [ ] Add strict/tolerant modes with deterministic physical-line, logical-row,
   column, raw-value, and diagnostic information.
-- [ ] Add confidence-bearing schema inference and explicit overrides; default
+- [x] Add confidence-bearing schema inference and explicit overrides; default
   ambiguous columns to `Text`.
 - [ ] Add resumable prepared writes and streaming RFC 4180 export with a typed
   manifest. Keep spreadsheet-safe export as an explicitly lossy mode.

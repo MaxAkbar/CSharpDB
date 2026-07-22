@@ -79,11 +79,12 @@ uses a content identity; a supplied logical name is SHA-256 hashed before it is
 stored. A binding can open a reader only against a snapshot with the exact same
 content identity.
 
-## Deferred Work
+## Follow-on Work
 
-This slice deliberately does not claim schema inference, migration catalog
-inspection, `IMigrationDataSource`, deterministic row cursors, tolerant reject
-files, prepared target writes, manifests, or export. Confidence-bearing schema
-inference and explicit overrides are the next Phase 4A slice. The migration data
-source will then consume the same binding so planning, apply, resume, and
+Confidence-bearing schema inference, explicit ordinal overrides, and migration
+catalog inspection are now implemented in the next slice; see
+[`migration-csv-schema-inference.md`](migration-csv-schema-inference.md).
+`IMigrationDataSource`, deterministic row cursors, tolerant reject files,
+prepared target writes, manifests, and export remain deferred. The migration
+data source must consume this same binding so planning, apply, resume, and
 validation cannot drift to different file bytes or parsing semantics.

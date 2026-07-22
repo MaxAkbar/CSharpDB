@@ -270,7 +270,16 @@ public sealed class MigrationPlanner
         }
 
         long examined = ParseLongFacet(item, "profileValuesExamined");
-        long total = ParseLongFacet(item, "profileTotalValues");
+        string? totalValue = Facet(item, "profileTotalValues");
+        long? total = totalValue is null
+            ? null
+            : ParseLongFacet(item, "profileTotalValues");
+        if (kind == MigrationCoverageKind.Full && total is null)
+        {
+            throw new InvalidDataException(
+                $"Object '{item.ObjectId}' must report 'profileTotalValues' for full profile coverage.");
+        }
+
         return new MigrationProfileCoverage
         {
             Kind = kind,

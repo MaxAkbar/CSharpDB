@@ -58,13 +58,15 @@ the source file or all records.
 
 Bounded delimiter/BOM inspection and immutable source binding are now complete;
 see [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md).
+Bounded schema inference, ordinal overrides, and migration catalog adaptation
+are also complete; see
+[`migration-csv-schema-inference.md`](migration-csv-schema-inference.md).
 
-1. Add confidence-bearing schema inference and explicit column overrides.
-2. Adapt logical records into `IMigrationDataSource`, including a deliberate
+1. Adapt logical records into `IMigrationDataSource`, including a deliberate
    missing-field policy and deterministic cursors.
-3. Reuse staged prepared writes, transactional receipts, validation, and
+2. Reuse staged prepared writes, transactional receipts, validation, and
    activation from Phases 2-3.
-4. Add deterministic tolerant rejects only after their durable transaction
+3. Add deterministic tolerant rejects only after their durable transaction
    contract is complete.
-5. Add RFC 4180 export, typed manifests, checksums, and the separately named
+4. Add RFC 4180 export, typed manifests, checksums, and the separately named
    spreadsheet-safe lossy mode.

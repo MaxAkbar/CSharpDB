@@ -144,6 +144,61 @@ public sealed class MigrationPlannerTests
     }
 
     [Fact]
+    public async Task SampleCoverage_AllowsAnUnknownTotalWithoutInventingOne()
+    {
+        MigrationCatalog catalog = await InspectAsync();
+        const string objectId = "syn:column:orders:source-counter";
+        MigrationCatalogObject column = catalog.Objects.Single(item => item.ObjectId == objectId);
+        catalog = catalog with
+        {
+            Objects = catalog.Objects
+                .Select(item => item.ObjectId == objectId
+                    ? column with
+                    {
+                        Facets = column.Facets
+                            .Where(facet => facet.Name != "profileTotalValues")
+                            .ToArray(),
+                    }
+                    : item)
+                .ToArray(),
+        };
+
+        MigrationPlan plan = new MigrationPlanner().CreatePlan(catalog);
+        MigrationProfileCoverage coverage = Mapping(plan, objectId).Coverage;
+
+        Assert.Equal(MigrationCoverageKind.Sample, coverage.Kind);
+        Assert.Equal(5, coverage.ValuesExamined);
+        Assert.Null(coverage.TotalValues);
+        Assert.True(coverage.RequiresFullStreamValidation);
+    }
+
+    [Fact]
+    public async Task FullCoverage_StillRequiresAnExactTotal()
+    {
+        MigrationCatalog catalog = await InspectAsync();
+        const string objectId = "syn:column:orders:amount";
+        MigrationCatalogObject column = catalog.Objects.Single(item => item.ObjectId == objectId);
+        catalog = catalog with
+        {
+            Objects = catalog.Objects
+                .Select(item => item.ObjectId == objectId
+                    ? column with
+                    {
+                        Facets = column.Facets
+                            .Where(facet => facet.Name != "profileTotalValues")
+                            .ToArray(),
+                    }
+                    : item)
+                .ToArray(),
+        };
+
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => new MigrationPlanner().CreatePlan(catalog));
+
+        Assert.Contains("profileTotalValues", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SyntheticPlanningArtifacts_MatchGoldenDigestVectors()
     {
         MigrationCatalog catalog = await InspectAsync();
