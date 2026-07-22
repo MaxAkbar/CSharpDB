@@ -1,0 +1,73 @@
+{
+  "format": "csharpdb-migration-catalog/v1",
+  "digestAlgorithm": "sha256",
+  "digest": "7962452934b30aad00de50f31c0b589635c847e24c9ab8ac6d7afe336190cb6b",
+  "payload": {
+    "targetCSharpDbVersion": "4.2.0",
+    "source": {
+      "kind": "synthetic",
+      "identity": "fixture:awkward-v1",
+      "fingerprint": "sha256:6f7b4f1b2f9e8f6eb164fae886f20ed840cbe2d838056f108f9c1fdb5e7813ad",
+      "providerVersion": "1.0",
+      "sourceVersion": "fixture-v1",
+      "consistency": {
+        "kind": "immutable",
+        "description": "Versioned immutable test fixture."
+      }
+    },
+    "objects": [
+      {
+        "objectId": "table:customers",
+        "kind": "table",
+        "sourceNamespace": "main",
+        "sourceName": "customers",
+        "facets": [
+          {
+            "name": "strict",
+            "value": "false"
+          }
+        ],
+        "members": [],
+        "dependsOn": []
+      },
+      {
+        "objectId": "table:customers/column:id",
+        "kind": "column",
+        "parentObjectId": "table:customers",
+        "sourceNamespace": "main",
+        "sourceName": "id",
+        "nativeType": "UNSIGNED BIGINT",
+        "facets": [
+          {
+            "name": "logicalType",
+            "value": "unsignedInteger"
+          },
+          {
+            "name": "nullable",
+            "value": "false"
+          },
+          {
+            "name": "precision",
+            "value": "20"
+          }
+        ],
+        "members": [],
+        "dependsOn": []
+      }
+    ],
+    "diagnostics": [
+      {
+        "diagnosticId": "diag:unsigned-id",
+        "ruleId": "MIG-TYPE-0001",
+        "severity": "warning",
+        "status": "conditional",
+        "evidence": "capabilityMatched",
+        "summary": "Unsigned range requires profiling.",
+        "explanation": "Values above Int64.MaxValue require a lossless text representation.",
+        "objectId": "table:customers/column:id",
+        "remediation": "Run a full range scan or choose canonical text storage.",
+        "canOverride": false
+      }
+    ]
+  }
+}

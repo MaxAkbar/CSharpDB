@@ -9,6 +9,9 @@ CliConsole.ConfigureTerminal();
 var stdout = CliConsole.Create(Console.Out, interactive: true);
 var stderr = CliConsole.Create(Console.Error);
 
+if (args.Length > 0 && MigrationCommandRunner.IsKnownCommand(args[0]))
+    return await MigrationCommandRunner.RunAsync(args, Console.Out, Console.Error);
+
 if (args.Length > 0 && InspectorCommandRunner.IsKnownCommand(args[0]))
     return await InspectorCommandRunner.RunAsync(args, Console.Out, Console.Error);
 

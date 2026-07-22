@@ -2148,9 +2148,25 @@ public sealed class Parser
                 action = new RenameColumnAction { OldColumnName = oldCol, NewColumnName = newCol };
             }
         }
+        else if (IsContextualKeyword(Peek(), "RESEED"))
+        {
+            Advance();
+            Token nextRowId = Expect(TokenType.IntegerLiteral);
+            if (!long.TryParse(
+                    nextRowId.Value,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out long parsedNextRowId) ||
+                parsedNextRowId <= 0)
+            {
+                throw Error("ALTER TABLE RESEED requires a positive 64-bit next row id.");
+            }
+
+            action = new ReseedTableAction { NextRowId = parsedNextRowId };
+        }
         else
         {
-            throw Error($"Expected ADD, DROP, ALTER, or RENAME after ALTER TABLE, got '{Peek().Value}'.");
+            throw Error($"Expected ADD, DROP, ALTER, RENAME, or RESEED after ALTER TABLE, got '{Peek().Value}'.");
         }
 
         return new AlterTableStatement { TableName = tableName, Action = action };

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Migration.CSharpDb</AssemblyName>
+    <RootNamespace>CSharpDB.Migration.CSharpDb</RootNamespace>
+    <Description>Crash-resumable staged CSharpDB target adapter for the migration execution pipeline.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\CSharpDB.Engine\CSharpDB.Engine.csproj" />
+  </ItemGroup>
+
+</Project>

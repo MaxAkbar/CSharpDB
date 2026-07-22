@@ -15,6 +15,11 @@ CSharpDB table archives directly.
 - primary-key index metadata and indexed integer primary-key lookup
 - conversion between archive schema models and `CSharpDB.Primitives.TableSchema`
 
+The integer primary-key lookup index is an optional acceleration structure.
+Writers retain at most 65,536 index entries in memory. Archives with more rows
+are written without the physical lookup index; their schema and rows are still
+complete, and external-table point lookups use the streaming scan fallback.
+
 ## Reading Archives
 
 ```csharp

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using CSharpDB.Engine;
 
@@ -8,6 +9,96 @@ namespace CSharpDB.Cli.Tests;
 [Collection("CliConsole")]
 public sealed class CliIntegrationTests
 {
+    [Fact]
+    public async Task CliProcess_MigrateInspect_DispatchesWithoutOpeningADatabaseNamedMigrate()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string workDir = NewTempDirectory();
+        string catalogPath = Path.Combine(workDir, "catalog.json");
+
+        try
+        {
+            var result = await RunCliAsync(
+                ["migrate", "inspect", "--source", "synthetic", "--out", catalogPath],
+                string.Empty,
+                workDir,
+                ct);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Contains("catalog=", result.StdOut, StringComparison.Ordinal);
+            Assert.True(File.Exists(catalogPath));
+            Assert.False(File.Exists(Path.Combine(workDir, "migrate")));
+            Assert.False(File.Exists(Path.Combine(workDir, "migrate.db")));
+            Assert.True(string.IsNullOrWhiteSpace(result.StdErr));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(workDir);
+        }
+    }
+
+    [Fact]
+    public async Task CliProcess_MigrateApply_DispatchesAndEmitsPureJsonRunReport()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string workDir = NewTempDirectory();
+        string catalogPath = Path.Combine(workDir, "catalog.json");
+        string planPath = Path.Combine(workDir, "plan.json");
+        string targetPath = Path.Combine(workDir, "staged.csdb");
+        string runPath = Path.Combine(workDir, "run.json");
+
+        try
+        {
+            Assert.Equal(
+                InspectorCommandRunner.ExitWarn,
+                await MigrationCommandRunner.RunAsync(
+                    ["migrate", "inspect", "--source", "synthetic", "--out", catalogPath],
+                    TextWriter.Null,
+                    TextWriter.Null,
+                    ct));
+            Assert.Equal(
+                InspectorCommandRunner.ExitWarn,
+                await MigrationCommandRunner.RunAsync(
+                    [
+                        "migrate", "plan", catalogPath,
+                        "--out", planPath,
+                        "--accept-exclusions", "all",
+                    ],
+                    TextWriter.Null,
+                    TextWriter.Null,
+                    ct));
+
+            var result = await RunCliAsync(
+                [
+                    "migrate", "apply", planPath,
+                    "--catalog", catalogPath,
+                    "--target", targetPath,
+                    "--out", runPath,
+                    "--format", "json",
+                ],
+                string.Empty,
+                workDir,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitWarn, result.ExitCode);
+            Assert.True(string.IsNullOrWhiteSpace(result.StdErr));
+            using JsonDocument stdout = JsonDocument.Parse(result.StdOut);
+            using JsonDocument report = JsonDocument.Parse(await File.ReadAllTextAsync(runPath, ct));
+            Assert.Equal("csharpdb-migration-run/v1", stdout.RootElement.GetProperty("format").GetString());
+            Assert.Equal("awaitingValidation", stdout.RootElement.GetProperty("status").GetString());
+            Assert.Equal(stdout.RootElement.GetRawText(), report.RootElement.GetRawText());
+            Assert.True(stdout.RootElement.GetProperty("rowsWritten").GetInt64() > 0);
+            Assert.True(File.Exists(targetPath));
+            Assert.False(File.Exists(Path.Combine(workDir, "migrate")));
+            Assert.False(File.Exists(Path.Combine(workDir, "migrate.db")));
+            Assert.False(File.Exists(targetPath + ".migration.lock"));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(workDir);
+        }
+    }
+
     [Fact]
     public async Task CliProcess_InfoCommand_WorksOnFreshDatabase()
     {

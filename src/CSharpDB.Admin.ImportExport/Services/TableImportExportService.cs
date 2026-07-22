@@ -1,22 +1,33 @@
 using System.Collections;
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using CSharpDB.Admin.ImportExport.Contracts;
 using CSharpDB.Client;
+using CSharpDB.ImportExport.Models;
 using CSharpDB.ImportExport.TableArchives;
 using TableArchiveExportProgress = CSharpDB.Client.Models.TableArchiveExportProgress;
+using ClientCheckConstraintDefinition = CSharpDB.Client.Models.CheckConstraintDefinition;
 using ClientColumnDefinition = CSharpDB.Client.Models.ColumnDefinition;
 using ClientDbType = CSharpDB.Client.Models.DbType;
 using ClientForeignKeyDefinition = CSharpDB.Client.Models.ForeignKeyDefinition;
 using ClientForeignKeyOnDeleteAction = CSharpDB.Client.Models.ForeignKeyOnDeleteAction;
+using ClientIndexSchema = CSharpDB.Client.Models.IndexSchema;
+using ClientKeyConstraintDefinition = CSharpDB.Client.Models.KeyConstraintDefinition;
+using ClientKeyConstraintKind = CSharpDB.Client.Models.KeyConstraintKind;
 using ClientTableSchema = CSharpDB.Client.Models.TableSchema;
+using PrimitiveCheckConstraintDefinition = CSharpDB.Primitives.CheckConstraintDefinition;
 using PrimitiveColumnDefinition = CSharpDB.Primitives.ColumnDefinition;
 using PrimitiveDbType = CSharpDB.Primitives.DbType;
 using PrimitiveDbValue = CSharpDB.Primitives.DbValue;
 using PrimitiveForeignKeyDefinition = CSharpDB.Primitives.ForeignKeyDefinition;
 using PrimitiveForeignKeyOnDeleteAction = CSharpDB.Primitives.ForeignKeyOnDeleteAction;
+using PrimitiveIndexSchema = CSharpDB.Primitives.IndexSchema;
+using PrimitiveKeyConstraintDefinition = CSharpDB.Primitives.KeyConstraintDefinition;
+using PrimitiveKeyConstraintKind = CSharpDB.Primitives.KeyConstraintKind;
 using PrimitiveTableSchema = CSharpDB.Primitives.TableSchema;
+using SqlIdentifierRules = CSharpDB.Primitives.SqlIdentifierRules;
 
 namespace CSharpDB.Admin.ImportExport.Services;
 
@@ -26,6 +37,12 @@ public sealed class TableImportExportService(
 {
     private const int ExportPageSize = 1_000;
     private const int RestoreInsertBatchSize = 100;
+    private const string RestoreJournalTableName = "__csharpdb_restore_journal_v1";
+    private const string RestoreJournalContractConstraintName = "__csharpdb_restore_journal_contract_v1";
+    private const string RestoreStagingTablePrefix = "__csharpdb_restore_stage_v1_";
+    private const string RestoreOwnerConstraintPrefix = "__csharpdb_restore_owner_v1_";
+    private const string RestoreContractCheckExpression = "(1 = 1)";
+    private static readonly TimeSpan RestoreLeaseTimeout = TimeSpan.FromMinutes(30);
 
     public Task<string> GetDefaultServerExportPathAsync(string tableName, CancellationToken ct = default)
     {
@@ -110,9 +127,14 @@ public sealed class TableImportExportService(
             ClientTableSchema clientSchema = await client.GetTableSchemaAsync(tableName, ct)
                 ?? throw new InvalidOperationException($"Table '{tableName}' was not found.");
             PrimitiveTableSchema schema = MapSchema(clientSchema);
+            PrimitiveIndexSchema[] secondaryIndexes = (await client.GetIndexesAsync(ct))
+                .Where(index => string.Equals(index.TableName, tableName, StringComparison.OrdinalIgnoreCase))
+                .Select(MapIndex)
+                .ToArray();
             var manifest = await TableArchiveWriter.WriteAsync(
                 path,
                 schema,
+                secondaryIndexes,
                 EnumerateRowsAsync(clientSchema, path, progress, ct),
                 ct);
             rowCount = manifest.RowCount;
@@ -223,37 +245,134 @@ public sealed class TableImportExportService(
         if (string.IsNullOrWhiteSpace(request.ArchivePath))
             throw new ArgumentException("Archive path is required.", nameof(request.ArchivePath));
 
-        PrimitiveTableSchema archiveSchema = await TableArchiveReader.ReadTableSchemaAsync(request.ArchivePath, ct: ct);
-        bool regeneratesRowVersionTokens = archiveSchema.Columns.Any(static column => column.IsRowVersion);
+        string archivePath = ResolveArchivePath(request.ArchivePath);
+        (TableArchiveSchema archivedSchema, TableArchiveManifest manifest) =
+            await TableArchiveReader.ReadMetadataAsync(archivePath, ct);
+        bool regeneratesRowVersionTokens = archivedSchema.Columns.Any(static column => column.IsRowVersion);
 
         string targetTableName = string.IsNullOrWhiteSpace(request.TargetTableName)
-            ? RequireIdentifier(archiveSchema.TableName, nameof(request.TargetTableName))
-            : RequireIdentifier(request.TargetTableName, nameof(request.TargetTableName));
+            ? RequireArchiveIdentifier(archivedSchema.TableName, "Archived table name")
+            : RequireArchiveIdentifier(request.TargetTableName.Trim(), nameof(request.TargetTableName));
 
-        var restoreSchema = new PrimitiveTableSchema
+        if (IsReservedRestoreTableName(targetTableName))
         {
-            TableName = targetTableName,
-            Columns = archiveSchema.Columns,
-            ForeignKeys = archiveSchema.ForeignKeys,
-            NextRowId = archiveSchema.NextRowId,
-        };
-
-        await ExecuteCheckedAsync(BuildCreateTableSql(restoreSchema), ct);
-
-        long inserted = 0;
-        var batch = new List<PrimitiveDbValue[]>(RestoreInsertBatchSize);
-        await foreach (PrimitiveDbValue[] row in TableArchiveReader.ReadRowsAsync(request.ArchivePath, ct))
-        {
-            batch.Add(row);
-            if (batch.Count >= RestoreInsertBatchSize)
-            {
-                inserted += await InsertBatchAsync(targetTableName, archiveSchema.Columns, batch, ct);
-                batch.Clear();
-            }
+            throw new InvalidOperationException(
+                $"Table name '{targetTableName}' is reserved by the archive restore staging contract.");
         }
 
-        if (batch.Count > 0)
-            inserted += await InsertBatchAsync(targetTableName, archiveSchema.Columns, batch, ct);
+        if (await client.GetTableSchemaAsync(targetTableName, ct) is not null)
+            throw new InvalidOperationException($"Table '{targetTableName}' already exists.");
+
+        string targetKey = ComputeTargetKey(targetTableName);
+        string archiveToken = await ComputeArchiveTokenAsync(archivePath, targetTableName, ct);
+        string stagingTableName = RestoreStagingTablePrefix + targetKey;
+        PrimitiveTableSchema restoreSchema = archivedSchema.ToTableSchema(stagingTableName);
+        IReadOnlyList<PrimitiveIndexSchema> secondaryIndexes = archivedSchema.ToSecondaryIndexes(stagingTableName);
+        await EnsureRestoreJournalAsync(ct);
+        await RecoverAbandonedRestoreAsync(
+            targetKey,
+            targetTableName,
+            stagingTableName,
+            archiveToken,
+            restoreSchema,
+            secondaryIndexes,
+            ct);
+
+        string ownerToken = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        string ownerConstraintName = RestoreOwnerConstraintPrefix + ownerToken;
+        await ClaimRestoreAsync(
+            targetKey,
+            stagingTableName,
+            targetTableName,
+            archiveToken,
+            ownerToken,
+            ct);
+
+        bool activated = false;
+        bool stagingCreated = false;
+        long inserted = 0;
+        try
+        {
+            await ExecuteCheckedAsync(BuildCreateTableSql(restoreSchema, ownerConstraintName), ct);
+            stagingCreated = true;
+            await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
+
+            var batch = new List<PrimitiveDbValue[]>(RestoreInsertBatchSize);
+            await foreach (PrimitiveDbValue[] row in TableArchiveReader.ReadRowsAsync(archivePath, ct))
+            {
+                batch.Add(row);
+                if (batch.Count >= RestoreInsertBatchSize)
+                {
+                    inserted += await InsertBatchAsync(stagingTableName, restoreSchema.Columns, batch, ct);
+                    batch.Clear();
+                    await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                inserted += await InsertBatchAsync(stagingTableName, restoreSchema.Columns, batch, ct);
+                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
+            }
+
+            foreach (PrimitiveForeignKeyDefinition foreignKey in restoreSchema.ForeignKeys)
+            {
+                await ExecuteCheckedAsync(BuildAddForeignKeySql(stagingTableName, foreignKey), ct);
+                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
+            }
+
+            foreach (PrimitiveIndexSchema index in secondaryIndexes)
+            {
+                await ExecuteCheckedAsync(BuildCreateIndexSql(index), ct);
+                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
+            }
+
+            if (archivedSchema.NextRowId > 0)
+            {
+                await ExecuteCheckedAsync(
+                    $"ALTER TABLE {QuoteIdentifier(stagingTableName)} RESEED {archivedSchema.NextRowId.ToString(CultureInfo.InvariantCulture)};",
+                    ct);
+                await RefreshRestoreLeaseAsync(targetKey, ownerToken, ct);
+            }
+
+            long restoredCount = await ExecuteScalarInt64Async(
+                $"SELECT COUNT(*) FROM {QuoteIdentifier(stagingTableName)};",
+                ct);
+            if (inserted != manifest.RowCount || restoredCount != manifest.RowCount)
+            {
+                throw new InvalidDataException(
+                    $"Archive restore count mismatch: expected {manifest.RowCount}, inserted {inserted}, found {restoredCount}.");
+            }
+
+            await ValidateRestoredSchemaAsync(
+                restoreSchema,
+                secondaryIndexes,
+                ownerConstraintName,
+                ct);
+            await ActivateRestoreAsync(
+                targetKey,
+                ownerToken,
+                ownerConstraintName,
+                stagingTableName,
+                targetTableName,
+                ct);
+            activated = true;
+        }
+        catch
+        {
+            if (!activated)
+            {
+                await TryReleaseRestoreAsync(
+                    targetKey,
+                    ownerToken,
+                    ownerConstraintName,
+                    stagingTableName,
+                    restoreSchema,
+                    secondaryIndexes,
+                    stagingCreated);
+            }
+            throw;
+        }
 
         return new RestoreTableResult
         {
@@ -346,6 +465,9 @@ public sealed class TableImportExportService(
         if (rows.Count == 0)
             return 0;
 
+        for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+            ValidateRestoreRow(columns, rows[rowIndex], rowIndex);
+
         int[] insertColumnIndexes = columns
             .Select(static (column, index) => (column, index))
             .Where(static pair => !pair.column.IsRowVersion)
@@ -356,7 +478,9 @@ public sealed class TableImportExportService(
             long inserted = 0;
             foreach (PrimitiveDbValue[] _ in rows)
             {
-                var insertResult = await client.ExecuteSqlAsync($"INSERT INTO {tableName} DEFAULT VALUES;", ct);
+                var insertResult = await client.ExecuteSqlAsync(
+                    $"INSERT INTO {QuoteIdentifier(tableName)} DEFAULT VALUES;",
+                    ct);
                 if (!string.IsNullOrWhiteSpace(insertResult.Error))
                     throw new InvalidOperationException(insertResult.Error);
                 inserted += insertResult.RowsAffected;
@@ -366,12 +490,12 @@ public sealed class TableImportExportService(
         }
 
         var sql = new StringBuilder();
-        sql.Append("INSERT INTO ").Append(tableName).Append(" (");
+        sql.Append("INSERT INTO ").Append(QuoteIdentifier(tableName)).Append(" (");
         for (int i = 0; i < insertColumnIndexes.Length; i++)
         {
             if (i > 0)
                 sql.Append(", ");
-            sql.Append(columns[insertColumnIndexes[i]].Name);
+            sql.Append(QuoteIdentifier(columns[insertColumnIndexes[i]].Name));
         }
 
         sql.Append(") VALUES ");
@@ -386,9 +510,7 @@ public sealed class TableImportExportService(
                     sql.Append(", ");
 
                 int columnIndex = insertColumnIndexes[insertIndex];
-                PrimitiveDbValue value = columnIndex < rows[rowIndex].Length
-                    ? rows[rowIndex][columnIndex]
-                    : PrimitiveDbValue.Null;
+                PrimitiveDbValue value = rows[rowIndex][columnIndex];
                 sql.Append(FormatLiteral(value, columns[columnIndex].Type));
             }
 
@@ -403,12 +525,45 @@ public sealed class TableImportExportService(
         return result.RowsAffected;
     }
 
+    private static void ValidateRestoreRow(
+        IReadOnlyList<PrimitiveColumnDefinition> columns,
+        PrimitiveDbValue[] row,
+        int rowIndex)
+    {
+        if (row.Length != columns.Count)
+        {
+            throw new InvalidDataException(
+                $"Archived row {rowIndex} has {row.Length} values; expected {columns.Count}.");
+        }
+
+        for (int columnIndex = 0; columnIndex < row.Length; columnIndex++)
+        {
+            PrimitiveColumnDefinition column = columns[columnIndex];
+            PrimitiveDbValue value = row[columnIndex];
+            if (value.IsNull)
+            {
+                if (!column.Nullable || column.IsPrimaryKey || column.IsRowVersion)
+                {
+                    throw new InvalidDataException(
+                        $"Archived row {rowIndex}, column '{column.Name}' cannot be NULL.");
+                }
+            }
+            else if (value.Type != column.Type)
+            {
+                throw new InvalidDataException(
+                    $"Archived row {rowIndex}, column '{column.Name}' has value tag {value.Type}; expected {column.Type}.");
+            }
+        }
+    }
+
     private static PrimitiveTableSchema MapSchema(ClientTableSchema schema) => new()
     {
         TableName = schema.TableName,
         Columns = schema.Columns.Select(MapColumn).ToArray(),
         ForeignKeys = schema.ForeignKeys.Select(MapForeignKey).ToArray(),
-        NextRowId = 1,
+        CheckConstraints = schema.CheckConstraints.Select(MapCheckConstraint).ToArray(),
+        KeyConstraints = schema.KeyConstraints.Select(MapKeyConstraint).ToArray(),
+        NextRowId = schema.NextRowId,
     };
 
     private static PrimitiveColumnDefinition MapColumn(ClientColumnDefinition column) => new()
@@ -430,6 +585,15 @@ public sealed class TableImportExportService(
         DefaultSql = column.DefaultSql,
     };
 
+    private static PrimitiveIndexSchema MapIndex(ClientIndexSchema index) => new()
+    {
+        IndexName = index.IndexName,
+        TableName = index.TableName,
+        Columns = index.Columns.ToArray(),
+        ColumnCollations = index.ColumnCollations.ToArray(),
+        IsUnique = index.IsUnique,
+    };
+
     private static PrimitiveForeignKeyDefinition MapForeignKey(ClientForeignKeyDefinition foreignKey) => new()
     {
         ConstraintName = foreignKey.ConstraintName,
@@ -446,6 +610,28 @@ public sealed class TableImportExportService(
             ? PrimitiveForeignKeyOnDeleteAction.Cascade
             : PrimitiveForeignKeyOnDeleteAction.Restrict,
         SupportingIndexName = foreignKey.SupportingIndexName,
+    };
+
+    private static PrimitiveCheckConstraintDefinition MapCheckConstraint(
+        ClientCheckConstraintDefinition check) => new()
+    {
+        ConstraintName = check.ConstraintName,
+        ExpressionSql = check.ExpressionSql,
+        ColumnName = check.ColumnName,
+    };
+
+    private static PrimitiveKeyConstraintDefinition MapKeyConstraint(
+        ClientKeyConstraintDefinition key) => new()
+    {
+        ConstraintName = key.ConstraintName,
+        Kind = key.Kind switch
+        {
+            ClientKeyConstraintKind.PrimaryKey => PrimitiveKeyConstraintKind.PrimaryKey,
+            ClientKeyConstraintKind.Unique => PrimitiveKeyConstraintKind.Unique,
+            _ => throw new InvalidOperationException($"Unsupported key constraint kind '{key.Kind}'."),
+        },
+        Columns = key.Columns.ToArray(),
+        BackingIndexName = key.BackingIndexName,
     };
 
     private static PrimitiveDbValue[] MapRow(ClientTableSchema schema, object?[] row)
@@ -524,34 +710,859 @@ public sealed class TableImportExportService(
         return Path.GetFullPath(Path.Combine(ResolveDatabaseFolder(client.DataSource), trimmed));
     }
 
-    private static string BuildCreateTableSql(PrimitiveTableSchema schema)
-    {
-        var sql = new StringBuilder();
-        sql.Append("CREATE TABLE ").Append(RequireIdentifier(schema.TableName, nameof(schema.TableName))).Append(" (");
-        for (int i = 0; i < schema.Columns.Count; i++)
-        {
-            PrimitiveColumnDefinition column = schema.Columns[i];
-            if (i > 0)
-                sql.Append(", ");
+    private static bool IsReservedRestoreTableName(string tableName) =>
+        string.Equals(tableName, RestoreJournalTableName, StringComparison.OrdinalIgnoreCase) ||
+        tableName.StartsWith(RestoreStagingTablePrefix, StringComparison.OrdinalIgnoreCase);
 
-            sql.Append(RequireIdentifier(column.Name, nameof(column.Name)))
+    private static string ComputeTargetKey(string targetTableName)
+    {
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(targetTableName.ToUpperInvariant()));
+        return Convert.ToHexString(digest.AsSpan(0, 12)).ToLowerInvariant();
+    }
+
+    private static async Task<string> ComputeArchiveTokenAsync(
+        string archivePath,
+        string targetTableName,
+        CancellationToken ct)
+    {
+        await using var stream = new FileStream(
+            archivePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        byte[] archiveDigest = await SHA256.HashDataAsync(stream, ct);
+        byte[] targetBytes = Encoding.UTF8.GetBytes(targetTableName.ToUpperInvariant());
+        byte[] identity = new byte[targetBytes.Length + 1 + archiveDigest.Length];
+        targetBytes.CopyTo(identity, 0);
+        archiveDigest.CopyTo(identity, targetBytes.Length + 1);
+        byte[] operationDigest = SHA256.HashData(identity);
+        return Convert.ToHexString(operationDigest.AsSpan(0, 16)).ToLowerInvariant();
+    }
+
+    private async Task EnsureRestoreJournalAsync(CancellationToken ct)
+    {
+        await ExecuteCheckedAsync(
+            $"""
+            CREATE TABLE IF NOT EXISTS {QuoteIdentifier(RestoreJournalTableName)} (
+                "target_key" TEXT PRIMARY KEY,
+                "staging_name" TEXT NOT NULL,
+                "target_name" TEXT NOT NULL,
+                "archive_token" TEXT NOT NULL,
+                "owner_token" TEXT NOT NULL,
+                "heartbeat_unix_ms" INTEGER NOT NULL,
+                CONSTRAINT {QuoteIdentifier(RestoreJournalContractConstraintName)}
+                    CHECK ({RestoreContractCheckExpression})
+            );
+            """,
+            ct);
+
+        ClientTableSchema schema = await client.GetTableSchemaAsync(RestoreJournalTableName, ct)
+            ?? throw new InvalidDataException("Archive restore journal was not created.");
+        string[] expectedColumns =
+        [
+            ColumnSignature("target_key", "Text", false, true, false, false, null, null),
+            ColumnSignature("staging_name", "Text", false, false, false, false, null, null),
+            ColumnSignature("target_name", "Text", false, false, false, false, null, null),
+            ColumnSignature("archive_token", "Text", false, false, false, false, null, null),
+            ColumnSignature("owner_token", "Text", false, false, false, false, null, null),
+            ColumnSignature("heartbeat_unix_ms", "Integer", false, false, false, false, null, null),
+        ];
+        string[] actualColumns = schema.Columns.Select(ActualColumnSignature).ToArray();
+        string expectedContractMarker = CheckSignature(
+            RestoreJournalContractConstraintName,
+            RestoreContractCheckExpression,
+            columnName: null);
+        string[] actualChecks = schema.CheckConstraints.Select(ActualCheckSignature).ToArray();
+        string expectedPrimaryKey = KeySignature(
+            name: null,
+            ClientKeyConstraintKind.PrimaryKey.ToString(),
+            ["target_key"]);
+        string[] actualKeys = schema.KeyConstraints.Select(ActualKeySignature).ToArray();
+        ClientIndexSchema[] journalIndexes = (await client.GetIndexesAsync(ct))
+            .Where(index => string.Equals(index.TableName, RestoreJournalTableName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (!expectedColumns.SequenceEqual(actualColumns, StringComparer.Ordinal) ||
+            actualChecks.Length != 1 ||
+            !string.Equals(actualChecks[0], expectedContractMarker, StringComparison.Ordinal) ||
+            actualKeys.Length != 1 ||
+            !string.Equals(actualKeys[0], expectedPrimaryKey, StringComparison.Ordinal) ||
+            schema.ForeignKeys.Count != 0 ||
+            journalIndexes.Length != 0)
+        {
+            throw new InvalidDataException(
+                $"Table '{RestoreJournalTableName}' exists but does not match the archive restore journal v1 contract; " +
+                $"columns=[{string.Join(",", actualColumns)}], " +
+                $"checks=[{string.Join(",", actualChecks)}], keys=[{string.Join(",", actualKeys)}]. " +
+                "No restore tables were changed.");
+        }
+    }
+
+    private async Task RecoverAbandonedRestoreAsync(
+        string targetKey,
+        string targetTableName,
+        string stagingTableName,
+        string archiveToken,
+        PrimitiveTableSchema expectedSchema,
+        IReadOnlyList<PrimitiveIndexSchema> expectedIndexes,
+        CancellationToken ct)
+    {
+        RestoreJournalRow? journal = await ReadRestoreJournalRowAsync(targetKey, ct);
+        ClientTableSchema? stagedSchema = await client.GetTableSchemaAsync(stagingTableName, ct);
+        if (journal is null)
+        {
+            if (stagedSchema is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Reserved restore staging table '{stagingTableName}' exists without an ownership journal entry; it was preserved.");
+            }
+
+            return;
+        }
+
+        if (!string.Equals(journal.StagingTableName, stagingTableName, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(journal.TargetTableName, targetTableName, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(journal.ArchiveToken, archiveToken, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"An archive restore claim already reserves target '{targetTableName}' for a different operation; it was preserved.");
+        }
+
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (journal.HeartbeatUnixMilliseconds > now - (long)RestoreLeaseTimeout.TotalMilliseconds)
+        {
+            throw new InvalidOperationException(
+                $"An active archive restore already owns target '{targetTableName}'. Retry after its lease expires if the process was interrupted.");
+        }
+
+        string ownerConstraintName = RestoreOwnerConstraintPrefix + journal.OwnerToken;
+        IReadOnlyList<ClientIndexSchema> stagedIndexes = stagedSchema is null
+            ? Array.Empty<ClientIndexSchema>()
+            : (await client.GetIndexesAsync(ct))
+                .Where(index => string.Equals(index.TableName, stagingTableName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        if (stagedSchema is not null)
+        {
+            ValidateNormalizedSchema(
+                stagedSchema,
+                stagedIndexes,
+                expectedSchema,
+                expectedIndexes,
+                ownerConstraintName,
+                allowIncompletePostLoadObjects: true);
+        }
+
+        string cleanupOwner = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        var transaction = await client.BeginTransactionAsync(ct);
+        bool committed = false;
+        try
+        {
+            var takeover = await client.ExecuteInTransactionAsync(
+                transaction.TransactionId,
+                $"""
+                UPDATE {QuoteIdentifier(RestoreJournalTableName)}
+                SET "owner_token" = {FormatStringLiteral(cleanupOwner)},
+                    "heartbeat_unix_ms" = {now.ToString(CultureInfo.InvariantCulture)}
+                WHERE "target_key" = {FormatStringLiteral(targetKey)}
+                  AND "owner_token" = {FormatStringLiteral(journal.OwnerToken)}
+                  AND "heartbeat_unix_ms" = {journal.HeartbeatUnixMilliseconds.ToString(CultureInfo.InvariantCulture)};
+                """,
+                ct);
+            if (!string.IsNullOrWhiteSpace(takeover.Error))
+                throw new InvalidOperationException(takeover.Error);
+            if (takeover.RowsAffected != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Archive restore ownership for target '{targetTableName}' changed concurrently; no staging table was removed.");
+            }
+
+            if (stagedSchema is not null)
+            {
+                await ExecuteInTransactionCheckedAsync(
+                    transaction.TransactionId,
+                    $"DROP TABLE {QuoteIdentifier(stagingTableName)};",
+                    ct);
+            }
+
+            var delete = await client.ExecuteInTransactionAsync(
+                transaction.TransactionId,
+                $"""
+                DELETE FROM {QuoteIdentifier(RestoreJournalTableName)}
+                WHERE "target_key" = {FormatStringLiteral(targetKey)}
+                  AND "owner_token" = {FormatStringLiteral(cleanupOwner)};
+                """,
+                ct);
+            if (!string.IsNullOrWhiteSpace(delete.Error))
+                throw new InvalidOperationException(delete.Error);
+            if (delete.RowsAffected != 1)
+                throw new InvalidOperationException("Archive restore stale-claim cleanup lost ownership.");
+
+            await client.CommitTransactionAsync(transaction.TransactionId, ct);
+            committed = true;
+        }
+        finally
+        {
+            if (!committed)
+            {
+                try
+                {
+                    await client.RollbackTransactionAsync(transaction.TransactionId, CancellationToken.None);
+                }
+                catch
+                {
+                    // Preserve the recovery failure. The transaction guarantees
+                    // the journal owner and staging marker do not diverge.
+                }
+            }
+        }
+    }
+
+    private async Task ClaimRestoreAsync(
+        string targetKey,
+        string stagingTableName,
+        string targetTableName,
+        string archiveToken,
+        string ownerToken,
+        CancellationToken ct)
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var result = await client.ExecuteSqlAsync(
+            $"""
+            INSERT INTO {QuoteIdentifier(RestoreJournalTableName)}
+                ("target_key", "staging_name", "target_name", "archive_token", "owner_token", "heartbeat_unix_ms")
+            VALUES (
+                {FormatStringLiteral(targetKey)},
+                {FormatStringLiteral(stagingTableName)},
+                {FormatStringLiteral(targetTableName)},
+                {FormatStringLiteral(archiveToken)},
+                {FormatStringLiteral(ownerToken)},
+                {now.ToString(CultureInfo.InvariantCulture)});
+            """,
+            ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+        {
+            throw new InvalidOperationException(
+                $"Could not claim archive restore target '{targetTableName}'. Another restore may have started concurrently. {result.Error}");
+        }
+        if (result.RowsAffected != 1)
+            throw new InvalidOperationException($"Could not claim archive restore target '{targetTableName}'.");
+    }
+
+    private async Task RefreshRestoreLeaseAsync(
+        string targetKey,
+        string ownerToken,
+        CancellationToken ct)
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var result = await client.ExecuteSqlAsync(
+            $"""
+            UPDATE {QuoteIdentifier(RestoreJournalTableName)}
+            SET "heartbeat_unix_ms" = {now.ToString(CultureInfo.InvariantCulture)}
+            WHERE "target_key" = {FormatStringLiteral(targetKey)}
+              AND "owner_token" = {FormatStringLiteral(ownerToken)};
+            """,
+            ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+        if (result.RowsAffected != 1)
+            throw new InvalidOperationException("Archive restore ownership was lost while loading the staging table.");
+    }
+
+    private async Task<RestoreJournalRow?> ReadRestoreJournalRowAsync(
+        string targetKey,
+        CancellationToken ct)
+    {
+        var result = await client.ExecuteSqlAsync(
+            $"""
+            SELECT "staging_name", "target_name", "archive_token", "owner_token", "heartbeat_unix_ms"
+            FROM {QuoteIdentifier(RestoreJournalTableName)}
+            WHERE "target_key" = {FormatStringLiteral(targetKey)};
+            """,
+            ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+        if (result.Rows is not { Count: > 0 })
+            return null;
+        if (result.Rows.Count != 1 || result.Rows[0].Length != 5 || result.Rows[0].Any(static value => value is null))
+            throw new InvalidDataException("Archive restore journal contains an invalid ownership row.");
+
+        object?[] row = result.Rows[0];
+        return new RestoreJournalRow(
+            Convert.ToString(row[0], CultureInfo.InvariantCulture)!,
+            Convert.ToString(row[1], CultureInfo.InvariantCulture)!,
+            Convert.ToString(row[2], CultureInfo.InvariantCulture)!,
+            Convert.ToString(row[3], CultureInfo.InvariantCulture)!,
+            Convert.ToInt64(row[4], CultureInfo.InvariantCulture));
+    }
+
+    private async Task DeleteRestoreJournalClaimAsync(
+        string targetKey,
+        string ownerToken,
+        CancellationToken ct)
+    {
+        var result = await client.ExecuteSqlAsync(
+            $"""
+            DELETE FROM {QuoteIdentifier(RestoreJournalTableName)}
+            WHERE "target_key" = {FormatStringLiteral(targetKey)}
+              AND "owner_token" = {FormatStringLiteral(ownerToken)};
+            """,
+            ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+        if (result.RowsAffected != 1)
+            throw new InvalidOperationException("Archive restore journal ownership changed before cleanup completed.");
+    }
+
+    private async Task ValidateRestoredSchemaAsync(
+        PrimitiveTableSchema expectedSchema,
+        IReadOnlyList<PrimitiveIndexSchema> expectedIndexes,
+        string ownerConstraintName,
+        CancellationToken ct)
+    {
+        ClientTableSchema actualSchema = await client.GetTableSchemaAsync(expectedSchema.TableName, ct)
+            ?? throw new InvalidDataException("Archive restore staging table disappeared before validation.");
+        ClientIndexSchema[] actualIndexes = (await client.GetIndexesAsync(ct))
+            .Where(index => string.Equals(index.TableName, expectedSchema.TableName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        ValidateNormalizedSchema(
+            actualSchema,
+            actualIndexes,
+            expectedSchema,
+            expectedIndexes,
+            ownerConstraintName,
+            allowIncompletePostLoadObjects: false);
+    }
+
+    private async Task ActivateRestoreAsync(
+        string targetKey,
+        string ownerToken,
+        string ownerConstraintName,
+        string stagingTableName,
+        string targetTableName,
+        CancellationToken ct)
+    {
+        var transaction = await client.BeginTransactionAsync(ct);
+        bool committed = false;
+        try
+        {
+            await ExecuteInTransactionCheckedAsync(
+                transaction.TransactionId,
+                $"ALTER TABLE {QuoteIdentifier(stagingTableName)} DROP CONSTRAINT {QuoteIdentifier(ownerConstraintName)};",
+                ct);
+            await ExecuteInTransactionCheckedAsync(
+                transaction.TransactionId,
+                $"ALTER TABLE {QuoteIdentifier(stagingTableName)} RENAME TO {QuoteIdentifier(targetTableName)};",
+                ct);
+            var delete = await client.ExecuteInTransactionAsync(
+                transaction.TransactionId,
+                $"""
+                DELETE FROM {QuoteIdentifier(RestoreJournalTableName)}
+                WHERE "target_key" = {FormatStringLiteral(targetKey)}
+                  AND "owner_token" = {FormatStringLiteral(ownerToken)};
+                """,
+                ct);
+            if (!string.IsNullOrWhiteSpace(delete.Error))
+                throw new InvalidOperationException(delete.Error);
+            if (delete.RowsAffected != 1)
+                throw new InvalidOperationException("Archive restore ownership changed before activation.");
+
+            await client.CommitTransactionAsync(transaction.TransactionId, ct);
+            committed = true;
+        }
+        finally
+        {
+            if (!committed)
+            {
+                try
+                {
+                    await client.RollbackTransactionAsync(transaction.TransactionId, CancellationToken.None);
+                }
+                catch
+                {
+                    // Preserve the activation failure; a committed rename has no
+                    // staging table for the outer cleanup path to remove.
+                }
+            }
+        }
+    }
+
+    private async Task ExecuteInTransactionCheckedAsync(
+        string transactionId,
+        string sql,
+        CancellationToken ct)
+    {
+        var result = await client.ExecuteInTransactionAsync(transactionId, sql, ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+    }
+
+    private async Task TryReleaseRestoreAsync(
+        string targetKey,
+        string ownerToken,
+        string ownerConstraintName,
+        string stagingTableName,
+        PrimitiveTableSchema expectedSchema,
+        IReadOnlyList<PrimitiveIndexSchema> expectedIndexes,
+        bool stagingCreated)
+    {
+        try
+        {
+            if (stagingCreated)
+            {
+                ClientTableSchema? stagedSchema = await client.GetTableSchemaAsync(
+                    stagingTableName,
+                    CancellationToken.None);
+                if (stagedSchema is not null)
+                {
+                    ClientIndexSchema[] stagedIndexes = (await client.GetIndexesAsync(CancellationToken.None))
+                        .Where(index => string.Equals(index.TableName, stagingTableName, StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+                    ValidateNormalizedSchema(
+                        stagedSchema,
+                        stagedIndexes,
+                        expectedSchema,
+                        expectedIndexes,
+                        ownerConstraintName,
+                        allowIncompletePostLoadObjects: true);
+                    await ExecuteCheckedAsync(
+                        $"DROP TABLE {QuoteIdentifier(stagingTableName)};",
+                        CancellationToken.None);
+                }
+            }
+
+            if (!stagingCreated ||
+                await client.GetTableSchemaAsync(stagingTableName, CancellationToken.None) is null)
+            {
+                await DeleteRestoreJournalClaimAsync(targetKey, ownerToken, CancellationToken.None);
+            }
+        }
+        catch
+        {
+            // Keep the original restore failure. Any claim that could not be
+            // proven safe to clean remains journaled for a later recovery.
+        }
+    }
+
+    private static void ValidateNormalizedSchema(
+        ClientTableSchema actualSchema,
+        IReadOnlyList<ClientIndexSchema> actualIndexes,
+        PrimitiveTableSchema expectedSchema,
+        IReadOnlyList<PrimitiveIndexSchema> expectedIndexes,
+        string ownerConstraintName,
+        bool allowIncompletePostLoadObjects)
+    {
+        var differences = new List<string>();
+        CompareExact(
+            "columns",
+            expectedSchema.Columns.Select(column => ExpectedColumnSignature(
+                column,
+                hasExplicitPrimaryKey: expectedSchema.KeyConstraints.Any(
+                    static key => key.Kind == PrimitiveKeyConstraintKind.PrimaryKey))),
+            actualSchema.Columns.Select(ActualColumnSignature),
+            preserveOrder: true,
+            differences);
+        CompareExact(
+            "key constraints",
+            ExpectedKeySignatures(expectedSchema),
+            actualSchema.KeyConstraints.Select(ActualKeySignature),
+            preserveOrder: false,
+            differences);
+
+        IEnumerable<string> expectedChecks = expectedSchema.CheckConstraints.Select(ExpectedCheckSignature)
+            .Append(CheckSignature(ownerConstraintName, RestoreContractCheckExpression, columnName: null));
+        CompareExact(
+            "check constraints",
+            expectedChecks,
+            actualSchema.CheckConstraints.Select(ActualCheckSignature),
+            preserveOrder: false,
+            differences);
+
+        CompareCompleteOrSubset(
+            "foreign keys",
+            expectedSchema.ForeignKeys.Select(ExpectedForeignKeySignature),
+            actualSchema.ForeignKeys.Select(ActualForeignKeySignature),
+            allowIncompletePostLoadObjects,
+            differences);
+        CompareCompleteOrSubset(
+            "secondary indexes",
+            expectedIndexes.Select(ExpectedIndexSignature),
+            actualIndexes.Select(ActualIndexSignature),
+            allowIncompletePostLoadObjects,
+            differences);
+
+        if (!allowIncompletePostLoadObjects &&
+            expectedSchema.NextRowId > 0 &&
+            actualSchema.NextRowId != expectedSchema.NextRowId)
+        {
+            differences.Add(
+                $"next-row id expected {expectedSchema.NextRowId.ToString(CultureInfo.InvariantCulture)}, " +
+                $"found {actualSchema.NextRowId.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (differences.Count > 0)
+        {
+            throw new InvalidDataException(
+                $"Archive restore schema validation failed for staging table '{actualSchema.TableName}': " +
+                string.Join("; ", differences));
+        }
+    }
+
+    private static void CompareExact(
+        string description,
+        IEnumerable<string> expected,
+        IEnumerable<string> actual,
+        bool preserveOrder,
+        ICollection<string> differences)
+    {
+        string[] expectedValues = preserveOrder
+            ? expected.ToArray()
+            : expected.Order(StringComparer.Ordinal).ToArray();
+        string[] actualValues = preserveOrder
+            ? actual.ToArray()
+            : actual.Order(StringComparer.Ordinal).ToArray();
+        if (!expectedValues.SequenceEqual(actualValues, StringComparer.Ordinal))
+        {
+            differences.Add(
+                $"{description} do not match the archive " +
+                $"(expected [{string.Join(";", expectedValues)}], found [{string.Join(";", actualValues)}])");
+        }
+    }
+
+    private static void CompareCompleteOrSubset(
+        string description,
+        IEnumerable<string> expected,
+        IEnumerable<string> actual,
+        bool allowSubset,
+        ICollection<string> differences)
+    {
+        var expectedValues = expected.ToHashSet(StringComparer.Ordinal);
+        var actualValues = actual.ToHashSet(StringComparer.Ordinal);
+        bool matches = allowSubset
+            ? actualValues.IsSubsetOf(expectedValues)
+            : actualValues.SetEquals(expectedValues);
+        if (!matches)
+            differences.Add($"{description} do not match the archive");
+    }
+
+    private static string ExpectedColumnSignature(
+        PrimitiveColumnDefinition column,
+        bool hasExplicitPrimaryKey) =>
+        ColumnSignature(
+            column.Name,
+            column.Type.ToString(),
+            column.Nullable,
+            column.IsPrimaryKey,
+            column.IsIdentity ||
+                (!hasExplicitPrimaryKey && column.IsPrimaryKey && column.Type == PrimitiveDbType.Integer),
+            column.IsRowVersion,
+            column.Collation,
+            column.DefaultSql);
+
+    private static string ActualColumnSignature(ClientColumnDefinition column) =>
+        ColumnSignature(
+            column.Name,
+            column.Type.ToString(),
+            column.Nullable,
+            column.IsPrimaryKey,
+            column.IsIdentity,
+            column.IsRowVersion,
+            column.Collation,
+            column.DefaultSql);
+
+    private static string ColumnSignature(
+        string name,
+        string type,
+        bool nullable,
+        bool primaryKey,
+        bool identity,
+        bool rowVersion,
+        string? collation,
+        string? defaultSql) =>
+        $"{NormalizeIdentifier(name)}|{type}|{nullable}|{primaryKey}|{identity}|{rowVersion}|" +
+        $"{NormalizeIdentifier(collation)}|{NormalizeSql(defaultSql)}";
+
+    private static string ExpectedCheckSignature(PrimitiveCheckConstraintDefinition check) =>
+        CheckSignature(check.ConstraintName, check.ExpressionSql, check.ColumnName);
+
+    private static string ActualCheckSignature(ClientCheckConstraintDefinition check) =>
+        CheckSignature(check.ConstraintName, check.ExpressionSql, check.ColumnName);
+
+    private static string CheckSignature(string? name, string sql, string? columnName) =>
+        $"{NormalizeIdentifier(name)}|{NormalizeIdentifier(columnName)}|{NormalizeSql(sql)}";
+
+    private static string ExpectedKeySignature(PrimitiveKeyConstraintDefinition key) =>
+        KeySignature(key.ConstraintName, key.Kind.ToString(), key.Columns);
+
+    private static IEnumerable<string> ExpectedKeySignatures(PrimitiveTableSchema schema)
+    {
+        foreach (PrimitiveKeyConstraintDefinition key in schema.KeyConstraints)
+            yield return ExpectedKeySignature(key);
+
+        if (!schema.KeyConstraints.Any(static key => key.Kind == PrimitiveKeyConstraintKind.PrimaryKey))
+        {
+            string[] primaryKeyColumns = schema.Columns
+                .Where(static column => column.IsPrimaryKey)
+                .Select(static column => column.Name)
+                .ToArray();
+            if (primaryKeyColumns.Length > 0)
+                yield return KeySignature(name: null, PrimitiveKeyConstraintKind.PrimaryKey.ToString(), primaryKeyColumns);
+        }
+    }
+
+    private static string ActualKeySignature(ClientKeyConstraintDefinition key) =>
+        KeySignature(key.ConstraintName, key.Kind.ToString(), key.Columns);
+
+    private static string KeySignature(string? name, string kind, IReadOnlyList<string> columns) =>
+        $"{NormalizeIdentifier(name)}|{kind}|{string.Join(",", columns.Select(NormalizeIdentifier))}";
+
+    private static string ExpectedForeignKeySignature(PrimitiveForeignKeyDefinition foreignKey) =>
+        ForeignKeySignature(
+            foreignKey.ConstraintName,
+            foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames : [foreignKey.ColumnName],
+            foreignKey.ReferencedTableName,
+            foreignKey.ReferencedColumnNames.Count > 0
+                ? foreignKey.ReferencedColumnNames
+                : [foreignKey.ReferencedColumnName],
+            foreignKey.OnDelete.ToString());
+
+    private static string ActualForeignKeySignature(ClientForeignKeyDefinition foreignKey) =>
+        ForeignKeySignature(
+            foreignKey.ConstraintName,
+            foreignKey.ColumnNames.Count > 0 ? foreignKey.ColumnNames : [foreignKey.ColumnName],
+            foreignKey.ReferencedTableName,
+            foreignKey.ReferencedColumnNames.Count > 0
+                ? foreignKey.ReferencedColumnNames
+                : [foreignKey.ReferencedColumnName],
+            foreignKey.OnDelete.ToString());
+
+    private static string ForeignKeySignature(
+        string name,
+        IReadOnlyList<string> columns,
+        string referencedTable,
+        IReadOnlyList<string> referencedColumns,
+        string onDelete) =>
+        $"{NormalizeIdentifier(name)}|{string.Join(",", columns.Select(NormalizeIdentifier))}|" +
+        $"{NormalizeIdentifier(referencedTable)}|" +
+        $"{string.Join(",", referencedColumns.Select(NormalizeIdentifier))}|{onDelete}";
+
+    private static string ExpectedIndexSignature(PrimitiveIndexSchema index) =>
+        IndexSignature(index.IndexName, index.Columns, index.ColumnCollations, index.IsUnique);
+
+    private static string ActualIndexSignature(ClientIndexSchema index) =>
+        IndexSignature(index.IndexName, index.Columns, index.ColumnCollations, index.IsUnique);
+
+    private static string IndexSignature(
+        string name,
+        IReadOnlyList<string> columns,
+        IReadOnlyList<string?> collations,
+        bool unique) =>
+        $"{NormalizeIdentifier(name)}|{string.Join(",", columns.Select(NormalizeIdentifier))}|" +
+        $"{string.Join(",", collations.Select(NormalizeIdentifier))}|{unique}";
+
+    private static string NormalizeIdentifier(string? value) =>
+        value is null ? "<NULL>" : value.ToUpperInvariant();
+
+    private static string NormalizeSql(string? value) =>
+        value is null
+            ? "<NULL>"
+            : string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    private sealed record RestoreJournalRow(
+        string StagingTableName,
+        string TargetTableName,
+        string ArchiveToken,
+        string OwnerToken,
+        long HeartbeatUnixMilliseconds);
+
+    private static string BuildCreateTableSql(
+        PrimitiveTableSchema schema,
+        string? restoreOwnerConstraintName = null)
+    {
+        if (schema.Columns.Count == 0)
+            throw new InvalidDataException("An archived table must contain at least one column.");
+
+        PrimitiveKeyConstraintDefinition? declaredPrimaryKey = schema.KeyConstraints.FirstOrDefault(
+            static key => key.Kind == PrimitiveKeyConstraintKind.PrimaryKey);
+        var definitions = new List<string>(
+            schema.Columns.Count + schema.KeyConstraints.Count + schema.CheckConstraints.Count);
+
+        foreach (PrimitiveColumnDefinition column in schema.Columns)
+        {
+            var definition = new StringBuilder();
+            definition.Append(QuoteIdentifier(column.Name))
                 .Append(' ')
                 .Append(column.Type.ToString().ToUpperInvariant());
 
             if (column.IsRowVersion)
-                sql.Append(" ROWVERSION");
-            if (column.IsPrimaryKey)
-                sql.Append(" PRIMARY KEY");
+                definition.Append(" ROWVERSION");
+
+            bool inlinePrimaryKey = declaredPrimaryKey is null && column.IsPrimaryKey;
+            if (inlinePrimaryKey)
+                definition.Append(" PRIMARY KEY");
+
             if (column.IsIdentity)
-                sql.Append(" IDENTITY");
-            if (!column.Nullable && !column.IsPrimaryKey)
-                sql.Append(" NOT NULL");
+            {
+                if (declaredPrimaryKey is null)
+                {
+                    definition.Append(" IDENTITY");
+                }
+                else if (declaredPrimaryKey.Columns.Count != 1 ||
+                         !string.Equals(
+                             declaredPrimaryKey.Columns[0],
+                             column.Name,
+                             StringComparison.OrdinalIgnoreCase) ||
+                         column.Type != PrimitiveDbType.Integer)
+                {
+                    throw new InvalidDataException(
+                        $"Archived identity column '{column.Name}' does not match its INTEGER primary key.");
+                }
+                // A table-level single INTEGER primary key restores the engine's
+                // identity semantics without adding a duplicate inline key.
+            }
+
+            if (!column.Nullable && !inlinePrimaryKey)
+                definition.Append(" NOT NULL");
             if (!string.IsNullOrWhiteSpace(column.Collation))
-                sql.Append(" COLLATE ").Append(RequireIdentifier(column.Collation, nameof(column.Collation)));
+                definition.Append(" COLLATE ").Append(QuoteIdentifier(column.Collation));
+            if (!string.IsNullOrWhiteSpace(column.DefaultSql))
+            {
+                if (column.IsRowVersion)
+                    throw new InvalidDataException($"Archived ROWVERSION column '{column.Name}' cannot have a default.");
+                definition.Append(" DEFAULT ").Append(column.DefaultSql);
+            }
+
+            foreach (PrimitiveCheckConstraintDefinition check in schema.CheckConstraints.Where(check =>
+                         check.ColumnName is not null &&
+                         string.Equals(check.ColumnName, column.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                AppendCheckConstraint(definition, check);
+            }
+
+            definitions.Add(definition.ToString());
         }
 
-        sql.Append(");");
-        return sql.ToString();
+        foreach (PrimitiveCheckConstraintDefinition check in schema.CheckConstraints)
+        {
+            if (check.ColumnName is not null &&
+                !schema.Columns.Any(column => string.Equals(
+                    column.Name,
+                    check.ColumnName,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidDataException(
+                    $"Archived CHECK constraint references missing column '{check.ColumnName}'.");
+            }
+        }
+
+        foreach (PrimitiveKeyConstraintDefinition key in schema.KeyConstraints)
+        {
+            if (key.Columns.Count == 0)
+                throw new InvalidDataException("An archived key constraint has no columns.");
+
+            var definition = new StringBuilder();
+            if (key.ConstraintName is not null)
+                definition.Append("CONSTRAINT ").Append(QuoteIdentifier(key.ConstraintName)).Append(' ');
+            definition.Append(key.Kind switch
+            {
+                PrimitiveKeyConstraintKind.PrimaryKey => "PRIMARY KEY",
+                PrimitiveKeyConstraintKind.Unique => "UNIQUE",
+                _ => throw new InvalidDataException($"Unsupported archived key constraint kind '{key.Kind}'."),
+            });
+            definition.Append(" (")
+                .Append(string.Join(", ", key.Columns.Select(QuoteIdentifier)))
+                .Append(')');
+            definitions.Add(definition.ToString());
+        }
+
+        foreach (PrimitiveCheckConstraintDefinition check in schema.CheckConstraints.Where(
+                     static check => check.ColumnName is null))
+        {
+            var definition = new StringBuilder();
+            AppendCheckConstraint(definition, check, includeLeadingSpace: false);
+            definitions.Add(definition.ToString());
+        }
+
+        if (restoreOwnerConstraintName is not null)
+        {
+            definitions.Add(
+                $"CONSTRAINT {QuoteIdentifier(restoreOwnerConstraintName)} " +
+                $"CHECK ({RestoreContractCheckExpression})");
+        }
+
+        return $"CREATE TABLE {QuoteIdentifier(schema.TableName)} ({string.Join(", ", definitions)});";
+    }
+
+    private static void AppendCheckConstraint(
+        StringBuilder sql,
+        PrimitiveCheckConstraintDefinition check,
+        bool includeLeadingSpace = true)
+    {
+        if (string.IsNullOrWhiteSpace(check.ExpressionSql))
+            throw new InvalidDataException("An archived CHECK constraint has no expression.");
+
+        if (includeLeadingSpace)
+            sql.Append(' ');
+        if (check.ConstraintName is not null)
+            sql.Append("CONSTRAINT ").Append(QuoteIdentifier(check.ConstraintName)).Append(' ');
+        sql.Append("CHECK (").Append(check.ExpressionSql).Append(')');
+    }
+
+    private static string BuildAddForeignKeySql(
+        string tableName,
+        PrimitiveForeignKeyDefinition foreignKey)
+    {
+        IReadOnlyList<string> sourceColumns = foreignKey.ColumnNames.Count > 0
+            ? foreignKey.ColumnNames
+            : [foreignKey.ColumnName];
+        IReadOnlyList<string> referencedColumns = foreignKey.ReferencedColumnNames.Count > 0
+            ? foreignKey.ReferencedColumnNames
+            : [foreignKey.ReferencedColumnName];
+        if (sourceColumns.Count == 0 || sourceColumns.Count != referencedColumns.Count)
+        {
+            throw new InvalidDataException(
+                $"Archived foreign key '{foreignKey.ConstraintName}' has inconsistent column lists.");
+        }
+
+        string onDelete = foreignKey.OnDelete switch
+        {
+            PrimitiveForeignKeyOnDeleteAction.Restrict => "RESTRICT",
+            PrimitiveForeignKeyOnDeleteAction.Cascade => "CASCADE",
+            _ => throw new InvalidDataException(
+                $"Unsupported archived foreign key delete action '{foreignKey.OnDelete}'."),
+        };
+        return
+            $"ALTER TABLE {QuoteIdentifier(tableName)} " +
+            $"ADD CONSTRAINT {QuoteIdentifier(foreignKey.ConstraintName)} " +
+            $"FOREIGN KEY ({string.Join(", ", sourceColumns.Select(QuoteIdentifier))}) " +
+            $"REFERENCES {QuoteIdentifier(foreignKey.ReferencedTableName)} " +
+            $"({string.Join(", ", referencedColumns.Select(QuoteIdentifier))}) " +
+            $"ON DELETE {onDelete};";
+    }
+
+    private static string BuildCreateIndexSql(PrimitiveIndexSchema index)
+    {
+        if (index.Columns.Count == 0)
+            throw new InvalidDataException($"Archived secondary index '{index.IndexName}' has no columns.");
+        if (index.ColumnCollations.Count != 0 && index.ColumnCollations.Count != index.Columns.Count)
+        {
+            throw new InvalidDataException(
+                $"Archived secondary index '{index.IndexName}' has inconsistent collation metadata.");
+        }
+
+        string[] columns = new string[index.Columns.Count];
+        for (int i = 0; i < columns.Length; i++)
+        {
+            columns[i] = QuoteIdentifier(index.Columns[i]);
+            string? collation = index.ColumnCollations.Count == 0 ? null : index.ColumnCollations[i];
+            if (collation is not null)
+                columns[i] += $" COLLATE {QuoteIdentifier(collation)}";
+        }
+
+        string unique = index.IsUnique ? "UNIQUE " : string.Empty;
+        return
+            $"CREATE {unique}INDEX {QuoteIdentifier(index.IndexName)} " +
+            $"ON {QuoteIdentifier(index.TableName)} ({string.Join(", ", columns)});";
     }
 
     private static string FormatLiteral(PrimitiveDbValue value, PrimitiveDbType columnType)
@@ -576,6 +1587,25 @@ public sealed class TableImportExportService(
         if (!string.IsNullOrWhiteSpace(result.Error))
             throw new InvalidOperationException(result.Error);
     }
+
+    private async Task<long> ExecuteScalarInt64Async(string sql, CancellationToken ct)
+    {
+        var result = await client.ExecuteSqlAsync(sql, ct);
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            throw new InvalidOperationException(result.Error);
+        if (result.Rows is not { Count: 1 } || result.Rows[0].Length != 1 || result.Rows[0][0] is null)
+            throw new InvalidDataException("Archive restore validation did not return one scalar count.");
+
+        return Convert.ToInt64(result.Rows[0][0], CultureInfo.InvariantCulture);
+    }
+
+    private static string RequireArchiveIdentifier(string value, string description)
+    {
+        SqlIdentifierRules.Validate(value, description);
+        return value;
+    }
+
+    private static string QuoteIdentifier(string value) => SqlIdentifierRules.Quote(value);
 
     private static string RequireIdentifier(string value, string parameterName)
     {

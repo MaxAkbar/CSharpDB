@@ -53,7 +53,8 @@ public static class TableEndpoints
             schema.CheckConstraints.Select(check => new CheckConstraintResponse(
                 check.ConstraintName,
                 check.ExpressionSql,
-                check.ColumnName)).ToList());
+                check.ColumnName)).ToList(),
+            schema.NextRowId);
 
         return Results.Ok(response);
     }

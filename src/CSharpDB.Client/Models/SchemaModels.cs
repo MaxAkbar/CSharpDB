@@ -68,6 +68,7 @@ public sealed class TableSchema
     public IReadOnlyList<ForeignKeyDefinition> ForeignKeys { get; init; } = Array.Empty<ForeignKeyDefinition>();
     public IReadOnlyList<CheckConstraintDefinition> CheckConstraints { get; init; } = Array.Empty<CheckConstraintDefinition>();
     public IReadOnlyList<KeyConstraintDefinition> KeyConstraints { get; init; } = Array.Empty<KeyConstraintDefinition>();
+    public long NextRowId { get; init; }
 }
 
 public sealed class IndexSchema

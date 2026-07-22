@@ -562,6 +562,15 @@ public sealed class Database : IAsyncDisposable
     }
 
     /// <summary>
+    /// Create a new database file using default composition options, atomically refusing to open or
+    /// replace an existing file.
+    /// </summary>
+    public static async ValueTask<Database> CreateNewAsync(string filePath, CancellationToken ct = default)
+    {
+        return await CreateNewAsync(filePath, new DatabaseOptions(), ct);
+    }
+
+    /// <summary>
     /// Open a new in-memory database using default composition options.
     /// </summary>
     public static async ValueTask<Database> OpenInMemoryAsync(CancellationToken ct = default)
@@ -754,6 +763,39 @@ public sealed class Database : IAsyncDisposable
 
         string fullPath = Path.GetFullPath(filePath);
         var context = await options.StorageEngineFactory.OpenAsync(fullPath, options.StorageEngineOptions, ct);
+        return await CompleteOpenAsync(new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
+            options.Functions,
+            databasePath: fullPath,
+            temporaryStorageOptions: options.StorageEngineOptions),
+            ct);
+    }
+
+    /// <summary>
+    /// Create a new database file using explicit composition options, atomically refusing to open or
+    /// replace an existing file.
+    /// </summary>
+    public static async ValueTask<Database> CreateNewAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        var context = await options.StorageEngineFactory.CreateNewAsync(
+            fullPath,
+            options.StorageEngineOptions,
+            ct);
         return await CompleteOpenAsync(new Database(
             context.Pager,
             context.Catalog,

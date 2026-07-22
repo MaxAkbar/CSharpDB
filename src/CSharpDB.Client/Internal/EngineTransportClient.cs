@@ -157,7 +157,18 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             totalRows,
             path);
         var rows = ReportArchiveRowsAsync(result.GetRowsAsync(ct), normalizedTableName, totalRows, path, progress, ct);
-        var manifest = await TableArchiveWriter.WriteAsync(path, schema, rows, ct);
+        CSharpDB.Primitives.IndexSchema[] secondaryIndexes = db.GetIndexes()
+            .Where(index =>
+                index.Kind == CSharpDB.Primitives.IndexKind.Sql &&
+                index.State == CSharpDB.Primitives.IndexState.Ready &&
+                string.Equals(index.TableName, normalizedTableName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var manifest = await TableArchiveWriter.WriteAsync(
+            path,
+            schema,
+            secondaryIndexes,
+            rows,
+            ct);
         ReportArchiveExportProgress(
             progress,
             normalizedTableName,
@@ -941,6 +952,7 @@ internal sealed partial class EngineTransportClient : ICSharpDbClient, IEngineBa
             ForeignKeys = schema.ForeignKeys.Select(MapForeignKeyDefinition).ToArray(),
             CheckConstraints = schema.CheckConstraints.Select(MapCheckConstraintDefinition).ToArray(),
             KeyConstraints = schema.KeyConstraints.Select(MapKeyConstraintDefinition).ToArray(),
+            NextRowId = schema.NextRowId,
         };
 
     private static CheckConstraintDefinition MapCheckConstraintDefinition(CoreCheckConstraintDefinition check)

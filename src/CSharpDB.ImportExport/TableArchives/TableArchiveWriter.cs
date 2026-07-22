@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using CSharpDB.ImportExport.Models;
 using CSharpDB.ImportExport.Serialization;
@@ -11,6 +12,13 @@ namespace CSharpDB.ImportExport.TableArchives;
 
 public static class TableArchiveWriter
 {
+    /// <summary>
+    /// Maximum number of integer primary-key entries retained while building the
+    /// optional physical lookup index. Larger archives are written without that
+    /// acceleration structure and remain readable through the scan fallback.
+    /// </summary>
+    public const int MaximumInMemoryPrimaryKeyIndexEntries = 65_536;
+
     private const int CooperativeYieldIntervalRows = 4096;
     private const int CooperativeYieldIntervalPages = 64;
     private const int FileBufferSize = 1024 * 1024;
@@ -20,21 +28,54 @@ public static class TableArchiveWriter
         TableSchema schema,
         IAsyncEnumerable<DbValue[]> rows,
         CancellationToken ct = default)
+        => await WriteAsync(path, schema, Array.Empty<IndexSchema>(), rows, ct);
+
+    public static async ValueTask<TableArchiveManifest> WriteAsync(
+        string path,
+        TableSchema schema,
+        IReadOnlyList<IndexSchema> secondaryIndexes,
+        IAsyncEnumerable<DbValue[]> rows,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(secondaryIndexes);
 
-        string? directory = Path.GetDirectoryName(Path.GetFullPath(path));
-        if (!string.IsNullOrWhiteSpace(directory))
-            Directory.CreateDirectory(directory);
+        string fullPath = Path.GetFullPath(path);
+        string? directory = Path.GetDirectoryName(fullPath);
+        if (string.IsNullOrWhiteSpace(directory))
+            throw new ArgumentException("The archive path must have a parent directory.", nameof(path));
+        Directory.CreateDirectory(directory);
 
-        await using var stream = new FileStream(
-            path,
-            FileMode.Create,
-            FileAccess.ReadWrite,
-            FileShare.None,
-            FileBufferSize,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return await WriteAsync(stream, schema, rows, ct);
+        string temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
+        bool published = false;
+        try
+        {
+            TableArchiveManifest manifest;
+            await using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                FileBufferSize,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                manifest = await WriteAsync(stream, schema, secondaryIndexes, rows, ct);
+                await stream.FlushAsync(ct);
+                stream.Flush(flushToDisk: true);
+            }
+
+            ct.ThrowIfCancellationRequested();
+            File.Move(temporaryPath, fullPath, overwrite: true);
+            published = true;
+            return manifest;
+        }
+        finally
+        {
+            if (!published)
+                TryDelete(temporaryPath);
+        }
     }
 
     public static async ValueTask<TableArchiveManifest> WriteAsync(
@@ -42,50 +83,77 @@ public static class TableArchiveWriter
         TableSchema schema,
         IAsyncEnumerable<DbValue[]> rows,
         CancellationToken ct = default)
-        => await WriteNativeAsync(destination, schema, rows, ct);
+        => await WriteAsync(destination, schema, Array.Empty<IndexSchema>(), rows, ct);
+
+    public static async ValueTask<TableArchiveManifest> WriteAsync(
+        Stream destination,
+        TableSchema schema,
+        IReadOnlyList<IndexSchema> secondaryIndexes,
+        IAsyncEnumerable<DbValue[]> rows,
+        CancellationToken ct = default)
+        => await WriteNativeAsync(destination, schema, secondaryIndexes, rows, ct);
 
     private static async ValueTask<TableArchiveManifest> WriteNativeAsync(
         Stream destination,
         TableSchema schema,
+        IReadOnlyList<IndexSchema> secondaryIndexes,
         IAsyncEnumerable<DbValue[]> rows,
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(secondaryIndexes);
         ArgumentNullException.ThrowIfNull(rows);
         if (!destination.CanSeek)
             throw new ArgumentException("Native table archives require a seekable destination stream.", nameof(destination));
+        if (!destination.CanWrite)
+            throw new ArgumentException("Native table archives require a writable destination stream.", nameof(destination));
+
+        int primaryKeyColumnIndex = FindIntegerPrimaryKeyColumnIndex(schema);
+        if (primaryKeyColumnIndex >= 0 && !destination.CanRead)
+        {
+            throw new ArgumentException(
+                "Integrity-protected native table archives with a physical index require a readable destination stream.",
+                nameof(destination));
+        }
+
+        destination.Position = 0;
+        destination.SetLength(0);
 
         byte[] emptyHeader = new byte[TableArchiveNativeFormat.HeaderSize];
         await destination.WriteAsync(emptyHeader, ct);
 
         long schemaOffset = destination.Position;
+        TableArchiveSchema archiveSchema = TableArchiveSchema.FromTableSchema(schema, secondaryIndexes);
         byte[] schemaBytes = JsonSerializer.SerializeToUtf8Bytes(
-            TableArchiveSchema.FromTableSchema(schema),
+            archiveSchema,
             TableArchiveJson.Options);
         await destination.WriteAsync(schemaBytes, ct);
+        string schemaDigest = EncodeDigest(SHA256.HashData(schemaBytes));
 
         long rowsOffset = destination.Position;
         long rowCount = 0;
-        int primaryKeyColumnIndex = FindIntegerPrimaryKeyColumnIndex(schema);
         NativePrimaryKeyIndexBuilder? primaryKeyIndexBuilder = primaryKeyColumnIndex >= 0
             ? new NativePrimaryKeyIndexBuilder(primaryKeyColumnIndex)
             : null;
         var lengthBuffer = new byte[sizeof(int)];
+        using var rowsHasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         await foreach (DbValue[] row in rows.WithCancellation(ct).ConfigureAwait(false))
         {
             ct.ThrowIfCancellationRequested();
-            DbValue[] normalizedRow = NormalizeRow(schema, row);
-            int encodedLength = RecordEncoder.GetEncodedLength(normalizedRow);
+            DbValue[] validatedRow = ValidateRow(schema, row, rowCount);
+            int encodedLength = RecordEncoder.GetEncodedLength(validatedRow);
             byte[] recordBuffer = ArrayPool<byte>.Shared.Rent(encodedLength);
             try
             {
-                RecordEncoder.EncodeInto(normalizedRow, recordBuffer.AsSpan(0, encodedLength), encodedLength);
+                RecordEncoder.EncodeInto(validatedRow, recordBuffer.AsSpan(0, encodedLength), encodedLength);
                 BinaryPrimitives.WriteInt32LittleEndian(lengthBuffer, encodedLength);
                 long rowOffset = destination.Position;
                 await destination.WriteAsync(lengthBuffer, ct);
                 await destination.WriteAsync(recordBuffer.AsMemory(0, encodedLength), ct);
-                primaryKeyIndexBuilder?.Add(normalizedRow, rowOffset);
+                rowsHasher.AppendData(lengthBuffer);
+                rowsHasher.AppendData(recordBuffer.AsSpan(0, encodedLength));
+                primaryKeyIndexBuilder?.Add(validatedRow, rowOffset);
             }
             finally
             {
@@ -101,6 +169,7 @@ public static class TableArchiveWriter
         }
 
         long rowsLength = destination.Position - rowsOffset;
+        string rowsDigest = EncodeDigest(rowsHasher.GetHashAndReset());
         long indexOffset = 0;
         long indexLength = 0;
         TableArchiveIndexManifest[] indexes = Array.Empty<TableArchiveIndexManifest>();
@@ -126,9 +195,10 @@ public static class TableArchiveWriter
             ];
         }
 
-        int archiveFormatVersion = schema.Columns.Any(static column => column.IsRowVersion)
-            ? TableArchiveManifest.RowVersionFormatVersion
-            : TableArchiveManifest.CurrentFormatVersion;
+        string physicalIndexDigest = indexLength == 0
+            ? EncodeDigest(SHA256.HashData(ReadOnlySpan<byte>.Empty))
+            : await ComputeSectionDigestAsync(destination, indexOffset, indexLength, ct);
+        const int archiveFormatVersion = TableArchiveManifest.LatestFormatVersion;
         var manifest = new TableArchiveManifest
         {
             FormatVersion = archiveFormatVersion,
@@ -138,6 +208,14 @@ public static class TableArchiveWriter
             SchemaEntry = "native:schema",
             RowsEntry = "native:rows",
             Indexes = indexes,
+            Digests = new TableArchiveSectionDigests
+            {
+                Algorithm = TableArchiveSectionDigests.Sha256Algorithm,
+                Encoding = TableArchiveSectionDigests.LowercaseHexEncoding,
+                Schema = schemaDigest,
+                Rows = rowsDigest,
+                PhysicalIndex = physicalIndexDigest,
+            },
         };
         long manifestOffset = destination.Position;
         byte[] manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, TableArchiveJson.Options);
@@ -160,6 +238,54 @@ public static class TableArchiveWriter
             ct);
         destination.Position = destination.Length;
         return manifest;
+    }
+
+    private static async ValueTask<string> ComputeSectionDigestAsync(
+        Stream stream,
+        long offset,
+        long length,
+        CancellationToken ct)
+    {
+        const int bufferSize = 64 * 1024;
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+        long originalPosition = stream.Position;
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        try
+        {
+            stream.Position = offset;
+            long remaining = length;
+            while (remaining > 0)
+            {
+                int count = (int)Math.Min(buffer.Length, remaining);
+                await stream.ReadExactlyAsync(buffer.AsMemory(0, count), ct);
+                hasher.AppendData(buffer.AsSpan(0, count));
+                remaining -= count;
+            }
+
+            return EncodeDigest(hasher.GetHashAndReset());
+        }
+        finally
+        {
+            stream.Position = originalPosition;
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static string EncodeDigest(ReadOnlySpan<byte> digest)
+        => Convert.ToHexString(digest).ToLowerInvariant();
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private static int FindIntegerPrimaryKeyColumnIndex(TableSchema schema)
@@ -322,17 +448,39 @@ public static class TableArchiveWriter
         }
     }
 
-    private static DbValue[] NormalizeRow(TableSchema schema, DbValue[] row)
+    private static DbValue[] ValidateRow(TableSchema schema, DbValue[] row, long rowIndex)
     {
-        if (row.Length == schema.Columns.Count)
-            return row;
+        if (row is null)
+            throw new InvalidDataException($"Archive row {rowIndex} is null.");
+        if (row.Length != schema.Columns.Count)
+        {
+            throw new InvalidDataException(
+                $"Archive row {rowIndex} has {row.Length} values; expected {schema.Columns.Count}.");
+        }
 
-        var normalized = new DbValue[schema.Columns.Count];
-        int copied = Math.Min(row.Length, normalized.Length);
-        Array.Copy(row, normalized, copied);
-        for (int i = copied; i < normalized.Length; i++)
-            normalized[i] = DbValue.Null;
-        return normalized;
+        for (int i = 0; i < row.Length; i++)
+        {
+            ColumnDefinition column = schema.Columns[i];
+            DbValue value = row[i];
+            if (value.IsNull)
+            {
+                if (!column.Nullable || column.IsPrimaryKey || column.IsRowVersion)
+                {
+                    throw new InvalidDataException(
+                        $"Archive row {rowIndex}, column '{column.Name}' cannot be NULL.");
+                }
+
+                continue;
+            }
+
+            if (value.Type != column.Type)
+            {
+                throw new InvalidDataException(
+                    $"Archive row {rowIndex}, column '{column.Name}' has value tag {value.Type}; expected {column.Type}.");
+            }
+        }
+
+        return row;
     }
 
     private readonly record struct NativePrimaryKeyIndexEntry(long Key, long RowOffset);
@@ -343,7 +491,7 @@ public static class TableArchiveWriter
 
     private sealed class NativePrimaryKeyIndexBuilder(int keyColumnIndex)
     {
-        private readonly List<NativePrimaryKeyIndexEntry> _entries = [];
+        private List<NativePrimaryKeyIndexEntry>? _entries = [];
         private bool _isValid = true;
         private bool _isSorted = true;
         private bool _hasLastKey;
@@ -358,6 +506,14 @@ public static class TableArchiveWriter
                 keyColumnIndex >= row.Length ||
                 row[keyColumnIndex].Type != DbType.Integer)
             {
+                _entries = null;
+                _isValid = false;
+                return;
+            }
+
+            if (_entries!.Count >= MaximumInMemoryPrimaryKeyIndexEntries)
+            {
+                _entries = null;
                 _isValid = false;
                 return;
             }
@@ -373,9 +529,9 @@ public static class TableArchiveWriter
 
         public bool TryBuildEntries(CancellationToken ct, out List<NativePrimaryKeyIndexEntry> entries)
         {
-            entries = _entries;
+            entries = _entries ?? [];
             ct.ThrowIfCancellationRequested();
-            if (!_isValid)
+            if (!_isValid || _entries is null)
                 return false;
 
             if (!_isSorted)

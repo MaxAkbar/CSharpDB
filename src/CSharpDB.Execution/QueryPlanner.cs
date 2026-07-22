@@ -2075,6 +2075,49 @@ public sealed class QueryPlanner
                 break;
             }
 
+            case ReseedTableAction reseed:
+            {
+                long currentNextRowId = schema.NextRowId > 0 ? schema.NextRowId : 1;
+                if (_nextRowIdHintProvider?.Invoke(stmt.TableName) is long sharedNextRowId &&
+                    sharedNextRowId > currentNextRowId)
+                {
+                    currentNextRowId = sharedNextRowId;
+                }
+                if (_nextRowIdCache.TryGetValue(stmt.TableName, out long cachedNextRowId) &&
+                    cachedNextRowId > currentNextRowId)
+                {
+                    currentNextRowId = cachedNextRowId;
+                }
+
+                if (reseed.NextRowId < currentNextRowId)
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.ConstraintViolation,
+                        $"Cannot reseed table '{stmt.TableName}' below its current next row id {currentNextRowId}.");
+                }
+
+                var reseededSchema = new TableSchema
+                {
+                    TableName = schema.TableName,
+                    Columns = schema.Columns,
+                    ForeignKeys = schema.ForeignKeys,
+                    CheckConstraints = schema.CheckConstraints,
+                    KeyConstraints = schema.KeyConstraints,
+                    QualifiedMappings = schema.QualifiedMappings,
+                    NextRowId = reseed.NextRowId,
+                };
+                await _catalog.UpdateTableSchemaAsync(stmt.TableName, reseededSchema, ct);
+                _nextRowIdCache[stmt.TableName] = reseed.NextRowId;
+                _dirtyNextRowIdTables.Add(stmt.TableName);
+                _nextRowIdObservationProvider?.Invoke(stmt.TableName, reseed.NextRowId);
+                if (_rowIdReservationLeases.TryGetValue(stmt.TableName, out RowIdReservationLease? lease) &&
+                    !lease.AdvanceTo(reseed.NextRowId))
+                {
+                    _rowIdReservationLeases.Remove(stmt.TableName);
+                }
+                break;
+            }
+
             case RenameColumnAction renameCol:
             {
                 int colIdx = schema.GetColumnIndex(renameCol.OldColumnName);

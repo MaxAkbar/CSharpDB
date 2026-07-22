@@ -35,7 +35,8 @@ public sealed record TableSchemaResponse(
     IReadOnlyList<ColumnResponse> Columns,
     IReadOnlyList<ForeignKeyResponse> ForeignKeys,
     IReadOnlyList<KeyConstraintResponse> KeyConstraints,
-    IReadOnlyList<CheckConstraintResponse> CheckConstraints);
+    IReadOnlyList<CheckConstraintResponse> CheckConstraints,
+    long NextRowId);
 
 // ─── Browse ─────────────────────────────────────────────────
 

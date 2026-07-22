@@ -107,6 +107,28 @@ csharpdb etl <status|run-package|rejects|resume> <dbfile> <runId> [--json]
 csharpdb etl <pipelines|revisions|import|export|export-revision|delete|run-stored> ...
 ```
 
+Migration planning proof surface:
+
+```powershell
+csharpdb migrate inspect --source synthetic --out <catalog.json>
+csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>]
+csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <run.json> [--resume] [--format text|json]
+```
+
+These commands inspect the immutable synthetic qualification source, produce
+digested deterministic planning artifacts, and apply an explicitly approved
+plan to a new staged database. Apply never overwrites or activates an existing
+target. Rows and receipts commit together; `--resume` replays the same source
+snapshot and skips only batches whose identities and digests match exactly.
+Successful execution stops at `awaitingValidation` and writes a derived run
+report that contains no source values or resume cursors. Phase 2 uses the
+versioned `csharpdb-migration-fail-fast/v1` contract: the first invalid value
+stops the load before its batch reaches the target, and the failure report
+contains only its stable code plus object, batch, row, and column coordinates.
+Plans requesting durable skip-and-record rejects are refused before a staged
+target is created.
+
 ## Project Layout
 
 - `Program.cs` - command dispatch and shell startup
@@ -117,6 +139,7 @@ csharpdb etl <pipelines|revisions|import|export|export-revision|delete|run-store
 - `MaintenanceCommandRunner.cs` - maintenance commands
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
+- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, and resume commands
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
 ## Build And Test
