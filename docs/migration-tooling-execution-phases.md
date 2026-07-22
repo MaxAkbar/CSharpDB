@@ -372,12 +372,12 @@ The two adapter tracks can proceed in parallel after the Phase 1-3 contracts
 are stable.
 
 **Status:** in progress. The isolated `CSharpDB.Migration.Files` package now
-contains the strict Phase 4A CSV reader foundation. It is forward-only,
-RFC 4180-capable, BOM-aware, explicitly bounded, and preserves null, empty,
-missing, and trailing-empty fields. Inspection/inference, tolerant rejects,
+contains the strict Phase 4A CSV reader plus immutable raw-byte snapshots,
+bounded delimiter/BOM inspection with explicit ambiguity, and deterministic
+content/format source binding. Schema inference, tolerant rejects,
 migration-source adaptation, prepared writes/resume, manifests, and export are
-not yet complete; see
-[`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md).
+not yet complete; see [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md)
+and [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md).
 
 ### Track 4A: CSV
 
@@ -388,6 +388,12 @@ not yet complete; see
   culture-looking text, and null/empty/missing/trailing-empty coverage.
 - [x] Add stable value-free parser diagnostics, forward-only/cancellation
   coverage, hostile field/record/column limit tests, and CI integration.
+- [x] Freeze the complete raw source into a bounded private snapshot and bind a
+  full-byte SHA-256 identity independently of the inspection window.
+- [x] Add quote-aware bounded delimiter/BOM inspection with confidence,
+  ambiguity, explicit selection, and culture/candidate-order invariance.
+- [x] Bind normalized parsing semantics and exact culture policy into the CSV
+  source fingerprint so later readers cannot drift from inspection.
 
 - [ ] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [ ] Support quoted multiline fields, escaped quotes, explicit/detected

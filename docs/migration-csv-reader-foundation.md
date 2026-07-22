@@ -56,14 +56,15 @@ the source file or all records.
 
 ## Next Phase 4A Slices
 
-1. Add bounded delimiter and encoding inspection with confidence and immutable
-   source fingerprint/snapshot metadata.
-2. Add confidence-bearing schema inference and explicit column overrides.
-3. Adapt logical records into `IMigrationDataSource`, including a deliberate
+Bounded delimiter/BOM inspection and immutable source binding are now complete;
+see [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md).
+
+1. Add confidence-bearing schema inference and explicit column overrides.
+2. Adapt logical records into `IMigrationDataSource`, including a deliberate
    missing-field policy and deterministic cursors.
-4. Reuse staged prepared writes, transactional receipts, validation, and
+3. Reuse staged prepared writes, transactional receipts, validation, and
    activation from Phases 2-3.
-5. Add deterministic tolerant rejects only after their durable transaction
+4. Add deterministic tolerant rejects only after their durable transaction
    contract is complete.
-6. Add RFC 4180 export, typed manifests, checksums, and the separately named
+5. Add RFC 4180 export, typed manifests, checksums, and the separately named
    spreadsheet-safe lossy mode.

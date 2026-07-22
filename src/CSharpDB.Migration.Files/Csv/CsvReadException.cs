@@ -10,6 +10,7 @@ public static class CsvDiagnosticRules
     public const string RecordLimitExceeded = "MIG-CSV-LIMIT-RECORD-001";
     public const string FieldCountLimitExceeded = "MIG-CSV-LIMIT-COLUMNS-001";
     public const string ExtraFields = "MIG-CSV-SHAPE-001";
+    public const string InspectionCharacterLimitExceeded = "MIG-CSV-INSPECTION-LIMIT-CHARACTERS-001";
 }
 
 public sealed class CsvReadDiagnostic
