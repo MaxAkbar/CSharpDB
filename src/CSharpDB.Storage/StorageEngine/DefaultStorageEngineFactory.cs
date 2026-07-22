@@ -29,7 +29,7 @@ public sealed class DefaultStorageEngineFactory : IStorageEngineFactory
 
         try
         {
-            device = new FileStorageDevice(filePath, createNew);
+            device = new FileStorageDevice(filePath, createNew, options.PrimaryFileShare);
             var walIndex = new WalIndex();
             var wal = new WriteAheadLog(
                 filePath,

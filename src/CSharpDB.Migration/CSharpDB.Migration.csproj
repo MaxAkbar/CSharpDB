@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Capabilities\csharpdb-4.2.0.json"
                       LogicalName="CSharpDB.Migration.Capabilities.csharpdb-4.2.0.json" />
   </ItemGroup>

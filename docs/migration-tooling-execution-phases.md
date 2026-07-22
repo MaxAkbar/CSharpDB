@@ -285,24 +285,31 @@ hash remains gated on the Phase 3 canonicalization contract.
 **Goal:** make correctness, rather than copy completion, the definition of a
 successful migration.
 
+**Status:** complete for the synthetic/local CSharpDB foundation slice. The
+canonical codec now has normative vectors for every v1 tag; validation uses
+normalized actual-target schema, coherent 64-bit counts, and bounded
+duplicate-preserving partitioned hashes; deterministic reports are secret-
+scanned and semantically verified; and a published `Passed` report plus an
+exclusive target writer barrier are enforced before atomic activation.
+
 ### Work
 
-- [ ] Specify `csharpdb-canon-v1` with contract hashes, type tags, null
+- [x] Specify `csharpdb-canon-v1` with contract hashes, type tags, null
   markers, lengths, and canonical logical payloads.
-- [ ] Publish cross-platform golden vectors for integers, decimals, reals,
+- [x] Publish cross-platform golden vectors for integers, decimals, reals,
   text, BLOBs, date/time values, nulls, and exclusions.
-- [ ] Implement normalized schema validation and snapshot-consistent 64-bit
+- [x] Implement normalized schema validation and snapshot-consistent 64-bit
   row/document counts.
-- [ ] Implement partitioned SHA-256 validation with deterministic spill/sort,
+- [x] Implement partitioned SHA-256 validation with deterministic spill/sort,
   duplicate preservation, and mismatch drill-down.
-- [ ] Make count and checksum validation use one coherent source view; return
+- [x] Make count and checksum validation use one coherent source view; return
   `Inconclusive` when that cannot be established.
-- [ ] Generate reproducible text and JSON reports tied to plan, source, target,
+- [x] Generate reproducible text and JSON reports tied to plan, source, target,
   and canonicalization versions.
-- [ ] Persist the final digested report after validation and prevent
+- [x] Persist the final digested report after validation and prevent
   staged-target activation until both the selected validation level passes and
   that audit artifact is written successfully.
-- [ ] Add deliberate corruption, duplicate, concurrent-write, cancellation,
+- [x] Add deliberate corruption, duplicate, concurrent-write, cancellation,
   temporary-disk cleanup, and large-data tests.
 
 ### Deliverables
@@ -335,6 +342,16 @@ synthetic inspect
 
 The same test must reject plan, source, snapshot, and target digest mismatches
 and prove that no serialized artifact contains a secret.
+
+The executable foundation spine is covered by a real child-process
+crash/resume test that continues through checksum validation, exact report
+retry, and activation. Focused adversarial coverage rejects changed bindings,
+unexpected target objects, changing or unavailable source views, a second
+target writer, contradictory/tampered/oversized reports, duplicate keys, spill
+exhaustion, and cancellation. The 50,000-row qualification case uses a 64 KiB
+sort cap and an eight-writer partition cap, completes with exact checksums, and
+leaves no spill workspace. Migration tests now run on Windows, Linux, and
+macOS in CI.
 
 ## Phase 4: Streaming File Migration
 

@@ -302,7 +302,7 @@ public static partial class MigrationArtifactSerializer
         }
     }
 
-    private static void ValidateNoSecrets(JsonElement payload) =>
+    internal static void ValidateNoSecrets(JsonElement payload) =>
         ValidateElement(payload, path: "$", propertyName: null);
 
     private static void ValidateElement(JsonElement element, string path, string? propertyName)

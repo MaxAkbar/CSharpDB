@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using CSharpDB.Engine;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Migration.Validation;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Migration.Tests;
@@ -69,6 +70,7 @@ public sealed class MigrationProcessCrashRecoveryTests
             await AssertReceiptSetAsync(resumed, plan, Ct);
             await using IValidationSnapshot snapshot = await resumed.OpenValidationSnapshotAsync(Ct);
             await AssertExactSyntheticRowsAsync(snapshot, catalog, plan, Ct);
+            Assert.Null(await resumed.ReadActivationReceiptAsync(Ct));
         }
 
         Assert.False(File.Exists(files.LeasePath));
@@ -92,13 +94,80 @@ public sealed class MigrationProcessCrashRecoveryTests
             Assert.Equal(21, replay.RowsSkipped);
             await using IValidationSnapshot snapshot = await verified.OpenValidationSnapshotAsync(Ct);
             await AssertExactSyntheticRowsAsync(snapshot, catalog, plan, Ct);
+            Assert.Null(await verified.ReadActivationReceiptAsync(Ct));
         }
 
         Assert.Equal("awaiting-validation", await ReadLifecycleAsync(files.TargetPath, Ct));
-        Assert.DoesNotContain(
-            typeof(CSharpDbStagedMigrationTarget).GetMethods(),
-            method => method.Name.Contains("Activate", StringComparison.OrdinalIgnoreCase) ||
-                method.Name.Contains("Replace", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task CrashResumeValidateReportAndActivate_CompletesFoundationSpineExactly()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyPlan(catalog, batchSize: 2);
+
+        await using (CSharpDbStagedMigrationTarget created =
+                     await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+        }
+
+        CrashResult crash = await CrashAtAsync(
+            files.TargetPath,
+            CSharpDbMigrationFaultPoint.AfterRowsBeforeReceipt,
+            Ct);
+        Assert.NotEqual(0, crash.ExitCode);
+
+        string reportPath = Path.Combine(files.DirectoryPath, "validation.json");
+        string? firstDigest;
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (var sourceSnapshot = new MigrationDataSourceValidationSnapshot(plan, catalog, source))
+        await using (CSharpDbStagedMigrationTarget resumed =
+                     await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            MigrationApplyResult apply = await ApplyAsync(plan, catalog, source, resumed, Ct);
+            Assert.Equal(MigrationApplyStatus.AwaitingValidation, apply.Status);
+
+            var request = new MigrationValidationRunRequest
+            {
+                Plan = plan,
+                Catalog = catalog,
+                SourceSnapshot = sourceSnapshot,
+                Target = resumed,
+                Level = MigrationValidationLevel.Checksum,
+                ReportOutputPath = reportPath,
+                ChecksumOptions = new PartitionedChecksumValidatorOptions
+                {
+                    SpillRootDirectory = files.DirectoryPath,
+                },
+            };
+            var runner = new MigrationValidationRunner();
+            MigrationValidationRunResult first = await runner.ValidateAsync(request, Ct);
+            MigrationValidationRunResult retry = await runner.ValidateAsync(request, Ct);
+
+            Assert.Equal(MigrationValidationStatus.Passed, first.Report.Outcome);
+            Assert.True(first.Activated);
+            Assert.True(retry.Activated);
+            Assert.Equal(first.ReportDigest, retry.ReportDigest);
+            Assert.Equal(
+                await File.ReadAllTextAsync(reportPath, Ct),
+                MigrationValidationReportSerializer.Serialize(first.Report, writeIndented: true));
+            firstDigest = first.ReportDigest;
+        }
+
+        Assert.Equal("activated", await ReadLifecycleAsync(files.TargetPath, Ct));
+        Assert.False(string.IsNullOrWhiteSpace(firstDigest));
+        Assert.Empty(Directory.GetDirectories(files.DirectoryPath));
     }
 
     private static async Task<CrashResult> CrashAtAsync(

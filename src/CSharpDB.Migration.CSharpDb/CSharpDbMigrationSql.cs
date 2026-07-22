@@ -9,10 +9,12 @@ internal static class CSharpDbMigrationSql
     internal const string StateTable = "__csharpdb_migration_state";
     internal const string StageTable = "__csharpdb_migration_stages";
     internal const string ReceiptTable = "__csharpdb_migration_receipts";
+    internal const string ValidationReceiptTable = "__csharpdb_migration_validation_receipt";
 
     internal const string TargetTag = "csharpdb-staged-migration-target/v1";
     internal const string StageTag = "csharpdb-migration-schema-stage/v1";
     internal const string ReceiptTag = "csharpdb-migration-batch-receipt/v1";
+    internal const string ValidationReceiptTag = MigrationValidationActivationReceipt.ContractVersion;
 
     internal const string CreatedState = "created";
     internal const string LoadingDataState = "loading-data";
@@ -20,6 +22,7 @@ internal static class CSharpDbMigrationSql
     internal const string ConstraintsState = "constraints";
     internal const string ViewsState = "views";
     internal const string AwaitingValidationState = "awaiting-validation";
+    internal const string ActivatedState = "activated";
 
     internal static IReadOnlyList<string> BuildInternalSchemaActions() =>
     [
@@ -64,6 +67,19 @@ internal static class CSharpDbMigrationSql
         $"{Quote("rejected_row_count")} INTEGER NOT NULL, " +
         $"CONSTRAINT {Quote("__csharpdb_migration_receipts_pk")} " +
         $"PRIMARY KEY ({Quote("plan_digest")}, {Quote("source_object_id")}, {Quote("batch_ordinal")}))",
+
+        $"CREATE TABLE {Quote(ValidationReceiptTable)} (" +
+        $"{Quote("singleton")} INTEGER PRIMARY KEY, " +
+        $"{Quote("receipt_tag")} TEXT NOT NULL, " +
+        $"{Quote("target_identity")} TEXT NOT NULL, " +
+        $"{Quote("plan_digest")} TEXT NOT NULL, " +
+        $"{Quote("catalog_digest")} TEXT NOT NULL, " +
+        $"{Quote("source_snapshot_identity")} TEXT NOT NULL, " +
+        $"{Quote("target_snapshot_identity")} TEXT NOT NULL, " +
+        $"{Quote("validation_level")} INTEGER NOT NULL, " +
+        $"{Quote("canonicalization_version")} TEXT NOT NULL, " +
+        $"{Quote("canonicalization_contract_digest")} TEXT NOT NULL, " +
+        $"{Quote("report_digest")} TEXT NOT NULL)",
     ];
 
     internal static IReadOnlyList<string> BuildStageActions(

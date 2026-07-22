@@ -306,6 +306,86 @@ public sealed class MigrationCommandRunnerTests
     }
 
     [Fact]
+    public async Task Validate_ChecksumPublishesReportActivatesAndRetriesExactly()
+    {
+        string directory = NewTempDirectory();
+        string targetPath = Path.Combine(directory, "staged.csdb");
+        string runPath = Path.Combine(directory, "run.json");
+        string validationPath = Path.Combine(directory, "validation.json");
+
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (string catalogPath, string planPath) = await CreateApplyReadyArtifactsAsync(directory, ct);
+            int applyCode = await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "apply", planPath,
+                    "--catalog", catalogPath,
+                    "--target", targetPath,
+                    "--out", runPath,
+                ],
+                TextWriter.Null,
+                TextWriter.Null,
+                ct);
+            Assert.Equal(InspectorCommandRunner.ExitWarn, applyCode);
+
+            var textOutput = new StringWriter();
+            var textError = new StringWriter();
+            int firstCode = await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "validate", planPath,
+                    "--catalog", catalogPath,
+                    "--target", targetPath,
+                    "--out", validationPath,
+                    "--level", "checksum",
+                    "--spill-dir", directory,
+                ],
+                textOutput,
+                textError,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitWarn, firstCode);
+            Assert.True(string.IsNullOrWhiteSpace(textError.ToString()));
+            Assert.Contains("Status: PASSED", textOutput.ToString(), StringComparison.Ordinal);
+            Assert.Contains("Activation: activated", textOutput.ToString(), StringComparison.Ordinal);
+            Assert.True(File.Exists(validationPath));
+            MigrationValidationReport report = MigrationValidationReportSerializer.Deserialize(
+                await File.ReadAllTextAsync(validationPath, ct));
+            Assert.Equal(MigrationValidationStatus.Passed, report.Outcome);
+            Assert.Equal(MigrationValidationLevel.Checksum, report.Level);
+            Assert.NotEmpty(report.Objects);
+            Assert.All(report.Objects, item => Assert.Equal(256, item.Partitions.Count));
+            string firstReportDigest = MigrationValidationReportSerializer.ComputeDigest(report);
+
+            var jsonOutput = new StringWriter();
+            var jsonError = new StringWriter();
+            int retryCode = await MigrationCommandRunner.RunAsync(
+                [
+                    "migrate", "validate", planPath,
+                    "--catalog", catalogPath,
+                    "--target", targetPath,
+                    "--out", validationPath,
+                    "--format", "json",
+                ],
+                jsonOutput,
+                jsonError,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitWarn, retryCode);
+            Assert.True(string.IsNullOrWhiteSpace(jsonError.ToString()));
+            MigrationValidationReport retried = MigrationValidationReportSerializer.Deserialize(
+                jsonOutput.ToString());
+            Assert.Equal(firstReportDigest, MigrationValidationReportSerializer.ComputeDigest(retried));
+            Assert.False(File.Exists(targetPath + ".migration.lock"));
+            Assert.Empty(Directory.EnumerateDirectories(directory, "csharpdb-validation-*"));
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(directory);
+        }
+    }
+
+    [Fact]
     public async Task Apply_ExistingTargetIsRefusedWithoutChangingItAndWritesSafeFailureReport()
     {
         string directory = NewTempDirectory();

@@ -14,6 +14,14 @@ public sealed class StorageEngineOptions
     public DurabilityMode DurabilityMode { get; init; } = DurabilityMode.Durable;
 
     /// <summary>
+    /// Sharing policy for the primary database file handle. The default keeps
+    /// the historical multi-handle behavior; specialized owners may select
+    /// <see cref="FileShare.Read"/> to allow readers while excluding every
+    /// other writer for the lifetime of the database handle.
+    /// </summary>
+    public FileShare PrimaryFileShare { get; init; } = FileShare.ReadWrite;
+
+    /// <summary>
     /// Opt-in settings used by durable WAL group commit to collect additional
     /// pending commits before forcing the OS flush. Ignored unless file-backed
     /// durable commit flushing allows concurrent writers.

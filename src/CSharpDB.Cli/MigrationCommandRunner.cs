@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Migration.Validation;
 
 namespace CSharpDB.Cli;
 
@@ -12,7 +13,8 @@ internal static class MigrationCommandRunner
         "Usage: csharpdb migrate inspect --source synthetic --out <catalog.json>\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
-        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <run.json> [--resume] [--format text|json]";
+        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <run.json> [--resume] [--format text|json]\n" +
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--format text|json]";
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -40,6 +42,7 @@ internal static class MigrationCommandRunner
                 "plan" => await RunPlanAsync(args, output, error, ct),
                 "preview" => await RunPreviewAsync(args, output, error, ct),
                 "apply" => await RunApplyAsync(args, output, error, ct),
+                "validate" => await RunValidateAsync(args, output, error, ct),
                 _ => await UnsupportedVerbAsync(args[1], error),
             };
         }
@@ -368,6 +371,145 @@ internal static class MigrationCommandRunner
                 ex).ConfigureAwait(false);
             throw;
         }
+    }
+
+    private static async ValueTask<int> RunValidateAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
+            return await OptionErrorAsync("Missing plan artifact path.", error);
+        if (!TryParseOptions(args, 3, out Dictionary<string, string> options, out string? parseError))
+            return await OptionErrorAsync(parseError!, error);
+        if (!RequireOnly(
+                options,
+                ["--catalog", "--target", "--out", "--level", "--spill-dir", "--format"],
+                out parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!options.TryGetValue("--catalog", out string? catalogValue))
+            return await OptionErrorAsync("Missing required option --catalog.", error);
+        if (!options.TryGetValue("--target", out string? targetValue))
+            return await OptionErrorAsync("Missing required option --target.", error);
+        if (!options.TryGetValue("--out", out string? reportValue))
+            return await OptionErrorAsync("Missing required option --out.", error);
+
+        string format = options.GetValueOrDefault("--format", "text");
+        if (!string.Equals(format, "text", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
+        {
+            return await OptionErrorAsync($"Unsupported validate format '{format}'.", error);
+        }
+
+        MigrationValidationLevel? requestedLevel = null;
+        if (options.TryGetValue("--level", out string? levelValue))
+        {
+            requestedLevel = levelValue.ToLowerInvariant() switch
+            {
+                "schema" => MigrationValidationLevel.Schema,
+                "count" => MigrationValidationLevel.Count,
+                "checksum" => MigrationValidationLevel.Checksum,
+                _ => null,
+            };
+            if (requestedLevel is null)
+                return await OptionErrorAsync($"Unsupported validation level '{levelValue}'.", error);
+        }
+
+        string planPath = Path.GetFullPath(args[2]);
+        string catalogPath = Path.GetFullPath(catalogValue);
+        string targetPath = Path.GetFullPath(targetValue);
+        string reportPath = Path.GetFullPath(reportValue);
+        string spillRoot = options.TryGetValue("--spill-dir", out string? spillValue)
+            ? Path.GetFullPath(spillValue)
+            : Path.GetDirectoryName(reportPath)!;
+        string[] protectedPaths =
+        [
+            planPath,
+            catalogPath,
+            targetPath,
+            targetPath + ".wal",
+            targetPath + ".migration.lock",
+            reportPath,
+        ];
+        if (ContainsEquivalentPaths(protectedPaths))
+        {
+            return await OptionErrorAsync(
+                "Plan, catalog, staged target, target companions, and validation report must use different files.",
+                error);
+        }
+        if (!Directory.Exists(spillRoot))
+            return await OptionErrorAsync($"Validation spill directory '{spillRoot}' does not exist.", error);
+
+        MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
+            await File.ReadAllTextAsync(catalogPath, ct));
+        MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
+            await File.ReadAllTextAsync(planPath, ct),
+            catalog);
+        MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
+        if (catalog.Source.Kind != MigrationSourceKind.Synthetic ||
+            !string.Equals(
+                catalog.Source.Identity,
+                SyntheticMigrationSourceInspector.FixtureIdentity,
+                StringComparison.Ordinal))
+        {
+            throw new NotSupportedException(
+                $"Migration validation source '{catalog.Source.Kind}' is not registered in this CLI build.");
+        }
+
+        MigrationValidationLevel requiredLevel = plan.Validation.ValidateChecksums
+            ? MigrationValidationLevel.Checksum
+            : plan.Validation.ValidateCounts
+                ? MigrationValidationLevel.Count
+                : MigrationValidationLevel.Schema;
+        MigrationValidationLevel level = requestedLevel ?? requiredLevel;
+
+        await using var source = new SyntheticMigrationDataSource(catalog);
+        await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(plan, catalog, source);
+        await using CSharpDbStagedMigrationTarget target = await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+            targetPath,
+            plan,
+            catalog,
+            source.SnapshotIdentity,
+            cancellationToken: ct);
+        MigrationValidationRunResult result = await new MigrationValidationRunner().ValidateAsync(
+            new MigrationValidationRunRequest
+            {
+                Plan = plan,
+                Catalog = catalog,
+                SourceSnapshot = sourceSnapshot,
+                Target = target,
+                Level = level,
+                ReportOutputPath = reportPath,
+                ChecksumOptions = new PartitionedChecksumValidatorOptions
+                {
+                    SpillRootDirectory = spillRoot,
+                },
+            },
+            ct);
+
+        if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
+        {
+            await output.WriteLineAsync(await File.ReadAllTextAsync(reportPath, ct));
+        }
+        else
+        {
+            await output.WriteAsync(MigrationValidationTextFormatter.Format(result.Report));
+            await output.WriteLineAsync($"Activation: {(result.Activated ? "activated" : "withheld")}");
+            await output.WriteLineAsync($"JSON report: {reportPath}");
+        }
+
+        return result.Report.Outcome switch
+        {
+            MigrationValidationStatus.Passed => plan.Objects.Any(item => !item.Included)
+                ? InspectorCommandRunner.ExitWarn
+                : InspectorCommandRunner.ExitOk,
+            MigrationValidationStatus.Inconclusive or MigrationValidationStatus.Skipped =>
+                InspectorCommandRunner.ExitWarn,
+            _ => InspectorCommandRunner.ExitError,
+        };
     }
 
     private static async ValueTask WriteTextPreviewAsync(

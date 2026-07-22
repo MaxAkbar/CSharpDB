@@ -1,6 +1,10 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using CSharpDB.Engine;
+using CSharpDB.Migration.Canonicalization;
+using CSharpDB.Migration.Validation;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Migration.CSharpDb;
@@ -8,9 +12,12 @@ namespace CSharpDB.Migration.CSharpDb;
 /// <summary>
 /// A migration-owned CSharpDB file that records schema stages and batch
 /// receipts inside the same durability boundary as the data they describe.
-/// It deliberately has no activation/replace operation.
+/// A successful validation receipt is persisted atomically with activation;
+/// replacement of a user-owned database remains outside this target.
 /// </summary>
-public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
+public sealed class CSharpDbStagedMigrationTarget :
+    IMigrationTarget,
+    IMigrationValidationActivationTarget
 {
     private const int MigrationPageCachePages = 2048;
 
@@ -141,7 +148,7 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
                 cancellationToken).ConfigureAwait(false);
             TargetState state = await ReadStateAsync(database, cancellationToken).ConfigureAwait(false);
             ValidateState(state, plan, sourceSnapshotIdentity);
-            return new CSharpDbStagedMigrationTarget(
+            var target = new CSharpDbStagedMigrationTarget(
                 fullPath,
                 lease,
                 database,
@@ -150,6 +157,18 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
                 sourceSnapshotIdentity,
                 state.TargetIdentity,
                 faultInjector);
+            MigrationValidationActivationReceipt? activation =
+                await target.ReadActivationReceiptAsync(cancellationToken).ConfigureAwait(false);
+            bool activated = string.Equals(
+                state.LifecycleState,
+                CSharpDbMigrationSql.ActivatedState,
+                StringComparison.Ordinal);
+            if (activated != (activation is not null))
+            {
+                throw new InvalidDataException(
+                    "Migration target lifecycle and validation receipt are not atomically consistent.");
+            }
+            return target;
         }
         catch
         {
@@ -185,6 +204,8 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
             ValidateStageReceipt(existing, stage, stageDigest, actions.Count);
             return;
         }
+
+        await RequireMutableLifecycleAsync(cancellationToken).ConfigureAwait(false);
 
         MigrationSchemaStage? previous = PreviousStage(stage);
         if (previous is MigrationSchemaStage previousStage)
@@ -267,6 +288,8 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
             ValidateReceiptAgainstBatch(existing, batch);
             return existing;
         }
+
+        await RequireMutableLifecycleAsync(cancellationToken).ConfigureAwait(false);
 
         await RequireStageAsync(MigrationSchemaStage.LoadEssential, cancellationToken).ConfigureAwait(false);
         if (await ReadStageAsync(MigrationSchemaStage.SecondaryIndexes, cancellationToken).ConfigureAwait(false) is not null)
@@ -397,12 +420,973 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
     {
         ThrowIfDisposed();
         await RequireStageAsync(MigrationSchemaStage.Triggers, cancellationToken).ConfigureAwait(false);
+        TargetState state = await ReadStateAsync(_database, cancellationToken).ConfigureAwait(false);
+        ValidateState(state, _plan, _snapshotIdentity);
+        if (state.LifecycleState is not (
+                CSharpDbMigrationSql.AwaitingValidationState or
+                CSharpDbMigrationSql.ActivatedState))
+        {
+            throw new InvalidDataException(
+                $"Migration validation cannot open while the target lifecycle is '{state.LifecycleState}'.");
+        }
+
+        MigrationNormalizedSchema schema = CaptureActualSchema();
         return new CSharpDbValidationSnapshot(
             _database.CreateReaderSession(),
             TargetIdentity,
             _planObjects,
-            _catalog);
+            _catalog,
+            schema);
     }
+
+    public async ValueTask<MigrationValidationActivationReceipt?> ReadActivationReceiptAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        MigrationValidationActivationReceipt? receipt = await ReadActivationReceiptCoreAsync(
+            cancellationToken).ConfigureAwait(false);
+        if (receipt is not null)
+            ValidateActivationReceiptBinding(receipt);
+        return receipt;
+    }
+
+    public async ValueTask ActivateAsync(
+        MigrationValidationActivationPermit permit,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(permit);
+        MigrationValidationActivationReceipt receipt = permit.Receipt;
+        ValidateActivationReceiptBinding(receipt);
+        await ReadAndValidateActivationReportAsync(
+            permit.PublishedReportPath,
+            receipt,
+            cancellationToken).ConfigureAwait(false);
+
+        MigrationValidationActivationReceipt? existing = await ReadActivationReceiptCoreAsync(
+            cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            ValidateActivationReceiptBinding(existing);
+            RequireSameActivationReceipt(existing, receipt);
+            TargetState activatedState = await ReadStateAsync(_database, cancellationToken).ConfigureAwait(false);
+            ValidateState(activatedState, _plan, _snapshotIdentity);
+            if (!string.Equals(
+                    activatedState.LifecycleState,
+                    CSharpDbMigrationSql.ActivatedState,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Migration validation receipt exists without the activated lifecycle state.");
+            }
+            return;
+        }
+
+        TargetState state = await ReadStateAsync(_database, cancellationToken).ConfigureAwait(false);
+        ValidateState(state, _plan, _snapshotIdentity);
+        if (!string.Equals(
+                state.LifecycleState,
+                CSharpDbMigrationSql.AwaitingValidationState,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"Migration target cannot activate from lifecycle '{state.LifecycleState}'.");
+        }
+
+        bool transactionStarted = false;
+        bool commitInvoked = false;
+        try
+        {
+            await _database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            transactionStarted = true;
+
+            InsertBatch receiptInsert = _database.PrepareInsertBatch(
+                CSharpDbMigrationSql.ValidationReceiptTable,
+                1);
+            receiptInsert.AddRow(
+                DbValue.FromInteger(1),
+                DbValue.FromText(CSharpDbMigrationSql.ValidationReceiptTag),
+                DbValue.FromText(receipt.TargetIdentity),
+                DbValue.FromText(receipt.PlanDigest),
+                DbValue.FromText(receipt.CatalogDigest),
+                DbValue.FromText(receipt.SourceSnapshotIdentity),
+                DbValue.FromText(receipt.TargetSnapshotIdentity),
+                DbValue.FromInteger((long)receipt.Level),
+                DbValue.FromText(receipt.CanonicalizationVersion),
+                DbValue.FromText(receipt.CanonicalizationContractDigest),
+                DbValue.FromText(receipt.ReportDigest));
+            if (await receiptInsert.ExecuteAsync(cancellationToken).ConfigureAwait(false) != 1)
+                throw new InvalidDataException("Migration validation receipt was not persisted.");
+
+            await using (var update = await _database.ExecuteAsync(
+                $"UPDATE {CSharpDbMigrationSql.Quote(CSharpDbMigrationSql.StateTable)} " +
+                $"SET {CSharpDbMigrationSql.Quote("lifecycle_state")} = " +
+                $"{CSharpDbMigrationSql.Literal(CSharpDbMigrationSql.ActivatedState)} " +
+                $"WHERE {CSharpDbMigrationSql.Quote("singleton")} = 1 " +
+                $"AND {CSharpDbMigrationSql.Quote("target_identity")} = " +
+                $"{CSharpDbMigrationSql.Literal(TargetIdentity)} " +
+                $"AND {CSharpDbMigrationSql.Quote("plan_digest")} = " +
+                $"{CSharpDbMigrationSql.Literal(_planDigest)} " +
+                $"AND {CSharpDbMigrationSql.Quote("lifecycle_state")} = " +
+                $"{CSharpDbMigrationSql.Literal(CSharpDbMigrationSql.AwaitingValidationState)}",
+                cancellationToken).ConfigureAwait(false))
+            {
+                if (update.RowsAffected != 1)
+                {
+                    throw new InvalidDataException(
+                        "Migration target lifecycle changed before validation activation committed.");
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            commitInvoked = true;
+            await _database.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (transactionStarted && !commitInvoked)
+                await TryRollbackAsync(_database).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async ValueTask ReadAndValidateActivationReportAsync(
+        string reportPath,
+        MigrationValidationActivationReceipt receipt,
+        CancellationToken cancellationToken)
+    {
+        string json;
+        try
+        {
+            var info = new FileInfo(reportPath);
+            FileAttributes unsupported =
+                FileAttributes.Directory | FileAttributes.Device | FileAttributes.ReparsePoint;
+            if (!info.Exists || (info.Attributes & unsupported) != 0)
+                throw new InvalidDataException("Published validation report is not a regular file.");
+            if (info.Length > MigrationValidationReportSerializer.MaximumArtifactBytes)
+            {
+                throw new InvalidDataException(
+                    "Published validation report exceeds the maximum artifact byte length.");
+            }
+            json = await File.ReadAllTextAsync(reportPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException(
+                "The published migration validation report could not be read.",
+                ex);
+        }
+
+        MigrationValidationReport report = MigrationValidationReportSerializer.Deserialize(json);
+        string reportDigest = MigrationValidationReportSerializer.ComputeDigest(report);
+        MigrationValidationBinding binding = report.Binding;
+        if (report.Outcome != MigrationValidationStatus.Passed ||
+            report.SnapshotConsistency.Status != MigrationSnapshotConsistencyStatus.Established ||
+            report.Level != receipt.Level ||
+            !FixedTimeSha256Equals(reportDigest, receipt.ReportDigest) ||
+            !string.Equals(
+                binding.TargetCSharpDbVersion,
+                _plan.TargetCSharpDbVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(binding.PlanDigest, receipt.PlanDigest, StringComparison.Ordinal) ||
+            !string.Equals(binding.CatalogDigest, receipt.CatalogDigest, StringComparison.Ordinal) ||
+            !string.Equals(binding.CapabilityDigest, _plan.CapabilityDigest, StringComparison.Ordinal) ||
+            !string.Equals(binding.SourceIdentity, _plan.Source.Identity, StringComparison.Ordinal) ||
+            !string.Equals(binding.SourceFingerprint, _plan.Source.Fingerprint, StringComparison.Ordinal) ||
+            !string.Equals(binding.TargetIdentity, receipt.TargetIdentity, StringComparison.Ordinal) ||
+            !string.Equals(
+                binding.SourceSnapshotIdentity,
+                receipt.SourceSnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                binding.TargetSnapshotIdentity,
+                receipt.TargetSnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                binding.CanonicalizationVersion,
+                receipt.CanonicalizationVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                binding.CanonicalizationContractDigest,
+                receipt.CanonicalizationContractDigest,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The published validation report is not a passed report bound to this staged target and receipt.");
+        }
+    }
+
+    private static bool FixedTimeSha256Equals(string left, string right)
+    {
+        if (!IsLowerSha256(left) || !IsLowerSha256(right))
+            return false;
+        return CryptographicOperations.FixedTimeEquals(
+            Convert.FromHexString(left),
+            Convert.FromHexString(right));
+    }
+
+    private async ValueTask<MigrationValidationActivationReceipt?> ReadActivationReceiptCoreAsync(
+        CancellationToken cancellationToken)
+    {
+        string[] columns =
+        [
+            "singleton", "receipt_tag", "target_identity", "plan_digest", "catalog_digest",
+            "source_snapshot_identity", "target_snapshot_identity", "validation_level",
+            "canonicalization_version", "canonicalization_contract_digest", "report_digest",
+        ];
+        string sql = $"SELECT {string.Join(", ", columns.Select(CSharpDbMigrationSql.Quote))} " +
+            $"FROM {CSharpDbMigrationSql.Quote(CSharpDbMigrationSql.ValidationReceiptTable)}";
+        await using var result = await _database.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
+        if (!await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+            return null;
+
+        DbValue[] row = result.Current;
+        long validationLevel = row.Length == columns.Length ? row[7].AsInteger : -1;
+        if (row.Length != columns.Length || row[0].AsInteger != 1 ||
+            !string.Equals(
+                row[1].AsText,
+                CSharpDbMigrationSql.ValidationReceiptTag,
+                StringComparison.Ordinal) ||
+            validationLevel < int.MinValue || validationLevel > int.MaxValue ||
+            !Enum.IsDefined((MigrationValidationLevel)(int)validationLevel))
+        {
+            throw new InvalidDataException("Migration validation receipt shape or format is invalid.");
+        }
+
+        var receipt = new MigrationValidationActivationReceipt
+        {
+            TargetIdentity = row[2].AsText,
+            PlanDigest = row[3].AsText,
+            CatalogDigest = row[4].AsText,
+            SourceSnapshotIdentity = row[5].AsText,
+            TargetSnapshotIdentity = row[6].AsText,
+            Level = (MigrationValidationLevel)(int)validationLevel,
+            CanonicalizationVersion = row[8].AsText,
+            CanonicalizationContractDigest = row[9].AsText,
+            ReportDigest = row[10].AsText,
+        };
+        if (await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+            throw new InvalidDataException("Migration target contains multiple validation receipts.");
+        return receipt;
+    }
+
+    private void ValidateActivationReceiptBinding(MigrationValidationActivationReceipt receipt)
+    {
+        MigrationValidationLevel requiredLevel = _plan.Validation.ValidateChecksums
+            ? MigrationValidationLevel.Checksum
+            : _plan.Validation.ValidateCounts
+                ? MigrationValidationLevel.Count
+                : MigrationValidationLevel.Schema;
+        string expectedTargetSnapshot = ValidationSnapshotIdentity(
+            TargetIdentity,
+            CSharpDbMigrationSql.AwaitingValidationState);
+
+        if (!string.Equals(receipt.TargetIdentity, TargetIdentity, StringComparison.Ordinal) ||
+            !string.Equals(receipt.PlanDigest, _planDigest, StringComparison.Ordinal) ||
+            !string.Equals(receipt.CatalogDigest, _plan.CatalogDigest, StringComparison.Ordinal) ||
+            !string.Equals(receipt.SourceSnapshotIdentity, _snapshotIdentity, StringComparison.Ordinal) ||
+            !string.Equals(receipt.TargetSnapshotIdentity, expectedTargetSnapshot, StringComparison.Ordinal) ||
+            receipt.Level is < MigrationValidationLevel.Schema or > MigrationValidationLevel.Checksum ||
+            receipt.Level < requiredLevel ||
+            !string.Equals(
+                receipt.CanonicalizationVersion,
+                _plan.Validation.CanonicalizationVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                receipt.CanonicalizationVersion,
+                CanonicalRowCodec.CanonicalizationId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                receipt.CanonicalizationContractDigest,
+                CanonicalRowCodec.ContractHashHex,
+                StringComparison.Ordinal) ||
+            !IsLowerSha256(receipt.ReportDigest))
+        {
+            throw new InvalidDataException(
+                "Migration validation receipt does not match the staged target binding or validation policy.");
+        }
+    }
+
+    private static void RequireSameActivationReceipt(
+        MigrationValidationActivationReceipt existing,
+        MigrationValidationActivationReceipt supplied)
+    {
+        if (existing != supplied)
+        {
+            throw new InvalidDataException(
+                "Migration target is already activated with a different validation receipt.");
+        }
+    }
+
+    private static bool IsLowerSha256(string? value)
+    {
+        if (value is null || value.Length != 64 ||
+            !string.Equals(value, value.ToLowerInvariant(), StringComparison.Ordinal))
+            return false;
+        try
+        {
+            return Convert.FromHexString(value).Length == 32;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static string ValidationSnapshotIdentity(string targetIdentity, string lifecycle) =>
+        $"staged-target:{targetIdentity}:{lifecycle}";
+
+    private MigrationNormalizedSchema CaptureActualSchema()
+    {
+        MigrationPlanObject[] included = _plan.Objects
+            .Where(item => item.Included)
+            .OrderBy(item => item.SourceObjectId, StringComparer.Ordinal)
+            .ToArray();
+        IReadOnlyDictionary<string, TableSchema> tables = included
+            .Where(item => _catalogObjects[item.SourceObjectId].Kind is
+                MigrationObjectKind.Table or MigrationObjectKind.Collection)
+            .Select(item => (Plan: item, Schema: _database.GetTableSchema(item.TargetName!)))
+            .Where(item => item.Schema is not null)
+            .ToDictionary(
+                item => item.Plan.SourceObjectId,
+                item => item.Schema!,
+                StringComparer.Ordinal);
+        IndexSchema[] indexes = _database.GetIndexes().ToArray();
+        string[] viewNames = _database.GetViewNames().ToArray();
+        TriggerSchema[] triggers = _database.GetTriggers().ToArray();
+        var definitions = new List<MigrationNormalizedSchemaObject>(included.Length);
+
+        foreach (MigrationPlanObject planned in included)
+        {
+            MigrationCatalogObject catalogObject = _catalogObjects[planned.SourceObjectId];
+            MigrationNormalizedSchemaObject? definition = catalogObject.Kind switch
+            {
+                MigrationObjectKind.Table or MigrationObjectKind.Collection =>
+                    CaptureTable(catalogObject, tables),
+                MigrationObjectKind.Column => CaptureColumn(catalogObject, tables),
+                MigrationObjectKind.Index => CaptureIndex(catalogObject, indexes, tables),
+                MigrationObjectKind.Key => CaptureKey(catalogObject, tables),
+                MigrationObjectKind.ForeignKey => CaptureForeignKey(catalogObject, tables),
+                MigrationObjectKind.CheckConstraint => CaptureCheck(catalogObject, tables),
+                MigrationObjectKind.View => CaptureView(catalogObject, viewNames),
+                MigrationObjectKind.Trigger => CaptureTrigger(catalogObject, triggers),
+                _ => null,
+            };
+            if (definition is not null)
+                definitions.Add(definition);
+        }
+
+        CaptureUnexpectedSchema(definitions, indexes, viewNames, triggers);
+
+        return MigrationNormalizedSchemaContract.Create(definitions);
+    }
+
+    private void CaptureUnexpectedSchema(
+        ICollection<MigrationNormalizedSchemaObject> definitions,
+        IReadOnlyList<IndexSchema> indexes,
+        IReadOnlyList<string> viewNames,
+        IReadOnlyList<TriggerSchema> triggers)
+    {
+        var knownIds = definitions
+            .Select(item => item.ObjectId)
+            .ToHashSet(StringComparer.Ordinal);
+        TableSchema[] actualTables = _database.GetTableNames()
+            .Where(name => !IsMigrationMetadataTable(name))
+            .Select(name => _database.GetTableSchema(name))
+            .Where(schema => schema is not null)
+            .Cast<TableSchema>()
+            .OrderBy(schema => schema.TableName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var tableIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var columnIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var actualKeys = new List<(string TableName, KeyConstraintDefinition Key, string ObjectId)>();
+
+        foreach (TableSchema table in actualTables)
+        {
+            string tableId = ResolvePlannedObjectId(
+                    MigrationObjectKind.Table,
+                    parentObjectId: null,
+                    table.TableName) ??
+                ResolvePlannedObjectId(
+                    MigrationObjectKind.Collection,
+                    parentObjectId: null,
+                    table.TableName) ??
+                ExtraObjectId(MigrationObjectKind.Table, null, table.TableName);
+            tableIds.Add(table.TableName, tableId);
+            if (knownIds.Add(tableId))
+            {
+                definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                    tableId,
+                    MigrationObjectKind.Table,
+                    parentObjectId: null,
+                    targetName: tableId));
+            }
+
+            foreach (ColumnDefinition column in table.Columns)
+            {
+                string columnId = ResolvePlannedObjectId(
+                        MigrationObjectKind.Column,
+                        tableId,
+                        column.Name) ??
+                    ExtraObjectId(MigrationObjectKind.Column, tableId, column.Name);
+                columnIds.Add(ColumnLookupKey(table.TableName, column.Name), columnId);
+                if (!knownIds.Add(columnId))
+                    continue;
+
+                var attributes = new List<MigrationNormalizedSchemaAttribute>
+                {
+                    Attribute("targetType", column.Type.ToString()),
+                    Attribute("nullable", BooleanToken(column.Nullable)),
+                    Attribute("identity", BooleanToken(column.IsIdentity)),
+                    Attribute("rowVersion", BooleanToken(column.IsRowVersion)),
+                };
+                if (column.Collation is not null)
+                    attributes.Add(Attribute("collation", column.Collation));
+                if (column.DefaultSql is not null)
+                    attributes.Add(Attribute("defaultSqlDigest", SqlDigest(column.DefaultSql)));
+                definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                    columnId,
+                    MigrationObjectKind.Column,
+                    tableId,
+                    columnId,
+                    attributes));
+            }
+
+            foreach (KeyConstraintDefinition key in table.KeyConstraints)
+            {
+                string discriminator = key.ConstraintName ??
+                    $"{key.Kind}:{string.Join("\0", key.Columns)}";
+                string keyId = ResolvePlannedObjectId(
+                        MigrationObjectKind.Key,
+                        tableId,
+                        key.ConstraintName) ??
+                    ExtraObjectId(MigrationObjectKind.Key, tableId, discriminator);
+                actualKeys.Add((table.TableName, key, keyId));
+                if (!knownIds.Add(keyId))
+                    continue;
+
+                definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                    keyId,
+                    MigrationObjectKind.Key,
+                    tableId,
+                    keyId,
+                    [Attribute("kind", key.Kind == KeyConstraintKind.PrimaryKey ? "primary" : "unique")],
+                    key.Columns.Select((name, ordinal) => new MigrationNormalizedSchemaMember
+                    {
+                        Role = MigrationObjectReferenceRoles.Column,
+                        Ordinal = ordinal,
+                        ObjectId = ResolveActualColumnId(columnIds, table.TableName, name),
+                    }).ToArray()));
+            }
+
+            foreach (CheckConstraintDefinition check in table.CheckConstraints)
+            {
+                string discriminator = check.ConstraintName ?? SqlDigest(check.ExpressionSql);
+                string checkId = ResolvePlannedObjectId(
+                        MigrationObjectKind.CheckConstraint,
+                        tableId,
+                        check.ConstraintName) ??
+                    ExtraObjectId(MigrationObjectKind.CheckConstraint, tableId, discriminator);
+                if (!knownIds.Add(checkId))
+                    continue;
+                definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                    checkId,
+                    MigrationObjectKind.CheckConstraint,
+                    tableId,
+                    checkId,
+                    [Attribute("targetSqlDigest", SqlDigest(check.ExpressionSql))]));
+            }
+        }
+
+        foreach (TableSchema table in actualTables)
+        {
+            string tableId = tableIds[table.TableName];
+            foreach (ForeignKeyDefinition foreignKey in table.ForeignKeys)
+            {
+                string foreignKeyId = ResolvePlannedObjectId(
+                        MigrationObjectKind.ForeignKey,
+                        tableId,
+                        foreignKey.ConstraintName) ??
+                    ExtraObjectId(
+                        MigrationObjectKind.ForeignKey,
+                        tableId,
+                        foreignKey.ConstraintName);
+                if (!knownIds.Add(foreignKeyId))
+                    continue;
+
+                IReadOnlyList<string> sourceColumns = foreignKey.ColumnNames.Count > 0
+                    ? foreignKey.ColumnNames
+                    : [foreignKey.ColumnName];
+                IReadOnlyList<string> referencedColumns = foreignKey.ReferencedColumnNames.Count > 0
+                    ? foreignKey.ReferencedColumnNames
+                    : [foreignKey.ReferencedColumnName];
+                var members = sourceColumns.Select((name, ordinal) =>
+                    new MigrationNormalizedSchemaMember
+                    {
+                        Role = MigrationObjectReferenceRoles.SourceColumn,
+                        Ordinal = ordinal,
+                        ObjectId = ResolveActualColumnId(columnIds, table.TableName, name),
+                    }).ToList();
+                string? referencedKeyId = actualKeys
+                    .Where(candidate => string.Equals(
+                        candidate.TableName,
+                        foreignKey.ReferencedTableName,
+                        StringComparison.OrdinalIgnoreCase))
+                    .Where(candidate => candidate.Key.Columns.SequenceEqual(
+                        referencedColumns,
+                        StringComparer.OrdinalIgnoreCase))
+                    .Select(candidate => candidate.ObjectId)
+                    .OrderBy(id => id, StringComparer.Ordinal)
+                    .FirstOrDefault();
+                if (referencedKeyId is not null)
+                {
+                    members.Add(new MigrationNormalizedSchemaMember
+                    {
+                        Role = MigrationObjectReferenceRoles.ReferencedKey,
+                        Ordinal = 0,
+                        ObjectId = referencedKeyId,
+                    });
+                }
+
+                definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                    foreignKeyId,
+                    MigrationObjectKind.ForeignKey,
+                    tableId,
+                    foreignKeyId,
+                    [
+                        Attribute(
+                            "onDelete",
+                            foreignKey.OnDelete == ForeignKeyOnDeleteAction.Cascade
+                                ? "cascade"
+                                : "restrict"),
+                        Attribute("onUpdate", "restrict"),
+                    ],
+                    members));
+            }
+        }
+
+        foreach (IndexSchema index in indexes
+                     .Where(item => item.Kind == IndexKind.Sql)
+                     .OrderBy(item => item.IndexName, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!tableIds.TryGetValue(index.TableName, out string? tableId))
+                continue;
+            string indexId = ResolvePlannedObjectId(
+                    MigrationObjectKind.Index,
+                    tableId,
+                    index.IndexName) ??
+                ExtraObjectId(MigrationObjectKind.Index, tableId, index.IndexName);
+            if (!knownIds.Add(indexId))
+                continue;
+            definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                indexId,
+                MigrationObjectKind.Index,
+                tableId,
+                indexId,
+                [Attribute("unique", BooleanToken(index.IsUnique))],
+                index.Columns.Select((name, ordinal) => new MigrationNormalizedSchemaMember
+                {
+                    Role = MigrationObjectReferenceRoles.Column,
+                    Ordinal = ordinal,
+                    ObjectId = ResolveActualColumnId(columnIds, index.TableName, name),
+                }).ToArray()));
+        }
+
+        foreach (string viewName in viewNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+        {
+            string viewId = ResolvePlannedObjectId(
+                    MigrationObjectKind.View,
+                    parentObjectId: null,
+                    viewName) ??
+                ExtraObjectId(MigrationObjectKind.View, null, viewName);
+            if (!knownIds.Add(viewId) || _database.GetViewSql(viewName) is not string sql)
+                continue;
+            definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                viewId,
+                MigrationObjectKind.View,
+                parentObjectId: null,
+                targetName: viewId,
+                [Attribute("targetSqlDigest", SqlDigest(sql))]));
+        }
+
+        foreach (TriggerSchema trigger in triggers.OrderBy(
+                     item => item.TriggerName,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            tableIds.TryGetValue(trigger.TableName, out string? tableId);
+            string triggerId = ResolvePlannedObjectId(
+                    MigrationObjectKind.Trigger,
+                    tableId,
+                    trigger.TriggerName) ??
+                ExtraObjectId(MigrationObjectKind.Trigger, tableId, trigger.TriggerName);
+            if (!knownIds.Add(triggerId))
+                continue;
+            string structuralSql =
+                $"CREATE TRIGGER {CSharpDbMigrationSql.Quote(trigger.TriggerName)} " +
+                $"{trigger.Timing.ToString().ToUpperInvariant()} " +
+                $"{trigger.Event.ToString().ToUpperInvariant()} ON " +
+                $"{CSharpDbMigrationSql.Quote(trigger.TableName)} BEGIN {trigger.BodySql} END";
+            definitions.Add(MigrationNormalizedSchemaContract.CreateObject(
+                triggerId,
+                MigrationObjectKind.Trigger,
+                tableId,
+                triggerId,
+                [Attribute("targetSqlDigest", SqlDigest(structuralSql))]));
+        }
+    }
+
+    private string? ResolvePlannedObjectId(
+        MigrationObjectKind kind,
+        string? parentObjectId,
+        string? targetName)
+    {
+        if (string.IsNullOrEmpty(targetName))
+            return null;
+        return _plan.Objects
+            .Where(item => item.Included && _catalogObjects[item.SourceObjectId].Kind == kind)
+            .Where(item => parentObjectId is null || string.Equals(
+                _catalogObjects[item.SourceObjectId].ParentObjectId,
+                parentObjectId,
+                StringComparison.Ordinal))
+            .SingleOrDefault(item => string.Equals(
+                item.TargetName,
+                targetName,
+                StringComparison.OrdinalIgnoreCase))
+            ?.SourceObjectId;
+    }
+
+    private static string ResolveActualColumnId(
+        IReadOnlyDictionary<string, string> columnIds,
+        string tableName,
+        string columnName) =>
+        columnIds.TryGetValue(ColumnLookupKey(tableName, columnName), out string? objectId)
+            ? objectId
+            : ExtraObjectId(MigrationObjectKind.Column, null, $"{tableName}\0{columnName}");
+
+    private static string ColumnLookupKey(string tableName, string columnName) =>
+        $"{tableName}\0{columnName}";
+
+    private static string ExtraObjectId(
+        MigrationObjectKind kind,
+        string? parentObjectId,
+        string discriminator)
+    {
+        string material = string.Join(
+            '\0',
+            "csharpdb-target-extra/v1",
+            kind.ToString(),
+            parentObjectId ?? string.Empty,
+            discriminator.ToLowerInvariant());
+        string digest = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(material)))
+            .ToLowerInvariant();
+        return $"target-extra:{kind.ToString().ToLowerInvariant()}:{digest}";
+    }
+
+    private static bool IsMigrationMetadataTable(string tableName) => tableName is
+        CSharpDbMigrationSql.StateTable or
+        CSharpDbMigrationSql.StageTable or
+        CSharpDbMigrationSql.ReceiptTable or
+        CSharpDbMigrationSql.ValidationReceiptTable;
+
+    private MigrationNormalizedSchemaObject? CaptureTable(
+        MigrationCatalogObject item,
+        IReadOnlyDictionary<string, TableSchema> tables) =>
+        tables.TryGetValue(item.ObjectId, out TableSchema? table)
+            ? CreateActualObject(item, table.TableName)
+            : null;
+
+    private MigrationNormalizedSchemaObject? CaptureColumn(
+        MigrationCatalogObject item,
+        IReadOnlyDictionary<string, TableSchema> tables)
+    {
+        if (item.ParentObjectId is null ||
+            !tables.TryGetValue(item.ParentObjectId, out TableSchema? table))
+        {
+            return null;
+        }
+
+        string expectedName = _planObjects[item.ObjectId].TargetName!;
+        ColumnDefinition? column = table.Columns.SingleOrDefault(candidate =>
+            string.Equals(candidate.Name, expectedName, StringComparison.OrdinalIgnoreCase));
+        if (column is null)
+            return null;
+
+        var attributes = new List<MigrationNormalizedSchemaAttribute>
+        {
+            Attribute("targetType", column.Type.ToString()),
+            Attribute("nullable", BooleanToken(column.Nullable)),
+            Attribute("identity", BooleanToken(column.IsIdentity)),
+            Attribute("rowVersion", BooleanToken(column.IsRowVersion)),
+        };
+        if (column.Collation is not null)
+            attributes.Add(Attribute("collation", column.Collation));
+        if (column.DefaultSql is not null)
+            attributes.Add(Attribute("defaultSqlDigest", SqlDigest(column.DefaultSql)));
+        return CreateActualObject(item, column.Name, attributes);
+    }
+
+    private MigrationNormalizedSchemaObject? CaptureIndex(
+        MigrationCatalogObject item,
+        IReadOnlyList<IndexSchema> indexes,
+        IReadOnlyDictionary<string, TableSchema> tables)
+    {
+        if (item.ParentObjectId is null ||
+            !tables.TryGetValue(item.ParentObjectId, out TableSchema? table))
+        {
+            return null;
+        }
+
+        string expectedName = _planObjects[item.ObjectId].TargetName!;
+        IndexSchema? index = indexes.SingleOrDefault(candidate =>
+            candidate.Kind == IndexKind.Sql &&
+            string.Equals(candidate.IndexName, expectedName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(candidate.TableName, table.TableName, StringComparison.OrdinalIgnoreCase));
+        if (index is null)
+            return null;
+
+        MigrationNormalizedSchemaMember[] members = MapColumnMembers(
+            item.ParentObjectId,
+            index.Columns,
+            MigrationObjectReferenceRoles.Column);
+        return CreateActualObject(
+            item,
+            index.IndexName,
+            [Attribute("unique", BooleanToken(index.IsUnique))],
+            members);
+    }
+
+    private MigrationNormalizedSchemaObject? CaptureKey(
+        MigrationCatalogObject item,
+        IReadOnlyDictionary<string, TableSchema> tables)
+    {
+        if (item.ParentObjectId is null ||
+            !tables.TryGetValue(item.ParentObjectId, out TableSchema? table))
+        {
+            return null;
+        }
+
+        string expectedName = _planObjects[item.ObjectId].TargetName!;
+        KeyConstraintDefinition? key = table.KeyConstraints.SingleOrDefault(candidate =>
+            string.Equals(candidate.ConstraintName, expectedName, StringComparison.OrdinalIgnoreCase));
+        if (key is null)
+            return null;
+
+        string kind = key.Kind switch
+        {
+            KeyConstraintKind.PrimaryKey => "primary",
+            KeyConstraintKind.Unique => "unique",
+            _ => throw new InvalidDataException(
+                $"Target key '{key.ConstraintName}' has unknown kind '{key.Kind}'."),
+        };
+        return CreateActualObject(
+            item,
+            key.ConstraintName!,
+            [Attribute("kind", kind)],
+            MapColumnMembers(item.ParentObjectId, key.Columns, MigrationObjectReferenceRoles.Column));
+    }
+
+    private MigrationNormalizedSchemaObject? CaptureForeignKey(
+        MigrationCatalogObject item,
+        IReadOnlyDictionary<string, TableSchema> tables)
+    {
+        if (item.ParentObjectId is null ||
+            !tables.TryGetValue(item.ParentObjectId, out TableSchema? table))
+        {
+            return null;
+        }
+
+        string expectedName = _planObjects[item.ObjectId].TargetName!;
+        ForeignKeyDefinition? foreignKey = table.ForeignKeys.SingleOrDefault(candidate =>
+            string.Equals(candidate.ConstraintName, expectedName, StringComparison.OrdinalIgnoreCase));
+        if (foreignKey is null)
+            return null;
+
+        IReadOnlyList<string> sourceColumns = foreignKey.ColumnNames.Count > 0
+            ? foreignKey.ColumnNames
+            : [foreignKey.ColumnName];
+        var members = MapColumnMembers(
+                item.ParentObjectId,
+                sourceColumns,
+                MigrationObjectReferenceRoles.SourceColumn)
+            .ToList();
+        string? referencedKeyId = ResolveReferencedKey(item, foreignKey, tables);
+        if (referencedKeyId is not null)
+        {
+            members.Add(new MigrationNormalizedSchemaMember
+            {
+                Role = MigrationObjectReferenceRoles.ReferencedKey,
+                Ordinal = 0,
+                ObjectId = referencedKeyId,
+            });
+        }
+
+        return CreateActualObject(
+            item,
+            foreignKey.ConstraintName,
+            [
+                Attribute("onDelete", foreignKey.OnDelete switch
+                {
+                    ForeignKeyOnDeleteAction.Restrict => "restrict",
+                    ForeignKeyOnDeleteAction.Cascade => "cascade",
+                    _ => throw new InvalidDataException(
+                        $"Target foreign key '{foreignKey.ConstraintName}' has an unknown delete action."),
+                }),
+                Attribute("onUpdate", "restrict"),
+            ],
+            members);
+    }
+
+    private MigrationNormalizedSchemaObject? CaptureCheck(
+        MigrationCatalogObject item,
+        IReadOnlyDictionary<string, TableSchema> tables)
+    {
+        if (item.ParentObjectId is null ||
+            !tables.TryGetValue(item.ParentObjectId, out TableSchema? table))
+        {
+            return null;
+        }
+
+        string expectedName = _planObjects[item.ObjectId].TargetName!;
+        CheckConstraintDefinition? check = table.CheckConstraints.SingleOrDefault(candidate =>
+            string.Equals(candidate.ConstraintName, expectedName, StringComparison.OrdinalIgnoreCase));
+        return check is null
+            ? null
+            : CreateActualObject(
+                item,
+                check.ConstraintName!,
+                [Attribute("targetSqlDigest", SqlDigest(check.ExpressionSql))]);
+    }
+
+    private MigrationNormalizedSchemaObject? CaptureView(
+        MigrationCatalogObject item,
+        IReadOnlyList<string> viewNames)
+    {
+        string expectedName = _planObjects[item.ObjectId].TargetName!;
+        string? actualName = viewNames.SingleOrDefault(candidate =>
+            string.Equals(candidate, expectedName, StringComparison.OrdinalIgnoreCase));
+        if (actualName is null || _database.GetViewSql(actualName) is not string sql)
+            return null;
+        return CreateActualObject(
+            item,
+            actualName,
+            [Attribute("targetSqlDigest", SqlDigest(sql))]);
+    }
+
+    private MigrationNormalizedSchemaObject? CaptureTrigger(
+        MigrationCatalogObject item,
+        IReadOnlyList<TriggerSchema> triggers)
+    {
+        string expectedName = _planObjects[item.ObjectId].TargetName!;
+        TriggerSchema? trigger = triggers.SingleOrDefault(candidate =>
+            string.Equals(candidate.TriggerName, expectedName, StringComparison.OrdinalIgnoreCase));
+        if (trigger is null)
+            return null;
+
+        string structuralSql =
+            $"CREATE TRIGGER {CSharpDbMigrationSql.Quote(trigger.TriggerName)} " +
+            $"{trigger.Timing.ToString().ToUpperInvariant()} " +
+            $"{trigger.Event.ToString().ToUpperInvariant()} ON " +
+            $"{CSharpDbMigrationSql.Quote(trigger.TableName)} BEGIN {trigger.BodySql} END";
+        return CreateActualObject(
+            item,
+            trigger.TriggerName,
+            [Attribute("targetSqlDigest", SqlDigest(structuralSql))]);
+    }
+
+    private string? ResolveReferencedKey(
+        MigrationCatalogObject foreignKeyObject,
+        ForeignKeyDefinition foreignKey,
+        IReadOnlyDictionary<string, TableSchema> tables)
+    {
+        string? referencedKeyId = foreignKeyObject.Members
+            .Where(member => string.Equals(
+                member.Role,
+                MigrationObjectReferenceRoles.ReferencedKey,
+                StringComparison.Ordinal))
+            .OrderBy(member => member.Ordinal)
+            .Select(member => member.ObjectId)
+            .SingleOrDefault();
+        if (referencedKeyId is null ||
+            !_catalogObjects.TryGetValue(referencedKeyId, out MigrationCatalogObject? referencedKey) ||
+            referencedKey.Kind != MigrationObjectKind.Key ||
+            referencedKey.ParentObjectId is null ||
+            !tables.TryGetValue(referencedKey.ParentObjectId, out TableSchema? table) ||
+            !_planObjects.TryGetValue(referencedKeyId, out MigrationPlanObject? keyPlan) ||
+            !keyPlan.Included)
+        {
+            return null;
+        }
+
+        IReadOnlyList<string> referencedColumns = foreignKey.ReferencedColumnNames.Count > 0
+            ? foreignKey.ReferencedColumnNames
+            : [foreignKey.ReferencedColumnName];
+        KeyConstraintDefinition? key = table.KeyConstraints.SingleOrDefault(candidate =>
+            string.Equals(
+                candidate.ConstraintName,
+                keyPlan.TargetName,
+                StringComparison.OrdinalIgnoreCase));
+        if (key is null ||
+            !string.Equals(
+                table.TableName,
+                foreignKey.ReferencedTableName,
+                StringComparison.OrdinalIgnoreCase) ||
+            !key.Columns.SequenceEqual(referencedColumns, StringComparer.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        return referencedKeyId;
+    }
+
+    private MigrationNormalizedSchemaMember[] MapColumnMembers(
+        string tableObjectId,
+        IReadOnlyList<string> actualColumnNames,
+        string role) => actualColumnNames
+        .Select((columnName, ordinal) => new MigrationNormalizedSchemaMember
+        {
+            Role = role,
+            Ordinal = ordinal,
+            ObjectId = ResolveColumnObjectId(tableObjectId, columnName),
+        })
+        .ToArray();
+
+    private string ResolveColumnObjectId(string tableObjectId, string targetColumnName)
+    {
+        MigrationPlanObject? column = _plan.Objects.SingleOrDefault(candidate =>
+            candidate.Included &&
+            _catalogObjects[candidate.SourceObjectId].Kind == MigrationObjectKind.Column &&
+            string.Equals(
+                _catalogObjects[candidate.SourceObjectId].ParentObjectId,
+                tableObjectId,
+                StringComparison.Ordinal) &&
+            string.Equals(candidate.TargetName, targetColumnName, StringComparison.OrdinalIgnoreCase));
+        return column?.SourceObjectId ??
+            $"target-column:{tableObjectId}:{targetColumnName.ToLowerInvariant()}";
+    }
+
+    private static MigrationNormalizedSchemaObject CreateActualObject(
+        MigrationCatalogObject item,
+        string targetName,
+        IReadOnlyList<MigrationNormalizedSchemaAttribute>? attributes = null,
+        IReadOnlyList<MigrationNormalizedSchemaMember>? members = null) =>
+        MigrationNormalizedSchemaContract.CreateObject(
+            item.ObjectId,
+            item.Kind,
+            item.ParentObjectId,
+            targetName,
+            attributes,
+            members);
+
+    private static MigrationNormalizedSchemaAttribute Attribute(string name, string value) => new()
+    {
+        Name = name,
+        Value = value,
+    };
+
+    private static string BooleanToken(bool value) => value ? "true" : "false";
+
+    private static string SqlDigest(string sql) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sql))).ToLowerInvariant();
 
     public async ValueTask DisposeAsync()
     {
@@ -613,6 +1597,20 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
             actions.Count);
     }
 
+    private async ValueTask RequireMutableLifecycleAsync(CancellationToken cancellationToken)
+    {
+        TargetState state = await ReadStateAsync(_database, cancellationToken).ConfigureAwait(false);
+        ValidateState(state, _plan, _snapshotIdentity);
+        if (string.Equals(
+                state.LifecycleState,
+                CSharpDbMigrationSql.ActivatedState,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "Activated migration targets refuse further schema or data mutation.");
+        }
+    }
+
     private async ValueTask<StageReceipt?> ReadStageAsync(
         MigrationSchemaStage stage,
         CancellationToken cancellationToken)
@@ -792,6 +1790,7 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
 
     private static DatabaseOptions CreateDatabaseOptions() =>
         new DatabaseOptions().ConfigureStorageEngine(builder => builder
+            .UsePrimaryFileShare(FileShare.Read)
             .UseHybridFileCachePreset(MigrationPageCachePages)
             .UseWriteOptimizedPreset());
 
@@ -841,6 +1840,7 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
         CSharpDbMigrationSql.ConstraintsState,
         CSharpDbMigrationSql.ViewsState,
         CSharpDbMigrationSql.AwaitingValidationState,
+        CSharpDbMigrationSql.ActivatedState,
     ],
         StringComparer.Ordinal);
 
@@ -891,26 +1891,44 @@ public sealed class CSharpDbStagedMigrationTarget : IMigrationTarget
         string StageDigest,
         long ActionCount);
 
-    private sealed class CSharpDbValidationSnapshot : IValidationSnapshot
+    private sealed class CSharpDbValidationSnapshot : IMigrationEvidenceValidationSnapshot
     {
         private readonly Database.ReaderSession _session;
         private readonly IReadOnlyDictionary<string, MigrationPlanObject> _planObjects;
         private readonly MigrationCatalog _catalog;
+        private readonly MigrationNormalizedSchema _schema;
         private bool _disposed;
 
         internal CSharpDbValidationSnapshot(
             Database.ReaderSession session,
             string targetIdentity,
             IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
-            MigrationCatalog catalog)
+            MigrationCatalog catalog,
+            MigrationNormalizedSchema schema)
         {
             _session = session;
             _planObjects = planObjects;
             _catalog = catalog;
-            SnapshotIdentity = $"staged-target:{targetIdentity}:awaiting-validation";
+            _schema = schema;
+            // Activation must not change the identity bound into the durable
+            // report; reopening and validating the same target is idempotent.
+            SnapshotIdentity = ValidationSnapshotIdentity(
+                targetIdentity,
+                CSharpDbMigrationSql.AwaitingValidationState);
         }
 
         public string SnapshotIdentity { get; }
+
+        public MigrationSnapshotConsistencyStatus ConsistencyStatus =>
+            MigrationSnapshotConsistencyStatus.Established;
+
+        public ValueTask<MigrationNormalizedSchema> ReadSchemaAsync(
+            CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(_schema);
+        }
 
         public async ValueTask<long> CountAsync(
             string objectId,

@@ -8,14 +8,17 @@ public sealed class FileStorageDevice : IStorageDevice
     private readonly string _filePath;
     private readonly Lazy<SafeFileHandle?> _sequentialReadHandle;
 
-    public FileStorageDevice(string filePath, bool createNew = false)
+    public FileStorageDevice(
+        string filePath,
+        bool createNew = false,
+        FileShare fileShare = FileShare.ReadWrite)
     {
         _filePath = filePath;
         _handle = File.OpenHandle(
             filePath,
             createNew ? FileMode.CreateNew : FileMode.OpenOrCreate,
             FileAccess.ReadWrite,
-            FileShare.ReadWrite,
+            fileShare,
             FileOptions.Asynchronous | FileOptions.RandomAccess);
 
         _sequentialReadHandle = new Lazy<SafeFileHandle?>(CreateSequentialReadHandle, isThreadSafe: true);

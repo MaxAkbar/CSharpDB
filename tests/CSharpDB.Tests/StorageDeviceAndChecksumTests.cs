@@ -156,6 +156,46 @@ public sealed class StorageDeviceAndChecksumTests
     }
 
     [Fact]
+    public async Task FileStorageDevice_DefaultSharePreservesMultipleWriterCompatibility()
+    {
+        string path = NewTempPath();
+        try
+        {
+            await using var first = new FileStorageDevice(path, createNew: true);
+            await using var second = new FileStorageDevice(path);
+            Assert.Equal(first.Length, second.Length);
+        }
+        finally
+        {
+            DeleteIfExists(path);
+        }
+    }
+
+    [Fact]
+    public async Task FileStorageDevice_ReadShareAllowsReaderButRejectsSecondWriter()
+    {
+        string path = NewTempPath();
+        try
+        {
+            await using var owner = new FileStorageDevice(
+                path,
+                createNew: true,
+                FileShare.Read);
+            using var reader = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite);
+
+            Assert.Throws<IOException>(() => new FileStorageDevice(path));
+        }
+        finally
+        {
+            DeleteIfExists(path);
+        }
+    }
+
+    [Fact]
     public void AdditiveChecksumProvider_EmptyBuffer_IsZero()
     {
         var provider = new AdditiveChecksumProvider();

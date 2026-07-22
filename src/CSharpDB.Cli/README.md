@@ -114,6 +114,7 @@ csharpdb migrate inspect --source synthetic --out <catalog.json>
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <run.json> [--resume] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--format text|json]
 ```
 
 These commands inspect the immutable synthetic qualification source, produce
@@ -129,6 +130,15 @@ contains only its stable code plus object, batch, row, and column coordinates.
 Plans requesting durable skip-and-record rejects are refused before a staged
 target is created.
 
+`migrate validate` compares normalized schema, 64-bit counts, and—by
+default—partitioned canonical SHA-256 evidence. It writes a deterministic,
+self-digesting JSON audit report and prints either a compact text summary or
+the JSON report. Validation uses bounded temporary spill space. Only an
+established, passing result whose report is successfully published can activate
+the staged database; differences, errors, or unavailable consistency leave it
+unactivated. Repeating the same validation/report path is idempotent, while a
+different existing report is never overwritten.
+
 ## Project Layout
 
 - `Program.cs` - command dispatch and shell startup
@@ -139,7 +149,7 @@ target is created.
 - `MaintenanceCommandRunner.cs` - maintenance commands
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
-- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, and resume commands
+- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, resume, and validate commands
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
 ## Build And Test

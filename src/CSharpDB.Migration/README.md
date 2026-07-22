@@ -4,8 +4,8 @@ Shared, provider-neutral contracts for the CSharpDB migration assurance stack.
 The project remains non-packable until its wire contracts and public SDK
 interfaces complete an explicit freeze review.
 
-The project contains the Phase 1 planning vertical slice and the
-provider-neutral part of the Phase 2 staged-apply slice:
+The project contains the Phase 1 planning vertical slice, the provider-neutral
+part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
 
 - versioned catalog and plan artifact formats;
 - deterministic SHA-256 artifact envelopes;
@@ -38,6 +38,16 @@ provider-neutral part of the Phase 2 staged-apply slice:
   failing prepared batch, and exact replay of prior transactional receipts;
 - a bounded streaming apply coordinator with transactional-receipt resume
   verification and ordered schema-stage orchestration;
+- the versioned `csharpdb-canon-v1` logical row codec, cross-platform golden
+  vectors, and plan-bound row/key projections;
+- deterministic normalized-schema, 64-bit count, and 256-partition SHA-256
+  validation with duplicate preservation and bounded spill/sort;
+- self-digesting JSON and deterministic text validation reports containing
+  identities, counts, and hashes but no raw row values;
+- coherent-snapshot enforcement with `Inconclusive` outcomes when consistency
+  cannot be established; and
+- a report-before-activation contract that requires a published, canonical,
+  semantically `Passed` report before the staged target can activate;
 - provisional inspector, streaming source, target, snapshot, and validator
   interfaces while this project remains non-packable;
 - an immutable awkward synthetic inspector, row source, and deterministic
@@ -76,4 +86,11 @@ csharpdb migrate inspect --source synthetic --out catalog.json
 csharpdb migrate plan catalog.json --out plan.json [--profile preserve|queryable] [--accept-exclusions all|<id,...>]
 csharpdb migrate preview plan.json --catalog catalog.json [--format text|json]
 csharpdb migrate apply plan.json --catalog catalog.json --target staged.csdb --out run.json [--resume] [--format text|json]
+csharpdb migrate validate plan.json --catalog catalog.json --target staged.csdb --out validation.json [--level schema|count|checksum] [--spill-dir directory] [--format text|json]
 ```
+
+`validate` reads schema, counts, and rows from one source snapshot and one target
+snapshot. Checksum validation uses bounded temporary spill space and removes its
+owned workspace on success, cancellation, or failure. A passing report is
+durably published and re-verified before activation; `Different`, `Error`, and
+`Inconclusive` reports leave the target staged.
