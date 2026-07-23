@@ -100,6 +100,106 @@ public sealed class CliIntegrationTests
     }
 
     [Fact]
+    public async Task CliProcess_MigrateCsv_UsesRetainedPackageAfterRawInputIsDeleted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string workDir = NewTempDirectory();
+        string sourcePath = Path.Combine(workDir, "orders.csv");
+        string packagePath = Path.Combine(workDir, "orders.csdbcsv");
+        string catalogPath = Path.Combine(workDir, "catalog.json");
+        string planPath = Path.Combine(workDir, "plan.json");
+        string targetPath = Path.Combine(workDir, "staged.csdb");
+        string runPath = Path.Combine(workDir, "run.json");
+
+        try
+        {
+            await File.WriteAllTextAsync(
+                sourcePath,
+                """
+                id,name
+                1,alpha
+                2,"bravo
+                incorporated"
+                3,charlie
+                """,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                ct);
+
+            CliProcessResult inspect = await RunCliAsync(
+                [
+                    "migrate", "inspect",
+                    "--source", "csv",
+                    "--input", sourcePath,
+                    "--package", packagePath,
+                    "--out", catalogPath,
+                ],
+                string.Empty,
+                workDir,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitOk, inspect.ExitCode);
+            Assert.True(string.IsNullOrWhiteSpace(inspect.StdErr));
+            Match digestMatch = Regex.Match(
+                inspect.StdOut,
+                @"(?:^|\|\s*)manifestDigest=(sha256:[0-9a-f]{64})(?:\s*\||\s*$)",
+                RegexOptions.CultureInvariant);
+            Assert.True(digestMatch.Success, $"No manifest digest was emitted: {inspect.StdOut}");
+            string manifestDigest = digestMatch.Groups[1].Value;
+            Assert.True(File.Exists(packagePath));
+            Assert.True(File.Exists(catalogPath));
+            byte[] originalPackage = await File.ReadAllBytesAsync(packagePath, ct);
+
+            File.Delete(sourcePath);
+
+            CliProcessResult plan = await RunCliAsync(
+                [
+                    "migrate", "plan", catalogPath,
+                    "--out", planPath,
+                    "--accept-exclusions", "all",
+                ],
+                string.Empty,
+                workDir,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitWarn, plan.ExitCode);
+            Assert.True(string.IsNullOrWhiteSpace(plan.StdErr));
+            Assert.True(File.Exists(planPath));
+
+            CliProcessResult apply = await RunCliAsync(
+                [
+                    "migrate", "apply", planPath,
+                    "--catalog", catalogPath,
+                    "--source-package", packagePath,
+                    "--expected-manifest-digest", manifestDigest,
+                    "--target", targetPath,
+                    "--out", runPath,
+                    "--format", "json",
+                ],
+                string.Empty,
+                workDir,
+                ct);
+
+            Assert.Equal(InspectorCommandRunner.ExitWarn, apply.ExitCode);
+            Assert.True(string.IsNullOrWhiteSpace(apply.StdErr));
+            Assert.False(File.Exists(sourcePath));
+            Assert.True(File.Exists(packagePath));
+            Assert.Equal(originalPackage, await File.ReadAllBytesAsync(packagePath, ct));
+            Assert.True(File.Exists(targetPath));
+            Assert.True(File.Exists(runPath));
+            Assert.False(File.Exists(targetPath + ".migration.lock"));
+
+            using JsonDocument stdout = JsonDocument.Parse(apply.StdOut);
+            using JsonDocument report = JsonDocument.Parse(await File.ReadAllTextAsync(runPath, ct));
+            Assert.Equal(3, stdout.RootElement.GetProperty("rowsWritten").GetInt64());
+            Assert.Equal(stdout.RootElement.GetRawText(), report.RootElement.GetRawText());
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(workDir);
+        }
+    }
+
+    [Fact]
     public async Task CliProcess_InfoCommand_WorksOnFreshDatabase()
     {
         var ct = TestContext.Current.CancellationToken;

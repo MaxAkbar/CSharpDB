@@ -84,5 +84,5 @@ change which rows were skipped. Typed binary fields also remain deferred until
 a manifest declares base64 or hex intent and a decoded-size bound. The durable
 raw-snapshot and policy package used to cross process boundaries is described
 in [`migration-csv-retained-package.md`](migration-csv-retained-package.md).
-CLI wiring, export, typed binary declarations, and large-stream performance
-qualification remain later Phase 4A work.
+Export, typed binary declarations, and large-stream performance qualification
+remain later Phase 4A work.

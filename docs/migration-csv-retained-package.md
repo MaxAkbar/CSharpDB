@@ -105,11 +105,35 @@ scope remain identical across processes.
 ephemeral workspace after active readers close. It never deletes the durable
 package. Independent sessions receive independent snapshots and readers.
 
+## CLI Boundary
+
+`csharpdb migrate inspect --source csv` snapshots, inspects, infers, and
+publishes the retained package before writing the ordinary migration catalog.
+The status line returns the writer's exact `manifestDigest`; it is not placed
+in a sidecar or overloaded into the semantic catalog. Existing package paths
+are never overwritten. Once package publication succeeds the CLI never
+deletes that pathname: if catalog publication then fails, it reports and
+preserves the complete package so a concurrent replacement cannot be mistaken
+for an owned rollback artifact.
+
+CSV apply, resume, and validation require `--source-package` together with an
+independently retained `--expected-manifest-digest`. Reopen checks that exact
+container pin before manifest allocation, then the CLI checks the reconstructed
+catalog digest, target version, source identity, and adapter policy against the
+supplied catalog and plan before creating or opening the staged target. The
+package path is also prohibited from colliding with the plan, catalog, target,
+target companions, or report. The CLI requires the package parent and optional
+workspace to preexist and rejects either trust-boundary directory when it is a
+link, reparse point, or device. Ancestor aliases are resolved before role
+comparison so they cannot bypass those collision checks. Synthetic migration
+syntax remains unchanged.
+
 ## Deferred Work
 
 This slice does not add overwrite, repair, in-place upgrade, automatic
 retention cleanup, deduplication, signatures, encryption, direct reads from the
 durable package, remote/object storage, or package-embedded plans and receipts.
-CLI command wiring is the next Phase 4A boundary. Tolerant rejects, typed CSV
-binary declarations, export manifests, and large-stream performance
-qualification remain separate work.
+A future plan-artifact version may carry a generic source-container digest so
+operators do not need to pass the independently trusted pin again. Tolerant
+rejects, typed CSV binary declarations, export manifests, and large-stream
+performance qualification remain separate work.

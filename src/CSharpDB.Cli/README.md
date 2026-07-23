@@ -111,17 +111,35 @@ Migration planning proof surface:
 
 ```powershell
 csharpdb migrate inspect --source synthetic --out <catalog.json>
+csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header]
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
-csharpdb migrate apply <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <run.json> [--resume] [--format text|json]
-csharpdb migrate validate <plan.json> --catalog <catalog.json> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--format text|json]
 ```
 
-These commands inspect the immutable synthetic qualification source, produce
-digested deterministic planning artifacts, and apply an explicitly approved
-plan to a new staged database. Apply never overwrites or activates an existing
-target. Rows and receipts commit together; `--resume` replays the same source
-snapshot and skips only batches whose identities and digests match exactly.
+Inspection supports both the immutable synthetic qualification source and a
+strict CSV source. CSV inspection freezes the raw bytes and complete reader and
+inference policy into one no-overwrite `.csdbcsv` package, writes the normal
+catalog artifact, and prints `manifestDigest=sha256:...`. Retain that digest in
+an independently trusted change record or CI parameter; CSV apply, resume, and
+validation require it through `--expected-manifest-digest`. The original CSV
+path is not retained and is never reopened after inspection. Common delimiter
+detection is automatic; `--delimiter` supplies the only candidate when an
+explicit convention is required. CSV defaults are strict UTF-8 with BOM
+detection, a header row, invariant culture, and no null token.
+The package parent and any explicit workspace must already exist and remain
+caller-controlled and cannot themselves be links, junctions, reparse points,
+or devices. CSV collision checks resolve link aliases in ancestor components
+before comparing input, package, catalog, plan, target, and report roles.
+
+These commands produce digested deterministic planning artifacts and apply an
+explicitly approved plan to a new staged database. Apply never overwrites or
+activates an existing target. Before target creation, CSV execution verifies
+the exact package-manifest digest and reconstructs the catalog, source fingerprint,
+snapshot identity, parser policy, and inference recipe. Rows and receipts
+commit together; `--resume` replays the same source snapshot and skips only
+batches whose identities and digests match exactly.
 Successful execution stops at `awaitingValidation` and writes a derived run
 report that contains no source values or resume cursors. Phase 2 uses the
 versioned `csharpdb-migration-fail-fast/v1` contract: the first invalid value
@@ -164,6 +182,7 @@ dotnet test tests/CSharpDB.Cli.Tests/CSharpDB.Cli.Tests.csproj
 - `CSharpDB.Client`
 - `CSharpDB.DevOps`
 - `CSharpDB.Engine`
+- `CSharpDB.Migration.Files`
 - `CSharpDB.Sql`
 - `CSharpDB.Storage.Diagnostics`
 - `Spectre.Console`

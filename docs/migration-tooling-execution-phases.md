@@ -382,8 +382,10 @@ canonical bytes, and supplies deterministic snapshot/policy-bound cursors.
 Inspection and a later process can now cross a durable boundary through an
 atomically published, canonical, tamper-evident `.csdbcsv` package that embeds
 the raw snapshot and replays its exact reader, inference, and catalog policy.
-Tolerant rejects, CLI prepared-write orchestration, typed export manifests,
-and export are not yet complete; see
+The CLI now inspects raw CSV into that package plus the standard catalog, emits
+an independently retainable manifest digest, and requires the exact package
+pin for apply, resume, and validation before target mutation. Tolerant rejects,
+typed export manifests, and export are not yet complete; see
 [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md),
 [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md),
 [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md),
@@ -415,6 +417,9 @@ and export are not yet complete; see
 - [x] Add an atomic single-file retained snapshot package with canonical
   manifests, strict/tamper-aware reopen, trusted digest pinning, copy-on-open
   ownership, and cross-process schema/catalog/cursor replay.
+- [x] Wire CLI inspect, plan, apply, resume, and validation across the retained
+  package boundary with an external manifest pin and pre-target catalog/source
+  verification.
 
 - [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [x] Support quoted multiline fields, escaped quotes, explicit/detected

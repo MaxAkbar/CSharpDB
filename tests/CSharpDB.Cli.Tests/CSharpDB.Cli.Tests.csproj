@@ -15,6 +15,7 @@
     <ProjectReference Include="..\..\src\CSharpDB.DevOps\CSharpDB.DevOps.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Engine\CSharpDB.Engine.csproj" />
     <ProjectReference Include="..\..\src\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <ProjectReference Include="..\..\src\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
   </ItemGroup>
 
   <ItemGroup>
