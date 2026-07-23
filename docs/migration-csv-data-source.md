@@ -23,7 +23,7 @@ does not imply a business key, so emitted rows deliberately use a null
 `StableKey`; global row ordinals and target-owned transactional receipts carry
 execution order and idempotency instead.
 
-## Strict Full-Stream Validation
+## Full-Stream Validation And Row Outcomes
 
 Reads accept only the stable `csv:table:0` object and canonical ordinal column
 IDs. Unknown, duplicate, noncanonical, or empty projections fail before a
@@ -44,26 +44,38 @@ Every projected non-null scalar passes through
 - individual value and aggregate row overflows have separate stable size rule
   IDs.
 
-Failures use `MigrationRowRejectedException.CreateForSource`, which has no
-free-form message or caller-supplied inner exception and bounds its identifier
-tokens. The CSV adapter passes only constant rules and canonical object IDs, so
-raw values, stable keys, and cursor text never enter its exception or failure
-report.
+Fail-fast reads raise `MigrationRowRejectedException.CreateForSource`, which has
+no free-form message or caller-supplied inner exception and bounds its identifier
+tokens. Under the opt-in deterministic-reject contract, the first
+`MissingField`, `NullNotAllowed`, or `TypeMismatch` failure in projected column
+order becomes a canonical rejected-row outcome. Its fixed evidence registry
+records column and record coordinates, physical line span, field kind, quote
+state, and the exact decoded text before null mapping or normalization. A null
+token retains its text; a missing field records a null raw value.
+
+Parser, encoding, snapshot-integrity, target-conversion, value/row-size,
+cancellation, unknown, disallowed-rule, and reject-policy limit failures remain
+fatal. Error messages contain no raw value, stable key, or cursor text.
 
 ## Batches And Cursors
 
 `MigrationReadRequest` now carries the plan's `MaxBatchBytes` and
 `MaxValueBytes`; apply and validation pass those values to every source read.
-CSV batches split before either the requested row count or a conservative
-source-canonical byte upper bound would be exceeded. The apply runner remains
-the final authority after target conversion. Fixed adapter safety ceilings may
-split an unusually large direct request earlier, keeping object overhead
-bounded independently of untrusted request values.
+CSV batches split before either the requested outcome count or a conservative
+source-canonical byte upper bound would be exceeded. Accepted and rejected rows
+share the same contiguous input interval, so mixed and all-reject batches
+advance cursors exactly once. Reject counts, sensitive evidence bytes, and
+canonical artifact bytes use the same checked accounting as the target ledger.
+The apply runner remains the final authority after target conversion. Fixed
+adapter safety ceilings may split an unusually large direct request earlier,
+keeping object overhead bounded independently of untrusted request values.
 
 Cursor contract `csharpdb-csv-cursor-v1` records the next zero-based data-row
 offset and global batch ordinal. Its position token binds those ordinals plus
 the source fingerprint, snapshot, catalog, schema/scalar contracts, complete
 inferred schema, ordered projection, row limit, and byte/value limits. A cursor
+for deterministic rejects additionally binds the contract, complete allowed-rule
+list, and every reject limit. Fail-fast cursor bytes are unchanged. A cursor
 from a different snapshot or policy is rejected before scanning. Resume
 reparses the immutable snapshot and discards the prefix until it proves the
 exact batch boundary; it
@@ -78,10 +90,11 @@ boundary.
 
 ## Deferred Work
 
-This strict slice does not invent tolerant skip semantics. Durable reject
-files require a row/reject/receipt transaction contract so a crash cannot
-change which rows were skipped. Typed binary fields also remain deferred until
-a manifest declares base64 or hex intent and a decoded-size bound. The durable
+The target-owned ledger and receipt, rather than an operator-facing file, are
+the durable authority for skipped rows. Reject-aware validation comparison and
+bounded artifact publication remain gated, so the CLI still exposes fail-fast
+apply only. Typed binary fields also remain deferred until a manifest declares
+base64 or hex intent and a decoded-size bound. The durable
 raw-snapshot and policy package used to cross process boundaries is described
 in [`migration-csv-retained-package.md`](migration-csv-retained-package.md).
 Large-stream behavior is qualified by the 50,000-row CI fixture and isolated

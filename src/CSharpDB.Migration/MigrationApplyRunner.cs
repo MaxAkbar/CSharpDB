@@ -42,6 +42,10 @@ public sealed record MigrationApplyResult
 
     public long RowsSkipped { get; init; }
 
+    public long RejectedRowsWritten { get; init; }
+
+    public long RejectedRowsSkipped { get; init; }
+
     public int PeakBufferedRows { get; init; }
 
     public long PeakBufferedBytes { get; init; }
@@ -75,7 +79,10 @@ public sealed class MigrationApplyRunner
         MigrationPlan plan = request.Plan;
         MigrationCatalog catalog = request.Catalog;
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog, request.MappingPolicy);
-        MigrationApplyPolicyValidator.ValidateForExecution(plan);
+        MigrationApplyPolicyValidator.ValidateForExecution(
+            plan,
+            request.Source,
+            request.Target);
         if (request.Source.Source != plan.Source)
             throw new InvalidDataException("Migration data source identity does not match the bound plan source.");
         if (request.Source is IMigrationCatalogBoundDataSource catalogBoundSource &&
@@ -99,6 +106,13 @@ public sealed class MigrationApplyRunner
 
         string snapshotIdentity = request.Source.SnapshotIdentity;
         string planDigest = MigrationArtifactSerializer.ComputePlanDigest(plan);
+        string rejectContractVersion = plan.Load.RejectMode switch
+        {
+            MigrationRejectMode.FailFast => MigrationRejectContract.DeterministicFailFastV1,
+            MigrationRejectMode.DeterministicRejects =>
+                MigrationRejectContract.DeterministicRejectsV1,
+            _ => throw new InvalidDataException("Migration plan reject mode is unsupported."),
+        };
         IReadOnlyDictionary<string, MigrationCatalogObject> catalogObjects = catalog.Objects
             .ToDictionary(item => item.ObjectId, StringComparer.Ordinal);
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects = plan.Objects
@@ -115,6 +129,8 @@ public sealed class MigrationApplyRunner
         long batchesSkipped = 0;
         long rowsWritten = 0;
         long rowsSkipped = 0;
+        long rejectedRowsWritten = 0;
+        long rejectedRowsSkipped = 0;
         int peakRows = 0;
         long peakBytes = 0;
 
@@ -144,6 +160,8 @@ public sealed class MigrationApplyRunner
                 BatchSize = plan.Load.BatchSize,
                 MaxBatchBytes = plan.Load.MaxBatchBytes,
                 MaxValueBytes = plan.Load.MaxValueBytes,
+                RejectContractVersion = rejectContractVersion,
+                RejectPolicy = plan.Load.RejectPolicy,
                 SnapshotToken = snapshotIdentity,
             };
 
@@ -155,14 +173,17 @@ public sealed class MigrationApplyRunner
                                .WithCancellation(cancellationToken)
                                .ConfigureAwait(false))
             {
-                ValidateSourceBatch(
+                long[] acceptedSourceOrdinals = ValidateSourceBatch(
                     sourceBatch,
                     sourceObject.ObjectId,
                     snapshotIdentity,
                     columnObjectIds,
                     expectedBatchOrdinal,
                     expectedStartCursor,
-                    plan.Load.BatchSize);
+                    plan.Load.BatchSize,
+                    sourceRowOrdinal,
+                    rejectContractVersion,
+                    plan.Load.RejectPolicy);
 
                 var targetRows = new MigrationTargetRow[sourceBatch.Rows.Count];
                 long bufferedBytes = 0;
@@ -172,10 +193,11 @@ public sealed class MigrationApplyRunner
                     MigrationDataRow sourceRow = sourceBatch.Rows[rowIndex] ??
                         throw new InvalidDataException(
                             $"Source batch '{sourceObject.ObjectId}'/{expectedBatchOrdinal} contains a null row.");
+                    long acceptedSourceRowOrdinal = acceptedSourceOrdinals[rowIndex];
                     if (sourceRow.Values is null || sourceRow.Values.Count != columns.Length)
                     {
                         throw new InvalidDataException(
-                            $"Source row {sourceRowOrdinal} for '{sourceObject.ObjectId}' has {sourceRow.Values?.Count ?? -1} values; expected {columns.Length}.");
+                            $"Source row {acceptedSourceRowOrdinal} for '{sourceObject.ObjectId}' has {sourceRow.Values?.Count ?? -1} values; expected {columns.Length}.");
                     }
 
                     var values = new CSharpDB.Primitives.DbValue[columns.Length];
@@ -189,7 +211,7 @@ public sealed class MigrationApplyRunner
                                 sourceRow.Values[columnIndex],
                                 columns[columnIndex],
                                 mappings[columnIndex],
-                                sourceRowOrdinal);
+                                acceptedSourceRowOrdinal);
                         }
                         catch (MigrationValueException error)
                         {
@@ -198,7 +220,7 @@ public sealed class MigrationApplyRunner
                                 sourceObject.ObjectId,
                                 columns[columnIndex].ObjectId,
                                 sourceBatch.BatchOrdinal,
-                                sourceRowOrdinal,
+                                acceptedSourceRowOrdinal,
                                 error);
                         }
                         int valueBytes = MigrationValueConverter.GetCanonicalByteCount(converted);
@@ -209,7 +231,7 @@ public sealed class MigrationApplyRunner
                                 sourceObject.ObjectId,
                                 columns[columnIndex].ObjectId,
                                 sourceBatch.BatchOrdinal,
-                                sourceRowOrdinal,
+                                acceptedSourceRowOrdinal,
                                 new InvalidDataException(
                                     $"Converted value exceeds MaxValueBytes ({plan.Load.MaxValueBytes})."));
                         }
@@ -235,14 +257,31 @@ public sealed class MigrationApplyRunner
 
                     targetRows[rowIndex] = new MigrationTargetRow
                     {
-                        SourceRowOrdinal = sourceRowOrdinal,
+                        SourceRowOrdinal = acceptedSourceRowOrdinal,
                         StableKey = sourceRow.StableKey,
                         Values = values,
                     };
-                    sourceRowOrdinal++;
+                }
+                sourceRowOrdinal = checked(
+                    sourceRowOrdinal + sourceBatch.Rows.Count + sourceBatch.RejectedRows.Count);
+                foreach (MigrationRejectedRow rejectedRow in sourceBatch.RejectedRows)
+                {
+                    bufferedBytes = checked(
+                        bufferedBytes +
+                        MigrationRejectLedgerCodec.GetCanonicalEntryByteCount(
+                            sourceObject.ObjectId,
+                            sourceBatch.BatchOrdinal,
+                            rejectedRow));
+                    if (bufferedBytes > plan.Load.MaxBatchBytes)
+                    {
+                        throw new InvalidDataException(
+                            $"Source batch '{sourceObject.ObjectId}'/{expectedBatchOrdinal} exceeds MaxBatchBytes ({plan.Load.MaxBatchBytes}).");
+                    }
                 }
 
-                peakRows = Math.Max(peakRows, targetRows.Length);
+                peakRows = Math.Max(
+                    peakRows,
+                    checked(targetRows.Length + sourceBatch.RejectedRows.Count));
                 peakBytes = Math.Max(peakBytes, bufferedBytes);
                 var targetBatch = new MigrationTargetBatch
                 {
@@ -256,8 +295,9 @@ public sealed class MigrationApplyRunner
                     StartCursor = sourceBatch.StartCursor,
                     NextCursor = sourceBatch.NextCursor,
                     BatchDigest = string.Empty,
-                    RejectContractVersion = MigrationRejectContract.DeterministicFailFastV1,
+                    RejectContractVersion = rejectContractVersion,
                     Rows = targetRows,
+                    RejectedRows = sourceBatch.RejectedRows,
                 };
                 targetBatch = targetBatch with
                 {
@@ -278,6 +318,7 @@ public sealed class MigrationApplyRunner
                     ValidateReceipt(request.Target.TargetIdentity, targetBatch, existing);
                     batchesSkipped++;
                     rowsSkipped += targetRows.Length;
+                    rejectedRowsSkipped += sourceBatch.RejectedRows.Count;
                 }
                 else
                 {
@@ -287,6 +328,7 @@ public sealed class MigrationApplyRunner
                     ValidateReceipt(request.Target.TargetIdentity, targetBatch, written);
                     batchesWritten++;
                     rowsWritten += targetRows.Length;
+                    rejectedRowsWritten += sourceBatch.RejectedRows.Count;
                 }
 
                 expectedBatchOrdinal++;
@@ -314,24 +356,29 @@ public sealed class MigrationApplyRunner
             PlanDigest = planDigest,
             CatalogDigest = plan.CatalogDigest,
             SourceSnapshotIdentity = snapshotIdentity,
-            RejectContractVersion = MigrationRejectContract.DeterministicFailFastV1,
+            RejectContractVersion = rejectContractVersion,
             BatchesWritten = batchesWritten,
             BatchesSkipped = batchesSkipped,
             RowsWritten = rowsWritten,
             RowsSkipped = rowsSkipped,
+            RejectedRowsWritten = rejectedRowsWritten,
+            RejectedRowsSkipped = rejectedRowsSkipped,
             PeakBufferedRows = peakRows,
             PeakBufferedBytes = peakBytes,
         };
     }
 
-    private static void ValidateSourceBatch(
+    private static long[] ValidateSourceBatch(
         MigrationDataBatch batch,
         string sourceObjectId,
         string snapshotIdentity,
         IReadOnlyList<string> columnObjectIds,
         long expectedBatchOrdinal,
         string? expectedStartCursor,
-        int maximumRows)
+        int maximumRows,
+        long expectedFirstSourceRowOrdinal,
+        string rejectContractVersion,
+        MigrationDeterministicRejectPolicy? rejectPolicy)
     {
         if (batch is null)
             throw new InvalidDataException("Migration source emitted a null batch.");
@@ -348,14 +395,120 @@ public sealed class MigrationApplyRunner
             throw new InvalidDataException($"Migration source batch ordinal {batch.BatchOrdinal} does not match expected ordinal {expectedBatchOrdinal}.");
         if (!string.Equals(batch.StartCursor, expectedStartCursor, StringComparison.Ordinal))
             throw new InvalidDataException("Migration source cursor chain changed during streaming.");
-        if (batch.Rows is null || batch.Rows.Count == 0)
-            throw new InvalidDataException("Migration source batches must contain at least one row.");
-        if (batch.Rows.Count > maximumRows)
-            throw new InvalidDataException($"Migration source batch contains {batch.Rows.Count} rows; maximum is {maximumRows}.");
-        if (batch.RejectedRows is null || batch.RejectedRows.Count != 0)
+        if (batch.Rows is null || batch.RejectedRows is null)
+            throw new InvalidDataException("Migration source batch outcomes cannot be null.");
+        long attemptedRows = checked((long)batch.Rows.Count + batch.RejectedRows.Count);
+        if (attemptedRows == 0)
+            throw new InvalidDataException("Migration source batches must contain at least one outcome.");
+        if (attemptedRows > maximumRows)
         {
             throw new InvalidDataException(
-                "Fail-fast migration sources cannot emit durable rejected-row outcomes.");
+                $"Migration source batch contains {attemptedRows} outcomes; maximum is {maximumRows}.");
+        }
+
+        switch (rejectContractVersion)
+        {
+            case MigrationRejectContract.DeterministicFailFastV1:
+                if (batch.RejectedRows.Count != 0)
+                {
+                    throw new InvalidDataException(
+                        "Fail-fast migration sources cannot emit durable rejected-row outcomes.");
+                }
+                break;
+
+            case MigrationRejectContract.DeterministicRejectsV1:
+                ValidateSourceRejects(
+                    batch.RejectedRows,
+                    columnObjectIds,
+                    rejectPolicy ??
+                        throw new InvalidDataException(
+                            "Deterministic source replay is missing its plan-bound policy."));
+                break;
+
+            default:
+                throw new InvalidDataException("Migration source reject contract is unsupported.");
+        }
+
+        long expectedEndSourceRowOrdinal = checked(
+            expectedFirstSourceRowOrdinal + attemptedRows);
+        if (batch.RejectedRows.Count > 0 &&
+            (batch.RejectedRows[0].SourceRowOrdinal < expectedFirstSourceRowOrdinal ||
+             batch.RejectedRows[^1].SourceRowOrdinal >= expectedEndSourceRowOrdinal))
+        {
+            throw new InvalidDataException(
+                "Migration source rejected-row ordinals are outside the current input interval.");
+        }
+
+        var acceptedSourceOrdinals = new long[batch.Rows.Count];
+        int acceptedIndex = 0;
+        int rejectedIndex = 0;
+        for (long ordinal = expectedFirstSourceRowOrdinal;
+             ordinal < expectedEndSourceRowOrdinal;
+             ordinal++)
+        {
+            if (rejectedIndex < batch.RejectedRows.Count &&
+                batch.RejectedRows[rejectedIndex].SourceRowOrdinal == ordinal)
+            {
+                rejectedIndex++;
+            }
+            else if (acceptedIndex < acceptedSourceOrdinals.Length)
+            {
+                acceptedSourceOrdinals[acceptedIndex++] = ordinal;
+            }
+            else
+            {
+                throw new InvalidDataException(
+                    "Migration source batch outcomes do not cover one contiguous input interval.");
+            }
+        }
+        if (acceptedIndex != acceptedSourceOrdinals.Length ||
+            rejectedIndex != batch.RejectedRows.Count)
+        {
+            throw new InvalidDataException(
+                "Migration source batch outcomes do not cover one contiguous input interval.");
+        }
+        return acceptedSourceOrdinals;
+    }
+
+    private static void ValidateSourceRejects(
+        IReadOnlyList<MigrationRejectedRow> rejectedRows,
+        IReadOnlyList<string> columnObjectIds,
+        MigrationDeterministicRejectPolicy policy)
+    {
+        MigrationRejectDigest.ValidateRejectedRows(rejectedRows);
+        if (rejectedRows.Count > policy.MaxRejectedRowsPerBatch)
+        {
+            throw new InvalidDataException(
+                "Migration source reject count exceeds the plan-bound batch limit.");
+        }
+
+        long rawValueBytes = 0;
+        foreach (MigrationRejectedRow rejectedRow in rejectedRows)
+        {
+            if (!policy.AllowedRuleIds.Contains(rejectedRow.RuleId, StringComparer.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Migration source emitted a reject rule outside the plan-bound registry.");
+            }
+            if (rejectedRow.ColumnObjectId is not null &&
+                !columnObjectIds.Contains(rejectedRow.ColumnObjectId, StringComparer.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Migration source reject column is outside the requested projection.");
+            }
+
+            int rowRawValueBytes = MigrationRejectLedgerCodec.GetRawValueByteCount(rejectedRow);
+            if (rowRawValueBytes > policy.MaxRawValueBytes)
+            {
+                throw new InvalidDataException(
+                    "Migration source reject evidence exceeds the plan-bound per-row limit.");
+            }
+            rawValueBytes = checked(rawValueBytes + rowRawValueBytes);
+        }
+        if (rawValueBytes > policy.MaxRawValueBytesPerBatch)
+        {
+            throw new InvalidDataException(
+                "Migration source reject evidence exceeds the plan-bound batch limit.");
         }
     }
 
@@ -382,7 +535,7 @@ public sealed class MigrationApplyRunner
                 batch.RejectDigest,
                 receipt.RejectDigest) ||
             receipt.RowCount != batch.Rows.Count ||
-            receipt.RejectedRowCount != 0)
+            receipt.RejectedRowCount != batch.RejectedRows.Count)
         {
             throw new InvalidDataException(
                 $"Migration receipt mismatch for '{batch.SourceObjectId}' batch {batch.BatchOrdinal}.");

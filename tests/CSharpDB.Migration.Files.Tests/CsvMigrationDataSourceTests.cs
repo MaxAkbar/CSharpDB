@@ -205,6 +205,32 @@ public sealed class CsvMigrationDataSourceTests
     }
 
     [Fact]
+    public async Task FailFastCursorGoldenRemainsByteIdentical()
+    {
+        const string csv = "id\n1\n2\n";
+        (CsvSourceSnapshot snapshot, CsvSchemaInferenceResult schema) = await InferAsync(csv, 100);
+        await using (snapshot)
+        await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+                         schema,
+                         snapshot,
+                         Catalog(schema),
+                         Cancellation))
+        {
+            MigrationDataBatch first = (await CollectAsync(source.ReadAsync(
+                Request(
+                    source,
+                    [CsvMigrationObjectIds.Column(0)],
+                    batchSize: 1),
+                Cancellation)))[0];
+
+            Assert.Equal(
+                "csharpdb-csv-cursor-v1/1/1/" +
+                "3beae5191bd4e4253c3d217b54aa42591112dc706c71c49a3081f56f75ad037d",
+                first.NextCursor);
+        }
+    }
+
+    [Fact]
     public async Task ByteSplitCursorsResumeTheExactVariableLengthBatchSuffix()
     {
         const string csv = "value\na\nb\n1234567890\nc\nd\n";
@@ -278,6 +304,446 @@ public sealed class CsvMigrationDataSourceTests
             Assert.Equal([2, 2], batches.Select(batch => batch.Rows.Count));
             Assert.Equal(batches[0].NextCursor, batches[1].StartCursor);
             Assert.Null(batches[1].NextCursor);
+        }
+    }
+
+    [Fact]
+    public async Task DeterministicRejects_MixedBatchesCountEveryOutcomeAndFreezeGoldenRules()
+    {
+        const string csv = "id,required\n1,alpha\nbad,beta\n3\n4,delta\n";
+        var schemaOptions = new CsvSchemaInferenceOptions
+        {
+            ColumnOverrides =
+            [
+                new CsvColumnSchemaOverride
+                {
+                    ColumnIndex = 0,
+                    ExpectedHeader = "id",
+                    LogicalType = CsvColumnLogicalType.SignedInteger,
+                    Nullable = false,
+                },
+                new CsvColumnSchemaOverride
+                {
+                    ColumnIndex = 1,
+                    ExpectedHeader = "required",
+                    LogicalType = CsvColumnLogicalType.Text,
+                    Nullable = false,
+                },
+            ],
+        };
+        (CsvSourceSnapshot snapshot, CsvSchemaInferenceResult schema) = await InferAsync(
+            csv,
+            100,
+            schemaOptions: schemaOptions);
+        await using (snapshot)
+        await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+                         schema,
+                         snapshot,
+                         Catalog(schema),
+                         Cancellation))
+        {
+            Assert.Equal(
+                MigrationRejectContract.DeterministicRejectsV1,
+                source.RejectContractVersion);
+            Assert.Equal(
+                [
+                    CsvMigrationDataRules.MissingField,
+                    CsvMigrationDataRules.NullNotAllowed,
+                    CsvMigrationDataRules.TypeMismatch,
+                ],
+                source.SupportedRejectRuleIds.Order(StringComparer.Ordinal));
+
+            MigrationReadRequest request = RejectRequest(
+                source,
+                [CsvMigrationObjectIds.Column(0), CsvMigrationObjectIds.Column(1)],
+                batchSize: 3);
+            List<MigrationDataBatch> batches = await CollectAsync(
+                source.ReadAsync(request, Cancellation));
+
+            Assert.Equal(2, batches.Count);
+            Assert.Equal([3, 1], batches.Select(OutcomeCount));
+            Assert.Equal([1, 1], batches.Select(batch => batch.Rows.Count));
+            Assert.Equal([2, 0], batches.Select(batch => batch.RejectedRows.Count));
+            Assert.Equal(
+                [CsvMigrationDataRules.TypeMismatch, CsvMigrationDataRules.MissingField],
+                batches[0].RejectedRows.Select(row => row.RuleId));
+            Assert.Equal([1L, 2L], batches[0].RejectedRows.Select(row => row.SourceRowOrdinal));
+            AssertGoldenEvidence(
+                batches[0].RejectedRows[1],
+                ["1", "3", "4", "Missing", "4", null, "4", "false"]);
+            Assert.Equal(
+                ["1", "alpha"],
+                batches[0].Rows.Single().Values.Select(value => value.CanonicalText));
+            Assert.Equal(
+                ["4", "delta"],
+                batches[1].Rows.Single().Values.Select(value => value.CanonicalText));
+            Assert.Equal(batches[0].NextCursor, batches[1].StartCursor);
+            Assert.Null(batches[1].NextCursor);
+        }
+    }
+
+    [Fact]
+    public async Task DeterministicRejects_AllRejectBatchesRemainVisibleAndTerminal()
+    {
+        const string csv = "id\nbad\nworse\nnope\n";
+        var schemaOptions = SignedRequiredColumn("id");
+        (CsvSourceSnapshot snapshot, CsvSchemaInferenceResult schema) = await InferAsync(
+            csv,
+            100,
+            schemaOptions: schemaOptions);
+        await using (snapshot)
+        await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+                         schema,
+                         snapshot,
+                         Catalog(schema),
+                         Cancellation))
+        {
+            MigrationReadRequest request = RejectRequest(
+                source,
+                [CsvMigrationObjectIds.Column(0)],
+                batchSize: 2);
+            List<MigrationDataBatch> batches = await CollectAsync(source.ReadAsync(
+                request,
+                Cancellation));
+
+            Assert.Equal(2, batches.Count);
+            Assert.All(batches, batch => Assert.Empty(batch.Rows));
+            Assert.Equal([2, 1], batches.Select(batch => batch.RejectedRows.Count));
+            Assert.Equal(
+                [0L, 1L, 2L],
+                batches.SelectMany(batch => batch.RejectedRows)
+                    .Select(row => row.SourceRowOrdinal));
+            Assert.All(
+                batches.SelectMany(batch => batch.RejectedRows),
+                row => Assert.Equal(CsvMigrationDataRules.TypeMismatch, row.RuleId));
+            Assert.Equal(batches[0].NextCursor, batches[1].StartCursor);
+            Assert.Null(batches[1].NextCursor);
+
+            MigrationRejectedRow[] rejects = batches
+                .SelectMany(batch => batch.RejectedRows)
+                .ToArray();
+            int maximumSingleRawBytes = rejects.Max(
+                MigrationRejectLedgerCodec.GetRawValueByteCount);
+            MigrationDeterministicRejectPolicy policy = request.RejectPolicy!;
+            List<MigrationDataBatch> rawBounded = await CollectAsync(source.ReadAsync(
+                request with
+                {
+                    RejectPolicy = policy with
+                    {
+                        MaxRawValueBytes = maximumSingleRawBytes,
+                        MaxRawValueBytesPerBatch = maximumSingleRawBytes,
+                    },
+                },
+                Cancellation));
+            Assert.Equal([1, 1, 1], rawBounded.Select(batch => batch.RejectedRows.Count));
+            Assert.All(rawBounded, batch => Assert.Empty(batch.Rows));
+        }
+    }
+
+    [Fact]
+    public async Task DeterministicRejectEvidence_PreservesNullTokenAndMultilineGoldenMetadata()
+    {
+        const string csv = "required\nNULL\n\"bad\nvalue\"\n";
+        var readerOptions = new CsvReaderOptions { NullToken = "NULL" };
+        var schemaOptions = SignedRequiredColumn("required");
+        (CsvSourceSnapshot snapshot, CsvSchemaInferenceResult schema) = await InferAsync(
+            csv,
+            100,
+            readerOptions,
+            schemaOptions);
+        await using (snapshot)
+        await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+                         schema,
+                         snapshot,
+                         Catalog(schema),
+                         Cancellation))
+        {
+            MigrationDataBatch batch = Assert.Single(await CollectAsync(source.ReadAsync(
+                RejectRequest(
+                    source,
+                    [CsvMigrationObjectIds.Column(0)],
+                    batchSize: 2),
+                Cancellation)));
+            Assert.Empty(batch.Rows);
+            Assert.Equal(2, batch.RejectedRows.Count);
+
+            MigrationRejectedRow nullToken = batch.RejectedRows[0];
+            Assert.Equal(CsvMigrationDataRules.NullNotAllowed, nullToken.RuleId);
+            AssertGoldenEvidence(
+                nullToken,
+                ["0", "1", "2", "Null", "2", "NULL", "2", "false"]);
+
+            MigrationRejectedRow multiline = batch.RejectedRows[1];
+            Assert.Equal(CsvMigrationDataRules.TypeMismatch, multiline.RuleId);
+            AssertGoldenEvidence(
+                multiline,
+                ["0", "2", "4", "Text", "3", "bad\nvalue", "3", "true"]);
+        }
+    }
+
+    [Fact]
+    public async Task DeterministicRejectResume_ReplaysExactMixedSuffixAndBindsFullPolicy()
+    {
+        const string csv = "id\n1\nbad\n2\nworse\n3\n";
+        var schemaOptions = SignedRequiredColumn("id");
+        (CsvSourceSnapshot snapshot, CsvSchemaInferenceResult schema) = await InferAsync(
+            csv,
+            100,
+            schemaOptions: schemaOptions);
+        await using (snapshot)
+        await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+                         schema,
+                         snapshot,
+                         Catalog(schema),
+                         Cancellation))
+        {
+            MigrationReadRequest request = RejectRequest(
+                source,
+                [CsvMigrationObjectIds.Column(0)],
+                batchSize: 2);
+            List<MigrationDataBatch> batches = await CollectAsync(
+                source.ReadAsync(request, Cancellation));
+            Assert.Equal([2, 2, 1], batches.Select(OutcomeCount));
+
+            string cursor = Assert.IsType<string>(batches[0].NextCursor);
+            List<MigrationDataBatch> resumed = await CollectAsync(source.ReadAsync(
+                request with { ResumeCursor = cursor },
+                Cancellation));
+            Assert.Equal(2, resumed.Count);
+            AssertBatchEqual(batches[1], resumed[0]);
+            AssertBatchEqual(batches[2], resumed[1]);
+
+            MigrationDeterministicRejectPolicy policy = request.RejectPolicy!;
+            List<MigrationDataBatch> reorderedRuleResume = await CollectAsync(
+                source.ReadAsync(
+                    request with
+                    {
+                        ResumeCursor = cursor,
+                        RejectPolicy = policy with
+                        {
+                            AllowedRuleIds = policy.AllowedRuleIds.Reverse().ToArray(),
+                        },
+                    },
+                    Cancellation));
+            Assert.Equal(2, reorderedRuleResume.Count);
+            AssertBatchEqual(batches[1], reorderedRuleResume[0]);
+            AssertBatchEqual(batches[2], reorderedRuleResume[1]);
+
+            MigrationReadRequest[] driftedRequests =
+            [
+                request with
+                {
+                    RejectContractVersion = MigrationRejectContract.DeterministicFailFastV1,
+                    RejectPolicy = null,
+                },
+                request with
+                {
+                    RejectPolicy = policy with
+                    {
+                        AllowedRuleIds =
+                        [
+                            CsvMigrationDataRules.MissingField,
+                            CsvMigrationDataRules.TypeMismatch,
+                        ],
+                    },
+                },
+                request with
+                {
+                    RejectPolicy = policy with { MaxRejectedRowsPerBatch = 1 },
+                },
+                request with
+                {
+                    RejectPolicy = policy with
+                    {
+                        MaxRejectedRowsPerRun = policy.MaxRejectedRowsPerRun - 1,
+                    },
+                },
+                request with
+                {
+                    RejectPolicy = policy with
+                    {
+                        MaxRawValueBytes = policy.MaxRawValueBytes - 1,
+                    },
+                },
+                request with
+                {
+                    RejectPolicy = policy with
+                    {
+                        MaxRawValueBytesPerBatch =
+                            policy.MaxRawValueBytesPerBatch - 1,
+                    },
+                },
+                request with
+                {
+                    RejectPolicy = policy with
+                    {
+                        MaxRawValueBytesPerRun =
+                            policy.MaxRawValueBytesPerRun - 1,
+                    },
+                },
+                request with
+                {
+                    RejectPolicy = policy with
+                    {
+                        MaxArtifactBytes = policy.MaxArtifactBytes - 1,
+                    },
+                },
+            ];
+            foreach (MigrationReadRequest drifted in driftedRequests)
+            {
+                Assert.Throws<InvalidDataException>(() => source.ReadAsync(
+                    drifted with { ResumeCursor = cursor },
+                    Cancellation));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task DeterministicRejectPolicyLimitsFailFatallyWithoutLeakingRawValues()
+    {
+        const string firstSecret = "TOP-SECRET-ONE";
+        const string secondSecret = "TOP-SECRET-TWO";
+        string csv = $"id\n{firstSecret}\n{secondSecret}\n";
+        var schemaOptions = SignedRequiredColumn("id");
+        (CsvSourceSnapshot snapshot, CsvSchemaInferenceResult schema) = await InferAsync(
+            csv,
+            100,
+            schemaOptions: schemaOptions);
+        await using (snapshot)
+        await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+                         schema,
+                         snapshot,
+                         Catalog(schema),
+                         Cancellation))
+        {
+            MigrationReadRequest request = RejectRequest(
+                source,
+                [CsvMigrationObjectIds.Column(0)],
+                batchSize: 2);
+            MigrationDeterministicRejectPolicy policy = request.RejectPolicy!;
+            MigrationDeterministicRejectPolicy[] limitedPolicies =
+            [
+                policy with { MaxRawValueBytes = 1 },
+                policy with
+                {
+                    MaxRejectedRowsPerBatch = 1,
+                    MaxRejectedRowsPerRun = 1,
+                },
+                policy with
+                {
+                    MaxArtifactBytes =
+                        MigrationRejectLedgerCodec.MinimumCanonicalArtifactBytes,
+                },
+            ];
+
+            foreach (MigrationDeterministicRejectPolicy limited in limitedPolicies)
+            {
+                InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+                    async () => await CollectAsync(source.ReadAsync(
+                        request with { RejectPolicy = limited },
+                        Cancellation)));
+                Assert.DoesNotContain(firstSecret, error.ToString(), StringComparison.Ordinal);
+                Assert.DoesNotContain(secondSecret, error.ToString(), StringComparison.Ordinal);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedOrDisallowedRejectRulesRemainFatal()
+    {
+        const string rejectedValue = "TOP-SECRET-TYPE-MISMATCH";
+        string csv = $"id\n{rejectedValue}\n";
+        var schemaOptions = SignedRequiredColumn("id");
+        (CsvSourceSnapshot snapshot, CsvSchemaInferenceResult schema) = await InferAsync(
+            csv,
+            100,
+            schemaOptions: schemaOptions);
+        await using (snapshot)
+        await using (CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+                         schema,
+                         snapshot,
+                         Catalog(schema),
+                         Cancellation))
+        {
+            MigrationReadRequest request = RejectRequest(
+                source,
+                [CsvMigrationObjectIds.Column(0)],
+                batchSize: 1);
+            MigrationDeterministicRejectPolicy policy = request.RejectPolicy!;
+
+            MigrationReadRequest unsupported = request with
+            {
+                RejectPolicy = policy with
+                {
+                    AllowedRuleIds = ["MIG-CSV-DATA-UNKNOWN-001"],
+                },
+            };
+            Assert.Throws<InvalidDataException>(() =>
+                source.ReadAsync(unsupported, Cancellation));
+
+            MigrationReadRequest disallowed = request with
+            {
+                RejectPolicy = policy with
+                {
+                    AllowedRuleIds = [CsvMigrationDataRules.MissingField],
+                },
+            };
+            MigrationRowRejectedException error =
+                await Assert.ThrowsAsync<MigrationRowRejectedException>(
+                    async () => await CollectAsync(
+                        source.ReadAsync(disallowed, Cancellation)));
+            Assert.Equal(CsvMigrationDataRules.TypeMismatch, error.Code);
+            Assert.DoesNotContain(rejectedValue, error.ToString(), StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task DeterministicRejectModeKeepsValueAndRowSizeFailuresFatal()
+    {
+        (CsvSourceSnapshot valueSnapshot, CsvSchemaInferenceResult valueSchema) = await InferAsync(
+            "value\n😀\n",
+            100);
+        await using (valueSnapshot)
+        await using (CsvMigrationDataSource valueSource = await CsvMigrationDataSource.CreateAsync(
+                         valueSchema,
+                         valueSnapshot,
+                         Catalog(valueSchema),
+                         Cancellation))
+        {
+            MigrationRowRejectedException valueError =
+                await Assert.ThrowsAsync<MigrationRowRejectedException>(
+                    async () => await CollectAsync(valueSource.ReadAsync(
+                        RejectRequest(
+                            valueSource,
+                            [CsvMigrationObjectIds.Column(0)],
+                            batchSize: 1,
+                            maxBatchBytes: 18,
+                            maxValueBytes: 8),
+                        Cancellation)));
+            Assert.Equal(CsvMigrationDataRules.ValueSizeExceeded, valueError.Code);
+        }
+
+        (CsvSourceSnapshot rowSnapshot, CsvSchemaInferenceResult rowSchema) = await InferAsync(
+            "left,right\n😀,😀\n",
+            100);
+        await using (rowSnapshot)
+        await using (CsvMigrationDataSource rowSource = await CsvMigrationDataSource.CreateAsync(
+                         rowSchema,
+                         rowSnapshot,
+                         Catalog(rowSchema),
+                         Cancellation))
+        {
+            MigrationRowRejectedException rowError =
+                await Assert.ThrowsAsync<MigrationRowRejectedException>(
+                    async () => await CollectAsync(rowSource.ReadAsync(
+                        RejectRequest(
+                            rowSource,
+                            [CsvMigrationObjectIds.Column(0), CsvMigrationObjectIds.Column(1)],
+                            batchSize: 1,
+                            maxBatchBytes: 17,
+                            maxValueBytes: 9),
+                        Cancellation)));
+            Assert.Equal(CsvMigrationDataRules.RowSizeExceeded, rowError.Code);
         }
     }
 
@@ -735,6 +1201,74 @@ public sealed class CsvMigrationDataSourceTests
             SnapshotToken = source.SnapshotIdentity,
         };
 
+    private static MigrationReadRequest RejectRequest(
+        CsvMigrationDataSource source,
+        IReadOnlyList<string> columns,
+        int batchSize,
+        long maxBatchBytes = 64L * 1024 * 1024,
+        int maxValueBytes = 16 * 1024 * 1024) =>
+        Request(
+            source,
+            columns,
+            batchSize,
+            maxBatchBytes,
+            maxValueBytes) with
+        {
+            RejectContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+            RejectPolicy = new MigrationDeterministicRejectPolicy
+            {
+                ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                AllowedRuleIds =
+                [
+                    CsvMigrationDataRules.MissingField,
+                    CsvMigrationDataRules.NullNotAllowed,
+                    CsvMigrationDataRules.TypeMismatch,
+                ],
+                MaxRejectedRowsPerBatch = batchSize,
+                MaxRejectedRowsPerRun = 1_000,
+                MaxRawValueBytes = 4_096,
+                MaxRawValueBytesPerBatch = 64 * 1_024,
+                MaxRawValueBytesPerRun = 1024 * 1_024,
+                MaxArtifactBytes = 16 * 1_024 * 1_024,
+            },
+        };
+
+    private static CsvSchemaInferenceOptions SignedRequiredColumn(string header) => new()
+    {
+        ColumnOverrides =
+        [
+            new CsvColumnSchemaOverride
+            {
+                ColumnIndex = 0,
+                ExpectedHeader = header,
+                LogicalType = CsvColumnLogicalType.SignedInteger,
+                Nullable = false,
+            },
+        ],
+    };
+
+    private static int OutcomeCount(MigrationDataBatch batch) =>
+        checked(batch.Rows.Count + batch.RejectedRows.Count);
+
+    private static void AssertGoldenEvidence(
+        MigrationRejectedRow rejectedRow,
+        IReadOnlyList<string?> expectedValues)
+    {
+        string[] expectedNames =
+        [
+            "columnIndex",
+            "dataRecordNumber",
+            "endPhysicalLine",
+            "fieldKind",
+            "logicalRecordNumber",
+            MigrationRejectLedgerCodec.RawValueEvidenceName,
+            "startPhysicalLine",
+            "wasQuoted",
+        ];
+        Assert.Equal(expectedNames, rejectedRow.Evidence.Select(item => item.Name));
+        Assert.Equal(expectedValues, rejectedRow.Evidence.Select(item => item.Value));
+    }
+
     private static async ValueTask<(CsvSourceSnapshot Snapshot, CsvSchemaInferenceResult Schema)> InferAsync(
         string csv,
         int maxDataRecords,
@@ -812,6 +1346,22 @@ public sealed class CsvMigrationDataSourceTests
                 Assert.Equal(expectedValue.CanonicalText, actualValue.CanonicalText);
                 Assert.Equal(expectedValue.BinaryValue.ToArray(), actualValue.BinaryValue.ToArray());
             }
+        }
+
+        Assert.Equal(expected.RejectedRows.Count, actual.RejectedRows.Count);
+        for (int rejectIndex = 0; rejectIndex < expected.RejectedRows.Count; rejectIndex++)
+        {
+            MigrationRejectedRow expectedRow = expected.RejectedRows[rejectIndex];
+            MigrationRejectedRow actualRow = actual.RejectedRows[rejectIndex];
+            Assert.Equal(expectedRow.SourceRowOrdinal, actualRow.SourceRowOrdinal);
+            Assert.Equal(expectedRow.RuleId, actualRow.RuleId);
+            Assert.Equal(expectedRow.ColumnObjectId, actualRow.ColumnObjectId);
+            Assert.Equal(
+                expectedRow.Evidence.Select(item => item.Name),
+                actualRow.Evidence.Select(item => item.Name));
+            Assert.Equal(
+                expectedRow.Evidence.Select(item => item.Value),
+                actualRow.Evidence.Select(item => item.Value));
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -6,7 +7,7 @@ using CSharpDB.Migration;
 
 namespace CSharpDB.Migration.Files.Csv;
 
-/// <summary>Stable fail-fast rules raised while streaming CSV migration rows.</summary>
+/// <summary>Stable row-local rules raised while streaming CSV migration rows.</summary>
 public static class CsvMigrationDataRules
 {
     public const string MissingField = "MIG-CSV-DATA-MISSING-001";
@@ -21,7 +22,10 @@ public static class CsvMigrationDataRules
 /// batches. The snapshot remains caller-owned and must outlive this source and
 /// every active enumeration.
 /// </summary>
-public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCatalogBoundDataSource
+public sealed class CsvMigrationDataSource :
+    IMigrationDataSource,
+    IMigrationCatalogBoundDataSource,
+    IMigrationRejectAwareDataSource
 {
     public const string CursorAlgorithmId = "csharpdb-csv-cursor-v1";
 
@@ -31,6 +35,13 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
     private const int MaximumBufferedRows = 65_536;
     private const long MaximumBufferedCanonicalBytes = 64L * 1024 * 1024;
     private const int MaximumCursorCharacters = 160;
+
+    private static readonly FrozenSet<string> SupportedRuleIds = new[]
+    {
+        CsvMigrationDataRules.MissingField,
+        CsvMigrationDataRules.NullNotAllowed,
+        CsvMigrationDataRules.TypeMismatch,
+    }.ToFrozenSet(StringComparer.Ordinal);
 
     private readonly CsvSchemaInferenceResult schema;
     private readonly CsvSourceSnapshot snapshot;
@@ -51,6 +62,11 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
     public string SnapshotIdentity => schema.SnapshotIdentity;
 
     public string CatalogDigest { get; }
+
+    public string RejectContractVersion =>
+        MigrationRejectContract.DeterministicRejectsV1;
+
+    public IReadOnlySet<string> SupportedRejectRuleIds => SupportedRuleIds;
 
     /// <summary>
     /// Creates a repeatable source after checking the exact snapshot and
@@ -146,8 +162,15 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
         long batchOrdinal = 0;
         long batchStartRowOrdinal = 0;
         long batchBytes = 0;
+        long batchRawValueBytes = 0;
+        long rejectedRowsInRun = 0;
+        long rawValueBytesInRun = 0;
+        long artifactBytesInRun = request.RejectPolicy is null
+            ? 0
+            : MigrationRejectLedgerCodec.MinimumCanonicalArtifactBytes;
         bool resumeBoundaryFound = request.Resume is null;
         var rows = NewRowBuffer(request.EffectiveMaximumRows);
+        var rejectedRows = NewRejectBuffer(request.EffectiveMaximumRows);
 
         await foreach (CsvLogicalRecord record in reader
                            .ReadRecordsAsync(cancellationToken)
@@ -159,7 +182,8 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             if (sourceRowOrdinal != expectedRowOrdinal)
                 throw new InvalidDataException("CSV data-record ordinals are not contiguous.");
 
-            if (rows.Count >= request.EffectiveMaximumRows ||
+            int outcomeCount = checked(rows.Count + rejectedRows.Count);
+            if (outcomeCount >= request.EffectiveMaximumRows ||
                 batchBytes == request.EffectiveMaximumBatchBytes)
             {
                 string nextCursor = EncodeCursor(
@@ -169,6 +193,7 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
                 MigrationDataBatch completed = CreateBatch(
                     request,
                     rows,
+                    rejectedRows,
                     batchStartRowOrdinal,
                     batchOrdinal,
                     nextCursor);
@@ -181,18 +206,34 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
                 batchOrdinal++;
                 batchStartRowOrdinal = sourceRowOrdinal;
                 batchBytes = 0;
+                batchRawValueBytes = 0;
                 rows = NewRowBuffer(request.EffectiveMaximumRows);
+                rejectedRows = NewRejectBuffer(request.EffectiveMaximumRows);
+                outcomeCount = 0;
             }
 
-            NormalizedRow normalized = Normalize(
+            NormalizedOutcome normalized = Normalize(
                 record,
                 request,
                 batchOrdinal,
                 sourceRowOrdinal);
 
-            if (rows.Count > 0 &&
-                checked(batchBytes + normalized.CanonicalBytes) >
-                    request.EffectiveMaximumBatchBytes)
+            long outcomeBytes = GetOutcomeCanonicalBytes(normalized, batchOrdinal);
+            if (outcomeBytes > request.EffectiveMaximumBatchBytes)
+            {
+                throw new InvalidDataException(
+                    "A CSV row outcome exceeds the bounded batch payload.");
+            }
+
+            bool splitForRejectPolicy = normalized.RejectedRow is not null &&
+                outcomeCount > 0 &&
+                (rejectedRows.Count >= request.RejectPolicy!.MaxRejectedRowsPerBatch ||
+                 checked(batchRawValueBytes + normalized.RawValueBytes) >
+                    request.RejectPolicy.MaxRawValueBytesPerBatch);
+            if (outcomeCount > 0 &&
+                (checked(batchBytes + outcomeBytes) >
+                    request.EffectiveMaximumBatchBytes ||
+                 splitForRejectPolicy))
             {
                 string nextCursor = EncodeCursor(
                     sourceRowOrdinal,
@@ -201,6 +242,7 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
                 MigrationDataBatch completed = CreateBatch(
                     request,
                     rows,
+                    rejectedRows,
                     batchStartRowOrdinal,
                     batchOrdinal,
                     nextCursor);
@@ -213,19 +255,75 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
                 batchOrdinal++;
                 batchStartRowOrdinal = sourceRowOrdinal;
                 batchBytes = 0;
+                batchRawValueBytes = 0;
                 rows = NewRowBuffer(request.EffectiveMaximumRows);
+                rejectedRows = NewRejectBuffer(request.EffectiveMaximumRows);
+                outcomeBytes = GetOutcomeCanonicalBytes(normalized, batchOrdinal);
+                if (outcomeBytes > request.EffectiveMaximumBatchBytes)
+                {
+                    throw new InvalidDataException(
+                        "A CSV row outcome exceeds the bounded batch payload.");
+                }
             }
 
-            rows.Add(normalized.Row);
-            batchBytes = checked(batchBytes + normalized.CanonicalBytes);
+            if (normalized.RejectedRow is MigrationRejectedRow rejectedRow)
+            {
+                MigrationDeterministicRejectPolicy policy = request.RejectPolicy ??
+                    throw new InvalidOperationException(
+                        "CSV deterministic reject state is inconsistent.");
+                if (normalized.RawValueBytes > policy.MaxRawValueBytes)
+                {
+                    throw RejectLimitExceeded("per-row raw-value byte");
+                }
+                if (rejectedRows.Count >= policy.MaxRejectedRowsPerBatch)
+                {
+                    throw RejectLimitExceeded("per-batch rejected-row");
+                }
+                if (checked(batchRawValueBytes + normalized.RawValueBytes) >
+                    policy.MaxRawValueBytesPerBatch)
+                {
+                    throw RejectLimitExceeded("per-batch raw-value byte");
+                }
+                if (checked(rejectedRowsInRun + 1) > policy.MaxRejectedRowsPerRun)
+                {
+                    throw RejectLimitExceeded("per-run rejected-row");
+                }
+                if (checked(rawValueBytesInRun + normalized.RawValueBytes) >
+                    policy.MaxRawValueBytesPerRun)
+                {
+                    throw RejectLimitExceeded("per-run raw-value byte");
+                }
+                if (checked(artifactBytesInRun + outcomeBytes) >
+                    policy.MaxArtifactBytes)
+                {
+                    throw RejectLimitExceeded("reject-artifact byte");
+                }
+
+                rejectedRows.Add(rejectedRow);
+                batchRawValueBytes = checked(
+                    batchRawValueBytes + normalized.RawValueBytes);
+                rejectedRowsInRun++;
+                rawValueBytesInRun = checked(
+                    rawValueBytesInRun + normalized.RawValueBytes);
+                artifactBytesInRun = checked(artifactBytesInRun + outcomeBytes);
+            }
+            else
+            {
+                rows.Add(normalized.Row ??
+                    throw new InvalidOperationException(
+                        "CSV normalized row outcome is inconsistent."));
+            }
+
+            batchBytes = checked(batchBytes + outcomeBytes);
             expectedRowOrdinal++;
         }
 
-        if (rows.Count > 0)
+        if (rows.Count > 0 || rejectedRows.Count > 0)
         {
             MigrationDataBatch final = CreateBatch(
                 request,
                 rows,
+                rejectedRows,
                 batchStartRowOrdinal,
                 batchOrdinal,
                 nextCursor: null);
@@ -265,6 +363,35 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
                 nameof(request),
                 "The maximum value bytes must be positive and no greater than the batch bound.");
         }
+        MigrationRejectReadPolicyValidator.Validate(request);
+        MigrationDeterministicRejectPolicy? rejectPolicy = null;
+        IReadOnlySet<string> allowedRejectRuleIds = FrozenSet<string>.Empty;
+        if (string.Equals(
+                request.RejectContractVersion,
+                MigrationRejectContract.DeterministicRejectsV1,
+                StringComparison.Ordinal))
+        {
+            MigrationDeterministicRejectPolicy supplied = request.RejectPolicy ??
+                throw new InvalidDataException(
+                    "CSV deterministic reject replay requires a reject policy.");
+            string[] frozenRuleIds = supplied.AllowedRuleIds
+                .OrderBy(ruleId => ruleId, StringComparer.Ordinal)
+                .ToArray();
+            foreach (string ruleId in frozenRuleIds)
+            {
+                if (!SupportedRuleIds.Contains(ruleId))
+                {
+                    throw new InvalidDataException(
+                        "The CSV reject policy contains a rule that this source does not support.");
+                }
+            }
+
+            rejectPolicy = supplied with
+            {
+                AllowedRuleIds = Array.AsReadOnly(frozenRuleIds),
+            };
+            allowedRejectRuleIds = frozenRuleIds.ToFrozenSet(StringComparer.Ordinal);
+        }
         if (request.SnapshotToken is not null &&
             !string.Equals(request.SnapshotToken, SnapshotIdentity, StringComparison.Ordinal))
         {
@@ -296,7 +423,7 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
         }
 
         ReadOnlyCollection<string> frozenColumnIds = Array.AsReadOnly(columnObjectIds);
-        string scopeDigest = ComputeScopeDigest(request, projected);
+        string scopeDigest = ComputeScopeDigest(request, projected, rejectPolicy);
         CursorPosition? resume = null;
         if (request.ResumeCursor is not null)
         {
@@ -319,10 +446,12 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             effectiveMaximumBatchBytes,
             checked((int)Math.Min(request.MaxValueBytes, effectiveMaximumBatchBytes)),
             scopeDigest,
-            resume);
+            resume,
+            rejectPolicy,
+            allowedRejectRuleIds);
     }
 
-    private NormalizedRow Normalize(
+    private NormalizedOutcome Normalize(
         CsvLogicalRecord record,
         ValidatedRead request,
         long batchOrdinal,
@@ -335,9 +464,12 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             ProjectedColumn projected = request.Columns[outputIndex];
             if ((uint)projected.SchemaIndex >= (uint)record.Fields.Count)
             {
-                throw Reject(
+                return RecoverableReject(
                     CsvMigrationDataRules.MissingField,
-                    projected.ObjectId,
+                    projected,
+                    record,
+                    field: null,
+                    request,
                     batchOrdinal,
                     sourceRowOrdinal);
             }
@@ -349,18 +481,24 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             switch (field.Kind)
             {
                 case CsvFieldKind.Missing:
-                    throw Reject(
+                    return RecoverableReject(
                         CsvMigrationDataRules.MissingField,
-                        projected.ObjectId,
+                        projected,
+                        record,
+                        field,
+                        request,
                         batchOrdinal,
                         sourceRowOrdinal);
 
                 case CsvFieldKind.Null:
                     if (!projected.Schema.Nullable)
                     {
-                        throw Reject(
+                        return RecoverableReject(
                             CsvMigrationDataRules.NullNotAllowed,
-                            projected.ObjectId,
+                            projected,
+                            record,
+                            field,
+                            request,
                             batchOrdinal,
                             sourceRowOrdinal);
                     }
@@ -374,9 +512,12 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
                     string text = field.Value!;
                     if (!schema.TryNormalizeScalar(projected.SchemaIndex, text, out string? canonical))
                     {
-                        throw Reject(
+                        return RecoverableReject(
                             CsvMigrationDataRules.TypeMismatch,
-                            projected.ObjectId,
+                            projected,
+                            record,
+                            field,
+                            request,
                             batchOrdinal,
                             sourceRowOrdinal);
                     }
@@ -416,20 +557,100 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             values[outputIndex] = value;
         }
 
-        return new NormalizedRow(
+        return new NormalizedOutcome(
             new MigrationDataRow
             {
                 StableKey = null,
                 Values = Array.AsReadOnly(values),
             },
-            rowBytes);
+            RejectedRow: null,
+            AcceptedCanonicalBytes: rowBytes,
+            RawValueBytes: 0);
+    }
+
+    private static NormalizedOutcome RecoverableReject(
+        string ruleId,
+        ProjectedColumn projected,
+        CsvLogicalRecord record,
+        CsvLogicalField? field,
+        ValidatedRead request,
+        long batchOrdinal,
+        long sourceRowOrdinal)
+    {
+        if (request.RejectPolicy is null ||
+            !request.AllowedRejectRuleIds.Contains(ruleId))
+        {
+            throw Reject(
+                ruleId,
+                projected.ObjectId,
+                batchOrdinal,
+                sourceRowOrdinal);
+        }
+
+        CsvFieldKind fieldKind = field?.Kind ?? CsvFieldKind.Missing;
+        MigrationRejectEvidence[] evidence =
+        [
+            new MigrationRejectEvidence
+            {
+                Name = "columnIndex",
+                Value = projected.SchemaIndex.ToString(CultureInfo.InvariantCulture),
+            },
+            new MigrationRejectEvidence
+            {
+                Name = "dataRecordNumber",
+                Value = record.DataRecordNumber.ToString(CultureInfo.InvariantCulture),
+            },
+            new MigrationRejectEvidence
+            {
+                Name = "endPhysicalLine",
+                Value = record.EndPhysicalLine.ToString(CultureInfo.InvariantCulture),
+            },
+            new MigrationRejectEvidence
+            {
+                Name = "fieldKind",
+                Value = fieldKind.ToString(),
+            },
+            new MigrationRejectEvidence
+            {
+                Name = "logicalRecordNumber",
+                Value = record.LogicalRecordNumber.ToString(CultureInfo.InvariantCulture),
+            },
+            new MigrationRejectEvidence
+            {
+                Name = MigrationRejectLedgerCodec.RawValueEvidenceName,
+                Value = field?.RawValue,
+            },
+            new MigrationRejectEvidence
+            {
+                Name = "startPhysicalLine",
+                Value = record.StartPhysicalLine.ToString(CultureInfo.InvariantCulture),
+            },
+            new MigrationRejectEvidence
+            {
+                Name = "wasQuoted",
+                Value = field?.WasQuoted == true ? "true" : "false",
+            },
+        ];
+        var rejectedRow = new MigrationRejectedRow
+        {
+            SourceRowOrdinal = sourceRowOrdinal,
+            RuleId = ruleId,
+            ColumnObjectId = projected.ObjectId,
+            Evidence = Array.AsReadOnly(evidence),
+        };
+        return new NormalizedOutcome(
+            Row: null,
+            rejectedRow,
+            AcceptedCanonicalBytes: 0,
+            RawValueBytes: MigrationRejectLedgerCodec.GetRawValueByteCount(rejectedRow));
     }
 
     private string ComputeScopeDigest(
         MigrationReadRequest request,
-        IReadOnlyList<ProjectedColumn> projected)
+        IReadOnlyList<ProjectedColumn> projected,
+        MigrationDeterministicRejectPolicy? rejectPolicy)
     {
-        var components = new List<string?>(13 + schema.Columns.Count * 5 + projected.Count)
+        var components = new List<string?>(24 + schema.Columns.Count * 5 + projected.Count)
         {
             CursorAlgorithmId,
             Source.Fingerprint,
@@ -443,6 +664,27 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             request.MaxBatchBytes.ToString(CultureInfo.InvariantCulture),
             request.MaxValueBytes.ToString(CultureInfo.InvariantCulture),
         };
+        if (rejectPolicy is not null)
+        {
+            components.Add(request.RejectContractVersion);
+            components.Add(rejectPolicy.ContractVersion);
+            components.Add(rejectPolicy.AllowedRuleIds.Count.ToString(
+                CultureInfo.InvariantCulture));
+            foreach (string ruleId in rejectPolicy.AllowedRuleIds)
+                components.Add(ruleId);
+            components.Add(rejectPolicy.MaxRejectedRowsPerBatch.ToString(
+                CultureInfo.InvariantCulture));
+            components.Add(rejectPolicy.MaxRejectedRowsPerRun.ToString(
+                CultureInfo.InvariantCulture));
+            components.Add(rejectPolicy.MaxRawValueBytes.ToString(
+                CultureInfo.InvariantCulture));
+            components.Add(rejectPolicy.MaxRawValueBytesPerBatch.ToString(
+                CultureInfo.InvariantCulture));
+            components.Add(rejectPolicy.MaxRawValueBytesPerRun.ToString(
+                CultureInfo.InvariantCulture));
+            components.Add(rejectPolicy.MaxArtifactBytes.ToString(
+                CultureInfo.InvariantCulture));
+        }
         foreach (CsvColumnSchema column in schema.Columns)
         {
             components.Add(CsvMigrationObjectIds.Column(column.ColumnIndex));
@@ -459,6 +701,7 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
     private MigrationDataBatch CreateBatch(
         ValidatedRead request,
         List<MigrationDataRow> rows,
+        List<MigrationRejectedRow> rejectedRows,
         long startRowOrdinal,
         long batchOrdinal,
         string? nextCursor) => new()
@@ -472,7 +715,18 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             : EncodeCursor(startRowOrdinal, batchOrdinal, request.ScopeDigest),
             NextCursor = nextCursor,
             Rows = rows.AsReadOnly(),
+            RejectedRows = rejectedRows.AsReadOnly(),
         };
+
+    private static long GetOutcomeCanonicalBytes(
+        NormalizedOutcome outcome,
+        long batchOrdinal) =>
+        outcome.RejectedRow is null
+            ? outcome.AcceptedCanonicalBytes
+            : MigrationRejectLedgerCodec.GetCanonicalArtifactEntryByteCount(
+                CsvMigrationObjectIds.Table,
+                batchOrdinal,
+                outcome.RejectedRow);
 
     private static bool ShouldYield(
         MigrationDataBatch batch,
@@ -605,7 +859,13 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
             batchOrdinal,
             sourceRowOrdinal);
 
+    private static InvalidDataException RejectLimitExceeded(string limit) =>
+        new($"The CSV deterministic reject {limit} limit was exceeded.");
+
     private static List<MigrationDataRow> NewRowBuffer(int maximumRows) =>
+        new(Math.Min(maximumRows, 1_024));
+
+    private static List<MigrationRejectedRow> NewRejectBuffer(int maximumRows) =>
         new(Math.Min(maximumRows, 1_024));
 
     private sealed record ProjectedColumn(
@@ -620,12 +880,18 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
         long EffectiveMaximumBatchBytes,
         int MaximumValueBytes,
         string ScopeDigest,
-        CursorPosition? Resume);
+        CursorPosition? Resume,
+        MigrationDeterministicRejectPolicy? RejectPolicy,
+        IReadOnlySet<string> AllowedRejectRuleIds);
 
     private sealed record CursorPosition(
         string Original,
         long RowOrdinal,
         long BatchOrdinal);
 
-    private sealed record NormalizedRow(MigrationDataRow Row, long CanonicalBytes);
+    private sealed record NormalizedOutcome(
+        MigrationDataRow? Row,
+        MigrationRejectedRow? RejectedRow,
+        long AcceptedCanonicalBytes,
+        long RawValueBytes);
 }

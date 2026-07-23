@@ -181,6 +181,7 @@ public sealed class CsvStreamingReader : IAsyncDisposable
                         index,
                         CsvFieldKind.Null,
                         null,
+                        value,
                         parsed.QuotedFields[index]);
                 }
                 else if (value.Length == 0)
@@ -189,6 +190,7 @@ public sealed class CsvStreamingReader : IAsyncDisposable
                         index,
                         CsvFieldKind.Empty,
                         string.Empty,
+                        value,
                         parsed.QuotedFields[index]);
                 }
                 else
@@ -197,12 +199,20 @@ public sealed class CsvStreamingReader : IAsyncDisposable
                         index,
                         CsvFieldKind.Text,
                         value,
+                        value,
                         parsed.QuotedFields[index]);
                 }
             }
 
             for (int index = parsed.Values.Length; index < fields.Length; index++)
-                fields[index] = new CsvLogicalField(index, CsvFieldKind.Missing, null, false);
+            {
+                fields[index] = new CsvLogicalField(
+                    index,
+                    CsvFieldKind.Missing,
+                    null,
+                    null,
+                    false);
+            }
 
             yield return new CsvLogicalRecord(
                 parsed.LogicalRecordNumber,

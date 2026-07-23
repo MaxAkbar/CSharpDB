@@ -56,6 +56,45 @@ public static class MigrationRejectContract
         value.All(character => !char.IsControl(character));
 }
 
+/// <summary>
+/// Validates the reject-policy portion of a provider read request without
+/// requiring the provider to reconstruct a complete migration plan.
+/// </summary>
+public static class MigrationRejectReadPolicyValidator
+{
+    public static void Validate(MigrationReadRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        Validate(
+            request.RejectContractVersion,
+            request.RejectPolicy,
+            request.BatchSize);
+    }
+
+    public static void Validate(
+        string rejectContractVersion,
+        MigrationDeterministicRejectPolicy? rejectPolicy,
+        int batchSize)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rejectContractVersion);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(batchSize);
+
+        MigrationRejectMode mode = rejectContractVersion switch
+        {
+            MigrationRejectContract.DeterministicFailFastV1 => MigrationRejectMode.FailFast,
+            MigrationRejectContract.DeterministicRejectsV1 => MigrationRejectMode.DeterministicRejects,
+            _ => throw new InvalidDataException(
+                "Migration read reject contract version is unsupported."),
+        };
+        MigrationDeterministicRejectPolicyValidator.Validate(new MigrationLoadPolicy
+        {
+            BatchSize = batchSize,
+            RejectMode = mode,
+            RejectPolicy = rejectPolicy,
+        });
+    }
+}
+
 internal static class MigrationDeterministicRejectPolicyValidator
 {
     internal static void Validate(MigrationLoadPolicy load)
@@ -318,4 +357,77 @@ public static class MigrationApplyPolicyValidator
                 "The atomic reject-ledger write and reject-aware validation path are not enabled.");
         }
     }
+
+    /// <summary>
+    /// Capability-qualified policy gate used by the provider-neutral apply
+    /// runner. CLI entry points intentionally retain the stricter plan-only
+    /// overload until tolerant artifact publication is enabled.
+    /// </summary>
+    public static void ValidateForExecution(
+        MigrationPlan plan,
+        IMigrationDataSource source,
+        IMigrationTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(target);
+        MigrationStagedTargetPolicyValidator.ValidateForBinding(plan);
+        if (plan.Load.RejectMode == MigrationRejectMode.FailFast)
+            return;
+
+        MigrationDeterministicRejectPolicy policy = plan.Load.RejectPolicy ??
+            throw new InvalidDataException(
+                "Deterministic reject mode requires a plan-bound reject policy.");
+        if (source is not IMigrationRejectAwareDataSource rejectAwareSource)
+        {
+            ValidateForExecution(plan);
+            return;
+        }
+
+        if (!string.Equals(
+                rejectAwareSource.RejectContractVersion,
+                policy.ContractVersion,
+                StringComparison.Ordinal))
+        {
+            throw UnsupportedCapability(
+                "MIG-APPLY-POLICY-REJECT-SOURCE-001",
+                "The migration source does not advertise the selected deterministic reject contract.");
+        }
+
+        IReadOnlySet<string> supportedRules = rejectAwareSource.SupportedRejectRuleIds ??
+            throw UnsupportedCapability(
+                "MIG-APPLY-POLICY-REJECT-SOURCE-001",
+                "The migration source reject-rule registry is unavailable.");
+        foreach (string ruleId in policy.AllowedRuleIds)
+        {
+            if (!supportedRules.Any(supported =>
+                    string.Equals(supported, ruleId, StringComparison.Ordinal)))
+            {
+                throw UnsupportedCapability(
+                    "MIG-APPLY-POLICY-REJECT-RULE-001",
+                    "The migration source does not advertise every plan-selected reject rule.");
+            }
+        }
+
+        if (target is not IMigrationRejectLedgerTarget)
+        {
+            throw UnsupportedCapability(
+                "MIG-APPLY-POLICY-REJECT-TARGET-001",
+                "The migration target does not advertise an authoritative reject ledger.");
+        }
+
+        if (target is not IMigrationBatchDigestContractTarget digestTarget ||
+            !string.Equals(
+                digestTarget.BatchDigestFormat,
+                MigrationBatchDigest.Format,
+                StringComparison.Ordinal))
+        {
+            throw UnsupportedCapability(
+                "MIG-APPLY-POLICY-REJECT-TARGET-001",
+                "Deterministic rejects require the current migration batch digest contract.");
+        }
+    }
+
+    private static MigrationExecutionPolicyException UnsupportedCapability(
+        string code,
+        string message) => new(code, message);
 }

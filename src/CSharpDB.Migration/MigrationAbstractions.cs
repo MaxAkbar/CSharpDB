@@ -130,6 +130,19 @@ public sealed record MigrationReadRequest
     /// <summary>Maximum canonical size of one scalar value, including BLOBs.</summary>
     public int MaxValueBytes { get; init; } = 16 * 1024 * 1024;
 
+    /// <summary>
+    /// Row-outcome contract selected by the bound migration plan. Fail-fast is
+    /// the compatibility default for existing callers.
+    /// </summary>
+    public string RejectContractVersion { get; init; } =
+        MigrationRejectContract.DeterministicFailFastV1;
+
+    /// <summary>
+    /// Plan-bound tolerant-replay policy. This is required only when
+    /// <see cref="RejectContractVersion"/> selects deterministic rejects.
+    /// </summary>
+    public MigrationDeterministicRejectPolicy? RejectPolicy { get; init; }
+
     public string? ResumeCursor { get; init; }
 
     public string? SnapshotToken { get; init; }
@@ -148,6 +161,18 @@ public interface IMigrationDataSource : IAsyncDisposable
     IAsyncEnumerable<MigrationDataBatch> ReadAsync(
         MigrationReadRequest request,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Optional source capability for reproducing deterministic rejected-row
+/// outcomes. The advertised registry is an upper bound; each plan may select a
+/// nonempty subset of these stable rule identifiers.
+/// </summary>
+public interface IMigrationRejectAwareDataSource
+{
+    string RejectContractVersion { get; }
+
+    IReadOnlySet<string> SupportedRejectRuleIds { get; }
 }
 
 /// <summary>
@@ -271,8 +296,9 @@ public sealed record MigrationBatchReceipt
 
 /// <summary>
 /// Optional target capability used to resume receipts written with an older
-/// canonical batch-digest format. Targets that do not implement this
-/// interface are treated as current-format targets.
+/// canonical batch-digest format. Fail-fast execution treats targets that do
+/// not implement this interface as current-format; deterministic rejects
+/// require an explicit current-format advertisement.
 /// </summary>
 public interface IMigrationBatchDigestContractTarget
 {

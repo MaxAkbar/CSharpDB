@@ -5,8 +5,9 @@ Streaming file-format adapters for `CSharpDB.Migration`.
 The current Phase 4A slices provide a forward-only CSV logical-record reader,
 an immutable raw-byte source snapshot, bounded delimiter/BOM inspection, a
 deterministic content-plus-format source binding, and confidence-bearing schema
-inference with ordinal overrides, migration-catalog adaptation, and a strict
-repeatable `IMigrationDataSource`. The reader handles quoted multiline fields
+inference with ordinal overrides, migration-catalog adaptation, and a repeatable
+`IMigrationDataSource` whose strict behavior remains the default. The reader
+handles quoted multiline fields
 and escaped quotes without loading the source file into memory, preserves exact
 decoded text, and keeps null, empty, missing,
 and trailing-empty fields distinct. Strict decoding and absolute field,
@@ -28,6 +29,12 @@ catalog without claiming that a sampled prefix proves the unseen tail. See
 column order, splits before row or canonical-byte limits, and emits
 snapshot/policy-bound cursors. Each pass opens a fresh reader over the same
 caller-owned snapshot, which supports receipt replay and validation rereads.
+Opt-in deterministic replay records only `MissingField`, `NullNotAllowed`, and
+`TypeMismatch`; its frozen evidence preserves record/line coordinates, field
+kind, quote state, and decoded pre-normalization text. Accepted and rejected
+outcomes share one contiguous cursor interval, including all-reject batches.
+Parser, encoding, integrity, target-conversion, and resource-limit failures stay
+fatal.
 See [`migration-csv-data-source.md`](../../docs/migration-csv-data-source.md).
 
 `CsvSnapshotPackage` atomically retains the raw snapshot and exact reader,
@@ -37,5 +44,6 @@ The CLI uses that boundary for inspect, apply, resume, and validation. A
 batches, exact resume/checksum behavior, bounded memory, and temporary cleanup;
 see [`migration-csv-performance.md`](../../docs/migration-csv-performance.md).
 
-Tolerant reject files, typed CSV export manifests, and export remain later
-Phase 4A slices.
+Reject-artifact publication, reject-aware validation comparison, typed CSV
+export manifests, and export remain later Phase 4A slices. The CLI therefore
+continues to expose fail-fast apply only.

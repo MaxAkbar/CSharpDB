@@ -13,24 +13,25 @@ the total source size.
 Schema actions are applied in ordered, transactionally receipted stages. Each
 prepared data batch is converted and digested by the provider-neutral runner;
 the target then validates the binding, ordered columns, value tags,
-nullability, finite REAL policy, and digest again. Target rows and their full
-receipt commit in one explicit transaction. Resume accepts only exact existing
-stage and batch receipts and rejects changed identities, cursor chains, or
-payloads.
+nullability, finite REAL policy, and digest again. Accepted rows, canonical
+reject-ledger entries, and their full v2 receipt commit in one explicit
+transaction. Resume accepts only exact existing stage and batch receipts and
+rejects changed identities, cursor chains, outcome order, or payloads.
 
-The lifecycle ends at `awaiting-validation`. This project intentionally has no
-activation, overwrite, merge, or replace API. Validation and activation gates
-belong to later migration phases.
+Apply stops at `awaiting-validation`. Activation accepts only a permit derived
+from a coherent, published, passing validation report and persists its receipt
+atomically; deterministic-reject validation remains gated. The project has no
+overwrite, merge, or replace API.
 
-The current Phase 2 slice implements the versioned deterministic fail-fast
-contract. Conversion visits canonical source objects, rows, and columns in
-order, reports only stable first-error metadata, and never submits the failing
-prepared batch. A cancellation observed before the final commit check rolls
-back both rows and receipt; after that check commit is deliberately
-non-cancellable and resume verifies whether it completed. Unsupported
-skip-and-record mode is rejected before this adapter creates a target because
-the current receipt schema cannot atomically bind durable reject records.
+The adapter implements both deterministic fail-fast and the opt-in deterministic
+reject contract. Conversion visits canonical source objects, rows, and columns
+in order, while tolerant batches bind every accepted/rejected outcome to the
+receipt and ledger. A cancellation observed before the final commit check rolls
+back rows, rejects, and receipt; after that check commit is deliberately
+non-cancellable and resume verifies whether it completed. Fresh-process fault
+qualification covers accepted-only, mixed, and all-reject batches at every
+transaction boundary.
 
-Identity/rowversion/default lowering, durable skip-and-record rejects, archive
-restoration, process-crash test harnesses, and activation remain explicit
-follow-up work.
+Identity/rowversion/default lowering, archive restoration, reject-artifact
+publication, and reject-aware validation comparison remain explicit follow-up
+work.

@@ -36,6 +36,9 @@ part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
 - the versioned `csharpdb-migration-fail-fast/v1` reject contract: canonical
   object/row/column ordering, safe first-error metadata, no submission of the
   failing prepared batch, and exact replay of prior transactional receipts;
+- the opt-in `csharpdb-migration-deterministic-rejects/v1` contract with
+  capability-gated sources and targets, contiguous accepted/rejected outcome
+  replay, canonical reject and batch digests, and separate replay counters;
 - a bounded streaming apply coordinator with transactional-receipt resume
   verification and ordered schema-stage orchestration;
 - the versioned `csharpdb-canon-v1` logical row codec, cross-platform golden
@@ -73,12 +76,13 @@ Phase 1 is complete for the in-repository planning slice. Exact decimal,
 date/time, GUID, and identifier behavior is shared through
 `CSharpDB.Primitives` and version-bound in migration conversion descriptors.
 The target-specific implementation lives in `CSharpDB.Migration.CSharpDb`. It
-creates a new staged database atomically, stores rows and receipts together,
-and stops at `AwaitingValidation`; activation belongs to the validation phase.
-The Phase 2 receipt schema intentionally supports deterministic fail-fast only.
-`DeterministicRejects` is rejected before target creation because skip-and-record
-would require rejected-row digests and records to commit atomically with each
-batch receipt; it is not silently approximated with a sidecar log.
+creates a new staged database atomically and stores accepted rows, canonical
+reject-ledger entries, and v2 receipts in one transaction. The SDK apply runner
+permits deterministic rejects only when the source advertises the exact contract
+and complete rule registry and the target advertises the current digest and
+authoritative ledger capabilities. Validation still stops this path before
+report publication, and the CLI remains fail-fast until outcome comparison and
+reject-artifact publication are qualified.
 
 The current CLI proof surface is:
 

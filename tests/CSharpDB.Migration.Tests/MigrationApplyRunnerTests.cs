@@ -5,6 +5,8 @@ namespace CSharpDB.Migration.Tests;
 
 public sealed class MigrationApplyRunnerTests
 {
+    private const string DeterministicRuleId = "MIG-TEST-REJECT-001";
+
     private static readonly MigrationSchemaStage[] ExpectedStages =
     [
         MigrationSchemaStage.LoadEssential,
@@ -39,6 +41,8 @@ public sealed class MigrationApplyRunnerTests
         Assert.Equal(0, first.BatchesSkipped);
         Assert.Equal(21, first.RowsWritten);
         Assert.Equal(0, first.RowsSkipped);
+        Assert.Equal(0, first.RejectedRowsWritten);
+        Assert.Equal(0, first.RejectedRowsSkipped);
         Assert.InRange(first.PeakBufferedRows, 1, plan.Load.BatchSize);
         Assert.InRange(first.PeakBufferedBytes, 1, plan.Load.MaxBatchBytes);
 
@@ -46,9 +50,247 @@ public sealed class MigrationApplyRunnerTests
         Assert.Equal(11, resumed.BatchesSkipped);
         Assert.Equal(0, resumed.RowsWritten);
         Assert.Equal(21, resumed.RowsSkipped);
+        Assert.Equal(0, resumed.RejectedRowsWritten);
+        Assert.Equal(0, resumed.RejectedRowsSkipped);
         Assert.Equal(11, target.WrittenBatches.Count);
         Assert.All(target.WrittenBatches, batch => Assert.InRange(batch.Rows.Count, 1, plan.Load.BatchSize));
         Assert.Equal(ExpectedStages.Concat(ExpectedStages), target.SchemaStages);
+    }
+
+    [Fact]
+    public async Task DeterministicReplay_WritesAndSkipsMixedOutcomesWithGlobalSourceOrdinals()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan failFast) = await CreateReadyPlanAsync(batchSize: 2);
+        MigrationPlan plan = WithDeterministicRejects(failFast);
+        await using var inner = new SyntheticMigrationDataSource(catalog);
+        await using var source = new RejectingDataSource(
+            inner,
+            "syn:table:customers-lower",
+            rejectWholeBatch: false);
+        await using var target = new InMemoryMigrationTarget();
+        var request = new MigrationApplyRequest
+        {
+            Plan = plan,
+            Catalog = catalog,
+            Source = source,
+            Target = target,
+        };
+        var runner = new MigrationApplyRunner();
+
+        MigrationApplyResult first = await runner.ApplyAsync(request, cancellationToken);
+        MigrationApplyResult replay = await runner.ApplyAsync(request, cancellationToken);
+
+        MigrationTargetBatch mixed = Assert.Single(target.WrittenBatches, batch =>
+            batch.SourceObjectId == "syn:table:customers-lower" && batch.BatchOrdinal == 0);
+        MigrationTargetBatch successor = Assert.Single(target.WrittenBatches, batch =>
+            batch.SourceObjectId == "syn:table:customers-lower" && batch.BatchOrdinal == 1);
+        Assert.Equal([0L], mixed.Rows.Select(row => row.SourceRowOrdinal));
+        Assert.Equal([1L], mixed.RejectedRows.Select(row => row.SourceRowOrdinal));
+        Assert.Equal([2L], successor.Rows.Select(row => row.SourceRowOrdinal));
+        Assert.Equal(MigrationRejectDigest.Compute(mixed), mixed.RejectDigest);
+        Assert.Equal(MigrationBatchDigest.Compute(mixed), mixed.BatchDigest);
+
+        Assert.Equal(MigrationRejectContract.DeterministicRejectsV1, first.RejectContractVersion);
+        Assert.Equal(20, first.RowsWritten);
+        Assert.Equal(1, first.RejectedRowsWritten);
+        Assert.Equal(0, first.RejectedRowsSkipped);
+        Assert.Equal(0, replay.RowsWritten);
+        Assert.Equal(20, replay.RowsSkipped);
+        Assert.Equal(0, replay.RejectedRowsWritten);
+        Assert.Equal(1, replay.RejectedRowsSkipped);
+        Assert.True(first.PeakBufferedBytes >=
+            MigrationRejectLedgerCodec.GetCanonicalEntryByteCount(
+                mixed.SourceObjectId,
+                mixed.BatchOrdinal,
+                Assert.Single(mixed.RejectedRows)));
+    }
+
+    [Fact]
+    public async Task DeterministicReplay_WritesAndSkipsAnAllRejectTerminalBatch()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan failFast) = await CreateReadyPlanAsync(batchSize: 2);
+        MigrationPlan plan = WithDeterministicRejects(failFast);
+        await using var inner = new SyntheticMigrationDataSource(catalog);
+        await using var source = new RejectingDataSource(
+            inner,
+            "syn:table:reserved",
+            rejectWholeBatch: true);
+        await using var target = new InMemoryMigrationTarget();
+        var request = new MigrationApplyRequest
+        {
+            Plan = plan,
+            Catalog = catalog,
+            Source = source,
+            Target = target,
+        };
+        var runner = new MigrationApplyRunner();
+
+        MigrationApplyResult first = await runner.ApplyAsync(request, cancellationToken);
+        MigrationApplyResult replay = await runner.ApplyAsync(request, cancellationToken);
+
+        MigrationTargetBatch terminal = Assert.Single(target.WrittenBatches, batch =>
+            batch.SourceObjectId == "syn:table:reserved");
+        Assert.Empty(terminal.Rows);
+        Assert.Equal([0L, 1L], terminal.RejectedRows.Select(row => row.SourceRowOrdinal));
+        Assert.Null(terminal.StartCursor);
+        Assert.Null(terminal.NextCursor);
+        Assert.Equal(19, first.RowsWritten);
+        Assert.Equal(2, first.RejectedRowsWritten);
+        Assert.Equal(19, replay.RowsSkipped);
+        Assert.Equal(2, replay.RejectedRowsSkipped);
+    }
+
+    [Fact]
+    public async Task DeterministicReplay_RejectsTamperedStoredRejectCountBeforeSkipping()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan failFast) = await CreateReadyPlanAsync(batchSize: 2);
+        MigrationPlan plan = WithDeterministicRejects(failFast);
+        await using var inner = new SyntheticMigrationDataSource(catalog);
+        await using var source = new RejectingDataSource(
+            inner,
+            "syn:table:customers-lower",
+            rejectWholeBatch: false);
+        await using var target = new InMemoryMigrationTarget();
+        var request = new MigrationApplyRequest
+        {
+            Plan = plan,
+            Catalog = catalog,
+            Source = source,
+            Target = target,
+        };
+        var runner = new MigrationApplyRunner();
+        await runner.ApplyAsync(request, cancellationToken);
+        target.TamperRejectedRowCount("syn:table:customers-lower", batchOrdinal: 0);
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await runner.ApplyAsync(request, cancellationToken));
+
+        Assert.Contains("receipt mismatch", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(11, target.WrittenBatches.Count);
+    }
+
+    [Fact]
+    public async Task DeterministicReplay_RejectsUnsupportedSourceBeforeTargetMutation()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan failFast) = await CreateReadyPlanAsync(batchSize: 2);
+        MigrationPlan plan = WithDeterministicRejects(failFast);
+        await using var source = new SyntheticMigrationDataSource(catalog);
+        await using var target = new InMemoryMigrationTarget();
+
+        MigrationExecutionPolicyException error =
+            await Assert.ThrowsAsync<MigrationExecutionPolicyException>(async () =>
+                await new MigrationApplyRunner().ApplyAsync(
+                    new MigrationApplyRequest
+                    {
+                        Plan = plan,
+                        Catalog = catalog,
+                        Source = source,
+                        Target = target,
+                    },
+                    cancellationToken));
+
+        Assert.Equal("MIG-APPLY-POLICY-REJECT-001", error.Code);
+        Assert.Empty(target.SchemaStages);
+        Assert.Empty(target.WrittenBatches);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DeterministicReplay_RejectsSourceContractOrRuleMismatchBeforeTargetMutation(
+        bool advertiseWrongContract)
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan failFast) = await CreateReadyPlanAsync(batchSize: 2);
+        MigrationPlan plan = WithDeterministicRejects(failFast);
+        await using var inner = new SyntheticMigrationDataSource(catalog);
+        await using var source = new RejectingDataSource(
+            inner,
+            "syn:table:customers-lower",
+            rejectWholeBatch: false,
+            advertisedRejectContractVersion: advertiseWrongContract
+                ? MigrationRejectContract.DeterministicFailFastV1
+                : null,
+            supportedRejectRuleIds: advertiseWrongContract
+                ? null
+                : new HashSet<string>(StringComparer.Ordinal));
+        await using var target = new InMemoryMigrationTarget();
+
+        MigrationExecutionPolicyException error =
+            await Assert.ThrowsAsync<MigrationExecutionPolicyException>(async () =>
+                await new MigrationApplyRunner().ApplyAsync(
+                    new MigrationApplyRequest
+                    {
+                        Plan = plan,
+                        Catalog = catalog,
+                        Source = source,
+                        Target = target,
+                    },
+                    cancellationToken));
+
+        Assert.Equal(
+            advertiseWrongContract
+                ? "MIG-APPLY-POLICY-REJECT-SOURCE-001"
+                : "MIG-APPLY-POLICY-REJECT-RULE-001",
+            error.Code);
+        Assert.Empty(target.SchemaStages);
+        Assert.Empty(target.WrittenBatches);
+    }
+
+    [Fact]
+    public async Task DeterministicReplay_RejectsUnsupportedOrLegacyTargetBeforeMutation()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan failFast) = await CreateReadyPlanAsync(batchSize: 2);
+        MigrationPlan plan = WithDeterministicRejects(failFast);
+
+        await using (var inner = new SyntheticMigrationDataSource(catalog))
+        await using (var source = new RejectingDataSource(
+                         inner,
+                         "syn:table:customers-lower",
+                         rejectWholeBatch: false))
+        await using (var target = new CapabilityProbeTarget())
+        {
+            MigrationExecutionPolicyException unsupported =
+                await Assert.ThrowsAsync<MigrationExecutionPolicyException>(async () =>
+                    await new MigrationApplyRunner().ApplyAsync(
+                        new MigrationApplyRequest
+                        {
+                            Plan = plan,
+                            Catalog = catalog,
+                            Source = source,
+                            Target = target,
+                        },
+                        cancellationToken));
+            Assert.Equal("MIG-APPLY-POLICY-REJECT-TARGET-001", unsupported.Code);
+            Assert.Equal(0, target.OperationCount);
+        }
+
+        await using (var inner = new SyntheticMigrationDataSource(catalog))
+        await using (var source = new RejectingDataSource(
+                         inner,
+                         "syn:table:customers-lower",
+                         rejectWholeBatch: false))
+        await using (var target = new LegacyLedgerCapabilityProbeTarget())
+        {
+            MigrationExecutionPolicyException legacy =
+                await Assert.ThrowsAsync<MigrationExecutionPolicyException>(async () =>
+                    await new MigrationApplyRunner().ApplyAsync(
+                        new MigrationApplyRequest
+                        {
+                            Plan = plan,
+                            Catalog = catalog,
+                            Source = source,
+                            Target = target,
+                        },
+                        cancellationToken));
+            Assert.Equal("MIG-APPLY-POLICY-REJECT-TARGET-001", legacy.Code);
+            Assert.Equal(0, target.OperationCount);
+        }
     }
 
     [Fact]
@@ -303,6 +545,38 @@ public sealed class MigrationApplyRunnerTests
         Assert.Empty(target.WrittenBatches);
     }
 
+    [Fact]
+    public async Task DeterministicReplay_RejectsCombinedCanonicalBatchBytesAboveThePlanBound()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan failFast) = await CreateReadyPlanAsync(
+            batchSize: 2,
+            maxBatchBytes: 512,
+            maxValueBytes: 512);
+        MigrationPlan plan = WithDeterministicRejects(failFast);
+        await using var inner = new SyntheticMigrationDataSource(catalog);
+        await using var source = new RejectingDataSource(
+            inner,
+            "syn:table:customers-lower",
+            rejectWholeBatch: false,
+            rejectEvidenceValue: new string('x', 500));
+        await using var target = new InMemoryMigrationTarget();
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await new MigrationApplyRunner().ApplyAsync(
+                new MigrationApplyRequest
+                {
+                    Plan = plan,
+                    Catalog = catalog,
+                    Source = source,
+                    Target = target,
+                },
+                cancellationToken));
+
+        Assert.Contains("MaxBatchBytes (512)", error.Message, StringComparison.Ordinal);
+        Assert.Empty(target.WrittenBatches);
+    }
+
     private static async Task<(MigrationCatalog Catalog, MigrationPlan Plan)> CreateReadyPlanAsync(
         int batchSize,
         long maxBatchBytes = 64L * 1024 * 1024,
@@ -326,6 +600,26 @@ public sealed class MigrationApplyRunnerTests
         };
         return (catalog, plan);
     }
+
+    private static MigrationPlan WithDeterministicRejects(MigrationPlan plan) =>
+        plan with
+        {
+            Load = plan.Load with
+            {
+                RejectMode = MigrationRejectMode.DeterministicRejects,
+                RejectPolicy = new MigrationDeterministicRejectPolicy
+                {
+                    ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                    AllowedRuleIds = [DeterministicRuleId],
+                    MaxRejectedRowsPerBatch = plan.Load.BatchSize,
+                    MaxRejectedRowsPerRun = 100,
+                    MaxRawValueBytes = 1_024,
+                    MaxRawValueBytesPerBatch = 8_192,
+                    MaxRawValueBytesPerRun = 65_536,
+                    MaxArtifactBytes = 131_072,
+                },
+            },
+        };
 
     private static async Task<MigrationCatalog> InspectAsync() =>
         await new SyntheticMigrationSourceInspector().InspectAsync(
@@ -448,12 +742,91 @@ public sealed class MigrationApplyRunnerTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class InMemoryMigrationTarget : IMigrationTarget
+    private sealed class RejectingDataSource(
+        SyntheticMigrationDataSource inner,
+        string rejectedObjectId,
+        bool rejectWholeBatch,
+        string? advertisedRejectContractVersion = null,
+        IReadOnlySet<string>? supportedRejectRuleIds = null,
+        string? rejectEvidenceValue = null) :
+        IMigrationDataSource,
+        IMigrationRejectAwareDataSource
+    {
+        private static readonly IReadOnlySet<string> s_supportedRules =
+            new HashSet<string>([DeterministicRuleId], StringComparer.Ordinal);
+
+        public MigrationSourceIdentity Source => inner.Source;
+
+        public string SnapshotIdentity => inner.SnapshotIdentity;
+
+        public string RejectContractVersion =>
+            advertisedRejectContractVersion ?? MigrationRejectContract.DeterministicRejectsV1;
+
+        public IReadOnlySet<string> SupportedRejectRuleIds =>
+            supportedRejectRuleIds ?? s_supportedRules;
+
+        public async IAsyncEnumerable<MigrationDataBatch> ReadAsync(
+            MigrationReadRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            MigrationRejectReadPolicyValidator.Validate(request);
+            await foreach (MigrationDataBatch batch in inner.ReadAsync(
+                                   request,
+                                   cancellationToken)
+                               .WithCancellation(cancellationToken))
+            {
+                if (!string.Equals(
+                        batch.SourceObjectId,
+                        rejectedObjectId,
+                        StringComparison.Ordinal) ||
+                    batch.BatchOrdinal != 0)
+                {
+                    yield return batch;
+                    continue;
+                }
+
+                int rejectedCount = rejectWholeBatch ? batch.Rows.Count : 1;
+                int acceptedCount = batch.Rows.Count - rejectedCount;
+                MigrationRejectedRow[] rejectedRows = Enumerable.Range(
+                        acceptedCount,
+                        rejectedCount)
+                    .Select(ordinal => new MigrationRejectedRow
+                    {
+                        SourceRowOrdinal = ordinal,
+                        RuleId = DeterministicRuleId,
+                        ColumnObjectId = request.ColumnObjectIds[0],
+                        Evidence =
+                        [
+                            new MigrationRejectEvidence
+                            {
+                                Name = MigrationRejectLedgerCodec.RawValueEvidenceName,
+                                Value = rejectEvidenceValue ?? $"row-{ordinal}",
+                            },
+                        ],
+                    })
+                    .ToArray();
+                yield return batch with
+                {
+                    Rows = batch.Rows.Take(acceptedCount).ToArray(),
+                    RejectedRows = rejectedRows,
+                };
+            }
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class InMemoryMigrationTarget :
+        IMigrationTarget,
+        IMigrationRejectLedgerTarget,
+        IMigrationBatchDigestContractTarget
     {
         private readonly Dictionary<(string PlanDigest, string ObjectId, long Ordinal), MigrationBatchReceipt>
             _receipts = new();
 
         public string TargetIdentity { get; } = "memory:phase2-target";
+
+        public string BatchDigestFormat => MigrationBatchDigest.Format;
 
         public List<MigrationSchemaStage> SchemaStages { get; } = [];
 
@@ -490,7 +863,7 @@ public sealed class MigrationApplyRunnerTests
                 RejectContractVersion = batch.RejectContractVersion,
                 RejectDigest = batch.RejectDigest,
                 RowCount = batch.Rows.Count,
-                RejectedRowCount = 0,
+                RejectedRowCount = batch.RejectedRows.Count,
             };
             if (!_receipts.TryAdd(Key(batch.PlanDigest, batch.SourceObjectId, batch.BatchOrdinal), receipt))
                 throw new InvalidOperationException("The in-memory target received a duplicate batch write.");
@@ -532,6 +905,40 @@ public sealed class MigrationApplyRunnerTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("Validation is outside this in-memory apply test double.");
 
+        public async IAsyncEnumerable<MigrationRejectLedgerEntry> ReadRejectLedgerAsync(
+            string planDigest,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (MigrationTargetBatch batch in WrittenBatches
+                         .Where(batch => string.Equals(
+                             batch.PlanDigest,
+                             planDigest,
+                             StringComparison.Ordinal))
+                         .OrderBy(batch => batch.SourceObjectId, StringComparer.Ordinal)
+                         .ThenBy(batch => batch.BatchOrdinal))
+            {
+                foreach (MigrationRejectedRow rejectedRow in batch.RejectedRows)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    yield return new MigrationRejectLedgerEntry
+                    {
+                        PlanDigest = planDigest,
+                        SourceObjectId = batch.SourceObjectId,
+                        BatchOrdinal = batch.BatchOrdinal,
+                        RejectedRow = rejectedRow,
+                        RawValueByteCount =
+                            MigrationRejectLedgerCodec.GetRawValueByteCount(rejectedRow),
+                        CanonicalEntryByteCount =
+                            MigrationRejectLedgerCodec.GetCanonicalEntryByteCount(
+                                batch.SourceObjectId,
+                                batch.BatchOrdinal,
+                                rejectedRow),
+                    };
+                    await Task.Yield();
+                }
+            }
+        }
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
         public void TamperReceiptDigest(string sourceObjectId, long batchOrdinal)
@@ -550,9 +957,93 @@ public sealed class MigrationApplyRunnerTests
             _receipts[item.Key] = item.Value with { RejectDigest = new string('0', 64) };
         }
 
+        public void TamperRejectedRowCount(string sourceObjectId, long batchOrdinal)
+        {
+            KeyValuePair<(string PlanDigest, string ObjectId, long Ordinal), MigrationBatchReceipt> item =
+                _receipts.Single(pair =>
+                    pair.Key.ObjectId == sourceObjectId && pair.Key.Ordinal == batchOrdinal);
+            _receipts[item.Key] = item.Value with
+            {
+                RejectedRowCount = checked(item.Value.RejectedRowCount + 1),
+            };
+        }
+
         private static (string PlanDigest, string ObjectId, long Ordinal) Key(
             string planDigest,
             string objectId,
             long ordinal) => (planDigest, objectId, ordinal);
+    }
+
+    private class CapabilityProbeTarget :
+        IMigrationTarget,
+        IMigrationBatchDigestContractTarget
+    {
+        public virtual string BatchDigestFormat => MigrationBatchDigest.Format;
+
+        public string TargetIdentity => "memory:capability-probe";
+
+        public int OperationCount { get; private set; }
+
+        public ValueTask ApplySchemaAsync(
+            MigrationPlan plan,
+            MigrationCatalog catalog,
+            MigrationSchemaStage stage,
+            CancellationToken cancellationToken = default)
+        {
+            OperationCount++;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<MigrationBatchReceipt> WriteBatchAsync(
+            MigrationTargetBatch batch,
+            CancellationToken cancellationToken = default)
+        {
+            OperationCount++;
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<MigrationBatchReceipt?> ReadReceiptAsync(
+            string planDigest,
+            string sourceObjectId,
+            long batchOrdinal,
+            CancellationToken cancellationToken = default)
+        {
+            OperationCount++;
+            return ValueTask.FromResult<MigrationBatchReceipt?>(null);
+        }
+
+        public async IAsyncEnumerable<MigrationBatchReceipt> ReadReceiptsAsync(
+            string planDigest,
+            string sourceObjectId,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            OperationCount++;
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public ValueTask<IValidationSnapshot> OpenValidationSnapshotAsync(
+            CancellationToken cancellationToken = default)
+        {
+            OperationCount++;
+            throw new NotSupportedException();
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class LegacyLedgerCapabilityProbeTarget :
+        CapabilityProbeTarget,
+        IMigrationRejectLedgerTarget
+    {
+        public override string BatchDigestFormat => MigrationBatchDigest.LegacyFormat;
+
+        public async IAsyncEnumerable<MigrationRejectLedgerEntry> ReadRejectLedgerAsync(
+            string planDigest,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
     }
 }

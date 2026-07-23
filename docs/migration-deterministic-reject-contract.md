@@ -6,10 +6,10 @@ workflow. This contract extends, but does not replace, the existing
 
 Implementation status: the bounded reject model, plan-bound rule/limit policy,
 reject-set and v2 batch digests, canonical ledger codec, atomic CSharpDB ledger
-write/read path, v2 receipts, and target-side outcome validation are present.
-Execution is still fail-fast; tolerant policy validation remains closed until
-reject-aware source replay, CSV evidence, reject-aware validation comparison,
-and artifact phases below pass.
+write/read path, v2 receipts, target-side outcome validation, provider-neutral
+source replay, and CSV evidence are present. Capability-qualified SDK apply can
+write and exactly replay accepted-only, mixed, and all-reject batches. Validation
+comparison, reject-artifact publication, and CLI tolerant mode remain closed.
 
 ## Decision
 
@@ -126,8 +126,10 @@ Because v1 allows exactly one reject per source row, its reject ordinal is
 implicitly zero and the ledger primary key uses the source-row ordinal. The
 canonical entry byte count is computed from the fixed-property-order UTF-8
 entry codec rather than stored as an independently mutable field. Generic
-evidence is stored as a fixed-property-order JSON array; the CSV adapter must
-freeze the exact evidence-name registry before it can emit tolerant outcomes.
+evidence is stored as a fixed-property-order JSON array. The CSV adapter freezes
+the registry to `columnIndex`, `dataRecordNumber`, `endPhysicalLine`,
+`fieldKind`, `logicalRecordNumber`, `rawValue`, `startPhysicalLine`, and
+`wasQuoted`, in that ordinal order.
 The artifact begins with the canonical JSON line
 `{"format":"csharpdb-migration-reject-artifact/v1","planDigest":"<sha256>"}`;
 every subsequent line is one canonical entry and every line ends in LF.
@@ -267,9 +269,10 @@ after commit; they must not become the authority for resume.
    activation-binding behavior are now covered. Fresh-process qualification
    covers accepted-only, mixed, and all-reject outcomes at every transaction
    boundary, including committed replay and a second fresh reopen.
-3. Add CSV row-outcome metadata for the explicit row-rejectable rule registry,
-   then add bounded artifact materialization. Parser, integrity, and resource
-   errors remain fatal.
+3. CSV row-outcome metadata and capability-qualified source replay are now
+   present for `MissingField`, `NullNotAllowed`, and `TypeMismatch`. Parser,
+   integrity, conversion, and resource errors remain fatal. Bounded artifact
+   materialization remains the next part of this phase.
 4. Expose CLI tolerant mode only after cross-process resume, tamper, privacy,
    large-stream, all-reject, limit, cancellation, and artifact-regeneration
    tests pass. Strict mode remains the default and release baseline.

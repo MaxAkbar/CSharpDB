@@ -8,6 +8,127 @@ namespace CSharpDB.Migration.Files.Tests;
 
 public sealed class CsvMigrationDataSourceIntegrationTests
 {
+    [Theory]
+    [InlineData("id\n1\nbad\n2\n", 2, 1)]
+    [InlineData("id\n1\nbad\nworse\n", 1, 2)]
+    public async Task DeterministicApplyReplaysRealCsvOutcomesAgainstLedgerCapableTarget(
+        string csv,
+        int expectedAccepted,
+        int expectedRejected)
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        await using CsvSourceSnapshot sourceSnapshot = await CsvSourceSnapshot.CreateAsync(
+            new MemoryStream(new UTF8Encoding(false, true).GetBytes(csv)),
+            cancellationToken: cancellationToken);
+        CsvFormatInspection inspection = await CsvFormatInspector.InspectAsync(
+            sourceSnapshot,
+            new CsvReaderOptions(),
+            new CsvInspectionOptions { DelimiterCandidates = [","] },
+            cancellationToken);
+        CsvSourceBinding binding = await CsvSourceBinding.CreateAsync(
+            sourceSnapshot,
+            inspection,
+            cancellationToken: cancellationToken);
+        CsvSchemaInferenceResult inferred = await CsvSchemaInferer.InferAsync(
+            binding,
+            sourceSnapshot,
+            maxDataRecords: 1,
+            new CsvSchemaInferenceOptions
+            {
+                ColumnOverrides =
+                [
+                    new CsvColumnSchemaOverride
+                    {
+                        ColumnIndex = 0,
+                        ExpectedHeader = "id",
+                        LogicalType = CsvColumnLogicalType.SignedInteger,
+                        Nullable = false,
+                    },
+                ],
+            },
+            cancellationToken);
+        MigrationCatalog catalog = inferred.CreateCatalog(
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion);
+        MigrationPlan failFast = ReadyPlan(catalog, batchSize: 2);
+        MigrationPlan plan = failFast with
+        {
+            Load = failFast.Load with
+            {
+                RejectMode = MigrationRejectMode.DeterministicRejects,
+                RejectPolicy = new MigrationDeterministicRejectPolicy
+                {
+                    ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                    AllowedRuleIds = [CsvMigrationDataRules.TypeMismatch],
+                    MaxRejectedRowsPerBatch = 2,
+                    MaxRejectedRowsPerRun = 10,
+                    MaxRawValueBytes = 4_096,
+                    MaxRawValueBytesPerBatch = 64 * 1_024,
+                    MaxRawValueBytesPerRun = 1024 * 1_024,
+                    MaxArtifactBytes = 1024 * 1_024,
+                },
+            },
+        };
+
+        await using CsvMigrationDataSource source = await CsvMigrationDataSource.CreateAsync(
+            inferred,
+            sourceSnapshot,
+            catalog,
+            cancellationToken);
+        await using var target = new ReceiptMigrationTarget();
+        var request = new MigrationApplyRequest
+        {
+            Plan = plan,
+            Catalog = catalog,
+            Source = source,
+            Target = target,
+        };
+        var runner = new MigrationApplyRunner();
+
+        MigrationApplyResult first = await runner.ApplyAsync(request, cancellationToken);
+        MigrationApplyResult replay = await runner.ApplyAsync(request, cancellationToken);
+
+        Assert.Equal(expectedAccepted, first.RowsWritten);
+        Assert.Equal(expectedRejected, first.RejectedRowsWritten);
+        Assert.Equal(0, first.RowsSkipped);
+        Assert.Equal(0, first.RejectedRowsSkipped);
+        Assert.Equal(0, replay.RowsWritten);
+        Assert.Equal(0, replay.RejectedRowsWritten);
+        Assert.Equal(expectedAccepted, replay.RowsSkipped);
+        Assert.Equal(expectedRejected, replay.RejectedRowsSkipped);
+        Assert.Equal(
+            Enumerable.Range(0, expectedAccepted + expectedRejected).Select(value => (long)value),
+            target.Batches
+                .SelectMany(batch => batch.Rows.Select(row => row.SourceRowOrdinal)
+                    .Concat(batch.RejectedRows.Select(row => row.SourceRowOrdinal)))
+                .Order());
+        Assert.Equal(
+            expectedRejected,
+            target.Receipts.Sum(receipt => receipt.RejectedRowCount));
+        Assert.Contains(
+            target.Batches,
+            batch => batch.Rows.Count > 0 && batch.RejectedRows.Count > 0);
+        if (expectedRejected == 2)
+        {
+            Assert.Contains(
+                target.Batches,
+                batch => batch.Rows.Count == 0 &&
+                    batch.RejectedRows.Count > 0 &&
+                    batch.NextCursor is null);
+        }
+
+        var ledger = new List<MigrationRejectLedgerEntry>();
+        await foreach (MigrationRejectLedgerEntry entry in target.ReadRejectLedgerAsync(
+                           first.PlanDigest,
+                           cancellationToken))
+        {
+            ledger.Add(entry);
+        }
+        Assert.Equal(expectedRejected, ledger.Count);
+        Assert.All(
+            ledger,
+            entry => Assert.Equal(CsvMigrationDataRules.TypeMismatch, entry.RejectedRow.RuleId));
+    }
+
     [Fact]
     public async Task ApplyWritesCsvBatchesThenSkipsTheSameReceiptsOnReplay()
     {
@@ -154,18 +275,27 @@ public sealed class CsvMigrationDataSourceIntegrationTests
         };
     }
 
-    private sealed class ReceiptMigrationTarget : IMigrationTarget
+    private sealed class ReceiptMigrationTarget :
+        IMigrationTarget,
+        IMigrationRejectLedgerTarget,
+        IMigrationBatchDigestContractTarget
     {
         private readonly Dictionary<(string PlanDigest, string ObjectId, long BatchOrdinal), MigrationBatchReceipt>
             receipts = [];
 
+        private readonly List<MigrationTargetBatch> batches = [];
+
         public string TargetIdentity => "target:csv-receipt-replay";
+
+        public string BatchDigestFormat => MigrationBatchDigest.Format;
 
         public int WriteCount { get; private set; }
 
         public IReadOnlyList<MigrationBatchReceipt> Receipts => receipts.Values
             .OrderBy(receipt => receipt.BatchOrdinal)
             .ToArray();
+
+        public IReadOnlyList<MigrationTargetBatch> Batches => batches;
 
         public ValueTask ApplySchemaAsync(
             MigrationPlan plan,
@@ -197,10 +327,11 @@ public sealed class CsvMigrationDataSourceIntegrationTests
                 RejectContractVersion = batch.RejectContractVersion,
                 RejectDigest = batch.RejectDigest,
                 RowCount = batch.Rows.Count,
-                RejectedRowCount = 0,
+                RejectedRowCount = batch.RejectedRows.Count,
             };
             if (!receipts.TryAdd(Key(batch.PlanDigest, batch.SourceObjectId, batch.BatchOrdinal), receipt))
                 throw new InvalidOperationException("The CSV apply attempted a duplicate batch write.");
+            batches.Add(batch);
             WriteCount++;
             return ValueTask.FromResult(receipt);
         }
@@ -239,6 +370,41 @@ public sealed class CsvMigrationDataSourceIntegrationTests
         public ValueTask<IValidationSnapshot> OpenValidationSnapshotAsync(
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public async IAsyncEnumerable<MigrationRejectLedgerEntry> ReadRejectLedgerAsync(
+            string planDigest,
+            [System.Runtime.CompilerServices.EnumeratorCancellation]
+            CancellationToken cancellationToken = default)
+        {
+            foreach (MigrationTargetBatch batch in batches
+                         .Where(item => string.Equals(
+                             item.PlanDigest,
+                             planDigest,
+                             StringComparison.Ordinal))
+                         .OrderBy(item => item.SourceObjectId, StringComparer.Ordinal)
+                         .ThenBy(item => item.BatchOrdinal))
+            {
+                foreach (MigrationRejectedRow rejectedRow in batch.RejectedRows)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    yield return new MigrationRejectLedgerEntry
+                    {
+                        PlanDigest = planDigest,
+                        SourceObjectId = batch.SourceObjectId,
+                        BatchOrdinal = batch.BatchOrdinal,
+                        RejectedRow = rejectedRow,
+                        RawValueByteCount =
+                            MigrationRejectLedgerCodec.GetRawValueByteCount(rejectedRow),
+                        CanonicalEntryByteCount =
+                            MigrationRejectLedgerCodec.GetCanonicalEntryByteCount(
+                                batch.SourceObjectId,
+                                batch.BatchOrdinal,
+                                rejectedRow),
+                    };
+                    await Task.Yield();
+                }
+            }
+        }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

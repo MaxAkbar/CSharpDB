@@ -16,11 +16,13 @@ public sealed class CsvLogicalField
         int columnIndex,
         CsvFieldKind kind,
         string? value,
+        string? rawValue,
         bool wasQuoted)
     {
         ColumnIndex = columnIndex;
         Kind = kind;
         Value = value;
+        RawValue = rawValue;
         WasQuoted = wasQuoted;
     }
 
@@ -34,6 +36,12 @@ public sealed class CsvLogicalField
     /// for <see cref="CsvFieldKind.Empty"/>, and null otherwise.
     /// </summary>
     public string? Value { get; }
+
+    /// <summary>
+    /// Exact decoded field text before null-token classification. Missing
+    /// fields have no raw value.
+    /// </summary>
+    public string? RawValue { get; }
 
     public bool WasQuoted { get; }
 }
