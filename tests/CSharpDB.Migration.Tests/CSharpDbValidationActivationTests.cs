@@ -450,6 +450,10 @@ public sealed class CSharpDbValidationActivationTests
                 },
             ],
         };
+        unsigned = unsigned with
+        {
+            RejectDigest = MigrationRejectDigest.Compute(unsigned),
+        };
         MigrationTargetBatch batch = unsigned with
         {
             BatchDigest = MigrationBatchDigest.Compute(unsigned),

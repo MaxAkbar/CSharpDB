@@ -393,7 +393,12 @@ apply, resume, and checksum measurements with fixed live-batch bounds; see
 [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md),
 [`migration-csv-data-source.md`](migration-csv-data-source.md),
 [`migration-csv-retained-package.md`](migration-csv-retained-package.md), and
-[`migration-csv-performance.md`](migration-csv-performance.md).
+[`migration-csv-performance.md`](migration-csv-performance.md). The
+provider-neutral ordered outcome, reject-set digest, and v2 batch/receipt
+foundation is frozen in
+[`migration-deterministic-reject-contract.md`](migration-deterministic-reject-contract.md),
+but tolerant execution remains gated until the target ledger, reject-aware
+validation, CSV evidence, and artifact publication are atomic and complete.
 
 ### Track 4A: CSV
 
@@ -426,6 +431,12 @@ apply, resume, and checksum measurements with fixed live-batch bounds; see
 - [x] Add absolute parser/inference/package resource ceilings, a 50,000-row
   structural CI fixture, and isolated 100K/1M retained migration performance,
   resume, checksum, memory, and temporary-disk qualification.
+- [x] Freeze the bounded provider-neutral reject record, canonical reject-set
+  digest, one-outcome-per-source-row validator, and v2 batch/receipt binding
+  while retaining the fail-fast execution gate.
+- [ ] Persist accepted rows, the canonical reject ledger, and its receipt in
+  one target transaction; add reject-aware validation before enabling the
+  tolerant policy.
 
 - [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [x] Support quoted multiline fields, escaped quotes, explicit/detected

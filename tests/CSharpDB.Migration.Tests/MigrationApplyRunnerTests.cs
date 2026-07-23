@@ -78,6 +78,31 @@ public sealed class MigrationApplyRunnerTests
     }
 
     [Fact]
+    public async Task Apply_RejectsAChangedRejectDigestOnResume()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (MigrationCatalog catalog, MigrationPlan plan) = await CreateReadyPlanAsync(batchSize: 2);
+        await using var source = new SyntheticMigrationDataSource(catalog);
+        await using var target = new InMemoryMigrationTarget();
+        var runner = new MigrationApplyRunner();
+        var request = new MigrationApplyRequest
+        {
+            Plan = plan,
+            Catalog = catalog,
+            Source = source,
+            Target = target,
+        };
+        await runner.ApplyAsync(request, cancellationToken);
+        target.TamperRejectDigest("syn:table:customers-lower", batchOrdinal: 0);
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await runner.ApplyAsync(request, cancellationToken));
+
+        Assert.Contains("receipt mismatch", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(11, target.WrittenBatches.Count);
+    }
+
+    [Fact]
     public void ValueConverter_ConvertsBlobAndNullableNullWithoutChangingTags()
     {
         MigrationCatalogObject column = Column("column:payload", "VARBINARY(MAX)", nullable: true);
@@ -174,16 +199,16 @@ public sealed class MigrationApplyRunnerTests
         Assert.Equal(64, digest.Length);
         Assert.NotEqual(
             digest,
-            MigrationBatchDigest.Compute(batch with { NextCursor = "row:changed" }));
+            MigrationBatchDigest.Compute(Seal(batch with { NextCursor = "row:changed" })));
         Assert.NotEqual(
             digest,
-            MigrationBatchDigest.Compute(batch with
+            MigrationBatchDigest.Compute(Seal(batch with
             {
                 ColumnObjectIds = batch.ColumnObjectIds.Reverse().ToArray(),
-            }));
+            })));
         Assert.NotEqual(
             digest,
-            MigrationBatchDigest.Compute(batch with
+            MigrationBatchDigest.Compute(Seal(batch with
             {
                 Rows =
                 [
@@ -192,7 +217,7 @@ public sealed class MigrationApplyRunnerTests
                         Values = [DbValue.FromInteger(42), DbValue.FromBlob([0x01, 0x03])],
                     },
                 ],
-            }));
+            })));
     }
 
     [Fact]
@@ -342,20 +367,20 @@ public sealed class MigrationApplyRunnerTests
         DbType targetType,
         string conversionId,
         params MigrationCatalogFacet[] parameters) => new()
-    {
-        SourceObjectId = column.ObjectId,
-        SourceNativeType = column.NativeType!,
-        TargetType = targetType,
-        Classification = MigrationMappingClassification.LosslessReencoded,
-        Profile = MigrationMappingProfile.Preserve,
-        Coverage = NoCoverage(),
-        Conversion = new MigrationConversionDescriptor
         {
-            ConversionId = conversionId,
-            Version = 1,
-            Parameters = parameters,
-        },
-    };
+            SourceObjectId = column.ObjectId,
+            SourceNativeType = column.NativeType!,
+            TargetType = targetType,
+            Classification = MigrationMappingClassification.LosslessReencoded,
+            Profile = MigrationMappingProfile.Preserve,
+            Coverage = NoCoverage(),
+            Conversion = new MigrationConversionDescriptor
+            {
+                ConversionId = conversionId,
+                Version = 1,
+                Parameters = parameters,
+            },
+        };
 
     private static MigrationProfileCoverage NoCoverage() => new()
     {
@@ -363,28 +388,35 @@ public sealed class MigrationApplyRunnerTests
         RequiresFullStreamValidation = true,
     };
 
-    private static MigrationTargetBatch TargetBatch() => new()
+    private static MigrationTargetBatch TargetBatch() => Seal(
+        new MigrationTargetBatch
+        {
+            PlanDigest = new string('1', 64),
+            CatalogDigest = new string('2', 64),
+            SourceFingerprint = "source:fingerprint",
+            SourceSnapshotIdentity = "source:snapshot",
+            SourceObjectId = "table:sample",
+            ColumnObjectIds = ["column:id", "column:payload"],
+            BatchOrdinal = 3,
+            StartCursor = "row:4",
+            NextCursor = "row:5",
+            BatchDigest = string.Empty,
+            Rows =
+            [
+                new MigrationTargetRow
+                {
+                    SourceRowOrdinal = 4,
+                    StableKey = "row-4",
+                    Values = [DbValue.FromInteger(42), DbValue.FromBlob([0x01, 0x02])],
+                },
+            ],
+        });
+
+    private static MigrationTargetBatch Seal(MigrationTargetBatch batch)
     {
-        PlanDigest = new string('1', 64),
-        CatalogDigest = new string('2', 64),
-        SourceFingerprint = "source:fingerprint",
-        SourceSnapshotIdentity = "source:snapshot",
-        SourceObjectId = "table:sample",
-        ColumnObjectIds = ["column:id", "column:payload"],
-        BatchOrdinal = 3,
-        StartCursor = "row:4",
-        NextCursor = "row:5",
-        BatchDigest = string.Empty,
-        Rows =
-        [
-            new MigrationTargetRow
-            {
-                SourceRowOrdinal = 4,
-                StableKey = "row-4",
-                Values = [DbValue.FromInteger(42), DbValue.FromBlob([0x01, 0x02])],
-            },
-        ],
-    };
+        batch = batch with { RejectDigest = MigrationRejectDigest.Compute(batch) };
+        return batch with { BatchDigest = MigrationBatchDigest.Compute(batch) };
+    }
 
     private static async Task<List<T>> CollectAsync<T>(IAsyncEnumerable<T> values)
     {
@@ -455,6 +487,8 @@ public sealed class MigrationApplyRunnerTests
                 StartCursor = batch.StartCursor,
                 NextCursor = batch.NextCursor,
                 BatchDigest = batch.BatchDigest,
+                RejectContractVersion = batch.RejectContractVersion,
+                RejectDigest = batch.RejectDigest,
                 RowCount = batch.Rows.Count,
                 RejectedRowCount = 0,
             };
@@ -506,6 +540,14 @@ public sealed class MigrationApplyRunnerTests
                 _receipts.Single(pair =>
                     pair.Key.ObjectId == sourceObjectId && pair.Key.Ordinal == batchOrdinal);
             _receipts[item.Key] = item.Value with { BatchDigest = new string('0', 64) };
+        }
+
+        public void TamperRejectDigest(string sourceObjectId, long batchOrdinal)
+        {
+            KeyValuePair<(string PlanDigest, string ObjectId, long Ordinal), MigrationBatchReceipt> item =
+                _receipts.Single(pair =>
+                    pair.Key.ObjectId == sourceObjectId && pair.Key.Ordinal == batchOrdinal);
+            _receipts[item.Key] = item.Value with { RejectDigest = new string('0', 64) };
         }
 
         private static (string PlanDigest, string ObjectId, long Ordinal) Key(

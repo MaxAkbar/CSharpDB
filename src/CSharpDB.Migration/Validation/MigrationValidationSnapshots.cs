@@ -246,7 +246,8 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
             !string.Equals(batch.SnapshotIdentity, SnapshotIdentity, StringComparison.Ordinal) ||
             batch.ColumnObjectIds is null ||
             !batch.ColumnObjectIds.SequenceEqual(columnIds, StringComparer.Ordinal) ||
-            batch.Rows is null || batch.Rows.Count == 0 || batch.Rows.Count > _plan.Load.BatchSize)
+            batch.Rows is null || batch.Rows.Count == 0 || batch.Rows.Count > _plan.Load.BatchSize ||
+            batch.RejectedRows is null || batch.RejectedRows.Count != 0)
         {
             throw new InvalidDataException(
                 $"Validation source batch for '{objectId}' changed identity, shape, or snapshot.");

@@ -88,6 +88,14 @@ public sealed class MigrationApplyRunner
             throw new InvalidDataException("Migration data source snapshot identity is required.");
         if (string.IsNullOrWhiteSpace(request.Target.TargetIdentity))
             throw new InvalidDataException("Migration target identity is required.");
+        string batchDigestFormat = request.Target is IMigrationBatchDigestContractTarget digestTarget
+            ? digestTarget.BatchDigestFormat
+            : MigrationBatchDigest.Format;
+        if (batchDigestFormat is not
+            (MigrationBatchDigest.LegacyFormat or MigrationBatchDigest.Format))
+        {
+            throw new InvalidDataException("Migration target batch digest format is unsupported.");
+        }
 
         string snapshotIdentity = request.Source.SnapshotIdentity;
         string planDigest = MigrationArtifactSerializer.ComputePlanDigest(plan);
@@ -248,9 +256,17 @@ public sealed class MigrationApplyRunner
                     StartCursor = sourceBatch.StartCursor,
                     NextCursor = sourceBatch.NextCursor,
                     BatchDigest = string.Empty,
+                    RejectContractVersion = MigrationRejectContract.DeterministicFailFastV1,
                     Rows = targetRows,
                 };
-                targetBatch = targetBatch with { BatchDigest = MigrationBatchDigest.Compute(targetBatch) };
+                targetBatch = targetBatch with
+                {
+                    RejectDigest = MigrationRejectDigest.Compute(targetBatch),
+                };
+                targetBatch = targetBatch with
+                {
+                    BatchDigest = MigrationBatchDigest.Compute(targetBatch, batchDigestFormat),
+                };
 
                 MigrationBatchReceipt? existing = await request.Target.ReadReceiptAsync(
                     planDigest,
@@ -336,6 +352,11 @@ public sealed class MigrationApplyRunner
             throw new InvalidDataException("Migration source batches must contain at least one row.");
         if (batch.Rows.Count > maximumRows)
             throw new InvalidDataException($"Migration source batch contains {batch.Rows.Count} rows; maximum is {maximumRows}.");
+        if (batch.RejectedRows is null || batch.RejectedRows.Count != 0)
+        {
+            throw new InvalidDataException(
+                "Fail-fast migration sources cannot emit durable rejected-row outcomes.");
+        }
     }
 
     private static void ValidateReceipt(
@@ -353,6 +374,13 @@ public sealed class MigrationApplyRunner
             !string.Equals(receipt.StartCursor, batch.StartCursor, StringComparison.Ordinal) ||
             !string.Equals(receipt.NextCursor, batch.NextCursor, StringComparison.Ordinal) ||
             !string.Equals(receipt.BatchDigest, batch.BatchDigest, StringComparison.Ordinal) ||
+            !string.Equals(
+                receipt.RejectContractVersion,
+                batch.RejectContractVersion,
+                StringComparison.Ordinal) ||
+            !MigrationBatchOutcomeValidator.FixedTimeSha256Equals(
+                batch.RejectDigest,
+                receipt.RejectDigest) ||
             receipt.RowCount != batch.Rows.Count ||
             receipt.RejectedRowCount != 0)
         {

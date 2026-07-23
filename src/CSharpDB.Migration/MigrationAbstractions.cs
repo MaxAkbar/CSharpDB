@@ -59,6 +59,36 @@ public sealed record MigrationDataRow
     public IReadOnlyList<MigrationSourceValue> Values { get; init; } = [];
 }
 
+/// <summary>
+/// One bounded, provider-defined piece of deterministic rejection evidence.
+/// Names and values are validated by <see cref="MigrationRejectDigest"/> and
+/// must be emitted in ordinal name order.
+/// </summary>
+public sealed record MigrationRejectEvidence
+{
+    public required string Name { get; init; }
+
+    public string? Value { get; init; }
+
+    public override string ToString() =>
+        $"{nameof(MigrationRejectEvidence)} {{ Name = {Name}, Value = <redacted> }}";
+}
+
+/// <summary>
+/// The first deterministic failure for one attempted source row. Free-form
+/// exception messages are deliberately excluded from this durable contract.
+/// </summary>
+public sealed record MigrationRejectedRow
+{
+    public long SourceRowOrdinal { get; init; }
+
+    public required string RuleId { get; init; }
+
+    public string? ColumnObjectId { get; init; }
+
+    public IReadOnlyList<MigrationRejectEvidence> Evidence { get; init; } = [];
+}
+
 public sealed record MigrationDataBatch
 {
     public required string SourceObjectId { get; init; }
@@ -74,6 +104,13 @@ public sealed record MigrationDataBatch
     public string? NextCursor { get; init; }
 
     public IReadOnlyList<MigrationDataRow> Rows { get; init; } = [];
+
+    /// <summary>
+    /// Recoverable row-local source failures. A source may populate this only
+    /// under a reject-aware execution contract; fatal structural failures are
+    /// still raised as exceptions.
+    /// </summary>
+    public IReadOnlyList<MigrationRejectedRow> RejectedRows { get; init; } = [];
 }
 
 public sealed record MigrationReadRequest
@@ -190,7 +227,14 @@ public sealed record MigrationTargetBatch
 
     public required string BatchDigest { get; init; }
 
+    public string RejectContractVersion { get; init; } =
+        MigrationRejectContract.DeterministicFailFastV1;
+
+    public string RejectDigest { get; init; } = string.Empty;
+
     public IReadOnlyList<MigrationTargetRow> Rows { get; init; } = [];
+
+    public IReadOnlyList<MigrationRejectedRow> RejectedRows { get; init; } = [];
 }
 
 public sealed record MigrationBatchReceipt
@@ -215,9 +259,24 @@ public sealed record MigrationBatchReceipt
 
     public required string BatchDigest { get; init; }
 
+    public string RejectContractVersion { get; init; } =
+        MigrationRejectContract.DeterministicFailFastV1;
+
+    public string RejectDigest { get; init; } = string.Empty;
+
     public long RowCount { get; init; }
 
     public long RejectedRowCount { get; init; }
+}
+
+/// <summary>
+/// Optional target capability used to resume receipts written with an older
+/// canonical batch-digest format. Targets that do not implement this
+/// interface are treated as current-format targets.
+/// </summary>
+public interface IMigrationBatchDigestContractTarget
+{
+    string BatchDigestFormat { get; }
 }
 
 public interface IMigrationTarget : IAsyncDisposable

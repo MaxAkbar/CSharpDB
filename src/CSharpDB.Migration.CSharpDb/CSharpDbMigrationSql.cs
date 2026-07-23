@@ -9,11 +9,15 @@ internal static class CSharpDbMigrationSql
     internal const string StateTable = "__csharpdb_migration_state";
     internal const string StageTable = "__csharpdb_migration_stages";
     internal const string ReceiptTable = "__csharpdb_migration_receipts";
+    internal const string RejectTable = "__csharpdb_migration_rejects";
     internal const string ValidationReceiptTable = "__csharpdb_migration_validation_receipt";
 
-    internal const string TargetTag = "csharpdb-staged-migration-target/v1";
+    internal const string LegacyTargetTag = "csharpdb-staged-migration-target/v1";
+    internal const string TargetTag = "csharpdb-staged-migration-target/v2";
     internal const string StageTag = "csharpdb-migration-schema-stage/v1";
-    internal const string ReceiptTag = "csharpdb-migration-batch-receipt/v1";
+    internal const string LegacyReceiptTag = "csharpdb-migration-batch-receipt/v1";
+    internal const string ReceiptTag = "csharpdb-migration-batch-receipt/v2";
+    internal const string RejectTag = "csharpdb-migration-reject-entry/v1";
     internal const string ValidationReceiptTag = MigrationValidationActivationReceipt.ContractVersion;
 
     internal const string CreatedState = "created";
@@ -63,10 +67,25 @@ internal static class CSharpDbMigrationSql
         $"{Quote("start_cursor")} TEXT, " +
         $"{Quote("next_cursor")} TEXT, " +
         $"{Quote("batch_digest")} TEXT NOT NULL, " +
+        $"{Quote("reject_contract_version")} TEXT NOT NULL, " +
+        $"{Quote("reject_digest")} TEXT NOT NULL, " +
         $"{Quote("row_count")} INTEGER NOT NULL, " +
         $"{Quote("rejected_row_count")} INTEGER NOT NULL, " +
         $"CONSTRAINT {Quote("__csharpdb_migration_receipts_pk")} " +
         $"PRIMARY KEY ({Quote("plan_digest")}, {Quote("source_object_id")}, {Quote("batch_ordinal")}))",
+
+        $"CREATE TABLE {Quote(RejectTable)} (" +
+        $"{Quote("reject_tag")} TEXT NOT NULL, " +
+        $"{Quote("plan_digest")} TEXT NOT NULL, " +
+        $"{Quote("source_object_id")} TEXT NOT NULL, " +
+        $"{Quote("batch_ordinal")} INTEGER NOT NULL, " +
+        $"{Quote("source_row_ordinal")} INTEGER NOT NULL, " +
+        $"{Quote("rule_id")} TEXT NOT NULL, " +
+        $"{Quote("column_object_id")} TEXT, " +
+        $"{Quote("evidence_json")} TEXT NOT NULL, " +
+        $"CONSTRAINT {Quote("__csharpdb_migration_rejects_pk")} " +
+        $"PRIMARY KEY ({Quote("plan_digest")}, {Quote("source_object_id")}, " +
+        $"{Quote("batch_ordinal")}, {Quote("source_row_ordinal")}))",
 
         $"CREATE TABLE {Quote(ValidationReceiptTable)} (" +
         $"{Quote("singleton")} INTEGER PRIMARY KEY, " +

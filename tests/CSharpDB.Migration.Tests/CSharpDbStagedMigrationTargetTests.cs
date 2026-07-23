@@ -32,6 +32,17 @@ public sealed class CSharpDbStagedMigrationTargetTests
             Assert.True(Guid.TryParse(targetIdentity, out _));
             Assert.Equal(11, result.BatchesWritten);
             Assert.Equal(21, result.RowsWritten);
+            MigrationBatchReceipt receipt = Assert.IsType<MigrationBatchReceipt>(
+                await target.ReadReceiptAsync(
+                    result.PlanDigest,
+                    "syn:table:customers-lower",
+                    batchOrdinal: 0,
+                    cancellationToken: Ct));
+            Assert.Equal(
+                MigrationRejectContract.DeterministicFailFastV1,
+                receipt.RejectContractVersion);
+            Assert.Matches("^[0-9a-f]{64}$", receipt.RejectDigest);
+            Assert.Equal(0, receipt.RejectedRowCount);
 
             await using IValidationSnapshot snapshot = await target.OpenValidationSnapshotAsync(Ct);
             Assert.Equal($"staged-target:{targetIdentity}:awaiting-validation", snapshot.SnapshotIdentity);
@@ -98,6 +109,82 @@ public sealed class CSharpDbStagedMigrationTargetTests
             await using IValidationSnapshot snapshot = await resumedTarget.OpenValidationSnapshotAsync(Ct);
             await AssertSyntheticCountsAsync(snapshot, Ct);
         }
+    }
+
+    [Fact]
+    public async Task LegacyV1Target_AppendsAndResumesWithoutChangingItsContractTags()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyPlan(catalog, batchSize: 2);
+
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target = await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+        }
+        await ConvertEmptyTargetToLegacyV1Async(files.TargetPath, Ct);
+
+        var injector = new ThrowOnceFaultInjector(CSharpDbMigrationFaultPoint.AfterCommit);
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target = await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         faultInjector: injector,
+                         cancellationToken: Ct))
+        {
+            Assert.Equal(MigrationBatchDigest.LegacyFormat, target.BatchDigestFormat);
+            await Assert.ThrowsAsync<InjectedMigrationFaultException>(async () =>
+                await ApplyAsync(plan, catalog, source, target, Ct));
+            Assert.True(injector.Fired);
+        }
+
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target = await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            MigrationApplyResult continued = await ApplyAsync(plan, catalog, source, target, Ct);
+            Assert.Equal(10, continued.BatchesWritten);
+            Assert.Equal(1, continued.BatchesSkipped);
+            MigrationBatchReceipt receipt = Assert.IsType<MigrationBatchReceipt>(
+                await target.ReadReceiptAsync(
+                    continued.PlanDigest,
+                    "syn:table:customers-lower",
+                    batchOrdinal: 0,
+                    cancellationToken: Ct));
+            Assert.Equal(
+                MigrationRejectContract.DeterministicFailFastV1,
+                receipt.RejectContractVersion);
+            Assert.Matches("^[0-9a-f]{64}$", receipt.RejectDigest);
+            Assert.Equal(0, receipt.RejectedRowCount);
+        }
+
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target = await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            MigrationApplyResult resumed = await ApplyAsync(plan, catalog, source, target, Ct);
+            Assert.Equal(0, resumed.BatchesWritten);
+            Assert.Equal(11, resumed.BatchesSkipped);
+        }
+
+        Assert.Equal(
+            ("csharpdb-staged-migration-target/v1", "csharpdb-migration-batch-receipt/v1"),
+            await ReadLegacyTagsAsync(files.TargetPath, Ct));
     }
 
     [Fact]
@@ -240,6 +327,41 @@ public sealed class CSharpDbStagedMigrationTargetTests
             await ApplyAsync(plan, catalog, resumedSource, resumedTarget, Ct));
 
         Assert.Contains("receipt mismatch", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Resume_RejectsSafelyTamperedRejectDigest()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyPlan(catalog, batchSize: 2);
+
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target = await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            _ = await ApplyAsync(plan, catalog, source, target, Ct);
+        }
+
+        await TamperRejectDigestAsync(files.TargetPath, Ct);
+
+        await using var resumedSource = new SyntheticMigrationDataSource(catalog);
+        await using CSharpDbStagedMigrationTarget resumedTarget =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                resumedSource.SnapshotIdentity,
+                cancellationToken: Ct);
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await ApplyAsync(plan, catalog, resumedSource, resumedTarget, Ct));
+
+        Assert.Contains("receipt", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("reject digest", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -477,6 +599,99 @@ public sealed class CSharpDbStagedMigrationTargetTests
         await using var result = await database.ExecuteAsync(
             "UPDATE \"__csharpdb_migration_receipts\" " +
             $"SET \"batch_digest\" = '{new string('0', 64)}' " +
+            "WHERE \"source_object_id\" = 'syn:table:customers-lower' AND \"batch_ordinal\" = 0",
+            cancellationToken);
+        Assert.Equal(1, result.RowsAffected);
+    }
+
+    private static async Task ConvertEmptyTargetToLegacyV1Async(
+        string targetPath,
+        CancellationToken cancellationToken)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, cancellationToken);
+        bool transactionStarted = false;
+        try
+        {
+            await database.BeginTransactionAsync(cancellationToken);
+            transactionStarted = true;
+            await ExecuteNonQueryAsync(
+                database,
+                "UPDATE \"__csharpdb_migration_state\" " +
+                "SET \"target_tag\" = 'csharpdb-staged-migration-target/v1' " +
+                "WHERE \"singleton\" = 1",
+                cancellationToken);
+            await ExecuteNonQueryAsync(
+                database,
+                "DROP TABLE \"__csharpdb_migration_rejects\"",
+                cancellationToken);
+            await ExecuteNonQueryAsync(
+                database,
+                "DROP TABLE \"__csharpdb_migration_receipts\"",
+                cancellationToken);
+            await ExecuteNonQueryAsync(
+                database,
+                "CREATE TABLE \"__csharpdb_migration_receipts\" (" +
+                "\"receipt_tag\" TEXT NOT NULL, " +
+                "\"target_identity\" TEXT NOT NULL, " +
+                "\"plan_digest\" TEXT NOT NULL, " +
+                "\"catalog_digest\" TEXT NOT NULL, " +
+                "\"source_fingerprint\" TEXT NOT NULL, " +
+                "\"source_snapshot_identity\" TEXT NOT NULL, " +
+                "\"source_object_id\" TEXT NOT NULL, " +
+                "\"batch_ordinal\" INTEGER NOT NULL, " +
+                "\"start_cursor\" TEXT, " +
+                "\"next_cursor\" TEXT, " +
+                "\"batch_digest\" TEXT NOT NULL, " +
+                "\"row_count\" INTEGER NOT NULL, " +
+                "\"rejected_row_count\" INTEGER NOT NULL, " +
+                "CONSTRAINT \"__csharpdb_migration_receipts_pk\" " +
+                "PRIMARY KEY (\"plan_digest\", \"source_object_id\", \"batch_ordinal\"))",
+                cancellationToken);
+            await database.CommitAsync(CancellationToken.None);
+        }
+        catch
+        {
+            if (transactionStarted)
+                await database.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static async Task<(string TargetTag, string ReceiptTag)> ReadLegacyTagsAsync(
+        string targetPath,
+        CancellationToken cancellationToken)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, cancellationToken);
+        await using var state = await database.ExecuteAsync(
+            "SELECT \"target_tag\" FROM \"__csharpdb_migration_state\" WHERE \"singleton\" = 1",
+            cancellationToken);
+        Assert.True(await state.MoveNextAsync(cancellationToken));
+        string targetTag = state.Current[0].AsText;
+
+        await using var receipt = await database.ExecuteAsync(
+            "SELECT \"receipt_tag\" FROM \"__csharpdb_migration_receipts\" " +
+            "WHERE \"batch_ordinal\" = 0",
+            cancellationToken);
+        Assert.True(await receipt.MoveNextAsync(cancellationToken));
+        return (targetTag, receipt.Current[0].AsText);
+    }
+
+    private static async Task ExecuteNonQueryAsync(
+        Database database,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var result = await database.ExecuteAsync(sql, cancellationToken);
+    }
+
+    private static async Task TamperRejectDigestAsync(
+        string targetPath,
+        CancellationToken cancellationToken)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, cancellationToken);
+        await using var result = await database.ExecuteAsync(
+            "UPDATE \"__csharpdb_migration_receipts\" " +
+            $"SET \"reject_digest\" = '{new string('0', 64)}' " +
             "WHERE \"source_object_id\" = 'syn:table:customers-lower' AND \"batch_ordinal\" = 0",
             cancellationToken);
         Assert.Equal(1, result.RowsAffected);

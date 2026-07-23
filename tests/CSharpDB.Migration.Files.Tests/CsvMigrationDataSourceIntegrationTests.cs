@@ -194,6 +194,8 @@ public sealed class CsvMigrationDataSourceIntegrationTests
                 StartCursor = batch.StartCursor,
                 NextCursor = batch.NextCursor,
                 BatchDigest = batch.BatchDigest,
+                RejectContractVersion = batch.RejectContractVersion,
+                RejectDigest = batch.RejectDigest,
                 RowCount = batch.Rows.Count,
                 RejectedRowCount = 0,
             };

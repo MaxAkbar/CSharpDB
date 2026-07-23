@@ -9,6 +9,39 @@ namespace CSharpDB.Migration;
 public static class MigrationRejectContract
 {
     public const string DeterministicFailFastV1 = "csharpdb-migration-fail-fast/v1";
+
+    public const string DeterministicRejectsV1 =
+        "csharpdb-migration-deterministic-rejects/v1";
+
+    public const string RejectSetV1 = "csharpdb-migration-reject-set/v1";
+
+    public const int MaximumRuleIdCharacters = 128;
+
+    public const int MaximumObjectIdCharacters = 512;
+
+    public const int MaximumRejectedRowsPerBatch = 65_536;
+
+    public const int MaximumEvidenceEntriesPerRow = 32;
+
+    public const int MaximumEvidenceNameCharacters = 64;
+
+    public const int MaximumEvidenceValueBytes = 4 * 1024;
+
+    public const int MaximumEvidenceBytesPerRow = 16 * 1024;
+
+    public const long MaximumEvidenceBytesPerBatch = 64L * 1024 * 1024;
+
+    internal static bool IsBoundedRuleId(string value) =>
+        value.Length <= MaximumRuleIdCharacters &&
+        value.StartsWith("MIG-", StringComparison.Ordinal) &&
+        value.All(character =>
+            character is >= 'A' and <= 'Z' or
+                >= '0' and <= '9' or
+                '-');
+
+    internal static bool IsBoundedIdentifier(string value) =>
+        value.Length <= MaximumObjectIdCharacters &&
+        value.All(character => !char.IsControl(character));
 }
 
 /// <summary>
@@ -80,11 +113,11 @@ public sealed class MigrationRowRejectedException : Exception
         ArgumentException.ThrowIfNullOrWhiteSpace(columnObjectId);
         ArgumentOutOfRangeException.ThrowIfNegative(batchOrdinal);
         ArgumentOutOfRangeException.ThrowIfNegative(sourceRowOrdinal);
-        if (!IsBoundedRuleId(code))
+        if (!MigrationRejectContract.IsBoundedRuleId(code))
             throw new ArgumentException("The rejection code is not a bounded migration rule ID.", nameof(code));
-        if (!IsBoundedIdentifier(sourceObjectId))
+        if (!MigrationRejectContract.IsBoundedIdentifier(sourceObjectId))
             throw new ArgumentException("The source object ID is not a bounded identifier.", nameof(sourceObjectId));
-        if (!IsBoundedIdentifier(columnObjectId))
+        if (!MigrationRejectContract.IsBoundedIdentifier(columnObjectId))
             throw new ArgumentException("The column object ID is not a bounded identifier.", nameof(columnObjectId));
 
         return new MigrationRowRejectedException(
@@ -97,16 +130,6 @@ public sealed class MigrationRowRejectedException : Exception
                 "The source adapter rejected a value under the deterministic fail-fast contract."));
     }
 
-    private static bool IsBoundedRuleId(string value) =>
-        value.Length <= 128 &&
-        value.StartsWith("MIG-", StringComparison.Ordinal) &&
-        value.All(character =>
-            character is >= 'A' and <= 'Z' or
-                >= '0' and <= '9' or
-                '-');
-
-    private static bool IsBoundedIdentifier(string value) =>
-        value.Length <= 512 && value.All(character => !char.IsControl(character));
 }
 
 /// <summary>
@@ -139,7 +162,7 @@ public static class MigrationApplyPolicyValidator
                 "MIG-APPLY-POLICY-REJECT-001",
                 $"Phase 2 apply supports only '{MigrationRejectMode.FailFast}' row handling " +
                 $"under contract '{MigrationRejectContract.DeterministicFailFastV1}'. " +
-                "Durable skip-and-record rejects are not supported by this receipt schema.");
+                "The atomic reject-ledger write and reject-aware validation path are not enabled.");
         }
     }
 }

@@ -142,6 +142,10 @@ public static class MigrationTargetThroughputBenchmark
                         BatchDigest = string.Empty,
                         Rows = rows,
                     };
+                    batch = batch with
+                    {
+                        RejectDigest = MigrationRejectDigest.Compute(batch),
+                    };
                     batch = batch with { BatchDigest = MigrationBatchDigest.Compute(batch) };
 
                     var batchLatency = Stopwatch.StartNew();
