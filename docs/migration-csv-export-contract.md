@@ -1,9 +1,10 @@
 # Migration CSV Export Contract
 
-This note records the typed-manifest and restart-only streaming-writer portion
-of the Phase 4A CSV export work. It freezes the compatibility boundary that a
-later retained-source adapter, reopener, publisher, and CLI must satisfy. It
-does not claim that the export command, fail-closed manifest-last publication,
+This note records the typed manifest, canonical checkpoint contract, and
+restart-only streaming-writer portions of the Phase 4A CSV export work. It
+freezes the compatibility boundary that a later retained-source adapter,
+reopener, publisher, and CLI must satisfy. It does not claim that the export
+command, fail-closed manifest-last publication, filesystem checkpoint journal,
 or durable resume are implemented.
 
 ## Contract Boundary
@@ -134,6 +135,47 @@ The serializer:
 Reopening requires the exact canonical bytes, not merely JSON with equivalent
 values.
 
+## Canonical Checkpoint Contract
+
+`csharpdb-csv-export-checkpoint/v1` now defines canonical, strict UTF-8 JSON
+evidence for one complete CSV record boundary. Its immutable binding covers the
+selected profile, source snapshot evidence and canonical retained-snapshot
+identity, table and ordered schema, fixed CSV codec, maximum data bytes, and
+the per-BLOB decoded-byte ceiling. A separate binding digest prevents a writer
+from reopening prepared bytes under a changed source, schema, profile, codec,
+or resource policy.
+
+Each generation has either `Writing` or `DataComplete` phase and records:
+
+- the completed data-row count and nullable last physical row ID;
+- the exact physical prefix byte length and SHA-256;
+- source and exported logical row-hash prefix digests under
+  `csharpdb-csv-export-ordered-content-prefix/v1`; and
+- aggregate spreadsheet-safe transformed-row and transformed-cell counts.
+
+Physical row IDs are signed 64-bit values. Negative IDs are valid; the last ID
+is absent exactly when the completed row count is zero. A zero-row checkpoint
+is not an empty file marker: it must bind the exact rendered header bytes,
+including quoting and the final CRLF, their exact byte length and SHA-256, and
+the frozen empty logical-prefix digests.
+
+`DataComplete` adds final source/export logical digests and the final manifest
+digest. The serializer reconstructs the canonical export manifest from that
+evidence and rejects a mismatched digest. `Writing` cannot carry completion
+evidence, while `DataComplete` must carry it. Lossless checkpoints require
+equal source/export logical evidence and zero transform counts; spreadsheet
+checkpoints retain the same aggregate consistency rules as the final manifest.
+
+The logical and physical prefix digests are verification evidence only. They
+are not serialized or resumable SHA-256 internal state. A future recovery
+implementation must rehash the prepared physical prefix through the recorded
+byte boundary and replay retained source rows through the recorded signed row
+ID to reconstruct physical and logical hash state before continuing.
+
+This slice is a canonical serializer and validator, not a durable checkpoint
+store. No prepared-output lease, disk-flush/fsync contract, atomic checkpoint
+journal, cross-process recovery coordinator, or resume API exists yet.
+
 ## Restart-Only Streaming Writer
 
 `CsvStreamingExporter` writes the fixed codec to a caller-owned, writable,
@@ -153,12 +195,14 @@ retained-source adapter must construct both from one verified snapshot session.
 This is deliberately a restart-only boundary. If enumeration, validation,
 I/O, or cancellation fails, no manifest result is returned and the
 caller-owned output must be discarded or truncated to zero before retrying.
-The writer exposes no checkpoint or append contract and makes no claim that a
-partial record is reusable.
+The writer exposes no checkpoint callback or append contract and makes no claim
+that a partial record is reusable. The separate canonical checkpoint models do
+not change this restart-only writer API.
 
-The slice does not provide an export CLI surface, checkpoint journal, retained
-snapshot adapter, prepared output publication, or cross-process resume. It
-also does not make a two-file CSV/manifest pair atomic.
+The slice does not provide an export CLI surface, filesystem checkpoint
+journal, retained snapshot adapter, prepared-output lease or durable
+flush/fsync, prepared output publication, or cross-process resume. It also does
+not make a two-file CSV/manifest pair atomic.
 
 The offline `RetainedDatabaseSnapshot` API now provides the required durable
 source view and deterministic row-source seam: it materializes recovery only
@@ -170,13 +214,15 @@ the retained identity. A process-local reader transaction remains insufficient
 after a crash. See
 [`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
 
-The future resume contract must bind its checkpoint to that retained snapshot,
-table and ordered schema, export profile and codec, completed row boundary,
-byte boundary, and verified output prefix. Until a retained-source adapter and
-checkpointed prepared writer bind those identities and boundaries, a failed
-export must restart from the beginning rather than claim durable resume. The
-source and restart-only codec prerequisites are now available; durable
-checkpoint integration remains outstanding.
+The canonical checkpoint contract now binds the retained snapshot, table and
+ordered schema, export profile and codec, completed row boundary, byte
+boundary, and expected output prefix. Until a retained-source adapter,
+exclusive prepared-output lease, durable data flush, atomic checkpoint journal,
+physical-prefix verifier, and source-prefix replay path enforce those
+identities and boundaries, a failed export must restart from the beginning
+rather than claim durable resume. The source, restart-only codec, and canonical
+checkpoint prerequisites are now available; filesystem durability and resume
+integration remain outstanding.
 
 Phase 4A remains open until the retained-source adapter and CLI use this
 contract, manifest-last data and sidecar publication fails closed, and large

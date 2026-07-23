@@ -48,13 +48,29 @@ public sealed class CsvExportOrderedContentDigest : IDisposable
         rowCount++;
     }
 
+    /// <summary>
+    /// Returns the SHA-256 of the ordered-content prefix accumulated so far,
+    /// before the final row-count suffix is appended. The operation does not
+    /// mutate or reset the digest and may be repeated while it remains active.
+    /// </summary>
+    public CsvExportHashManifest GetCurrentPrefixDigest()
+    {
+        ThrowIfUnavailable();
+        string value = Convert.ToHexString(hash.GetCurrentHash()).ToLowerInvariant();
+        return new CsvExportHashManifest
+        {
+            Algorithm = CsvExportHashManifest.Sha256Algorithm,
+            Value = value,
+        };
+    }
+
     public CsvExportHashManifest Complete()
     {
         ThrowIfUnavailable();
         Span<byte> countBytes = stackalloc byte[sizeof(ulong)];
         BinaryPrimitives.WriteUInt64BigEndian(countBytes, rowCount);
         hash.AppendData(countBytes);
-        string value = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        string value = Convert.ToHexString(hash.GetCurrentHash()).ToLowerInvariant();
         completed = true;
         return new CsvExportHashManifest
         {

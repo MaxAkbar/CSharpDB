@@ -63,13 +63,23 @@ manifest and rejects BLOB columns whose base64 could resemble a formula.
 `CsvStreamingExporter` now writes the fixed RFC 4180 codec to a caller-owned
 empty stream, validates whole typed rows before emitting them, streams UTF-8
 and padded base64 in bounded chunks, and returns canonical physical/logical
-manifest evidence. It is deliberately restart-only: the export CLI,
-retained-source adapter, fail-closed manifest-last publication, checkpoint
-journal, and durable resume are not implemented. The offline retained
-read-only CSharpDB snapshot can now be reopened and verified across processes,
-and its physical table reader provides strictly ascending row IDs with an
-exclusive resume boundary. The checkpointed exporter does not yet bind those
-source primitives. See
+manifest evidence. `CsvExportCheckpointSerializer` now freezes
+`csharpdb-csv-export-checkpoint/v1`: it binds the retained source identity,
+schema, profile, codec and resource limits to complete-record physical and
+logical prefixes, a signed last row ID, transform counts, and optional
+data-complete manifest evidence. Zero-row progress must describe the exact
+rendered header bytes and digest.
+
+Checkpoint prefix digests are verification-only; they are not resumable
+SHA-256 state. Recovery must rehash the prepared physical prefix and replay
+retained source rows through the recorded signed row ID to rebuild hash state.
+The streaming writer remains deliberately restart-only. There is no
+prepared-output lease, durable disk flush/fsync, atomic filesystem checkpoint
+journal, retained-source export adapter, cross-process resume API, export CLI,
+or fail-closed manifest-last publication yet. The offline retained read-only
+CSharpDB snapshot can be reopened and verified across processes, and its
+physical table reader provides strictly ascending signed row IDs with an
+exclusive resume boundary. See
 [`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md)
 and
 [`migration-csharpdb-retained-snapshot.md`](../../docs/migration-csharpdb-retained-snapshot.md).
