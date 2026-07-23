@@ -249,8 +249,9 @@ and cursor capability.
 - [x] Refuse an existing target unless the plan names an explicit and
   recoverable merge/replace policy.
 - [x] Define deterministic reject and cancellation behavior. Phase 2 supports
-  the versioned fail-fast contract; durable skip-and-record is rejected before
-  target creation until its receipt/reject transaction schema is designed.
+  the versioned fail-fast contract; the durable skip-and-record transaction
+  and ledger are now implemented, while normal execution remains rejected
+  before target creation until source replay and qualification are complete.
 - [x] Validate every streamed value against the planned mapping; block or
   deterministically reject values that contradict profile-derived assumptions
   rather than coercing them silently.
@@ -397,8 +398,15 @@ apply, resume, and checksum measurements with fixed live-batch bounds; see
 provider-neutral ordered outcome, reject-set digest, and v2 batch/receipt
 foundation is frozen in
 [`migration-deterministic-reject-contract.md`](migration-deterministic-reject-contract.md),
-but tolerant execution remains gated until the target ledger, reject-aware
-validation, CSV evidence, and artifact publication are atomic and complete.
+and the plan-bound rule/limit policy plus CSharpDB's atomic target ledger are
+now implemented. Target reopen and validation-snapshot creation verify the
+ledger against receipts, reapply plan-bound sensitive/artifact budgets, verify
+contiguous terminal batch chains, and bind an outcome digest into the snapshot
+identity. New activations require that identity while legacy activated targets
+remain reopenable.
+Tolerant execution remains gated until reject-aware source replay, CSV
+evidence, cross-process crash qualification, and artifact publication are
+complete.
 
 ### Track 4A: CSV
 
@@ -434,9 +442,17 @@ validation, CSV evidence, and artifact publication are atomic and complete.
 - [x] Freeze the bounded provider-neutral reject record, canonical reject-set
   digest, one-outcome-per-source-row validator, and v2 batch/receipt binding
   while retaining the fail-fast execution gate.
-- [ ] Persist accepted rows, the canonical reject ledger, and its receipt in
-  one target transaction; add reject-aware validation before enabling the
-  tolerant policy.
+- [x] Persist accepted rows, canonical reject ledger entries, and the v2
+  receipt in one CSharpDB target transaction, with accepted-only, mixed,
+  all-reject, rollback, replay, canonical-codec, tamper, and plan-limit tests.
+- [x] Verify target-owned receipt/ledger chains and physical accepted counts
+  before validation, and bind their canonical outcome digest into the target
+  snapshot and activation receipt.
+- [x] Serialize target mutation admission; enforce predecessor cursors,
+  cross-batch source ordinals, terminal cursors, all-evidence privacy budgets,
+  and exact canonical artifact-byte limits before commit and again on reopen.
+- [ ] Add reject-aware source replay and compare its accepted/rejected outcome
+  chain with the target ledger before enabling the tolerant policy.
 
 - [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [x] Support quoted multiline fields, escaped quotes, explicit/detected

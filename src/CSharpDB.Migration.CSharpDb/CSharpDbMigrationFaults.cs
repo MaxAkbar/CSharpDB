@@ -4,6 +4,7 @@ public enum CSharpDbMigrationFaultPoint
 {
     BeforeRows,
     AfterRowsBeforeReceipt,
+    AfterRejectsBeforeReceipt,
     AfterReceiptBeforeCommit,
     AfterCommit,
 }

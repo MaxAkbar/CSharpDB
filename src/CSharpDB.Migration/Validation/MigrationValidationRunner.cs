@@ -330,6 +330,7 @@ public sealed class MigrationValidationRunner
         ArgumentNullException.ThrowIfNull(request.Target);
         ArgumentNullException.ThrowIfNull(request.ChecksumOptions);
         MigrationPlanReadinessValidator.ValidateForApply(request.Plan, request.Catalog);
+        MigrationValidationPolicyValidator.ValidateForExecution(request.Plan);
         if (string.IsNullOrWhiteSpace(request.Target.TargetIdentity))
             throw new InvalidDataException("Migration validation target identity is required.");
         if (request.Level is < MigrationValidationLevel.Schema or > MigrationValidationLevel.Checksum)

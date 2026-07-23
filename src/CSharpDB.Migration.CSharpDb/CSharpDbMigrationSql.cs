@@ -13,7 +13,8 @@ internal static class CSharpDbMigrationSql
     internal const string ValidationReceiptTable = "__csharpdb_migration_validation_receipt";
 
     internal const string LegacyTargetTag = "csharpdb-staged-migration-target/v1";
-    internal const string TargetTag = "csharpdb-staged-migration-target/v2";
+    internal const string OutcomeUnboundTargetTag = "csharpdb-staged-migration-target/v2";
+    internal const string TargetTag = "csharpdb-staged-migration-target/v3";
     internal const string StageTag = "csharpdb-migration-schema-stage/v1";
     internal const string LegacyReceiptTag = "csharpdb-migration-batch-receipt/v1";
     internal const string ReceiptTag = "csharpdb-migration-batch-receipt/v2";

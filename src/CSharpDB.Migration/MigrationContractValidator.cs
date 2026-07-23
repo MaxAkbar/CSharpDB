@@ -212,6 +212,7 @@ public static class MigrationContractValidator
             throw Invalid("Migration load maximum value bytes must be greater than zero.");
         if (plan.Load.MaxValueBytes > plan.Load.MaxBatchBytes)
             throw Invalid("Migration load maximum value bytes cannot exceed maximum batch bytes.");
+        MigrationDeterministicRejectPolicyValidator.Validate(plan.Load);
 
         if (plan.Validation is null)
             throw Invalid("Migration validation policy is required.");
@@ -344,7 +345,7 @@ public static class MigrationContractValidator
             if (mappings.Count != expectedMappings)
             {
                 throw Invalid(
-                    $"Plan object '{item.SourceObjectId}' must contain exactly {expectedMappings} type mapping(s)." );
+                    $"Plan object '{item.SourceObjectId}' must contain exactly {expectedMappings} type mapping(s).");
             }
         }
 

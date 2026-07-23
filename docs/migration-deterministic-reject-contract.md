@@ -4,10 +4,12 @@ Architecture decision for durable tolerant row handling in the staged migration
 workflow. This contract extends, but does not replace, the existing
 `csharpdb-migration-fail-fast/v1` behavior.
 
-Implementation status: the bounded reject model, reject-set digest, v2 batch
-digest, v2 receipt storage, and empty ledger schema are present. Execution is
-still fail-fast; tolerant policy validation remains closed until the ledger
-write, reject-aware validation, CSV evidence, and artifact phases below pass.
+Implementation status: the bounded reject model, plan-bound rule/limit policy,
+reject-set and v2 batch digests, canonical ledger codec, atomic CSharpDB ledger
+write/read path, v2 receipts, and target-side outcome validation are present.
+Execution is still fail-fast; tolerant policy validation remains closed until
+reject-aware source replay, CSV evidence, cross-process crash qualification,
+and artifact phases below pass.
 
 ## Decision
 
@@ -37,6 +39,7 @@ The tolerant path introduces these independently tagged records:
 | Record | Contract tag | Purpose |
 | --- | --- | --- |
 | Reject behavior | `csharpdb-migration-deterministic-rejects/v1` | Selection and ordering of accepted and rejected outcomes |
+| Staged target | `csharpdb-staged-migration-target/v3` | Requires outcome-bound validation identities; v1/v2 remain readable |
 | Batch receipt | `csharpdb-migration-batch-receipt/v2` | Counts, cursors, identities, and outcome digests |
 | Reject ledger entry | `csharpdb-migration-reject-entry/v1` | Durable source position, diagnostic, and optional raw value |
 | Reject artifact | `csharpdb-migration-reject-artifact/v1` | Canonical operator-facing serialization |
@@ -119,6 +122,16 @@ contains:
 - raw value when a field value is available; and
 - the canonical entry byte count.
 
+Because v1 allows exactly one reject per source row, its reject ordinal is
+implicitly zero and the ledger primary key uses the source-row ordinal. The
+canonical entry byte count is computed from the fixed-property-order UTF-8
+entry codec rather than stored as an independently mutable field. Generic
+evidence is stored as a fixed-property-order JSON array; the CSV adapter must
+freeze the exact evidence-name registry before it can emit tolerant outcomes.
+The artifact begins with the canonical JSON line
+`{"format":"csharpdb-migration-reject-artifact/v1","planDigest":"<sha256>"}`;
+every subsequent line is one canonical entry and every line ends in LF.
+
 The diagnostic ID, not a localized message, identifies the failure. Structural
 failures without a reliable record boundary are fatal and consequently do not
 create a ledger entry. A future contract may add recoverable parser failures,
@@ -158,14 +171,19 @@ Digests provide integrity, not redaction. Receipt and ledger access remains
 restricted with the staged target even though receipts contain only aggregate
 digests and counts.
 
-The plan must carry positive limits for rejected rows, raw UTF-8 bytes per
-value, raw UTF-8 bytes per batch and run, and serialized artifact bytes. These
-limits, their public absolute ceilings, and the CSV reader's field, record, and
-column ceilings are validated before target creation and are included in the
-plan digest. Accounting uses checked arithmetic. These plan-bound limits are a
-remaining enablement item; the current core enforces absolute per-value,
-per-row, per-batch, and reject-count ceilings while tolerant execution stays
-disabled.
+The plan carries positive limits for rejected rows, sensitive evidence UTF-8
+bytes per value-bearing row, sensitive bytes per batch and run, and serialized
+artifact bytes. The public property names retain `RawValue` for contract
+compatibility, but every non-null evidence value is charged so a provider
+cannot hide source payload under another evidence name. These limits, their
+public absolute ceilings, the minimum canonical artifact header, and the CSV
+reader's field, record, and column ceilings are validated before target
+creation and are included in the plan digest. Accounting uses checked
+arithmetic. The CSharpDB target serializes admission, then enforces the rule
+registry, per-row and per-batch sensitive-value limits, cumulative row/value
+run limits, and the exact canonical header + entry + LF artifact byte count
+before mutation. Reopen recomputes the same totals from the authoritative
+ledger.
 
 Reader resource-limit failures are fatal rather than rejects. If adding the
 next reject would exceed a reject limit, the current batch is not committed;
@@ -184,15 +202,24 @@ The target accepts one prepared batch containing accepted rows and canonical
 reject entries. Within one target transaction it:
 
 1. verifies that no receipt already owns the batch ordinal;
-2. inserts all accepted rows;
-3. inserts every reject ledger entry;
-4. inserts the v2 receipt with exact counts and digests; and
-5. commits once using the existing indeterminate-commit handling.
+2. verifies the ordinal, predecessor cursor, source-row interval, terminal
+   cursor, and cumulative plan limits under the serialized mutation gate;
+3. inserts all accepted rows;
+4. inserts every reject ledger entry;
+5. inserts the v2 receipt with exact counts and digests; and
+6. commits once using the existing indeterminate-commit handling.
 
 Ledger rows have a uniqueness key scoped by target, plan, source object, batch,
 and reject ordinal. A receipt and its ledger rows cannot exist independently.
 When an existing receipt is found, the target validates the replayed batch
 against it and performs no inserts.
+
+Post-load schema cannot begin while a nonempty receipt chain still has a
+non-null next cursor. A zero-receipt object is represented explicitly in the
+target outcome digest; count/checksum validation against the pinned source
+snapshot is the proof that such an object was actually empty. Already
+activated targets carrying the pre-outcome-digest validation snapshot identity
+remain reopenable, but new activations require the outcome-bound identity.
 
 ## Crash and Cancellation Matrix
 
@@ -236,8 +263,10 @@ after commit; they must not become the authority for resume.
    vectors, limit validation, and negative compatibility tests. Keep execution
    fail-fast.
 2. Add the CSharpDB v2 receipt and reject-ledger schema plus one atomic target
-   write API. Prove rollback and indeterminate-commit behavior with fault
-   injection before allowing a source adapter to request it.
+   write API. In-process rollback, committed replay, all-reject, tamper, and
+   activation-binding behavior are now covered; fresh-process crash-matrix
+   qualification remains required before allowing a source adapter to request
+   it.
 3. Add CSV row-outcome metadata for the explicit row-rejectable rule registry,
    then add bounded artifact materialization. Parser, integrity, and resource
    errors remain fatal.

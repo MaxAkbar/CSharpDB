@@ -55,12 +55,27 @@ internal static class MigrationArtifactNormalizer
             .OrderBy(item => item, StringComparer.Ordinal)
             .ToArray();
 
+        MigrationLoadPolicy? load = plan.Load;
+        if (load?.RejectPolicy is MigrationDeterministicRejectPolicy rejectPolicy)
+        {
+            IReadOnlyList<string> allowedRuleIds = RequireList(
+                    rejectPolicy.AllowedRuleIds,
+                    "Allowed reject rule ids")
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
+            load = load with
+            {
+                RejectPolicy = rejectPolicy with { AllowedRuleIds = allowedRuleIds },
+            };
+        }
+
         return plan with
         {
             Objects = objects,
             Diagnostics = diagnostics,
             AcceptedDiagnosticIds = acceptedDiagnosticIds,
             AcceptedExclusionObjectIds = acceptedExclusionObjectIds,
+            Load = load!,
         };
     }
 

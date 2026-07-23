@@ -314,6 +314,71 @@ public sealed class MigrationValidationRunnerTests
         }
     }
 
+    [Fact]
+    public async Task DeterministicRejectPolicyIsRejectedBeforeOpeningTargetOrPublishingReport()
+    {
+        string root = CreateRoot();
+        try
+        {
+            (MigrationCatalog catalog, MigrationPlan ready) = await ReadyPlanAsync();
+            await using var source = new SyntheticMigrationDataSource(catalog);
+            await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(
+                ready,
+                catalog,
+                source);
+            MaterializedSnapshot targetSnapshot = await MaterializeAsync(
+                ready,
+                catalog,
+                sourceSnapshot,
+                "target:snapshot:reject-policy");
+            await using var target = new FakeValidationTarget(targetSnapshot);
+            MigrationPlan unsupported = WithDeterministicRejectPolicy(ready);
+            string reportPath = Path.Combine(root, "must-not-exist.json");
+
+            MigrationExecutionPolicyException error =
+                await Assert.ThrowsAsync<MigrationExecutionPolicyException>(async () =>
+                    await new MigrationValidationRunner().ValidateAsync(
+                        Request(
+                            unsupported,
+                            catalog,
+                            sourceSnapshot,
+                            target,
+                            reportPath,
+                            root),
+                        TestContext.Current.CancellationToken));
+
+            Assert.Equal("MIG-VALIDATE-POLICY-REJECT-001", error.Code);
+            Assert.Contains(
+                MigrationRejectContract.DeterministicFailFastV1,
+                error.Message,
+                StringComparison.Ordinal);
+            Assert.Equal(0, target.OpenSnapshotCount);
+            Assert.Equal(0, target.ActivationAttempts);
+            Assert.False(File.Exists(reportPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task DataSourceSnapshotRejectsDeterministicRejectPolicyBeforeReadingSource()
+    {
+        (MigrationCatalog catalog, MigrationPlan ready) = await ReadyPlanAsync();
+        MigrationPlan unsupported = WithDeterministicRejectPolicy(ready);
+        await using var source = new NeverReadMigrationDataSource(
+            ready.Source,
+            SyntheticMigrationDataSource.FixtureSnapshotIdentity);
+
+        MigrationExecutionPolicyException error =
+            Assert.Throws<MigrationExecutionPolicyException>(() =>
+                new MigrationDataSourceValidationSnapshot(unsupported, catalog, source));
+
+        Assert.Equal("MIG-VALIDATE-POLICY-REJECT-001", error.Code);
+        Assert.Equal(0, source.ReadCount);
+    }
+
     private static MigrationValidationRunRequest Request(
         MigrationPlan plan,
         MigrationCatalog catalog,
@@ -388,6 +453,25 @@ public sealed class MigrationValidationRunnerTests
                 .ToArray(),
         });
     }
+
+    private static MigrationPlan WithDeterministicRejectPolicy(MigrationPlan plan) => plan with
+    {
+        Load = plan.Load with
+        {
+            RejectMode = MigrationRejectMode.DeterministicRejects,
+            RejectPolicy = new MigrationDeterministicRejectPolicy
+            {
+                ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                AllowedRuleIds = ["MIG-TEST-001"],
+                MaxRejectedRowsPerBatch = 1,
+                MaxRejectedRowsPerRun = 10,
+                MaxRawValueBytes = 1_024,
+                MaxRawValueBytesPerBatch = 8_192,
+                MaxRawValueBytesPerRun = 65_536,
+                MaxArtifactBytes = 131_072,
+            },
+        },
+    };
 
     private sealed class FakeValidationTarget(MaterializedSnapshot snapshot) :
         IMigrationTarget,
@@ -575,6 +659,27 @@ public sealed class MigrationValidationRunnerTests
             }
             if (string.Equals(objectId, changedObjectId, StringComparison.Ordinal) && first is not null)
                 yield return first;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class NeverReadMigrationDataSource(
+        MigrationSourceIdentity source,
+        string snapshotIdentity) : IMigrationDataSource
+    {
+        public MigrationSourceIdentity Source { get; } = source;
+
+        public string SnapshotIdentity { get; } = snapshotIdentity;
+
+        public int ReadCount { get; private set; }
+
+        public IAsyncEnumerable<MigrationDataBatch> ReadAsync(
+            MigrationReadRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            ReadCount++;
+            throw new InvalidOperationException("Validation policy must be checked before source reads.");
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

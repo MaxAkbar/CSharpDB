@@ -487,7 +487,21 @@ public sealed class CsvMigrationCommandRunnerTests
             catalog);
         MigrationPlan unsupported = ready with
         {
-            Load = ready.Load with { RejectMode = MigrationRejectMode.DeterministicRejects },
+            Load = ready.Load with
+            {
+                RejectMode = MigrationRejectMode.DeterministicRejects,
+                RejectPolicy = new MigrationDeterministicRejectPolicy
+                {
+                    ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                    AllowedRuleIds = ["MIG-TEST-001"],
+                    MaxRejectedRowsPerBatch = 1,
+                    MaxRejectedRowsPerRun = 10,
+                    MaxRawValueBytes = 1_024,
+                    MaxRawValueBytesPerBatch = 8_192,
+                    MaxRawValueBytesPerRun = 65_536,
+                    MaxArtifactBytes = 131_072,
+                },
+            },
         };
         await File.WriteAllTextAsync(
             artifacts.PlanPath,

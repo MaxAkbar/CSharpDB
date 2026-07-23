@@ -17,6 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.CSharpDb" />
     <InternalsVisibleTo Include="CSharpDB.Migration.Tests" />
   </ItemGroup>
 

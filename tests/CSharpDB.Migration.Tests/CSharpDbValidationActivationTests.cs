@@ -2,11 +2,14 @@ using CSharpDB.Migration.Canonicalization;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Validation;
 using CSharpDB.Engine;
+using CSharpDB.Primitives;
 
 namespace CSharpDB.Migration.Tests;
 
 public sealed class CSharpDbValidationActivationTests
 {
+    private const string GoldenTargetIdentity = "00000000-0000-0000-0000-000000000042";
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact]
@@ -91,6 +94,136 @@ public sealed class CSharpDbValidationActivationTests
         Assert.Equal(receipt, await reopened.ReadActivationReceiptAsync(Ct));
         await using IValidationSnapshot snapshot = await reopened.OpenValidationSnapshotAsync(Ct);
         Assert.Equal(receipt.TargetSnapshotIdentity, snapshot.SnapshotIdentity);
+    }
+
+    [Fact]
+    public async Task LegacySnapshotIdentity_ActivatedTargetReopensAndExactRetryIsIdempotent()
+    {
+        using var files = new TemporaryTargetDirectory();
+        (MigrationCatalog catalog, MigrationPlan plan) = await ArtifactsAsync();
+        MigrationValidationActivationPermit legacyPermit;
+
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            await ApplyAsync(plan, catalog, source, target);
+            string legacySnapshotIdentity =
+                $"staged-target:{target.TargetIdentity}:awaiting-validation";
+            legacyPermit = await ActivationPermitAsync(
+                target,
+                plan,
+                catalog,
+                source.SnapshotIdentity,
+                Path.Combine(files.DirectoryPath, "legacy-activation.json"),
+                targetSnapshotIdentityOverride: legacySnapshotIdentity);
+        }
+
+        await PersistLegacyActivationAsync(files.TargetPath, legacyPermit.Receipt);
+
+        await using CSharpDbStagedMigrationTarget reopened =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        Assert.Equal(legacyPermit.Receipt, await reopened.ReadActivationReceiptAsync(Ct));
+        await using (IValidationSnapshot snapshot = await reopened.OpenValidationSnapshotAsync(Ct))
+            Assert.Equal(legacyPermit.Receipt.TargetSnapshotIdentity, snapshot.SnapshotIdentity);
+
+        await reopened.ActivateAsync(legacyPermit, Ct);
+        await reopened.ActivateAsync(legacyPermit, Ct);
+
+        Assert.Equal(legacyPermit.Receipt, await reopened.ReadActivationReceiptAsync(Ct));
+    }
+
+    [Fact]
+    public async Task LegacySnapshotIdentity_AwaitingV2TargetCanActivatePublishedReport()
+    {
+        using var files = new TemporaryTargetDirectory();
+        (MigrationCatalog catalog, MigrationPlan plan) = await ArtifactsAsync();
+        MigrationValidationActivationPermit legacyPermit;
+
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            await ApplyAsync(plan, catalog, source, target);
+            legacyPermit = await ActivationPermitAsync(
+                target,
+                plan,
+                catalog,
+                source.SnapshotIdentity,
+                Path.Combine(files.DirectoryPath, "legacy-pending-activation.json"),
+                targetSnapshotIdentityOverride:
+                    $"staged-target:{target.TargetIdentity}:awaiting-validation");
+        }
+
+        await RewriteTargetTagAsV2Async(files.TargetPath);
+
+        await using CSharpDbStagedMigrationTarget reopened =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        await reopened.ActivateAsync(legacyPermit, Ct);
+
+        Assert.Equal(legacyPermit.Receipt, await reopened.ReadActivationReceiptAsync(Ct));
+        await using IValidationSnapshot snapshot = await reopened.OpenValidationSnapshotAsync(Ct);
+        Assert.Equal(legacyPermit.Receipt.TargetSnapshotIdentity, snapshot.SnapshotIdentity);
+    }
+
+    [Fact]
+    public async Task ValidationSnapshot_OutcomeDigestMatchesGoldenVector()
+    {
+        using var files = new TemporaryTargetDirectory();
+        (MigrationCatalog catalog, MigrationPlan plan) = await ArtifactsAsync();
+        string originalTargetIdentity;
+
+        await using (var source = new SyntheticMigrationDataSource(catalog))
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         source.SnapshotIdentity,
+                         cancellationToken: Ct))
+        {
+            originalTargetIdentity = target.TargetIdentity;
+            await ApplyAsync(plan, catalog, source, target);
+        }
+
+        await RewriteTargetIdentityAsync(
+            files.TargetPath,
+            originalTargetIdentity,
+            GoldenTargetIdentity);
+
+        await using CSharpDbStagedMigrationTarget reopened =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        await using IValidationSnapshot snapshot = await reopened.OpenValidationSnapshotAsync(Ct);
+
+        Assert.Equal(
+            $"staged-target:{GoldenTargetIdentity}:awaiting-validation:outcomes:" +
+            "bb1406e8d43cd98bd50413955fc3266bb721ddd1d1fd2e11b01c928b2959892f",
+            snapshot.SnapshotIdentity);
     }
 
     [Fact]
@@ -521,9 +654,28 @@ public sealed class CSharpDbValidationActivationTests
         string sourceSnapshotIdentity,
         string reportPath,
         MigrationSnapshotConsistencyStatus consistency = MigrationSnapshotConsistencyStatus.Established,
-        string? diagnosticSuffix = null)
+        string? diagnosticSuffix = null,
+        string? targetSnapshotIdentityOverride = null)
     {
         string schemaDigest = MigrationNormalizedSchemaContract.CreateExpected(plan, catalog).Digest;
+        string targetSnapshotIdentity;
+        if (targetSnapshotIdentityOverride is not null)
+        {
+            targetSnapshotIdentity = targetSnapshotIdentityOverride;
+        }
+        else
+        {
+            try
+            {
+                await using IValidationSnapshot snapshot = await target.OpenValidationSnapshotAsync(Ct);
+                targetSnapshotIdentity = snapshot.SnapshotIdentity;
+            }
+            catch (InvalidDataException)
+            {
+                targetSnapshotIdentity =
+                    $"staged-target:{target.TargetIdentity}:validation-unavailable";
+            }
+        }
         MigrationValidationStatus outcome = consistency == MigrationSnapshotConsistencyStatus.Established
             ? MigrationValidationStatus.Passed
             : MigrationValidationStatus.Inconclusive;
@@ -539,7 +691,7 @@ public sealed class CSharpDbValidationActivationTests
                 SourceFingerprint = plan.Source.Fingerprint,
                 TargetIdentity = target.TargetIdentity,
                 SourceSnapshotIdentity = sourceSnapshotIdentity,
-                TargetSnapshotIdentity = $"staged-target:{target.TargetIdentity}:awaiting-validation",
+                TargetSnapshotIdentity = targetSnapshotIdentity,
                 CanonicalizationVersion = CanonicalRowCodec.CanonicalizationId,
                 CanonicalizationContractDigest = CanonicalRowCodec.ContractHashHex,
             },
@@ -575,13 +727,131 @@ public sealed class CSharpDbValidationActivationTests
             PlanDigest = MigrationArtifactSerializer.ComputePlanDigest(plan),
             CatalogDigest = plan.CatalogDigest,
             SourceSnapshotIdentity = sourceSnapshotIdentity,
-            TargetSnapshotIdentity = $"staged-target:{target.TargetIdentity}:awaiting-validation",
+            TargetSnapshotIdentity = targetSnapshotIdentity,
             Level = MigrationValidationLevel.Checksum,
             CanonicalizationVersion = CanonicalRowCodec.CanonicalizationId,
             CanonicalizationContractDigest = CanonicalRowCodec.ContractHashHex,
             ReportDigest = digest,
         };
         return new MigrationValidationActivationPermit(receipt, reportPath);
+    }
+
+    private static async Task PersistLegacyActivationAsync(
+        string targetPath,
+        MigrationValidationActivationReceipt receipt)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, Ct);
+        bool transactionStarted = false;
+        bool commitInvoked = false;
+        try
+        {
+            await database.BeginTransactionAsync(Ct);
+            transactionStarted = true;
+
+            InsertBatch receiptInsert = database.PrepareInsertBatch(
+                "__csharpdb_migration_validation_receipt",
+                1);
+            receiptInsert.AddRow(
+                DbValue.FromInteger(1),
+                DbValue.FromText(MigrationValidationActivationReceipt.ContractVersion),
+                DbValue.FromText(receipt.TargetIdentity),
+                DbValue.FromText(receipt.PlanDigest),
+                DbValue.FromText(receipt.CatalogDigest),
+                DbValue.FromText(receipt.SourceSnapshotIdentity),
+                DbValue.FromText(receipt.TargetSnapshotIdentity),
+                DbValue.FromInteger((long)receipt.Level),
+                DbValue.FromText(receipt.CanonicalizationVersion),
+                DbValue.FromText(receipt.CanonicalizationContractDigest),
+                DbValue.FromText(receipt.ReportDigest));
+            Assert.Equal(1, await receiptInsert.ExecuteAsync(Ct));
+
+            await using (var update = await database.ExecuteAsync(
+                             "UPDATE \"__csharpdb_migration_state\" " +
+                             "SET \"target_tag\" = 'csharpdb-staged-migration-target/v2', " +
+                             "\"lifecycle_state\" = 'activated' " +
+                             "WHERE \"singleton\" = 1 " +
+                             "AND \"lifecycle_state\" = 'awaiting-validation'",
+                             Ct))
+            {
+                Assert.Equal(1, update.RowsAffected);
+            }
+
+            commitInvoked = true;
+            await database.CommitAsync(CancellationToken.None);
+        }
+        catch
+        {
+            if (transactionStarted && !commitInvoked)
+                await database.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static async Task RewriteTargetTagAsV2Async(string targetPath)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, Ct);
+        await using var update = await database.ExecuteAsync(
+            "UPDATE \"__csharpdb_migration_state\" " +
+            "SET \"target_tag\" = 'csharpdb-staged-migration-target/v2' " +
+            "WHERE \"singleton\" = 1 " +
+            "AND \"lifecycle_state\" = 'awaiting-validation'",
+            Ct);
+        Assert.Equal(1, update.RowsAffected);
+    }
+
+    private static async Task RewriteTargetIdentityAsync(
+        string targetPath,
+        string originalTargetIdentity,
+        string replacementTargetIdentity)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, Ct);
+        await database.BeginTransactionAsync(Ct);
+        bool commitInvoked = false;
+        try
+        {
+            await AssertIdentityRewriteAsync(
+                database,
+                "__csharpdb_migration_state",
+                originalTargetIdentity,
+                replacementTargetIdentity,
+                expectedRows: 1);
+            await AssertIdentityRewriteAsync(
+                database,
+                "__csharpdb_migration_stages",
+                originalTargetIdentity,
+                replacementTargetIdentity,
+                expectedRows: Enum.GetValues<MigrationSchemaStage>().Length);
+            await AssertIdentityRewriteAsync(
+                database,
+                "__csharpdb_migration_receipts",
+                originalTargetIdentity,
+                replacementTargetIdentity,
+                expectedRows: 11);
+
+            commitInvoked = true;
+            await database.CommitAsync(CancellationToken.None);
+        }
+        catch
+        {
+            if (!commitInvoked)
+                await database.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static async Task AssertIdentityRewriteAsync(
+        Database database,
+        string tableName,
+        string originalTargetIdentity,
+        string replacementTargetIdentity,
+        int expectedRows)
+    {
+        string sql =
+            $"UPDATE \"{tableName}\" " +
+            $"SET \"target_identity\" = '{replacementTargetIdentity}' " +
+            $"WHERE \"target_identity\" = '{originalTargetIdentity}'";
+        await using var update = await database.ExecuteAsync(sql, Ct);
+        Assert.Equal(expectedRows, update.RowsAffected);
     }
 
     private sealed class TemporaryTargetDirectory : IDisposable

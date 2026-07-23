@@ -32,7 +32,11 @@ public sealed class MigrationRejectContractCliTests
                 new MigrationPlanningOptions { AcceptAllExclusions = true });
             MigrationPlan unsupported = ready with
             {
-                Load = ready.Load with { RejectMode = MigrationRejectMode.DeterministicRejects },
+                Load = ready.Load with
+                {
+                    RejectMode = MigrationRejectMode.DeterministicRejects,
+                    RejectPolicy = ValidDeterministicRejectPolicy(),
+                },
             };
             await File.WriteAllTextAsync(
                 catalogPath,
@@ -91,4 +95,16 @@ public sealed class MigrationRejectContractCliTests
             }
         }
     }
+
+    private static MigrationDeterministicRejectPolicy ValidDeterministicRejectPolicy() => new()
+    {
+        ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+        AllowedRuleIds = ["MIG-TEST-001"],
+        MaxRejectedRowsPerBatch = 1,
+        MaxRejectedRowsPerRun = 10,
+        MaxRawValueBytes = 1_024,
+        MaxRawValueBytesPerBatch = 8_192,
+        MaxRawValueBytesPerRun = 65_536,
+        MaxArtifactBytes = 131_072,
+    };
 }

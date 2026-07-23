@@ -102,34 +102,39 @@ public sealed class MigrationFailFastContractTests
     }
 
     [Fact]
-    public async Task DurableRejectMode_IsRefusedBeforeTargetCreation()
+    public async Task DurableRejectMode_NormalExecutionIsRefusedBeforeTargetMutation()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
-        using var files = new TemporaryTargetDirectory();
         MigrationCatalog catalog = await InspectAsync(ct);
         MigrationPlan ready = ReadyPlan(catalog, batchSize: 2);
         MigrationPlan unsupported = ready with
         {
-            Load = ready.Load with { RejectMode = MigrationRejectMode.DeterministicRejects },
+            Load = ready.Load with
+            {
+                RejectMode = MigrationRejectMode.DeterministicRejects,
+                RejectPolicy = new MigrationDeterministicRejectPolicy
+                {
+                    ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                    AllowedRuleIds = ["MIG-TEST-001"],
+                    MaxRejectedRowsPerBatch = 1,
+                    MaxRejectedRowsPerRun = 10,
+                    MaxRawValueBytes = 1_024,
+                    MaxRawValueBytesPerBatch = 8_192,
+                    MaxRawValueBytesPerRun = 65_536,
+                    MaxArtifactBytes = 131_072,
+                },
+            },
         };
+        await using var source = new SyntheticMigrationDataSource(catalog);
+        await using var target = new MutationProbeTarget();
 
         MigrationExecutionPolicyException error =
             await Assert.ThrowsAsync<MigrationExecutionPolicyException>(async () =>
-            {
-                await using CSharpDbStagedMigrationTarget unexpected =
-                    await CSharpDbStagedMigrationTarget.CreateNewAsync(
-                        files.TargetPath,
-                        unsupported,
-                        catalog,
-                        SyntheticMigrationDataSource.FixtureSnapshotIdentity,
-                        cancellationToken: ct);
-            });
+                await ApplyAsync(unsupported, catalog, source, target, ct));
 
         Assert.Equal("MIG-APPLY-POLICY-REJECT-001", error.Code);
         Assert.Contains(MigrationRejectContract.DeterministicFailFastV1, error.Message, StringComparison.Ordinal);
-        Assert.False(File.Exists(files.TargetPath));
-        Assert.False(File.Exists(files.TargetPath + ".wal"));
-        Assert.False(File.Exists(files.TargetPath + ".migration.lock"));
+        Assert.Equal(0, target.OperationCount);
     }
 
     [Fact]

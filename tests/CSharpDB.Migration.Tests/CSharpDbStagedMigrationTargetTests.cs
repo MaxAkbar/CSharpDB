@@ -6,6 +6,10 @@ namespace CSharpDB.Migration.Tests;
 
 public sealed class CSharpDbStagedMigrationTargetTests
 {
+    private const string DeterministicRuleId = "MIG-CSV-ROW-001";
+    private const string RejectSourceObjectId = "syn:table:customers-lower";
+    private const string RejectColumnObjectId = "syn:column:customers-lower:code-lower";
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact]
@@ -45,7 +49,12 @@ public sealed class CSharpDbStagedMigrationTargetTests
             Assert.Equal(0, receipt.RejectedRowCount);
 
             await using IValidationSnapshot snapshot = await target.OpenValidationSnapshotAsync(Ct);
-            Assert.Equal($"staged-target:{targetIdentity}:awaiting-validation", snapshot.SnapshotIdentity);
+            string snapshotPrefix =
+                $"staged-target:{targetIdentity}:awaiting-validation:outcomes:";
+            Assert.StartsWith(snapshotPrefix, snapshot.SnapshotIdentity, StringComparison.Ordinal);
+            Assert.Matches(
+                "^[0-9a-f]{64}$",
+                snapshot.SnapshotIdentity[snapshotPrefix.Length..]);
             await AssertSyntheticCountsAsync(snapshot, Ct);
 
             List<MigrationValidationRow> customers = await CollectAsync(
@@ -185,6 +194,599 @@ public sealed class CSharpDbStagedMigrationTargetTests
         Assert.Equal(
             ("csharpdb-staged-migration-target/v1", "csharpdb-migration-batch-receipt/v1"),
             await ReadLegacyTagsAsync(files.TargetPath, Ct));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_AcceptedOnlyBatchReplaysWithoutLedgerRows()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows:
+            [
+                AcceptedRow(0, "zero"),
+                AcceptedRow(1, "one"),
+            ]);
+        string targetIdentity;
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            targetIdentity = target.TargetIdentity;
+            MigrationBatchReceipt receipt = await target.WriteBatchAsync(batch, Ct);
+            MigrationBatchReceipt replay = await target.WriteBatchAsync(batch, Ct);
+            List<MigrationRejectLedgerEntry> ledger = await ReadLedgerAsync(target, plan);
+
+            Assert.Equal(2, receipt.RowCount);
+            Assert.Equal(0, receipt.RejectedRowCount);
+            Assert.Equal(receipt, replay);
+            Assert.Empty(ledger);
+        }
+
+        Assert.Equal(2, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+        await using CSharpDbStagedMigrationTarget resumed =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        Assert.Equal(targetIdentity, resumed.TargetIdentity);
+        Assert.NotNull(await resumed.ReadReceiptAsync(
+            batch.PlanDigest,
+            batch.SourceObjectId,
+            batch.BatchOrdinal,
+            Ct));
+        Assert.Empty(await ReadLedgerAsync(resumed, plan));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_MixedBatchPersistsAndReplaysBoundLedger()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationRejectedRow rejected = RejectedRow(1, "bad-value");
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows:
+            [
+                AcceptedRow(0, "zero"),
+                AcceptedRow(2, "two"),
+            ],
+            rejectedRows: [rejected]);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            MigrationBatchReceipt receipt = await target.WriteBatchAsync(batch, Ct);
+            MigrationBatchReceipt replay = await target.WriteBatchAsync(batch, Ct);
+            MigrationRejectLedgerEntry entry = Assert.Single(await ReadLedgerAsync(target, plan));
+
+            Assert.Equal(2, receipt.RowCount);
+            Assert.Equal(1, receipt.RejectedRowCount);
+            Assert.Equal(receipt, replay);
+            Assert.Equal(batch.PlanDigest, entry.PlanDigest);
+            Assert.Equal(RejectSourceObjectId, entry.SourceObjectId);
+            Assert.Equal(0, entry.BatchOrdinal);
+            AssertRejectedRowEqual(rejected, entry.RejectedRow);
+            Assert.Equal("bad-value".Length, entry.RawValueByteCount);
+            Assert.True(entry.CanonicalEntryByteCount > entry.RawValueByteCount);
+        }
+
+        Assert.Equal(2, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+        await using CSharpDbStagedMigrationTarget resumed =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        MigrationBatchReceipt restored = Assert.IsType<MigrationBatchReceipt>(
+            await resumed.ReadReceiptAsync(
+                batch.PlanDigest,
+                batch.SourceObjectId,
+                batch.BatchOrdinal,
+                Ct));
+        Assert.Equal(1, restored.RejectedRowCount);
+        AssertRejectedRowEqual(
+            rejected,
+            Assert.Single(await ReadLedgerAsync(resumed, plan)).RejectedRow);
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_AllRejectBatchAdvancesWithNoTargetRows()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows:
+            [
+                RejectedRow(0, "bad-zero"),
+                RejectedRow(1, "bad-one"),
+            ]);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            MigrationBatchReceipt receipt = await target.WriteBatchAsync(batch, Ct);
+            MigrationBatchReceipt replay = await target.WriteBatchAsync(batch, Ct);
+            List<MigrationRejectLedgerEntry> ledger = await ReadLedgerAsync(target, plan);
+
+            Assert.Equal(0, receipt.RowCount);
+            Assert.Equal(2, receipt.RejectedRowCount);
+            Assert.Equal(receipt, replay);
+            Assert.Equal([0L, 1L], ledger.Select(item => item.RejectedRow.SourceRowOrdinal));
+        }
+
+        Assert.Equal(0, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+        await using CSharpDbStagedMigrationTarget resumed =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        Assert.Equal(2, (await ReadLedgerAsync(resumed, plan)).Count);
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_FaultAfterRejectsRollsBackRowsLedgerAndReceipt()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows:
+            [
+                AcceptedRow(0, "zero"),
+                AcceptedRow(2, "two"),
+            ],
+            rejectedRows: [RejectedRow(1, "bad-value")]);
+        var injector = new ThrowOnceFaultInjector(
+            CSharpDbMigrationFaultPoint.AfterRejectsBeforeReceipt);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                         files.TargetPath,
+                         plan,
+                         catalog,
+                         SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                         injector,
+                         Ct))
+        {
+            await target.ApplySchemaAsync(
+                plan,
+                catalog,
+                MigrationSchemaStage.LoadEssential,
+                Ct);
+            await Assert.ThrowsAsync<InjectedMigrationFaultException>(async () =>
+                await target.WriteBatchAsync(batch, Ct));
+            Assert.True(injector.Fired);
+        }
+
+        Assert.Equal(0, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+        await using CSharpDbStagedMigrationTarget resumed =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        Assert.Null(await resumed.ReadReceiptAsync(
+            batch.PlanDigest,
+            batch.SourceObjectId,
+            batch.BatchOrdinal,
+            Ct));
+        Assert.Empty(await ReadLedgerAsync(resumed, plan));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_NoncanonicalStoredEvidenceFailsReopen()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows:
+            [
+                AcceptedRow(0, "zero"),
+                AcceptedRow(2, "two"),
+            ],
+            rejectedRows: [RejectedRow(1, "bad-value")]);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            _ = await target.WriteBatchAsync(batch, Ct);
+        }
+        await TamperRejectEvidenceJsonAsync(files.TargetPath, Ct);
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+        {
+            await using CSharpDbStagedMigrationTarget unexpected =
+                await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                    files.TargetPath,
+                    plan,
+                    catalog,
+                    SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                    cancellationToken: Ct);
+        });
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_DisallowedRuleFailsBeforeMutationWithoutRawValueLeak()
+    {
+        const string secretRawValue = "TOP-SECRET-DISALLOWED-RAW-VALUE";
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 2);
+        MigrationRejectedRow rejected = RejectedRow(0, secretRawValue) with
+        {
+            RuleId = "MIG-CSV-ROW-999",
+        };
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows: [rejected]);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await target.WriteBatchAsync(batch, Ct));
+
+            Assert.Contains("rule", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(secretRawValue, error.ToString(), StringComparison.Ordinal);
+            Assert.Null(await target.ReadReceiptAsync(
+                batch.PlanDigest,
+                batch.SourceObjectId,
+                batch.BatchOrdinal,
+                Ct));
+            Assert.Empty(await ReadLedgerAsync(target, plan));
+        }
+
+        Assert.Equal(0, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_CumulativeRunLimitSurvivesCommittedBatch()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan original = ReadyDeterministicRejectPlan(catalog, batchSize: 2);
+        MigrationPlan plan = original with
+        {
+            Load = original.Load with
+            {
+                RejectPolicy = original.Load.RejectPolicy! with
+                {
+                    MaxRejectedRowsPerBatch = 1,
+                    MaxRejectedRowsPerRun = 1,
+                },
+            },
+        };
+        MigrationTargetBatch first = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows: [RejectedRow(0, "first")],
+            batchOrdinal: 0,
+            startCursor: null,
+            nextCursor: "cursor:1");
+        MigrationTargetBatch second = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows: [RejectedRow(1, "second")],
+            batchOrdinal: 1,
+            startCursor: "cursor:1",
+            nextCursor: null);
+
+        await using CSharpDbStagedMigrationTarget target =
+            await CreateDeterministicTargetAsync(files, plan, catalog);
+        _ = await target.WriteBatchAsync(first, Ct);
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await target.WriteBatchAsync(second, Ct));
+
+        Assert.Contains("run limit", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(await target.ReadReceiptAsync(
+            first.PlanDigest,
+            first.SourceObjectId,
+            first.BatchOrdinal,
+            Ct));
+        Assert.Null(await target.ReadReceiptAsync(
+            second.PlanDigest,
+            second.SourceObjectId,
+            second.BatchOrdinal,
+            Ct));
+        Assert.Single(await ReadLedgerAsync(target, plan));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_RejectsOrdinalGapAndWrongCursorBeforeMutation()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch first = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(0, "zero")],
+            nextCursor: "cursor:1");
+        MigrationTargetBatch ordinalGap = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(1, "gap")],
+            batchOrdinal: 2,
+            startCursor: "cursor:1");
+        MigrationTargetBatch wrongCursor = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(1, "wrong-cursor")],
+            batchOrdinal: 1,
+            startCursor: "cursor:wrong");
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            _ = await target.WriteBatchAsync(first, Ct);
+
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await target.WriteBatchAsync(ordinalGap, Ct));
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await target.WriteBatchAsync(wrongCursor, Ct));
+
+            Assert.Null(await target.ReadReceiptAsync(
+                first.PlanDigest,
+                first.SourceObjectId,
+                batchOrdinal: 1,
+                cancellationToken: Ct));
+            Assert.Empty(await ReadLedgerAsync(target, plan));
+        }
+
+        Assert.Equal(1, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_RejectsAppendAfterTerminalBeforeMutation()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch terminal = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(0, "terminal")]);
+        MigrationTargetBatch append = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(1, "append")],
+            batchOrdinal: 1);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            _ = await target.WriteBatchAsync(terminal, Ct);
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await target.WriteBatchAsync(append, Ct));
+
+            Assert.Null(await target.ReadReceiptAsync(
+                terminal.PlanDigest,
+                terminal.SourceObjectId,
+                batchOrdinal: 1,
+                cancellationToken: Ct));
+        }
+
+        Assert.Equal(1, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_RejectsPostLoadSchemaUntilChainIsTerminal()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch nonterminal = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(0, "zero")],
+            nextCursor: "cursor:1");
+        MigrationTargetBatch terminal = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(1, "one")],
+            batchOrdinal: 1,
+            startCursor: "cursor:1");
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            _ = await target.WriteBatchAsync(nonterminal, Ct);
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await target.ApplySchemaAsync(
+                    plan,
+                    catalog,
+                    MigrationSchemaStage.SecondaryIndexes,
+                    Ct));
+
+            _ = await target.WriteBatchAsync(terminal, Ct);
+            await target.ApplySchemaAsync(
+                plan,
+                catalog,
+                MigrationSchemaStage.SecondaryIndexes,
+                Ct);
+        }
+
+        Assert.Equal(2, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_ChargesEveryEvidenceValueToSensitiveBudget()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 1);
+        plan = plan with
+        {
+            Load = plan.Load with
+            {
+                RejectPolicy = plan.Load.RejectPolicy! with
+                {
+                    MaxRawValueBytes = 4,
+                },
+            },
+        };
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows:
+            [
+                RejectedRow(
+                    0,
+                    "12345",
+                    evidenceName: "decodedValue"),
+            ]);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await target.WriteBatchAsync(batch, Ct));
+            Assert.Null(await target.ReadReceiptAsync(
+                batch.PlanDigest,
+                batch.SourceObjectId,
+                batch.BatchOrdinal,
+                Ct));
+            Assert.Empty(await ReadLedgerAsync(target, plan));
+        }
+
+        Assert.Equal(0, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_EnforcesCanonicalArtifactBudgetBeforeMutation()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 1);
+        plan = plan with
+        {
+            Load = plan.Load with
+            {
+                RejectPolicy = plan.Load.RejectPolicy! with
+                {
+                    MaxArtifactBytes =
+                        MigrationRejectLedgerCodec.MinimumCanonicalArtifactBytes,
+                },
+            },
+        };
+        MigrationTargetBatch batch = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows: [RejectedRow(0, "x")]);
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await target.WriteBatchAsync(batch, Ct));
+            Assert.Null(await target.ReadReceiptAsync(
+                batch.PlanDigest,
+                batch.SourceObjectId,
+                batch.BatchOrdinal,
+                Ct));
+            Assert.Empty(await ReadLedgerAsync(target, plan));
+        }
+
+        Assert.Equal(0, await CountTargetRowsAsync(files.TargetPath, plan, Ct));
+    }
+
+    [Fact]
+    public async Task DeterministicRejectTarget_ConcurrentBatchesCannotRaceRunRejectLimit()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 1);
+        plan = plan with
+        {
+            Load = plan.Load with
+            {
+                RejectPolicy = plan.Load.RejectPolicy! with
+                {
+                    MaxRejectedRowsPerRun = 1,
+                },
+            },
+        };
+        MigrationTargetBatch first = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows: [RejectedRow(0, "first")],
+            nextCursor: "cursor:1");
+        MigrationTargetBatch second = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [],
+            rejectedRows: [RejectedRow(1, "second")],
+            batchOrdinal: 1,
+            startCursor: "cursor:1");
+        var injector = new BlockingBeforeRowsFaultInjector();
+
+        await using CSharpDbStagedMigrationTarget target =
+            await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                injector,
+                Ct);
+        await target.ApplySchemaAsync(
+            plan,
+            catalog,
+            MigrationSchemaStage.LoadEssential,
+            Ct);
+
+        Task<MigrationBatchReceipt> firstWrite = target.WriteBatchAsync(first, Ct).AsTask();
+        await injector.WaitUntilBlockedAsync(Ct);
+        Task<MigrationBatchReceipt> secondWrite = target.WriteBatchAsync(second, Ct).AsTask();
+        try
+        {
+            injector.Release();
+            _ = await firstWrite;
+            await Assert.ThrowsAsync<InvalidDataException>(async () => await secondWrite);
+        }
+        finally
+        {
+            injector.Release();
+        }
+
+        Assert.NotNull(await target.ReadReceiptAsync(
+            first.PlanDigest,
+            first.SourceObjectId,
+            first.BatchOrdinal,
+            Ct));
+        Assert.Null(await target.ReadReceiptAsync(
+            second.PlanDigest,
+            second.SourceObjectId,
+            second.BatchOrdinal,
+            Ct));
+        Assert.Single(await ReadLedgerAsync(target, plan));
     }
 
     [Fact]
@@ -349,16 +951,13 @@ public sealed class CSharpDbStagedMigrationTargetTests
 
         await TamperRejectDigestAsync(files.TargetPath, Ct);
 
-        await using var resumedSource = new SyntheticMigrationDataSource(catalog);
-        await using CSharpDbStagedMigrationTarget resumedTarget =
-            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            OpenAndDisposeAsync(
                 files.TargetPath,
                 plan,
                 catalog,
-                resumedSource.SnapshotIdentity,
-                cancellationToken: Ct);
-        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
-            await ApplyAsync(plan, catalog, resumedSource, resumedTarget, Ct));
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                Ct));
 
         Assert.Contains("receipt", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("reject digest", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -509,6 +1108,187 @@ public sealed class CSharpDbStagedMigrationTargetTests
             catalog,
             new MigrationPlanningOptions { AcceptAllExclusions = true });
         return plan with { Load = plan.Load with { BatchSize = batchSize } };
+    }
+
+    private static MigrationPlan ReadyDeterministicRejectPlan(
+        MigrationCatalog catalog,
+        int batchSize)
+    {
+        MigrationPlan plan = ReadyPlan(catalog, batchSize);
+        return plan with
+        {
+            Load = plan.Load with
+            {
+                RejectMode = MigrationRejectMode.DeterministicRejects,
+                RejectPolicy = new MigrationDeterministicRejectPolicy
+                {
+                    ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                    AllowedRuleIds = [DeterministicRuleId],
+                    MaxRejectedRowsPerBatch = batchSize,
+                    MaxRejectedRowsPerRun = 100,
+                    MaxRawValueBytes = 1_024,
+                    MaxRawValueBytesPerBatch = 8_192,
+                    MaxRawValueBytesPerRun = 65_536,
+                    MaxArtifactBytes = 131_072,
+                },
+            },
+        };
+    }
+
+    private static async ValueTask<CSharpDbStagedMigrationTarget> CreateDeterministicTargetAsync(
+        TemporaryTargetDirectory files,
+        MigrationPlan plan,
+        MigrationCatalog catalog)
+    {
+        CSharpDbStagedMigrationTarget target =
+            await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        try
+        {
+            await target.ApplySchemaAsync(
+                plan,
+                catalog,
+                MigrationSchemaStage.LoadEssential,
+                Ct);
+            return target;
+        }
+        catch
+        {
+            await target.DisposeAsync();
+            throw;
+        }
+    }
+
+    private static MigrationTargetBatch DeterministicBatch(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        IReadOnlyList<MigrationTargetRow> rows,
+        IReadOnlyList<MigrationRejectedRow>? rejectedRows = null,
+        long batchOrdinal = 0,
+        string? startCursor = null,
+        string? nextCursor = null)
+    {
+        string[] columnObjectIds = IncludedColumnIds(
+            catalog,
+            plan,
+            RejectSourceObjectId);
+        var unsigned = new MigrationTargetBatch
+        {
+            PlanDigest = MigrationArtifactSerializer.ComputePlanDigest(plan),
+            CatalogDigest = plan.CatalogDigest,
+            SourceFingerprint = plan.Source.Fingerprint,
+            SourceSnapshotIdentity = SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+            SourceObjectId = RejectSourceObjectId,
+            ColumnObjectIds = columnObjectIds,
+            BatchOrdinal = batchOrdinal,
+            StartCursor = startCursor,
+            NextCursor = nextCursor,
+            BatchDigest = string.Empty,
+            RejectContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+            Rows = rows,
+            RejectedRows = rejectedRows ?? [],
+        };
+        MigrationTargetBatch rejectSealed = unsigned with
+        {
+            RejectDigest = MigrationRejectDigest.Compute(unsigned),
+        };
+        return rejectSealed with
+        {
+            BatchDigest = MigrationBatchDigest.Compute(rejectSealed),
+        };
+    }
+
+    private static MigrationTargetRow AcceptedRow(long sourceRowOrdinal, string suffix) => new()
+    {
+        SourceRowOrdinal = sourceRowOrdinal,
+        StableKey = suffix,
+        Values =
+        [
+            DbValue.FromText($"lower-{suffix}"),
+            DbValue.FromText($"upper-{suffix}"),
+        ],
+    };
+
+    private static MigrationRejectedRow RejectedRow(
+        long sourceRowOrdinal,
+        string rawValue,
+        string evidenceName = MigrationRejectLedgerCodec.RawValueEvidenceName) => new()
+        {
+            SourceRowOrdinal = sourceRowOrdinal,
+            RuleId = DeterministicRuleId,
+            ColumnObjectId = RejectColumnObjectId,
+            Evidence =
+        [
+            new MigrationRejectEvidence
+            {
+                Name = evidenceName,
+                Value = rawValue,
+            },
+        ],
+        };
+
+    private static void AssertRejectedRowEqual(
+        MigrationRejectedRow expected,
+        MigrationRejectedRow actual)
+    {
+        Assert.Equal(expected.SourceRowOrdinal, actual.SourceRowOrdinal);
+        Assert.Equal(expected.RuleId, actual.RuleId);
+        Assert.Equal(expected.ColumnObjectId, actual.ColumnObjectId);
+        MigrationRejectEvidence expectedEvidence = Assert.Single(expected.Evidence);
+        MigrationRejectEvidence actualEvidence = Assert.Single(actual.Evidence);
+        Assert.Equal(expectedEvidence.Name, actualEvidence.Name);
+        Assert.Equal(expectedEvidence.Value, actualEvidence.Value);
+    }
+
+    private static async Task<List<MigrationRejectLedgerEntry>> ReadLedgerAsync(
+        CSharpDbStagedMigrationTarget target,
+        MigrationPlan plan)
+    {
+        var entries = new List<MigrationRejectLedgerEntry>();
+        await foreach (MigrationRejectLedgerEntry entry in target.ReadRejectLedgerAsync(
+                           MigrationArtifactSerializer.ComputePlanDigest(plan),
+                           Ct))
+        {
+            entries.Add(entry);
+        }
+        return entries;
+    }
+
+    private static async Task<long> CountTargetRowsAsync(
+        string targetPath,
+        MigrationPlan plan,
+        CancellationToken cancellationToken)
+    {
+        string targetName = plan.Objects.Single(item =>
+            string.Equals(
+                item.SourceObjectId,
+                RejectSourceObjectId,
+                StringComparison.Ordinal)).TargetName!;
+        string quoted = $"\"{targetName.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+        await using Database database = await Database.OpenAsync(targetPath, cancellationToken);
+        await using var result = await database.ExecuteAsync(
+            $"SELECT COUNT(*) FROM {quoted}",
+            cancellationToken);
+        Assert.True(await result.MoveNextAsync(cancellationToken));
+        return result.Current[0].AsInteger;
+    }
+
+    private static async Task TamperRejectEvidenceJsonAsync(
+        string targetPath,
+        CancellationToken cancellationToken)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, cancellationToken);
+        await using var result = await database.ExecuteAsync(
+            "UPDATE \"__csharpdb_migration_rejects\" " +
+            "SET \"evidence_json\" = '[ {\"name\":\"rawValue\",\"value\":\"bad-value\"} ]' " +
+            "WHERE \"source_object_id\" = 'syn:table:customers-lower' " +
+            "AND \"batch_ordinal\" = 0 AND \"source_row_ordinal\" = 1",
+            cancellationToken);
+        Assert.Equal(1, result.RowsAffected);
     }
 
     private static async ValueTask<MigrationApplyResult> ApplyAsync(
@@ -714,6 +1494,35 @@ public sealed class CSharpDbStagedMigrationTargetTests
                 throw new InjectedMigrationFaultException(point);
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class BlockingBeforeRowsFaultInjector : ICSharpDbMigrationFaultInjector
+    {
+        private readonly TaskCompletionSource _blocked =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _fired;
+
+        public async ValueTask InjectAsync(
+            CSharpDbMigrationFaultPoint point,
+            MigrationTargetBatch batch,
+            CancellationToken cancellationToken = default)
+        {
+            if (point != CSharpDbMigrationFaultPoint.BeforeRows ||
+                Interlocked.Exchange(ref _fired, 1) != 0)
+            {
+                return;
+            }
+
+            _blocked.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+        }
+
+        public Task WaitUntilBlockedAsync(CancellationToken cancellationToken) =>
+            _blocked.Task.WaitAsync(cancellationToken);
+
+        public void Release() => _release.TrySetResult();
     }
 
     private sealed class CancelAtPointFaultInjector(

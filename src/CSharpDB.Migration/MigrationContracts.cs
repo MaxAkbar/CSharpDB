@@ -309,6 +309,30 @@ public sealed record MigrationPlanObject
     public IReadOnlyList<string> DependsOn { get; init; } = [];
 }
 
+/// <summary>
+/// Plan-bound limits and rule registry for durable deterministic row rejects.
+/// This policy is absent for fail-fast plans so existing plan-v1 artifacts
+/// retain their canonical JSON shape and digest.
+/// </summary>
+public sealed record MigrationDeterministicRejectPolicy
+{
+    public required string ContractVersion { get; init; }
+
+    public IReadOnlyList<string> AllowedRuleIds { get; init; } = [];
+
+    public required int MaxRejectedRowsPerBatch { get; init; }
+
+    public required long MaxRejectedRowsPerRun { get; init; }
+
+    public required int MaxRawValueBytes { get; init; }
+
+    public required long MaxRawValueBytesPerBatch { get; init; }
+
+    public required long MaxRawValueBytesPerRun { get; init; }
+
+    public required long MaxArtifactBytes { get; init; }
+}
+
 public sealed record MigrationLoadPolicy
 {
     public int BatchSize { get; init; } = 1_000;
@@ -327,6 +351,8 @@ public sealed record MigrationLoadPolicy
     public MigrationResumeMode ResumeMode { get; init; } = MigrationResumeMode.TransactionalReceipts;
 
     public MigrationRejectMode RejectMode { get; init; } = MigrationRejectMode.FailFast;
+
+    public MigrationDeterministicRejectPolicy? RejectPolicy { get; init; }
 
     public bool CreateStagedTarget { get; init; } = true;
 }

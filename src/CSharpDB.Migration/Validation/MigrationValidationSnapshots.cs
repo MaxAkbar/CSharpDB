@@ -95,6 +95,7 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(source);
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
+        MigrationValidationPolicyValidator.ValidateForExecution(plan);
         if (source.Source != plan.Source)
             throw new InvalidDataException("Validation data source identity does not match the bound plan source.");
         if (source is IMigrationCatalogBoundDataSource catalogBoundSource &&

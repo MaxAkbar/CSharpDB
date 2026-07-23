@@ -19,7 +19,11 @@ public static class MigrationRejectContract
 
     public const int MaximumObjectIdCharacters = 512;
 
+    public const int MaximumAllowedRuleIds = 4_096;
+
     public const int MaximumRejectedRowsPerBatch = 65_536;
+
+    public const long MaximumRejectedRowsPerRun = 1_000_000_000L;
 
     public const int MaximumEvidenceEntriesPerRow = 32;
 
@@ -30,6 +34,14 @@ public static class MigrationRejectContract
     public const int MaximumEvidenceBytesPerRow = 16 * 1024;
 
     public const long MaximumEvidenceBytesPerBatch = 64L * 1024 * 1024;
+
+    public const int MaximumRawValueBytes = MaximumEvidenceValueBytes;
+
+    public const long MaximumRawValueBytesPerBatch = MaximumEvidenceBytesPerBatch;
+
+    public const long MaximumRawValueBytesPerRun = 1024L * 1024 * 1024 * 1024;
+
+    public const long MaximumArtifactBytes = 1024L * 1024 * 1024 * 1024;
 
     internal static bool IsBoundedRuleId(string value) =>
         value.Length <= MaximumRuleIdCharacters &&
@@ -42,6 +54,124 @@ public static class MigrationRejectContract
     internal static bool IsBoundedIdentifier(string value) =>
         value.Length <= MaximumObjectIdCharacters &&
         value.All(character => !char.IsControl(character));
+}
+
+internal static class MigrationDeterministicRejectPolicyValidator
+{
+    internal static void Validate(MigrationLoadPolicy load)
+    {
+        ArgumentNullException.ThrowIfNull(load);
+
+        switch (load.RejectMode)
+        {
+            case MigrationRejectMode.FailFast:
+                if (load.RejectPolicy is not null)
+                {
+                    throw new InvalidDataException(
+                        "Fail-fast migration plans cannot contain a deterministic reject policy.");
+                }
+
+                return;
+
+            case MigrationRejectMode.DeterministicRejects:
+                if (load.RejectPolicy is null)
+                {
+                    throw new InvalidDataException(
+                        "Deterministic reject mode requires a plan-bound reject policy.");
+                }
+
+                ValidateDeterministic(load.RejectPolicy, load.BatchSize);
+                return;
+
+            default:
+                throw new InvalidDataException("Migration reject mode is unsupported.");
+        }
+    }
+
+    private static void ValidateDeterministic(
+        MigrationDeterministicRejectPolicy policy,
+        int batchSize)
+    {
+        if (!string.Equals(
+                policy.ContractVersion,
+                MigrationRejectContract.DeterministicRejectsV1,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "Deterministic reject policy contract version is unsupported.");
+        }
+
+        IReadOnlyList<string> allowedRuleIds = policy.AllowedRuleIds ??
+            throw new InvalidDataException("Allowed reject rule ids cannot be null.");
+        if (allowedRuleIds.Count == 0 ||
+            allowedRuleIds.Count > MigrationRejectContract.MaximumAllowedRuleIds)
+        {
+            throw new InvalidDataException(
+                "Deterministic reject policy must contain a bounded, nonempty rule registry.");
+        }
+
+        var uniqueRuleIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string? ruleId in allowedRuleIds)
+        {
+            if (ruleId is null ||
+                !MigrationRejectContract.IsBoundedRuleId(ruleId) ||
+                !uniqueRuleIds.Add(ruleId))
+            {
+                throw new InvalidDataException(
+                    "Deterministic reject policy contains an invalid or duplicate rule id.");
+            }
+        }
+
+        RequirePositiveBound(
+            policy.MaxRejectedRowsPerBatch,
+            MigrationRejectContract.MaximumRejectedRowsPerBatch,
+            "Maximum rejected rows per batch");
+        RequirePositiveBound(
+            policy.MaxRejectedRowsPerRun,
+            MigrationRejectContract.MaximumRejectedRowsPerRun,
+            "Maximum rejected rows per run");
+        RequirePositiveBound(
+            policy.MaxRawValueBytes,
+            MigrationRejectContract.MaximumRawValueBytes,
+            "Maximum raw value bytes");
+        RequirePositiveBound(
+            policy.MaxRawValueBytesPerBatch,
+            MigrationRejectContract.MaximumRawValueBytesPerBatch,
+            "Maximum raw value bytes per batch");
+        RequirePositiveBound(
+            policy.MaxRawValueBytesPerRun,
+            MigrationRejectContract.MaximumRawValueBytesPerRun,
+            "Maximum raw value bytes per run");
+        RequirePositiveBound(
+            policy.MaxArtifactBytes,
+            MigrationRejectContract.MaximumArtifactBytes,
+            "Maximum reject artifact bytes");
+        if (policy.MaxArtifactBytes < MigrationRejectLedgerCodec.MinimumCanonicalArtifactBytes)
+        {
+            throw new InvalidDataException(
+                "Maximum reject artifact bytes cannot fit the canonical artifact header.");
+        }
+
+        if (policy.MaxRejectedRowsPerBatch > batchSize ||
+            policy.MaxRejectedRowsPerBatch > policy.MaxRejectedRowsPerRun)
+        {
+            throw new InvalidDataException(
+                "Maximum rejected rows per batch cannot exceed the batch or run limit.");
+        }
+
+        if (policy.MaxRawValueBytes > policy.MaxRawValueBytesPerBatch ||
+            policy.MaxRawValueBytesPerBatch > policy.MaxRawValueBytesPerRun)
+        {
+            throw new InvalidDataException(
+                "Raw value byte limits must be ordered from value to batch to run.");
+        }
+    }
+
+    private static void RequirePositiveBound(long value, long ceiling, string description)
+    {
+        if (value <= 0 || value > ceiling)
+            throw new InvalidDataException($"{description} is outside the supported bounds.");
+    }
 }
 
 /// <summary>
@@ -133,11 +263,13 @@ public sealed class MigrationRowRejectedException : Exception
 }
 
 /// <summary>
-/// Validates the load policy before a staged target is created or changed.
+/// Validates the load policy for a staged target binding. This intentionally
+/// permits a valid deterministic reject policy before the execution path is
+/// enabled, so target durability can be qualified independently.
 /// </summary>
-public static class MigrationApplyPolicyValidator
+internal static class MigrationStagedTargetPolicyValidator
 {
-    public static void ValidateForExecution(MigrationPlan plan)
+    internal static void ValidateForBinding(MigrationPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(plan.Load);
@@ -155,6 +287,27 @@ public static class MigrationApplyPolicyValidator
                 "MIG-APPLY-POLICY-RESUME-001",
                 "Phase 2 apply requires transactional receipts.");
         }
+
+        MigrationDeterministicRejectPolicyValidator.Validate(plan.Load);
+        if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+            plan.Objects.Any(item => item.Included &&
+                !MigrationRejectContract.IsBoundedIdentifier(item.SourceObjectId)))
+        {
+            throw new InvalidDataException(
+                "Deterministic reject plans require bounded included object identifiers.");
+        }
+    }
+}
+
+/// <summary>
+/// Validates the load policy before the normal apply execution path may mutate
+/// a target.
+/// </summary>
+public static class MigrationApplyPolicyValidator
+{
+    public static void ValidateForExecution(MigrationPlan plan)
+    {
+        MigrationStagedTargetPolicyValidator.ValidateForBinding(plan);
 
         if (plan.Load.RejectMode != MigrationRejectMode.FailFast)
         {
