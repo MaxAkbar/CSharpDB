@@ -131,6 +131,39 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Performs the publication path and existing-file checks without creating,
+    /// truncating, locking, or publishing a temporary claim. Publication must
+    /// repeat these checks because this method does not reserve filesystem
+    /// identities after it returns.
+    /// </summary>
+    internal static MigrationRejectArtifactDestinationBinding ValidateDestinationForPreflight(
+        string outputPath,
+        string planDigest)
+    {
+        DestinationBinding binding = ValidateDestination(outputPath, planDigest);
+        if (OperatingSystem.IsWindows())
+        {
+            using SafeFileHandle parent = OpenWindowsParent(binding.ParentPath);
+            RequireWindowsParentIdentity(binding.ParentPath, parent);
+            ValidateWindowsExistingFileForPreflight(binding.DestinationPath);
+            ValidateWindowsExistingFileForPreflight(binding.TemporaryPath);
+            RequireWindowsParentIdentity(binding.ParentPath, parent);
+            return ToPublicBinding(binding);
+        }
+
+        using SafeFileHandle unixParent = OpenUnixParent(binding.ParentPath);
+        ValidateUnixExistingFileForPreflight(
+            unixParent,
+            binding.DestinationLeaf,
+            binding.DestinationPath);
+        ValidateUnixExistingFileForPreflight(
+            unixParent,
+            binding.TemporaryLeaf,
+            binding.TemporaryPath);
+        return ToPublicBinding(binding);
+    }
+
     internal async ValueTask FlushAsync(CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
@@ -464,6 +497,14 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
             temporaryPath);
     }
 
+    private static MigrationRejectArtifactDestinationBinding ToPublicBinding(
+        DestinationBinding binding) =>
+        new()
+        {
+            DestinationPath = binding.DestinationPath,
+            TemporaryPath = binding.TemporaryPath,
+        };
+
     private static void RejectDotSegments(string path)
     {
         string root = Path.GetPathRoot(path) ?? string.Empty;
@@ -576,6 +617,15 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
                 }
             }
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ValidateWindowsExistingFileForPreflight(string path)
+    {
+        if (!TryGetAttributes(path, out _))
+            return;
+
+        using FileStream existing = OpenWindowsExistingArtifact(path);
     }
 
     [SupportedOSPlatform("windows")]
@@ -991,6 +1041,18 @@ internal sealed class MigrationRejectArtifactPublication : IAsyncDisposable
         {
             handle?.Dispose();
         }
+    }
+
+    private static void ValidateUnixExistingFileForPreflight(
+        SafeFileHandle parent,
+        string leaf,
+        string path)
+    {
+        if (!TryGetAttributes(path, out _))
+            return;
+
+        using FileStream existing = OpenUnixExistingArtifact(parent, leaf);
+        RequireUnixNamedIdentity(parent, leaf, existing.SafeFileHandle);
     }
 
     private static void ValidateUnixRegularPrivateFile(

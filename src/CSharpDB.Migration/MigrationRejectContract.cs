@@ -360,8 +360,8 @@ public static class MigrationApplyPolicyValidator
 
     /// <summary>
     /// Capability-qualified policy gate used by the provider-neutral apply
-    /// runner. CLI entry points intentionally retain the stricter plan-only
-    /// overload until the operator-facing tolerant workflow is enabled.
+    /// runner. The plan-only overload remains the strict fail-fast boundary;
+    /// explicitly opted-in coordinators use this source-and-target gate.
     /// </summary>
     public static void ValidateForExecution(
         MigrationPlan plan,
@@ -380,7 +380,7 @@ public static class MigrationApplyPolicyValidator
             return;
         }
 
-        MigrationRejectSourceCapabilityValidator.Validate(plan, source);
+        MigrationRejectSourceCapabilityValidator.ValidateForExecution(plan, source);
 
         if (target is not IMigrationRejectLedgerTarget)
         {
@@ -411,9 +411,14 @@ public static class MigrationApplyPolicyValidator
 /// validation replay. Target qualification remains the coordinator's
 /// responsibility.
 /// </summary>
-internal static class MigrationRejectSourceCapabilityValidator
+public static class MigrationRejectSourceCapabilityValidator
 {
-    internal static void Validate(
+    /// <summary>
+    /// Verifies that a source advertises the deterministic reject contract and
+    /// every rule selected by the plan. This capability-only preflight does not
+    /// enumerate source rows or mutate source or target state.
+    /// </summary>
+    public static void ValidateForExecution(
         MigrationPlan plan,
         IMigrationDataSource source)
     {

@@ -52,7 +52,7 @@ internal sealed class MigrationOutcomeBatchReplayer
             throw new InvalidDataException("Migration target batch digest format is unsupported.");
         }
 
-        MigrationRejectSourceCapabilityValidator.Validate(plan, source);
+        MigrationRejectSourceCapabilityValidator.ValidateForExecution(plan, source);
         if (source.Source != plan.Source)
             throw new InvalidDataException("Migration data source identity does not match the bound plan source.");
         if (source is IMigrationCatalogBoundDataSource catalogBoundSource &&

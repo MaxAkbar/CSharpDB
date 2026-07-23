@@ -88,14 +88,52 @@ confirmed. No empty batch is emitted. Buffering is limited to one bounded
 batch plus the individually bounded logical record needed to decide the next
 boundary.
 
+## CLI Deterministic Reject Workflow
+
+CLI planning remains fail-fast when `--reject-mode` is omitted or set to
+`fail-fast`; that path retains the established plan JSON and digest. A retained
+CSV catalog may instead select `--reject-mode deterministic`, but it must also
+provide `--reject-rules all|<id,...>` and all six plan-bound limits:
+
+- `--max-rejected-rows-per-batch`
+- `--max-rejected-rows-per-run`
+- `--max-reject-evidence-value-bytes`
+- `--max-reject-evidence-bytes-per-batch`
+- `--max-reject-evidence-bytes-per-run`
+- `--max-reject-artifact-bytes`
+
+Every limit is a positive base-10 integer. `--reject-rules all` expands into
+the exact stable CSV registry `MIG-CSV-DATA-MISSING-001`,
+`MIG-CSV-DATA-NULL-001`, and `MIG-CSV-DATA-TYPE-001`; an explicit list may
+select a nonempty subset. The expanded registry, contract, and limits are
+serialized into the plan and bound by its digest.
+
+Apply, resume, and validate require both runtime options
+`--allow-deterministic-rejects` and
+`--reject-artifact <absolute-normalized-rejects.jsonl>` for such a plan. The
+destination parent must already exist and remain stable and caller-controlled.
+The path preflight rejects traversal, alias, link, reparse-point, device, unsafe
+existing-file, and collision cases before source or target access. Publication
+is private, atomic, and no-overwrite; an existing artifact is reused only when
+every canonical byte matches, while a different file is preserved.
+
+Apply projects the target-owned ledger into the required artifact before it
+publishes a successful `awaitingValidation` run report. Validation compares the
+complete source replay with the snapshot-scoped receipts and ledger, publishes
+the passing validation report, then re-materializes or exactly reuses and
+requalifies the artifact against that report's target snapshot before
+activation. Ordinary reports and console output contain only safe reject
+aggregates and bindings. A passing operation with one or more rejects returns a
+warning exit code.
+
+The target-owned ledger and transactional receipts—not the operator-facing
+artifact—remain the durable authority for skipped rows and resume. Reject
+artifacts can contain decoded source values, so access control, retention, and
+deletion remain explicit operator responsibilities.
+
 ## Deferred Work
 
-The target-owned ledger and receipt, rather than an operator-facing file, are
-the durable authority for skipped rows. Capability-qualified SDK validation
-now compares the complete source replay with snapshot-scoped target receipts
-and ledger entries before report publication. Bounded reject-artifact
-publication remains gated, so the CLI still exposes fail-fast apply only. Typed
-binary fields also remain deferred until a manifest declares base64 or hex
+Typed binary fields remain deferred until a manifest declares base64 or hex
 intent and a decoded-size bound. The durable
 raw-snapshot and policy package used to cross process boundaries is described
 in [`migration-csv-retained-package.md`](migration-csv-retained-package.md).

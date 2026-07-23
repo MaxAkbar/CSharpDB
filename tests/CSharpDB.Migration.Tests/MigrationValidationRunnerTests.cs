@@ -30,6 +30,7 @@ public sealed class MigrationValidationRunnerTests
                 target,
                 reportPath,
                 root);
+            Assert.Null(request.BeforeActivationAsync);
 
             MigrationValidationRunResult first = await runner.ValidateAsync(
                 request,
@@ -61,6 +62,233 @@ public sealed class MigrationValidationRunnerTests
             Assert.DoesNotContain("Customer 1", await File.ReadAllTextAsync(
                 reportPath,
                 TestContext.Current.CancellationToken), StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task PreActivationCallbackRunsAfterPublishedReportAndBeforeActivation()
+    {
+        string root = CreateRoot();
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (MigrationCatalog catalog, MigrationPlan plan) = await ReadyPlanAsync();
+            await using var source = new SyntheticMigrationDataSource(catalog);
+            await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(
+                plan,
+                catalog,
+                source);
+            MaterializedSnapshot targetSnapshot = await MaterializeAsync(
+                plan,
+                catalog,
+                sourceSnapshot,
+                "target:snapshot:pre-activation-order");
+            var sequence = new List<string>();
+            await using var target = new FakeValidationTarget(
+                targetSnapshot,
+                () => sequence.Add("activate"));
+            string reportPath = Path.Combine(root, "pre-activation-order.json");
+            MigrationValidationRunRequest request = Request(
+                plan,
+                catalog,
+                sourceSnapshot,
+                target,
+                reportPath,
+                root) with
+            {
+                BeforeActivationAsync = async (context, callbackToken) =>
+                {
+                    callbackToken.ThrowIfCancellationRequested();
+                    Assert.Equal(ct, callbackToken);
+                    Assert.Equal(Path.GetFullPath(reportPath), context.ReportPath);
+                    Assert.True(File.Exists(context.ReportPath));
+                    MigrationValidationReport published =
+                        MigrationValidationReportSerializer.Deserialize(
+                            await File.ReadAllTextAsync(context.ReportPath, callbackToken));
+                    Assert.Equal(MigrationValidationStatus.Passed, context.Report.Outcome);
+                    Assert.Equal(
+                        context.ReportDigest,
+                        MigrationValidationReportSerializer.ComputeDigest(context.Report));
+                    Assert.Equal(
+                        context.ReportDigest,
+                        MigrationValidationReportSerializer.ComputeDigest(published));
+                    sequence.Add("callback");
+                },
+            };
+
+            MigrationValidationRunResult result =
+                await new MigrationValidationRunner().ValidateAsync(request, ct);
+
+            Assert.True(result.Activated);
+            Assert.Equal(["callback", "activate"], sequence);
+            Assert.Equal(1, target.ActivationAttempts);
+            Assert.Equal(result.ReportDigest, target.ActivationReceipt!.ReportDigest);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task PreActivationCallbackFailureKeepsPublishedReportAndWithholdsActivation()
+    {
+        string root = CreateRoot();
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (MigrationCatalog catalog, MigrationPlan plan) = await ReadyPlanAsync();
+            await using var source = new SyntheticMigrationDataSource(catalog);
+            await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(
+                plan,
+                catalog,
+                source);
+            MaterializedSnapshot targetSnapshot = await MaterializeAsync(
+                plan,
+                catalog,
+                sourceSnapshot,
+                "target:snapshot:pre-activation-failure");
+            await using var target = new FakeValidationTarget(targetSnapshot);
+            string reportPath = Path.Combine(root, "pre-activation-failure.json");
+            var expected = new InvalidOperationException("artifact publication failed");
+            MigrationValidationRunRequest request = Request(
+                plan,
+                catalog,
+                sourceSnapshot,
+                target,
+                reportPath,
+                root) with
+            {
+                BeforeActivationAsync = (context, _) =>
+                {
+                    Assert.True(File.Exists(context.ReportPath));
+                    return ValueTask.FromException(expected);
+                },
+            };
+
+            InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await new MigrationValidationRunner().ValidateAsync(request, ct));
+
+            Assert.Same(expected, error);
+            Assert.True(File.Exists(reportPath));
+            Assert.Equal(0, target.ActivationAttempts);
+            Assert.Null(target.ActivationReceipt);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task PreActivationCallbackCancellationKeepsPublishedReportAndWithholdsActivation()
+    {
+        string root = CreateRoot();
+        try
+        {
+            using var cancellation = new CancellationTokenSource();
+            CancellationToken ct = cancellation.Token;
+            (MigrationCatalog catalog, MigrationPlan plan) = await ReadyPlanAsync();
+            await using var source = new SyntheticMigrationDataSource(catalog);
+            await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(
+                plan,
+                catalog,
+                source);
+            MaterializedSnapshot targetSnapshot = await MaterializeAsync(
+                plan,
+                catalog,
+                sourceSnapshot,
+                "target:snapshot:pre-activation-cancellation");
+            await using var target = new FakeValidationTarget(targetSnapshot);
+            string reportPath = Path.Combine(root, "pre-activation-cancellation.json");
+            bool callbackInvoked = false;
+            MigrationValidationRunRequest request = Request(
+                plan,
+                catalog,
+                sourceSnapshot,
+                target,
+                reportPath,
+                root) with
+            {
+                BeforeActivationAsync = (_, callbackToken) =>
+                {
+                    Assert.Equal(ct, callbackToken);
+                    callbackInvoked = true;
+                    cancellation.Cancel();
+                    return ValueTask.CompletedTask;
+                },
+            };
+
+            OperationCanceledException error =
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    async () => await new MigrationValidationRunner().ValidateAsync(request, ct));
+
+            Assert.True(callbackInvoked);
+            Assert.Equal(ct, error.CancellationToken);
+            Assert.True(File.Exists(reportPath));
+            Assert.Equal(0, target.ActivationAttempts);
+            Assert.Null(target.ActivationReceipt);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task NonPassedReportSkipsPreActivationCallbackAndActivation()
+    {
+        string root = CreateRoot();
+        try
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            (MigrationCatalog catalog, MigrationPlan plan) = await ReadyPlanAsync();
+            await using var source = new SyntheticMigrationDataSource(catalog);
+            await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(
+                plan,
+                catalog,
+                source);
+            MaterializedSnapshot targetSnapshot = await MaterializeAsync(
+                plan,
+                catalog,
+                sourceSnapshot,
+                "target:snapshot:pre-activation-different");
+            targetSnapshot.ChangeValue(
+                "syn:table:customers-upper",
+                rowIndex: 0,
+                valueIndex: 3,
+                DbValue.FromText("changed-before-pre-activation"));
+            await using var target = new FakeValidationTarget(targetSnapshot);
+            string reportPath = Path.Combine(root, "pre-activation-different.json");
+            int callbackInvocations = 0;
+            MigrationValidationRunRequest request = Request(
+                plan,
+                catalog,
+                sourceSnapshot,
+                target,
+                reportPath,
+                root) with
+            {
+                BeforeActivationAsync = (_, _) =>
+                {
+                    callbackInvocations++;
+                    return ValueTask.CompletedTask;
+                },
+            };
+
+            MigrationValidationRunResult result =
+                await new MigrationValidationRunner().ValidateAsync(request, ct);
+
+            Assert.Equal(MigrationValidationStatus.Different, result.Report.Outcome);
+            Assert.False(result.Activated);
+            Assert.Equal(0, callbackInvocations);
+            Assert.Equal(0, target.ActivationAttempts);
+            Assert.Null(target.ActivationReceipt);
+            Assert.True(File.Exists(reportPath));
         }
         finally
         {
@@ -1302,7 +1530,9 @@ public sealed class MigrationValidationRunnerTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class FakeValidationTarget(MaterializedSnapshot snapshot) :
+    private sealed class FakeValidationTarget(
+        MaterializedSnapshot snapshot,
+        Action? beforeActivation = null) :
         IMigrationTarget,
         IMigrationValidationActivationTarget
     {
@@ -1330,6 +1560,7 @@ public sealed class MigrationValidationRunnerTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            beforeActivation?.Invoke();
             ActivationAttempts++;
             MigrationValidationActivationReceipt receipt = permit.Receipt;
             if (ActivationReceipt is not null && ActivationReceipt != receipt)

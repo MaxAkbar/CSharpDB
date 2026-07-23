@@ -1,12 +1,14 @@
-using System.Text.Json;
 using CSharpDB.Migration;
 
 namespace CSharpDB.Cli.Tests;
 
 public sealed class MigrationRejectContractCliTests
 {
+    private const string CsvOnlyExecutionMessage =
+        "Deterministic-reject CLI execution is supported only for retained CSV migrations.";
+
     [Fact]
-    public async Task Apply_DurableRejectModeFailsBeforeTargetCreationWithStableReport()
+    public async Task Apply_CraftedDeterministicSyntheticPlanFailsClosedAsCsvOnlyUsage()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = Path.Combine(
@@ -61,25 +63,13 @@ public sealed class MigrationRejectContractCliTests
                 error,
                 ct);
 
-            Assert.Equal(InspectorCommandRunner.ExitError, exitCode);
+            Assert.Equal(InspectorCommandRunner.ExitUsage, exitCode);
             Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
-            Assert.Contains(MigrationRejectContract.DeterministicFailFastV1, error.ToString(), StringComparison.Ordinal);
+            Assert.Contains(CsvOnlyExecutionMessage, error.ToString(), StringComparison.Ordinal);
             Assert.False(File.Exists(targetPath));
             Assert.False(File.Exists(targetPath + ".wal"));
             Assert.False(File.Exists(targetPath + ".migration.lock"));
-
-            using JsonDocument report = JsonDocument.Parse(await File.ReadAllTextAsync(reportPath, ct));
-            JsonElement root = report.RootElement;
-            Assert.Equal("csharpdb-migration-run/v1", root.GetProperty("format").GetString());
-            Assert.Equal("failed", root.GetProperty("status").GetString());
-            Assert.Equal("MIG-APPLY-POLICY-REJECT-001", root.GetProperty("errorCode").GetString());
-            Assert.Equal(
-                MigrationRejectContract.DeterministicFailFastV1,
-                root.GetProperty("rejectContractVersion").GetString());
-            Assert.Equal(0, root.GetProperty("rejectedRows").GetInt32());
-            Assert.False(root.TryGetProperty("firstRejectedRow", out _));
-            Assert.False(root.TryGetProperty("message", out _));
-            Assert.False(root.TryGetProperty("targetPath", out _));
+            Assert.False(File.Exists(reportPath));
         }
         finally
         {
@@ -97,7 +87,7 @@ public sealed class MigrationRejectContractCliTests
     }
 
     [Fact]
-    public async Task Validate_DurableRejectModeFailsBeforeOpeningTargetOrPublishingReport()
+    public async Task Validate_CraftedDeterministicSyntheticPlanFailsClosedAsCsvOnlyUsage()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = Path.Combine(
@@ -151,12 +141,9 @@ public sealed class MigrationRejectContractCliTests
                 error,
                 ct);
 
-            Assert.Equal(InspectorCommandRunner.ExitError, exitCode);
+            Assert.Equal(InspectorCommandRunner.ExitUsage, exitCode);
             Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
-            Assert.Contains(
-                MigrationRejectContract.DeterministicFailFastV1,
-                error.ToString(),
-                StringComparison.Ordinal);
+            Assert.Contains(CsvOnlyExecutionMessage, error.ToString(), StringComparison.Ordinal);
             Assert.False(File.Exists(targetPath));
             Assert.False(File.Exists(targetPath + ".wal"));
             Assert.False(File.Exists(targetPath + ".migration.lock"));

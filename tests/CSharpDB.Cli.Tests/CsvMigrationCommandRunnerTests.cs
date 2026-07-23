@@ -16,6 +16,18 @@ public sealed class CsvMigrationCommandRunnerTests
         "2,\"bravo\nincorporated\"\n" +
         "3,charlie\n";
 
+    private const string MixedRejectCsvContents =
+        "id,name\n" +
+        "1,alpha\n" +
+        "2,bravo\n" +
+        "bad,broken\n" +
+        "3,charlie\n";
+
+    private const string DeterministicRejectRules =
+        CsvMigrationDataRules.MissingField + "," +
+        CsvMigrationDataRules.NullNotAllowed + "," +
+        CsvMigrationDataRules.TypeMismatch;
+
     private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
 
     [Fact]
@@ -476,75 +488,649 @@ public sealed class CsvMigrationCommandRunnerTests
     }
 
     [Fact]
-    public async Task ApplyCsv_UnsupportedRejectPolicyFailsBeforeOpeningTheSourcePackage()
+    public async Task PlanCsv_DeterministicModeRequiresCompletePositivePolicyAndKeepsStrictBytes()
+    {
+        using var workspace = new TemporaryDirectory();
+        string missingCatalogPath = Path.Combine(workspace.Root, "missing-catalog.json");
+        string invalidPolicyOutput = Path.Combine(workspace.Root, "invalid-policy.json");
+        var invalidPolicyError = new StringWriter();
+        int invalidPolicyCode = await MigrationCommandRunner.RunAsync(
+            PlanArguments(
+                missingCatalogPath,
+                invalidPolicyOutput,
+                ["--reject-rules", DeterministicRejectRules]),
+            TextWriter.Null,
+            invalidPolicyError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitUsage, invalidPolicyCode);
+        Assert.Contains(
+            "reject-mode",
+            invalidPolicyError.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "could not find",
+            invalidPolicyError.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(invalidPolicyOutput));
+
+        CsvArtifacts strict = await CreateCsvApplyReadyArtifactsAsync(workspace.Root);
+        MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
+            await File.ReadAllTextAsync(strict.CatalogPath, Cancellation));
+        MigrationPlan expectedStrict = new MigrationPlanner().CreatePlan(
+            catalog,
+            new MigrationPlanningOptions { AcceptAllExclusions = true });
+        string strictJson = await File.ReadAllTextAsync(strict.PlanPath, Cancellation);
+
+        Assert.Equal(
+            MigrationArtifactSerializer.SerializePlan(expectedStrict, catalog),
+            strictJson);
+        Assert.Equal(MigrationRejectMode.FailFast, expectedStrict.Load.RejectMode);
+        Assert.Null(expectedStrict.Load.RejectPolicy);
+
+        string[][] policyOptions = DeterministicPlanPolicyArguments()
+            .Chunk(2)
+            .Select(pair => pair.ToArray())
+            .Skip(1)
+            .ToArray();
+        for (int index = 0; index < policyOptions.Length; index++)
+        {
+            string outputPath = Path.Combine(workspace.Root, $"policy-only-{index}.json");
+            var error = new StringWriter();
+            int code = await MigrationCommandRunner.RunAsync(
+                PlanArguments(strict.CatalogPath, outputPath, policyOptions[index]),
+                TextWriter.Null,
+                error,
+                Cancellation);
+
+            Assert.Equal(InspectorCommandRunner.ExitUsage, code);
+            Assert.Contains("reject-mode", error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(outputPath));
+        }
+
+        string[] completePolicy = DeterministicPlanPolicyArguments();
+        for (int missingPair = 0; missingPair < completePolicy.Length / 2; missingPair++)
+        {
+            string outputPath = Path.Combine(workspace.Root, $"missing-policy-{missingPair}.json");
+            string[] incomplete = RemoveOptionPair(completePolicy, missingPair);
+            var error = new StringWriter();
+            int code = await MigrationCommandRunner.RunAsync(
+                PlanArguments(strict.CatalogPath, outputPath, incomplete),
+                TextWriter.Null,
+                error,
+                Cancellation);
+
+            Assert.Equal(InspectorCommandRunner.ExitUsage, code);
+            Assert.False(File.Exists(outputPath));
+        }
+
+        for (int limitPair = 2; limitPair < completePolicy.Length / 2; limitPair++)
+        {
+            string outputPath = Path.Combine(workspace.Root, $"nonpositive-policy-{limitPair}.json");
+            string[] nonpositive = completePolicy.ToArray();
+            nonpositive[(limitPair * 2) + 1] = "0";
+            var error = new StringWriter();
+            int code = await MigrationCommandRunner.RunAsync(
+                PlanArguments(strict.CatalogPath, outputPath, nonpositive),
+                TextWriter.Null,
+                error,
+                Cancellation);
+
+            Assert.Equal(InspectorCommandRunner.ExitUsage, code);
+            Assert.Contains("positive", error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(outputPath));
+        }
+
+        string deterministicPath = Path.Combine(workspace.Root, "deterministic-plan.json");
+        var deterministicError = new StringWriter();
+        int deterministicCode = await MigrationCommandRunner.RunAsync(
+            PlanArguments(strict.CatalogPath, deterministicPath, completePolicy),
+            TextWriter.Null,
+            deterministicError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitWarn, deterministicCode);
+        Assert.True(string.IsNullOrWhiteSpace(deterministicError.ToString()));
+        MigrationPlan deterministic = MigrationArtifactSerializer.DeserializePlan(
+            await File.ReadAllTextAsync(deterministicPath, Cancellation),
+            catalog);
+        MigrationDeterministicRejectPolicy policy =
+            Assert.IsType<MigrationDeterministicRejectPolicy>(deterministic.Load.RejectPolicy);
+        Assert.Equal(MigrationRejectMode.DeterministicRejects, deterministic.Load.RejectMode);
+        Assert.Equal(MigrationRejectContract.DeterministicRejectsV1, policy.ContractVersion);
+        Assert.Equal(
+            [
+                CsvMigrationDataRules.MissingField,
+                CsvMigrationDataRules.NullNotAllowed,
+                CsvMigrationDataRules.TypeMismatch,
+            ],
+            policy.AllowedRuleIds);
+        Assert.Equal(100, policy.MaxRejectedRowsPerBatch);
+        Assert.Equal(10_000, policy.MaxRejectedRowsPerRun);
+        Assert.Equal(4_096, policy.MaxRawValueBytes);
+        Assert.Equal(65_536, policy.MaxRawValueBytesPerBatch);
+        Assert.Equal(1_048_576, policy.MaxRawValueBytesPerRun);
+        Assert.Equal(16_777_216, policy.MaxArtifactBytes);
+        Assert.NotEqual(
+            MigrationArtifactSerializer.ComputePlanDigest(expectedStrict),
+            MigrationArtifactSerializer.ComputePlanDigest(deterministic));
+
+        string[] allRulesPolicy = completePolicy.ToArray();
+        allRulesPolicy[3] = "all";
+        string allRulesPath = Path.Combine(workspace.Root, "deterministic-plan-all-rules.json");
+        var allRulesError = new StringWriter();
+        int allRulesCode = await MigrationCommandRunner.RunAsync(
+            PlanArguments(strict.CatalogPath, allRulesPath, allRulesPolicy),
+            TextWriter.Null,
+            allRulesError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitWarn, allRulesCode);
+        Assert.True(string.IsNullOrWhiteSpace(allRulesError.ToString()));
+        MigrationPlan allRules = MigrationArtifactSerializer.DeserializePlan(
+            await File.ReadAllTextAsync(allRulesPath, Cancellation),
+            catalog);
+        Assert.Equal(policy.AllowedRuleIds, allRules.Load.RejectPolicy!.AllowedRuleIds);
+        Assert.Equal(
+            MigrationArtifactSerializer.ComputePlanDigest(deterministic),
+            MigrationArtifactSerializer.ComputePlanDigest(allRules));
+    }
+
+    [Fact]
+    public async Task StrictCsvApplyAndValidate_ForbidDeterministicConsentAndArtifactOptions()
     {
         using var workspace = new TemporaryDirectory();
         CsvArtifacts artifacts = await CreateCsvApplyReadyArtifactsAsync(workspace.Root);
-        MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
-            await File.ReadAllTextAsync(artifacts.CatalogPath, Cancellation));
-        MigrationPlan ready = MigrationArtifactSerializer.DeserializePlan(
-            await File.ReadAllTextAsync(artifacts.PlanPath, Cancellation),
-            catalog);
-        MigrationPlan unsupported = ready with
-        {
-            Load = ready.Load with
-            {
-                RejectMode = MigrationRejectMode.DeterministicRejects,
-                RejectPolicy = new MigrationDeterministicRejectPolicy
-                {
-                    ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
-                    AllowedRuleIds = ["MIG-TEST-001"],
-                    MaxRejectedRowsPerBatch = 1,
-                    MaxRejectedRowsPerRun = 10,
-                    MaxRawValueBytes = 1_024,
-                    MaxRawValueBytesPerBatch = 8_192,
-                    MaxRawValueBytesPerRun = 65_536,
-                    MaxArtifactBytes = 131_072,
-                },
-            },
-        };
-        await File.WriteAllTextAsync(
-            artifacts.PlanPath,
-            MigrationArtifactSerializer.SerializePlan(unsupported, catalog),
-            Cancellation);
-
-        string missingPackagePath = Path.Combine(workspace.Root, "missing.csdbcsv");
         string targetPath = Path.Combine(workspace.Root, "staged.csdb");
-        string reportPath = Path.Combine(workspace.Root, "run.json");
-        var output = new StringWriter();
-        var error = new StringWriter();
+        string runPath = Path.Combine(workspace.Root, "run.json");
+        string validationPath = Path.Combine(workspace.Root, "validation.json");
+        string rejectPath = Path.Combine(workspace.Root, "rejects.jsonl");
+        string[] deterministicOptions =
+        [
+            "--allow-deterministic-rejects",
+            "--reject-artifact", rejectPath,
+        ];
 
-        int code = await MigrationCommandRunner.RunAsync(
+        var applyError = new StringWriter();
+        int applyCode = await MigrationCommandRunner.RunAsync(
             ApplyArguments(
                 artifacts,
                 targetPath,
-                reportPath,
+                runPath,
                 [
-                    "--source-package", missingPackagePath,
+                    "--source-package", artifacts.PackagePath,
                     "--expected-manifest-digest", artifacts.ManifestDigest,
                     "--workspace", workspace.Root,
+                    .. deterministicOptions,
                 ]),
-            output,
-            error,
+            TextWriter.Null,
+            applyError,
             Cancellation);
 
-        Assert.Equal(InspectorCommandRunner.ExitError, code);
-        Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
-        Assert.Contains(
-            MigrationRejectContract.DeterministicFailFastV1,
-            error.ToString(),
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "capability-qualified SDK apply path",
-            error.ToString(),
-            StringComparison.Ordinal);
-        Assert.DoesNotContain("MIG-CSV-PACKAGE", error.ToString(), StringComparison.Ordinal);
-        Assert.DoesNotContain("could not find", error.ToString(), StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(missingPackagePath, error.ToString(), StringComparison.OrdinalIgnoreCase);
-        Assert.False(File.Exists(missingPackagePath));
-        Assert.False(File.Exists(targetPath));
-        Assert.False(File.Exists(targetPath + ".wal"));
+        Assert.Equal(InspectorCommandRunner.ExitUsage, applyCode);
+        Assert.Contains("fail-fast", applyError.ToString(), StringComparison.OrdinalIgnoreCase);
+        AssertTargetWasNotCreated(targetPath, runPath);
+        Assert.False(File.Exists(rejectPath));
+
+        var validateError = new StringWriter();
+        int validateCode = await MigrationCommandRunner.RunAsync(
+            ValidateArguments(
+                artifacts,
+                targetPath,
+                validationPath,
+                [
+                    "--source-package", artifacts.PackagePath,
+                    "--expected-manifest-digest", artifacts.ManifestDigest,
+                    "--workspace", workspace.Root,
+                    .. deterministicOptions,
+                ]),
+            TextWriter.Null,
+            validateError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitUsage, validateCode);
+        Assert.Contains("fail-fast", validateError.ToString(), StringComparison.OrdinalIgnoreCase);
+        AssertTargetWasNotCreated(targetPath, validationPath);
+        Assert.False(File.Exists(rejectPath));
+    }
+
+    [Fact]
+    public async Task DeterministicCsv_ApplyResumeAndValidate_PublishAndReuseExactRejectArtifact()
+    {
+        using var workspace = new TemporaryDirectory();
+        CsvArtifacts artifacts = await CreateCsvApplyReadyArtifactsAsync(
+            workspace.Root,
+            MixedRejectCsvContents,
+            inspectSuffix: ["--sample-rows", "2"],
+            planSuffix: DeterministicPlanPolicyArguments());
+        string targetPath = Path.Combine(workspace.Root, "staged.csdb");
+        string runPath = Path.Combine(workspace.Root, "run.json");
+        string rejectPath = Path.Combine(workspace.Root, "rejects.jsonl");
+        string[] sourceOptions =
+        [
+            "--source-package", artifacts.PackagePath,
+            "--expected-manifest-digest", artifacts.ManifestDigest,
+            "--workspace", workspace.Root,
+        ];
+
+        (string[] MissingOptions, string ExpectedMessage)[] incompleteApplyOptions =
+        [
+            (
+                [.. sourceOptions, "--reject-artifact", rejectPath],
+                "--allow-deterministic-rejects"),
+            (
+                [.. sourceOptions, "--allow-deterministic-rejects"],
+                "--reject-artifact"),
+            (
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact", "rejects.jsonl",
+                ],
+                "absolute"),
+            (
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact",
+                    Path.Combine(workspace.Root, "child", "..", "rejects.jsonl"),
+                ],
+                "normalized"),
+        ];
+        for (int index = 0; index < incompleteApplyOptions.Length; index++)
+        {
+            string failedRunPath = Path.Combine(workspace.Root, $"run-invalid-{index}.json");
+            var error = new StringWriter();
+            int code = await MigrationCommandRunner.RunAsync(
+                ApplyArguments(
+                    artifacts,
+                    targetPath,
+                    failedRunPath,
+                    incompleteApplyOptions[index].MissingOptions),
+                TextWriter.Null,
+                error,
+                Cancellation);
+
+            Assert.Equal(InspectorCommandRunner.ExitUsage, code);
+            Assert.Contains(
+                incompleteApplyOptions[index].ExpectedMessage,
+                error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+            AssertTargetWasNotCreated(targetPath, failedRunPath);
+            Assert.False(File.Exists(rejectPath));
+        }
+
+        MigrationCatalog boundCatalog = MigrationArtifactSerializer.DeserializeCatalog(
+            await File.ReadAllTextAsync(artifacts.CatalogPath, Cancellation));
+        MigrationPlan boundPlan = MigrationArtifactSerializer.DeserializePlan(
+            await File.ReadAllTextAsync(artifacts.PlanPath, Cancellation),
+            boundCatalog);
+        MigrationRejectArtifactDestinationBinding rejectBinding =
+            MigrationRejectArtifactDestinationValidator.ValidateForPublication(
+                boundPlan,
+                rejectPath);
+        (string ArtifactPath, string ReportPath)[] collisionCases =
+        [
+            (targetPath, Path.Combine(workspace.Root, "run-target-collision.json")),
+            (rejectPath, rejectBinding.TemporaryPath),
+        ];
+        foreach ((string artifactPath, string collisionReportPath) in collisionCases)
+        {
+            var collisionError = new StringWriter();
+            int collisionCode = await MigrationCommandRunner.RunAsync(
+                ApplyArguments(
+                    artifacts,
+                    targetPath,
+                    collisionReportPath,
+                    [
+                        .. sourceOptions,
+                        "--allow-deterministic-rejects",
+                        "--reject-artifact", artifactPath,
+                    ]),
+                TextWriter.Null,
+                collisionError,
+                Cancellation);
+
+            Assert.Equal(InspectorCommandRunner.ExitUsage, collisionCode);
+            Assert.Contains(
+                "different paths",
+                collisionError.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+            AssertTargetWasNotCreated(targetPath, collisionReportPath);
+            Assert.False(File.Exists(rejectPath));
+        }
+
+        var applyOutput = new StringWriter();
+        var applyError = new StringWriter();
+        int applyCode = await MigrationCommandRunner.RunAsync(
+            ApplyArguments(
+                artifacts,
+                targetPath,
+                runPath,
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact", rejectPath,
+                    "--format", "json",
+                ]),
+            applyOutput,
+            applyError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitWarn, applyCode);
+        Assert.True(string.IsNullOrWhiteSpace(applyError.ToString()));
+        Assert.True(File.Exists(targetPath));
+        Assert.True(File.Exists(runPath));
+        Assert.True(File.Exists(rejectPath));
         Assert.False(File.Exists(targetPath + ".migration.lock"));
+        byte[] originalRejectBytes = await File.ReadAllBytesAsync(rejectPath, Cancellation);
+        using JsonDocument applyStdout = JsonDocument.Parse(applyOutput.ToString());
+        using JsonDocument applyReport = JsonDocument.Parse(
+            await File.ReadAllTextAsync(runPath, Cancellation));
+        Assert.Equal(
+            applyStdout.RootElement.GetRawText(),
+            applyReport.RootElement.GetRawText());
+        AssertDeterministicRunReport(
+            applyReport.RootElement,
+            rejectedRows: 1,
+            rejectedRowsWritten: 1,
+            rejectedRowsSkipped: 0,
+            artifactBytes: originalRejectBytes.LongLength,
+            artifactReused: false);
+        Assert.DoesNotContain(
+            "bad",
+            applyReport.RootElement.GetRawText(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            rejectPath,
+            applyReport.RootElement.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+
+        string[] artifactLines = Encoding.UTF8.GetString(originalRejectBytes).Split(
+            '\n',
+            StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(2, artifactLines.Length);
+        using JsonDocument artifactHeader = JsonDocument.Parse(artifactLines[0]);
+        using JsonDocument artifactEntry = JsonDocument.Parse(artifactLines[1]);
+        Assert.Equal(
+            MigrationRejectLedgerCodec.ArtifactFormat,
+            artifactHeader.RootElement.GetProperty("format").GetString());
+        Assert.Equal(
+            applyReport.RootElement.GetProperty("planDigest").GetString(),
+            artifactHeader.RootElement.GetProperty("planDigest").GetString());
+        JsonElement entry = artifactEntry.RootElement;
+        Assert.Equal(MigrationRejectLedgerCodec.EntryFormat, entry.GetProperty("format").GetString());
+        Assert.Equal(CsvMigrationObjectIds.Table, entry.GetProperty("sourceObjectId").GetString());
+        Assert.Equal(0, entry.GetProperty("batchOrdinal").GetInt64());
+        Assert.Equal(2, entry.GetProperty("sourceRowOrdinal").GetInt64());
+        Assert.Equal(CsvMigrationDataRules.TypeMismatch, entry.GetProperty("ruleId").GetString());
+        Assert.Equal(CsvMigrationObjectIds.Column(0), entry.GetProperty("columnObjectId").GetString());
+        Dictionary<string, string?> evidence = entry.GetProperty("evidence")
+            .EnumerateArray()
+            .ToDictionary(
+                item => item.GetProperty("name").GetString()!,
+                item => item.GetProperty("value").ValueKind == JsonValueKind.Null
+                    ? null
+                    : item.GetProperty("value").GetString(),
+                StringComparer.Ordinal);
+        Assert.Equal("0", evidence["columnIndex"]);
+        Assert.Equal("3", evidence["dataRecordNumber"]);
+        Assert.Equal("4", evidence["endPhysicalLine"]);
+        Assert.Equal("Text", evidence["fieldKind"]);
+        Assert.Equal("4", evidence["logicalRecordNumber"]);
+        Assert.Equal("bad", evidence[MigrationRejectLedgerCodec.RawValueEvidenceName]);
+        Assert.Equal("4", evidence["startPhysicalLine"]);
+        Assert.Equal("false", evidence["wasQuoted"]);
+
+        await using (var database = await Database.OpenAsync(targetPath, Cancellation))
+        await using (var query = await database.ExecuteAsync(
+                         "SELECT id, name FROM csv_data ORDER BY id;",
+                         Cancellation))
+        {
+            var rows = await query.ToListAsync(Cancellation);
+            Assert.Equal([1L, 2L, 3L], rows.Select(row => row[0].AsInteger));
+            Assert.Equal(["alpha", "bravo", "charlie"], rows.Select(row => row[1].AsText));
+        }
+        Assert.Equal("awaiting-validation", await ReadLifecycleAsync(targetPath));
+
+        string resumeRunPath = Path.Combine(workspace.Root, "run-resume.json");
+        var resumeOutput = new StringWriter();
+        var resumeError = new StringWriter();
+        int resumeCode = await MigrationCommandRunner.RunAsync(
+            ApplyArguments(
+                artifacts,
+                targetPath,
+                resumeRunPath,
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact", rejectPath,
+                    "--resume",
+                    "--format", "json",
+                ]),
+            resumeOutput,
+            resumeError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitWarn, resumeCode);
+        Assert.True(string.IsNullOrWhiteSpace(resumeError.ToString()));
+        using JsonDocument resumeReport = JsonDocument.Parse(
+            await File.ReadAllTextAsync(resumeRunPath, Cancellation));
+        Assert.Equal(resumeOutput.ToString().Trim(), resumeReport.RootElement.GetRawText());
+        AssertDeterministicRunReport(
+            resumeReport.RootElement,
+            rejectedRows: 1,
+            rejectedRowsWritten: 0,
+            rejectedRowsSkipped: 1,
+            artifactBytes: originalRejectBytes.LongLength,
+            artifactReused: true);
+        Assert.Equal(originalRejectBytes, await File.ReadAllBytesAsync(rejectPath, Cancellation));
+        Assert.Equal(
+            applyReport.RootElement.GetProperty("rejectArtifactDigest").GetString(),
+            resumeReport.RootElement.GetProperty("rejectArtifactDigest").GetString());
+        Assert.Equal("awaiting-validation", await ReadLifecycleAsync(targetPath));
+
+        byte[] applyConflictBytes = Encoding.UTF8.GetBytes(
+            "operator-owned-apply-conflict\n");
+        await File.WriteAllBytesAsync(rejectPath, applyConflictBytes, Cancellation);
+        string conflictRunPath = Path.Combine(workspace.Root, "run-artifact-conflict.json");
+        var conflictOutput = new StringWriter();
+        var conflictError = new StringWriter();
+        int conflictCode = await MigrationCommandRunner.RunAsync(
+            ApplyArguments(
+                artifacts,
+                targetPath,
+                conflictRunPath,
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact", rejectPath,
+                    "--resume",
+                    "--format", "json",
+                ]),
+            conflictOutput,
+            conflictError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitError, conflictCode);
+        Assert.True(string.IsNullOrWhiteSpace(conflictOutput.ToString()));
+        Assert.Contains(
+            "MIG-APPLY-REJECT-ARTIFACT-001",
+            conflictError.ToString(),
+            StringComparison.Ordinal);
+        Assert.Equal(applyConflictBytes, await File.ReadAllBytesAsync(rejectPath, Cancellation));
+        using (JsonDocument conflictReport = JsonDocument.Parse(
+                   await File.ReadAllTextAsync(conflictRunPath, Cancellation)))
+        {
+            JsonElement conflict = conflictReport.RootElement;
+            Assert.Equal("awaitingValidation", conflict.GetProperty("status").GetString());
+            Assert.Equal("unconfirmed", conflict.GetProperty("rejectArtifactStatus").GetString());
+            Assert.Equal(
+                "MIG-APPLY-REJECT-ARTIFACT-001",
+                conflict.GetProperty("errorCode").GetString());
+            Assert.Equal(1, conflict.GetProperty("rejectedRows").GetInt64());
+            Assert.Equal(0, conflict.GetProperty("rejectedRowsWritten").GetInt64());
+            Assert.Equal(1, conflict.GetProperty("rejectedRowsSkipped").GetInt64());
+            Assert.False(conflict.TryGetProperty("rejectArtifactPath", out _));
+            Assert.DoesNotContain(
+                "operator-owned-apply-conflict",
+                conflict.GetRawText(),
+                StringComparison.Ordinal);
+        }
+        Assert.Equal("awaiting-validation", await ReadLifecycleAsync(targetPath));
+        await File.WriteAllBytesAsync(rejectPath, originalRejectBytes, Cancellation);
+
+        string missingConsentReport = Path.Combine(workspace.Root, "validation-no-consent.json");
+        var missingConsentError = new StringWriter();
+        int missingConsentCode = await MigrationCommandRunner.RunAsync(
+            ValidateArguments(
+                artifacts,
+                targetPath,
+                missingConsentReport,
+                [
+                    .. sourceOptions,
+                    "--reject-artifact", rejectPath,
+                ]),
+            TextWriter.Null,
+            missingConsentError,
+            Cancellation);
+        Assert.Equal(InspectorCommandRunner.ExitUsage, missingConsentCode);
+        Assert.Contains(
+            "--allow-deterministic-rejects",
+            missingConsentError.ToString(),
+            StringComparison.Ordinal);
+        Assert.False(File.Exists(missingConsentReport));
+        Assert.Equal("awaiting-validation", await ReadLifecycleAsync(targetPath));
+
+        string missingArtifactReport = Path.Combine(workspace.Root, "validation-no-artifact.json");
+        var missingArtifactError = new StringWriter();
+        int missingArtifactCode = await MigrationCommandRunner.RunAsync(
+            ValidateArguments(
+                artifacts,
+                targetPath,
+                missingArtifactReport,
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                ]),
+            TextWriter.Null,
+            missingArtifactError,
+            Cancellation);
+        Assert.Equal(InspectorCommandRunner.ExitUsage, missingArtifactCode);
+        Assert.Contains(
+            "--reject-artifact",
+            missingArtifactError.ToString(),
+            StringComparison.Ordinal);
+        Assert.False(File.Exists(missingArtifactReport));
+        Assert.Equal("awaiting-validation", await ReadLifecycleAsync(targetPath));
+
+        byte[] differentBytes = Encoding.UTF8.GetBytes("operator-owned-different-artifact\n");
+        await File.WriteAllBytesAsync(rejectPath, differentBytes, Cancellation);
+        string rejectedValidationPath = Path.Combine(workspace.Root, "validation-rejected.json");
+        var rejectedValidationError = new StringWriter();
+        int rejectedValidationCode = await MigrationCommandRunner.RunAsync(
+            ValidateArguments(
+                artifacts,
+                targetPath,
+                rejectedValidationPath,
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact", rejectPath,
+                    "--level", "checksum",
+                    "--spill-dir", workspace.Root,
+                ]),
+            TextWriter.Null,
+            rejectedValidationError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitError, rejectedValidationCode);
+        Assert.True(!string.IsNullOrWhiteSpace(rejectedValidationError.ToString()));
+        Assert.Equal(differentBytes, await File.ReadAllBytesAsync(rejectPath, Cancellation));
+        Assert.True(File.Exists(rejectedValidationPath));
+        MigrationValidationReport rejectedValidation =
+            MigrationValidationReportSerializer.Deserialize(
+                await File.ReadAllTextAsync(rejectedValidationPath, Cancellation));
+        Assert.Equal(MigrationValidationStatus.Passed, rejectedValidation.Outcome);
+        Assert.Equal(MigrationValidationLevel.Checksum, rejectedValidation.Level);
+        Assert.Equal("awaiting-validation", await ReadLifecycleAsync(targetPath));
+        await File.WriteAllBytesAsync(rejectPath, originalRejectBytes, Cancellation);
+
+        const string plantedOutputFailure = "planted-output-failure-secret";
+        string outputFailureReportPath = Path.Combine(
+            workspace.Root,
+            "validation-output-failure.json");
+        var outputFailureError = new StringWriter();
+        int outputFailureCode = await MigrationCommandRunner.RunAsync(
+            ValidateArguments(
+                artifacts,
+                targetPath,
+                outputFailureReportPath,
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact", rejectPath,
+                    "--level", "checksum",
+                    "--spill-dir", workspace.Root,
+                    "--format", "json",
+                ]),
+            new ThrowingTextWriter(plantedOutputFailure),
+            outputFailureError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitError, outputFailureCode);
+        Assert.Contains(
+            "MIG-VALIDATE-OUTPUT-AFTER-ACTIVATION-001",
+            outputFailureError.ToString(),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "was activated",
+            outputFailureError.ToString(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            plantedOutputFailure,
+            outputFailureError.ToString(),
+            StringComparison.Ordinal);
+        MigrationValidationReport outputFailureReport =
+            MigrationValidationReportSerializer.Deserialize(
+                await File.ReadAllTextAsync(outputFailureReportPath, Cancellation));
+        Assert.Equal(MigrationValidationStatus.Passed, outputFailureReport.Outcome);
+        Assert.Equal("activated", await ReadLifecycleAsync(targetPath));
+        Assert.Equal(originalRejectBytes, await File.ReadAllBytesAsync(rejectPath, Cancellation));
+
+        string validationPath = Path.Combine(workspace.Root, "validation.json");
+        var validationOutput = new StringWriter();
+        var validationError = new StringWriter();
+        int validationCode = await MigrationCommandRunner.RunAsync(
+            ValidateArguments(
+                artifacts,
+                targetPath,
+                validationPath,
+                [
+                    .. sourceOptions,
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact", rejectPath,
+                    "--level", "checksum",
+                    "--spill-dir", workspace.Root,
+                ]),
+            validationOutput,
+            validationError,
+            Cancellation);
+
+        Assert.Equal(InspectorCommandRunner.ExitWarn, validationCode);
+        Assert.True(string.IsNullOrWhiteSpace(validationError.ToString()));
+        Assert.Contains("Status: PASSED", validationOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Activation: activated", validationOutput.ToString(), StringComparison.Ordinal);
+        MigrationValidationReport validation = MigrationValidationReportSerializer.Deserialize(
+            await File.ReadAllTextAsync(validationPath, Cancellation));
+        Assert.Equal(MigrationValidationStatus.Passed, validation.Outcome);
+        Assert.Equal(MigrationValidationLevel.Checksum, validation.Level);
+        Assert.Equal(originalRejectBytes, await File.ReadAllBytesAsync(rejectPath, Cancellation));
+        Assert.Equal("activated", await ReadLifecycleAsync(targetPath));
+        Assert.Empty(Directory.EnumerateFiles(
+            workspace.Root,
+            ".csharpdb-reject-*.tmp"));
+        AssertNoCsvWorkspaceDirectories(workspace.Root);
     }
 
     [Fact]
@@ -889,7 +1475,9 @@ public sealed class CsvMigrationCommandRunnerTests
 
     private static async ValueTask<CsvArtifacts> CreateCsvApplyReadyArtifactsAsync(
         string directory,
-        string csvContents = CsvContents)
+        string csvContents = CsvContents,
+        IReadOnlyList<string>? inspectSuffix = null,
+        IReadOnlyList<string>? planSuffix = null)
     {
         string sourcePath = Path.Combine(directory, "orders.csv");
         string packagePath = Path.Combine(directory, "orders.csdbcsv");
@@ -899,30 +1487,40 @@ public sealed class CsvMigrationCommandRunnerTests
         var inspectOutput = new StringWriter();
         var inspectError = new StringWriter();
 
+        var inspectArguments = new List<string>
+        {
+            "migrate", "inspect",
+            "--source", "csv",
+            "--input", sourcePath,
+            "--package", packagePath,
+            "--out", catalogPath,
+            "--workspace", directory,
+        };
+        if (inspectSuffix is not null)
+            inspectArguments.AddRange(inspectSuffix);
         int inspectCode = await MigrationCommandRunner.RunAsync(
-            [
-                "migrate", "inspect",
-                "--source", "csv",
-                "--input", sourcePath,
-                "--package", packagePath,
-                "--out", catalogPath,
-                "--workspace", directory,
-            ],
+            inspectArguments.ToArray(),
             inspectOutput,
             inspectError,
             Cancellation);
-        Assert.Equal(InspectorCommandRunner.ExitOk, inspectCode);
+        Assert.True(
+            inspectCode is InspectorCommandRunner.ExitOk or InspectorCommandRunner.ExitWarn,
+            inspectError.ToString());
         Assert.True(string.IsNullOrWhiteSpace(inspectError.ToString()));
         string manifestDigest = ReadStatusField(inspectOutput.ToString(), "manifestDigest");
         AssertNoCsvWorkspaceDirectories(directory);
 
+        var planArguments = new List<string>
+        {
+            "migrate", "plan", catalogPath,
+            "--out", planPath,
+            "--accept-exclusions", "all",
+        };
+        if (planSuffix is not null)
+            planArguments.AddRange(planSuffix);
         var planError = new StringWriter();
         int planCode = await MigrationCommandRunner.RunAsync(
-            [
-                "migrate", "plan", catalogPath,
-                "--out", planPath,
-                "--accept-exclusions", "all",
-            ],
+            planArguments.ToArray(),
             TextWriter.Null,
             planError,
             Cancellation);
@@ -935,6 +1533,91 @@ public sealed class CsvMigrationCommandRunnerTests
             catalogPath,
             planPath,
             manifestDigest);
+    }
+
+    private static string[] DeterministicPlanPolicyArguments() =>
+    [
+        "--reject-mode", "deterministic",
+        "--reject-rules", DeterministicRejectRules,
+        "--max-rejected-rows-per-batch", "100",
+        "--max-rejected-rows-per-run", "10000",
+        "--max-reject-evidence-value-bytes", "4096",
+        "--max-reject-evidence-bytes-per-batch", "65536",
+        "--max-reject-evidence-bytes-per-run", "1048576",
+        "--max-reject-artifact-bytes", "16777216",
+    ];
+
+    private static string[] PlanArguments(
+        string catalogPath,
+        string outputPath,
+        IReadOnlyList<string> suffix)
+    {
+        var arguments = new List<string>
+        {
+            "migrate", "plan", catalogPath,
+            "--out", outputPath,
+            "--accept-exclusions", "all",
+        };
+        arguments.AddRange(suffix);
+        return arguments.ToArray();
+    }
+
+    private static string[] RemoveOptionPair(
+        IReadOnlyList<string> options,
+        int pairIndex)
+    {
+        var result = new List<string>(options.Count - 2);
+        for (int index = 0; index < options.Count; index += 2)
+        {
+            if (index / 2 != pairIndex)
+            {
+                result.Add(options[index]);
+                result.Add(options[index + 1]);
+            }
+        }
+        return result.ToArray();
+    }
+
+    private static void AssertDeterministicRunReport(
+        JsonElement report,
+        long rejectedRows,
+        long rejectedRowsWritten,
+        long rejectedRowsSkipped,
+        long artifactBytes,
+        bool artifactReused)
+    {
+        Assert.Equal("csharpdb-migration-run/v1", report.GetProperty("format").GetString());
+        Assert.Equal("awaitingValidation", report.GetProperty("status").GetString());
+        Assert.Equal(
+            MigrationRejectContract.DeterministicRejectsV1,
+            report.GetProperty("rejectContractVersion").GetString());
+        Assert.Equal(rejectedRows, report.GetProperty("rejectedRows").GetInt64());
+        Assert.Equal(rejectedRowsWritten, report.GetProperty("rejectedRowsWritten").GetInt64());
+        Assert.Equal(rejectedRowsSkipped, report.GetProperty("rejectedRowsSkipped").GetInt64());
+        Assert.Equal(
+            MigrationRejectLedgerCodec.ArtifactFormat,
+            report.GetProperty("rejectArtifactFormat").GetString());
+        string digest = Assert.IsType<string>(
+            report.GetProperty("rejectArtifactDigest").GetString());
+        Assert.Equal(64, digest.Length);
+        Assert.All(digest, character =>
+            Assert.True(character is >= '0' and <= '9' or >= 'a' and <= 'f'));
+        Assert.Equal(artifactBytes, report.GetProperty("rejectArtifactBytes").GetInt64());
+        Assert.Equal(artifactReused, report.GetProperty("rejectArtifactReused").GetBoolean());
+        Assert.False(report.TryGetProperty("rejectArtifactPath", out _));
+        Assert.False(report.TryGetProperty("firstRejectedRow", out _));
+    }
+
+    private static async ValueTask<string> ReadLifecycleAsync(string targetPath)
+    {
+        await using Database database = await Database.OpenAsync(targetPath, Cancellation);
+        await using var result = await database.ExecuteAsync(
+            "SELECT \"lifecycle_state\" FROM \"__csharpdb_migration_state\" WHERE \"singleton\" = 1",
+            Cancellation);
+        Assert.True(await result.MoveNextAsync(Cancellation));
+        string lifecycle = result.Current[0].AsText;
+        Assert.False(await result.MoveNextAsync(Cancellation));
+        return lifecycle;
     }
 
     private static async ValueTask WriteCsvAsync(
@@ -1037,6 +1720,14 @@ public sealed class CsvMigrationCommandRunnerTests
         string CatalogPath,
         string PlanPath,
         string ManifestDigest);
+
+    private sealed class ThrowingTextWriter(string message) : TextWriter
+    {
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override Task WriteLineAsync(string? value) =>
+            Task.FromException(new IOException(message));
+    }
 
     private sealed class TemporaryDirectory : IDisposable
     {

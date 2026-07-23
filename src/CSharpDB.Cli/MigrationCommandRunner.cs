@@ -15,10 +15,10 @@ internal static class MigrationCommandRunner
     internal const string Usage =
         "Usage: csharpdb migrate inspect --source synthetic --out <catalog.json>\n" +
         "       csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header] [--table <name>] [--sample-rows <count>] [--null-token <text>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]\n" +
-        "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>]\n" +
+        "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
-        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--format text|json]\n" +
-        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--format text|json]";
+        "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]";
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -28,6 +28,12 @@ internal static class MigrationCommandRunner
         : StringComparison.Ordinal;
     private const StringComparison PortableArtifactPathComparison =
         StringComparison.OrdinalIgnoreCase;
+    private static readonly string[] CsvDeterministicRejectRuleIds =
+    [
+        CsvMigrationDataRules.MissingField,
+        CsvMigrationDataRules.NullNotAllowed,
+        CsvMigrationDataRules.TypeMismatch,
+    ];
 
     public static bool IsKnownCommand(string? arg) =>
         string.Equals(arg, "migrate", StringComparison.OrdinalIgnoreCase);
@@ -61,6 +67,8 @@ internal static class MigrationCommandRunner
         {
             string message = ex switch
             {
+                MigrationCliSafeException safe =>
+                    $"{safe.Code}: {safe.Message}",
                 CsvSnapshotPackageException packageError =>
                     $"{packageError.RuleId}: {packageError.Message}",
                 CsvSourceSnapshotException snapshotError =>
@@ -326,7 +334,20 @@ internal static class MigrationCommandRunner
             return await OptionErrorAsync(parseError!, error);
         if (!RequireOnly(
                 options,
-                ["--out", "--profile", "--accept-exclusions", "--accept-diagnostics"],
+                [
+                    "--out",
+                    "--profile",
+                    "--accept-exclusions",
+                    "--accept-diagnostics",
+                    "--reject-mode",
+                    "--reject-rules",
+                    "--max-rejected-rows-per-batch",
+                    "--max-rejected-rows-per-run",
+                    "--max-reject-evidence-value-bytes",
+                    "--max-reject-evidence-bytes-per-batch",
+                    "--max-reject-evidence-bytes-per-run",
+                    "--max-reject-artifact-bytes",
+                ],
                 out parseError))
             return await OptionErrorAsync(parseError!, error);
         if (!options.TryGetValue("--out", out string? outputValue))
@@ -376,13 +397,23 @@ internal static class MigrationCommandRunner
             }
         }
 
+        if (!TryCreatePlanLoadPolicy(options, out MigrationLoadPolicy load, out parseError))
+            return await OptionErrorAsync(parseError!, error);
         MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
             await File.ReadAllTextAsync(catalogPath, ct));
+        if (load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+            catalog.Source.Kind != MigrationSourceKind.Csv)
+        {
+            return await OptionErrorAsync(
+                "Deterministic rejects are supported only for retained CSV migrations.",
+                error);
+        }
         MigrationPlan plan = new MigrationPlanner().CreatePlan(
             catalog,
             new MigrationPlanningOptions
             {
                 MappingProfile = profile,
+                Load = load,
                 AcceptedDiagnosticIds = acceptedDiagnosticIds,
                 AcceptedExclusionObjectIds = acceptedExclusionObjectIds,
                 AcceptAllExclusions = acceptAllExclusions,
@@ -396,8 +427,11 @@ internal static class MigrationCommandRunner
         int exitCode = HasReviewFindings(plan, readiness)
             ? InspectorCommandRunner.ExitWarn
             : InspectorCommandRunner.ExitOk;
+        string rejectStatus = plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects
+            ? " | rejectMode=deterministic"
+            : string.Empty;
         await output.WriteLineAsync(
-            $"Status: {StatusLabel(exitCode)} | plan={outputPath} | included={plan.Objects.Count(item => item.Included)} | excluded={plan.Objects.Count(item => !item.Included)} | diagnostics={plan.Diagnostics.Count}");
+            $"Status: {StatusLabel(exitCode)} | plan={outputPath} | included={plan.Objects.Count(item => item.Included)} | excluded={plan.Objects.Count(item => !item.Included)} | diagnostics={plan.Diagnostics.Count}{rejectStatus}");
         return exitCode;
     }
 
@@ -455,7 +489,7 @@ internal static class MigrationCommandRunner
         if (!TryParseOptions(
                 args,
                 3,
-                ["--resume"],
+                ["--resume", "--allow-deterministic-rejects"],
                 out Dictionary<string, string> options,
                 out string? parseError))
         {
@@ -473,6 +507,8 @@ internal static class MigrationCommandRunner
                     "--expected-manifest-digest",
                     "--workspace",
                     "--max-source-bytes",
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact",
                 ],
                 out parseError))
         {
@@ -509,64 +545,81 @@ internal static class MigrationCommandRunner
         };
         if (options.TryGetValue("--source-package", out string? sourcePackageValue))
             protectedPaths.Add(Path.GetFullPath(sourcePackageValue));
-        bool protectedPathsCollide = options.ContainsKey("--source-package")
-            ? ContainsEquivalentResolvedPaths(protectedPaths)
-            : ContainsEquivalentPaths(protectedPaths);
-        if (protectedPathsCollide)
+        if (ContainsEquivalentPaths(protectedPaths))
         {
             return await OptionErrorAsync(
                 "Plan, catalog, source package, staged target, target companions, and run report must use different files.",
                 error);
         }
-        if (!ValidateWorkspacePath(options, protectedPaths, out parseError))
-            return await OptionErrorAsync(parseError!, error);
-
         MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
             await File.ReadAllTextAsync(catalogPath, ct));
         MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
             await File.ReadAllTextAsync(planPath, ct),
             catalog);
+        if (!TryValidateRejectExecutionOptions(
+                plan,
+                catalog,
+                options,
+                out MigrationRejectArtifactDestinationBinding? rejectArtifactBinding,
+                out parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (rejectArtifactBinding is not null)
+        {
+            protectedPaths.Add(rejectArtifactBinding.DestinationPath);
+            protectedPaths.Add(rejectArtifactBinding.TemporaryPath);
+        }
+        bool resolvedPathsCollide =
+            options.ContainsKey("--source-package") || rejectArtifactBinding is not null
+                ? ContainsEquivalentResolvedPaths(protectedPaths)
+                : ContainsEquivalentPaths(protectedPaths);
+        if (resolvedPathsCollide)
+        {
+            return await OptionErrorAsync(
+                rejectArtifactBinding is null
+                    ? "Plan, catalog, source package, staged target, target companions, and run report must use different files."
+                    : "Plan, catalog, source package, staged target, target companions, run report, reject artifact, and reject temporary file must use different paths.",
+                error);
+        }
+        if (!ValidateWorkspacePath(options, protectedPaths, out parseError))
+            return await OptionErrorAsync(parseError!, error);
         if (!ValidateSourceOptions(catalog, options, out parseError))
             return await OptionErrorAsync(parseError!, error);
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
-        try
+        if (plan.Load.RejectMode == MigrationRejectMode.FailFast)
         {
             MigrationApplyPolicyValidator.ValidateForExecution(plan);
         }
-        catch (MigrationExecutionPolicyException policyFailure) when (
-            catalog.Source.Kind == MigrationSourceKind.Synthetic &&
-            string.Equals(
-                catalog.Source.Identity,
-                SyntheticMigrationSourceInspector.FixtureIdentity,
-                StringComparison.Ordinal))
-        {
-            await TryWriteFailureReportAsync(
-                runOutputPath,
-                plan,
-                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
-                policyFailure);
-            throw;
-        }
 
-        await using MigrationSourceLease sourceLease = await OpenMigrationSourceAsync(
-            catalog,
-            options,
-            ct);
-        IMigrationDataSource source = sourceLease.Source;
+        MigrationSourceLease? sourceLease = null;
+        IMigrationDataSource? source = null;
+        string sourceSnapshotIdentity = "unavailable";
+        MigrationApplyResult? completedResult = null;
+        MigrationRejectArtifactWriteResult? completedRejectArtifact = null;
+        bool runReportPublished = false;
         try
         {
+            sourceLease = await OpenMigrationSourceAsync(catalog, options, ct);
+            source = sourceLease.Source;
+            sourceSnapshotIdentity = source.SnapshotIdentity;
+            if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects)
+            {
+                MigrationRejectSourceCapabilityValidator.ValidateForExecution(plan, source);
+            }
+
             await using CSharpDbStagedMigrationTarget target = options.ContainsKey("--resume")
                 ? await CSharpDbStagedMigrationTarget.OpenResumeAsync(
                     targetPath,
                     plan,
                     catalog,
-                    source.SnapshotIdentity,
+                    sourceSnapshotIdentity,
                     cancellationToken: ct)
                 : await CSharpDbStagedMigrationTarget.CreateNewAsync(
                     targetPath,
                     plan,
                     catalog,
-                    source.SnapshotIdentity,
+                    sourceSnapshotIdentity,
                     cancellationToken: ct);
 
             MigrationApplyResult result = await new MigrationApplyRunner().ApplyAsync(
@@ -578,6 +631,46 @@ internal static class MigrationCommandRunner
                     Target = target,
                 },
                 ct);
+            completedResult = result;
+            MigrationRejectArtifactWriteResult? rejectArtifact = null;
+            if (rejectArtifactBinding is not null)
+            {
+                try
+                {
+                    rejectArtifact = await new MigrationRejectArtifactWriter().WriteAsync(
+                        new MigrationRejectArtifactWriteRequest
+                        {
+                            Plan = plan,
+                            Catalog = catalog,
+                            Target = target,
+                            OutputPath = rejectArtifactBinding.DestinationPath,
+                        },
+                        ct);
+                    ValidateRejectArtifactResult(result, rejectArtifact);
+                    completedRejectArtifact = rejectArtifact;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception artifactError)
+                {
+                    await TryWriteAwaitingValidationPublicationFailureReportAsync(
+                        runOutputPath,
+                        plan,
+                        sourceLease,
+                        result,
+                        rejectArtifact: null,
+                        rejectArtifactStatus: "unconfirmed",
+                        errorCode: "MIG-APPLY-REJECT-ARTIFACT-001").ConfigureAwait(false);
+                    throw new MigrationCliSafeException(
+                        "MIG-APPLY-REJECT-ARTIFACT-001",
+                        "The required migration reject artifact could not be published.",
+                        artifactError);
+                }
+            }
+
+            long rejectedRows = checked(result.RejectedRowsWritten + result.RejectedRowsSkipped);
             var runReport = new
             {
                 Format = "csharpdb-migration-run/v1",
@@ -597,13 +690,27 @@ internal static class MigrationCommandRunner
                 result.BatchesSkipped,
                 result.RowsWritten,
                 result.RowsSkipped,
-                RejectedRows = 0,
+                RejectedRows = rejectedRows,
+                RejectedRowsWritten = rejectArtifact is null
+                    ? (long?)null
+                    : result.RejectedRowsWritten,
+                RejectedRowsSkipped = rejectArtifact is null
+                    ? (long?)null
+                    : result.RejectedRowsSkipped,
+                RejectArtifactFormat = rejectArtifact is null
+                    ? null
+                    : MigrationRejectLedgerCodec.ArtifactFormat,
+                RejectArtifactDigest = rejectArtifact?.ArtifactDigest,
+                RejectArtifactBytes = rejectArtifact?.ArtifactBytes,
+                RejectArtifactReused = rejectArtifact?.ReusedExistingArtifact,
+                TargetSnapshotIdentity = rejectArtifact?.TargetSnapshotIdentity,
                 ExcludedObjects = plan.Objects.Count(item => !item.Included),
                 result.PeakBufferedRows,
                 result.PeakBufferedBytes,
             };
             string runJson = JsonSerializer.Serialize(runReport, JsonOptions);
             await WriteArtifactAsync(runOutputPath, runJson, ct);
+            runReportPublished = true;
 
             if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
             {
@@ -611,11 +718,14 @@ internal static class MigrationCommandRunner
             }
             else
             {
+                string rejectedStatus = rejectArtifact is null
+                    ? string.Empty
+                    : $" | rejected={rejectedRows} | rejectArtifact=published";
                 await output.WriteLineAsync(
-                    $"Status: AWAITING VALIDATION | targetId={result.TargetIdentity} | batches={result.BatchesWritten} written/{result.BatchesSkipped} resumed | rows={result.RowsWritten} written/{result.RowsSkipped} resumed | report={runOutputPath}");
+                    $"Status: AWAITING VALIDATION | targetId={result.TargetIdentity} | batches={result.BatchesWritten} written/{result.BatchesSkipped} resumed | rows={result.RowsWritten} written/{result.RowsSkipped} resumed{rejectedStatus} | report={runOutputPath}");
             }
 
-            return plan.Objects.Any(item => !item.Included)
+            return plan.Objects.Any(item => !item.Included) || rejectedRows > 0
                 ? InspectorCommandRunner.ExitWarn
                 : InspectorCommandRunner.ExitOk;
         }
@@ -625,12 +735,98 @@ internal static class MigrationCommandRunner
         }
         catch (Exception ex)
         {
-            await TryWriteFailureReportAsync(
-                runOutputPath,
-                plan,
-                source.SnapshotIdentity,
-                ex).ConfigureAwait(false);
+            if (source is null)
+            {
+                if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                    ex is not MigrationCliSafeException)
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-APPLY-DETERMINISTIC-SOURCE-001",
+                        "The deterministic-reject migration source could not be opened and verified.",
+                        ex);
+                }
+
+                throw;
+            }
+
+            if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                completedResult is not null &&
+                ex is not MigrationCliSafeException &&
+                !runReportPublished)
+            {
+                await TryWriteAwaitingValidationPublicationFailureReportAsync(
+                    runOutputPath,
+                    plan,
+                    sourceLease!,
+                    completedResult,
+                    completedRejectArtifact,
+                    rejectArtifactStatus: completedRejectArtifact is null
+                        ? "unconfirmed"
+                        : "published",
+                    errorCode: "MIG-APPLY-RUN-REPORT-001").ConfigureAwait(false);
+                throw new MigrationCliSafeException(
+                    "MIG-APPLY-RUN-REPORT-001",
+                    "The migration completed in staged form, but its run report could not be published.",
+                    ex);
+            }
+
+            if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                runReportPublished &&
+                ex is not MigrationCliSafeException)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-APPLY-OUTPUT-001",
+                    "The migration completed in staged form and its run report was published, but command output failed.",
+                    ex);
+            }
+
+            if (ex is not MigrationCliSafeException ||
+                !string.Equals(
+                    ((MigrationCliSafeException)ex).Code,
+                    "MIG-APPLY-REJECT-ARTIFACT-001",
+                    StringComparison.Ordinal))
+            {
+                await TryWriteFailureReportAsync(
+                    runOutputPath,
+                    plan,
+                    sourceSnapshotIdentity,
+                    ex).ConfigureAwait(false);
+            }
+
+            if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                ex is not MigrationCliSafeException)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-APPLY-DETERMINISTIC-001",
+                    "The deterministic-reject migration apply operation failed.",
+                    ex);
+            }
+
             throw;
+        }
+        finally
+        {
+            if (sourceLease is not null)
+            {
+                try
+                {
+                    await sourceLease.DisposeAsync();
+                }
+                catch (Exception disposeError) when (
+                    plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                    disposeError is not
+                        (OutOfMemoryException or StackOverflowException or AccessViolationException))
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-APPLY-DETERMINISTIC-CLEANUP-001",
+                        runReportPublished
+                            ? "The migration completed in staged form and its run report was published, but the deterministic-reject source could not be closed safely."
+                            : completedResult is not null
+                                ? "The migration completed in staged form, but the deterministic-reject source could not be closed safely."
+                                : "The deterministic-reject migration source could not be closed safely.",
+                        disposeError);
+                }
+            }
         }
     }
 
@@ -642,7 +838,12 @@ internal static class MigrationCommandRunner
     {
         if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
             return await OptionErrorAsync("Missing plan artifact path.", error);
-        if (!TryParseOptions(args, 3, out Dictionary<string, string> options, out string? parseError))
+        if (!TryParseOptions(
+                args,
+                3,
+                ["--allow-deterministic-rejects"],
+                out Dictionary<string, string> options,
+                out string? parseError))
             return await OptionErrorAsync(parseError!, error);
         if (!RequireOnly(
                 options,
@@ -657,6 +858,8 @@ internal static class MigrationCommandRunner
                     "--expected-manifest-digest",
                     "--workspace",
                     "--max-source-bytes",
+                    "--allow-deterministic-rejects",
+                    "--reject-artifact",
                 ],
                 out parseError))
         {
@@ -710,17 +913,12 @@ internal static class MigrationCommandRunner
         };
         if (options.TryGetValue("--source-package", out string? sourcePackageValue))
             protectedPaths.Add(Path.GetFullPath(sourcePackageValue));
-        bool protectedPathsCollide = options.ContainsKey("--source-package")
-            ? ContainsEquivalentResolvedPaths(protectedPaths)
-            : ContainsEquivalentPaths(protectedPaths);
-        if (protectedPathsCollide)
+        if (ContainsEquivalentPaths(protectedPaths))
         {
             return await OptionErrorAsync(
                 "Plan, catalog, source package, staged target, target companions, and validation report must use different files.",
                 error);
         }
-        if (!ValidateWorkspacePath(options, protectedPaths, out parseError))
-            return await OptionErrorAsync(parseError!, error);
         if (!Directory.Exists(spillRoot))
             return await OptionErrorAsync($"Validation spill directory '{spillRoot}' does not exist.", error);
 
@@ -729,10 +927,42 @@ internal static class MigrationCommandRunner
         MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
             await File.ReadAllTextAsync(planPath, ct),
             catalog);
+        if (!TryValidateRejectExecutionOptions(
+                plan,
+                catalog,
+                options,
+                out MigrationRejectArtifactDestinationBinding? rejectArtifactBinding,
+                out parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (rejectArtifactBinding is not null)
+        {
+            protectedPaths.Add(rejectArtifactBinding.DestinationPath);
+            protectedPaths.Add(rejectArtifactBinding.TemporaryPath);
+        }
+        bool resolvedPathsCollide =
+            options.ContainsKey("--source-package") || rejectArtifactBinding is not null
+                ? ContainsEquivalentResolvedPaths(protectedPaths)
+                : ContainsEquivalentPaths(protectedPaths);
+        if (resolvedPathsCollide ||
+            rejectArtifactBinding is not null &&
+            (ResolvedPathsAreEquivalent(spillRoot, rejectArtifactBinding.DestinationPath) ||
+             ResolvedPathsAreEquivalent(spillRoot, rejectArtifactBinding.TemporaryPath)))
+        {
+            return await OptionErrorAsync(
+                rejectArtifactBinding is null
+                    ? "Plan, catalog, source package, staged target, target companions, and validation report must use different files."
+                    : "Plan, catalog, source package, staged target, target companions, validation report, spill directory, reject artifact, and reject temporary file must use different paths.",
+                error);
+        }
+        if (!ValidateWorkspacePath(options, protectedPaths, out parseError))
+            return await OptionErrorAsync(parseError!, error);
         if (!ValidateSourceOptions(catalog, options, out parseError))
             return await OptionErrorAsync(parseError!, error);
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
-        MigrationValidationPolicyValidator.ValidateForExecution(plan);
+        if (plan.Load.RejectMode == MigrationRejectMode.FailFast)
+            MigrationValidationPolicyValidator.ValidateForExecution(plan);
 
         MigrationValidationLevel requiredLevel = plan.Validation.ValidateChecksums
             ? MigrationValidationLevel.Checksum
@@ -741,54 +971,156 @@ internal static class MigrationCommandRunner
                 : MigrationValidationLevel.Schema;
         MigrationValidationLevel level = requestedLevel ?? requiredLevel;
 
-        await using MigrationSourceLease sourceLease = await OpenMigrationSourceAsync(
-            catalog,
-            options,
-            ct);
-        IMigrationDataSource source = sourceLease.Source;
-        await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(plan, catalog, source);
-        await using CSharpDbStagedMigrationTarget target = await CSharpDbStagedMigrationTarget.OpenResumeAsync(
-            targetPath,
-            plan,
-            catalog,
-            source.SnapshotIdentity,
-            cancellationToken: ct);
-        MigrationValidationRunResult result = await new MigrationValidationRunner().ValidateAsync(
-            new MigrationValidationRunRequest
+        MigrationSourceLease? sourceLease = null;
+        MigrationValidationRunResult? completedValidation = null;
+        try
+        {
+            sourceLease = await OpenMigrationSourceAsync(catalog, options, ct);
+            IMigrationDataSource source = sourceLease.Source;
+            string sourceSnapshotIdentity = source.SnapshotIdentity;
+            if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects)
+                MigrationRejectSourceCapabilityValidator.ValidateForExecution(plan, source);
+
+            await using var sourceSnapshot = new MigrationDataSourceValidationSnapshot(
+                plan,
+                catalog,
+                source);
+            await using CSharpDbStagedMigrationTarget target =
+                await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                    targetPath,
+                    plan,
+                    catalog,
+                    sourceSnapshotIdentity,
+                    cancellationToken: ct);
+
+            MigrationRejectArtifactWriteResult? validatedRejectArtifact = null;
+            Func<MigrationValidationPreActivationContext, CancellationToken, ValueTask>?
+                beforeActivation = null;
+            if (rejectArtifactBinding is not null)
             {
-                Plan = plan,
-                Catalog = catalog,
-                SourceSnapshot = sourceSnapshot,
-                Target = target,
-                Level = level,
-                ReportOutputPath = reportPath,
-                ChecksumOptions = new PartitionedChecksumValidatorOptions
+                beforeActivation = async (context, callbackCancellation) =>
                 {
-                    SpillRootDirectory = spillRoot,
+                    MigrationRejectArtifactWriteResult artifact =
+                        await new MigrationRejectArtifactWriter().WriteAsync(
+                            new MigrationRejectArtifactWriteRequest
+                            {
+                                Plan = plan,
+                                Catalog = catalog,
+                                Target = target,
+                                OutputPath = rejectArtifactBinding.DestinationPath,
+                            },
+                            callbackCancellation);
+                    ValidateRejectArtifactResult(context, artifact);
+                    validatedRejectArtifact = artifact;
+                };
+            }
+
+            MigrationValidationRunResult result = await new MigrationValidationRunner().ValidateAsync(
+                new MigrationValidationRunRequest
+                {
+                    Plan = plan,
+                    Catalog = catalog,
+                    SourceSnapshot = sourceSnapshot,
+                    Target = target,
+                    Level = level,
+                    ReportOutputPath = reportPath,
+                    ChecksumOptions = new PartitionedChecksumValidatorOptions
+                    {
+                        SpillRootDirectory = spillRoot,
+                    },
+                    BeforeActivationAsync = beforeActivation,
                 },
-            },
-            ct);
+                ct);
+            completedValidation = result;
 
-        if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
-        {
-            await output.WriteLineAsync(await File.ReadAllTextAsync(reportPath, ct));
-        }
-        else
-        {
-            await output.WriteAsync(MigrationValidationTextFormatter.Format(result.Report));
-            await output.WriteLineAsync($"Activation: {(result.Activated ? "activated" : "withheld")}");
-            await output.WriteLineAsync($"JSON report: {reportPath}");
-        }
+            if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
+            {
+                await output.WriteLineAsync(
+                    await File.ReadAllTextAsync(
+                        reportPath,
+                        plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects
+                            ? CancellationToken.None
+                            : ct));
+            }
+            else
+            {
+                await output.WriteAsync(MigrationValidationTextFormatter.Format(result.Report));
+                if (validatedRejectArtifact is not null)
+                {
+                    await output.WriteLineAsync(
+                        $"Reject artifact: verified | rejected={validatedRejectArtifact.RejectedRowCount} | digest={validatedRejectArtifact.ArtifactDigest} | reused={validatedRejectArtifact.ReusedExistingArtifact.ToString().ToLowerInvariant()}");
+                }
+                await output.WriteLineAsync(
+                    $"Activation: {(result.Activated ? "activated" : "withheld")}");
+                await output.WriteLineAsync($"JSON report: {reportPath}");
+            }
 
-        return result.Report.Outcome switch
+            return result.Report.Outcome switch
+            {
+                MigrationValidationStatus.Passed =>
+                    plan.Objects.Any(item => !item.Included) ||
+                    validatedRejectArtifact?.RejectedRowCount > 0
+                        ? InspectorCommandRunner.ExitWarn
+                        : InspectorCommandRunner.ExitOk,
+                MigrationValidationStatus.Inconclusive or MigrationValidationStatus.Skipped =>
+                    InspectorCommandRunner.ExitWarn,
+                _ => InspectorCommandRunner.ExitError,
+            };
+        }
+        catch (OperationCanceledException cancellation) when (ct.IsCancellationRequested)
         {
-            MigrationValidationStatus.Passed => plan.Objects.Any(item => !item.Included)
-                ? InspectorCommandRunner.ExitWarn
-                : InspectorCommandRunner.ExitOk,
-            MigrationValidationStatus.Inconclusive or MigrationValidationStatus.Skipped =>
-                InspectorCommandRunner.ExitWarn,
-            _ => InspectorCommandRunner.ExitError,
-        };
+            if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                completedValidation?.Activated == true)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-VALIDATE-OUTPUT-AFTER-ACTIVATION-001",
+                    "Validation completed and the staged target was activated, but command output was canceled.",
+                    cancellation);
+            }
+
+            throw;
+        }
+        catch (Exception validationError) when (
+            plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+            validationError is not
+                (OutOfMemoryException or StackOverflowException or AccessViolationException))
+        {
+            if (validationError is MigrationCliSafeException)
+                throw;
+            if (completedValidation?.Activated == true)
+            {
+                throw new MigrationCliSafeException(
+                    "MIG-VALIDATE-OUTPUT-AFTER-ACTIVATION-001",
+                    "Validation completed and the staged target was activated, but command output failed.",
+                    validationError);
+            }
+            throw new MigrationCliSafeException(
+                "MIG-VALIDATE-DETERMINISTIC-001",
+                "The deterministic-reject migration validation operation failed; activation was withheld.",
+                validationError);
+        }
+        finally
+        {
+            if (sourceLease is not null)
+            {
+                try
+                {
+                    await sourceLease.DisposeAsync();
+                }
+                catch (Exception disposeError) when (
+                    plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                    disposeError is not
+                        (OutOfMemoryException or StackOverflowException or AccessViolationException))
+                {
+                    throw new MigrationCliSafeException(
+                        "MIG-VALIDATE-DETERMINISTIC-CLEANUP-001",
+                        completedValidation?.Activated == true
+                            ? "Validation completed and the staged target was activated, but the deterministic-reject source could not be closed safely."
+                            : "The deterministic-reject migration source could not be closed safely; activation was withheld.",
+                        disposeError);
+                }
+            }
+        }
     }
 
     private static async ValueTask WriteTextPreviewAsync(
@@ -809,6 +1141,17 @@ internal static class MigrationCommandRunner
             $"Diagnostics: information={counts.Information} warning={counts.Warning} error={counts.Error}");
         await output.WriteLineAsync(
             $"Pending approvals: diagnostics={readiness.PendingDiagnosticIds.Count} exclusions={readiness.PendingExclusionObjectIds.Count}");
+        if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+            plan.Load.RejectPolicy is MigrationDeterministicRejectPolicy rejectPolicy)
+        {
+            await output.WriteLineAsync("Reject mode: deterministic (explicit runtime consent required)");
+            await output.WriteLineAsync(
+                $"Reject rules: {string.Join(',', rejectPolicy.AllowedRuleIds)}");
+            await output.WriteLineAsync(
+                $"Reject limits: rows={rejectPolicy.MaxRejectedRowsPerBatch}/batch,{rejectPolicy.MaxRejectedRowsPerRun}/run evidenceBytes={rejectPolicy.MaxRawValueBytes}/value,{rejectPolicy.MaxRawValueBytesPerBatch}/batch,{rejectPolicy.MaxRawValueBytesPerRun}/run artifactBytes={rejectPolicy.MaxArtifactBytes}");
+            await output.WriteLineAsync(
+                "Reject artifact: sensitive raw source evidence; choose a private absolute destination and manage retention explicitly.");
+        }
 
         foreach (MigrationPlanObject item in plan.Objects.Where(item => !item.Included))
             await output.WriteLineAsync($"[excluded] {item.SourceObjectId}: {item.ExclusionReason}");
@@ -832,6 +1175,24 @@ internal static class MigrationCommandRunner
             Status = status.ToLowerInvariant().Replace(' ', '-'),
             plan.TargetCSharpDbVersion,
             plan.MappingProfile,
+            RejectMode = plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects
+                ? "deterministic"
+                : null,
+            RejectPolicy = plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                plan.Load.RejectPolicy is MigrationDeterministicRejectPolicy rejectPolicy
+                    ? new
+                    {
+                        rejectPolicy.ContractVersion,
+                        rejectPolicy.AllowedRuleIds,
+                        rejectPolicy.MaxRejectedRowsPerBatch,
+                        rejectPolicy.MaxRejectedRowsPerRun,
+                        MaxRejectEvidenceValueBytes = rejectPolicy.MaxRawValueBytes,
+                        MaxRejectEvidenceBytesPerBatch = rejectPolicy.MaxRawValueBytesPerBatch,
+                        MaxRejectEvidenceBytesPerRun = rejectPolicy.MaxRawValueBytesPerRun,
+                        MaxRejectArtifactBytes = rejectPolicy.MaxArtifactBytes,
+                        Sensitive = true,
+                    }
+                    : null,
             Objects = new
             {
                 Total = counts.TotalObjects,
@@ -914,6 +1275,139 @@ internal static class MigrationCommandRunner
             out result) &&
         result > 0;
 
+    private static bool TryParsePositiveLong(string value, out long result) =>
+        long.TryParse(
+            value,
+            NumberStyles.None,
+            CultureInfo.InvariantCulture,
+            out result) &&
+        result > 0;
+
+    private static bool TryCreatePlanLoadPolicy(
+        IReadOnlyDictionary<string, string> options,
+        out MigrationLoadPolicy load,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        load = new MigrationLoadPolicy();
+        string rejectModeValue = options.GetValueOrDefault("--reject-mode", "fail-fast");
+        bool deterministic = string.Equals(
+            rejectModeValue,
+            "deterministic",
+            StringComparison.OrdinalIgnoreCase);
+        if (!deterministic &&
+            !string.Equals(rejectModeValue, "fail-fast", StringComparison.OrdinalIgnoreCase))
+        {
+            error = $"Unsupported reject mode '{rejectModeValue}'.";
+            return false;
+        }
+
+        string[] policyOptions =
+        [
+            "--reject-rules",
+            "--max-rejected-rows-per-batch",
+            "--max-rejected-rows-per-run",
+            "--max-reject-evidence-value-bytes",
+            "--max-reject-evidence-bytes-per-batch",
+            "--max-reject-evidence-bytes-per-run",
+            "--max-reject-artifact-bytes",
+        ];
+        if (!deterministic)
+        {
+            string? unexpected = policyOptions.FirstOrDefault(options.ContainsKey);
+            if (unexpected is not null)
+            {
+                error = $"Option {unexpected} requires --reject-mode deterministic.";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        string? missing = policyOptions.FirstOrDefault(option => !options.ContainsKey(option));
+        if (missing is not null)
+        {
+            error = $"Missing required option {missing} for deterministic reject mode.";
+            return false;
+        }
+
+        string ruleValue = options["--reject-rules"];
+        IReadOnlyList<string> allowedRuleIds;
+        if (string.Equals(ruleValue, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            allowedRuleIds = CsvDeterministicRejectRuleIds.ToArray();
+        }
+        else if (!TryParseIdList(ruleValue, out allowedRuleIds, out error))
+        {
+            return false;
+        }
+
+        string? unsupportedRule = allowedRuleIds.FirstOrDefault(ruleId =>
+            !CsvDeterministicRejectRuleIds.Contains(ruleId, StringComparer.Ordinal));
+        if (unsupportedRule is not null)
+        {
+            error = $"Reject rule '{unsupportedRule}' is not supported by the retained CSV source.";
+            return false;
+        }
+
+        if (!TryParsePositiveInt(
+                options["--max-rejected-rows-per-batch"],
+                out int maxRejectedRowsPerBatch) ||
+            !TryParsePositiveLong(
+                options["--max-rejected-rows-per-run"],
+                out long maxRejectedRowsPerRun) ||
+            !TryParsePositiveInt(
+                options["--max-reject-evidence-value-bytes"],
+                out int maxRawValueBytes) ||
+            !TryParsePositiveLong(
+                options["--max-reject-evidence-bytes-per-batch"],
+                out long maxRawValueBytesPerBatch) ||
+            !TryParsePositiveLong(
+                options["--max-reject-evidence-bytes-per-run"],
+                out long maxRawValueBytesPerRun) ||
+            !TryParsePositiveLong(
+                options["--max-reject-artifact-bytes"],
+                out long maxArtifactBytes))
+        {
+            error = "Deterministic reject limits must be positive base-10 integers.";
+            return false;
+        }
+
+        var rejectPolicy = new MigrationDeterministicRejectPolicy
+        {
+            ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+            AllowedRuleIds = allowedRuleIds,
+            MaxRejectedRowsPerBatch = maxRejectedRowsPerBatch,
+            MaxRejectedRowsPerRun = maxRejectedRowsPerRun,
+            MaxRawValueBytes = maxRawValueBytes,
+            MaxRawValueBytesPerBatch = maxRawValueBytesPerBatch,
+            MaxRawValueBytesPerRun = maxRawValueBytesPerRun,
+            MaxArtifactBytes = maxArtifactBytes,
+        };
+        try
+        {
+            MigrationRejectReadPolicyValidator.Validate(
+                MigrationRejectContract.DeterministicRejectsV1,
+                rejectPolicy,
+                load.BatchSize);
+        }
+        catch (InvalidDataException policyError)
+        {
+            error = $"Invalid deterministic reject policy: {policyError.Message}";
+            return false;
+        }
+
+        load = load with
+        {
+            RejectMode = MigrationRejectMode.DeterministicRejects,
+            RejectPolicy = rejectPolicy,
+        };
+        error = null;
+        return true;
+    }
+
     private static bool TryParseSourceByteLimit(string value, out long result) =>
         long.TryParse(
             value,
@@ -955,6 +1449,131 @@ internal static class MigrationCommandRunner
 
         error = null;
         return true;
+    }
+
+    private static bool TryValidateRejectExecutionOptions(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        IReadOnlyDictionary<string, string> options,
+        out MigrationRejectArtifactDestinationBinding? artifactBinding,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(options);
+
+        artifactBinding = null;
+        bool allowDeterministicRejects = options.ContainsKey("--allow-deterministic-rejects");
+        bool hasArtifact = options.TryGetValue("--reject-artifact", out string? artifactPath);
+        if (plan.Load.RejectMode == MigrationRejectMode.FailFast)
+        {
+            if (allowDeterministicRejects || hasArtifact)
+            {
+                error =
+                    "Deterministic-reject execution options cannot be used with a fail-fast plan.";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        if (plan.Load.RejectMode != MigrationRejectMode.DeterministicRejects ||
+            plan.Load.RejectPolicy is null)
+        {
+            error = "The migration plan contains an unsupported reject policy.";
+            return false;
+        }
+        if (catalog.Source.Kind != MigrationSourceKind.Csv)
+        {
+            error = "Deterministic-reject CLI execution is supported only for retained CSV migrations.";
+            return false;
+        }
+        if (!allowDeterministicRejects)
+        {
+            error =
+                "Missing required option --allow-deterministic-rejects for a deterministic-reject plan.";
+            return false;
+        }
+        if (!hasArtifact)
+        {
+            error = "Missing required option --reject-artifact for a deterministic-reject plan.";
+            return false;
+        }
+
+        try
+        {
+            artifactBinding = MigrationRejectArtifactDestinationValidator.ValidateForPublication(
+                plan,
+                artifactPath!);
+        }
+        catch (Exception pathError) when (pathError is
+            ArgumentException or InvalidDataException or IOException or
+            UnauthorizedAccessException or MigrationExecutionPolicyException)
+        {
+            error = $"Invalid reject artifact destination: {pathError.Message}";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    private static void ValidateRejectArtifactResult(
+        MigrationApplyResult applyResult,
+        MigrationRejectArtifactWriteResult artifactResult)
+    {
+        ArgumentNullException.ThrowIfNull(applyResult);
+        ArgumentNullException.ThrowIfNull(artifactResult);
+
+        long expectedRejectedRows = checked(
+            applyResult.RejectedRowsWritten + applyResult.RejectedRowsSkipped);
+        if (!string.Equals(
+                artifactResult.PlanDigest,
+                applyResult.PlanDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                artifactResult.TargetIdentity,
+                applyResult.TargetIdentity,
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(artifactResult.TargetSnapshotIdentity) ||
+            !IsCanonicalSha256Hex(artifactResult.ArtifactDigest) ||
+            artifactResult.ArtifactBytes <= 0 ||
+            artifactResult.RejectedRowCount != expectedRejectedRows)
+        {
+            throw new InvalidDataException(
+                "The reject artifact result does not match the completed migration apply result.");
+        }
+    }
+
+    private static void ValidateRejectArtifactResult(
+        MigrationValidationPreActivationContext context,
+        MigrationRejectArtifactWriteResult artifactResult)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(context.Report);
+        ArgumentNullException.ThrowIfNull(artifactResult);
+
+        MigrationValidationBinding binding = context.Report.Binding;
+        if (!string.Equals(
+                artifactResult.PlanDigest,
+                binding.PlanDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                artifactResult.TargetIdentity,
+                binding.TargetIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                artifactResult.TargetSnapshotIdentity,
+                binding.TargetSnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !IsCanonicalSha256Hex(artifactResult.ArtifactDigest) ||
+            artifactResult.ArtifactBytes <= 0 ||
+            artifactResult.RejectedRowCount < 0)
+        {
+            throw new InvalidDataException(
+                "The reject artifact result does not match the published validation report.");
+        }
     }
 
     private static bool ValidateSourceOptions(
@@ -1208,6 +1827,19 @@ internal static class MigrationCommandRunner
         return true;
     }
 
+    private static bool IsCanonicalSha256Hex(string value)
+    {
+        if (value.Length != 64)
+            return false;
+        foreach (char character in value)
+        {
+            if (character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f'))
+                return false;
+        }
+
+        return true;
+    }
+
     private static bool TryParseOptions(
         IReadOnlyList<string> args,
         int startIndex,
@@ -1345,6 +1977,7 @@ internal static class MigrationCommandRunner
     {
         string errorCode = error switch
         {
+            MigrationCliSafeException safe => safe.Code,
             MigrationRowRejectedException rejected => rejected.Code,
             MigrationExecutionPolicyException policy => policy.Code,
             MigrationValueException valueError => valueError.Code,
@@ -1362,6 +1995,8 @@ internal static class MigrationCommandRunner
                 rejectedRow.ColumnObjectId,
             }
             : null;
+        bool deterministicRejects =
+            plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects;
         var report = new
         {
             Format = "csharpdb-migration-run/v1",
@@ -1371,9 +2006,13 @@ internal static class MigrationCommandRunner
             plan.CapabilityDigest,
             SourceFingerprint = plan.Source.Fingerprint,
             SourceSnapshotIdentity = sourceSnapshotIdentity,
-            RejectContractVersion = MigrationRejectContract.DeterministicFailFastV1,
-            RejectedRows = firstRejectedRow is null ? 0 : 1,
-            FirstRejectedRow = firstRejectedRow,
+            RejectContractVersion = deterministicRejects
+                ? plan.Load.RejectPolicy?.ContractVersion
+                : MigrationRejectContract.DeterministicFailFastV1,
+            RejectedRows = deterministicRejects
+                ? (long?)null
+                : firstRejectedRow is null ? 0L : 1L,
+            FirstRejectedRow = deterministicRejects ? null : firstRejectedRow,
             ErrorCode = errorCode,
         };
         try
@@ -1384,6 +2023,64 @@ internal static class MigrationCommandRunner
                 CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception reportError) when (reportError is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static async ValueTask TryWriteAwaitingValidationPublicationFailureReportAsync(
+        string path,
+        MigrationPlan plan,
+        MigrationSourceLease sourceLease,
+        MigrationApplyResult result,
+        MigrationRejectArtifactWriteResult? rejectArtifact,
+        string rejectArtifactStatus,
+        string errorCode)
+    {
+        long rejectedRows = checked(result.RejectedRowsWritten + result.RejectedRowsSkipped);
+        var report = new
+        {
+            Format = "csharpdb-migration-run/v1",
+            Status = "awaitingValidation",
+            RejectArtifactStatus = rejectArtifactStatus,
+            ErrorCode = errorCode,
+            result.TargetIdentity,
+            result.PlanDigest,
+            result.CatalogDigest,
+            plan.CapabilityDigest,
+            SourceFingerprint = plan.Source.Fingerprint,
+            result.SourceSnapshotIdentity,
+            SourcePackageFormat = sourceLease.PackageManifest is null
+                ? null
+                : CsvSnapshotPackage.Format,
+            SourcePackageManifestDigest = sourceLease.PackageManifest?.ManifestDigest,
+            result.RejectContractVersion,
+            result.BatchesWritten,
+            result.BatchesSkipped,
+            result.RowsWritten,
+            result.RowsSkipped,
+            RejectedRows = rejectedRows,
+            result.RejectedRowsWritten,
+            result.RejectedRowsSkipped,
+            RejectArtifactFormat = rejectArtifact is null
+                ? null
+                : MigrationRejectLedgerCodec.ArtifactFormat,
+            RejectArtifactDigest = rejectArtifact?.ArtifactDigest,
+            RejectArtifactBytes = rejectArtifact?.ArtifactBytes,
+            RejectArtifactReused = rejectArtifact?.ReusedExistingArtifact,
+            TargetSnapshotIdentity = rejectArtifact?.TargetSnapshotIdentity,
+            ExcludedObjects = plan.Objects.Count(item => !item.Included),
+            result.PeakBufferedRows,
+            result.PeakBufferedBytes,
+        };
+        try
+        {
+            await WriteArtifactAsync(
+                path,
+                JsonSerializer.Serialize(report, JsonOptions),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception reportError) when (reportError is
+            IOException or UnauthorizedAccessException)
         {
         }
     }
@@ -1478,6 +2175,18 @@ internal static class MigrationCommandRunner
         };
         options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
         return options;
+    }
+
+    private sealed class MigrationCliSafeException : Exception
+    {
+        internal MigrationCliSafeException(string code, string message, Exception innerException)
+            : base(message, innerException)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(code);
+            Code = code;
+        }
+
+        internal string Code { get; }
     }
 
     private sealed class MigrationSourceLease : IAsyncDisposable

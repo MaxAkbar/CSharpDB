@@ -7,6 +7,12 @@ public sealed record MigrationPlanningOptions
 {
     public MigrationMappingProfile MappingProfile { get; init; } = MigrationMappingProfile.Preserve;
 
+    /// <summary>
+    /// The complete load policy bound into the generated plan. The default
+    /// preserves the established fail-fast plan artifact and digest.
+    /// </summary>
+    public MigrationLoadPolicy Load { get; init; } = new();
+
     public IReadOnlyDictionary<string, DbType> CustomTargetTypes { get; init; } =
         new Dictionary<string, DbType>(StringComparer.Ordinal);
 
@@ -36,6 +42,7 @@ public sealed class MigrationPlanner
     {
         ArgumentNullException.ThrowIfNull(catalog);
         options ??= new MigrationPlanningOptions();
+        ArgumentNullException.ThrowIfNull(options.Load);
         MigrationContractValidator.ValidateCatalog(catalog);
         if (!string.Equals(
                 catalog.TargetCSharpDbVersion,
@@ -235,6 +242,7 @@ public sealed class MigrationPlanner
             MappingPolicyVersion = _typeMapper.PolicyVersion,
             MappingProfile = options.MappingProfile,
             Objects = planObjects,
+            Load = options.Load,
             Diagnostics = diagnostics.Values.OrderBy(item => item.DiagnosticId, StringComparer.Ordinal).ToArray(),
             AcceptedDiagnosticIds = options.AcceptedDiagnosticIds,
             AcceptedExclusionObjectIds = acceptedExclusionObjectIds,

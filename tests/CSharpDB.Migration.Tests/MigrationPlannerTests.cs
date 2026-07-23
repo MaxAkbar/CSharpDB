@@ -90,6 +90,111 @@ public sealed class MigrationPlannerTests
     }
 
     [Fact]
+    public async Task DefaultLoadPolicy_PreservesCanonicalPlanJsonAndDigest()
+    {
+        MigrationCatalog catalog = await InspectAsync();
+        var planner = new MigrationPlanner();
+
+        MigrationPlan implicitDefault = planner.CreatePlan(catalog);
+        MigrationPlan emptyOptions = planner.CreatePlan(
+            catalog,
+            new MigrationPlanningOptions());
+        MigrationPlan explicitDefault = planner.CreatePlan(
+            catalog,
+            new MigrationPlanningOptions { Load = new MigrationLoadPolicy() });
+
+        string expectedJson = MigrationArtifactSerializer.SerializePlan(
+            implicitDefault,
+            catalog,
+            writeIndented: false);
+        string expectedDigest = MigrationArtifactSerializer.ComputePlanDigest(implicitDefault);
+
+        Assert.Equal(new MigrationLoadPolicy(), implicitDefault.Load);
+        Assert.Equal(
+            expectedJson,
+            MigrationArtifactSerializer.SerializePlan(
+                emptyOptions,
+                catalog,
+                writeIndented: false));
+        Assert.Equal(
+            expectedJson,
+            MigrationArtifactSerializer.SerializePlan(
+                explicitDefault,
+                catalog,
+                writeIndented: false));
+        Assert.Equal(expectedDigest, MigrationArtifactSerializer.ComputePlanDigest(emptyOptions));
+        Assert.Equal(expectedDigest, MigrationArtifactSerializer.ComputePlanDigest(explicitDefault));
+    }
+
+    [Fact]
+    public async Task ExplicitLoadPolicy_IsValidatedAndBoundIntoThePlanDigest()
+    {
+        MigrationCatalog catalog = await InspectAsync();
+        var loadPolicy = new MigrationLoadPolicy
+        {
+            BatchSize = 32,
+            MaxBatchBytes = 1024 * 1024,
+            MaxValueBytes = 64 * 1024,
+            RejectMode = MigrationRejectMode.DeterministicRejects,
+            RejectPolicy = new MigrationDeterministicRejectPolicy
+            {
+                ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                AllowedRuleIds = ["MIG-TEST-001"],
+                MaxRejectedRowsPerBatch = 4,
+                MaxRejectedRowsPerRun = 10,
+                MaxRawValueBytes = 1_024,
+                MaxRawValueBytesPerBatch = 4_096,
+                MaxRawValueBytesPerRun = 8_192,
+                MaxArtifactBytes = 131_072,
+            },
+        };
+        var planner = new MigrationPlanner();
+        MigrationPlan strict = planner.CreatePlan(catalog);
+
+        MigrationPlan deterministic = planner.CreatePlan(
+            catalog,
+            new MigrationPlanningOptions { Load = loadPolicy });
+        string json = MigrationArtifactSerializer.SerializePlan(
+            deterministic,
+            catalog,
+            writeIndented: false);
+        MigrationPlan restored = MigrationArtifactSerializer.DeserializePlan(json, catalog);
+
+        Assert.Same(loadPolicy, deterministic.Load);
+        Assert.Equal(MigrationRejectMode.DeterministicRejects, restored.Load.RejectMode);
+        Assert.Equal(32, restored.Load.BatchSize);
+        Assert.Equal(loadPolicy.MaxBatchBytes, restored.Load.MaxBatchBytes);
+        Assert.Equal(loadPolicy.MaxValueBytes, restored.Load.MaxValueBytes);
+        Assert.Equal(
+            loadPolicy.RejectPolicy!.ContractVersion,
+            restored.Load.RejectPolicy!.ContractVersion);
+        Assert.Equal(
+            loadPolicy.RejectPolicy.AllowedRuleIds,
+            restored.Load.RejectPolicy.AllowedRuleIds);
+        Assert.Equal(
+            loadPolicy.RejectPolicy.MaxRejectedRowsPerBatch,
+            restored.Load.RejectPolicy.MaxRejectedRowsPerBatch);
+        Assert.Equal(
+            loadPolicy.RejectPolicy.MaxRejectedRowsPerRun,
+            restored.Load.RejectPolicy.MaxRejectedRowsPerRun);
+        Assert.Equal(
+            loadPolicy.RejectPolicy.MaxRawValueBytes,
+            restored.Load.RejectPolicy.MaxRawValueBytes);
+        Assert.Equal(
+            loadPolicy.RejectPolicy.MaxRawValueBytesPerBatch,
+            restored.Load.RejectPolicy.MaxRawValueBytesPerBatch);
+        Assert.Equal(
+            loadPolicy.RejectPolicy.MaxRawValueBytesPerRun,
+            restored.Load.RejectPolicy.MaxRawValueBytesPerRun);
+        Assert.Equal(
+            loadPolicy.RejectPolicy.MaxArtifactBytes,
+            restored.Load.RejectPolicy.MaxArtifactBytes);
+        Assert.NotEqual(
+            MigrationArtifactSerializer.ComputePlanDigest(strict),
+            MigrationArtifactSerializer.ComputePlanDigest(restored));
+    }
+
+    [Fact]
     public async Task NameMapping_HandlesCaseCollisionsReservedNamesAndLengthWithoutLosingUnicode()
     {
         MigrationCatalog catalog = await InspectAsync();

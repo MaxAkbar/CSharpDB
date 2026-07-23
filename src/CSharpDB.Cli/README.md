@@ -112,10 +112,10 @@ Migration planning proof surface:
 ```powershell
 csharpdb migrate inspect --source synthetic --out <catalog.json>
 csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header]
-csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>]
+csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
-csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--format text|json]
-csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--format text|json]
+csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 ```
 
 Inspection supports both the immutable synthetic qualification source and a
@@ -133,6 +133,27 @@ caller-controlled and cannot themselves be links, junctions, reparse points,
 or devices. CSV collision checks resolve link aliases in ancestor components
 before comparing input, package, catalog, plan, target, and report roles.
 
+Fail-fast is the default: omitting `--reject-mode` produces the established
+`csharpdb-migration-fail-fast/v1` plan JSON and digest. Retained CSV is the only
+CLI source that can currently opt into `--reject-mode deterministic`. That mode
+requires `--reject-rules` plus all six positive, base-10 limits shown above.
+`--reject-rules all` expands in the plan to the current fixed set
+`MIG-CSV-DATA-MISSING-001`, `MIG-CSV-DATA-NULL-001`, and
+`MIG-CSV-DATA-TYPE-001`; an explicit comma-separated value may select a
+nonempty subset. The expanded rule registry and all six limits are stored in
+the plan and therefore change its digest. They cannot be supplied to a
+fail-fast plan.
+
+Apply, `apply --resume`, and validate require a second explicit opt-in for a
+deterministic plan: both `--allow-deterministic-rejects` and
+`--reject-artifact <absolute-normalized-rejects.jsonl>`. They are rejected for
+a fail-fast plan. The artifact parent must already exist, be stable and
+caller-controlled, and contain no link, junction, reparse-point, device, or
+traversal aliases. Publication is owner-private, atomic, and no-overwrite. An
+existing artifact is reused only when every byte matches the newly projected
+canonical artifact; a different existing file is preserved and the operation
+fails.
+
 These commands produce digested deterministic planning artifacts and apply an
 explicitly approved plan to a new staged database. Apply never overwrites or
 activates an existing target. Before target creation, CSV execution verifies
@@ -141,25 +162,35 @@ snapshot identity, parser policy, and inference recipe. Rows and receipts
 commit together; `--resume` replays the same source snapshot and skips only
 batches whose identities and digests match exactly.
 Successful execution stops at `awaitingValidation` and writes a derived run
-report that contains no source values or resume cursors. Phase 2 uses the
-versioned `csharpdb-migration-fail-fast/v1` contract: the first invalid value
-stops the load before its batch reaches the target, and the failure report
-contains only its stable code plus object, batch, row, and column coordinates.
-Plans requesting durable skip-and-record rejects are refused before a staged
-target is created. The underlying SDK and CSV adapter can reproduce deterministic
-reject outcomes, and capability-qualified SDK validation compares them with the
-authoritative target snapshot before publishing its validation report. The CLI
-remains closed until it can safely publish and qualify the bounded operator-facing
-reject artifact.
+report that contains no source values or resume cursors. In fail-fast mode the
+first invalid value stops the load before its batch reaches the target, and the
+failure report contains only its stable code plus object, batch, row, and column
+coordinates. In deterministic mode accepted rows, rejects, and each v2 receipt
+commit atomically. Apply materializes and verifies the required reject artifact
+before publishing the successful run report. The report and console expose only
+safe aggregates and bindings—such as reject count, artifact digest, byte count,
+and exact-reuse status—never rejected values. A successful apply or validation
+that contains rejects returns the warning exit code so automation cannot mistake
+skip-and-record outcomes for a clean strict run.
 
 `migrate validate` compares normalized schema, 64-bit counts, and—by
 default—partitioned canonical SHA-256 evidence. It writes a deterministic,
 self-digesting JSON audit report and prints either a compact text summary or
-the JSON report. Validation uses bounded temporary spill space. Only an
-established, passing result whose report is successfully published can activate
-the staged database; differences, errors, or unavailable consistency leave it
-unactivated. Repeating the same validation/report path is idempotent, while a
-different existing report is never overwritten.
+the JSON report. Validation uses bounded temporary spill space. For a
+deterministic plan it first compares the complete source outcome replay with the
+target receipt and reject-ledger snapshot. After a passing validation report is
+durably published, the CLI re-materializes or exactly reuses the reject artifact
+and verifies its plan, target, and target-snapshot report bindings plus its
+digest, byte, and count invariants;
+only then may activation occur. Any report, artifact, or requalification failure
+withholds activation. Repeating the same validation/report and reject-artifact
+paths is idempotent, while different existing files are never overwritten.
+
+Reject artifacts are sensitive because they can contain decoded source values.
+Their protected storage, access, retention, and deletion are operator
+responsibilities. The target-owned ledger and transactional receipts remain the
+resume authority: the artifact is an operator-facing projection, never a
+checkpoint, and is not consulted to decide which batches `--resume` skips.
 
 ## Project Layout
 

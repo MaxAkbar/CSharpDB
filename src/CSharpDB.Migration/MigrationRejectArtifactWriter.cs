@@ -40,6 +40,45 @@ public sealed record MigrationRejectArtifactWriteResult
     public bool ReusedExistingArtifact { get; init; }
 }
 
+public sealed record MigrationRejectArtifactDestinationBinding
+{
+    public required string DestinationPath { get; init; }
+
+    public required string TemporaryPath { get; init; }
+}
+
+/// <summary>
+/// Performs a read-only preflight of a deterministic reject artifact
+/// destination before a coordinator opens its source or target.
+/// </summary>
+/// <remarks>
+/// Publication repeats all path, identity, link, and privacy checks while it
+/// owns the temporary claim. A successful preflight is not a reservation of
+/// the path or its parent directory.
+/// </remarks>
+public static class MigrationRejectArtifactDestinationValidator
+{
+    public static MigrationRejectArtifactDestinationBinding ValidateForPublication(
+        MigrationPlan plan,
+        string outputPath)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
+        MigrationStagedTargetPolicyValidator.ValidateForBinding(plan);
+        if (plan.Load.RejectMode != MigrationRejectMode.DeterministicRejects ||
+            plan.Load.RejectPolicy is null)
+        {
+            throw new MigrationExecutionPolicyException(
+                MigrationRejectArtifactWriter.UnsupportedRejectModeCode,
+                "Reject artifacts require the deterministic-reject migration contract.");
+        }
+
+        return MigrationRejectArtifactPublication.ValidateDestinationForPreflight(
+            outputPath,
+            MigrationArtifactSerializer.ComputePlanDigest(plan));
+    }
+}
+
 internal enum MigrationRejectArtifactFaultPoint
 {
     AfterTemporaryHeaderDurablyFlushed,

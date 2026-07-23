@@ -4,6 +4,20 @@ using CSharpDB.Migration.Canonicalization;
 
 namespace CSharpDB.Migration.Validation;
 
+/// <summary>
+/// Safe report binding exposed to a caller-owned prerequisite immediately
+/// before validation activation. The report is normalized, digested, and
+/// durably published before this context is created.
+/// </summary>
+public sealed record MigrationValidationPreActivationContext
+{
+    public required MigrationValidationReport Report { get; init; }
+
+    public required string ReportDigest { get; init; }
+
+    public required string ReportPath { get; init; }
+}
+
 public sealed record MigrationValidationRunRequest
 {
     public required MigrationPlan Plan { get; init; }
@@ -21,6 +35,17 @@ public sealed record MigrationValidationRunRequest
     public required PartitionedChecksumValidatorOptions ChecksumOptions { get; init; }
 
     public bool ActivateOnSuccess { get; init; } = true;
+
+    /// <summary>
+    /// Optional caller-owned prerequisite invoked only after a passing report
+    /// is durably published and activation has been requested. Failure or
+    /// cancellation prevents activation. No activation permit is exposed.
+    /// </summary>
+    public Func<
+        MigrationValidationPreActivationContext,
+        CancellationToken,
+        ValueTask>? BeforeActivationAsync
+    { get; init; }
 }
 
 public sealed record MigrationValidationRunResult
@@ -117,6 +142,28 @@ public sealed class MigrationValidationRunner
             {
                 throw new NotSupportedException(
                     "The validation report was published, but the migration target has no activation capability.");
+            }
+
+            if (request.BeforeActivationAsync is not null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    await request.BeforeActivationAsync(
+                            new MigrationValidationPreActivationContext
+                            {
+                                Report = report,
+                                ReportDigest = reportDigest,
+                                ReportPath = reportPath,
+                            },
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException(cancellationToken);
+                }
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
             var receipt = new MigrationValidationActivationReceipt

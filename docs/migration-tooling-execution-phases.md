@@ -385,10 +385,12 @@ atomically published, canonical, tamper-evident `.csdbcsv` package that embeds
 the raw snapshot and replays its exact reader, inference, and catalog policy.
 The CLI now inspects raw CSV into that package plus the standard catalog, emits
 an independently retainable manifest digest, and requires the exact package
-pin for apply, resume, and validation before target mutation. Tolerant rejects,
-typed export manifests, and export are not yet complete. Strict retained CSV
-now has a 50,000-row CI fixture plus isolated 100K/1M inspect, package, replay,
-apply, resume, and checksum measurements with fixed live-batch bounds; see
+pin for apply, resume, and validation before target mutation. Retained CSV now
+also exposes deterministic skip-and-record rejects through an explicit
+plan-bound rule/limit policy and a required operator-owned artifact. Typed
+export manifests and export are not yet complete. Retained CSV has a
+50,000-row CI fixture plus isolated 100K/1M inspect, package, replay, apply,
+resume, and checksum measurements with fixed live-batch bounds; see
 [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md),
 [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md),
 [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md),
@@ -409,8 +411,18 @@ replay, CSV evidence, and exact snapshot-scoped receipt/ledger comparison.
 Bounded SDK reject-artifact materialization now uses canonical JSONL, private
 same-directory claims, atomic no-overwrite publication, exact-existing reuse,
 and fresh-process recovery at partial-temp and post-publication boundaries.
-CLI tolerant execution remains gated on its explicit operator workflow; strict
-mode remains the release default.
+The CLI preserves strict fail-fast as the default. Deterministic planning is
+CSV-only and requires `--reject-mode deterministic`, the exact
+`--reject-rules all|<id,...>` registry, and explicit per-batch/per-run rejected
+row, evidence-value, evidence-batch, evidence-run, and artifact byte limits.
+Apply, resume, and validation each require
+`--allow-deterministic-rejects` and
+`--reject-artifact <absolute-normalized-rejects.jsonl>`. Apply qualifies the
+artifact before its success report; validation publishes its report,
+requalifies the artifact against that target snapshot, and only then activates.
+Reports expose safe aggregates and return a warning when rejects occurred. The
+sensitive artifact remains operator-retained, while the target ledger and
+receipts remain the resume authority.
 
 ### Track 4A: CSV
 
@@ -470,7 +482,7 @@ mode remains the release default.
 - [x] Add bounded SDK reject-artifact materialization with exact canonical
   bytes, tamper/privacy/limit/cancellation coverage, exclusive publication,
   exact regeneration, and fresh-process recovery.
-- [ ] Expose CLI strict/tolerant modes with deterministic physical-line,
+- [x] Expose CLI strict/tolerant modes with deterministic physical-line,
   logical-row, column, raw-value, and diagnostic information in a bounded
   operator-facing reject artifact.
 - [x] Add confidence-bearing schema inference and explicit overrides; default

@@ -13,12 +13,13 @@ report publication, capability-qualified SDK validation now compares that
 complete replay with snapshot-scoped target receipts and the canonical reject
 ledger. The SDK can now materialize the bounded canonical reject artifact from
 one immutable target snapshot using atomic no-overwrite publication and exact
-existing-file reuse. CLI tolerant mode remains closed; strict mode is still the
-release default.
+existing-file reuse. The CLI now exposes that capability for retained CSV
+through an explicit plan-time and per-invocation opt-in. Strict fail-fast remains
+the release default.
 
 ## Decision
 
-`MigrationRejectMode.DeterministicRejects` will use
+`MigrationRejectMode.DeterministicRejects` uses
 `csharpdb-migration-deterministic-rejects/v1`. For every source batch, the
 target must commit these three things in one transaction:
 
@@ -36,6 +37,63 @@ to rules explicitly classified as row-rejectable by the source adapter.
 Encoding failures, snapshot-integrity failures, resource-limit failures,
 unrecoverable CSV syntax, cancellation, target failures, and unknown
 exceptions remain fatal.
+
+## CLI Contract
+
+Omitting `--reject-mode` from `csharpdb migrate plan` is exactly equivalent to
+`--reject-mode fail-fast`; it does not add a reject policy and preserves the
+existing fail-fast plan JSON and digest. The initial deterministic CLI surface
+is limited to retained CSV. Selecting `--reject-mode deterministic` requires
+all of these plan options:
+
+- `--reject-rules all|<id,...>`
+- `--max-rejected-rows-per-batch <count>`
+- `--max-rejected-rows-per-run <count>`
+- `--max-reject-evidence-value-bytes <count>`
+- `--max-reject-evidence-bytes-per-batch <count>`
+- `--max-reject-evidence-bytes-per-run <count>`
+- `--max-reject-artifact-bytes <count>`
+
+The six limits are positive base-10 integers and are validated against the
+contract ceilings and ordering rules before the plan is written. `all` is not a
+runtime wildcard: planning expands it to the current ordinal CSV registry
+`MIG-CSV-DATA-MISSING-001`, `MIG-CSV-DATA-NULL-001`, and
+`MIG-CSV-DATA-TYPE-001`. An explicit comma-separated list may select a nonempty
+subset. The contract tag, expanded rules, and six limits are serialized in the
+plan and included in its digest. Reject policy options are invalid with a
+fail-fast plan.
+
+Every `migrate apply`, `migrate apply --resume`, and `migrate validate`
+invocation for a deterministic plan requires both the valueless
+`--allow-deterministic-rejects` flag and
+`--reject-artifact <absolute-normalized-rejects.jsonl>`. Those runtime options
+are invalid for fail-fast plans. The destination parent must already exist and
+remain stable and caller-controlled. Preflight uses the writer's canonical
+destination and deterministic temporary paths for collision checks and rejects
+relative, non-normalized, traversal, alias, link, reparse-point, device, and
+unsafe existing-file cases before source or target access.
+
+Apply publishes or exactly reuses and qualifies the reject artifact after all
+batch transactions succeed but before it publishes the successful
+`csharpdb-migration-run/v1` report. Validate first performs exact source-outcome
+versus target-receipt/ledger comparison and durably publishes its passing
+validation report. It then re-materializes or exactly reuses the artifact,
+checks its plan, target, and target-snapshot bindings against that report, and
+rechecks its digest, byte, and count invariants before activation. Failure or
+cancellation at either artifact boundary leaves the target unactivated and
+resumable.
+
+Ordinary reports and console output never contain rejected values. They expose
+only safe aggregates and bindings such as rejected-row counts, artifact digest,
+artifact byte count, target snapshot, and exact-reuse status. A successful
+apply or validation with any rejected rows returns the warning exit code. The
+artifact can contain decoded source values, so its access control, retention,
+and deletion remain explicit operator responsibilities.
+
+The target ledger and receipts remain the sole resume authority. The artifact
+is an idempotent operator-facing projection: it is never a checkpoint, is not
+read to decide which batches resume skips, and can be regenerated from the
+authoritative target.
 
 ## Versioned Records
 
@@ -309,9 +367,11 @@ after commit; they must not become the authority for resume.
    exact canonical JSONL, preserves different destinations, reuses identical
    destinations, and is qualified for tamper, privacy, concurrency, limits,
    cancellation, regeneration, and both fresh-process publication boundaries.
-4. Integrate the already-qualified SDK path into an explicit CLI tolerant
-   workflow only after its operator-facing destination and retention UX is
-   reviewed. Strict mode remains the default and release baseline.
+4. The CLI now integrates the qualified path for retained CSV through explicit
+   plan-time policy and per-invocation execution/artifact consent. Apply
+   publishes the artifact before its success report; validation requalifies it
+   after report publication and before activation. Strict mode remains the
+   default and release baseline.
 
 Later providers must pass the same contract suite; provider-specific exception
 catching or sidecar logging is not sufficient.
