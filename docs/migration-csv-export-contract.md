@@ -8,8 +8,9 @@ of the Phase 4A CSV export work. The generic row-factory API does not by itself
 prove source origin; the CSharpDB adapter closes that boundary only for an
 independently pinned retained snapshot. This note does not claim that
 power-loss qualification of checkpoint or final namespace replacement is
-complete, that the export/resume command exists, or that the prepared-output
-and publication substrates support non-Windows systems.
+complete or that the prepared-output and publication substrates support
+non-Windows systems. The retained-snapshot CSV export/resume command described
+below is now wired to this contract.
 
 ## Contract Boundary
 
@@ -240,14 +241,14 @@ checkpoint authoritative, while any stale pending file remains non-authority.
 This substrate is intentionally limited to local Windows filesystems. UNC and
 mapped network volumes fail closed, and non-Windows platforms receive
 `PlatformNotSupportedException`. Abrupt-power-loss qualification of namespace
-rename durability and export/resume CLI wiring remain pending.
+rename durability remains pending.
 
 ## Fail-Closed Manifest-Last Publication
 
 `CsvExportPreparedOutputPublisher` publishes only a recovered terminal
 `DataComplete` checkpoint whose canonical manifest digest equals an
 independently supplied expected digest. The request names the exact final CSV
-path and an explicit manifest path, matching the planned CLI's `--manifest`
+path and an explicit manifest path, matching the CLI's `--manifest`
 surface. Both paths must be fully qualified, normalized, distinct siblings in
 the same real local-Windows directory, and cannot alias the prepared data,
 active checkpoint, pending checkpoint, or deterministic publication staging
@@ -317,6 +318,43 @@ The handle renames provide no-overwrite process-crash ordering, but this code
 does not claim that Windows directory entries have been forced to stable
 storage. Abrupt-power-loss qualification of both checkpoint replacement and
 the data/manifest namespace sequence remains an explicit release gate.
+
+## Retained-Snapshot Export CLI
+
+The supported command surface is:
+
+```text
+csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
+```
+
+The source must already be a retained database snapshot. Its canonical
+identity, including exact byte length and lowercase SHA-256, must be captured
+and pinned independently; the command verifies that evidence before using the
+source. It does not capture a live database or treat a path as sufficient
+source identity. `lossless-v1` is the default profile.
+`spreadsheet-safe-lossy-v1` selects the separately named, value-changing
+formula mitigation policy. The optional resource arguments are positive
+base-10 values. The data-byte and decoded-BLOB ceilings become part of the
+checkpoint binding; the checkpoint row interval controls only how often
+verified progress is made durable and may be tuned between retries.
+
+There is no separate resume flag. Repeating the exact same command reopens the
+deterministic private journal, verifies its binding and prepared prefix,
+replays the retained source through the checkpoint boundary, and continues
+from the next physical row. The same rerun also recovers an exact CSV-only
+publication or idempotently reuses an exact final CSV/manifest pair. Changed
+source identity, table, profile, bound byte ceilings, destination, or existing
+bytes fail closed without overwrite or repair. A different manifest path names
+a separate publication request rather than a retry of the original pair; it is
+still subject to exact-existing and no-overwrite qualification.
+
+The output and manifest must be distinct sibling files in one trusted,
+caller-controlled local Windows directory. All prepared, checkpoint, and
+publication-staging names are deterministically derived beside them. UNC
+paths, mapped network volumes, links, junctions, reparse points, device paths,
+and non-Windows platforms remain unsupported. The normal result is a compact
+text report containing paths, row and byte counts, digests, and per-artifact
+reuse flags; `--json` emits the same safe result as structured JSON.
 
 ## Stateful Resumable Prepared-Output Coordinator
 
@@ -433,9 +471,9 @@ The writer exposes no checkpoint callback or append contract and makes no claim
 that a partial record is reusable. The separate canonical checkpoint models do
 not change this restart-only writer API.
 
-The slice still does not provide an export CLI surface, and the two-file pair
-cannot appear in one indivisible namespace operation. The manifest-last state
-machine instead makes every observable interruption state either incomplete
+The two-file pair cannot appear in one indivisible namespace operation. The
+manifest-last state machine instead makes every observable interruption state
+either incomplete
 without a manifest, exactly recoverable, or a complete exact pair. The
 separate retained-source adapter, resumable method, prepared-output lease, and
 publisher provide the verified CSharpDB source binding, generic stateful
@@ -462,7 +500,8 @@ the logical prefix through that boundary. `CSharpDbCsvExportAdapter` now proves
 that its schema, replay, and continuation all come from the bound immutable
 retained snapshot.
 
-Phase 4A remains open until the CLI uses this contract, namespace replacement
-passes abrupt-power-loss qualification, and large interrupted exports pass
-bounded-memory and resume qualification. The prepared-output and publication
-support scope remains explicitly limited to local Windows filesystems.
+The CLI now uses this contract. Phase 4A remains open until namespace
+replacement passes abrupt-power-loss qualification and large interrupted
+exports pass bounded-memory and resume qualification. The prepared-output and
+publication support scope remains explicitly limited to local Windows
+filesystems.

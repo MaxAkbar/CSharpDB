@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CSharpDB.Engine;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Csv;
@@ -18,7 +19,8 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
-        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]";
+        "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
+        "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -56,6 +58,7 @@ internal static class MigrationCommandRunner
                 "preview" => await RunPreviewAsync(args, output, error, ct),
                 "apply" => await RunApplyAsync(args, output, error, ct),
                 "validate" => await RunValidateAsync(args, output, error, ct),
+                "export" => await RunExportAsync(args, output, error, ct),
                 _ => await UnsupportedVerbAsync(args[1], error),
             };
         }
@@ -78,6 +81,217 @@ internal static class MigrationCommandRunner
             await error.WriteLineAsync($"Error: {message}");
             return InspectorCommandRunner.ExitError;
         }
+    }
+
+    private static async ValueTask<int> RunExportAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
+            return await OptionErrorAsync("Missing retained snapshot path.", error);
+        if (!TryParseOptions(
+                args,
+                3,
+                ["--json"],
+                out Dictionary<string, string> options,
+                out string? parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!RequireOnly(
+                options,
+                [
+                    "--format",
+                    "--table",
+                    "--out",
+                    "--manifest",
+                    "--expected-snapshot-identity",
+                    "--profile",
+                    "--max-data-bytes",
+                    "--max-decoded-blob-bytes",
+                    "--checkpoint-row-interval",
+                    "--json",
+                ],
+                out parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!options.TryGetValue("--format", out string? formatValue))
+            return await OptionErrorAsync("Missing required option --format.", error);
+        if (!string.Equals(formatValue, "csv", StringComparison.OrdinalIgnoreCase))
+            return await OptionErrorAsync($"Unsupported export format '{formatValue}'.", error);
+        if (!options.TryGetValue("--table", out string? tableName))
+            return await OptionErrorAsync("Missing required option --table.", error);
+        if (!options.TryGetValue("--out", out string? outputValue))
+            return await OptionErrorAsync("Missing required option --out.", error);
+        if (!options.TryGetValue("--manifest", out string? manifestValue))
+            return await OptionErrorAsync("Missing required option --manifest.", error);
+        if (!options.TryGetValue(
+                "--expected-snapshot-identity",
+                out string? snapshotIdentityValue))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --expected-snapshot-identity.",
+                error);
+        }
+        if (string.IsNullOrWhiteSpace(tableName) ||
+            string.IsNullOrWhiteSpace(outputValue) ||
+            string.IsNullOrWhiteSpace(manifestValue))
+        {
+            return await OptionErrorAsync(
+                "Export table, CSV, and manifest values cannot be blank.",
+                error);
+        }
+        if (!TryParseRetainedSnapshotIdentity(
+                snapshotIdentityValue,
+                out RetainedDatabaseSnapshotIdentity snapshotIdentity))
+        {
+            return await OptionErrorAsync(
+                "The expected snapshot identity must use canonical " +
+                "'csharpdb-retained-snapshot/v1:<positive-bytes>:sha256:<64 lowercase hex>' form.",
+                error);
+        }
+
+        CsvExportProfile profile = CsvExportProfile.LosslessV1;
+        if (options.TryGetValue("--profile", out string? profileValue))
+        {
+            profile = profileValue.ToLowerInvariant() switch
+            {
+                "lossless-v1" => CsvExportProfile.LosslessV1,
+                "spreadsheet-safe-lossy-v1" =>
+                    CsvExportProfile.SpreadsheetSafeLossyV1,
+                _ => (CsvExportProfile)(-1),
+            };
+            if (!Enum.IsDefined(profile))
+            {
+                return await OptionErrorAsync(
+                    $"Unsupported CSV export profile '{profileValue}'.",
+                    error);
+            }
+        }
+
+        long maxDataBytes = 1L << 40;
+        if (options.TryGetValue("--max-data-bytes", out string? maxDataValue) &&
+            !TryParsePositiveLong(maxDataValue, out maxDataBytes))
+        {
+            return await OptionErrorAsync(
+                "The CSV export data-byte limit must be a positive 64-bit integer.",
+                error);
+        }
+
+        int maxDecodedBlobBytes =
+            CsvExportContracts.MaximumSupportedDecodedBlobBytes;
+        if (options.TryGetValue(
+                "--max-decoded-blob-bytes",
+                out string? maxBlobValue) &&
+            (!TryParsePositiveInt(maxBlobValue, out maxDecodedBlobBytes) ||
+             maxDecodedBlobBytes >
+             CsvExportContracts.MaximumSupportedDecodedBlobBytes))
+        {
+            return await OptionErrorAsync(
+                "The CSV export decoded BLOB limit must be a positive 32-bit integer " +
+                $"no greater than {CsvExportContracts.MaximumSupportedDecodedBlobBytes}.",
+                error);
+        }
+
+        long checkpointRowInterval = 10_000;
+        if (options.TryGetValue(
+                "--checkpoint-row-interval",
+                out string? checkpointValue) &&
+            !TryParsePositiveLong(checkpointValue, out checkpointRowInterval))
+        {
+            return await OptionErrorAsync(
+                "The CSV export checkpoint row interval must be a positive 64-bit integer.",
+                error);
+        }
+
+        string snapshotPath = Path.GetFullPath(args[2]);
+        string destinationPath = Path.GetFullPath(outputValue);
+        string manifestPath = Path.GetFullPath(manifestValue);
+        if (HasWindowsDosAliasSegment(snapshotPath))
+        {
+            return await OptionErrorAsync(
+                "Windows DOS short-name aliases cannot be used for retained CSV export snapshots.",
+                error);
+        }
+        if (ContainsEquivalentResolvedPaths(
+                [snapshotPath, destinationPath, manifestPath]))
+        {
+            return await OptionErrorAsync(
+                "Retained snapshot, CSV, and manifest must use different files.",
+                error);
+        }
+        if (SnapshotUsesReservedExportNamespace(
+                snapshotPath,
+                destinationPath))
+        {
+            return await OptionErrorAsync(
+                "The retained snapshot cannot occupy the CSV export's reserved private namespace.",
+                error);
+        }
+
+        CsvExportPreparedOutputPublisher.ValidatePaths(
+            destinationPath,
+            manifestPath);
+        var request = new CSharpDbRetainedCsvExportRequest
+        {
+            SnapshotPath = snapshotPath,
+            SnapshotIdentity = snapshotIdentity,
+            TableName = tableName,
+            DestinationPath = destinationPath,
+            Profile = profile,
+            MaxDataBytes = maxDataBytes,
+            MaximumDecodedBlobBytes = maxDecodedBlobBytes,
+            CheckpointRowInterval = checkpointRowInterval,
+        };
+        CsvExportPublicationResult result =
+            await new CSharpDbCsvExportAdapter()
+                .WriteResumableAndPublishTableAsync(
+                    request,
+                    manifestPath,
+                    ct)
+                .ConfigureAwait(false);
+
+        if (options.ContainsKey("--json"))
+        {
+            var report = new
+            {
+                Format = "csharpdb-migration-export-result/v1",
+                Status = "complete",
+                ExportFormat = "csv",
+                SnapshotIdentity = snapshotIdentity.SnapshotIdentity,
+                Table = result.Manifest.Table.Name,
+                Profile = result.Manifest.Profile,
+                DataPath = result.DestinationPath,
+                ManifestPath = result.ManifestPath,
+                result.ManifestDigest,
+                RowCount = result.Manifest.Content.RowCount,
+                DataByteLength = result.Manifest.Content.DataByteLength,
+                DataDigest = result.Manifest.Content.DataDigest,
+                result.ReusedData,
+                result.ReusedManifest,
+            };
+            await output.WriteLineAsync(
+                JsonSerializer.Serialize(report, JsonOptions));
+        }
+        else
+        {
+            await output.WriteLineAsync(
+                $"Status: OK | format=csv | table={result.Manifest.Table.Name} | " +
+                $"profile={FormatCsvExportProfile(result.Manifest.Profile)} | " +
+                $"csv={result.DestinationPath} | manifest={result.ManifestPath} | " +
+                $"manifestDigest={result.ManifestDigest} | " +
+                $"dataDigest={result.Manifest.Content.DataDigest.Algorithm}:" +
+                $"{result.Manifest.Content.DataDigest.Value} | " +
+                $"rows={result.Manifest.Content.RowCount} | " +
+                $"bytes={result.Manifest.Content.DataByteLength} | " +
+                $"dataState={(result.ReusedData ? "reused" : "published")} | " +
+                $"manifestState={(result.ReusedManifest ? "reused" : "published")}");
+        }
+
+        return InspectorCommandRunner.ExitOk;
     }
 
     private static async ValueTask<int> RunInspectAsync(
@@ -1282,6 +1496,91 @@ internal static class MigrationCommandRunner
             CultureInfo.InvariantCulture,
             out result) &&
         result > 0;
+
+    private static bool TryParseRetainedSnapshotIdentity(
+        string value,
+        out RetainedDatabaseSnapshotIdentity identity)
+    {
+        identity = null!;
+        if (string.IsNullOrWhiteSpace(value) ||
+            !value.StartsWith(
+                CsvExportCheckpointContracts.RetainedSnapshotIdentityPrefix,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> remainder = value.AsSpan(
+            CsvExportCheckpointContracts.RetainedSnapshotIdentityPrefix.Length);
+        int separator = remainder.IndexOf(':');
+        if (separator <= 0)
+            return false;
+
+        ReadOnlySpan<char> byteLengthText = remainder[..separator];
+        ReadOnlySpan<char> sha256 = remainder[(separator + 1)..];
+        if (!long.TryParse(
+                byteLengthText,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out long byteLength) ||
+            byteLength <= 0 ||
+            !byteLengthText.SequenceEqual(
+                byteLength.ToString(CultureInfo.InvariantCulture)))
+        {
+            return false;
+        }
+        const string sha256Prefix = "sha256:";
+        if (!sha256.StartsWith(sha256Prefix, StringComparison.Ordinal) ||
+            sha256.Length != sha256Prefix.Length + 64 ||
+            sha256[sha256Prefix.Length..].ContainsAnyExcept(
+                "0123456789abcdef"))
+        {
+            return false;
+        }
+
+        string canonicalSha256 = sha256.ToString();
+        identity = new RetainedDatabaseSnapshotIdentity(
+            byteLength,
+            canonicalSha256,
+            value);
+        return true;
+    }
+
+    private static string FormatCsvExportProfile(CsvExportProfile profile) =>
+        profile switch
+        {
+            CsvExportProfile.LosslessV1 => "lossless-v1",
+            CsvExportProfile.SpreadsheetSafeLossyV1 =>
+                "spreadsheet-safe-lossy-v1",
+            _ => throw new ArgumentOutOfRangeException(nameof(profile)),
+        };
+
+    private static bool SnapshotUsesReservedExportNamespace(
+        string snapshotPath,
+        string destinationPath)
+    {
+        string? snapshotParent = Path.GetDirectoryName(snapshotPath);
+        string? destinationParent = Path.GetDirectoryName(destinationPath);
+        return snapshotParent is not null &&
+            destinationParent is not null &&
+            ResolvedPathsAreEquivalent(snapshotParent, destinationParent) &&
+            Path.GetFileName(snapshotPath).StartsWith(
+                ".csharpdb-csv-export-",
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasWindowsDosAliasSegment(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+
+        string root = Path.GetPathRoot(path) ?? string.Empty;
+        return path[root.Length..]
+            .Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries)
+            .Any(static segment => segment.Contains('~'));
+    }
 
     private static bool TryCreatePlanLoadPolicy(
         IReadOnlyDictionary<string, string> options,

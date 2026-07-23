@@ -107,7 +107,7 @@ csharpdb etl <status|run-package|rejects|resume> <dbfile> <runId> [--json]
 csharpdb etl <pipelines|revisions|import|export|export-revision|delete|run-stored> ...
 ```
 
-Migration planning proof surface:
+Migration and retained CSV export surface:
 
 ```powershell
 csharpdb migrate inspect --source synthetic --out <catalog.json>
@@ -116,6 +116,7 @@ csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|query
 csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
+csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 ```
 
 Inspection supports both the immutable synthetic qualification source and a
@@ -132,6 +133,24 @@ The package parent and any explicit workspace must already exist and remain
 caller-controlled and cannot themselves be links, junctions, reparse points,
 or devices. CSV collision checks resolve link aliases in ancestor components
 before comparing input, package, catalog, plan, target, and report roles.
+
+CSV export accepts only an already retained CSharpDB snapshot. Capture
+and pin its canonical identity independently before invoking the command; the
+CLI does not turn a live database path into a retained source or derive a trust
+decision from the path alone. The default profile is `lossless-v1`.
+`spreadsheet-safe-lossy-v1` is an explicit value-changing mitigation profile.
+The output CSV and manifest must be distinct siblings in one trusted,
+caller-controlled local Windows directory. UNC or mapped-network output paths,
+output links, junctions, reparse points, and devices, and non-Windows
+publication fail closed.
+
+The exact same export command is also the resume command. A rerun requalifies
+the retained snapshot identity and private checkpoint journal, resumes only at
+a verified complete-row boundary, recovers an exact CSV-only publication, or
+reuses an exact completed CSV/manifest pair. Different or unsafe existing
+files are never overwritten or repaired. Text output reports the final paths,
+row and byte counts, content digests, and whether the CSV or manifest was
+reused; `--json` emits the same result as structured JSON.
 
 Fail-fast is the default: omitting `--reject-mode` produces the established
 `csharpdb-migration-fail-fast/v1` plan JSON and digest. Retained CSV is the only
@@ -202,7 +221,7 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `MaintenanceCommandRunner.cs` - maintenance commands
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
-- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, resume, and validate commands
+- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, resume, validate, and retained CSV export commands
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
 ## Build And Test

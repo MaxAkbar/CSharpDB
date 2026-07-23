@@ -442,7 +442,13 @@ or unsafe final without mutation, stops observing cancellation after the
 first irreversible final-data commit, and preserves the private journal for
 recovery. The generic and retained CSharpDB end-to-end entry points replay the
 bound source through EOF before publication. Abrupt-power-loss qualification
-of namespace replacement and the export/resume CLI remain incomplete.
+of namespace replacement remains incomplete. The CLI now exports one physical
+table from an already retained snapshot with an independently pinned canonical
+snapshot identity. It publishes an explicit sibling CSV/manifest pair and
+uses an exact rerun of the same command as its verified resume and idempotent
+recovery path. It exposes lossless and explicitly lossy spreadsheet-safe
+profiles, resource-bound overrides, safe text or JSON results, and per-artifact
+reuse flags.
 Non-Windows platforms remain unsupported, and UNC or mapped network volumes
 fail closed. The offline retained read-only CSharpDB snapshot can be reopened
 and verified across
@@ -583,8 +589,12 @@ receipts remain the resume authority.
   requalification and copy, durable private staging, atomic no-overwrite
   renames, exact-existing recovery, invalid-state preservation, frozen
   post-data cancellation, and retained private recovery authority.
-- [ ] Qualify namespace replacement under abrupt power loss and add the
-  export/resume CLI.
+- [x] Add the retained-snapshot CSV export/resume CLI with an independently
+  pinned canonical source identity, explicit sibling CSV and manifest paths,
+  exact-command rerun recovery, profile and resource-limit controls, and text
+  or JSON results with reuse flags.
+- [ ] Qualify checkpoint and publication namespace replacement under abrupt
+  power loss.
   Prepared output remains unsupported on non-Windows platforms and fails
   closed on UNC or mapped network volumes.
 
