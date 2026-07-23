@@ -12,6 +12,7 @@ internal static partial class CsvSnapshotPackageManifestSerializer
     internal const string DigestAlgorithm = "sha256";
     internal const int MaximumManifestBytes = 16 * 1024 * 1024;
     internal const int MaximumJsonDepth = 64;
+    internal const int MaximumPayloadTextCharacters = 1024 * 1024;
 
     private static readonly UTF8Encoding s_strictUtf8 = new(
         encoderShouldEmitUTF8Identifier: false,
@@ -22,6 +23,7 @@ internal static partial class CsvSnapshotPackageManifestSerializer
     {
         ArgumentNullException.ThrowIfNull(payload);
         ValidatePayload(payload);
+        ValidateSerializationBudget(payload);
 
         JsonElement payloadElement;
         try
@@ -45,14 +47,14 @@ internal static partial class CsvSnapshotPackageManifestSerializer
         return manifestBytes;
     }
 
-    internal static CsvSnapshotPackageManifestPayload Deserialize(ReadOnlySpan<byte> utf8Json)
+    internal static CsvSnapshotPackageManifestPayload Deserialize(ReadOnlyMemory<byte> utf8Json)
     {
-        ValidateInputEncoding(utf8Json);
+        ValidateInputEncoding(utf8Json.Span);
 
         JsonDocument document;
         try
         {
-            document = JsonDocument.Parse(utf8Json.ToArray(), new JsonDocumentOptions
+            document = JsonDocument.Parse(utf8Json, new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
@@ -115,10 +117,11 @@ internal static partial class CsvSnapshotPackageManifestSerializer
             }
 
             ValidatePayload(payload);
+            ValidateSerializationBudget(payload);
             VerifyDigest(envelope.Digest, ComputeDigest(payload));
 
             byte[] canonicalBytes = SerializeEnvelope(payload, envelope.Digest);
-            if (!utf8Json.SequenceEqual(canonicalBytes))
+            if (!utf8Json.Span.SequenceEqual(canonicalBytes))
             {
                 throw new InvalidDataException(
                     "The CSV snapshot package manifest is not in the required canonical UTF-8 form.");
@@ -309,6 +312,52 @@ internal static partial class CsvSnapshotPackageManifestSerializer
         RequireMember(payload.Catalog.Digest, "payload.catalog.digest");
         ValidateText(payload.Catalog.TargetCSharpDbVersion, "payload.catalog.targetCSharpDbVersion");
         ValidateText(payload.Catalog.Digest, "payload.catalog.digest");
+    }
+
+    private static void ValidateSerializationBudget(CsvSnapshotPackageManifestPayload payload)
+    {
+        long totalCharacters = 0;
+        Add(payload.Contracts.Snapshot, "payload.contracts.snapshot");
+        Add(payload.Contracts.Binding, "payload.contracts.binding");
+        Add(payload.Contracts.Format, "payload.contracts.format");
+        Add(payload.Contracts.Inspection, "payload.contracts.inspection");
+        Add(payload.Contracts.Schema, "payload.contracts.schema");
+        Add(payload.Contracts.Scalar, "payload.contracts.scalar");
+        Add(payload.Contracts.CatalogFormat, "payload.contracts.catalogFormat");
+        Add(payload.Snapshot.ContentDigest, "payload.snapshot.contentDigest");
+        Add(payload.Snapshot.SnapshotIdentity, "payload.snapshot.snapshotIdentity");
+        Add(payload.Source.Identity, "payload.source.identity");
+        Add(payload.Source.Fingerprint, "payload.source.fingerprint");
+        Add(payload.Source.OptionsDigest, "payload.source.optionsDigest");
+        Add(payload.Reader.Delimiter, "payload.reader.delimiter");
+        Add(payload.Reader.ConfiguredEncodingName, "payload.reader.configuredEncodingName");
+        Add(payload.Reader.ResolvedEncodingName, "payload.reader.resolvedEncodingName");
+        Add(payload.Reader.CultureName, "payload.reader.cultureName");
+        Add(payload.Reader.CulturePolicyDigest, "payload.reader.culturePolicyDigest");
+        Add(payload.Reader.NullToken, "payload.reader.nullToken");
+        Add(payload.Reader.NewlinePolicy, "payload.reader.newlinePolicy");
+        Add(payload.Inference.TableName, "payload.inference.tableName");
+        for (int index = 0; index < payload.Inference.ColumnOverrides.Count; index++)
+        {
+            Add(
+                payload.Inference.ColumnOverrides[index].ExpectedHeader,
+                $"payload.inference.columnOverrides[{index}].expectedHeader");
+        }
+        Add(payload.Catalog.TargetCSharpDbVersion, "payload.catalog.targetCSharpDbVersion");
+        Add(payload.Catalog.Digest, "payload.catalog.digest");
+
+        void Add(string? value, string path)
+        {
+            if (value is null)
+                return;
+
+            totalCharacters = checked(totalCharacters + value.Length);
+            if (totalCharacters > MaximumPayloadTextCharacters)
+            {
+                throw new InvalidDataException(
+                    $"CSV snapshot package manifest text exceeds the {MaximumPayloadTextCharacters}-character serialization budget at '{path}'.");
+            }
+        }
     }
 
     private static void RequireMember(object? value, string path)

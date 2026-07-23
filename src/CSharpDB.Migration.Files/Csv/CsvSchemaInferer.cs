@@ -8,6 +8,9 @@ namespace CSharpDB.Migration.Files.Csv;
 /// </summary>
 public static class CsvSchemaInferer
 {
+    /// <summary>Absolute record-count ceiling for a bounded inference pass.</summary>
+    public const int MaximumSupportedDataRecords = 1_000_000;
+
     private const string DefaultTextRuleId = "MIG-CSV-SCHEMA-TEXT-001";
     private const string MissingFieldRuleId = "MIG-CSV-SCHEMA-MISSING-001";
     private const string OverrideMismatchRuleId = "MIG-CSV-SCHEMA-OVERRIDE-001";
@@ -79,11 +82,11 @@ public static class CsvSchemaInferer
         ArgumentNullException.ThrowIfNull(binding);
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(options);
-        if (maxDataRecords <= 0)
+        if (maxDataRecords <= 0 || maxDataRecords > MaximumSupportedDataRecords)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(maxDataRecords),
-                "The schema profile record limit must be positive.");
+                $"The schema profile record limit must be between 1 and {MaximumSupportedDataRecords}.");
         }
         if (string.IsNullOrWhiteSpace(options.TableName) || options.TableName.Length > 1024)
         {
@@ -93,11 +96,18 @@ public static class CsvSchemaInferer
         }
         if (options.ColumnOverrides is null)
             throw new ArgumentException("CSV column overrides cannot be null.", nameof(options));
-        if (options.MaxProfileCharacters <= 0)
+        if (options.ColumnOverrides.Count > CsvSchemaInferenceOptions.MaximumSupportedColumnOverrides)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
-                "The cumulative CSV profile character limit must be positive.");
+                $"CSV schema inference accepts at most {CsvSchemaInferenceOptions.MaximumSupportedColumnOverrides} column overrides.");
+        }
+        if (options.MaxProfileCharacters <= 0 ||
+            options.MaxProfileCharacters > CsvSchemaInferenceOptions.MaximumSupportedProfileCharacters)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                $"The cumulative CSV profile character limit must be between 1 and {CsvSchemaInferenceOptions.MaximumSupportedProfileCharacters}.");
         }
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -242,6 +252,13 @@ public static class CsvSchemaInferer
                 throw new ArgumentException("CSV column overrides cannot contain null values.", nameof(options));
             if (schemaOverride.ColumnIndex < 0)
                 throw new ArgumentOutOfRangeException(nameof(options), "CSV override indexes cannot be negative.");
+            if (schemaOverride.ExpectedHeader is not null &&
+                schemaOverride.ExpectedHeader.Length > CsvReaderOptions.MaximumSupportedFieldCharacters)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(options),
+                    $"CSV override header guards cannot exceed {CsvReaderOptions.MaximumSupportedFieldCharacters} characters.");
+            }
             if (!Enum.IsDefined(schemaOverride.LogicalType))
                 throw new ArgumentOutOfRangeException(nameof(options), "A CSV override logical type is invalid.");
             if (!result.TryAdd(schemaOverride.ColumnIndex, schemaOverride))

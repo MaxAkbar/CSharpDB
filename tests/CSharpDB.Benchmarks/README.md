@@ -18,6 +18,24 @@ It compares 100K and 1M row loads with the same 1,000-row/69,000-byte live
 batch bound. The recorded qualification and environment are in
 [`docs/migration-tooling-phase-2-performance.md`](../../docs/migration-tooling-phase-2-performance.md).
 
+The retained CSV diagnostic exercises immutable inspection, package reopen,
+full replay, staged apply, a fresh-session resume, and source/target checksum
+validation. Run the two sizes in separate processes so process peak-memory
+observations are not cumulative:
+
+```powershell
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --csv-retained-migration-scenario Rows100K_Batch1000_Text64 --repro
+dotnet run -c Release --project .\tests\CSharpDB.Benchmarks\CSharpDB.Benchmarks.csproj -- --csv-retained-migration-scenario Rows1M_Batch1000_Text64 --repro
+```
+
+The recorded environment, results, and resource analysis are in
+[`docs/migration-csv-performance.md`](../../docs/migration-csv-performance.md).
+
+The harness fails only on deterministic package, catalog, cursor, row,
+receipt, resume, checksum, cleanup, and fixed live-batch invariants. Its timing,
+allocation, heap, and working-set values are diagnostic evidence rather than
+release thresholds.
+
 ## Benchmark Contract
 
 Published numbers in this file are a release contract, not a scratchpad. They are promoted only from the balanced release-core suite after the release guardrail comparison passes on the canonical or same-machine runner.

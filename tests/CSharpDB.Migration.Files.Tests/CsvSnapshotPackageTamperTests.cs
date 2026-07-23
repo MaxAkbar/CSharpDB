@@ -528,6 +528,29 @@ public sealed class CsvSnapshotPackageTamperTests
     }
 
     [Fact]
+    public async Task OversizedRetainedTextWithValidDigestsIsRejectedBeforeWorkspaceCreation()
+    {
+        using var workspace = new TemporaryWorkspace();
+        string packagePath = await CreatePackageAsync(workspace);
+        string json = Encoding.UTF8.GetString(await ReadManifestAsync(packagePath));
+        string oversizedNullToken = new('n', (1024 * 1024) + 1);
+        json = ReplaceOnce(
+            json,
+            "\"nullTokenMatchesQuotedFields\":",
+            $"\"nullToken\":\"{oversizedNullToken}\",\"nullTokenMatchesQuotedFields\":");
+        json = RecomputeInnerDigest(json);
+        await ReplaceManifestAsync(packagePath, Encoding.UTF8.GetBytes(json));
+        Assert.Empty(Directory.EnumerateDirectories(workspace.Root));
+
+        await AssertOpenFailsAndPreservesAsync(
+            workspace,
+            packagePath,
+            CsvSnapshotPackageRules.InvalidFormat);
+
+        Assert.Empty(Directory.EnumerateDirectories(workspace.Root));
+    }
+
+    [Fact]
     public async Task InnerDigestHelperMatchesCanonicalPackageDigest()
     {
         using var workspace = new TemporaryWorkspace();
@@ -565,6 +588,9 @@ public sealed class CsvSnapshotPackageTamperTests
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
     public async Task SemanticTamperWithValidInnerAndOuterDigestsIsRejected(int mutation)
     {
         using var workspace = new TemporaryWorkspace();
@@ -594,6 +620,24 @@ public sealed class CsvSnapshotPackageTamperTests
                     json,
                     "\"newlinePolicy\":\"common-auto\"",
                     "\"newlinePolicy\":\"lf-only\"");
+                break;
+            case 3:
+                json = ReplaceOnce(
+                    json,
+                    "\"maxFieldCharacters\":16777216",
+                    "\"maxFieldCharacters\":2147483647");
+                break;
+            case 4:
+                json = ReplaceOnce(
+                    json,
+                    "\"maxDataRecords\":100",
+                    "\"maxDataRecords\":2147483647");
+                break;
+            case 5:
+                json = ReplaceOnce(
+                    json,
+                    "\"maxProfileCharacters\":67108864",
+                    "\"maxProfileCharacters\":9223372036854775807");
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(mutation));

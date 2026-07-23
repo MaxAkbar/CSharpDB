@@ -9,9 +9,9 @@ inference with ordinal overrides, migration-catalog adaptation, and a strict
 repeatable `IMigrationDataSource`. The reader handles quoted multiline fields
 and escaped quotes without loading the source file into memory, preserves exact
 decoded text, and keeps null, empty, missing,
-and trailing-empty fields distinct. Strict decoding and explicit field, record,
-column, inspection, and snapshot limits keep malformed or hostile inputs
-bounded.
+and trailing-empty fields distinct. Strict decoding and absolute field,
+record, column, inspection, inference, manifest, and snapshot limits keep
+malformed or hostile inputs bounded.
 
 This project owns its file-parser dependencies. It does not expose CsvHelper
 types through its public API, and the provider-neutral migration project does
@@ -30,5 +30,12 @@ snapshot/policy-bound cursors. Each pass opens a fresh reader over the same
 caller-owned snapshot, which supports receipt replay and validation rereads.
 See [`migration-csv-data-source.md`](../../docs/migration-csv-data-source.md).
 
-Tolerant reject files, CLI orchestration, manifests, and export are later
-Phase 4 slices.
+`CsvSnapshotPackage` atomically retains the raw snapshot and exact reader,
+inference, source, and catalog policy for digest-pinned cross-process reopen.
+The CLI uses that boundary for inspect, apply, resume, and validation. A
+50,000-row CI fixture and isolated 100K/1M measurements qualify fixed live
+batches, exact resume/checksum behavior, bounded memory, and temporary cleanup;
+see [`migration-csv-performance.md`](../../docs/migration-csv-performance.md).
+
+Tolerant reject files, typed CSV export manifests, and export remain later
+Phase 4A slices.

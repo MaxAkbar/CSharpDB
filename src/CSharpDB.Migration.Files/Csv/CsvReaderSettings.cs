@@ -51,24 +51,17 @@ internal sealed record CsvReaderSettings(
                 nameof(options));
         }
 
-        if (options.MaxFieldCharacters <= 0)
-            throw new ArgumentOutOfRangeException(nameof(options), "The field limit must be positive.");
-        if (options.MaxRecordCharacters <= 0 ||
-            options.MaxRecordCharacters < options.MaxFieldCharacters)
+        ValidateResourceLimits(
+            options.MaxFieldCharacters,
+            options.MaxRecordCharacters,
+            options.MaxFieldsPerRecord,
+            options.ExpectedFieldCount);
+        if (options.NullToken is not null &&
+            options.NullToken.Length > options.MaxFieldCharacters)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
-                "The record limit must be positive and at least the field limit.");
-        }
-
-        if (options.MaxFieldsPerRecord <= 0)
-            throw new ArgumentOutOfRangeException(nameof(options), "The field-count limit must be positive.");
-        if (options.ExpectedFieldCount is <= 0 ||
-            options.ExpectedFieldCount > options.MaxFieldsPerRecord)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "The expected field count must fit within the field-count limit.");
+                "The null token must fit within the configured field-character limit.");
         }
 
         var culture = CultureInfo.ReadOnly((CultureInfo)options.Culture.Clone());
@@ -91,6 +84,44 @@ internal sealed record CsvReaderSettings(
             options.MaxRecordCharacters,
             options.MaxFieldsPerRecord,
             options.LeaveOpen);
+    }
+
+    internal static void ValidateResourceLimits(
+        int maxFieldCharacters,
+        int maxRecordCharacters,
+        int maxFieldsPerRecord,
+        int? expectedFieldCount)
+    {
+        if (maxFieldCharacters <= 0 ||
+            maxFieldCharacters > CsvReaderOptions.MaximumSupportedFieldCharacters)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxFieldCharacters),
+                $"The field limit must be between 1 and {CsvReaderOptions.MaximumSupportedFieldCharacters} characters.");
+        }
+        if (maxRecordCharacters <= 0 ||
+            maxRecordCharacters < maxFieldCharacters ||
+            maxRecordCharacters > CsvReaderOptions.MaximumSupportedRecordCharacters)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxRecordCharacters),
+                $"The record limit must be at least the field limit and no greater than {CsvReaderOptions.MaximumSupportedRecordCharacters} characters.");
+        }
+
+        if (maxFieldsPerRecord <= 0 ||
+            maxFieldsPerRecord > CsvReaderOptions.MaximumSupportedFieldsPerRecord)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxFieldsPerRecord),
+                $"The field-count limit must be between 1 and {CsvReaderOptions.MaximumSupportedFieldsPerRecord}.");
+        }
+        if (expectedFieldCount is <= 0 ||
+            expectedFieldCount > maxFieldsPerRecord)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(expectedFieldCount),
+                "The expected field count must fit within the field-count limit.");
+        }
     }
 
     public CsvReaderOptions ToOptions(

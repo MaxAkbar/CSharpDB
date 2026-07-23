@@ -435,12 +435,63 @@ public static class CsvSnapshotPackage
                 "The CSV package reader policy is unsupported or noncanonical.");
         }
 
+        ValidateRetainedResourcePolicy(reader, payload.Inference);
+
         if (string.IsNullOrWhiteSpace(payload.Catalog.TargetCSharpDbVersion) ||
             !IsCanonicalHexDigest(payload.Catalog.Digest))
         {
             throw PackageError(
                 CsvSnapshotPackageRules.PolicyMismatch,
                 "The CSV package catalog binding is invalid.");
+        }
+    }
+
+    private static void ValidateRetainedResourcePolicy(
+        CsvSnapshotPackageReaderManifest reader,
+        CsvSnapshotPackageInferenceManifest inference)
+    {
+        try
+        {
+            CsvReaderSettings.ValidateResourceLimits(
+                reader.MaxFieldCharacters,
+                reader.MaxRecordCharacters,
+                reader.MaxFieldsPerRecord,
+                reader.ExpectedFieldCount);
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw PackageError(
+                CsvSnapshotPackageRules.PolicyMismatch,
+                "The CSV package reader resource policy exceeds supported safety ceilings.",
+                exception);
+        }
+
+        if (reader.NullToken is not null &&
+            reader.NullToken.Length > reader.MaxFieldCharacters)
+        {
+            throw PackageError(
+                CsvSnapshotPackageRules.PolicyMismatch,
+                "The CSV package null token exceeds its field-character limit.");
+        }
+
+        if (inference.MaxDataRecords <= 0 ||
+            inference.MaxDataRecords > CsvSchemaInferer.MaximumSupportedDataRecords ||
+            inference.MaxProfileCharacters <= 0 ||
+            inference.MaxProfileCharacters >
+                CsvSchemaInferenceOptions.MaximumSupportedProfileCharacters ||
+            string.IsNullOrWhiteSpace(inference.TableName) ||
+            inference.TableName.Length > 1024 ||
+            inference.ColumnOverrides.Count >
+                CsvSchemaInferenceOptions.MaximumSupportedColumnOverrides ||
+            inference.ColumnOverrides.Any(item =>
+                item.Index < 0 ||
+                item.Index >= CsvReaderOptions.MaximumSupportedFieldsPerRecord ||
+                (item.ExpectedHeader is not null &&
+                 item.ExpectedHeader.Length > CsvReaderOptions.MaximumSupportedFieldCharacters)))
+        {
+            throw PackageError(
+                CsvSnapshotPackageRules.PolicyMismatch,
+                "The CSV package inference resource policy exceeds supported safety ceilings.");
         }
     }
 

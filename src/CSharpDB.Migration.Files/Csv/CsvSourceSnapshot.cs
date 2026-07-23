@@ -97,6 +97,7 @@ public sealed class CsvSourceSnapshot : IAsyncDisposable
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             workspace = new CsvSnapshotWorkspace(parentPath);
             string snapshotPath = workspace.GetImmediateChildPath("source.snapshot");
             buffer = ArrayPool<byte>.Shared.Rent(settings.CopyBufferBytes);

@@ -394,7 +394,7 @@ public sealed class CsvStreamingReaderTests
         {
             MaxFieldCharacters = 1,
             MaxRecordCharacters = 128,
-            MaxFieldsPerRecord = 20_000,
+            MaxFieldsPerRecord = CsvReaderOptions.MaximumSupportedFieldsPerRecord,
         };
         await using CsvStreamingReader reader = await OpenReaderAsync(stream, options);
 
@@ -422,6 +422,38 @@ public sealed class CsvStreamingReaderTests
 
         Assert.Equal(CsvDiagnosticRules.FieldCountLimitExceeded, exception.Diagnostic.RuleId);
         Assert.Equal(32, exception.Diagnostic.ColumnIndex);
+    }
+
+    [Fact]
+    public async Task RejectsConfiguredLimitsAboveAbsoluteSafetyCeilings()
+    {
+        CsvReaderOptions[] invalidOptions =
+        [
+            new CsvReaderOptions
+            {
+                MaxFieldCharacters = CsvReaderOptions.MaximumSupportedFieldCharacters + 1,
+            },
+            new CsvReaderOptions
+            {
+                MaxRecordCharacters = CsvReaderOptions.MaximumSupportedRecordCharacters + 1,
+            },
+            new CsvReaderOptions
+            {
+                MaxFieldsPerRecord = CsvReaderOptions.MaximumSupportedFieldsPerRecord + 1,
+            },
+            new CsvReaderOptions
+            {
+                MaxFieldCharacters = 4,
+                NullToken = "oversized",
+            },
+        ];
+
+        foreach (CsvReaderOptions options in invalidOptions)
+        {
+            await using var stream = Utf8("id\n1\n");
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await OpenReaderAsync(stream, options));
+        }
     }
 
     [Fact]

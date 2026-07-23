@@ -79,6 +79,13 @@ public sealed record CsvColumnSchemaOverride
 
 public sealed record CsvSchemaInferenceOptions
 {
+    /// <summary>Absolute cumulative character ceiling for one profile pass.</summary>
+    public const long MaximumSupportedProfileCharacters = 64L * 1024 * 1024;
+
+    /// <summary>Absolute number of ordinal overrides accepted by one recipe.</summary>
+    public const int MaximumSupportedColumnOverrides =
+        CsvReaderOptions.MaximumSupportedFieldsPerRecord;
+
     public string TableName { get; init; } = "csv_data";
 
     public IReadOnlyList<CsvColumnSchemaOverride> ColumnOverrides { get; init; } = [];
@@ -88,7 +95,7 @@ public sealed record CsvSchemaInferenceOptions
     /// evidence. At most one additionally bounded logical record is parsed to
     /// identify the limit or exact EOF.
     /// </summary>
-    public long MaxProfileCharacters { get; init; } = 64L * 1024 * 1024;
+    public long MaxProfileCharacters { get; init; } = MaximumSupportedProfileCharacters;
 }
 
 internal sealed class CsvSchemaInferenceRecipe

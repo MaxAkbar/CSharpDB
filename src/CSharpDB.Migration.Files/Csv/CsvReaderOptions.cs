@@ -9,6 +9,15 @@ namespace CSharpDB.Migration.Files.Csv;
 /// </summary>
 public sealed record CsvReaderOptions
 {
+    /// <summary>Absolute decoded-field ceiling supported by the strict adapter.</summary>
+    public const int MaximumSupportedFieldCharacters = 16 * 1024 * 1024;
+
+    /// <summary>Absolute decoded-record ceiling supported by the strict adapter.</summary>
+    public const int MaximumSupportedRecordCharacters = 64 * 1024 * 1024;
+
+    /// <summary>Absolute column-count ceiling supported by the strict adapter.</summary>
+    public const int MaximumSupportedFieldsPerRecord = 16_384;
+
     public bool HasHeaderRecord { get; init; } = true;
 
     public string Delimiter { get; init; } = ",";
@@ -43,16 +52,16 @@ public sealed record CsvReaderOptions
     public int? ExpectedFieldCount { get; init; }
 
     /// <summary>Maximum decoded logical value length for one field.</summary>
-    public int MaxFieldCharacters { get; init; } = 16 * 1024 * 1024;
+    public int MaxFieldCharacters { get; init; } = MaximumSupportedFieldCharacters;
 
     /// <summary>
     /// Maximum decoded CSV syntax length for one logical record, including
     /// delimiters and quote syntax but excluding the terminating line break.
     /// </summary>
-    public int MaxRecordCharacters { get; init; } = 64 * 1024 * 1024;
+    public int MaxRecordCharacters { get; init; } = MaximumSupportedRecordCharacters;
 
     /// <summary>Maximum number of fields before parser materialization.</summary>
-    public int MaxFieldsPerRecord { get; init; } = 16_384;
+    public int MaxFieldsPerRecord { get; init; } = MaximumSupportedFieldsPerRecord;
 
     public bool LeaveOpen { get; init; }
 }

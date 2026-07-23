@@ -134,6 +134,8 @@ This slice does not add overwrite, repair, in-place upgrade, automatic
 retention cleanup, deduplication, signatures, encryption, direct reads from the
 durable package, remote/object storage, or package-embedded plans and receipts.
 A future plan-artifact version may carry a generic source-container digest so
-operators do not need to pass the independently trusted pin again. Tolerant
-rejects, typed CSV binary declarations, export manifests, and large-stream
-performance qualification remain separate work.
+operators do not need to pass the independently trusted pin again. Strict
+large-stream and resource bounds are qualified in
+[`migration-csv-performance.md`](migration-csv-performance.md). Tolerant
+rejects, typed CSV binary declarations, and export manifests remain separate
+work.

@@ -385,12 +385,15 @@ the raw snapshot and replays its exact reader, inference, and catalog policy.
 The CLI now inspects raw CSV into that package plus the standard catalog, emits
 an independently retainable manifest digest, and requires the exact package
 pin for apply, resume, and validation before target mutation. Tolerant rejects,
-typed export manifests, and export are not yet complete; see
+typed export manifests, and export are not yet complete. Strict retained CSV
+now has a 50,000-row CI fixture plus isolated 100K/1M inspect, package, replay,
+apply, resume, and checksum measurements with fixed live-batch bounds; see
 [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md),
 [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md),
 [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md),
-[`migration-csv-data-source.md`](migration-csv-data-source.md), and
-[`migration-csv-retained-package.md`](migration-csv-retained-package.md).
+[`migration-csv-data-source.md`](migration-csv-data-source.md),
+[`migration-csv-retained-package.md`](migration-csv-retained-package.md), and
+[`migration-csv-performance.md`](migration-csv-performance.md).
 
 ### Track 4A: CSV
 
@@ -420,6 +423,9 @@ typed export manifests, and export are not yet complete; see
 - [x] Wire CLI inspect, plan, apply, resume, and validation across the retained
   package boundary with an external manifest pin and pre-target catalog/source
   verification.
+- [x] Add absolute parser/inference/package resource ceilings, a 50,000-row
+  structural CI fixture, and isolated 100K/1M retained migration performance,
+  resume, checksum, memory, and temporary-disk qualification.
 
 - [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [x] Support quoted multiline fields, escaped quotes, explicit/detected

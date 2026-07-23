@@ -390,6 +390,57 @@ public sealed class CsvSnapshotPackageTests
         Assert.True(File.Exists(origin.PackagePath));
     }
 
+    [Fact]
+    public async Task PackageWriteRejectsOversizedManifestTextBeforeCreatingArtifacts()
+    {
+        using var workspace = new TemporaryDirectory();
+        string sourcePath = Path.Combine(workspace.Root, "oversized-manifest.csv");
+        string packagePath = Path.Combine(
+            workspace.Root,
+            "oversized-manifest" + CsvSnapshotPackage.FileExtension);
+        await WriteTextAsync(sourcePath, "id\n1\n2\n");
+        var readerOptions = new CsvReaderOptions
+        {
+            NullToken = new string(
+                'n',
+                (1024 * 1024) + 1),
+        };
+
+        await using (CsvSourceSnapshot snapshot = await CreateSnapshotAsync(
+            sourcePath,
+            workspace.Root))
+        {
+            CsvFormatInspection inspection = await CsvFormatInspector.InspectAsync(
+                snapshot,
+                readerOptions,
+                new CsvInspectionOptions { DelimiterCandidates = [","] },
+                Cancellation);
+            CsvSourceBinding binding = await CsvSourceBinding.CreateAsync(
+                snapshot,
+                inspection,
+                cancellationToken: Cancellation);
+            CsvSchemaInferenceResult schema = await CsvSchemaInferer.InferAsync(
+                binding,
+                snapshot,
+                maxDataRecords: 10,
+                cancellationToken: Cancellation);
+
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+                async () => await CsvSnapshotPackage.WriteAsync(
+                    packagePath,
+                    snapshot,
+                    schema,
+                    TargetVersion,
+                    Cancellation));
+
+            Assert.Contains("serialization budget", error.Message, StringComparison.Ordinal);
+            Assert.False(File.Exists(packagePath));
+            Assert.Empty(Directory.GetFiles(workspace.Root, ".csdbcsv-*.tmp"));
+        }
+
+        Assert.Empty(Directory.EnumerateDirectories(workspace.Root));
+    }
+
     private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
 
     private static async ValueTask<PackageOrigin> WritePackageAsync(

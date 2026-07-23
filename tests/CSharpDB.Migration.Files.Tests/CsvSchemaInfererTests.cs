@@ -668,6 +668,42 @@ public sealed class CsvSchemaInfererTests
         }
     }
 
+    [Fact]
+    public async Task RejectsInferencePoliciesAboveAbsoluteSafetyCeilings()
+    {
+        (CsvSourceSnapshot snapshot, CsvSourceBinding binding) = await BindAsync("id\n1\n2\n");
+        await using (snapshot)
+        {
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await InferAsync(
+                    binding,
+                    snapshot,
+                    CsvSchemaInferer.MaximumSupportedDataRecords + 1));
+
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await InferAsync(
+                    binding,
+                    snapshot,
+                    10,
+                    new CsvSchemaInferenceOptions
+                    {
+                        MaxProfileCharacters =
+                            CsvSchemaInferenceOptions.MaximumSupportedProfileCharacters + 1,
+                    }));
+
+            CsvColumnSchemaOverride[] excessiveOverrides = Enumerable
+                .Range(0, CsvSchemaInferenceOptions.MaximumSupportedColumnOverrides + 1)
+                .Select(index => Override(index, CsvColumnLogicalType.Text))
+                .ToArray();
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                async () => await InferAsync(
+                    binding,
+                    snapshot,
+                    10,
+                    new CsvSchemaInferenceOptions { ColumnOverrides = excessiveOverrides }));
+        }
+    }
+
     private const string CurrentVersion = "4.2.0";
 
     private static CsvColumnSchemaOverride Override(
