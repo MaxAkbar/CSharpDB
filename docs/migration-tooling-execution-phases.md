@@ -387,16 +387,25 @@ The CLI now inspects raw CSV into that package plus the standard catalog, emits
 an independently retainable manifest digest, and requires the exact package
 pin for apply, resume, and validation before target mutation. Retained CSV now
 also exposes deterministic skip-and-record rejects through an explicit
-plan-bound rule/limit policy and a required operator-owned artifact. Typed
-export manifests and export are not yet complete. Retained CSV has a
-50,000-row CI fixture plus isolated 100K/1M inspect, package, replay, apply,
+plan-bound rule/limit policy and a required operator-owned artifact. The typed
+`csharpdb-csv-export-manifest/v1` sidecar contract now binds the source
+snapshot, deterministic row order, ordered CSharpDB types, fixed lossless CSV
+codec, BLOB decoded-size bounds, physical data digest, and source/export
+logical digests. Its separately
+named spreadsheet-safe profile records explicit aggregate loss. The streaming
+writer, export CLI, fail-closed manifest-last publication, and durable resume are not
+yet complete. Durable resume is blocked on a retained read-only CSharpDB
+snapshot API that can be reopened and verified across processes.
+Retained CSV has a 50,000-row CI fixture plus isolated 100K/1M inspect, package,
+replay, apply,
 resume, and checksum measurements with fixed live-batch bounds; see
 [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md),
 [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md),
 [`migration-csv-schema-inference.md`](migration-csv-schema-inference.md),
 [`migration-csv-data-source.md`](migration-csv-data-source.md),
-[`migration-csv-retained-package.md`](migration-csv-retained-package.md), and
-[`migration-csv-performance.md`](migration-csv-performance.md). The
+[`migration-csv-retained-package.md`](migration-csv-retained-package.md),
+[`migration-csv-performance.md`](migration-csv-performance.md), and
+[`migration-csv-export-contract.md`](migration-csv-export-contract.md). The
 provider-neutral ordered outcome, reject-set digest, and v2 batch/receipt
 foundation is frozen in
 [`migration-deterministic-reject-contract.md`](migration-deterministic-reject-contract.md),
@@ -487,8 +496,11 @@ receipts remain the resume authority.
   operator-facing reject artifact.
 - [x] Add confidence-bearing schema inference and explicit overrides; default
   ambiguous columns to `Text`.
-- [ ] Add resumable prepared writes and streaming RFC 4180 export with a typed
-  manifest. Keep spreadsheet-safe export as an explicitly lossy mode.
+- [ ] Add resumable prepared writes and streaming RFC 4180 export using the
+  now-frozen typed manifest contract. Keep spreadsheet-safe export as an
+  explicitly lossy mode. The writer, CLI, atomic publication, and resume remain
+  outstanding; durable resume requires a retained read-only cross-process
+  CSharpDB snapshot API.
 
 ### Track 4B: JSON And NDJSON
 

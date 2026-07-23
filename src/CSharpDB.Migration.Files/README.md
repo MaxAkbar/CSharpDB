@@ -48,6 +48,20 @@ The capability-qualified SDK validation path now replays these same CSV
 accepted/rejected outcomes and compares them with the target snapshot's
 authoritative receipts and ledger before report publication. The
 provider-neutral SDK can now materialize the canonical reject artifact from
-that target-owned evidence. Its CSV CLI tolerant workflow, typed CSV export
-manifests, and export remain later Phase 4A slices, so the CLI continues to
-expose fail-fast apply only.
+that target-owned evidence. The CSV CLI now exposes deterministic tolerant
+planning, apply, resume, and validation only through explicit reject policy,
+limit, opt-in, and retained-artifact arguments; strict fail-fast remains the
+default.
+
+The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
+CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data
+digest, source/export logical digests, and a BLOB decoded-size ceiling.
+`LosslessV1` preserves source
+values; the separately named `SpreadsheetSafeLossyV1` profile records
+aggregate formula-mitigation changes without putting cell values in the
+manifest and rejects BLOB columns whose base64 could resemble a formula. The
+streaming CSV writer, export CLI, fail-closed manifest-last
+publication, and durable resume are not implemented. Durable resume requires a
+retained read-only CSharpDB snapshot that can be reopened and verified across
+processes. See
+[`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md).
