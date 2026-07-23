@@ -146,6 +146,9 @@ public sealed class JsonSourceBinding
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        await snapshot
+            .VerifyIntegrityAsync(cancellationToken)
+            .ConfigureAwait(false);
         Stream stream = snapshot.OpenRead();
         try
         {

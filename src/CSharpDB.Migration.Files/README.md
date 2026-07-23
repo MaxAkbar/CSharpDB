@@ -53,15 +53,19 @@ planning, apply, resume, and validation only through explicit reject policy,
 limit, opt-in, and retained-artifact arguments; strict fail-fast remains the
 default.
 
-The first Phase 4B slice adds a bounded, forward-only JSON reader for exact
+The first Phase 4B slices add a bounded, forward-only JSON reader for exact
 root-array and whitespace-separated multiple-value framing (including
-conventional NDJSON). It accepts strict UTF-8 with an optional leading BOM,
-preserves property encounter order, decoded names, explicit nulls, and exact
-number lexemes, and rejects duplicate decoded property names at every depth.
-The ordered logical-value model and deterministic canonical serializer are the
-format foundation only; table projection, schema inference, retained-source
-binding, migration adaptation, and JSON export remain later slices. See
-[`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md).
+conventional NDJSON), immutable source snapshots with exact reader bindings,
+and full-stream object-row schema discovery with independently bounded type
+profiling. They preserve property encounter order, decoded names, explicit
+nulls, exact number lexemes, and nested ordered values, while rejecting
+duplicate decoded property names at every depth. The inferred catalog keeps
+missing distinct from explicit null and maps nested, mixed, or lexically
+significant values to versioned canonical JSON text. Row-batch projection,
+typed sidecars, export, resume, and CLI integration remain later slices. See
+[`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
+and
+[`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md).
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
 CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data

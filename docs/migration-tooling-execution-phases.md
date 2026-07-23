@@ -615,9 +615,14 @@ The strict
 [`migration-json-reader-foundation.md`](migration-json-reader-foundation.md)
 freezes UTF-8 framing, ordered logical values, exact number lexemes, recursive
 duplicate detection, deterministic nested-value serialization, stable
-diagnostics, and per-value resource ceilings. It is a format foundation only;
-source snapshot binding, schema inference, table/collection projection, typed
-sidecars, export, resume, and CLI integration remain open.
+diagnostics, and per-value resource ceilings. Immutable private snapshots now
+bind the exact framing and reader limits used for replay. The
+[`migration-json-table-schema.md`](migration-json-table-schema.md) contract
+adds full-stream object-row shape discovery, first-encounter column ordering,
+strict missing/null policy, bounded native-type evidence, preservation-first
+number classification, and migration-catalog inspection. Row-batch data
+projection, collection projection, typed sidecars, export, resume, and CLI
+integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
