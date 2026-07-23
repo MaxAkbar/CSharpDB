@@ -53,6 +53,16 @@ planning, apply, resume, and validation only through explicit reject policy,
 limit, opt-in, and retained-artifact arguments; strict fail-fast remains the
 default.
 
+The first Phase 4B slice adds a bounded, forward-only JSON reader for exact
+root-array and whitespace-separated multiple-value framing (including
+conventional NDJSON). It accepts strict UTF-8 with an optional leading BOM,
+preserves property encounter order, decoded names, explicit nulls, and exact
+number lexemes, and rejects duplicate decoded property names at every depth.
+The ordered logical-value model and deterministic canonical serializer are the
+format foundation only; table projection, schema inference, retained-source
+binding, migration adaptation, and JSON export remain later slices. See
+[`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md).
+
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
 CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data
 digest, source/export logical digests, and a BLOB decoded-size ceiling.
@@ -92,14 +102,17 @@ authority, and disposing the lease preserves every private file.
 
 The prepared-output substrate is limited to local Windows filesystems; it fails
 closed on UNC and mapped network volumes and is unsupported on non-Windows
-platforms. The streaming writer remains deliberately restart-only: retained
-source-row replay and stateful writer integration, abrupt-power-loss
-qualification of namespace replacement, the retained-source export adapter,
-cross-process export/resume coordination, the export CLI, and fail-closed
-manifest-last publication remain pending. The offline retained read-only
-CSharpDB snapshot can be reopened and verified across processes, and its
-physical table reader provides strictly ascending signed row IDs with an
-exclusive resume boundary. See
+platforms. Retained-source replay, the stateful prepared-output coordinator,
+cross-process export/resume, the retained-snapshot CLI, and fail-closed
+manifest-last publication are implemented and process-crash qualified.
+Abrupt hard-power qualification of checkpoint and publication namespace
+replacement remains open against the documented disposable-VM filesystem and
+cache matrix. The offline retained read-only CSharpDB snapshot can be reopened
+and verified across processes, and its physical table reader provides strictly
+ascending signed row IDs with an exclusive resume boundary. See
 [`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md)
 and
-[`migration-csharpdb-retained-snapshot.md`](../../docs/migration-csharpdb-retained-snapshot.md).
+[`migration-csharpdb-retained-snapshot.md`](../../docs/migration-csharpdb-retained-snapshot.md),
+plus the
+[`migration-csv-export-power-loss-qualification.md`](../../docs/migration-csv-export-power-loss-qualification.md)
+runbook for the remaining external gate.

@@ -611,9 +611,17 @@ receipts remain the resume authority.
 
 ### Track 4B: JSON And NDJSON
 
-- [ ] Stream root arrays and NDJSON/multiple top-level values without loading
+The strict
+[`migration-json-reader-foundation.md`](migration-json-reader-foundation.md)
+freezes UTF-8 framing, ordered logical values, exact number lexemes, recursive
+duplicate detection, deterministic nested-value serialization, stable
+diagnostics, and per-value resource ceilings. It is a format foundation only;
+source snapshot binding, schema inference, table/collection projection, typed
+sidecars, export, resume, and CLI integration remain open.
+
+- [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
-- [ ] Preserve original names, explicit nulls, stable output order, duplicate
+- [x] Preserve original names, explicit nulls, stable output order, duplicate
   key diagnostics, and unrepresentable number lexemes.
 - [ ] Keep nested values as canonical JSON text for tables or as documents for
   collection targets unless an explicit projection is selected.
