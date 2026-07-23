@@ -14,26 +14,38 @@ public static class JsonCanonicalValueSerializer
         throwOnInvalidBytes: true);
 
     /// <summary>Returns deterministic canonical UTF-8 bytes for one value.</summary>
+    public static byte[] SerializeToUtf8Bytes(JsonLogicalValue value) =>
+        SerializeToUtf8Bytes(value, CancellationToken.None);
+
+    /// <summary>Returns deterministic canonical UTF-8 bytes for one value.</summary>
     public static byte[] SerializeToUtf8Bytes(
         JsonLogicalValue value,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(value);
         cancellationToken.ThrowIfCancellationRequested();
         var writer = new ArrayBufferWriter<byte>();
         Write(writer, value, cancellationToken);
-        return writer.WrittenSpan.ToArray();
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] result = writer.WrittenSpan.ToArray();
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
     }
+
+    /// <summary>Returns deterministic canonical JSON text for one value.</summary>
+    public static string SerializeToString(JsonLogicalValue value) =>
+        SerializeToString(value, CancellationToken.None);
 
     /// <summary>Returns deterministic canonical JSON text for one value.</summary>
     public static string SerializeToString(
         JsonLogicalValue value,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(value);
         cancellationToken.ThrowIfCancellationRequested();
         var writer = new ArrayBufferWriter<byte>();
         Write(writer, value, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         string result = s_strictUtf8.GetString(writer.WrittenSpan);
         cancellationToken.ThrowIfCancellationRequested();
         return result;
@@ -45,8 +57,17 @@ public static class JsonCanonicalValueSerializer
     /// </summary>
     public static void Write(
         IBufferWriter<byte> destination,
+        JsonLogicalValue value) =>
+        Write(destination, value, CancellationToken.None);
+
+    /// <summary>
+    /// Writes one value in encounter property order, retaining exact number
+    /// lexemes and using minimal JSON string escaping.
+    /// </summary>
+    public static void Write(
+        IBufferWriter<byte> destination,
         JsonLogicalValue value,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(value);

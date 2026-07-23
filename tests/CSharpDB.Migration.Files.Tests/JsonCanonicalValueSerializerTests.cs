@@ -157,6 +157,17 @@ public sealed class JsonCanonicalValueSerializerTests
                 cancellation.Token));
     }
 
+    [Fact]
+    public void OriginalClrMethodSignaturesRemainAvailable()
+    {
+        Assert.NotNull(typeof(JsonCanonicalValueSerializer).GetMethod(
+            nameof(JsonCanonicalValueSerializer.SerializeToUtf8Bytes),
+            [typeof(JsonLogicalValue)]));
+        Assert.NotNull(typeof(JsonCanonicalValueSerializer).GetMethod(
+            nameof(JsonCanonicalValueSerializer.Write),
+            [typeof(IBufferWriter<byte>), typeof(JsonLogicalValue)]));
+    }
+
     private static JsonLogicalValue Number(string lexeme) =>
         JsonLogicalValue.CreateNumber(lexeme);
 
