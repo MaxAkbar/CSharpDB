@@ -2,13 +2,15 @@
 
 This note records the typed manifest, canonical checkpoint contract,
 restart-only streaming writer, generic stateful resumable prepared-output
-coordinator, and Windows-qualified prepared-output lease/journal portions of
-the Phase 4A CSV export work. It freezes the compatibility boundary that a
-later retained-source adapter, publisher, and CLI must satisfy. It does not
-claim that a caller-supplied row factory proves source origin, that
-manifest-last publication or power-loss qualification of checkpoint namespace
-replacement is complete, that the export/resume command exists, or that the
-prepared-output substrate supports non-Windows systems.
+coordinator, retained CSharpDB source adapter, and Windows-qualified
+prepared-output lease/journal portions of the Phase 4A CSV export work. It
+freezes the compatibility boundary that a later publisher and CLI must
+satisfy. The generic row-factory API does not by itself prove source origin;
+the CSharpDB adapter closes that boundary only for an independently pinned
+retained snapshot. This note does not claim that manifest-last publication or
+power-loss qualification of checkpoint namespace replacement is complete,
+that the export/resume command exists, or that the prepared-output substrate
+supports non-Windows systems.
 
 ## Contract Boundary
 
@@ -176,7 +178,9 @@ recorded signed row ID to rebuild and verify both logical hash states and the
 transform counters. It separately rehashes the actual prepared physical prefix
 through the recorded byte boundary before appending. These checks depend on
 the trusted row factory returning the same immutable source on every open; the
-generic coordinator does not itself prove that source origin.
+generic coordinator does not itself prove that source origin. The retained
+CSharpDB adapter described below constructs that factory without accepting
+caller-supplied source evidence, schema, or row sequences.
 
 Checkpoint transitions are fail-closed. The first durable generation is zero.
 The same generation is idempotent only when its canonical bytes are identical;
@@ -233,9 +237,8 @@ checkpoint authoritative, while any stale pending file remains non-authority.
 This substrate is intentionally limited to local Windows filesystems. UNC and
 mapped network volumes fail closed, and non-Windows platforms receive
 `PlatformNotSupportedException`. Abrupt-power-loss qualification of namespace
-rename durability, final data/manifest publication, the retained-source export
-adapter and its source-origin proof, and export/resume CLI wiring remain
-pending.
+rename durability, final data/manifest publication, and export/resume CLI
+wiring remain pending.
 
 ## Stateful Resumable Prepared-Output Coordinator
 
@@ -276,10 +279,47 @@ does not publish the prepared data or manifest.
 `OpenRows` is intentionally a trusted seam, not source-origin evidence. Every
 call must enumerate the same immutable source named by `Source` and
 `SourceSnapshotIdentity`; a null boundary means from the beginning, and a
-non-null boundary must be exclusive. A retained-snapshot adapter must still
-construct the source evidence, canonical snapshot identity, table schema, and
-all row sequences from one independently verified retained snapshot session.
-That adapter and its source-origin proof remain pending.
+non-null boundary must be exclusive. Callers that use this generic API
+directly remain responsible for that invariant.
+
+## Retained CSharpDB Export Adapter
+
+`CSharpDbCsvExportAdapter.WriteResumableTableAsync` closes the source-origin
+boundary for the retained CSharpDB path. Its request accepts a retained
+snapshot path plus an independently pinned `RetainedDatabaseSnapshotIdentity`,
+the physical table name, future CSV destination, export profile, and resource
+ceilings. It does not accept a source manifest, table schema, row factory, or
+reader configuration.
+
+The adapter opens and owns one default-configured
+`RetainedDatabaseSnapshotSession` by passing the path and expected identity to
+`RetainedDatabaseSnapshot.OpenAsync`. Before the CSV coordinator can create or
+resume prepared output, the adapter opens the physical table reader once,
+thereby rejecting a view, system/internal table, external table, or missing
+table, and captures the reader's exact catalog table name and columns in
+persisted order. Every replay or continuation opens a new physical reader on
+that same verified session and rechecks the table name plus each column's
+position, exact name, type, and nullability before yielding rows. The session's
+single-active-read rule and the coordinator's sequential source opens keep
+replay and exclusive-boundary continuation on one immutable private snapshot.
+
+Source evidence is derived only from the verified session identity.
+`ByteLength` maps to `source.snapshotByteLength`; canonical
+`sha256:<64 lowercase hex>` is split into the `sha256` algorithm and bare
+64-hex `source.snapshotDigest` value; and `SnapshotIdentity` is copied exactly
+into the checkpoint binding. The source kind is `csharpdb`. Source version is
+the informational version of the `CSharpDB.Engine` assembly that qualified and
+read the retained snapshot, with `+` build metadata removed and the assembly
+version used only as a fallback. That reader version is checkpoint-bound, so a
+different Engine version cannot silently resume the same prepared output.
+
+The adapter accepts neither `DatabaseOptions` nor
+`RetainedDatabaseSnapshotOptions`; it always uses the built-in default Engine
+reader/serializer composition and the retained-snapshot default resource
+policy. The Engine reader version plus that fixed composition define the bound
+interpretation of the retained bytes. Custom serializer, index, catalog,
+checksum, or function-provider provenance is not represented by the retained
+identity or CSV checkpoint and remains unsupported.
 
 ## Restart-Only Streaming Writer
 
@@ -294,8 +334,9 @@ digest, but does not claim that the flush is durable.
 
 The low-level request receives source evidence and rows separately. Its result
 proves the emitted bytes and supplied typed row sequence; it does not by itself
-prove that those rows came from the named retained snapshot. The future
-retained-source adapter must construct both from one verified snapshot session.
+prove that those rows came from the named retained snapshot.
+`CSharpDbCsvExportAdapter` supplies the stronger retained-source path by
+constructing both from one verified, adapter-owned snapshot session.
 
 This is deliberately a restart-only boundary. If enumeration, validation,
 I/O, or cancellation fails, no manifest result is returned and the
@@ -304,10 +345,10 @@ The writer exposes no checkpoint callback or append contract and makes no claim
 that a partial record is reusable. The separate canonical checkpoint models do
 not change this restart-only writer API.
 
-The slice still does not provide an export CLI surface, retained-snapshot
-export adapter and source-origin proof, or prepared-output publication. It also
-does not make a two-file CSV/manifest pair atomic. The separate resumable
-method and prepared-output lease provide the generic stateful coordinator and
+The slice still does not provide an export CLI surface or prepared-output
+publication. It also does not make a two-file CSV/manifest pair atomic. The
+separate retained-source adapter, resumable method, and prepared-output lease
+provide the verified CSharpDB source binding, generic stateful coordinator, and
 Windows-qualified durable physical journal described above; they do not
 change this restart-only writer API.
 
@@ -327,13 +368,12 @@ boundary, and expected output prefix. The Windows lease enforces exclusive
 prepared-file ownership, durable data-before-checkpoint ordering, atomic active
 checkpoint replacement, physical-prefix verification, and tail truncation on
 reopen. The generic stateful coordinator now replays source rows and rebuilds
-the logical prefix through that boundary. End-to-end retained-source resume
-still requires the pending adapter to prove that every `OpenRows` sequence
-came from the bound immutable snapshot.
+the logical prefix through that boundary. `CSharpDbCsvExportAdapter` now proves
+that its schema, replay, and continuation all come from the bound immutable
+retained snapshot.
 
-Phase 4A remains open until the retained-source adapter and CLI use this
-contract with source-origin proof, manifest-last data and sidecar publication
-fails closed, namespace replacement passes abrupt-power-loss qualification,
-and large interrupted exports pass bounded-memory and resume qualification.
-The prepared-output support scope remains explicitly limited to local Windows
-filesystems.
+Phase 4A remains open until the CLI uses this contract, manifest-last data and
+sidecar publication fails closed, namespace replacement passes
+abrupt-power-loss qualification, and large interrupted exports pass
+bounded-memory and resume qualification. The prepared-output support scope
+remains explicitly limited to local Windows filesystems.

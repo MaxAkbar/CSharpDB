@@ -111,7 +111,54 @@ snapshot while writers continue. V1 does not claim that capability.
 
 ## CSV Export Integration
 
-This API removes both the cross-process source-view prerequisite and the
-deterministic physical row-order prerequisite for resumable CSV export, but it
-does not itself implement the CSV writer or checkpoint journal. Until that
-integration is complete, CSV export resume remains unavailable.
+`CSharpDbCsvExportAdapter.WriteResumableTableAsync` now joins this verified
+source boundary to the stateful CSV prepared-output coordinator. Its public
+request takes the retained snapshot path and an independently pinned
+`RetainedDatabaseSnapshotIdentity`, plus the physical table name, future CSV
+destination, export profile, and CSV resource ceilings. It does not accept
+caller-created source evidence, a schema, a row factory, or Engine reader
+configuration.
+
+The adapter passes the path and expected identity to
+`RetainedDatabaseSnapshot.OpenAsync` and owns the resulting default-configured
+session until the CSV operation returns or fails. It first opens the requested
+physical table reader without advancing it. That preflight applies the
+reader's existing rejection of views, system/internal tables, external tables,
+and missing tables, and captures the exact catalog table name and persisted
+column order from the physical reader rather than from caller input.
+
+Replay and continuation are separate physical readers opened sequentially on
+that same verified session. Each open rechecks the exact table name and every
+column's ordinal, name, type, and nullability against the preflight schema
+before yielding the reader's signed physical row IDs and values. The session's
+single-active-read gate therefore aligns with the stateful writer's source
+sequence: recovery first opens from the beginning to rebuild and verify the
+checkpoint prefix, disposes that reader, and only then opens after the last
+completed row ID for exclusive-boundary continuation. A `DataComplete` reopen
+uses the same session and proves EOF on its replay reader.
+
+CSV source evidence is derived only from the verified session identity:
+
+- `ByteLength` becomes the manifest snapshot byte length;
+- canonical `sha256:<64 lowercase hex>` is split into algorithm `sha256` and
+  the bare 64-hex manifest digest value; and
+- `SnapshotIdentity` is copied exactly into the checkpoint binding.
+
+The source kind is `csharpdb`. The source version is the informational version
+of the `CSharpDB.Engine` assembly that qualified and read the snapshot, with
+`+` build metadata removed and the assembly version used only as a fallback.
+That version is part of the immutable CSV checkpoint binding.
+
+The adapter exposes neither `DatabaseOptions` nor
+`RetainedDatabaseSnapshotOptions`. It always interprets retained bytes through
+the built-in default Engine reader/serializer composition and uses the default
+retained-snapshot resource policy. The Engine reader version plus that fixed
+composition define the bound source interpretation. Retained identity v1 does
+not represent custom serializer, index, catalog, checksum, or function-provider
+provenance, so custom provider configurations remain unsupported for this
+adapter.
+
+This completes the retained-source adapter and source-origin proof for local
+physical CSharpDB tables. Final CSV/manifest publication, abrupt-power-loss
+qualification of checkpoint namespace replacement, export/resume CLI wiring,
+and cross-platform prepared-output support remain separate pending work.

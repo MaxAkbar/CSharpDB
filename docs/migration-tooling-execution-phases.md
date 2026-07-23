@@ -422,15 +422,23 @@ transform counters, independently rehashes the prepared physical prefix before
 continuation, and relies on the lease to truncate a non-authoritative tail.
 Reopening `DataComplete` replays through the final boundary, proves source EOF,
 verifies the final logical digests, and reconstructs the manifest without
-appending. The trusted `OpenRows` factory must return the same immutable source
-on every call; a retained-snapshot adapter and source-origin proof are still
-required. Abrupt-power-loss qualification of namespace replacement,
-fail-closed manifest-last publication, that adapter, and export/resume CLI
-remain incomplete. Non-Windows platforms remain unsupported, and UNC or mapped
-network volumes fail closed. The offline retained
-read-only CSharpDB snapshot can now be reopened and verified across processes,
-and its physical table reader provides strictly ascending signed row IDs plus
-an exclusive resume boundary. See
+appending. The generic `OpenRows` factory remains a trusted seam, while
+`CSharpDbCsvExportAdapter` now closes the retained CSharpDB source-origin
+boundary. It takes a retained path plus an independently pinned identity,
+opens and owns one default-configured verified session, preflights the exact
+physical table schema, and supplies sequential replay and exclusive-boundary
+continuation readers from that same session. It derives source length,
+SHA-256, and canonical snapshot identity from the verified session and binds
+the normalized Engine reader informational version. The adapter exposes no
+custom Engine or retained-snapshot options: the reader version and built-in
+default reader/serializer composition define the source interpretation, while
+custom provider provenance remains unsupported. Abrupt-power-loss
+qualification of namespace replacement, fail-closed manifest-last
+publication, and export/resume CLI remain incomplete. Non-Windows platforms
+remain unsupported, and UNC or mapped network volumes fail closed. The offline
+retained read-only CSharpDB snapshot can be reopened and verified across
+processes, and its physical table reader provides strictly ascending signed
+row IDs plus an exclusive resume boundary. See
 [`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
 Retained CSV has a 50,000-row CI fixture plus isolated 100K/1M inspect, package,
 replay, apply,
@@ -554,14 +562,17 @@ receipts remain the resume authority.
   transform-count rebuild, independent physical-prefix rehash before append,
   lease-owned tail truncation, and `DataComplete` EOF proof and manifest
   reconstruction on reopen.
-- [ ] Bind a retained-snapshot adapter and source-origin proof so every trusted
-  `OpenRows` sequence comes from the checkpointed immutable source, qualify
-  namespace replacement under abrupt power loss, add the export/resume CLI,
-  and implement fail-closed manifest-last publication. The prepared-output
-  substrate remains unsupported on
-  non-Windows platforms and fails closed on UNC or mapped network volumes. The
-  retained read-only cross-process CSharpDB snapshot and deterministic physical
-  row-ID cursor are implemented for offline sources.
+- [x] Bind the retained CSharpDB source adapter and source-origin proof from a
+  path plus independently pinned `RetainedDatabaseSnapshotIdentity`: own one
+  default-configured verified session, preflight and recheck the physical
+  schema, derive all source evidence, and keep replay/continuation on that
+  session. Bind the normalized Engine reader version and fixed built-in
+  reader/serializer composition; custom provider provenance remains
+  unsupported.
+- [ ] Qualify namespace replacement under abrupt power loss, add the
+  export/resume CLI, and implement fail-closed manifest-last publication.
+  Prepared output remains unsupported on non-Windows platforms and fails
+  closed on UNC or mapped network volumes.
 
 ### Track 4B: JSON And NDJSON
 
