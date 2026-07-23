@@ -38,6 +38,7 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
 
     private readonly CsvExportPreparedOutputFileSystem fileSystem;
     private readonly CsvExportHashManifest expectedBindingDigest;
+    private readonly ICsvExportCheckpointFaultInjector? checkpointFaultInjector;
     private readonly SemaphoreSlim operationGate = new(1, 1);
     private byte[]? currentCheckpointBytes;
     private bool disposed;
@@ -49,7 +50,8 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
         CsvExportHashManifest expectedBindingDigest,
         CsvExportPreparedOutputState state,
         CsvExportCheckpoint? currentCheckpoint,
-        byte[]? currentCheckpointBytes)
+        byte[]? currentCheckpointBytes,
+        ICsvExportCheckpointFaultInjector? checkpointFaultInjector)
     {
         DestinationPath = destinationPath;
         Paths = paths;
@@ -58,6 +60,7 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
         State = state;
         CurrentCheckpoint = currentCheckpoint;
         this.currentCheckpointBytes = currentCheckpointBytes;
+        this.checkpointFaultInjector = checkpointFaultInjector;
     }
 
     /// <summary>The normalized future CSV destination.</summary>
@@ -104,6 +107,7 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                 destinationPath,
                 expectedBinding,
                 allowCompletedDestination: false,
+                checkpointFaultInjector: null,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -118,6 +122,24 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                 destinationPath,
                 expectedBinding,
                 allowCompletedDestination: true,
+                checkpointFaultInjector: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal static async ValueTask<CsvExportPreparedOutputLease>
+        OpenWithCheckpointFaultInjectorAsync(
+            string destinationPath,
+            CsvExportCheckpointBinding expectedBinding,
+            ICsvExportCheckpointFaultInjector checkpointFaultInjector,
+            CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(checkpointFaultInjector);
+        return await OpenAsyncCore(
+                destinationPath,
+                expectedBinding,
+                allowCompletedDestination: false,
+                checkpointFaultInjector,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -176,7 +198,8 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                 checkpoint.BindingDigest,
                 CsvExportPreparedOutputState.Recovered,
                 checkpoint,
-                checkpointBytes);
+                checkpointBytes,
+                checkpointFaultInjector: null);
         }
         catch
         {
@@ -189,6 +212,7 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
         string destinationPath,
         CsvExportCheckpointBinding expectedBinding,
         bool allowCompletedDestination,
+        ICsvExportCheckpointFaultInjector? checkpointFaultInjector,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -231,7 +255,8 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                     expectedBindingDigest,
                     state,
                     currentCheckpoint: null,
-                    currentCheckpointBytes: null);
+                    currentCheckpointBytes: null,
+                    checkpointFaultInjector);
             }
 
             CsvExportCheckpoint checkpoint =
@@ -259,7 +284,8 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                 expectedBindingDigest,
                 CsvExportPreparedOutputState.Recovered,
                 checkpoint,
-                checkpointBytes);
+                checkpointBytes,
+                checkpointFaultInjector);
         }
         catch
         {
@@ -390,7 +416,16 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
             if (idempotent)
                 return;
 
-            await fileSystem.ReplaceCheckpointAsync(canonicalBytes, cancellationToken)
+            await InjectCheckpointFaultAsync(
+                    checkpointFaultInjector,
+                    CsvExportCheckpointFaultPoint
+                        .AfterDataDurablyFlushedBeforePendingCheckpoint,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await fileSystem.ReplaceCheckpointAsync(
+                    canonicalBytes,
+                    checkpointFaultInjector,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             CurrentCheckpoint = checkpoint;
@@ -508,6 +543,13 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
         }
         data.Position = prefixLength;
     }
+
+    private static ValueTask InjectCheckpointFaultAsync(
+        ICsvExportCheckpointFaultInjector? faultInjector,
+        CsvExportCheckpointFaultPoint point,
+        CancellationToken cancellationToken) =>
+        faultInjector?.InjectAsync(point, cancellationToken) ??
+        ValueTask.CompletedTask;
 
     private static bool ValidateTransition(
         CsvExportCheckpoint? current,
@@ -1013,4 +1055,18 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
 
     private void ThrowIfDisposed() =>
         ObjectDisposedException.ThrowIf(disposed, this);
+}
+
+internal enum CsvExportCheckpointFaultPoint
+{
+    AfterDataDurablyFlushedBeforePendingCheckpoint,
+    AfterPendingCheckpointDurablyFlushedBeforeActiveReplacement,
+    AfterActiveCheckpointReplacedBeforeResult,
+}
+
+internal interface ICsvExportCheckpointFaultInjector
+{
+    ValueTask InjectAsync(
+        CsvExportCheckpointFaultPoint point,
+        CancellationToken cancellationToken);
 }

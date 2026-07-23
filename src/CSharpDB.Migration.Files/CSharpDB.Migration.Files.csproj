@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="CSharpDB.Migration.Files.Tests" />
+    <InternalsVisibleTo Include="CSharpDB.Migration.CrashHarness" />
   </ItemGroup>
 
 </Project>

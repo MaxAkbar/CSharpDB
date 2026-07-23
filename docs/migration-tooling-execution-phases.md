@@ -442,7 +442,11 @@ or unsafe final without mutation, stops observing cancellation after the
 first irreversible final-data commit, and preserves the private journal for
 recovery. The generic and retained CSharpDB end-to-end entry points replay the
 bound source through EOF before publication. Abrupt-power-loss qualification
-of namespace replacement remains incomplete. The CLI now exports one physical
+of namespace replacement remains incomplete. Automated child `Process.Kill`
+coverage qualifies process-crash recovery but does not close the external
+hard-power gate; see
+[`migration-csv-export-power-loss-qualification.md`](migration-csv-export-power-loss-qualification.md).
+The CLI now exports one physical
 table from an already retained snapshot with an independently pinned canonical
 snapshot identity. It publishes an explicit sibling CSV/manifest pair and
 uses an exact rerun of the same command as its verified resume and idempotent
@@ -595,6 +599,13 @@ receipts remain the resume authority.
   or JSON results with reuse flags.
 - [ ] Qualify checkpoint and publication namespace replacement under abrupt
   power loss.
+  Follow the
+  [external hard-off qualification runbook](migration-csv-export-power-loss-qualification.md);
+  process-kill tests remain process-crash coverage only. Because parent
+  directory entries are not flushed and the current admission covers broad
+  local-Windows filesystems, close this item only after every claimed
+  filesystem/cache matrix cell passes or runtime support is narrowed to the
+  qualified matrix.
   Prepared output remains unsupported on non-Windows platforms and fails
   closed on UNC or mapped network volumes.
 

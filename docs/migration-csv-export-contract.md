@@ -10,7 +10,9 @@ independently pinned retained snapshot. This note does not claim that
 power-loss qualification of checkpoint or final namespace replacement is
 complete or that the prepared-output and publication substrates support
 non-Windows systems. The retained-snapshot CSV export/resume command described
-below is now wired to this contract.
+below is now wired to this contract. The still-open external qualification gate
+and its evidence requirements are defined in
+[`migration-csv-export-power-loss-qualification.md`](migration-csv-export-power-loss-qualification.md).
 
 ## Contract Boundary
 
@@ -241,7 +243,9 @@ checkpoint authoritative, while any stale pending file remains non-authority.
 This substrate is intentionally limited to local Windows filesystems. UNC and
 mapped network volumes fail closed, and non-Windows platforms receive
 `PlatformNotSupportedException`. Abrupt-power-loss qualification of namespace
-rename durability remains pending.
+rename durability remains pending; automated child-process termination covers
+process-crash recovery only. See the
+[power-loss qualification runbook](migration-csv-export-power-loss-qualification.md).
 
 ## Fail-Closed Manifest-Last Publication
 
@@ -317,7 +321,11 @@ session.
 The handle renames provide no-overwrite process-crash ordering, but this code
 does not claim that Windows directory entries have been forced to stable
 storage. Abrupt-power-loss qualification of both checkpoint replacement and
-the data/manifest namespace sequence remains an explicit release gate.
+the data/manifest namespace sequence remains an explicit release gate. In
+particular, the implementation does not call `FlushFileBuffers` on the parent
+directory after a rename. The external hard-off matrix and accepted states are
+specified in the
+[power-loss qualification runbook](migration-csv-export-power-loss-qualification.md).
 
 ## Retained-Snapshot Export CLI
 
@@ -504,4 +512,8 @@ The CLI now uses this contract. Phase 4A remains open until namespace
 replacement passes abrupt-power-loss qualification and large interrupted
 exports pass bounded-memory and resume qualification. The prepared-output and
 publication support scope remains explicitly limited to local Windows
-filesystems.
+filesystems. The current local-Windows admission is broader than the durability
+evidence: the
+[power-loss qualification runbook](migration-csv-export-power-loss-qualification.md)
+requires either qualifying every supported filesystem/cache matrix cell or
+narrowing runtime support before this gate can close.

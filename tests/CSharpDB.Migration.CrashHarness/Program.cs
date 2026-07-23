@@ -2,6 +2,7 @@ using System.IO.Pipes;
 using System.Text;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Migration.Files.Csv;
 using CSharpDB.Primitives;
 
 return await MigrationCrashHarness.RunAsync(args);
@@ -18,6 +19,11 @@ internal static class MigrationCrashHarness
 
     public static async Task<int> RunAsync(string[] args)
     {
+        if (OptionalOption(args, "--csv-checkpoint-destination") is not null)
+            return await RunCsvCheckpointAsync(args).ConfigureAwait(false);
+        if (OptionalOption(args, "--csv-publication-destination") is not null)
+            return await RunCsvPublicationAsync(args).ConfigureAwait(false);
+
         string targetPath = Path.GetFullPath(RequiredOption(args, "--target"));
         string pipeName = RequiredOption(args, "--pipe");
         string scenario = OptionalOption(args, "--scenario") ?? FailFastScenario;
@@ -125,6 +131,150 @@ internal static class MigrationCrashHarness
                     Encoding.UTF8.GetBytes(error.Message));
                 await writer.WriteLineAsync(
                     $"ERROR|{error.GetType().FullName}|{encodedMessage}").ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+
+            return 2;
+        }
+    }
+
+    private static async Task<int> RunCsvCheckpointAsync(string[] args)
+    {
+        string destinationPath = Path.GetFullPath(
+            RequiredOption(args, "--csv-checkpoint-destination"));
+        string checkpointPath = Path.GetFullPath(
+            RequiredOption(args, "--csv-next-checkpoint"));
+        string appendPath = Path.GetFullPath(
+            RequiredOption(args, "--csv-append-bytes"));
+        string faultName = RequiredOption(args, "--csv-checkpoint-fault");
+        if (!Enum.TryParse(
+                faultName,
+                ignoreCase: false,
+                out CsvExportCheckpointFaultPoint faultPoint))
+        {
+            throw new ArgumentException(
+                $"Unknown CSV checkpoint fault point '{faultName}'.",
+                nameof(args));
+        }
+
+        return await RunCsvCoordinatedAsync(
+                args,
+                async (reader, writer) =>
+                {
+                    CsvExportCheckpoint checkpoint =
+                        CsvExportCheckpointSerializer.Deserialize(
+                            await File.ReadAllBytesAsync(checkpointPath)
+                                .ConfigureAwait(false));
+                    byte[] appendBytes = await File.ReadAllBytesAsync(appendPath)
+                        .ConfigureAwait(false);
+                    await using CsvExportPreparedOutputLease lease =
+                        await CsvExportPreparedOutputLease
+                            .OpenWithCheckpointFaultInjectorAsync(
+                                destinationPath,
+                                checkpoint.Binding,
+                                new CoordinatedCsvCheckpointFaultInjector(
+                                    faultPoint,
+                                    reader,
+                                    writer),
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                    lease.DataStream.Position = lease.DataStream.Length;
+                    await lease.DataStream.WriteAsync(appendBytes)
+                        .ConfigureAwait(false);
+                    await lease.PersistCheckpointAsync(checkpoint)
+                        .ConfigureAwait(false);
+                })
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<int> RunCsvPublicationAsync(string[] args)
+    {
+        string destinationPath = Path.GetFullPath(
+            RequiredOption(args, "--csv-publication-destination"));
+        string manifestPath = Path.GetFullPath(
+            RequiredOption(args, "--csv-publication-manifest"));
+        string expectedManifestDigest =
+            RequiredOption(args, "--csv-publication-manifest-digest");
+        string faultName = RequiredOption(args, "--csv-publication-fault");
+        if (!Enum.TryParse(
+                faultName,
+                ignoreCase: false,
+                out CsvExportPublicationFaultPoint faultPoint))
+        {
+            throw new ArgumentException(
+                $"Unknown CSV publication fault point '{faultName}'.",
+                nameof(args));
+        }
+
+        return await RunCsvCoordinatedAsync(
+                args,
+                async (reader, writer) =>
+                {
+                    _ = await new CsvExportPreparedOutputPublisher(
+                            new CoordinatedCsvPublicationFaultInjector(
+                                faultPoint,
+                                reader,
+                                writer))
+                        .PublishCompletedAsync(
+                            new CsvExportPublicationRequest
+                            {
+                                DestinationPath = destinationPath,
+                                ManifestPath = manifestPath,
+                                ExpectedManifestDigest =
+                                    expectedManifestDigest,
+                            })
+                        .ConfigureAwait(false);
+                })
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<int> RunCsvCoordinatedAsync(
+        IReadOnlyList<string> args,
+        Func<StreamReader, StreamWriter, Task> operation)
+    {
+        string pipeName = RequiredOption(args, "--pipe");
+        using var pipe = new NamedPipeClientStream(
+            ".",
+            pipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous);
+        using var connectTimeout =
+            new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await pipe.ConnectAsync(connectTimeout.Token).ConfigureAwait(false);
+        using var reader = new StreamReader(
+            pipe,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1024,
+            leaveOpen: true);
+        using var writer = new StreamWriter(
+            pipe,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true)
+        {
+            AutoFlush = true,
+        };
+
+        await writer.WriteLineAsync("READY").ConfigureAwait(false);
+        try
+        {
+            await operation(reader, writer).ConfigureAwait(false);
+            await writer.WriteLineAsync("COMPLETED_WITHOUT_FAULT")
+                .ConfigureAwait(false);
+            return 3;
+        }
+        catch (Exception error)
+        {
+            try
+            {
+                string encodedMessage = Convert.ToBase64String(
+                    Encoding.UTF8.GetBytes(error.Message));
+                await writer.WriteLineAsync(
+                        $"ERROR|{error.GetType().FullName}|{encodedMessage}")
+                    .ConfigureAwait(false);
             }
             catch
             {
@@ -422,6 +572,66 @@ internal static class MigrationCrashHarness
             {
                 throw new EndOfStreamException(
                     "Crash coordinator disconnected before releasing the reject-artifact fault point.");
+            }
+        }
+    }
+
+    private sealed class CoordinatedCsvCheckpointFaultInjector(
+        CsvExportCheckpointFaultPoint faultPoint,
+        StreamReader reader,
+        StreamWriter writer) : ICsvExportCheckpointFaultInjector
+    {
+        private int _fired;
+
+        public async ValueTask InjectAsync(
+            CsvExportCheckpointFaultPoint point,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (point != faultPoint ||
+                Interlocked.Exchange(ref _fired, 1) != 0)
+            {
+                return;
+            }
+
+            await writer.WriteLineAsync($"CSV_CHECKPOINT_REACHED|{point}")
+                .ConfigureAwait(false);
+            string? command = await reader.ReadLineAsync()
+                .ConfigureAwait(false);
+            if (!string.Equals(command, "CONTINUE", StringComparison.Ordinal))
+            {
+                throw new EndOfStreamException(
+                    "Crash coordinator disconnected before releasing the CSV checkpoint fault point.");
+            }
+        }
+    }
+
+    private sealed class CoordinatedCsvPublicationFaultInjector(
+        CsvExportPublicationFaultPoint faultPoint,
+        StreamReader reader,
+        StreamWriter writer) : ICsvExportPublicationFaultInjector
+    {
+        private int _fired;
+
+        public async ValueTask InjectAsync(
+            CsvExportPublicationFaultPoint point,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (point != faultPoint ||
+                Interlocked.Exchange(ref _fired, 1) != 0)
+            {
+                return;
+            }
+
+            await writer.WriteLineAsync($"CSV_PUBLICATION_REACHED|{point}")
+                .ConfigureAwait(false);
+            string? command = await reader.ReadLineAsync()
+                .ConfigureAwait(false);
+            if (!string.Equals(command, "CONTINUE", StringComparison.Ordinal))
+            {
+                throw new EndOfStreamException(
+                    "Crash coordinator disconnected before releasing the CSV publication fault point.");
             }
         }
     }

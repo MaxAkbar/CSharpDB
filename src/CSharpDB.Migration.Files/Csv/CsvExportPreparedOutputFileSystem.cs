@@ -199,6 +199,7 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
 
     internal async ValueTask ReplaceCheckpointAsync(
         ReadOnlyMemory<byte> canonicalBytes,
+        ICsvExportCheckpointFaultInjector? faultInjector,
         CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
@@ -228,10 +229,22 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
             // Cancellation is intentionally no longer observed after the pending
             // checkpoint becomes durable. The rename either fails or establishes
             // the new active recovery authority.
+            await InjectCheckpointFaultAsync(
+                    faultInjector,
+                    CsvExportCheckpointFaultPoint
+                        .AfterPendingCheckpointDurablyFlushedBeforeActiveReplacement,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
             ValidateOptionalPrivateSibling(paths.CheckpointPath);
             RequireWindowsParentIdentity(parentPath, parentHandle);
             ReplaceWindowsByHandle(pending, paths.CheckpointPath);
             renamed = true;
+            await InjectCheckpointFaultAsync(
+                    faultInjector,
+                    CsvExportCheckpointFaultPoint
+                        .AfterActiveCheckpointReplacedBeforeResult,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -913,6 +926,13 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
     private static ValueTask InjectFaultAsync(
         ICsvExportPublicationFaultInjector? faultInjector,
         CsvExportPublicationFaultPoint point,
+        CancellationToken cancellationToken) =>
+        faultInjector?.InjectAsync(point, cancellationToken) ??
+        ValueTask.CompletedTask;
+
+    private static ValueTask InjectCheckpointFaultAsync(
+        ICsvExportCheckpointFaultInjector? faultInjector,
+        CsvExportCheckpointFaultPoint point,
         CancellationToken cancellationToken) =>
         faultInjector?.InjectAsync(point, cancellationToken) ??
         ValueTask.CompletedTask;

@@ -98,6 +98,33 @@ public sealed class CsvExportPreparedOutputLeaseTests
     }
 
     [Fact]
+    public async Task PersistCheckpoint_EmitsEveryDurableFaultBoundaryInOrder()
+    {
+        using var workspace = new TemporaryDirectory();
+        string destinationPath = workspace.PathFor("fault-boundaries.csv");
+        CsvExportCheckpointBinding binding = CreateBinding();
+        byte[] header = HeaderBytes();
+        var injector = new RecordingCheckpointFaultInjector();
+
+        await using CsvExportPreparedOutputLease lease =
+            await CsvExportPreparedOutputLease
+                .OpenWithCheckpointFaultInjectorAsync(
+                    destinationPath,
+                    binding,
+                    injector,
+                    Cancellation);
+        await lease.DataStream.WriteAsync(header, Cancellation);
+        await lease.PersistCheckpointAsync(
+            CreateWritingCheckpoint(binding, generation: 0, header),
+            Cancellation);
+
+        Assert.Equal(
+            Enum.GetValues<CsvExportCheckpointFaultPoint>(),
+            injector.ObservedPoints);
+        Assert.Equal(0, lease.CurrentCheckpoint!.Generation);
+    }
+
+    [Fact]
     public async Task UncheckpointedData_IsInaccessibleAndPreservedUntilExplicitReset()
     {
         using var workspace = new TemporaryDirectory();
@@ -470,6 +497,40 @@ public sealed class CsvExportPreparedOutputLeaseTests
         Assert.False(File.Exists(destinationPath));
     }
 
+    [Fact]
+    public async Task Recovery_IgnoresTornPendingCheckpointBytes()
+    {
+        using var workspace = new TemporaryDirectory();
+        string destinationPath = workspace.PathFor("torn-pending.csv");
+        CsvExportCheckpointBinding binding = CreateBinding();
+        byte[] header = HeaderBytes();
+        CsvExportPreparedOutputPaths paths = await PersistHeaderCheckpointAsync(
+            destinationPath,
+            binding,
+            header);
+        byte[] torn = Encoding.UTF8.GetBytes("{\"format\":\"torn");
+        await WritePrivateFileAsync(
+            paths.PendingCheckpointPath,
+            torn,
+            Cancellation);
+
+        await using CsvExportPreparedOutputLease recovered =
+            await CsvExportPreparedOutputLease.OpenAsync(
+                destinationPath,
+                binding,
+                Cancellation);
+
+        Assert.Equal(CsvExportPreparedOutputState.Recovered, recovered.State);
+        Assert.Equal(0, recovered.CurrentCheckpoint!.Generation);
+        Assert.Equal(header.LongLength, recovered.DataStream.Length);
+        Assert.Equal(
+            torn,
+            await File.ReadAllBytesAsync(
+                paths.PendingCheckpointPath,
+                Cancellation));
+        Assert.False(File.Exists(destinationPath));
+    }
+
     private static async Task<CsvExportPreparedOutputPaths>
         PersistHeaderCheckpointAsync(
             string destinationPath,
@@ -763,6 +824,22 @@ public sealed class CsvExportPreparedOutputLeaseTests
         {
             if (Directory.Exists(Root))
                 Directory.Delete(Root, recursive: true);
+        }
+    }
+
+    private sealed class RecordingCheckpointFaultInjector
+        : ICsvExportCheckpointFaultInjector
+    {
+        public List<CsvExportCheckpointFaultPoint> ObservedPoints { get; } =
+            [];
+
+        public ValueTask InjectAsync(
+            CsvExportCheckpointFaultPoint point,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ObservedPoints.Add(point);
+            return ValueTask.CompletedTask;
         }
     }
 }
