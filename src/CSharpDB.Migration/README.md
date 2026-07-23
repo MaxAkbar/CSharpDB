@@ -49,6 +49,9 @@ part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
 - snapshot-scoped deterministic-reject validation that replays the exact apply
   outcome stream and compares every receipt and canonical ledger entry before
   schema, count, or checksum evidence can be published;
+- bounded target-snapshot reject-artifact materialization with exact canonical
+  JSONL, owner-private deterministic temporary claims, atomic no-overwrite
+  publication, and exact-existing reuse;
 - self-digesting JSON and deterministic text validation reports containing
   identities, counts, and hashes but no raw row values;
 - coherent-snapshot enforcement with `Inconclusive` outcomes when consistency
@@ -86,7 +89,8 @@ and complete rule registry and the target advertises the current digest and
 authoritative ledger capabilities. Validation still stops this path before
 report publication unless immutable source replay exactly matches the target
 snapshot's complete receipt and reject-ledger streams. The CLI remains
-fail-fast until bounded reject-artifact publication is qualified.
+fail-fast while the qualified SDK reject-artifact writer awaits an explicit
+operator-facing tolerant CLI workflow.
 
 The current CLI proof surface is:
 

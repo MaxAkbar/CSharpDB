@@ -46,7 +46,8 @@ see [`migration-csv-performance.md`](../../docs/migration-csv-performance.md).
 
 The capability-qualified SDK validation path now replays these same CSV
 accepted/rejected outcomes and compares them with the target snapshot's
-authoritative receipts and ledger before report publication. Reject-artifact
-publication, its CLI tolerant workflow, typed CSV export manifests, and export
-remain later Phase 4A slices. The CLI therefore continues to expose fail-fast
-apply only.
+authoritative receipts and ledger before report publication. The
+provider-neutral SDK can now materialize the canonical reject artifact from
+that target-owned evidence. Its CSV CLI tolerant workflow, typed CSV export
+manifests, and export remain later Phase 4A slices, so the CLI continues to
+expose fail-fast apply only.

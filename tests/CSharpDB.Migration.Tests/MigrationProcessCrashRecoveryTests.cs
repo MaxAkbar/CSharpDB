@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Security.Cryptography;
+using System.Text;
 using CSharpDB.Engine;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Validation;
@@ -255,6 +257,115 @@ public sealed class MigrationProcessCrashRecoveryTests
     }
 
     [Fact]
+    public async Task RejectArtifactChildCrash_AfterDurablePartialTemp_RetryReclaimsAndPublishes()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch batch = DeterministicBatch(plan, catalog, MixedScenario);
+        await PrepareArtifactTargetAsync(files.TargetPath, plan, catalog, batch, Ct);
+        string artifactPath = Path.Combine(files.DirectoryPath, "rejects.jsonl");
+
+        ArtifactCrashResult crash = await CrashArtifactAtAsync(
+            files.TargetPath,
+            artifactPath,
+            MigrationRejectArtifactFaultPoint.AfterTemporaryHeaderDurablyFlushed,
+            Ct);
+
+        Assert.NotEqual(0, crash.ExitCode);
+        Assert.Equal(
+            MigrationRejectArtifactFaultPoint.AfterTemporaryHeaderDurablyFlushed,
+            crash.Point);
+        Assert.False(File.Exists(artifactPath));
+        string temporaryPath = Assert.Single(Directory.EnumerateFiles(
+            files.DirectoryPath,
+            ".csharpdb-reject-*.tmp"));
+        byte[] partialBytes = await File.ReadAllBytesAsync(temporaryPath, Ct);
+        Assert.Equal(
+            Encoding.UTF8.GetBytes(
+                MigrationRejectLedgerCodec.SerializeArtifactHeader(batch.PlanDigest) + "\n"),
+            partialBytes);
+
+        await using CSharpDbStagedMigrationTarget reopened =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        MigrationRejectArtifactWriteResult result =
+            await new MigrationRejectArtifactWriter().WriteAsync(
+                new MigrationRejectArtifactWriteRequest
+                {
+                    Plan = plan,
+                    Catalog = catalog,
+                    Target = reopened,
+                    OutputPath = artifactPath,
+                },
+                Ct);
+
+        Assert.False(result.ReusedExistingArtifact);
+        Assert.Equal(1, result.RejectedRowCount);
+        Assert.True(result.ArtifactBytes > partialBytes.LongLength);
+        Assert.True(File.Exists(artifactPath));
+        Assert.Empty(Directory.EnumerateFiles(
+            files.DirectoryPath,
+            ".csharpdb-reject-*.tmp"));
+    }
+
+    [Fact]
+    public async Task RejectArtifactChildCrash_AfterPublishBeforeResult_RetryExactlyReuses()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch batch = DeterministicBatch(plan, catalog, MixedScenario);
+        await PrepareArtifactTargetAsync(files.TargetPath, plan, catalog, batch, Ct);
+        string artifactPath = Path.Combine(files.DirectoryPath, "rejects.jsonl");
+
+        ArtifactCrashResult crash = await CrashArtifactAtAsync(
+            files.TargetPath,
+            artifactPath,
+            MigrationRejectArtifactFaultPoint.AfterPublishBeforeResult,
+            Ct);
+
+        Assert.NotEqual(0, crash.ExitCode);
+        Assert.Equal(MigrationRejectArtifactFaultPoint.AfterPublishBeforeResult, crash.Point);
+        Assert.True(File.Exists(artifactPath));
+        Assert.Empty(Directory.EnumerateFiles(
+            files.DirectoryPath,
+            ".csharpdb-reject-*.tmp"));
+        byte[] publishedBytes = await File.ReadAllBytesAsync(artifactPath, Ct);
+        string publishedDigest = Convert.ToHexString(SHA256.HashData(publishedBytes))
+            .ToLowerInvariant();
+
+        await using CSharpDbStagedMigrationTarget reopened =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        MigrationRejectArtifactWriteResult result =
+            await new MigrationRejectArtifactWriter().WriteAsync(
+                new MigrationRejectArtifactWriteRequest
+                {
+                    Plan = plan,
+                    Catalog = catalog,
+                    Target = reopened,
+                    OutputPath = artifactPath,
+                },
+                Ct);
+
+        Assert.True(result.ReusedExistingArtifact);
+        Assert.Equal(publishedDigest, result.ArtifactDigest);
+        Assert.Equal(publishedBytes, await File.ReadAllBytesAsync(artifactPath, Ct));
+        Assert.Empty(Directory.EnumerateFiles(
+            files.DirectoryPath,
+            ".csharpdb-reject-*.tmp"));
+    }
+
+    [Fact]
     public async Task CrashResumeValidateReportAndActivate_CompletesFoundationSpineExactly()
     {
         using var files = new TemporaryTargetDirectory();
@@ -407,6 +518,116 @@ public sealed class MigrationProcessCrashRecoveryTests
         }
     }
 
+    private static async Task<ArtifactCrashResult> CrashArtifactAtAsync(
+        string targetPath,
+        string artifactPath,
+        MigrationRejectArtifactFaultPoint faultPoint,
+        CancellationToken cancellationToken)
+    {
+        string pipeName = $"csharpdb-reject-artifact-crash-{Guid.NewGuid():N}";
+        await using var pipe = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.InOut,
+            maxNumberOfServerInstances: 1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous);
+        using Process process = CreateRejectArtifactCrashHarnessProcess(
+            targetPath,
+            artifactPath,
+            pipeName,
+            faultPoint);
+        if (!process.Start())
+        {
+            throw new InvalidOperationException(
+                "Failed to start the migration reject-artifact crash harness process.");
+        }
+
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        bool killed = false;
+        try
+        {
+            await pipe.WaitForConnectionAsync(cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            using var reader = new StreamReader(pipe, leaveOpen: true);
+
+            string ready = await ReadProtocolLineAsync(reader, cancellationToken);
+            if (!string.Equals(ready, "READY", StringComparison.Ordinal))
+                throw ProtocolFailure(ready);
+
+            string reached = await ReadProtocolLineAsync(reader, cancellationToken);
+            string[] parts = reached.Split('|');
+            if (parts.Length != 2 ||
+                !string.Equals(parts[0], "ARTIFACT_REACHED", StringComparison.Ordinal) ||
+                !Enum.TryParse(
+                    parts[1],
+                    ignoreCase: false,
+                    out MigrationRejectArtifactFaultPoint reachedPoint))
+            {
+                throw ProtocolFailure(reached);
+            }
+
+            process.Kill(entireProcessTree: true);
+            killed = true;
+            await process.WaitForExitAsync(cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            return new ArtifactCrashResult(
+                process.ExitCode,
+                reachedPoint,
+                await stdoutTask,
+                await stderrTask);
+        }
+        catch (Exception error)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                killed = true;
+            }
+            await process.WaitForExitAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(30));
+            string stdout = await stdoutTask.ConfigureAwait(false);
+            string stderr = await stderrTask.ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Migration reject-artifact crash harness failed at {faultPoint}. " +
+                $"ExitCode={process.ExitCode}; STDOUT={stdout}; STDERR={stderr}",
+                error);
+        }
+        finally
+        {
+            if (!killed && !process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(30));
+            }
+        }
+    }
+
+    private static async Task PrepareArtifactTargetAsync(
+        string targetPath,
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        MigrationTargetBatch batch,
+        CancellationToken cancellationToken)
+    {
+        await using CSharpDbStagedMigrationTarget target =
+            await CSharpDbStagedMigrationTarget.CreateNewAsync(
+                targetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: cancellationToken);
+        await target.ApplySchemaAsync(
+            plan,
+            catalog,
+            MigrationSchemaStage.LoadEssential,
+            cancellationToken);
+        await target.WriteBatchAsync(batch, cancellationToken);
+        foreach (MigrationSchemaStage stage in Enum.GetValues<MigrationSchemaStage>().Skip(1))
+            await target.ApplySchemaAsync(plan, catalog, stage, cancellationToken);
+    }
+
     private static Process CreateCrashHarnessProcess(
         string targetPath,
         string pipeName,
@@ -437,6 +658,36 @@ public sealed class MigrationProcessCrashRecoveryTests
             startInfo.ArgumentList.Add("--scenario");
             startInfo.ArgumentList.Add(scenario);
         }
+        return new Process { StartInfo = startInfo };
+    }
+
+    private static Process CreateRejectArtifactCrashHarnessProcess(
+        string targetPath,
+        string artifactPath,
+        string pipeName,
+        MigrationRejectArtifactFaultPoint faultPoint)
+    {
+        string assemblyPath = FindCrashHarnessAssembly();
+        string dotnetHost = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } path
+            ? path
+            : "dotnet";
+        var startInfo = new ProcessStartInfo(dotnetHost)
+        {
+            WorkingDirectory = Path.GetDirectoryName(assemblyPath)!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add(assemblyPath);
+        startInfo.ArgumentList.Add("--target");
+        startInfo.ArgumentList.Add(targetPath);
+        startInfo.ArgumentList.Add("--pipe");
+        startInfo.ArgumentList.Add(pipeName);
+        startInfo.ArgumentList.Add("--artifact-output");
+        startInfo.ArgumentList.Add(artifactPath);
+        startInfo.ArgumentList.Add("--artifact-fault");
+        startInfo.ArgumentList.Add(faultPoint.ToString());
         return new Process { StartInfo = startInfo };
     }
 
@@ -938,6 +1189,12 @@ public sealed class MigrationProcessCrashRecoveryTests
         CSharpDbMigrationFaultPoint Point,
         string SourceObjectId,
         long BatchOrdinal,
+        string StdOut,
+        string StdErr);
+
+    private sealed record ArtifactCrashResult(
+        int ExitCode,
+        MigrationRejectArtifactFaultPoint Point,
         string StdOut,
         string StdErr);
 

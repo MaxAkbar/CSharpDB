@@ -352,16 +352,16 @@ public static class MigrationApplyPolicyValidator
         {
             throw new MigrationExecutionPolicyException(
                 "MIG-APPLY-POLICY-REJECT-001",
-                $"Phase 2 apply supports only '{MigrationRejectMode.FailFast}' row handling " +
+                $"This strict migration apply entry point supports only '{MigrationRejectMode.FailFast}' row handling " +
                 $"under contract '{MigrationRejectContract.DeterministicFailFastV1}'. " +
-                "The atomic reject-ledger write and reject-aware validation path are not enabled.");
+                "Deterministic rejects require the capability-qualified SDK apply path.");
         }
     }
 
     /// <summary>
     /// Capability-qualified policy gate used by the provider-neutral apply
     /// runner. CLI entry points intentionally retain the stricter plan-only
-    /// overload until tolerant artifact publication is enabled.
+    /// overload until the operator-facing tolerant workflow is enabled.
     /// </summary>
     public static void ValidateForExecution(
         MigrationPlan plan,

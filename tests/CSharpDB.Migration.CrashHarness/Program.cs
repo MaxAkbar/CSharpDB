@@ -20,10 +20,42 @@ internal static class MigrationCrashHarness
     {
         string targetPath = Path.GetFullPath(RequiredOption(args, "--target"));
         string pipeName = RequiredOption(args, "--pipe");
-        string faultName = RequiredOption(args, "--fault");
         string scenario = OptionalOption(args, "--scenario") ?? FailFastScenario;
-        if (!Enum.TryParse(faultName, ignoreCase: false, out CSharpDbMigrationFaultPoint faultPoint))
-            throw new ArgumentException($"Unknown migration fault point '{faultName}'.", nameof(args));
+        string? artifactOutputOption = OptionalOption(args, "--artifact-output");
+        string? artifactFaultName = OptionalOption(args, "--artifact-fault");
+        CSharpDbMigrationFaultPoint migrationFaultPoint = default;
+        MigrationRejectArtifactFaultPoint artifactFaultPoint = default;
+        if (artifactOutputOption is null)
+        {
+            string faultName = RequiredOption(args, "--fault");
+            if (!Enum.TryParse(
+                    faultName,
+                    ignoreCase: false,
+                    out migrationFaultPoint))
+            {
+                throw new ArgumentException(
+                    $"Unknown migration fault point '{faultName}'.",
+                    nameof(args));
+            }
+        }
+        else
+        {
+            if (artifactFaultName is null)
+            {
+                throw new ArgumentException(
+                    "Missing required option '--artifact-fault'.",
+                    nameof(args));
+            }
+            if (!Enum.TryParse(
+                    artifactFaultName,
+                    ignoreCase: false,
+                    out artifactFaultPoint))
+            {
+                throw new ArgumentException(
+                    $"Unknown reject-artifact fault point '{artifactFaultName}'.",
+                    nameof(args));
+            }
+        }
 
         using var pipe = new NamedPipeClientStream(
             ".",
@@ -51,19 +83,35 @@ internal static class MigrationCrashHarness
         try
         {
             MigrationCatalog catalog = await InspectAsync().ConfigureAwait(false);
-            var injector = new CoordinatedCrashFaultInjector(faultPoint, reader, writer);
-
-            if (string.Equals(scenario, FailFastScenario, StringComparison.Ordinal))
+            if (artifactOutputOption is not null)
             {
-                await RunFailFastAsync(targetPath, catalog, injector).ConfigureAwait(false);
+                await RunRejectArtifactAsync(
+                    targetPath,
+                    Path.GetFullPath(artifactOutputOption),
+                    catalog,
+                    new CoordinatedRejectArtifactFaultInjector(
+                        artifactFaultPoint,
+                        reader,
+                        writer)).ConfigureAwait(false);
             }
             else
             {
-                await RunDeterministicRejectAsync(
-                    targetPath,
-                    catalog,
-                    scenario,
-                    injector).ConfigureAwait(false);
+                var injector = new CoordinatedCrashFaultInjector(
+                    migrationFaultPoint,
+                    reader,
+                    writer);
+                if (string.Equals(scenario, FailFastScenario, StringComparison.Ordinal))
+                {
+                    await RunFailFastAsync(targetPath, catalog, injector).ConfigureAwait(false);
+                }
+                else
+                {
+                    await RunDeterministicRejectAsync(
+                        targetPath,
+                        catalog,
+                        scenario,
+                        injector).ConfigureAwait(false);
+                }
             }
 
             await writer.WriteLineAsync("COMPLETED_WITHOUT_FAULT").ConfigureAwait(false);
@@ -126,6 +174,29 @@ internal static class MigrationCrashHarness
                 SyntheticMigrationDataSource.FixtureSnapshotIdentity,
                 injector).ConfigureAwait(false);
         _ = await target.WriteBatchAsync(batch).ConfigureAwait(false);
+    }
+
+    private static async Task RunRejectArtifactAsync(
+        string targetPath,
+        string outputPath,
+        MigrationCatalog catalog,
+        IMigrationRejectArtifactFaultInjector injector)
+    {
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        await using CSharpDbStagedMigrationTarget target =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                targetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity).ConfigureAwait(false);
+        _ = await new MigrationRejectArtifactWriter(injector).WriteAsync(
+            new MigrationRejectArtifactWriteRequest
+            {
+                Plan = plan,
+                Catalog = catalog,
+                Target = target,
+                OutputPath = outputPath,
+            }).ConfigureAwait(false);
     }
 
     private static async ValueTask<MigrationCatalog> InspectAsync() =>
@@ -327,6 +398,31 @@ internal static class MigrationCrashHarness
             string? command = await reader.ReadLineAsync().ConfigureAwait(false);
             if (!string.Equals(command, "CONTINUE", StringComparison.Ordinal))
                 throw new EndOfStreamException("Crash coordinator disconnected before releasing the fault point.");
+        }
+    }
+
+    private sealed class CoordinatedRejectArtifactFaultInjector(
+        MigrationRejectArtifactFaultPoint faultPoint,
+        StreamReader reader,
+        StreamWriter writer) : IMigrationRejectArtifactFaultInjector
+    {
+        private int _fired;
+
+        public async ValueTask InjectAsync(
+            MigrationRejectArtifactFaultPoint point,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (point != faultPoint || Interlocked.Exchange(ref _fired, 1) != 0)
+                return;
+
+            await writer.WriteLineAsync($"ARTIFACT_REACHED|{point}").ConfigureAwait(false);
+            string? command = await reader.ReadLineAsync().ConfigureAwait(false);
+            if (!string.Equals(command, "CONTINUE", StringComparison.Ordinal))
+            {
+                throw new EndOfStreamException(
+                    "Crash coordinator disconnected before releasing the reject-artifact fault point.");
+            }
         }
     }
 }

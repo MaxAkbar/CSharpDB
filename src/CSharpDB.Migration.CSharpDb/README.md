@@ -24,7 +24,8 @@ atomically. One immutable validation reader snapshot exposes the complete
 ordered receipt and reject-ledger streams alongside schema, counts, and rows;
 the SDK runner requires exact source-outcome agreement before it can publish a
 deterministic-reject report. The project has no overwrite, merge, or replace
-API.
+API. The provider-neutral SDK artifact writer projects those immutable streams
+into canonical JSONL and publishes without overwriting a different file.
 
 The adapter implements both deterministic fail-fast and the opt-in deterministic
 reject contract. Conversion visits canonical source objects, rows, and columns
@@ -36,4 +37,5 @@ qualification covers accepted-only, mixed, and all-reject batches at every
 transaction boundary.
 
 Identity/rowversion/default lowering, archive restoration, and bounded
-reject-artifact publication remain explicit follow-up work.
+operator-facing CLI integration remain explicit follow-up work. SDK
+reject-artifact publication is qualified independently of the CLI.

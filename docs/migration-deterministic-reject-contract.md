@@ -11,7 +11,10 @@ source replay, and CSV evidence are present. Capability-qualified SDK apply can
 write and exactly replay accepted-only, mixed, and all-reject batches. Before
 report publication, capability-qualified SDK validation now compares that
 complete replay with snapshot-scoped target receipts and the canonical reject
-ledger. Reject-artifact publication and CLI tolerant mode remain closed.
+ledger. The SDK can now materialize the bounded canonical reject artifact from
+one immutable target snapshot using atomic no-overwrite publication and exact
+existing-file reuse. CLI tolerant mode remains closed; strict mode is still the
+release default.
 
 ## Decision
 
@@ -165,11 +168,27 @@ values. They follow stricter handling than migration reports:
   reports, receipts, diagnostic messages, or file names;
 - the operator must explicitly select tolerant mode and a reject-artifact
   destination;
-- artifact creation uses an exclusive file, rejects traversal and
-  reparse-point destinations, writes a same-directory temporary file, and
-  publishes by atomic replacement without widening the parent directory ACL;
-- incomplete temporary artifacts are removed on retry; and
+- artifact creation requires a fully qualified normalized path with valid
+  Unicode scalar data, rejects traversal, aliases, devices, links, and
+  reparse-point parents, and writes an owner-private, single-link,
+  same-directory deterministic temporary file without widening the parent
+  directory ACL;
+- publication is atomic and no-overwrite. An existing owner-private,
+  single-link destination is reused only when every byte is identical; a
+  different existing file is preserved and fails the operation;
+- retry reclaims only the writer's unlocked, owner-private, single-link stale
+  temporary claim. Linked, non-private, or active claims are refused and
+  preserved;
+- cancellation before publication removes the owned temporary file, while a
+  completed publication is deliberately not rolled back; and
 - retention and deletion are explicit operator responsibilities.
+
+The selected parent directory is a caller-controlled trust boundary. It must
+remain stable for the operation, and the caller must prevent other actors with
+directory-entry mutation rights from replacing the parent, temporary name, or
+destination while publication is running. The no-link and identity checks
+protect against accidental or uncoordinated paths; they do not turn an
+attacker-writable directory into a safe secret store.
 
 Digests provide integrity, not redaction. Receipt and ledger access remains
 restricted with the staged target even though receipts contain only aggregate
@@ -199,6 +218,14 @@ The artifact is canonical UTF-8 JSON Lines, ordered exactly like the ledger,
 with a versioned binding header followed by canonical reject entries. It has
 no timestamps or environment-specific paths. Re-materializing it from the same
 target ledger produces identical bytes.
+
+Materialization recomputes the reject digest and checks receipt, cursor, count,
+rule, column, ledger-order, and policy bindings. It does not independently
+recompute the accepted-row portion of the batch digest because accepted rows
+are not part of the reject artifact. That binding remains the responsibility
+of the target implementation behind the immutable,
+`ConsistencyStatus.Established` validation snapshot; the writer requires the
+current digest format and validates the stored batch digest syntax.
 
 ## Atomic Write Contract
 
@@ -235,13 +262,16 @@ remain reopenable, but new activations require the outcome-bound identity.
 | After receipt, before commit | Transaction uncommitted | Roll back all three records |
 | Commit succeeds but acknowledgement is lost | All three records committed | Read receipt, reproduce outcome, validate, and skip |
 | After commit, before artifact projection | All three records committed | Regenerate artifact from the ledger |
-| During artifact write or publish | Target remains authoritative; temp may exist | Delete/replace temp and regenerate identical bytes |
+| During artifact write or publish | Target remains authoritative; private temp or final may exist | Reclaim only an owned private stale temp, otherwise publish or exactly reuse without overwrite |
 | Cancellation before commit begins | No current-batch state | Honor cancellation |
 | Cancellation after commit is invoked | Commit result may be indeterminate | Resolve through receipt lookup; never assume rollback |
 | Source, policy, count, digest, or cursor mismatch | Prior receipts only | Stop without changing the target or artifact |
 
 Tests must inject faults at every transaction boundary, include accepted-only,
 mixed, and all-reject batches, and repeat each case across a fresh process.
+Artifact qualification additionally kills a fresh process after a durable
+partial temporary write and after atomic publication but before the result is
+returned, then proves stale-temp regeneration or exact-existing reuse.
 
 ## Pipeline Reuse Decision
 
@@ -275,11 +305,13 @@ after commit; they must not become the authority for resume.
    present for `MissingField`, `NullNotAllowed`, and `TypeMismatch`. Parser,
    integrity, conversion, and resource errors remain fatal. Snapshot-scoped
    validation compares exact receipt and ledger streams before report
-   publication. Bounded artifact materialization remains the next part of this
-   phase.
-4. Expose CLI tolerant mode only after cross-process resume, tamper, privacy,
-   large-stream, all-reject, limit, cancellation, and artifact-regeneration
-   tests pass. Strict mode remains the default and release baseline.
+   publication. SDK artifact materialization is now bounded and streaming, uses
+   exact canonical JSONL, preserves different destinations, reuses identical
+   destinations, and is qualified for tamper, privacy, concurrency, limits,
+   cancellation, regeneration, and both fresh-process publication boundaries.
+4. Integrate the already-qualified SDK path into an explicit CLI tolerant
+   workflow only after its operator-facing destination and retention UX is
+   reviewed. Strict mode remains the default and release baseline.
 
 Later providers must pass the same contract suite; provider-specific exception
 catching or sidecar logging is not sufficient.

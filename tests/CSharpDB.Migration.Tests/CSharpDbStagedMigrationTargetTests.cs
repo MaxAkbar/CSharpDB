@@ -1,3 +1,4 @@
+using System.Text;
 using CSharpDB.Engine;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Primitives;
@@ -449,6 +450,87 @@ public sealed class CSharpDbStagedMigrationTargetTests
             (await CollectAsync(
                 rejectSnapshot.ReadRejectLedgerAsync(planDigest, Ct)))
             .Select(entry => entry.RejectedRow.SourceRowOrdinal));
+    }
+
+    [Fact]
+    public async Task RejectArtifactWriter_RegeneratesExactRealTargetLedgerAcrossReopen()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch first = DeterministicBatch(
+            plan,
+            catalog,
+            rows:
+            [
+                AcceptedRow(0, "zero"),
+                AcceptedRow(2, "two"),
+            ],
+            rejectedRows: [RejectedRow(1, "private-bad-one")],
+            nextCursor: "cursor:3");
+        MigrationTargetBatch second = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(4, "four")],
+            rejectedRows:
+            [
+                RejectedRow(3, "private-bad-three"),
+                RejectedRow(5, "private-bad-five"),
+            ],
+            batchOrdinal: 1,
+            startCursor: "cursor:3");
+        string artifactPath = Path.Combine(files.DirectoryPath, "rejects.jsonl");
+        MigrationRejectArtifactWriteResult firstResult;
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            await target.WriteBatchAsync(first, Ct);
+            await target.WriteBatchAsync(second, Ct);
+            foreach (MigrationSchemaStage stage in Enum.GetValues<MigrationSchemaStage>().Skip(1))
+                await target.ApplySchemaAsync(plan, catalog, stage, Ct);
+
+            firstResult = await new MigrationRejectArtifactWriter().WriteAsync(
+                new MigrationRejectArtifactWriteRequest
+                {
+                    Plan = plan,
+                    Catalog = catalog,
+                    Target = target,
+                    OutputPath = artifactPath,
+                },
+                Ct);
+        }
+
+        byte[] firstBytes = await File.ReadAllBytesAsync(artifactPath, Ct);
+        Assert.Equal(3, firstResult.RejectedRowCount);
+        Assert.False(firstResult.ReusedExistingArtifact);
+        Assert.Equal(firstBytes.LongLength, firstResult.ArtifactBytes);
+        Assert.DoesNotContain(
+            "\r\n",
+            Encoding.UTF8.GetString(firstBytes),
+            StringComparison.Ordinal);
+
+        await using CSharpDbStagedMigrationTarget reopened =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        MigrationRejectArtifactWriteResult reopenedResult =
+            await new MigrationRejectArtifactWriter().WriteAsync(
+                new MigrationRejectArtifactWriteRequest
+                {
+                    Plan = plan,
+                    Catalog = catalog,
+                    Target = reopened,
+                    OutputPath = artifactPath,
+                },
+                Ct);
+
+        Assert.True(reopenedResult.ReusedExistingArtifact);
+        Assert.Equal(firstResult.ArtifactDigest, reopenedResult.ArtifactDigest);
+        Assert.Equal(firstBytes, await File.ReadAllBytesAsync(artifactPath, Ct));
     }
 
     [Fact]

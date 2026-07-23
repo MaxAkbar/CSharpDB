@@ -534,7 +534,10 @@ public sealed class CsvMigrationCommandRunnerTests
             MigrationRejectContract.DeterministicFailFastV1,
             error.ToString(),
             StringComparison.Ordinal);
-        Assert.Contains("atomic reject-ledger write", error.ToString(), StringComparison.Ordinal);
+        Assert.Contains(
+            "capability-qualified SDK apply path",
+            error.ToString(),
+            StringComparison.Ordinal);
         Assert.DoesNotContain("MIG-CSV-PACKAGE", error.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("could not find", error.ToString(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(missingPackagePath, error.ToString(), StringComparison.OrdinalIgnoreCase);

@@ -406,8 +406,11 @@ identity. New activations require that identity while legacy activated targets
 remain reopenable.
 Capability-qualified SDK apply and validation now support reject-aware source
 replay, CSV evidence, and exact snapshot-scoped receipt/ledger comparison.
-CLI tolerant execution remains gated until bounded reject-artifact publication
-and its cross-process operator workflow are complete.
+Bounded SDK reject-artifact materialization now uses canonical JSONL, private
+same-directory claims, atomic no-overwrite publication, exact-existing reuse,
+and fresh-process recovery at partial-temp and post-publication boundaries.
+CLI tolerant execution remains gated on its explicit operator workflow; strict
+mode remains the release default.
 
 ### Track 4A: CSV
 
@@ -464,6 +467,9 @@ and its cross-process operator workflow are complete.
   delimiters, encoding/BOM, headers, newline, culture, quote, and null policy.
 - [x] Keep null, empty string, missing field, and an empty final column
   distinct.
+- [x] Add bounded SDK reject-artifact materialization with exact canonical
+  bytes, tamper/privacy/limit/cancellation coverage, exclusive publication,
+  exact regeneration, and fresh-process recovery.
 - [ ] Expose CLI strict/tolerant modes with deterministic physical-line,
   logical-row, column, raw-value, and diagnostic information in a bounded
   operator-facing reject artifact.
