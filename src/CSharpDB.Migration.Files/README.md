@@ -56,15 +56,19 @@ default.
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
 CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data
 digest, source/export logical digests, and a BLOB decoded-size ceiling.
-`LosslessV1` preserves source
-values; the separately named `SpreadsheetSafeLossyV1` profile records
+`LosslessV1` preserves source values; the separately named
+`SpreadsheetSafeLossyV1` profile records
 aggregate formula-mitigation changes without putting cell values in the
-manifest and rejects BLOB columns whose base64 could resemble a formula. The
-streaming CSV writer, export CLI, fail-closed manifest-last publication, and
-durable resume are not implemented. The offline retained read-only CSharpDB
-snapshot can now be reopened and verified across processes, and its physical
-table reader provides strictly ascending row IDs with an exclusive resume
-boundary. The CSV writer and checkpoint journal do not yet consume those
+manifest and rejects BLOB columns whose base64 could resemble a formula.
+`CsvStreamingExporter` now writes the fixed RFC 4180 codec to a caller-owned
+empty stream, validates whole typed rows before emitting them, streams UTF-8
+and padded base64 in bounded chunks, and returns canonical physical/logical
+manifest evidence. It is deliberately restart-only: the export CLI,
+retained-source adapter, fail-closed manifest-last publication, checkpoint
+journal, and durable resume are not implemented. The offline retained
+read-only CSharpDB snapshot can now be reopened and verified across processes,
+and its physical table reader provides strictly ascending row IDs with an
+exclusive resume boundary. The checkpointed exporter does not yet bind those
 source primitives. See
 [`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md)
 and

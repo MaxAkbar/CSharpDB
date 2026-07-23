@@ -391,13 +391,17 @@ plan-bound rule/limit policy and a required operator-owned artifact. The typed
 `csharpdb-csv-export-manifest/v1` sidecar contract now binds the source
 snapshot, deterministic row order, ordered CSharpDB types, fixed lossless CSV
 codec, BLOB decoded-size bounds, physical data digest, and source/export
-logical digests. Its separately
-named spreadsheet-safe profile records explicit aggregate loss. The streaming
-writer, export CLI, fail-closed manifest-last publication, and durable resume
-are not yet complete. The offline retained read-only CSharpDB snapshot
-can now be reopened and verified across processes, and its physical table
-reader provides strictly ascending row IDs plus an exclusive resume boundary.
-The exporter still needs to bind and consume both through its checkpoint. See
+logical digests. Its separately named spreadsheet-safe profile records
+explicit aggregate loss. The streaming RFC 4180 writer now emits deterministic
+typed rows and canonical physical and logical manifest evidence to a
+caller-owned empty stream. It supports lossless and explicitly lossy
+spreadsheet-safe output with bounded UTF-8 and BLOB chunks, but is deliberately
+restart-only. The export CLI, retained-source adapter, fail-closed
+manifest-last publication, checkpoint journal, and durable resume are not yet
+complete. The offline retained read-only CSharpDB snapshot can now be reopened
+and verified across processes, and its physical table reader provides strictly
+ascending row IDs plus an exclusive resume boundary. The next exporter slice
+must bind and consume both through its checkpoint. See
 [`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
 Retained CSV has a 50,000-row CI fixture plus isolated 100K/1M inspect, package,
 replay, apply,
@@ -499,12 +503,14 @@ receipts remain the resume authority.
   operator-facing reject artifact.
 - [x] Add confidence-bearing schema inference and explicit overrides; default
   ambiguous columns to `Text`.
-- [ ] Add resumable prepared writes and streaming RFC 4180 export using the
-  now-frozen typed manifest contract. Keep spreadsheet-safe export as an
-  explicitly lossy mode. The writer, CLI, atomic publication, and resume remain
-  outstanding. The retained read-only cross-process CSharpDB snapshot and
-  deterministic physical row-ID cursor are implemented for offline sources;
-  checkpoint and writer integration remain.
+- [x] Add restart-only streaming RFC 4180 export using the frozen typed
+  manifest contract, with deterministic physical/logical evidence, bounded
+  scalar emission, and spreadsheet-safe export as an explicitly lossy mode.
+- [ ] Add the retained-source adapter, resumable prepared writes, verified
+  prefix checkpoints, export CLI, and fail-closed manifest-last publication.
+  The retained read-only cross-process CSharpDB snapshot and deterministic
+  physical row-ID cursor are implemented for offline sources; durable
+  checkpoint integration remains.
 
 ### Track 4B: JSON And NDJSON
 

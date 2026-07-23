@@ -1,10 +1,10 @@
 # Migration CSV Export Contract
 
-This note records the typed-manifest portion of the Phase 4A CSV export work.
-It freezes the compatibility boundary that a later streaming exporter,
-reopener, and CLI must satisfy. It does not claim that the CSV data writer,
-export command, fail-closed manifest-last publication, or durable resume are
-implemented.
+This note records the typed-manifest and restart-only streaming-writer portion
+of the Phase 4A CSV export work. It freezes the compatibility boundary that a
+later retained-source adapter, reopener, publisher, and CLI must satisfy. It
+does not claim that the export command, fail-closed manifest-last publication,
+or durable resume are implemented.
 
 ## Contract Boundary
 
@@ -52,12 +52,12 @@ header, CSharpDB storage type, nullability, and scalar encoding. V1 supports:
 | `Blob` | padded RFC 4648 base64 plus an explicit decoded-byte ceiling |
 
 The ordered column list has its own schema contract and SHA-256. Lossless
-headers equal source column names exactly. A later writer must also enforce the
-declared field count and must not use omission to represent null or missing
-values. Each BLOB column carries a positive per-value decoded-byte bound no
-larger than 12 MiB, which keeps its base64 text inside the strict reader's
-absolute 16 Mi-character field ceiling. Non-BLOB columns cannot claim that
-binary bound.
+headers equal source column names exactly. The writer enforces the declared
+field count and never uses omission to represent null or missing values. Each
+BLOB column carries a positive per-value decoded-byte bound no larger than
+12 MiB, which keeps its base64 text inside the strict reader's absolute
+16 Mi-character field ceiling. Non-BLOB columns cannot claim that binary
+bound.
 
 ## Content Proofs
 
@@ -83,9 +83,10 @@ For `LosslessV1`, the source and exported logical digests must be identical.
 This is stronger than checking the CSV file alone: it prevents a syntactically
 valid export from silently changing a typed value.
 
-The contract serializer validates relationships within the sidecar. It does
-not yet stream the CSV or independently re-read the data file, so producing and
-requalifying these proofs remains exporter work.
+The contract serializer validates relationships within the sidecar. The
+restart-only writer produces the physical and logical proofs while it streams
+the CSV. Independent requalification of a published data/manifest pair remains
+publication work.
 
 ## Explicit Spreadsheet-Safe Loss
 
@@ -133,11 +134,31 @@ The serializer:
 Reopening requires the exact canonical bytes, not merely JSON with equivalent
 values.
 
-## Streaming And Resume Remain Deferred
+## Restart-Only Streaming Writer
 
-This contract slice does not provide a streaming RFC 4180 writer, an export
-CLI surface, checkpoint files, prepared output publication, or cross-process
-resume. It also does not make a two-file CSV/manifest pair atomic.
+`CsvStreamingExporter` writes the fixed codec to a caller-owned, writable,
+seekable stream that is empty and positioned at byte zero. It validates the
+fixed source/profile/schema relationship before writing the header, requires
+strictly increasing signed physical row IDs, validates a complete typed row
+before writing any byte of that row, and leaves the destination open. UTF-8
+text and padded base64 BLOBs are emitted in bounded chunks. Successful
+completion flushes the stream and returns the canonical manifest bytes and
+digest, but does not claim that the flush is durable.
+
+The low-level request receives source evidence and rows separately. Its result
+proves the emitted bytes and supplied typed row sequence; it does not by itself
+prove that those rows came from the named retained snapshot. The future
+retained-source adapter must construct both from one verified snapshot session.
+
+This is deliberately a restart-only boundary. If enumeration, validation,
+I/O, or cancellation fails, no manifest result is returned and the
+caller-owned output must be discarded or truncated to zero before retrying.
+The writer exposes no checkpoint or append contract and makes no claim that a
+partial record is reusable.
+
+The slice does not provide an export CLI surface, checkpoint journal, retained
+snapshot adapter, prepared output publication, or cross-process resume. It
+also does not make a two-file CSV/manifest pair atomic.
 
 The offline `RetainedDatabaseSnapshot` API now provides the required durable
 source view and deterministic row-source seam: it materializes recovery only
@@ -151,14 +172,12 @@ after a crash. See
 
 The future resume contract must bind its checkpoint to that retained snapshot,
 table and ordered schema, export profile and codec, completed row boundary,
-byte boundary, and verified output prefix. Until the exporter consumes the
-retained snapshot and row-ID cursor through that checkpoint, a failed export
-must restart from the beginning rather than claim durable resume. The source
-prerequisites are now available; writer/checkpoint integration remains
-outstanding.
+byte boundary, and verified output prefix. Until a retained-source adapter and
+checkpointed prepared writer bind those identities and boundaries, a failed
+export must restart from the beginning rather than claim durable resume. The
+source and restart-only codec prerequisites are now available; durable
+checkpoint integration remains outstanding.
 
-Phase 4A remains open until the streaming writer and CLI use this contract,
-manifest-last data and sidecar publication fails closed, lossless round trips
-reproduce the typed logical digest, the spreadsheet profile reports its loss
-exactly, and large interrupted exports pass bounded-memory and resume
-qualification.
+Phase 4A remains open until the retained-source adapter and CLI use this
+contract, manifest-last data and sidecar publication fails closed, and large
+interrupted exports pass bounded-memory and resume qualification.
