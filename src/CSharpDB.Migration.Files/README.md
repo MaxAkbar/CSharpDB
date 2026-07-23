@@ -60,8 +60,10 @@ digest, source/export logical digests, and a BLOB decoded-size ceiling.
 values; the separately named `SpreadsheetSafeLossyV1` profile records
 aggregate formula-mitigation changes without putting cell values in the
 manifest and rejects BLOB columns whose base64 could resemble a formula. The
-streaming CSV writer, export CLI, fail-closed manifest-last
-publication, and durable resume are not implemented. Durable resume requires a
-retained read-only CSharpDB snapshot that can be reopened and verified across
-processes. See
-[`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md).
+streaming CSV writer, export CLI, fail-closed manifest-last publication, and
+durable resume are not implemented. The offline retained read-only CSharpDB
+snapshot prerequisite can now be reopened and verified across processes, but
+the CSV writer and checkpoint journal do not yet consume it. See
+[`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md)
+and
+[`migration-csharpdb-retained-snapshot.md`](../../docs/migration-csharpdb-retained-snapshot.md).

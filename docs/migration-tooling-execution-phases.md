@@ -393,9 +393,11 @@ snapshot, deterministic row order, ordered CSharpDB types, fixed lossless CSV
 codec, BLOB decoded-size bounds, physical data digest, and source/export
 logical digests. Its separately
 named spreadsheet-safe profile records explicit aggregate loss. The streaming
-writer, export CLI, fail-closed manifest-last publication, and durable resume are not
-yet complete. Durable resume is blocked on a retained read-only CSharpDB
-snapshot API that can be reopened and verified across processes.
+writer, export CLI, fail-closed manifest-last publication, and durable resume
+are not yet complete. The offline retained read-only CSharpDB snapshot
+prerequisite can now be reopened and verified across processes; the exporter
+still needs to bind and consume it. See
+[`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
 Retained CSV has a 50,000-row CI fixture plus isolated 100K/1M inspect, package,
 replay, apply,
 resume, and checksum measurements with fixed live-batch bounds; see
@@ -499,8 +501,9 @@ receipts remain the resume authority.
 - [ ] Add resumable prepared writes and streaming RFC 4180 export using the
   now-frozen typed manifest contract. Keep spreadsheet-safe export as an
   explicitly lossy mode. The writer, CLI, atomic publication, and resume remain
-  outstanding; durable resume requires a retained read-only cross-process
-  CSharpDB snapshot API.
+  outstanding. The retained read-only cross-process CSharpDB snapshot
+  prerequisite is implemented for offline sources; checkpoint and writer
+  integration remain.
 
 ### Track 4B: JSON And NDJSON
 

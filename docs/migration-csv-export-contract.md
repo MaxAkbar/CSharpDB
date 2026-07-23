@@ -139,18 +139,19 @@ This contract slice does not provide a streaming RFC 4180 writer, an export
 CLI surface, checkpoint files, prepared output publication, or cross-process
 resume. It also does not make a two-file CSV/manifest pair atomic.
 
-Durable resume has one prerequisite that is not currently exposed: a retained,
-read-only CSharpDB snapshot API that can be reopened and verified across
-processes. A process-local reader transaction is insufficient after a crash.
-Without a retained snapshot, a checkpoint can bind the written prefix but
-cannot prove that the remaining rows come from the same database view; an
-append-style resume could therefore omit, duplicate, or mix versions of rows.
+The offline `RetainedDatabaseSnapshot` API now provides the required durable
+source view: it materializes recovery only on a private copy, publishes one
+clean database file, and requires an independently retained byte length and
+SHA-256 when a later process reopens it through a read-only session. A
+process-local reader transaction remains insufficient after a crash. See
+[`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
 
-The future resume contract must bind its checkpoint to the retained snapshot,
+The future resume contract must bind its checkpoint to that retained snapshot,
 table and ordered schema, export profile and codec, completed row boundary,
-byte boundary, and verified output prefix. Until the database exposes that
-cross-process snapshot boundary, a failed export must restart from the
-beginning rather than claim durable resume.
+byte boundary, and verified output prefix. Until the exporter consumes that
+cross-process boundary, a failed export must restart from the beginning rather
+than claim durable resume. The snapshot prerequisite is now available;
+writer/checkpoint integration remains outstanding.
 
 Phase 4A remains open until the streaming writer and CLI use this contract,
 manifest-last data and sidecar publication fails closed, lossless round trips

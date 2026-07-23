@@ -60,6 +60,7 @@ public sealed class Database : IAsyncDisposable
     private readonly string? _databasePath;
     private readonly StatementCache _statementCache;
     private readonly HybridDatabasePersistenceCoordinator? _hybridPersistenceCoordinator;
+    private readonly bool _skipDisposePersistence;
     private readonly Dictionary<string, object> _collectionCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingCollectionCatalogMutation> _pendingCollectionCatalogMutations = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, long> _sharedNextRowIdHints = new(StringComparer.OrdinalIgnoreCase);
@@ -173,7 +174,8 @@ public sealed class Database : IAsyncDisposable
         DbFunctionRegistry? functions = null,
         HybridDatabasePersistenceCoordinator? hybridPersistenceCoordinator = null,
         string? databasePath = null,
-        StorageEngineOptions? temporaryStorageOptions = null)
+        StorageEngineOptions? temporaryStorageOptions = null,
+        bool skipDisposePersistence = false)
     {
         _pager = pager;
         _catalog = catalog;
@@ -187,6 +189,7 @@ public sealed class Database : IAsyncDisposable
         _databasePath = string.IsNullOrWhiteSpace(databasePath) ? null : Path.GetFullPath(databasePath);
         _implicitInsertExecutionMode = implicitInsertExecutionMode;
         _hybridPersistenceCoordinator = hybridPersistenceCoordinator;
+        _skipDisposePersistence = skipDisposePersistence;
         _planner = new QueryPlanner(
             pager,
             catalog,
@@ -777,6 +780,59 @@ public sealed class Database : IAsyncDisposable
             databasePath: fullPath,
             temporaryStorageOptions: options.StorageEngineOptions),
             ct);
+    }
+
+    /// <summary>
+    /// Opens an engine-owned private snapshot copy without running open-time
+    /// repair routines. The caller must never expose this mutable handle.
+    /// </summary>
+    internal static async ValueTask<Database> OpenPrivateSnapshotCopyAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        var context = await new DefaultStorageEngineFactory().OpenAsync(
+            fullPath,
+            options.StorageEngineOptions,
+            ct);
+        return new Database(
+            context.Pager,
+            context.Catalog,
+            context.RecordSerializer,
+            context.SchemaSerializer,
+            context.IndexProvider,
+            context.CatalogStore,
+            context.AdvisoryStatisticsPersistenceMode,
+            options.ImplicitInsertExecutionMode,
+            options.AdaptiveQueryReoptimization,
+            options.Functions,
+            databasePath: fullPath,
+            temporaryStorageOptions: options.StorageEngineOptions,
+            skipDisposePersistence: true);
+    }
+
+    /// <summary>
+    /// Recovers and checkpoints an engine-owned private snapshot pair without
+    /// constructing a Database or persisting advisory/catalog metadata.
+    /// </summary>
+    internal static async ValueTask RecoverPrivateSnapshotCopyAsync(
+        string filePath,
+        DatabaseOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(options);
+
+        string fullPath = Path.GetFullPath(filePath);
+        var context = await new DefaultStorageEngineFactory().OpenAsync(
+            fullPath,
+            options.StorageEngineOptions,
+            ct);
+        await context.Pager.DisposeAsync();
     }
 
     /// <summary>
@@ -1641,8 +1697,8 @@ public sealed class Database : IAsyncDisposable
     [RequiresUnreferencedCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
     [RequiresDynamicCode("Collection<T> uses reflection-based JSON serialization and member binding. Use SQL API for NativeAOT scenarios.")]
     public async ValueTask<Collection<T>> GetCollectionAsync<
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
-        T>(
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+    T>(
         string name,
         CancellationToken ct = default)
         => await GetCollectionCoreAsync<T>(name, generatedOnly: false, ct);
@@ -2151,9 +2207,12 @@ public sealed class Database : IAsyncDisposable
 
         try
         {
-            if (!rolledBackExplicitTransaction)
-                await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
-            await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
+            if (!_skipDisposePersistence)
+            {
+                if (!rolledBackExplicitTransaction)
+                    await FlushPendingAdvisoryStatisticsAsync(CancellationToken.None);
+                await PersistHybridStateAsync(HybridPersistenceTriggers.Dispose, CancellationToken.None);
+            }
         }
         finally
         {
