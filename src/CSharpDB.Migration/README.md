@@ -46,6 +46,9 @@ part of the Phase 2 staged-apply slice, and the Phase 3 validation core:
   table contract used by archive restore;
 - deterministic normalized-schema, 64-bit count, and 256-partition SHA-256
   validation with duplicate preservation and bounded spill/sort;
+- snapshot-scoped deterministic-reject validation that replays the exact apply
+  outcome stream and compares every receipt and canonical ledger entry before
+  schema, count, or checksum evidence can be published;
 - self-digesting JSON and deterministic text validation reports containing
   identities, counts, and hashes but no raw row values;
 - coherent-snapshot enforcement with `Inconclusive` outcomes when consistency
@@ -81,8 +84,9 @@ reject-ledger entries, and v2 receipts in one transaction. The SDK apply runner
 permits deterministic rejects only when the source advertises the exact contract
 and complete rule registry and the target advertises the current digest and
 authoritative ledger capabilities. Validation still stops this path before
-report publication, and the CLI remains fail-fast until outcome comparison and
-reject-artifact publication are qualified.
+report publication unless immutable source replay exactly matches the target
+snapshot's complete receipt and reject-ledger streams. The CLI remains
+fail-fast until bounded reject-artifact publication is qualified.
 
 The current CLI proof surface is:
 

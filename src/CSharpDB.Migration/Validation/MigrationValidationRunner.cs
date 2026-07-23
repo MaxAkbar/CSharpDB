@@ -43,29 +43,65 @@ public sealed record MigrationValidationRunResult
 /// </summary>
 public sealed class MigrationValidationRunner
 {
+    internal const string RejectActivationFailureMessage =
+        "Deterministic migration activation could not verify the published validation report.";
+
     public async ValueTask<MigrationValidationRunResult> ValidateAsync(
         MigrationValidationRunRequest request,
         CancellationToken cancellationToken = default)
     {
-        ValidateRequest(request);
+        string targetIdentity = ValidateRequest(request);
         string reportPath = ValidateReportPath(request.ReportOutputPath);
         MigrationValidationReport report;
         long peakSpillBytes;
 
-        await using (IValidationSnapshot openedTarget = await request.Target
-                         .OpenValidationSnapshotAsync(cancellationToken)
-                         .ConfigureAwait(false))
+        try
         {
+            await using IValidationSnapshot openedTarget = await request.Target
+                .OpenValidationSnapshotAsync(cancellationToken)
+                .ConfigureAwait(false);
             if (openedTarget is not IMigrationEvidenceValidationSnapshot targetSnapshot)
             {
                 throw new NotSupportedException(
                     "The migration target does not expose Phase 3 schema and consistency evidence.");
             }
 
+            if (request.Plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects)
+            {
+                if (request.SourceSnapshot is not IMigrationRejectReplayValidationSnapshot sourceReplay ||
+                    openedTarget is not IMigrationRejectTargetValidationSnapshot rejectTargetSnapshot)
+                {
+                    throw new NotSupportedException(
+                        "Deterministic reject validation requires immutable source replay and target outcome snapshots.");
+                }
+
+                await new MigrationRejectOutcomeComparer().CompareAsync(
+                    request.Plan,
+                    request.Catalog,
+                    targetIdentity,
+                    sourceReplay,
+                    rejectTargetSnapshot,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             (report, peakSpillBytes) = await BuildReportAsync(
                 request,
                 targetSnapshot,
+                targetIdentity,
                 cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+        catch (Exception error) when (
+            request.Plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+            error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
+        {
+            // Once reject-aware provider snapshots are opened, any provider
+            // message could contain rejected evidence. Keep the complete
+            // pre-publication evidence phase behind one value-free boundary.
+            throw new InvalidDataException(MigrationRejectOutcomeComparer.MismatchMessage);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -85,7 +121,7 @@ public sealed class MigrationValidationRunner
 
             var receipt = new MigrationValidationActivationReceipt
             {
-                TargetIdentity = request.Target.TargetIdentity,
+                TargetIdentity = targetIdentity,
                 PlanDigest = report.Binding.PlanDigest,
                 CatalogDigest = report.Binding.CatalogDigest,
                 SourceSnapshotIdentity = report.Binding.SourceSnapshotIdentity,
@@ -96,7 +132,23 @@ public sealed class MigrationValidationRunner
                 ReportDigest = reportDigest,
             };
             var permit = new MigrationValidationActivationPermit(receipt, reportPath);
-            await activationTarget.ActivateAsync(permit, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await activationTarget.ActivateAsync(permit, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+            catch (Exception error) when (
+                request.Plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+                error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
+            {
+                // A target may re-read authoritative outcomes while verifying
+                // the permit. Keep that post-publication provider boundary
+                // value-free as well.
+                throw new InvalidDataException(RejectActivationFailureMessage);
+            }
             activated = true;
         }
 
@@ -113,6 +165,7 @@ public sealed class MigrationValidationRunner
     private static async ValueTask<(MigrationValidationReport Report, long PeakSpillBytes)> BuildReportAsync(
         MigrationValidationRunRequest request,
         IMigrationEvidenceValidationSnapshot targetSnapshot,
+        string targetIdentity,
         CancellationToken cancellationToken)
     {
         MigrationPlan plan = request.Plan;
@@ -233,7 +286,7 @@ public sealed class MigrationValidationRunner
                 CapabilityDigest = plan.CapabilityDigest,
                 SourceIdentity = plan.Source.Identity,
                 SourceFingerprint = plan.Source.Fingerprint,
-                TargetIdentity = request.Target.TargetIdentity,
+                TargetIdentity = targetIdentity,
                 SourceSnapshotIdentity = sourceSnapshot.SnapshotIdentity,
                 TargetSnapshotIdentity = targetSnapshot.SnapshotIdentity,
                 CanonicalizationVersion = plan.Validation.CanonicalizationVersion,
@@ -253,24 +306,24 @@ public sealed class MigrationValidationRunner
         MigrationNormalizedSchema source,
         MigrationNormalizedSchema target,
         IReadOnlyList<MigrationNormalizedSchemaDifference> differences) => new()
-    {
-        Status = differences.Count == 0
+        {
+            Status = differences.Count == 0
             ? MigrationValidationStatus.Passed
             : MigrationValidationStatus.Different,
-        SourceSchemaDigest = source.Digest,
-        TargetSchemaDigest = target.Digest,
-        Differences = differences.Select(item => new MigrationSchemaDifferenceEvidence
-        {
-            ObjectId = item.ObjectId,
-            Kind = item.SourceDefinitionDigest is null
-                ? MigrationSchemaDifferenceKind.MissingFromSource
-                : item.TargetDefinitionDigest is null
-                    ? MigrationSchemaDifferenceKind.MissingFromTarget
-                    : MigrationSchemaDifferenceKind.DefinitionMismatch,
-            SourceDefinitionDigest = item.SourceDefinitionDigest,
-            TargetDefinitionDigest = item.TargetDefinitionDigest,
-        }).ToArray(),
-    };
+            SourceSchemaDigest = source.Digest,
+            TargetSchemaDigest = target.Digest,
+            Differences = differences.Select(item => new MigrationSchemaDifferenceEvidence
+            {
+                ObjectId = item.ObjectId,
+                Kind = item.SourceDefinitionDigest is null
+                    ? MigrationSchemaDifferenceKind.MissingFromSource
+                    : item.TargetDefinitionDigest is null
+                        ? MigrationSchemaDifferenceKind.MissingFromTarget
+                        : MigrationSchemaDifferenceKind.DefinitionMismatch,
+                SourceDefinitionDigest = item.SourceDefinitionDigest,
+                TargetDefinitionDigest = item.TargetDefinitionDigest,
+            }).ToArray(),
+        };
 
     private static MigrationSnapshotConsistencyStatus CombineConsistency(
         MigrationSnapshotConsistencyStatus source,
@@ -296,17 +349,17 @@ public sealed class MigrationValidationRunner
 
     private static MigrationValidationDiagnosticEvidence ConsistencyDiagnostic(
         MigrationSnapshotConsistencyStatus consistency) => new()
-    {
-        DiagnosticId = consistency == MigrationSnapshotConsistencyStatus.Unavailable
+        {
+            DiagnosticId = consistency == MigrationSnapshotConsistencyStatus.Unavailable
             ? "validation:consistency:unavailable"
             : "validation:consistency:not-established",
-        RuleId = "MIG-VALIDATE-CONSISTENCY-001",
-        Severity = consistency == MigrationSnapshotConsistencyStatus.Unavailable
+            RuleId = "MIG-VALIDATE-CONSISTENCY-001",
+            Severity = consistency == MigrationSnapshotConsistencyStatus.Unavailable
             ? MigrationDiagnosticSeverity.Error
             : MigrationDiagnosticSeverity.Warning,
-        Status = MigrationValidationStatus.Inconclusive,
-        Evidence = MigrationEvidenceLevel.CapabilityMatched,
-    };
+            Status = MigrationValidationStatus.Inconclusive,
+            Evidence = MigrationEvidenceLevel.CapabilityMatched,
+        };
 
     private static MigrationValidationDiagnosticEvidence CountCoherenceDiagnostic(string objectId) => new()
     {
@@ -321,7 +374,7 @@ public sealed class MigrationValidationRunner
     private static string StableSuffix(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant()[..16];
 
-    private static void ValidateRequest(MigrationValidationRunRequest request)
+    private static string ValidateRequest(MigrationValidationRunRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Plan);
@@ -330,8 +383,22 @@ public sealed class MigrationValidationRunner
         ArgumentNullException.ThrowIfNull(request.Target);
         ArgumentNullException.ThrowIfNull(request.ChecksumOptions);
         MigrationPlanReadinessValidator.ValidateForApply(request.Plan, request.Catalog);
-        MigrationValidationPolicyValidator.ValidateForExecution(request.Plan);
-        if (string.IsNullOrWhiteSpace(request.Target.TargetIdentity))
+        MigrationValidationPolicyValidator.ValidateForExecution(
+            request.Plan,
+            request.SourceSnapshot,
+            request.Target);
+        string targetIdentity;
+        try
+        {
+            targetIdentity = request.Target.TargetIdentity;
+        }
+        catch (Exception error) when (
+            request.Plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+            error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
+        {
+            throw new InvalidDataException(MigrationRejectOutcomeComparer.MismatchMessage);
+        }
+        if (string.IsNullOrWhiteSpace(targetIdentity))
             throw new InvalidDataException("Migration validation target identity is required.");
         if (request.Level is < MigrationValidationLevel.Schema or > MigrationValidationLevel.Checksum)
             throw new NotSupportedException("Phase 3 supports schema, count, and checksum validation levels.");
@@ -354,6 +421,7 @@ public sealed class MigrationValidationRunner
             throw new NotSupportedException(
                 $"Canonicalization version '{request.Plan.Validation.CanonicalizationVersion}' is not supported.");
         }
+        return targetIdentity;
     }
 
     private static string ValidateReportPath(string path)

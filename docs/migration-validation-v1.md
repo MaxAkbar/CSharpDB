@@ -18,6 +18,30 @@ Each snapshot reports one of three consistency states:
 Only `Established` evidence can produce a passing activation report. Matching
 data under either other state is `Inconclusive`, never `Passed`.
 
+## Deterministic reject outcomes
+
+When a plan selects `csharpdb-migration-deterministic-rejects/v1`, validation
+first replays the immutable source snapshot through the same projection,
+conversion, source-ordinal, cursor, reject, and batch-digest path used by
+apply. The target exposes its ordered receipts and canonical reject ledger
+through the same immutable reader snapshot later used for schema, counts, and
+rows.
+
+The comparer advances those streams sequentially with at most one source
+batch, receipt, and ledger entry live. It requires exact plan, catalog, source,
+snapshot, object, column, cursor, count, contract, reject-digest, batch-digest,
+and canonical evidence agreement; proves every stream is exhausted; and
+reapplies the plan's per-batch and per-run privacy and artifact limits. Empty
+objects are proven by the later physical count/checksum pass. Any missing,
+extra, reordered, changed, nonterminal, or over-budget outcome raises one
+value-free failure before schema evidence is read, so no validation report or
+activation permit is produced.
+
+All reject-aware provider operations through schema/count/checksum evidence
+and target activation remain behind value-free error boundaries. Caller
+cancellation is preserved with the original cancellation token but provider
+exception text is discarded because it may contain rejected evidence.
+
 ## Schema and object contracts
 
 `csharpdb-migration-schema/v1` hashes sorted, persisted schema identities and
@@ -86,14 +110,16 @@ checksum, partition, or consistency evidence.
 
 The success order is strict:
 
-1. finish schema, count, and checksum evidence;
-2. normalize and digest the report;
-3. durably write and atomically publish the report file;
-4. have the target reopen and verify the published `Passed` report through a
+1. for deterministic-reject plans, compare the complete source outcome replay
+   with snapshot-scoped target receipts and ledger entries;
+2. finish schema, count, and checksum evidence;
+3. normalize and digest the report;
+4. durably write and atomically publish the report file;
+5. have the target reopen and verify the published `Passed` report through a
    runner-issued activation permit;
-5. atomically store its activation receipt and change the staged target from
+6. atomically store its activation receipt and change the staged target from
    `awaiting-validation` to `activated`;
-6. report success.
+7. report success.
 
 An exact retry reuses the existing report and activation receipt. A changed
 report, binding, validation level, snapshot, or digest is rejected. A report

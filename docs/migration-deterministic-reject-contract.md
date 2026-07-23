@@ -8,8 +8,10 @@ Implementation status: the bounded reject model, plan-bound rule/limit policy,
 reject-set and v2 batch digests, canonical ledger codec, atomic CSharpDB ledger
 write/read path, v2 receipts, target-side outcome validation, provider-neutral
 source replay, and CSV evidence are present. Capability-qualified SDK apply can
-write and exactly replay accepted-only, mixed, and all-reject batches. Validation
-comparison, reject-artifact publication, and CLI tolerant mode remain closed.
+write and exactly replay accepted-only, mixed, and all-reject batches. Before
+report publication, capability-qualified SDK validation now compares that
+complete replay with snapshot-scoped target receipts and the canonical reject
+ledger. Reject-artifact publication and CLI tolerant mode remain closed.
 
 ## Decision
 
@@ -271,8 +273,10 @@ after commit; they must not become the authority for resume.
    boundary, including committed replay and a second fresh reopen.
 3. CSV row-outcome metadata and capability-qualified source replay are now
    present for `MissingField`, `NullNotAllowed`, and `TypeMismatch`. Parser,
-   integrity, conversion, and resource errors remain fatal. Bounded artifact
-   materialization remains the next part of this phase.
+   integrity, conversion, and resource errors remain fatal. Snapshot-scoped
+   validation compares exact receipt and ledger streams before report
+   publication. Bounded artifact materialization remains the next part of this
+   phase.
 4. Expose CLI tolerant mode only after cross-process resume, tamper, privacy,
    large-stream, all-reject, limit, cancellation, and artifact-regeneration
    tests pass. Strict mode remains the default and release baseline.

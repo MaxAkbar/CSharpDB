@@ -62,6 +62,8 @@ public sealed class CSharpDbValidationActivationTests
         using var files = new TemporaryTargetDirectory();
         (MigrationCatalog catalog, MigrationPlan plan) = await ArtifactsAsync();
         MigrationValidationActivationReceipt receipt;
+        string snapshotIdentity;
+        string planDigest = MigrationArtifactSerializer.ComputePlanDigest(plan);
 
         await using (var source = new SyntheticMigrationDataSource(catalog))
         await using (CSharpDbStagedMigrationTarget target =
@@ -73,6 +75,12 @@ public sealed class CSharpDbValidationActivationTests
                          cancellationToken: Ct))
         {
             await ApplyAsync(plan, catalog, source, target);
+            await using IValidationSnapshot beforeActivation =
+                await target.OpenValidationSnapshotAsync(Ct);
+            IMigrationRejectTargetValidationSnapshot beforeOutcomes =
+                Assert.IsAssignableFrom<IMigrationRejectTargetValidationSnapshot>(
+                    beforeActivation);
+            snapshotIdentity = beforeOutcomes.SnapshotIdentity;
             MigrationValidationActivationPermit permit = await ActivationPermitAsync(
                 target,
                 plan,
@@ -82,6 +90,25 @@ public sealed class CSharpDbValidationActivationTests
             receipt = permit.Receipt;
             await target.ActivateAsync(permit, Ct);
             Assert.Equal(receipt, await target.ReadActivationReceiptAsync(Ct));
+
+            Assert.Equal(snapshotIdentity, beforeOutcomes.SnapshotIdentity);
+            await using IValidationSnapshot afterActivation =
+                await target.OpenValidationSnapshotAsync(Ct);
+            IMigrationRejectTargetValidationSnapshot afterOutcomes =
+                Assert.IsAssignableFrom<IMigrationRejectTargetValidationSnapshot>(
+                    afterActivation);
+            Assert.Equal(snapshotIdentity, afterOutcomes.SnapshotIdentity);
+            List<MigrationBatchReceipt> receipts = await CollectAsync(
+                afterOutcomes.ReadOutcomeReceiptsAsync(planDigest, Ct));
+            Assert.Equal(11, receipts.Count);
+            Assert.Equal(
+                receipts
+                    .OrderBy(item => item.SourceObjectId, StringComparer.Ordinal)
+                    .ThenBy(item => item.BatchOrdinal)
+                    .ToArray(),
+                receipts);
+            Assert.Empty(await CollectAsync(
+                afterOutcomes.ReadRejectLedgerAsync(planDigest, Ct)));
         }
 
         await using CSharpDbStagedMigrationTarget reopened =
@@ -93,6 +120,7 @@ public sealed class CSharpDbValidationActivationTests
                 cancellationToken: Ct);
         Assert.Equal(receipt, await reopened.ReadActivationReceiptAsync(Ct));
         await using IValidationSnapshot snapshot = await reopened.OpenValidationSnapshotAsync(Ct);
+        Assert.Equal(snapshotIdentity, snapshot.SnapshotIdentity);
         Assert.Equal(receipt.TargetSnapshotIdentity, snapshot.SnapshotIdentity);
     }
 
@@ -635,6 +663,14 @@ public sealed class CSharpDbValidationActivationTests
                 Target = target,
             },
             Ct);
+
+    private static async Task<List<T>> CollectAsync<T>(IAsyncEnumerable<T> source)
+    {
+        var values = new List<T>();
+        await foreach (T value in source)
+            values.Add(value);
+        return values;
+    }
 
     private static PartitionedChecksumValidatorOptions ChecksumOptions(string root) => new()
     {

@@ -374,13 +374,63 @@ public static class MigrationApplyPolicyValidator
         if (plan.Load.RejectMode == MigrationRejectMode.FailFast)
             return;
 
+        if (source is not IMigrationRejectAwareDataSource)
+        {
+            ValidateForExecution(plan);
+            return;
+        }
+
+        MigrationRejectSourceCapabilityValidator.Validate(plan, source);
+
+        if (target is not IMigrationRejectLedgerTarget)
+        {
+            throw UnsupportedCapability(
+                "MIG-APPLY-POLICY-REJECT-TARGET-001",
+                "The migration target does not advertise an authoritative reject ledger.");
+        }
+
+        if (target is not IMigrationBatchDigestContractTarget digestTarget ||
+            !string.Equals(
+                digestTarget.BatchDigestFormat,
+                MigrationBatchDigest.Format,
+                StringComparison.Ordinal))
+        {
+            throw UnsupportedCapability(
+                "MIG-APPLY-POLICY-REJECT-TARGET-001",
+                "Deterministic rejects require the current migration batch digest contract.");
+        }
+    }
+
+    private static MigrationExecutionPolicyException UnsupportedCapability(
+        string code,
+        string message) => new(code, message);
+}
+
+/// <summary>
+/// Provider-neutral source capability gate shared by apply and immutable
+/// validation replay. Target qualification remains the coordinator's
+/// responsibility.
+/// </summary>
+internal static class MigrationRejectSourceCapabilityValidator
+{
+    internal static void Validate(
+        MigrationPlan plan,
+        IMigrationDataSource source)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(plan.Load);
+        ArgumentNullException.ThrowIfNull(source);
+        if (plan.Load.RejectMode == MigrationRejectMode.FailFast)
+            return;
+
         MigrationDeterministicRejectPolicy policy = plan.Load.RejectPolicy ??
             throw new InvalidDataException(
                 "Deterministic reject mode requires a plan-bound reject policy.");
         if (source is not IMigrationRejectAwareDataSource rejectAwareSource)
         {
-            ValidateForExecution(plan);
-            return;
+            throw UnsupportedCapability(
+                "MIG-APPLY-POLICY-REJECT-SOURCE-001",
+                "The migration source does not advertise deterministic reject replay.");
         }
 
         if (!string.Equals(
@@ -406,24 +456,6 @@ public static class MigrationApplyPolicyValidator
                     "MIG-APPLY-POLICY-REJECT-RULE-001",
                     "The migration source does not advertise every plan-selected reject rule.");
             }
-        }
-
-        if (target is not IMigrationRejectLedgerTarget)
-        {
-            throw UnsupportedCapability(
-                "MIG-APPLY-POLICY-REJECT-TARGET-001",
-                "The migration target does not advertise an authoritative reject ledger.");
-        }
-
-        if (target is not IMigrationBatchDigestContractTarget digestTarget ||
-            !string.Equals(
-                digestTarget.BatchDigestFormat,
-                MigrationBatchDigest.Format,
-                StringComparison.Ordinal))
-        {
-            throw UnsupportedCapability(
-                "MIG-APPLY-POLICY-REJECT-TARGET-001",
-                "Deterministic rejects require the current migration batch digest contract.");
         }
     }
 

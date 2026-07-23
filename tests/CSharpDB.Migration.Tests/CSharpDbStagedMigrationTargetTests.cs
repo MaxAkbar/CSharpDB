@@ -189,6 +189,21 @@ public sealed class CSharpDbStagedMigrationTargetTests
             MigrationApplyResult resumed = await ApplyAsync(plan, catalog, source, target, Ct);
             Assert.Equal(0, resumed.BatchesWritten);
             Assert.Equal(11, resumed.BatchesSkipped);
+
+            await using IValidationSnapshot opened =
+                await target.OpenValidationSnapshotAsync(Ct);
+            IMigrationRejectTargetValidationSnapshot snapshot =
+                Assert.IsAssignableFrom<IMigrationRejectTargetValidationSnapshot>(
+                    opened);
+            List<MigrationBatchReceipt> receipts = await CollectAsync(
+                snapshot.ReadOutcomeReceiptsAsync(resumed.PlanDigest, Ct));
+            Assert.Equal(11, receipts.Count);
+            Assert.All(receipts, receipt =>
+                Assert.Equal(
+                    MigrationRejectContract.DeterministicFailFastV1,
+                    receipt.RejectContractVersion));
+            Assert.Empty(await CollectAsync(
+                snapshot.ReadRejectLedgerAsync(resumed.PlanDigest, Ct)));
         }
 
         Assert.Equal(
@@ -336,6 +351,104 @@ public sealed class CSharpDbStagedMigrationTargetTests
                 SyntheticMigrationDataSource.FixtureSnapshotIdentity,
                 cancellationToken: Ct);
         Assert.Equal(2, (await ReadLedgerAsync(resumed, plan)).Count);
+    }
+
+    [Fact]
+    public async Task ValidationSnapshot_StreamsCompleteOrderedRejectOutcomesAcrossReopen()
+    {
+        using var files = new TemporaryTargetDirectory();
+        MigrationCatalog catalog = await InspectAsync(Ct);
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        string planDigest = MigrationArtifactSerializer.ComputePlanDigest(plan);
+        MigrationTargetBatch first = DeterministicBatch(
+            plan,
+            catalog,
+            rows:
+            [
+                AcceptedRow(0, "zero"),
+                AcceptedRow(2, "two"),
+            ],
+            rejectedRows: [RejectedRow(1, "bad-one")],
+            nextCursor: "cursor:3");
+        MigrationTargetBatch second = DeterministicBatch(
+            plan,
+            catalog,
+            rows: [AcceptedRow(4, "four")],
+            rejectedRows:
+            [
+                RejectedRow(3, "bad-three"),
+                RejectedRow(5, "bad-five"),
+            ],
+            batchOrdinal: 1,
+            startCursor: "cursor:3");
+        string snapshotIdentity;
+
+        await using (CSharpDbStagedMigrationTarget target =
+                     await CreateDeterministicTargetAsync(files, plan, catalog))
+        {
+            MigrationBatchReceipt firstReceipt = await target.WriteBatchAsync(first, Ct);
+            MigrationBatchReceipt secondReceipt = await target.WriteBatchAsync(second, Ct);
+            foreach (MigrationSchemaStage stage in Enum.GetValues<MigrationSchemaStage>().Skip(1))
+                await target.ApplySchemaAsync(plan, catalog, stage, Ct);
+
+            await using IValidationSnapshot opened =
+                await target.OpenValidationSnapshotAsync(Ct);
+            IMigrationRejectTargetValidationSnapshot snapshot =
+                Assert.IsAssignableFrom<IMigrationRejectTargetValidationSnapshot>(opened);
+            snapshotIdentity = snapshot.SnapshotIdentity;
+
+            await using IAsyncEnumerator<MigrationBatchReceipt> receipts =
+                snapshot.ReadOutcomeReceiptsAsync(planDigest, Ct).GetAsyncEnumerator(Ct);
+            await using IAsyncEnumerator<MigrationRejectLedgerEntry> ledger =
+                snapshot.ReadRejectLedgerAsync(planDigest, Ct).GetAsyncEnumerator(Ct);
+
+            Assert.True(await receipts.MoveNextAsync());
+            Assert.Equal(firstReceipt, receipts.Current);
+            Assert.True(await ledger.MoveNextAsync());
+            Assert.Equal(1, ledger.Current.RejectedRow.SourceRowOrdinal);
+            Assert.True(await receipts.MoveNextAsync());
+            Assert.Equal(secondReceipt, receipts.Current);
+            Assert.True(await ledger.MoveNextAsync());
+            Assert.Equal(3, ledger.Current.RejectedRow.SourceRowOrdinal);
+            Assert.True(await ledger.MoveNextAsync());
+            Assert.Equal(5, ledger.Current.RejectedRow.SourceRowOrdinal);
+            Assert.False(await receipts.MoveNextAsync());
+            Assert.False(await ledger.MoveNextAsync());
+
+            const string unboundPlanDigest = "sensitive-plan-token";
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+                async () => await CollectAsync(
+                    snapshot.ReadOutcomeReceiptsAsync(unboundPlanDigest, Ct)));
+            Assert.DoesNotContain(
+                unboundPlanDigest,
+                error.ToString(),
+                StringComparison.Ordinal);
+        }
+
+        await using CSharpDbStagedMigrationTarget reopened =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                files.TargetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                cancellationToken: Ct);
+        await using IValidationSnapshot reopenedSnapshot =
+            await reopened.OpenValidationSnapshotAsync(Ct);
+        IMigrationRejectTargetValidationSnapshot rejectSnapshot =
+            Assert.IsAssignableFrom<IMigrationRejectTargetValidationSnapshot>(
+                reopenedSnapshot);
+
+        Assert.Equal(snapshotIdentity, rejectSnapshot.SnapshotIdentity);
+        Assert.Equal(
+            [0L, 1L],
+            (await CollectAsync(
+                rejectSnapshot.ReadOutcomeReceiptsAsync(planDigest, Ct)))
+            .Select(receipt => receipt.BatchOrdinal));
+        Assert.Equal(
+            [1L, 3L, 5L],
+            (await CollectAsync(
+                rejectSnapshot.ReadRejectLedgerAsync(planDigest, Ct)))
+            .Select(entry => entry.RejectedRow.SourceRowOrdinal));
     }
 
     [Fact]

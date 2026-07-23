@@ -732,6 +732,7 @@ internal static class MigrationCommandRunner
         if (!ValidateSourceOptions(catalog, options, out parseError))
             return await OptionErrorAsync(parseError!, error);
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
+        MigrationValidationPolicyValidator.ValidateForExecution(plan);
 
         MigrationValidationLevel requiredLevel = plan.Validation.ValidateChecksums
             ? MigrationValidationLevel.Checksum

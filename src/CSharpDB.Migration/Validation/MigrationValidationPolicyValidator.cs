@@ -1,10 +1,10 @@
 namespace CSharpDB.Migration;
 
-internal static class MigrationValidationPolicyValidator
+public static class MigrationValidationPolicyValidator
 {
-    internal const string UnsupportedRejectModeCode = "MIG-VALIDATE-POLICY-REJECT-001";
+    public const string UnsupportedRejectModeCode = "MIG-VALIDATE-POLICY-REJECT-001";
 
-    internal static void ValidateForExecution(MigrationPlan plan)
+    public static void ValidateForExecution(MigrationPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(plan.Load);
@@ -13,9 +13,61 @@ internal static class MigrationValidationPolicyValidator
         {
             throw new MigrationExecutionPolicyException(
                 UnsupportedRejectModeCode,
-                $"Migration validation supports only '{MigrationRejectMode.FailFast}' row handling " +
+                $"This strict migration validation entry point supports only '{MigrationRejectMode.FailFast}' row handling " +
                 $"under contract '{MigrationRejectContract.DeterministicFailFastV1}'. " +
-                "End-to-end reject-aware source replay and outcome comparison are not enabled.");
+                "Deterministic rejects require the capability-qualified SDK validation path.");
+        }
+    }
+
+    internal static void ValidateForExecution(
+        MigrationPlan plan,
+        IMigrationEvidenceValidationSnapshot sourceSnapshot,
+        IMigrationTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(plan.Load);
+        ArgumentNullException.ThrowIfNull(sourceSnapshot);
+        ArgumentNullException.ThrowIfNull(target);
+
+        if (plan.Load.RejectMode == MigrationRejectMode.FailFast)
+            return;
+        if (plan.Load.RejectMode != MigrationRejectMode.DeterministicRejects)
+        {
+            throw new MigrationExecutionPolicyException(
+                UnsupportedRejectModeCode,
+                "The migration validation reject policy is unsupported.");
+        }
+        if (sourceSnapshot is not IMigrationRejectReplayValidationSnapshot)
+        {
+            ValidateForExecution(plan);
+            return;
+        }
+        if (target is not IMigrationRejectLedgerTarget ||
+            target is not IMigrationBatchDigestContractTarget digestTarget)
+        {
+            ValidateForExecution(plan);
+            return;
+        }
+
+        string batchDigestFormat;
+        try
+        {
+            batchDigestFormat = digestTarget.BatchDigestFormat;
+        }
+        catch (Exception error) when (error is not
+            (OutOfMemoryException or StackOverflowException or AccessViolationException))
+        {
+            // Capability getters belong to the provider boundary and may not
+            // expose arbitrary adapter messages during policy qualification.
+            ValidateForExecution(plan);
+            return;
+        }
+        if (!string.Equals(
+                batchDigestFormat,
+                MigrationBatchDigest.Format,
+                StringComparison.Ordinal))
+        {
+            ValidateForExecution(plan);
         }
     }
 }

@@ -781,6 +781,18 @@ public sealed class CSharpDbStagedMigrationTarget :
         return new CSharpDbValidationSnapshot(
             _database.CreateReaderSession(),
             snapshotIdentity,
+            TargetIdentity,
+            _planDigest,
+            _plan.CatalogDigest,
+            _plan.Source.Fingerprint,
+            _snapshotIdentity,
+            IsLegacyTarget,
+            _plan.Load,
+            _validatedObjectProgress.ToDictionary(
+                item => item.Key,
+                item => item.Value.ReceiptCount,
+                StringComparer.Ordinal),
+            _validatedRejectedRows,
             _planObjects,
             _catalog,
             schema);
@@ -2783,27 +2795,137 @@ public sealed class CSharpDbStagedMigrationTarget :
         string StageDigest,
         long ActionCount);
 
-    private sealed class CSharpDbValidationSnapshot : IMigrationEvidenceValidationSnapshot
+    private sealed class CSharpDbValidationSnapshot :
+        IMigrationRejectTargetValidationSnapshot
     {
         private readonly Database.ReaderSession _session;
-        private readonly IReadOnlyDictionary<string, MigrationPlanObject> _planObjects;
-        private readonly MigrationCatalog _catalog;
         private readonly MigrationNormalizedSchema _schema;
+        private readonly IReadOnlyDictionary<string, ValidationDataObjectBinding> _dataObjects;
+        private readonly string[] _dataObjectIds;
+        private readonly IReadOnlyDictionary<string, long> _receiptCounts;
+        private readonly string _targetIdentity;
+        private readonly string _planDigest;
+        private readonly string _catalogDigest;
+        private readonly string _sourceFingerprint;
+        private readonly string _sourceSnapshotIdentity;
+        private readonly bool _legacy;
+        private readonly int _batchSize;
+        private readonly MigrationRejectMode _rejectMode;
+        private readonly string _expectedRejectContract;
+        private readonly HashSet<string> _allowedRuleIds;
+        private readonly long _maxRejectedRowsPerBatch;
+        private readonly long _maxRejectedRowsPerRun;
+        private readonly long _maxRawValueBytes;
+        private readonly long _maxRawValueBytesPerBatch;
+        private readonly long _maxRawValueBytesPerRun;
+        private readonly long _maxArtifactBytes;
+        private readonly long _expectedReceiptCount;
+        private readonly long _expectedRejectCount;
         private bool _disposed;
 
         internal CSharpDbValidationSnapshot(
             Database.ReaderSession session,
             string snapshotIdentity,
+            string targetIdentity,
+            string planDigest,
+            string catalogDigest,
+            string sourceFingerprint,
+            string sourceSnapshotIdentity,
+            bool legacy,
+            MigrationLoadPolicy load,
+            IReadOnlyDictionary<string, long> receiptCounts,
+            long expectedRejectCount,
             IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
             MigrationCatalog catalog,
             MigrationNormalizedSchema schema)
         {
             _session = session;
-            _planObjects = planObjects;
-            _catalog = catalog;
+            _targetIdentity = targetIdentity;
+            _planDigest = planDigest;
+            _catalogDigest = catalogDigest;
+            _sourceFingerprint = sourceFingerprint;
+            _sourceSnapshotIdentity = sourceSnapshotIdentity;
+            _legacy = legacy;
+            _batchSize = load.BatchSize;
+            _rejectMode = load.RejectMode;
+            _expectedRejectContract = load.RejectMode switch
+            {
+                MigrationRejectMode.FailFast => MigrationRejectContract.DeterministicFailFastV1,
+                MigrationRejectMode.DeterministicRejects => MigrationRejectContract.DeterministicRejectsV1,
+                _ => throw new InvalidDataException("Migration validation reject mode is unsupported."),
+            };
+            MigrationDeterministicRejectPolicy? rejectPolicy = load.RejectPolicy;
+            _allowedRuleIds = rejectPolicy is null
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : new HashSet<string>(rejectPolicy.AllowedRuleIds, StringComparer.Ordinal);
+            _maxRejectedRowsPerBatch = rejectPolicy?.MaxRejectedRowsPerBatch ?? 0;
+            _maxRejectedRowsPerRun = rejectPolicy?.MaxRejectedRowsPerRun ?? 0;
+            _maxRawValueBytes = rejectPolicy?.MaxRawValueBytes ?? 0;
+            _maxRawValueBytesPerBatch = rejectPolicy?.MaxRawValueBytesPerBatch ?? 0;
+            _maxRawValueBytesPerRun = rejectPolicy?.MaxRawValueBytesPerRun ?? 0;
+            _maxArtifactBytes = rejectPolicy?.MaxArtifactBytes ?? 0;
+            _expectedRejectCount = expectedRejectCount;
             _schema = schema;
-            // Activation must not change the identity bound into the durable
-            // report; reopening and validating the same target is idempotent.
+
+            _dataObjects = catalog.Objects
+                .Where(item => item.Kind is MigrationObjectKind.Table or MigrationObjectKind.Collection)
+                .Where(item =>
+                    planObjects.TryGetValue(item.ObjectId, out MigrationPlanObject? planned) &&
+                    planned.Included)
+                .ToDictionary(
+                    item => item.ObjectId,
+                    item =>
+                    {
+                        MigrationPlanObject planned = planObjects[item.ObjectId];
+                        string[] columnObjectIds = catalog.Objects
+                            .Where(column => column.Kind == MigrationObjectKind.Column &&
+                                string.Equals(
+                                    column.ParentObjectId,
+                                    item.ObjectId,
+                                    StringComparison.Ordinal) &&
+                                planObjects.TryGetValue(
+                                    column.ObjectId,
+                                    out MigrationPlanObject? columnPlan) &&
+                                columnPlan.Included)
+                            .OrderBy(column => column.ObjectId, StringComparer.Ordinal)
+                            .Select(column => column.ObjectId)
+                            .ToArray();
+                        return new ValidationDataObjectBinding(
+                            planned.TargetName ??
+                                throw new InvalidDataException(
+                                    "Migration validation table binding is incomplete."),
+                            columnObjectIds
+                                .Select(columnObjectId =>
+                                    planObjects[columnObjectId].TargetName ??
+                                    throw new InvalidDataException(
+                                        "Migration validation column binding is incomplete."))
+                                .ToArray(),
+                            new HashSet<string>(columnObjectIds, StringComparer.Ordinal));
+                    },
+                    StringComparer.Ordinal);
+            _dataObjectIds = _dataObjects.Keys
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
+            _receiptCounts = _dataObjectIds.ToDictionary(
+                objectId => objectId,
+                objectId => receiptCounts.TryGetValue(objectId, out long count)
+                    ? count
+                    : throw new InvalidDataException(
+                        "Migration validation receipt progress is incomplete."),
+                StringComparer.Ordinal);
+            if (receiptCounts.Count != _receiptCounts.Count ||
+                expectedRejectCount < 0 ||
+                _receiptCounts.Values.Any(count => count < 0))
+            {
+                throw new InvalidDataException(
+                    "Migration validation outcome progress is invalid.");
+            }
+            _expectedReceiptCount = _receiptCounts.Values.Aggregate(
+                0L,
+                static (total, count) => checked(total + count));
+
+            // Activation changes only target lifecycle metadata. This immutable
+            // reader and identity remain bound to the pre-activation outcomes.
             SnapshotIdentity = snapshotIdentity;
         }
 
@@ -2824,39 +2946,189 @@ public sealed class CSharpDbStagedMigrationTarget :
             string objectId,
             CancellationToken cancellationToken = default)
         {
-            string tableName = ResolveTable(objectId);
-            await using var result = await _session.ExecuteReadAsync(
-                $"SELECT COUNT(*) FROM {CSharpDbMigrationSql.Quote(tableName)}",
+            string tableName = ResolveTable(objectId).TargetName;
+            return await CountRowsAsync(
+                tableName,
+                where: null,
                 cancellationToken).ConfigureAwait(false);
-            if (!await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
-                throw new InvalidDataException($"Validation count for '{objectId}' returned no row.");
-            long count = result.Current[0].AsInteger;
-            if (await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
-                throw new InvalidDataException($"Validation count for '{objectId}' returned multiple rows.");
-            return count;
         }
 
         public async IAsyncEnumerable<MigrationValidationRow> ReadRowsAsync(
             string objectId,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            string tableName = ResolveTable(objectId);
-            string[] columns = _catalog.Objects
-                .Where(item => item.Kind == MigrationObjectKind.Column &&
-                    string.Equals(item.ParentObjectId, objectId, StringComparison.Ordinal) &&
-                    _planObjects[item.ObjectId].Included)
-                .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
-                .Select(item => _planObjects[item.ObjectId].TargetName!)
-                .ToArray();
-            string sql = $"SELECT {string.Join(", ", columns.Select(CSharpDbMigrationSql.Quote))} " +
-                $"FROM {CSharpDbMigrationSql.Quote(tableName)}";
-            await using var result = await _session.ExecuteReadAsync(sql, cancellationToken).ConfigureAwait(false);
-            await foreach (DbValue[] row in result.GetRowsAsync(cancellationToken).ConfigureAwait(false))
+            ValidationDataObjectBinding binding = ResolveTable(objectId);
+            string sql =
+                $"SELECT {string.Join(", ", binding.ProjectedColumnNames.Select(CSharpDbMigrationSql.Quote))} " +
+                $"FROM {CSharpDbMigrationSql.Quote(binding.TargetName)}";
+            await using var result = await _session.ExecuteReadAsync(
+                sql,
+                cancellationToken).ConfigureAwait(false);
+            await foreach (DbValue[] row in result
+                               .GetRowsAsync(cancellationToken)
+                               .ConfigureAwait(false))
             {
                 yield return new MigrationValidationRow
                 {
                     Values = row.ToArray(),
                 };
+            }
+        }
+
+        public async IAsyncEnumerable<MigrationBatchReceipt> ReadOutcomeReceiptsAsync(
+            string planDigest,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            RequirePlanDigest(planDigest);
+
+            long emitted = 0;
+            foreach (string sourceObjectId in _dataObjectIds)
+            {
+                long receiptCount = _receiptCounts[sourceObjectId];
+                string? expectedStartCursor = null;
+                for (long batchOrdinal = 0; batchOrdinal < receiptCount; batchOrdinal++)
+                {
+                    MigrationBatchReceipt receipt = await ReadReceiptAsync(
+                        sourceObjectId,
+                        batchOrdinal,
+                        cancellationToken).ConfigureAwait(false);
+                    if (receipt.BatchOrdinal != batchOrdinal ||
+                        !string.Equals(
+                            receipt.StartCursor,
+                            expectedStartCursor,
+                            StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException(
+                            "Migration validation receipt sequence is invalid.");
+                    }
+
+                    expectedStartCursor = receipt.NextCursor;
+                    emitted = checked(emitted + 1);
+                    yield return receipt;
+                }
+
+                if (receiptCount > 0 && expectedStartCursor is not null)
+                {
+                    throw new InvalidDataException(
+                        "Migration validation receipt chain is not terminal.");
+                }
+            }
+
+            long stored = await CountRowsAsync(
+                CSharpDbMigrationSql.ReceiptTable,
+                where: null,
+                cancellationToken).ConfigureAwait(false);
+            if (emitted != _expectedReceiptCount || stored != _expectedReceiptCount)
+            {
+                throw new InvalidDataException(
+                    "Migration validation receipt stream is incomplete.");
+            }
+        }
+
+        public async IAsyncEnumerable<MigrationRejectLedgerEntry> ReadRejectLedgerAsync(
+            string planDigest,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            RequirePlanDigest(planDigest);
+            if (_legacy)
+            {
+                if (_expectedRejectCount != 0)
+                {
+                    throw new InvalidDataException(
+                        "Legacy migration validation contains reject outcomes.");
+                }
+                yield break;
+            }
+
+            long emitted = 0;
+            long totalRawValueBytes = 0;
+            long artifactBytes = _rejectMode == MigrationRejectMode.DeterministicRejects
+                ? MigrationRejectLedgerCodec.GetArtifactHeaderByteCount(_planDigest)
+                : 0;
+            foreach (string sourceObjectId in _dataObjectIds)
+            {
+                long attemptedRows = 0;
+                long receiptCount = _receiptCounts[sourceObjectId];
+                for (long batchOrdinal = 0; batchOrdinal < receiptCount; batchOrdinal++)
+                {
+                    MigrationBatchReceipt receipt = await ReadReceiptAsync(
+                        sourceObjectId,
+                        batchOrdinal,
+                        cancellationToken).ConfigureAwait(false);
+                    long attemptedInBatch = checked(
+                        receipt.RowCount + receipt.RejectedRowCount);
+                    long intervalEnd = checked(attemptedRows + attemptedInBatch);
+                    long previousSourceRowOrdinal = -1;
+                    long batchRawValueBytes = 0;
+                    long batchArtifactBytes = 0;
+
+                    for (long rejectIndex = 0;
+                         rejectIndex < receipt.RejectedRowCount;
+                         rejectIndex++)
+                    {
+                        MigrationRejectLedgerEntry entry =
+                            await ReadNextRejectLedgerEntryAsync(
+                                sourceObjectId,
+                                batchOrdinal,
+                                previousSourceRowOrdinal,
+                                cancellationToken).ConfigureAwait(false) ??
+                            throw new InvalidDataException(
+                                "Migration validation reject ledger is incomplete.");
+                        if (entry.RejectedRow.SourceRowOrdinal < attemptedRows ||
+                            entry.RejectedRow.SourceRowOrdinal >= intervalEnd)
+                        {
+                            throw new InvalidDataException(
+                                "Migration validation reject ordinal is outside its receipt interval.");
+                        }
+
+                        ValidateRejectEntry(
+                            entry,
+                            ref batchRawValueBytes,
+                            ref batchArtifactBytes);
+                        previousSourceRowOrdinal = entry.RejectedRow.SourceRowOrdinal;
+                        emitted = checked(emitted + 1);
+                        totalRawValueBytes = checked(
+                            totalRawValueBytes + entry.RawValueByteCount);
+                        artifactBytes = checked(
+                            artifactBytes +
+                            MigrationRejectLedgerCodec.GetCanonicalArtifactEntryByteCount(
+                                entry.SourceObjectId,
+                                entry.BatchOrdinal,
+                                entry.RejectedRow));
+                        yield return entry;
+                    }
+
+                    if (await ReadNextRejectLedgerEntryAsync(
+                            sourceObjectId,
+                            batchOrdinal,
+                            previousSourceRowOrdinal,
+                            cancellationToken).ConfigureAwait(false) is not null)
+                    {
+                        throw new InvalidDataException(
+                            "Migration validation reject ledger contains an orphan entry.");
+                    }
+                    attemptedRows = intervalEnd;
+                }
+            }
+
+            long stored = await CountRowsAsync(
+                CSharpDbMigrationSql.RejectTable,
+                where: null,
+                cancellationToken).ConfigureAwait(false);
+            if (emitted != _expectedRejectCount || stored != _expectedRejectCount)
+            {
+                throw new InvalidDataException(
+                    "Migration validation reject-ledger stream is incomplete.");
+            }
+            if (_rejectMode == MigrationRejectMode.DeterministicRejects &&
+                (emitted > _maxRejectedRowsPerRun ||
+                 totalRawValueBytes > _maxRawValueBytesPerRun ||
+                 artifactBytes > _maxArtifactBytes))
+            {
+                throw new InvalidDataException(
+                    "Migration validation reject ledger exceeds plan-bound run limits.");
             }
         }
 
@@ -2870,18 +3142,369 @@ public sealed class CSharpDbStagedMigrationTarget :
             return ValueTask.CompletedTask;
         }
 
-        private string ResolveTable(string objectId)
+        private async ValueTask<MigrationBatchReceipt> ReadReceiptAsync(
+            string sourceObjectId,
+            long batchOrdinal,
+            CancellationToken cancellationToken)
+        {
+            string[] columns = ReceiptColumns(_legacy);
+            string sql =
+                $"SELECT {string.Join(", ", columns.Select(CSharpDbMigrationSql.Quote))} " +
+                $"FROM {CSharpDbMigrationSql.Quote(CSharpDbMigrationSql.ReceiptTable)} " +
+                $"WHERE {CSharpDbMigrationSql.Quote("plan_digest")} = " +
+                $"{CSharpDbMigrationSql.Literal(_planDigest)} " +
+                $"AND {CSharpDbMigrationSql.Quote("source_object_id")} = " +
+                $"{CSharpDbMigrationSql.Literal(sourceObjectId)} " +
+                $"AND {CSharpDbMigrationSql.Quote("batch_ordinal")} = " +
+                batchOrdinal.ToString(CultureInfo.InvariantCulture);
+            DbValue[] row;
+            await using (var result = await _session.ExecuteReadAsync(
+                             sql,
+                             cancellationToken).ConfigureAwait(false))
+            {
+                if (!await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    throw new InvalidDataException(
+                        "Migration validation receipt stream is missing an expected row.");
+                }
+                row = result.Current.ToArray();
+                if (await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    throw new InvalidDataException(
+                        "Migration validation receipt stream contains a duplicate key.");
+                }
+            }
+            return MapReceipt(row);
+        }
+
+        private async ValueTask<MigrationRejectLedgerEntry?> ReadNextRejectLedgerEntryAsync(
+            string sourceObjectId,
+            long batchOrdinal,
+            long previousSourceRowOrdinal,
+            CancellationToken cancellationToken)
+        {
+            string sql =
+                $"SELECT {string.Join(", ", RejectColumns.Select(CSharpDbMigrationSql.Quote))} " +
+                $"FROM {CSharpDbMigrationSql.Quote(CSharpDbMigrationSql.RejectTable)} " +
+                $"WHERE {CSharpDbMigrationSql.Quote("plan_digest")} = " +
+                $"{CSharpDbMigrationSql.Literal(_planDigest)} " +
+                $"AND {CSharpDbMigrationSql.Quote("source_object_id")} = " +
+                $"{CSharpDbMigrationSql.Literal(sourceObjectId)} " +
+                $"AND {CSharpDbMigrationSql.Quote("batch_ordinal")} = " +
+                $"{batchOrdinal.ToString(CultureInfo.InvariantCulture)} " +
+                $"AND {CSharpDbMigrationSql.Quote("source_row_ordinal")} > " +
+                $"{previousSourceRowOrdinal.ToString(CultureInfo.InvariantCulture)} " +
+                $"ORDER BY {CSharpDbMigrationSql.Quote("source_row_ordinal")} LIMIT 1";
+            DbValue[]? row = null;
+            await using (var result = await _session.ExecuteReadAsync(
+                             sql,
+                             cancellationToken).ConfigureAwait(false))
+            {
+                if (await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+                    row = result.Current.ToArray();
+                if (await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    throw new InvalidDataException(
+                        "Migration validation reject lookup exceeded its bounded result.");
+                }
+            }
+            return row is null ? null : MapRejectLedgerEntry(row);
+        }
+
+        private MigrationBatchReceipt MapReceipt(DbValue[] row)
+        {
+            int expectedLength = _legacy ? 13 : 15;
+            if (row.Length != expectedLength)
+            {
+                throw new InvalidDataException(
+                    "Migration validation receipt row shape is invalid.");
+            }
+
+            var receipt = new MigrationBatchReceipt
+            {
+                TargetIdentity = Text(row, 1, "Migration validation receipt row type is invalid."),
+                PlanDigest = Text(row, 2, "Migration validation receipt row type is invalid."),
+                CatalogDigest = Text(row, 3, "Migration validation receipt row type is invalid."),
+                SourceFingerprint = Text(row, 4, "Migration validation receipt row type is invalid."),
+                SourceSnapshotIdentity = Text(row, 5, "Migration validation receipt row type is invalid."),
+                SourceObjectId = Text(row, 6, "Migration validation receipt row type is invalid."),
+                BatchOrdinal = Integer(row, 7, "Migration validation receipt row type is invalid."),
+                StartCursor = NullableText(row, 8, "Migration validation receipt row type is invalid."),
+                NextCursor = NullableText(row, 9, "Migration validation receipt row type is invalid."),
+                BatchDigest = Text(row, 10, "Migration validation receipt row type is invalid."),
+                RejectContractVersion = _legacy
+                    ? MigrationRejectContract.DeterministicFailFastV1
+                    : Text(row, 11, "Migration validation receipt row type is invalid."),
+                RejectDigest = _legacy
+                    ? string.Empty
+                    : Text(row, 12, "Migration validation receipt row type is invalid."),
+                RowCount = Integer(
+                    row,
+                    _legacy ? 11 : 13,
+                    "Migration validation receipt row type is invalid."),
+                RejectedRowCount = Integer(
+                    row,
+                    _legacy ? 12 : 14,
+                    "Migration validation receipt row type is invalid."),
+            };
+            string expectedTag = _legacy
+                ? CSharpDbMigrationSql.LegacyReceiptTag
+                : CSharpDbMigrationSql.ReceiptTag;
+            long attemptedRows;
+            try
+            {
+                attemptedRows = checked(receipt.RowCount + receipt.RejectedRowCount);
+            }
+            catch (OverflowException error)
+            {
+                throw new InvalidDataException(
+                    "Migration validation receipt counts overflow.",
+                    error);
+            }
+            if (!string.Equals(Text(
+                    row,
+                    0,
+                    "Migration validation receipt row type is invalid."),
+                    expectedTag,
+                    StringComparison.Ordinal) ||
+                !string.Equals(receipt.TargetIdentity, _targetIdentity, StringComparison.Ordinal) ||
+                !string.Equals(receipt.PlanDigest, _planDigest, StringComparison.Ordinal) ||
+                !string.Equals(receipt.CatalogDigest, _catalogDigest, StringComparison.Ordinal) ||
+                !string.Equals(
+                    receipt.SourceFingerprint,
+                    _sourceFingerprint,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    receipt.SourceSnapshotIdentity,
+                    _sourceSnapshotIdentity,
+                    StringComparison.Ordinal) ||
+                !_dataObjects.ContainsKey(receipt.SourceObjectId) ||
+                receipt.BatchOrdinal < 0 ||
+                receipt.RowCount < 0 ||
+                receipt.RejectedRowCount < 0 ||
+                attemptedRows <= 0 ||
+                attemptedRows > _batchSize ||
+                receipt.RejectedRowCount > MigrationRejectContract.MaximumRejectedRowsPerBatch ||
+                (_rejectMode == MigrationRejectMode.DeterministicRejects &&
+                 receipt.RejectedRowCount > _maxRejectedRowsPerBatch) ||
+                (_rejectMode == MigrationRejectMode.FailFast && receipt.RejectedRowCount != 0) ||
+                !string.Equals(
+                    receipt.RejectContractVersion,
+                    _expectedRejectContract,
+                    StringComparison.Ordinal) ||
+                !IsLowerSha256(receipt.BatchDigest) ||
+                (!_legacy && !IsLowerSha256(receipt.RejectDigest)))
+            {
+                throw new InvalidDataException(
+                    "Migration validation receipt binding or format is invalid.");
+            }
+
+            if (_legacy)
+                receipt = receipt with { RejectDigest = ComputeEmptyRejectDigest(receipt) };
+            else if (receipt.RejectedRowCount == 0 &&
+                !FixedTimeSha256Equals(ComputeEmptyRejectDigest(receipt), receipt.RejectDigest))
+            {
+                throw new InvalidDataException(
+                    "Migration validation receipt empty reject digest is invalid.");
+            }
+            return receipt;
+        }
+
+        private MigrationRejectLedgerEntry MapRejectLedgerEntry(DbValue[] row)
+        {
+            if (row.Length != RejectColumns.Length)
+            {
+                throw new InvalidDataException(
+                    "Migration validation reject-ledger row shape is invalid.");
+            }
+
+            string sourceObjectId = Text(
+                row,
+                2,
+                "Migration validation reject-ledger row type is invalid.");
+            long batchOrdinal = Integer(
+                row,
+                3,
+                "Migration validation reject-ledger row type is invalid.");
+            var rejectedRow = new MigrationRejectedRow
+            {
+                SourceRowOrdinal = Integer(
+                    row,
+                    4,
+                    "Migration validation reject-ledger row type is invalid."),
+                RuleId = Text(
+                    row,
+                    5,
+                    "Migration validation reject-ledger row type is invalid."),
+                ColumnObjectId = NullableText(
+                    row,
+                    6,
+                    "Migration validation reject-ledger row type is invalid."),
+                Evidence = MigrationRejectLedgerCodec.DeserializeEvidence(
+                    Text(
+                        row,
+                        7,
+                        "Migration validation reject-ledger row type is invalid.")),
+            };
+            if (!string.Equals(
+                    Text(
+                        row,
+                        0,
+                        "Migration validation reject-ledger row type is invalid."),
+                    CSharpDbMigrationSql.RejectTag,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    Text(
+                        row,
+                        1,
+                        "Migration validation reject-ledger row type is invalid."),
+                    _planDigest,
+                    StringComparison.Ordinal) ||
+                !_dataObjects.TryGetValue(
+                    sourceObjectId,
+                    out ValidationDataObjectBinding? sourceBinding) ||
+                batchOrdinal < 0 ||
+                rejectedRow.SourceRowOrdinal < 0 ||
+                (rejectedRow.ColumnObjectId is not null &&
+                 !sourceBinding.ProjectedColumnObjectIds.Contains(
+                     rejectedRow.ColumnObjectId)))
+            {
+                throw new InvalidDataException(
+                    "Migration validation reject-ledger binding or format is invalid.");
+            }
+
+            int rawValueByteCount =
+                MigrationRejectLedgerCodec.GetRawValueByteCount(rejectedRow);
+            int canonicalEntryByteCount =
+                MigrationRejectLedgerCodec.GetCanonicalEntryByteCount(
+                    sourceObjectId,
+                    batchOrdinal,
+                    rejectedRow);
+            return new MigrationRejectLedgerEntry
+            {
+                PlanDigest = _planDigest,
+                SourceObjectId = sourceObjectId,
+                BatchOrdinal = batchOrdinal,
+                RejectedRow = rejectedRow,
+                RawValueByteCount = rawValueByteCount,
+                CanonicalEntryByteCount = canonicalEntryByteCount,
+            };
+        }
+
+        private void ValidateRejectEntry(
+            MigrationRejectLedgerEntry entry,
+            ref long batchRawValueBytes,
+            ref long batchArtifactBytes)
+        {
+            if (_rejectMode != MigrationRejectMode.DeterministicRejects ||
+                !_allowedRuleIds.Contains(entry.RejectedRow.RuleId) ||
+                entry.RawValueByteCount > _maxRawValueBytes)
+            {
+                throw new InvalidDataException(
+                    "Migration validation reject-ledger policy binding is invalid.");
+            }
+            batchRawValueBytes = checked(
+                batchRawValueBytes + entry.RawValueByteCount);
+            batchArtifactBytes = checked(
+                batchArtifactBytes +
+                MigrationRejectLedgerCodec.GetCanonicalArtifactEntryByteCount(
+                    entry.SourceObjectId,
+                    entry.BatchOrdinal,
+                    entry.RejectedRow));
+            if (batchRawValueBytes > _maxRawValueBytesPerBatch ||
+                batchArtifactBytes > _maxArtifactBytes)
+            {
+                throw new InvalidDataException(
+                    "Migration validation reject ledger exceeds plan-bound batch limits.");
+            }
+        }
+
+        private async ValueTask<long> CountRowsAsync(
+            string tableName,
+            string? where,
+            CancellationToken cancellationToken)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (!_planObjects.TryGetValue(objectId, out MigrationPlanObject? planned) ||
-                !planned.Included || string.IsNullOrWhiteSpace(planned.TargetName))
+            string sql = $"SELECT COUNT(*) FROM {CSharpDbMigrationSql.Quote(tableName)}";
+            if (where is not null)
+                sql += $" WHERE {where}";
+            await using var result = await _session.ExecuteReadAsync(
+                sql,
+                cancellationToken).ConfigureAwait(false);
+            if (!await result.MoveNextAsync(cancellationToken).ConfigureAwait(false) ||
+                result.Current.Length != 1 ||
+                result.Current[0].Type != DbType.Integer)
             {
-                throw new InvalidDataException($"Validation object '{objectId}' is not an included target table.");
+                throw new InvalidDataException(
+                    "Migration validation internal row count shape is invalid.");
             }
-            MigrationCatalogObject catalogObject = _catalog.Objects.Single(item => item.ObjectId == objectId);
-            if (catalogObject.Kind is not (MigrationObjectKind.Table or MigrationObjectKind.Collection))
-                throw new InvalidDataException($"Validation object '{objectId}' is not a table or collection.");
-            return planned.TargetName;
+            long count = result.Current[0].AsInteger;
+            if (count < 0 ||
+                await result.MoveNextAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidDataException(
+                    "Migration validation internal row count is invalid.");
+            }
+            return count;
         }
+
+        private void RequirePlanDigest(string planDigest)
+        {
+            if (!string.Equals(planDigest, _planDigest, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Migration validation outcome lookup does not match the snapshot plan.");
+            }
+        }
+
+        private ValidationDataObjectBinding ResolveTable(string objectId)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_dataObjects.TryGetValue(
+                    objectId,
+                    out ValidationDataObjectBinding? binding))
+            {
+                throw new InvalidDataException(
+                    "Migration validation object is not an included target table.");
+            }
+            return binding;
+        }
+
+        private static string Text(
+            DbValue[] row,
+            int index,
+            string errorMessage)
+        {
+            if (row[index].Type != DbType.Text)
+                throw new InvalidDataException(errorMessage);
+            return row[index].AsText;
+        }
+
+        private static long Integer(
+            DbValue[] row,
+            int index,
+            string errorMessage)
+        {
+            if (row[index].Type != DbType.Integer)
+                throw new InvalidDataException(errorMessage);
+            return row[index].AsInteger;
+        }
+
+        private static string? NullableText(
+            DbValue[] row,
+            int index,
+            string errorMessage)
+        {
+            if (row[index].IsNull)
+                return null;
+            if (row[index].Type != DbType.Text)
+                throw new InvalidDataException(errorMessage);
+            return row[index].AsText;
+        }
+
+        private sealed record ValidationDataObjectBinding(
+            string TargetName,
+            string[] ProjectedColumnNames,
+            HashSet<string> ProjectedColumnObjectIds);
     }
 }

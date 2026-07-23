@@ -91,10 +91,12 @@ boundary.
 ## Deferred Work
 
 The target-owned ledger and receipt, rather than an operator-facing file, are
-the durable authority for skipped rows. Reject-aware validation comparison and
-bounded artifact publication remain gated, so the CLI still exposes fail-fast
-apply only. Typed binary fields also remain deferred until a manifest declares
-base64 or hex intent and a decoded-size bound. The durable
+the durable authority for skipped rows. Capability-qualified SDK validation
+now compares the complete source replay with snapshot-scoped target receipts
+and ledger entries before report publication. Bounded reject-artifact
+publication remains gated, so the CLI still exposes fail-fast apply only. Typed
+binary fields also remain deferred until a manifest declares base64 or hex
+intent and a decoded-size bound. The durable
 raw-snapshot and policy package used to cross process boundaries is described
 in [`migration-csv-retained-package.md`](migration-csv-retained-package.md).
 Large-stream behavior is qualified by the 50,000-row CI fixture and isolated

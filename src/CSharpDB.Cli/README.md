@@ -147,9 +147,10 @@ stops the load before its batch reaches the target, and the failure report
 contains only its stable code plus object, batch, row, and column coordinates.
 Plans requesting durable skip-and-record rejects are refused before a staged
 target is created. The underlying SDK and CSV adapter can reproduce deterministic
-reject outcomes, but the CLI remains closed until validation compares those
-outcomes with the authoritative target ledger and publishes the bounded reject
-artifact.
+reject outcomes, and capability-qualified SDK validation compares them with the
+authoritative target snapshot before publishing its validation report. The CLI
+remains closed until it can safely publish and qualify the bounded operator-facing
+reject artifact.
 
 `migrate validate` compares normalized schema, 64-bit counts, and—by
 default—partitioned canonical SHA-256 evidence. It writes a deterministic,

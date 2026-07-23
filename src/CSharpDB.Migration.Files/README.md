@@ -44,6 +44,9 @@ The CLI uses that boundary for inspect, apply, resume, and validation. A
 batches, exact resume/checksum behavior, bounded memory, and temporary cleanup;
 see [`migration-csv-performance.md`](../../docs/migration-csv-performance.md).
 
-Reject-artifact publication, reject-aware validation comparison, typed CSV
-export manifests, and export remain later Phase 4A slices. The CLI therefore
-continues to expose fail-fast apply only.
+The capability-qualified SDK validation path now replays these same CSV
+accepted/rejected outcomes and compares them with the target snapshot's
+authoritative receipts and ledger before report publication. Reject-artifact
+publication, its CLI tolerant workflow, typed CSV export manifests, and export
+remain later Phase 4A slices. The CLI therefore continues to expose fail-fast
+apply only.

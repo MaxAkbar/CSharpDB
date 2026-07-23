@@ -379,6 +379,370 @@ public sealed class MigrationValidationRunnerTests
         Assert.Equal(0, source.ReadCount);
     }
 
+    [Theory]
+    [InlineData("accepted-only")]
+    [InlineData("mixed")]
+    [InlineData("all-reject")]
+    [InlineData("empty")]
+    [InlineData("multi-object")]
+    public async Task RejectOutcomeComparerAcceptsExactBoundedStreams(string scenario)
+    {
+        RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync(scenario);
+        await using var source = new RejectReplaySnapshot(
+            fixture.SourceSnapshotIdentity,
+            fixture.Batches);
+        await using var target = new RejectTargetOutcomeSnapshot(
+            "target:snapshot:reject-outcomes",
+            fixture.Receipts,
+            fixture.Ledger);
+
+        await new MigrationRejectOutcomeComparer().CompareAsync(
+            fixture.Plan,
+            fixture.Catalog,
+            RejectValidationTarget.Identity,
+            source,
+            target,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(target.PeakConcurrentMoves <= 1);
+    }
+
+    [Theory]
+    [InlineData("receipt-tampered")]
+    [InlineData("receipt-missing")]
+    [InlineData("receipt-extra")]
+    [InlineData("receipt-reordered")]
+    [InlineData("ledger-tampered")]
+    [InlineData("ledger-missing")]
+    [InlineData("ledger-extra")]
+    [InlineData("ledger-reordered")]
+    [InlineData("source-reordered")]
+    public async Task RejectOutcomeComparerFailsClosedForMismatchedOrUnexhaustedStreams(
+        string mismatch)
+    {
+        RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync("two-batches");
+        switch (mismatch)
+        {
+            case "receipt-tampered":
+                fixture.Receipts[0] = fixture.Receipts[0] with
+                {
+                    RowCount = fixture.Receipts[0].RowCount + 1,
+                };
+                break;
+            case "receipt-missing":
+                fixture.Receipts.RemoveAt(0);
+                break;
+            case "receipt-extra":
+                fixture.Receipts.Add(fixture.Receipts[^1]);
+                break;
+            case "receipt-reordered":
+                fixture.Receipts.Reverse();
+                break;
+            case "ledger-tampered":
+                MigrationRejectLedgerEntry entry = fixture.Ledger[0];
+                fixture.Ledger[0] = entry with
+                {
+                    RejectedRow = entry.RejectedRow with
+                    {
+                        Evidence =
+                        [
+                            new MigrationRejectEvidence
+                            {
+                                Name = MigrationRejectLedgerCodec.RawValueEvidenceName,
+                                Value = "private-ledger-value",
+                            },
+                        ],
+                    },
+                };
+                break;
+            case "ledger-missing":
+                fixture.Ledger.RemoveAt(0);
+                break;
+            case "ledger-extra":
+                fixture.Ledger.Add(fixture.Ledger[^1]);
+                break;
+            case "ledger-reordered":
+                fixture.Ledger.Reverse();
+                break;
+            case "source-reordered":
+                fixture.Batches.Reverse();
+                break;
+            default:
+                throw new InvalidOperationException("Unknown test case.");
+        }
+
+        await using var source = new RejectReplaySnapshot(
+            fixture.SourceSnapshotIdentity,
+            fixture.Batches);
+        await using var target = new RejectTargetOutcomeSnapshot(
+            "target:snapshot:reject-mismatch",
+            fixture.Receipts,
+            fixture.Ledger);
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await new MigrationRejectOutcomeComparer().CompareAsync(
+                fixture.Plan,
+                fixture.Catalog,
+                RejectValidationTarget.Identity,
+                source,
+                target,
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(MigrationRejectOutcomeComparer.MismatchMessage, error.Message);
+        Assert.DoesNotContain("private-ledger-value", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("value")]
+    [InlineData("batch")]
+    public async Task RejectOutcomeComparerEnforcesReplayByteBoundsBeforeDigesting(string bound)
+    {
+        const string secret = "private-oversized-replay-value";
+        RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync("accepted-only");
+        MigrationPlan plan = fixture.Plan with
+        {
+            Load = fixture.Plan.Load with
+            {
+                MaxValueBytes = 1,
+                MaxBatchBytes = string.Equals(bound, "batch", StringComparison.Ordinal)
+                    ? 1
+                    : fixture.Plan.Load.MaxBatchBytes,
+            },
+        };
+        MigrationTargetBatch original = Assert.Single(fixture.Batches);
+        MigrationTargetRow originalRow = Assert.Single(original.Rows);
+        MigrationTargetRow row = string.Equals(bound, "value", StringComparison.Ordinal)
+            ? originalRow with
+            {
+                Values = originalRow.Values
+                    .Select((value, index) => index == 0 ? DbValue.FromText(secret) : value)
+                    .ToArray(),
+            }
+            : originalRow;
+        MigrationTargetBatch unsigned = original with
+        {
+            PlanDigest = MigrationArtifactSerializer.ComputePlanDigest(plan),
+            BatchDigest = string.Empty,
+            RejectDigest = string.Empty,
+            Rows = [row],
+        };
+        MigrationTargetBatch rejectSealed = unsigned with
+        {
+            RejectDigest = MigrationRejectDigest.Compute(unsigned),
+        };
+        MigrationTargetBatch batch = rejectSealed with
+        {
+            BatchDigest = MigrationBatchDigest.Compute(rejectSealed),
+        };
+        await using var source = new RejectReplaySnapshot(
+            fixture.SourceSnapshotIdentity,
+            [batch]);
+        await using var target = new RejectTargetOutcomeSnapshot(
+            "target:snapshot:reject-byte-bound",
+            [CreateOutcomeReceipt(batch)],
+            []);
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await new MigrationRejectOutcomeComparer().CompareAsync(
+                plan,
+                fixture.Catalog,
+                RejectValidationTarget.Identity,
+                source,
+                target,
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(MigrationRejectOutcomeComparer.MismatchMessage, error.Message);
+        Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RejectOutcomeComparerMasksProviderEvidenceErrors()
+    {
+        RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync("mixed");
+        await using var source = new RejectReplaySnapshot(
+            fixture.SourceSnapshotIdentity,
+            fixture.Batches);
+        await using var target = new RejectTargetOutcomeSnapshot(
+            "target:snapshot:private-provider-error",
+            fixture.Receipts,
+            fixture.Ledger,
+            new InvalidOperationException("raw-secret-from-provider"));
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await new MigrationRejectOutcomeComparer().CompareAsync(
+                fixture.Plan,
+                fixture.Catalog,
+                RejectValidationTarget.Identity,
+                source,
+                target,
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(MigrationRejectOutcomeComparer.MismatchMessage, error.Message);
+        Assert.DoesNotContain("raw-secret-from-provider", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RejectOutcomeComparerSanitizesProviderCancellationMessages()
+    {
+        const string secret = "raw-secret-in-provider-cancellation";
+        RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync("mixed");
+        using var cancellation = new CancellationTokenSource();
+        await using var source = new RejectReplaySnapshot(
+            fixture.SourceSnapshotIdentity,
+            fixture.Batches);
+        await using var target = new RejectTargetOutcomeSnapshot(
+            "target:snapshot:private-provider-cancellation",
+            fixture.Receipts,
+            fixture.Ledger,
+            new OperationCanceledException(secret, innerException: null, cancellation.Token),
+            cancellation.Cancel);
+
+        OperationCanceledException error =
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                await new MigrationRejectOutcomeComparer().CompareAsync(
+                    fixture.Plan,
+                    fixture.Catalog,
+                    RejectValidationTarget.Identity,
+                    source,
+                    target,
+                    cancellation.Token));
+
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RejectEvidenceReadFailureIsMaskedBeforeReportPublicationOrActivation()
+    {
+        const string secret = "raw-secret-after-outcome-comparison";
+        string root = CreateRoot();
+        try
+        {
+            RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync("mixed");
+            await using var source = new RejectReplaySnapshot(
+                fixture.SourceSnapshotIdentity,
+                fixture.Batches,
+                new InvalidOperationException(secret));
+            var targetSnapshot = new RejectTargetOutcomeSnapshot(
+                "target:snapshot:private-evidence-error",
+                fixture.Receipts,
+                fixture.Ledger);
+            await using var target = new RejectValidationTarget(targetSnapshot);
+            string reportPath = Path.Combine(root, "must-not-publish.json");
+
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await new MigrationValidationRunner().ValidateAsync(
+                    Request(
+                        fixture.Plan,
+                        fixture.Catalog,
+                        source,
+                        target,
+                        reportPath,
+                        root),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(MigrationRejectOutcomeComparer.MismatchMessage, error.Message);
+            Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
+            Assert.Equal(1, source.SchemaReadCount);
+            Assert.Equal(0, target.ActivationAttempts);
+            Assert.False(File.Exists(reportPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task RejectEvidenceCancellationIsSanitizedBeforeReportPublicationOrActivation()
+    {
+        const string secret = "raw-secret-after-cancelled-outcome-comparison";
+        string root = CreateRoot();
+        try
+        {
+            RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync("mixed");
+            using var cancellation = new CancellationTokenSource();
+            await using var source = new RejectReplaySnapshot(
+                fixture.SourceSnapshotIdentity,
+                fixture.Batches,
+                new OperationCanceledException(secret, innerException: null, cancellation.Token),
+                cancellation.Cancel);
+            var targetSnapshot = new RejectTargetOutcomeSnapshot(
+                "target:snapshot:private-evidence-cancellation",
+                fixture.Receipts,
+                fixture.Ledger);
+            await using var target = new RejectValidationTarget(targetSnapshot);
+            string reportPath = Path.Combine(root, "must-not-publish.json");
+
+            OperationCanceledException error =
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                    await new MigrationValidationRunner().ValidateAsync(
+                        Request(
+                            fixture.Plan,
+                            fixture.Catalog,
+                            source,
+                            target,
+                            reportPath,
+                            root),
+                        cancellation.Token));
+
+            Assert.Equal(cancellation.Token, error.CancellationToken);
+            Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
+            Assert.Equal(0, target.ActivationAttempts);
+            Assert.False(File.Exists(reportPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task RejectOutcomeMismatchPreventsEvidenceReadsReportPublicationAndActivation()
+    {
+        string root = CreateRoot();
+        try
+        {
+            RejectOutcomeFixture fixture = await RejectOutcomeFixtureAsync("mixed");
+            MigrationRejectLedgerEntry entry = fixture.Ledger[0];
+            fixture.Ledger[0] = entry with
+            {
+                CanonicalEntryByteCount = entry.CanonicalEntryByteCount + 1,
+            };
+            await using var source = new RejectReplaySnapshot(
+                fixture.SourceSnapshotIdentity,
+                fixture.Batches);
+            var targetSnapshot = new RejectTargetOutcomeSnapshot(
+                "target:snapshot:no-publication",
+                fixture.Receipts,
+                fixture.Ledger);
+            await using var target = new RejectValidationTarget(targetSnapshot);
+            string reportPath = Path.Combine(root, "must-not-publish.json");
+
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+                await new MigrationValidationRunner().ValidateAsync(
+                    Request(
+                        fixture.Plan,
+                        fixture.Catalog,
+                        source,
+                        target,
+                        reportPath,
+                        root),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(MigrationRejectOutcomeComparer.MismatchMessage, error.Message);
+            Assert.Equal(1, target.OpenSnapshotCount);
+            Assert.Equal(0, target.ActivationAttempts);
+            Assert.Equal(0, source.SchemaReadCount);
+            Assert.Equal(0, targetSnapshot.SchemaReadCount);
+            Assert.False(File.Exists(reportPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     private static MigrationValidationRunRequest Request(
         MigrationPlan plan,
         MigrationCatalog catalog,
@@ -386,24 +750,24 @@ public sealed class MigrationValidationRunnerTests
         IMigrationTarget target,
         string reportPath,
         string spillRoot) => new()
-    {
-        Plan = plan,
-        Catalog = catalog,
-        SourceSnapshot = source,
-        Target = target,
-        Level = MigrationValidationLevel.Checksum,
-        ReportOutputPath = reportPath,
-        ChecksumOptions = new PartitionedChecksumValidatorOptions
         {
-            SpillRootDirectory = spillRoot,
-            SortMemoryBudgetBytes = ValidationHashRecord.SerializedLength * 4,
-            MaxSpillBytes = 32 * 1024 * 1024,
-            MergeFanIn = 2,
-            MaxOpenFiles = 3,
-            MaxOpenPartitionWriters = 4,
-            MaxMismatchDetailsPerPartition = 10,
-        },
-    };
+            Plan = plan,
+            Catalog = catalog,
+            SourceSnapshot = source,
+            Target = target,
+            Level = MigrationValidationLevel.Checksum,
+            ReportOutputPath = reportPath,
+            ChecksumOptions = new PartitionedChecksumValidatorOptions
+            {
+                SpillRootDirectory = spillRoot,
+                SortMemoryBudgetBytes = ValidationHashRecord.SerializedLength * 4,
+                MaxSpillBytes = 32 * 1024 * 1024,
+                MergeFanIn = 2,
+                MaxOpenFiles = 3,
+                MaxOpenPartitionWriters = 4,
+                MaxMismatchDetailsPerPartition = 10,
+            },
+        };
 
     private static async Task<MaterializedSnapshot> MaterializeAsync(
         MigrationPlan plan,
@@ -472,6 +836,471 @@ public sealed class MigrationValidationRunnerTests
             },
         },
     };
+
+    private static async Task<RejectOutcomeFixture> RejectOutcomeFixtureAsync(string scenario)
+    {
+        (MigrationCatalog catalog, MigrationPlan ready) = await ReadyPlanAsync();
+        MigrationPlan plan = WithDeterministicRejectPolicy(ready);
+        const string sourceSnapshotIdentity = "source:snapshot:reject-outcomes";
+        Projection[] projections = catalog.Objects
+            .Where(item => item.Kind is MigrationObjectKind.Table or MigrationObjectKind.Collection)
+            .Where(item => plan.Objects.Single(planned =>
+                string.Equals(
+                    planned.SourceObjectId,
+                    item.ObjectId,
+                    StringComparison.Ordinal)).Included)
+            .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
+            .Select(item => new Projection(
+                item.ObjectId,
+                catalog.Objects
+                    .Where(column =>
+                        column.Kind == MigrationObjectKind.Column &&
+                        string.Equals(
+                            column.ParentObjectId,
+                            item.ObjectId,
+                            StringComparison.Ordinal) &&
+                        plan.Objects.Single(planned =>
+                            string.Equals(
+                                planned.SourceObjectId,
+                                column.ObjectId,
+                                StringComparison.Ordinal)).Included)
+                    .OrderBy(column => column.ObjectId, StringComparer.Ordinal)
+                    .Select(column => column.ObjectId)
+                    .ToArray()))
+            .ToArray();
+        Assert.NotEmpty(projections);
+
+        var batches = new List<MigrationTargetBatch>();
+        switch (scenario)
+        {
+            case "accepted-only":
+                batches.Add(CreateOutcomeBatch(
+                    plan,
+                    projections[0],
+                    sourceSnapshotIdentity,
+                    0,
+                    null,
+                    null,
+                    [AcceptedRow(projections[0], 0)],
+                    []));
+                break;
+            case "mixed":
+                batches.Add(CreateOutcomeBatch(
+                    plan,
+                    projections[0],
+                    sourceSnapshotIdentity,
+                    0,
+                    null,
+                    null,
+                    [AcceptedRow(projections[0], 0)],
+                    [RejectedRow(projections[0], 1, "source-private-value")]));
+                break;
+            case "all-reject":
+                batches.Add(CreateOutcomeBatch(
+                    plan,
+                    projections[0],
+                    sourceSnapshotIdentity,
+                    0,
+                    null,
+                    null,
+                    [],
+                    [RejectedRow(projections[0], 0, "source-private-value")]));
+                break;
+            case "empty":
+                break;
+            case "multi-object":
+                Assert.True(projections.Length >= 2);
+                batches.Add(CreateOutcomeBatch(
+                    plan,
+                    projections[0],
+                    sourceSnapshotIdentity,
+                    0,
+                    null,
+                    null,
+                    [AcceptedRow(projections[0], 0)],
+                    []));
+                batches.Add(CreateOutcomeBatch(
+                    plan,
+                    projections[1],
+                    sourceSnapshotIdentity,
+                    0,
+                    null,
+                    null,
+                    [],
+                    [RejectedRow(projections[1], 0, "second-object-private-value")]));
+                break;
+            case "two-batches":
+                batches.Add(CreateOutcomeBatch(
+                    plan,
+                    projections[0],
+                    sourceSnapshotIdentity,
+                    0,
+                    null,
+                    "cursor:1",
+                    [],
+                    [RejectedRow(projections[0], 0, "first-private-value")]));
+                batches.Add(CreateOutcomeBatch(
+                    plan,
+                    projections[0],
+                    sourceSnapshotIdentity,
+                    1,
+                    "cursor:1",
+                    null,
+                    [],
+                    [RejectedRow(projections[0], 1, "second-private-value")]));
+                break;
+            default:
+                throw new InvalidOperationException("Unknown test fixture.");
+        }
+
+        List<MigrationBatchReceipt> receipts = batches
+            .Select(CreateOutcomeReceipt)
+            .ToList();
+        List<MigrationRejectLedgerEntry> ledger = batches
+            .SelectMany(batch => batch.RejectedRows.Select(rejectedRow =>
+                CreateLedgerEntry(batch, rejectedRow)))
+            .ToList();
+        return new RejectOutcomeFixture(
+            catalog,
+            plan,
+            sourceSnapshotIdentity,
+            batches,
+            receipts,
+            ledger);
+    }
+
+    private static MigrationTargetBatch CreateOutcomeBatch(
+        MigrationPlan plan,
+        Projection projection,
+        string sourceSnapshotIdentity,
+        long batchOrdinal,
+        string? startCursor,
+        string? nextCursor,
+        IReadOnlyList<MigrationTargetRow> rows,
+        IReadOnlyList<MigrationRejectedRow> rejectedRows)
+    {
+        var unsigned = new MigrationTargetBatch
+        {
+            PlanDigest = MigrationArtifactSerializer.ComputePlanDigest(plan),
+            CatalogDigest = plan.CatalogDigest,
+            SourceFingerprint = plan.Source.Fingerprint,
+            SourceSnapshotIdentity = sourceSnapshotIdentity,
+            SourceObjectId = projection.SourceObjectId,
+            ColumnObjectIds = projection.ColumnObjectIds,
+            BatchOrdinal = batchOrdinal,
+            StartCursor = startCursor,
+            NextCursor = nextCursor,
+            BatchDigest = string.Empty,
+            RejectContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+            RejectDigest = string.Empty,
+            Rows = rows,
+            RejectedRows = rejectedRows,
+        };
+        MigrationTargetBatch rejectSealed = unsigned with
+        {
+            RejectDigest = MigrationRejectDigest.Compute(unsigned),
+        };
+        return rejectSealed with
+        {
+            BatchDigest = MigrationBatchDigest.Compute(rejectSealed),
+        };
+    }
+
+    private static MigrationTargetRow AcceptedRow(Projection projection, long sourceRowOrdinal) =>
+        new()
+        {
+            SourceRowOrdinal = sourceRowOrdinal,
+            StableKey = $"stable:{sourceRowOrdinal}",
+            Values = projection.ColumnObjectIds.Select(_ => DbValue.Null).ToArray(),
+        };
+
+    private static MigrationRejectedRow RejectedRow(
+        Projection projection,
+        long sourceRowOrdinal,
+        string rawValue) =>
+        new()
+        {
+            SourceRowOrdinal = sourceRowOrdinal,
+            RuleId = "MIG-TEST-001",
+            ColumnObjectId = projection.ColumnObjectIds[0],
+            Evidence =
+            [
+                new MigrationRejectEvidence
+                {
+                    Name = MigrationRejectLedgerCodec.RawValueEvidenceName,
+                    Value = rawValue,
+                },
+            ],
+        };
+
+    private static MigrationBatchReceipt CreateOutcomeReceipt(MigrationTargetBatch batch) =>
+        new()
+        {
+            TargetIdentity = RejectValidationTarget.Identity,
+            PlanDigest = batch.PlanDigest,
+            CatalogDigest = batch.CatalogDigest,
+            SourceFingerprint = batch.SourceFingerprint,
+            SourceSnapshotIdentity = batch.SourceSnapshotIdentity,
+            SourceObjectId = batch.SourceObjectId,
+            BatchOrdinal = batch.BatchOrdinal,
+            StartCursor = batch.StartCursor,
+            NextCursor = batch.NextCursor,
+            BatchDigest = batch.BatchDigest,
+            RejectContractVersion = batch.RejectContractVersion,
+            RejectDigest = batch.RejectDigest,
+            RowCount = batch.Rows.Count,
+            RejectedRowCount = batch.RejectedRows.Count,
+        };
+
+    private static MigrationRejectLedgerEntry CreateLedgerEntry(
+        MigrationTargetBatch batch,
+        MigrationRejectedRow rejectedRow) =>
+        new()
+        {
+            PlanDigest = batch.PlanDigest,
+            SourceObjectId = batch.SourceObjectId,
+            BatchOrdinal = batch.BatchOrdinal,
+            RejectedRow = rejectedRow,
+            RawValueByteCount = MigrationRejectLedgerCodec.GetRawValueByteCount(rejectedRow),
+            CanonicalEntryByteCount = MigrationRejectLedgerCodec.GetCanonicalEntryByteCount(
+                batch.SourceObjectId,
+                batch.BatchOrdinal,
+                rejectedRow),
+        };
+
+    private sealed record RejectOutcomeFixture(
+        MigrationCatalog Catalog,
+        MigrationPlan Plan,
+        string SourceSnapshotIdentity,
+        List<MigrationTargetBatch> Batches,
+        List<MigrationBatchReceipt> Receipts,
+        List<MigrationRejectLedgerEntry> Ledger);
+
+    private sealed record Projection(
+        string SourceObjectId,
+        IReadOnlyList<string> ColumnObjectIds);
+
+    private sealed class RejectReplaySnapshot(
+        string snapshotIdentity,
+        IReadOnlyList<MigrationTargetBatch> batches,
+        Exception? evidenceError = null,
+        Action? beforeEvidenceError = null) :
+        IMigrationRejectReplayValidationSnapshot
+    {
+        public string SnapshotIdentity { get; } = snapshotIdentity;
+
+        public MigrationSnapshotConsistencyStatus ConsistencyStatus =>
+            MigrationSnapshotConsistencyStatus.Established;
+
+        public int SchemaReadCount { get; private set; }
+
+        public async IAsyncEnumerable<MigrationTargetBatch> ReplayOutcomeBatchesAsync(
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (MigrationTargetBatch batch in batches)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Yield();
+                yield return batch;
+            }
+        }
+
+        public ValueTask<MigrationNormalizedSchema> ReadSchemaAsync(
+            CancellationToken cancellationToken = default)
+        {
+            SchemaReadCount++;
+            beforeEvidenceError?.Invoke();
+            throw evidenceError ??
+                new InvalidOperationException("Outcome mismatch must precede schema reads.");
+        }
+
+        public ValueTask<long> CountAsync(
+            string objectId,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Outcome mismatch must precede count reads.");
+
+        public IAsyncEnumerable<MigrationValidationRow> ReadRowsAsync(
+            string objectId,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Outcome mismatch must precede row reads.");
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class RejectTargetOutcomeSnapshot(
+        string snapshotIdentity,
+        IReadOnlyList<MigrationBatchReceipt> receipts,
+        IReadOnlyList<MigrationRejectLedgerEntry> ledger,
+        Exception? ledgerError = null,
+        Action? beforeLedgerError = null) :
+        IMigrationRejectTargetValidationSnapshot
+    {
+        private int _moveInProgress;
+        private int _peakConcurrentMoves;
+
+        public string SnapshotIdentity { get; } = snapshotIdentity;
+
+        public MigrationSnapshotConsistencyStatus ConsistencyStatus =>
+            MigrationSnapshotConsistencyStatus.Established;
+
+        public int PeakConcurrentMoves => Volatile.Read(ref _peakConcurrentMoves);
+
+        public int SchemaReadCount { get; private set; }
+
+        public async IAsyncEnumerable<MigrationBatchReceipt> ReadOutcomeReceiptsAsync(
+            string planDigest,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (MigrationBatchReceipt receipt in receipts)
+            {
+                await BeforeYieldAsync(cancellationToken);
+                yield return receipt;
+            }
+        }
+
+        public async IAsyncEnumerable<MigrationRejectLedgerEntry> ReadRejectLedgerAsync(
+            string planDigest,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            if (ledgerError is not null)
+            {
+                beforeLedgerError?.Invoke();
+                if (beforeLedgerError is null)
+                    await BeforeYieldAsync(cancellationToken);
+                throw ledgerError;
+            }
+
+            foreach (MigrationRejectLedgerEntry entry in ledger)
+            {
+                await BeforeYieldAsync(cancellationToken);
+                yield return entry;
+            }
+        }
+
+        public ValueTask<MigrationNormalizedSchema> ReadSchemaAsync(
+            CancellationToken cancellationToken = default)
+        {
+            SchemaReadCount++;
+            throw new InvalidOperationException("Outcome mismatch must precede schema reads.");
+        }
+
+        public ValueTask<long> CountAsync(
+            string objectId,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Outcome mismatch must precede count reads.");
+
+        public IAsyncEnumerable<MigrationValidationRow> ReadRowsAsync(
+            string objectId,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Outcome mismatch must precede row reads.");
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        private async ValueTask BeforeYieldAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int concurrent = Interlocked.Increment(ref _moveInProgress);
+            SetPeak(concurrent);
+            try
+            {
+                if (concurrent != 1)
+                    throw new InvalidOperationException("Target outcome streams were advanced concurrently.");
+                await Task.Yield();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _moveInProgress);
+            }
+        }
+
+        private void SetPeak(int value)
+        {
+            int current;
+            do
+            {
+                current = Volatile.Read(ref _peakConcurrentMoves);
+                if (current >= value)
+                    return;
+            }
+            while (Interlocked.CompareExchange(
+                       ref _peakConcurrentMoves,
+                       value,
+                       current) != current);
+        }
+    }
+
+    private sealed class RejectValidationTarget(
+        RejectTargetOutcomeSnapshot snapshot) :
+        IMigrationTarget,
+        IMigrationRejectLedgerTarget,
+        IMigrationBatchDigestContractTarget,
+        IMigrationValidationActivationTarget
+    {
+        internal const string Identity = "target:validation-reject-test";
+
+        public string TargetIdentity => Identity;
+
+        public string BatchDigestFormat => MigrationBatchDigest.Format;
+
+        public int OpenSnapshotCount { get; private set; }
+
+        public int ActivationAttempts { get; private set; }
+
+        public ValueTask<IValidationSnapshot> OpenValidationSnapshotAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            OpenSnapshotCount++;
+            return ValueTask.FromResult<IValidationSnapshot>(snapshot);
+        }
+
+        public IAsyncEnumerable<MigrationRejectLedgerEntry> ReadRejectLedgerAsync(
+            string planDigest,
+            CancellationToken cancellationToken = default) =>
+            snapshot.ReadRejectLedgerAsync(planDigest, cancellationToken);
+
+        public ValueTask<MigrationValidationActivationReceipt?> ReadActivationReceiptAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult<MigrationValidationActivationReceipt?>(null);
+
+        public ValueTask ActivateAsync(
+            MigrationValidationActivationPermit permit,
+            CancellationToken cancellationToken = default)
+        {
+            ActivationAttempts++;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask ApplySchemaAsync(
+            MigrationPlan plan,
+            MigrationCatalog catalog,
+            MigrationSchemaStage stage,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<MigrationBatchReceipt> WriteBatchAsync(
+            MigrationTargetBatch batch,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<MigrationBatchReceipt?> ReadReceiptAsync(
+            string planDigest,
+            string sourceObjectId,
+            long batchOrdinal,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<MigrationBatchReceipt> ReadReceiptsAsync(
+            string planDigest,
+            string sourceObjectId,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield break;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 
     private sealed class FakeValidationTarget(MaterializedSnapshot snapshot) :
         IMigrationTarget,

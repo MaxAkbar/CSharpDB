@@ -404,9 +404,10 @@ ledger against receipts, reapply plan-bound sensitive/artifact budgets, verify
 contiguous terminal batch chains, and bind an outcome digest into the snapshot
 identity. New activations require that identity while legacy activated targets
 remain reopenable.
-Tolerant execution remains gated until reject-aware source replay, CSV
-evidence, reject-aware validation comparison, and artifact publication are
-complete.
+Capability-qualified SDK apply and validation now support reject-aware source
+replay, CSV evidence, and exact snapshot-scoped receipt/ledger comparison.
+CLI tolerant execution remains gated until bounded reject-artifact publication
+and its cross-process operator workflow are complete.
 
 ### Track 4A: CSV
 
@@ -454,16 +455,18 @@ complete.
 - [x] Qualify accepted-only, mixed, and all-reject target batches in fresh
   processes at every row/ledger/receipt/commit boundary, then prove exact
   replay and a second fresh reopen without duplicated outcomes.
-- [ ] Add reject-aware source replay and compare its accepted/rejected outcome
-  chain with the target ledger before enabling the tolerant policy.
+- [x] Add reject-aware source replay and compare its accepted/rejected outcome
+  chain with snapshot-scoped target receipts and the canonical ledger before
+  report publication or activation.
 
 - [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [x] Support quoted multiline fields, escaped quotes, explicit/detected
   delimiters, encoding/BOM, headers, newline, culture, quote, and null policy.
 - [x] Keep null, empty string, missing field, and an empty final column
   distinct.
-- [ ] Add strict/tolerant modes with deterministic physical-line, logical-row,
-  column, raw-value, and diagnostic information.
+- [ ] Expose CLI strict/tolerant modes with deterministic physical-line,
+  logical-row, column, raw-value, and diagnostic information in a bounded
+  operator-facing reject artifact.
 - [x] Add confidence-bearing schema inference and explicit overrides; default
   ambiguous columns to `Text`.
 - [ ] Add resumable prepared writes and streaming RFC 4180 export with a typed

@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using CSharpDB.Migration.Validation;
-using CSharpDB.Primitives;
 
 namespace CSharpDB.Migration;
 
@@ -11,6 +10,39 @@ namespace CSharpDB.Migration;
 public interface IMigrationEvidenceValidationSnapshot : IMigrationSchemaValidationSnapshot
 {
     MigrationSnapshotConsistencyStatus ConsistencyStatus { get; }
+}
+
+/// <summary>
+/// Source-snapshot capability for reproducing the complete ordered batch
+/// outcome stream used by deterministic-reject apply. The stream covers every
+/// included data object in canonical object and batch order and is bound to
+/// this snapshot's <see cref="IValidationSnapshot.SnapshotIdentity"/>.
+/// </summary>
+public interface IMigrationRejectReplayValidationSnapshot :
+    IMigrationEvidenceValidationSnapshot
+{
+    IAsyncEnumerable<MigrationTargetBatch> ReplayOutcomeBatchesAsync(
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Target-snapshot capability for reading all plan-scoped receipts and reject
+/// entries from the same immutable reader snapshot used for schema, counts,
+/// and rows. Implementations must expose complete ordered streams, including
+/// enough state for callers to detect foreign or orphan records, and must bind
+/// their complete contents into <see cref="IValidationSnapshot.SnapshotIdentity"/>.
+/// Activation must not change that identity.
+/// </summary>
+public interface IMigrationRejectTargetValidationSnapshot :
+    IMigrationEvidenceValidationSnapshot
+{
+    IAsyncEnumerable<MigrationBatchReceipt> ReadOutcomeReceiptsAsync(
+        string planDigest,
+        CancellationToken cancellationToken = default);
+
+    IAsyncEnumerable<MigrationRejectLedgerEntry> ReadRejectLedgerAsync(
+        string planDigest,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record MigrationValidationActivationReceipt
@@ -78,12 +110,12 @@ public interface IMigrationValidationActivationTarget
 /// planned conversions used during apply, yielding target-shaped rows for
 /// canonical logical comparison.
 /// </summary>
-public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceValidationSnapshot
+public sealed class MigrationDataSourceValidationSnapshot :
+    IMigrationRejectReplayValidationSnapshot
 {
     private readonly MigrationPlan _plan;
     private readonly MigrationCatalog _catalog;
-    private readonly IMigrationDataSource _source;
-    private readonly IReadOnlyDictionary<string, MigrationPlanObject> _planned;
+    private readonly MigrationOutcomeBatchReplayer _replayer;
     private bool _disposed;
 
     public MigrationDataSourceValidationSnapshot(
@@ -95,23 +127,19 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(source);
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
-        MigrationValidationPolicyValidator.ValidateForExecution(plan);
-        if (source.Source != plan.Source)
-            throw new InvalidDataException("Validation data source identity does not match the bound plan source.");
-        if (source is IMigrationCatalogBoundDataSource catalogBoundSource &&
-            !string.Equals(catalogBoundSource.CatalogDigest, plan.CatalogDigest, StringComparison.Ordinal))
+        if (plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects &&
+            source is not IMigrationRejectAwareDataSource)
         {
-            throw new InvalidDataException(
-                "Validation data source catalog policy does not match the bound plan catalog.");
+            // Preserve the established validation-policy failure for sources
+            // that do not opt into replay. Reject-aware sources proceed to the
+            // exact contract and rule-registry gate in the shared replayer.
+            MigrationValidationPolicyValidator.ValidateForExecution(plan);
         }
-        if (string.IsNullOrWhiteSpace(source.SnapshotIdentity))
-            throw new InvalidDataException("Validation data source snapshot identity is required.");
 
         _plan = plan;
         _catalog = catalog;
-        _source = source;
-        _planned = plan.Objects.ToDictionary(item => item.SourceObjectId, StringComparer.Ordinal);
-        SnapshotIdentity = source.SnapshotIdentity;
+        _replayer = new MigrationOutcomeBatchReplayer(plan, catalog, source);
+        SnapshotIdentity = _replayer.SnapshotIdentity;
         ConsistencyStatus = plan.Source.Consistency.Kind switch
         {
             MigrationConsistencyKind.Immutable or
@@ -142,16 +170,13 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        (string[] columnIds, _) = ResolveObject(objectId);
         long count = 0;
-        await foreach (MigrationDataBatch batch in _source.ReadAsync(
-                               ReadRequest(objectId, columnIds),
-                               cancellationToken)
+        await foreach (MigrationReplayedOutcomeBatch replayedBatch in _replayer
+                           .ReplayObjectAsync(objectId, cancellationToken)
                            .WithCancellation(cancellationToken)
                            .ConfigureAwait(false))
         {
-            ValidateBatch(batch, objectId, columnIds);
-            count = checked(count + batch.Rows.Count);
+            count = checked(count + replayedBatch.Batch.Rows.Count);
         }
         return count;
     }
@@ -161,41 +186,34 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        (string[] columnIds, MigrationCatalogObject[] columns) = ResolveObject(objectId);
-        MigrationTypeMapping[] mappings = columns
-            .Select(column => _planned[column.ObjectId].TypeMappings.Single())
-            .ToArray();
-        long rowOrdinal = 0;
-
-        await foreach (MigrationDataBatch batch in _source.ReadAsync(
-                               ReadRequest(objectId, columnIds),
-                               cancellationToken)
+        await foreach (MigrationReplayedOutcomeBatch replayedBatch in _replayer
+                           .ReplayObjectAsync(objectId, cancellationToken)
                            .WithCancellation(cancellationToken)
                            .ConfigureAwait(false))
         {
-            ValidateBatch(batch, objectId, columnIds);
-            foreach (MigrationDataRow row in batch.Rows)
+            foreach (MigrationTargetRow row in replayedBatch.Batch.Rows)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (row is null || row.Values is null || row.Values.Count != columns.Length)
-                    throw new InvalidDataException($"Validation source row for '{objectId}' has an invalid shape.");
-
-                var converted = new DbValue[columns.Length];
-                for (int index = 0; index < converted.Length; index++)
-                {
-                    converted[index] = MigrationValueConverter.Convert(
-                        row.Values[index],
-                        columns[index],
-                        mappings[index],
-                        rowOrdinal);
-                }
                 yield return new MigrationValidationRow
                 {
                     StableKey = row.StableKey,
-                    Values = converted,
+                    Values = row.Values,
                 };
-                rowOrdinal++;
             }
+        }
+    }
+
+    public async IAsyncEnumerable<MigrationTargetBatch> ReplayOutcomeBatchesAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await foreach (MigrationReplayedOutcomeBatch replayedBatch in _replayer
+                           .ReplayAsync(cancellationToken)
+                           .WithCancellation(cancellationToken)
+                           .ConfigureAwait(false))
+        {
+            ThrowIfDisposed();
+            yield return replayedBatch.Batch;
         }
     }
 
@@ -203,56 +221,6 @@ public sealed class MigrationDataSourceValidationSnapshot : IMigrationEvidenceVa
     {
         _disposed = true;
         return ValueTask.CompletedTask;
-    }
-
-    private MigrationReadRequest ReadRequest(string objectId, IReadOnlyList<string> columnIds) => new()
-    {
-        SourceObjectId = objectId,
-        ColumnObjectIds = columnIds,
-        BatchSize = _plan.Load.BatchSize,
-        MaxBatchBytes = _plan.Load.MaxBatchBytes,
-        MaxValueBytes = _plan.Load.MaxValueBytes,
-        SnapshotToken = SnapshotIdentity,
-    };
-
-    private (string[] ColumnIds, MigrationCatalogObject[] Columns) ResolveObject(string objectId)
-    {
-        ThrowIfDisposed();
-        if (!_planned.TryGetValue(objectId, out MigrationPlanObject? planned) || !planned.Included)
-            throw new InvalidDataException($"Validation source object '{objectId}' is not included by the plan.");
-        MigrationCatalogObject table = _catalog.Objects.SingleOrDefault(item =>
-                string.Equals(item.ObjectId, objectId, StringComparison.Ordinal))
-            ?? throw new InvalidDataException($"Validation source object '{objectId}' is absent from the catalog.");
-        if (table.Kind is not (MigrationObjectKind.Table or MigrationObjectKind.Collection))
-            throw new InvalidDataException($"Validation source object '{objectId}' is not a table or collection.");
-
-        MigrationCatalogObject[] columns = _catalog.Objects
-            .Where(item => item.Kind == MigrationObjectKind.Column &&
-                string.Equals(item.ParentObjectId, objectId, StringComparison.Ordinal) &&
-                _planned.TryGetValue(item.ObjectId, out MigrationPlanObject? value) && value.Included)
-            .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
-            .ToArray();
-        if (columns.Length == 0)
-            throw new InvalidDataException($"Validation source object '{objectId}' has no included columns.");
-        return (columns.Select(item => item.ObjectId).ToArray(), columns);
-    }
-
-    private void ValidateBatch(
-        MigrationDataBatch batch,
-        string objectId,
-        IReadOnlyList<string> columnIds)
-    {
-        if (batch is null ||
-            !string.Equals(batch.SourceObjectId, objectId, StringComparison.Ordinal) ||
-            !string.Equals(batch.SnapshotIdentity, SnapshotIdentity, StringComparison.Ordinal) ||
-            batch.ColumnObjectIds is null ||
-            !batch.ColumnObjectIds.SequenceEqual(columnIds, StringComparer.Ordinal) ||
-            batch.Rows is null || batch.Rows.Count == 0 || batch.Rows.Count > _plan.Load.BatchSize ||
-            batch.RejectedRows is null || batch.RejectedRows.Count != 0)
-        {
-            throw new InvalidDataException(
-                $"Validation source batch for '{objectId}' changed identity, shape, or snapshot.");
-        }
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

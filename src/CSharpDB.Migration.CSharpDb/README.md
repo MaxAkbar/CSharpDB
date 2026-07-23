@@ -20,8 +20,11 @@ rejects changed identities, cursor chains, outcome order, or payloads.
 
 Apply stops at `awaiting-validation`. Activation accepts only a permit derived
 from a coherent, published, passing validation report and persists its receipt
-atomically; deterministic-reject validation remains gated. The project has no
-overwrite, merge, or replace API.
+atomically. One immutable validation reader snapshot exposes the complete
+ordered receipt and reject-ledger streams alongside schema, counts, and rows;
+the SDK runner requires exact source-outcome agreement before it can publish a
+deterministic-reject report. The project has no overwrite, merge, or replace
+API.
 
 The adapter implements both deterministic fail-fast and the opt-in deterministic
 reject contract. Conversion visits canonical source objects, rows, and columns
@@ -32,6 +35,5 @@ non-cancellable and resume verifies whether it completed. Fresh-process fault
 qualification covers accepted-only, mixed, and all-reject batches at every
 transaction boundary.
 
-Identity/rowversion/default lowering, archive restoration, reject-artifact
-publication, and reject-aware validation comparison remain explicit follow-up
-work.
+Identity/rowversion/default lowering, archive restoration, and bounded
+reject-artifact publication remain explicit follow-up work.
