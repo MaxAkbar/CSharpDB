@@ -405,7 +405,7 @@ contiguous terminal batch chains, and bind an outcome digest into the snapshot
 identity. New activations require that identity while legacy activated targets
 remain reopenable.
 Tolerant execution remains gated until reject-aware source replay, CSV
-evidence, cross-process crash qualification, and artifact publication are
+evidence, reject-aware validation comparison, and artifact publication are
 complete.
 
 ### Track 4A: CSV
@@ -451,6 +451,9 @@ complete.
 - [x] Serialize target mutation admission; enforce predecessor cursors,
   cross-batch source ordinals, terminal cursors, all-evidence privacy budgets,
   and exact canonical artifact-byte limits before commit and again on reopen.
+- [x] Qualify accepted-only, mixed, and all-reject target batches in fresh
+  processes at every row/ledger/receipt/commit boundary, then prove exact
+  replay and a second fresh reopen without duplicated outcomes.
 - [ ] Add reject-aware source replay and compare its accepted/rejected outcome
   chain with the target ledger before enabling the tolerant policy.
 

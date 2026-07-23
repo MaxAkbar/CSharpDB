@@ -2,16 +2,26 @@ using System.IO.Pipes;
 using System.Text;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
+using CSharpDB.Primitives;
 
 return await MigrationCrashHarness.RunAsync(args);
 
 internal static class MigrationCrashHarness
 {
+    private const string FailFastScenario = "fail-fast";
+    private const string AcceptedOnlyScenario = "accepted-only";
+    private const string MixedScenario = "mixed";
+    private const string AllRejectScenario = "all-reject";
+    private const string DeterministicRuleId = "MIG-CSV-ROW-001";
+    private const string RejectSourceObjectId = "syn:table:customers-lower";
+    private const string RejectColumnObjectId = "syn:column:customers-lower:code-lower";
+
     public static async Task<int> RunAsync(string[] args)
     {
         string targetPath = Path.GetFullPath(RequiredOption(args, "--target"));
         string pipeName = RequiredOption(args, "--pipe");
         string faultName = RequiredOption(args, "--fault");
+        string scenario = OptionalOption(args, "--scenario") ?? FailFastScenario;
         if (!Enum.TryParse(faultName, ignoreCase: false, out CSharpDbMigrationFaultPoint faultPoint))
             throw new ArgumentException($"Unknown migration fault point '{faultName}'.", nameof(args));
 
@@ -41,25 +51,20 @@ internal static class MigrationCrashHarness
         try
         {
             MigrationCatalog catalog = await InspectAsync().ConfigureAwait(false);
-            MigrationPlan plan = ReadyPlan(catalog, batchSize: 2);
             var injector = new CoordinatedCrashFaultInjector(faultPoint, reader, writer);
 
-            await using var source = new SyntheticMigrationDataSource(catalog);
-            await using CSharpDbStagedMigrationTarget target =
-                await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+            if (string.Equals(scenario, FailFastScenario, StringComparison.Ordinal))
+            {
+                await RunFailFastAsync(targetPath, catalog, injector).ConfigureAwait(false);
+            }
+            else
+            {
+                await RunDeterministicRejectAsync(
                     targetPath,
-                    plan,
                     catalog,
-                    source.SnapshotIdentity,
+                    scenario,
                     injector).ConfigureAwait(false);
-            _ = await new MigrationApplyRunner().ApplyAsync(
-                new MigrationApplyRequest
-                {
-                    Plan = plan,
-                    Catalog = catalog,
-                    Source = source,
-                    Target = target,
-                }).ConfigureAwait(false);
+            }
 
             await writer.WriteLineAsync("COMPLETED_WITHOUT_FAULT").ConfigureAwait(false);
             return 3;
@@ -81,6 +86,48 @@ internal static class MigrationCrashHarness
         }
     }
 
+    private static async Task RunFailFastAsync(
+        string targetPath,
+        MigrationCatalog catalog,
+        ICSharpDbMigrationFaultInjector injector)
+    {
+        MigrationPlan plan = ReadyPlan(catalog, batchSize: 2);
+        await using var source = new SyntheticMigrationDataSource(catalog);
+        await using CSharpDbStagedMigrationTarget target =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                targetPath,
+                plan,
+                catalog,
+                source.SnapshotIdentity,
+                injector).ConfigureAwait(false);
+        _ = await new MigrationApplyRunner().ApplyAsync(
+            new MigrationApplyRequest
+            {
+                Plan = plan,
+                Catalog = catalog,
+                Source = source,
+                Target = target,
+            }).ConfigureAwait(false);
+    }
+
+    private static async Task RunDeterministicRejectAsync(
+        string targetPath,
+        MigrationCatalog catalog,
+        string scenario,
+        ICSharpDbMigrationFaultInjector injector)
+    {
+        MigrationPlan plan = ReadyDeterministicRejectPlan(catalog, batchSize: 3);
+        MigrationTargetBatch batch = DeterministicBatch(plan, catalog, scenario);
+        await using CSharpDbStagedMigrationTarget target =
+            await CSharpDbStagedMigrationTarget.OpenResumeAsync(
+                targetPath,
+                plan,
+                catalog,
+                SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+                injector).ConfigureAwait(false);
+        _ = await target.WriteBatchAsync(batch).ConfigureAwait(false);
+    }
+
     private static async ValueTask<MigrationCatalog> InspectAsync() =>
         await new SyntheticMigrationSourceInspector().InspectAsync(
             new MigrationInspectionRequest
@@ -98,7 +145,151 @@ internal static class MigrationCrashHarness
         return plan with { Load = plan.Load with { BatchSize = batchSize } };
     }
 
+    private static MigrationPlan ReadyDeterministicRejectPlan(
+        MigrationCatalog catalog,
+        int batchSize)
+    {
+        MigrationPlan plan = ReadyPlan(catalog, batchSize);
+        return plan with
+        {
+            Load = plan.Load with
+            {
+                RejectMode = MigrationRejectMode.DeterministicRejects,
+                RejectPolicy = new MigrationDeterministicRejectPolicy
+                {
+                    ContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+                    AllowedRuleIds = [DeterministicRuleId],
+                    MaxRejectedRowsPerBatch = batchSize,
+                    MaxRejectedRowsPerRun = 100,
+                    MaxRawValueBytes = 1_024,
+                    MaxRawValueBytesPerBatch = 8_192,
+                    MaxRawValueBytesPerRun = 65_536,
+                    MaxArtifactBytes = 131_072,
+                },
+            },
+        };
+    }
+
+    private static MigrationTargetBatch DeterministicBatch(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        string scenario)
+    {
+        IReadOnlyList<MigrationTargetRow> rows;
+        IReadOnlyList<MigrationRejectedRow> rejectedRows;
+        switch (scenario)
+        {
+            case AcceptedOnlyScenario:
+                rows =
+                [
+                    AcceptedRow(0, "zero"),
+                    AcceptedRow(1, "one"),
+                ];
+                rejectedRows = [];
+                break;
+            case MixedScenario:
+                rows =
+                [
+                    AcceptedRow(0, "zero"),
+                    AcceptedRow(2, "two"),
+                ];
+                rejectedRows = [RejectedRow(1, "bad-one")];
+                break;
+            case AllRejectScenario:
+                rows = [];
+                rejectedRows =
+                [
+                    RejectedRow(0, "bad-zero"),
+                    RejectedRow(1, "bad-one"),
+                ];
+                break;
+            default:
+                throw new ArgumentException(
+                    $"Unknown migration crash scenario '{scenario}'.",
+                    nameof(scenario));
+        }
+
+        var unsigned = new MigrationTargetBatch
+        {
+            PlanDigest = MigrationArtifactSerializer.ComputePlanDigest(plan),
+            CatalogDigest = plan.CatalogDigest,
+            SourceFingerprint = plan.Source.Fingerprint,
+            SourceSnapshotIdentity = SyntheticMigrationDataSource.FixtureSnapshotIdentity,
+            SourceObjectId = RejectSourceObjectId,
+            ColumnObjectIds = IncludedColumnIds(catalog, plan, RejectSourceObjectId),
+            BatchOrdinal = 0,
+            StartCursor = null,
+            NextCursor = null,
+            BatchDigest = string.Empty,
+            RejectContractVersion = MigrationRejectContract.DeterministicRejectsV1,
+            Rows = rows,
+            RejectedRows = rejectedRows,
+        };
+        MigrationTargetBatch rejectSealed = unsigned with
+        {
+            RejectDigest = MigrationRejectDigest.Compute(unsigned),
+        };
+        return rejectSealed with
+        {
+            BatchDigest = MigrationBatchDigest.Compute(rejectSealed),
+        };
+    }
+
+    private static MigrationTargetRow AcceptedRow(long sourceRowOrdinal, string suffix) => new()
+    {
+        SourceRowOrdinal = sourceRowOrdinal,
+        StableKey = suffix,
+        Values =
+        [
+            DbValue.FromText($"lower-{suffix}"),
+            DbValue.FromText($"upper-{suffix}"),
+        ],
+    };
+
+    private static MigrationRejectedRow RejectedRow(
+        long sourceRowOrdinal,
+        string rawValue) => new()
+        {
+            SourceRowOrdinal = sourceRowOrdinal,
+            RuleId = DeterministicRuleId,
+            ColumnObjectId = RejectColumnObjectId,
+            Evidence =
+            [
+                new MigrationRejectEvidence
+                {
+                    Name = MigrationRejectLedgerCodec.RawValueEvidenceName,
+                    Value = rawValue,
+                },
+            ],
+        };
+
+    private static string[] IncludedColumnIds(
+        MigrationCatalog catalog,
+        MigrationPlan plan,
+        string tableObjectId)
+    {
+        IReadOnlySet<string> included = plan.Objects
+            .Where(item => item.Included)
+            .Select(item => item.SourceObjectId)
+            .ToHashSet(StringComparer.Ordinal);
+        return catalog.Objects
+            .Where(item => item.Kind == MigrationObjectKind.Column &&
+                string.Equals(item.ParentObjectId, tableObjectId, StringComparison.Ordinal) &&
+                included.Contains(item.ObjectId))
+            .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
+            .Select(item => item.ObjectId)
+            .ToArray();
+    }
+
     private static string RequiredOption(IReadOnlyList<string> args, string name)
+    {
+        string? value = OptionalOption(args, name);
+        return value ?? throw new ArgumentException(
+            $"Missing required option '{name}'.",
+            nameof(args));
+    }
+
+    private static string? OptionalOption(IReadOnlyList<string> args, string name)
     {
         for (int index = 0; index < args.Count; index++)
         {
@@ -109,7 +300,7 @@ internal static class MigrationCrashHarness
             return args[index + 1];
         }
 
-        throw new ArgumentException($"Missing required option '{name}'.", nameof(args));
+        return null;
     }
 
     private sealed class CoordinatedCrashFaultInjector(

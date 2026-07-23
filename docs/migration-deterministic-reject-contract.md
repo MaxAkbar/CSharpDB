@@ -8,7 +8,7 @@ Implementation status: the bounded reject model, plan-bound rule/limit policy,
 reject-set and v2 batch digests, canonical ledger codec, atomic CSharpDB ledger
 write/read path, v2 receipts, and target-side outcome validation are present.
 Execution is still fail-fast; tolerant policy validation remains closed until
-reject-aware source replay, CSV evidence, cross-process crash qualification,
+reject-aware source replay, CSV evidence, reject-aware validation comparison,
 and artifact phases below pass.
 
 ## Decision
@@ -264,9 +264,9 @@ after commit; they must not become the authority for resume.
    fail-fast.
 2. Add the CSharpDB v2 receipt and reject-ledger schema plus one atomic target
    write API. In-process rollback, committed replay, all-reject, tamper, and
-   activation-binding behavior are now covered; fresh-process crash-matrix
-   qualification remains required before allowing a source adapter to request
-   it.
+   activation-binding behavior are now covered. Fresh-process qualification
+   covers accepted-only, mixed, and all-reject outcomes at every transaction
+   boundary, including committed replay and a second fresh reopen.
 3. Add CSV row-outcome metadata for the explicit row-rejectable rule registry,
    then add bounded artifact materialization. Parser, integrity, and resource
    errors remain fatal.
