@@ -187,8 +187,15 @@ RetainedDatabaseSnapshotReceipt receipt =
 // Persist receipt.Identity with the export checkpoint.
 await using RetainedDatabaseSnapshotSession snapshot =
     await RetainedDatabaseSnapshot.OpenAsync(retained, receipt.Identity);
-await using var rows =
-    await snapshot.ExecuteReadAsync("SELECT * FROM users ORDER BY id");
+
+await using RetainedDatabaseSnapshotTableReader rows =
+    snapshot.OpenTableReader("users", afterRowIdExclusive: lastCompletedRowId);
+while (await rows.MoveNextAsync(cancellationToken))
+{
+    long physicalRowId = rows.CurrentRowId;
+    ReadOnlySpan<DbValue> values = rows.Current.Span;
+    // Consume values before advancing; the reader reuses this row buffer.
+}
 ```
 
 The v1 path capture is offline: it requires a cooperating writer to be closed
@@ -202,7 +209,12 @@ must already be trusted and link-free. On platforms with advisory file sharing,
 enforce the write freeze and keep the source and destination parents trusted.
 Registered external-table archives are separate files and are not covered by
 the retained database digest; retain them independently or exclude those
-queries from a snapshot-qualified export.
+queries from a snapshot-qualified export. `OpenTableReader` scans only local
+physical tables in strictly ascending physical row-ID order. Its optional
+resume boundary is exclusive, and only one SQL query or table reader may be
+active on a retained session at a time. The session owns and closes its active
+table reader during disposal. `RetainedDatabaseSnapshotOptions.MaxEncodedRowBytes`
+defaults to 64 MiB and rejects larger overflow records before materialization.
 
 ### Hybrid Memory-Resident Mode
 

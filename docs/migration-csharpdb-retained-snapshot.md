@@ -48,18 +48,44 @@ Queries that read an external table are therefore outside the retained-snapshot
 guarantee, and migration exporters must reject them unless that archive is
 retained and verified through its own contract.
 
+### Deterministic Physical Table Reads
+
+`RetainedDatabaseSnapshotSession.OpenTableReader` exposes local physical-table
+rows directly from the verified reader snapshot. It returns rows in strictly
+ascending physical row-ID order and accepts an optional `afterRowIdExclusive`
+resume boundary. That boundary is the last fully completed physical row ID,
+not a row ordinal or user primary-key value; the first returned row is strictly
+greater than it. Deleted row-ID gaps therefore do not affect resume.
+
+The reader rejects views, system/internal tables, external tables, and missing
+local tables before scanning. In particular, it never follows an external
+table's archive path because those bytes are outside the retained identity.
+Only one SQL query or physical table reader may be active on a session at a
+time. The current row uses one reusable buffer, so callers must consume it
+before advancing and must dispose the table reader before starting another
+read. Disposing the owning retained session also disposes its active physical
+reader before closing the private pager and workspace.
+
+The physical boundary alone is not a durable export checkpoint. A resumable
+export must also bind it to the retained snapshot identity, table, ordered
+schema, row-order contract, export profile and codec, durable CSV byte
+boundary, and verified output-prefix digest.
+
 Disposing the session closes its reader and database and removes only its owned
 private workspace. It never deletes the retained snapshot.
 
 ## Resource And Failure Boundaries
 
 Database bytes, WAL bytes, consolidated snapshot bytes, copy-buffer size, and
-private pager caches have explicit limits. Copying and hashing are streaming;
-the implementation does not load the database or WAL in proportion to file
-size. Cancellation before publication removes owned temporary state and leaves
-the destination absent. Once the no-replace publication succeeds, the method
-returns the valid receipt rather than treating a late cancellation as a failed
-operation whose published file is ambiguous.
+private pager caches have explicit limits. Physical table readers also enforce
+`MaxEncodedRowBytes` (64 MiB by default); an oversized overflow reference is
+rejected before its chain is read or its declared payload is allocated.
+Copying and hashing are streaming; the implementation does not load the
+database or WAL in proportion to file size. Cancellation before publication
+removes owned temporary state and leaves the destination absent. Once the
+no-replace publication succeeds, the method returns the valid receipt rather
+than treating a late cancellation as a failed operation whose published file
+is ambiguous.
 
 Missing input never creates a database or WAL. An existing destination is
 preserved. Reopen rejects a wrong pin, truncation, appended bytes, or changed
@@ -85,9 +111,7 @@ snapshot while writers continue. V1 does not claim that capability.
 
 ## CSV Export Integration
 
-This API removes the cross-process source-view prerequisite for resumable CSV
-export, but it does not itself implement the CSV writer or checkpoint journal.
-The export checkpoint must still bind the retained snapshot identity, table,
-ordered schema, export profile and codec, completed row boundary, durable CSV
-byte boundary, and verified output-prefix digest. Until that integration is
-complete, CSV export resume remains unavailable.
+This API removes both the cross-process source-view prerequisite and the
+deterministic physical row-order prerequisite for resumable CSV export, but it
+does not itself implement the CSV writer or checkpoint journal. Until that
+integration is complete, CSV export resume remains unavailable.

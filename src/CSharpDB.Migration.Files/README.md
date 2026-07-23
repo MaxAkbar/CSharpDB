@@ -62,8 +62,10 @@ aggregate formula-mitigation changes without putting cell values in the
 manifest and rejects BLOB columns whose base64 could resemble a formula. The
 streaming CSV writer, export CLI, fail-closed manifest-last publication, and
 durable resume are not implemented. The offline retained read-only CSharpDB
-snapshot prerequisite can now be reopened and verified across processes, but
-the CSV writer and checkpoint journal do not yet consume it. See
+snapshot can now be reopened and verified across processes, and its physical
+table reader provides strictly ascending row IDs with an exclusive resume
+boundary. The CSV writer and checkpoint journal do not yet consume those
+source primitives. See
 [`migration-csv-export-contract.md`](../../docs/migration-csv-export-contract.md)
 and
 [`migration-csharpdb-retained-snapshot.md`](../../docs/migration-csharpdb-retained-snapshot.md).

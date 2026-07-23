@@ -14,6 +14,7 @@ public sealed class RetainedDatabaseSnapshotOptions
     public const long DefaultMaxDatabaseBytes = 1L << 40;
     public const long DefaultMaxWalBytes = 4L << 30;
     public const long DefaultMaxSnapshotBytes = 1L << 40;
+    public const int DefaultMaxEncodedRowBytes = 64 * 1024 * 1024;
 
     /// <summary>
     /// Optional existing, trusted, link-free parent for private working directories.
@@ -27,6 +28,13 @@ public sealed class RetainedDatabaseSnapshotOptions
     public long MaxWalBytes { get; init; } = DefaultMaxWalBytes;
 
     public long MaxSnapshotBytes { get; init; } = DefaultMaxSnapshotBytes;
+
+    /// <summary>
+    /// Maximum encoded physical row payload materialized by a retained table
+    /// reader. Oversized overflow records are rejected before their overflow
+    /// chain is read or allocated.
+    /// </summary>
+    public int MaxEncodedRowBytes { get; init; } = DefaultMaxEncodedRowBytes;
 
     public int CopyBufferBytes { get; init; } = 128 * 1024;
 
@@ -42,6 +50,8 @@ public sealed class RetainedDatabaseSnapshotOptions
             throw new ArgumentOutOfRangeException(nameof(MaxWalBytes));
         if (MaxSnapshotBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(MaxSnapshotBytes));
+        if (MaxEncodedRowBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(MaxEncodedRowBytes));
         if (CopyBufferBytes is < 4096 or > 16 * 1024 * 1024)
         {
             throw new ArgumentOutOfRangeException(
@@ -241,7 +251,8 @@ public static class RetainedDatabaseSnapshot
                     expectedIdentity,
                     database,
                     reader,
-                    workspace);
+                    workspace,
+                    options.MaxEncodedRowBytes);
                 workspace = null;
                 return session;
             }
@@ -335,6 +346,9 @@ public sealed class RetainedDatabaseSnapshotSession : IAsyncDisposable
 {
     private readonly Database _database;
     private readonly Database.ReaderSession _reader;
+    private readonly object _lifecycleGate = new();
+    private readonly int _maxEncodedRowBytes;
+    private RetainedDatabaseSnapshotTableReader? _activeTableReader;
     private RetainedDatabaseSnapshotWorkspace? _workspace;
     private int _disposed;
 
@@ -343,13 +357,15 @@ public sealed class RetainedDatabaseSnapshotSession : IAsyncDisposable
         RetainedDatabaseSnapshotIdentity identity,
         Database database,
         Database.ReaderSession reader,
-        RetainedDatabaseSnapshotWorkspace workspace)
+        RetainedDatabaseSnapshotWorkspace workspace,
+        int maxEncodedRowBytes)
     {
         SnapshotPath = snapshotPath;
         Identity = identity;
         _database = database;
         _reader = reader;
         _workspace = workspace;
+        _maxEncodedRowBytes = maxEncodedRowBytes;
     }
 
     public string SnapshotPath { get; }
@@ -402,27 +418,66 @@ public sealed class RetainedDatabaseSnapshotSession : IAsyncDisposable
         return _reader.ExecuteReadAsync(sql, ct);
     }
 
+    /// <summary>
+    /// Opens a forward-only physical table reader in ascending row-ID order.
+    /// When supplied, <paramref name="afterRowIdExclusive"/> resumes at the
+    /// first row whose physical row ID is greater than that boundary.
+    /// </summary>
+    /// <remarks>
+    /// Views, system/internal tables, and external tables are not supported.
+    /// The reader must be disposed before another read is started through this
+    /// session.
+    /// </remarks>
+    public RetainedDatabaseSnapshotTableReader OpenTableReader(
+        string tableName,
+        long? afterRowIdExclusive = null)
+    {
+        lock (_lifecycleGate)
+        {
+            ThrowIfDisposed();
+            RetainedDatabaseSnapshotTableReader reader =
+                _reader.OpenTableReader(
+                    tableName,
+                    afterRowIdExclusive,
+                    _maxEncodedRowBytes);
+            _activeTableReader = reader;
+            return reader;
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        RetainedDatabaseSnapshotTableReader? activeTableReader;
+        lock (_lifecycleGate)
+            activeTableReader = Interlocked.Exchange(ref _activeTableReader, null);
+
         try
         {
-            _reader.Dispose();
+            if (activeTableReader is not null)
+                await activeTableReader.DisposeAsync();
         }
         finally
         {
             try
             {
-                await _database.DisposeAsync();
+                _reader.Dispose();
             }
             finally
             {
-                RetainedDatabaseSnapshotWorkspace? workspace =
-                    Interlocked.Exchange(ref _workspace, null);
-                if (workspace is not null)
-                    await workspace.DisposeAsync();
+                try
+                {
+                    await _database.DisposeAsync();
+                }
+                finally
+                {
+                    RetainedDatabaseSnapshotWorkspace? workspace =
+                        Interlocked.Exchange(ref _workspace, null);
+                    if (workspace is not null)
+                        await workspace.DisposeAsync();
+                }
             }
         }
     }

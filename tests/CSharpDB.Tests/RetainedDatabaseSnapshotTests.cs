@@ -2,9 +2,11 @@ using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using CSharpDB.Engine;
 using CSharpDB.Execution;
+using CSharpDB.ImportExport.TableArchives;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Checkpointing;
 using CSharpDB.Storage.Paging;
+using CSharpDB.Storage.Serialization;
 using CSharpDB.Storage.StorageEngine;
 
 namespace CSharpDB.Tests;
@@ -782,6 +784,497 @@ public sealed class RetainedDatabaseSnapshotTests : IAsyncLifetime
         Assert.False(File.Exists(snapshotPath + ".wal"));
     }
 
+    [Fact]
+    public async Task OpenTableReader_StreamsPhysicalRowsAscending_AndResumesAfterExclusiveBoundary()
+    {
+        RetainedDatabaseSnapshotReceipt receipt = await CaptureConfiguredSnapshotAsync(
+            "ordered-reader",
+            async database =>
+            {
+                await database.ExecuteAsync(
+                    "CREATE TABLE ordered_items (id INTEGER PRIMARY KEY, note TEXT, score REAL NOT NULL, payload BLOB)",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO ordered_items VALUES (7, NULL, 7.5, X'0708')",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO ordered_items VALUES (-2, '', -2.25, X'00')",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO ordered_items VALUES (4, 'four', 4.25, NULL)",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO ordered_items VALUES (5, 'deleted', 5.25, X'05')",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "DELETE FROM ordered_items WHERE id = 5",
+                    Cancellation);
+            });
+        byte[] retainedBefore = await File.ReadAllBytesAsync(receipt.SnapshotPath, Cancellation);
+
+        await using RetainedDatabaseSnapshotSession session = await RetainedDatabaseSnapshot.OpenAsync(
+            receipt.SnapshotPath,
+            receipt.Identity,
+            databaseOptions: null,
+            SnapshotOptions(CreateDirectory("ordered-reader-open-workspace")),
+            Cancellation);
+
+        await using (RetainedDatabaseSnapshotTableReader reader =
+                     session.OpenTableReader("ordered_items"))
+        {
+            Assert.Equal("ordered_items", reader.TableName);
+            Assert.Equal(
+                ["id", "note", "score", "payload"],
+                reader.Columns.Select(static column => column.Name));
+            Assert.Equal(
+                [DbType.Integer, DbType.Text, DbType.Real, DbType.Blob],
+                reader.Columns.Select(static column => column.Type));
+            var mutableColumns = Assert.IsAssignableFrom<ICollection<ColumnDefinition>>(
+                reader.Columns);
+            Assert.True(mutableColumns.IsReadOnly);
+            Assert.Throws<NotSupportedException>(
+                () => mutableColumns.Add(
+                    new ColumnDefinition
+                    {
+                        Name = "injected",
+                        Type = DbType.Text,
+                    }));
+            Assert.Throws<InvalidOperationException>(() => reader.CurrentRowId);
+            Assert.Throws<InvalidOperationException>(() => reader.Current);
+
+            Assert.True(await reader.MoveNextAsync(Cancellation));
+            Assert.Equal(-2, reader.CurrentRowId);
+            Assert.Equal(-2, reader.Current.Span[0].AsInteger);
+            Assert.Equal(string.Empty, reader.Current.Span[1].AsText);
+            Assert.Equal(-2.25, reader.Current.Span[2].AsReal);
+            Assert.Equal([0x00], reader.Current.Span[3].AsBlob);
+
+            Assert.True(await reader.MoveNextAsync(Cancellation));
+            Assert.Equal(4, reader.CurrentRowId);
+            Assert.Equal("four", reader.Current.Span[1].AsText);
+            Assert.True(reader.Current.Span[3].IsNull);
+
+            Assert.True(await reader.MoveNextAsync(Cancellation));
+            Assert.Equal(7, reader.CurrentRowId);
+            Assert.True(reader.Current.Span[1].IsNull);
+            Assert.Equal([0x07, 0x08], reader.Current.Span[3].AsBlob);
+
+            Assert.False(await reader.MoveNextAsync(Cancellation));
+            Assert.False(await reader.MoveNextAsync(Cancellation));
+            Assert.Throws<InvalidOperationException>(() => reader.Current);
+        }
+
+        Assert.Equal(
+            [4L, 7L],
+            (await ReadPhysicalRowsAsync(session, "ordered_items", afterRowIdExclusive: -2))
+            .Select(static row => row.RowId));
+        Assert.Equal(
+            [7L],
+            (await ReadPhysicalRowsAsync(session, "ordered_items", afterRowIdExclusive: 5))
+            .Select(static row => row.RowId));
+        Assert.Empty(
+            await ReadPhysicalRowsAsync(
+                session,
+                "ordered_items",
+                afterRowIdExclusive: long.MaxValue));
+
+        Assert.Equal(retainedBefore, await File.ReadAllBytesAsync(receipt.SnapshotPath, Cancellation));
+        Assert.False(File.Exists(receipt.SnapshotPath + ".wal"));
+    }
+
+    [Fact]
+    public async Task OpenTableReader_UsesOneActiveReadGate_AndCancellationReleasesIt()
+    {
+        RetainedDatabaseSnapshotReceipt receipt = await CaptureSimpleSnapshotAsync(
+            "reader-lifecycle");
+        var blockingRead = new OneShotBlockingReadInterceptor();
+        await using RetainedDatabaseSnapshotSession session = await RetainedDatabaseSnapshot.OpenAsync(
+            receipt.SnapshotPath,
+            receipt.Identity,
+            CreateDatabaseOptions(FileShare.Read, interceptors: [blockingRead]),
+            SnapshotOptions(CreateDirectory("reader-lifecycle-open-workspace")),
+            Cancellation);
+
+        RetainedDatabaseSnapshotTableReader reader = session.OpenTableReader("items");
+        Assert.Throws<InvalidOperationException>(
+            () => session.OpenTableReader("items"));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () =>
+            {
+                await using QueryResult ignored = await session.ExecuteReadAsync(
+                    "SELECT COUNT(*) FROM items",
+                    Cancellation);
+            });
+        await reader.DisposeAsync();
+        await reader.DisposeAsync();
+
+        await using (QueryResult query = await session.ExecuteReadAsync(
+                         "SELECT COUNT(*) FROM items",
+                         Cancellation))
+        {
+            Assert.Throws<InvalidOperationException>(
+                () => session.OpenTableReader("items"));
+        }
+
+        reader = session.OpenTableReader("items");
+        using (var cancellation = new CancellationTokenSource())
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await reader.MoveNextAsync(cancellation.Token));
+        }
+        Assert.Throws<ObjectDisposedException>(() => reader.Current);
+        await reader.DisposeAsync();
+
+        await using (QueryResult afterCancellation = await session.ExecuteReadAsync(
+                         "SELECT COUNT(*) FROM items",
+                         Cancellation))
+        {
+            DbValue[] row = Assert.Single(await afterCancellation.ToListAsync(Cancellation));
+            Assert.Equal(1, row[0].AsInteger);
+        }
+
+        reader = session.OpenTableReader("items", afterRowIdExclusive: 0);
+        blockingRead.Arm();
+        using (var cancellation = new CancellationTokenSource())
+        {
+            Task<bool> move = reader.MoveNextAsync(cancellation.Token).AsTask();
+            await blockingRead.WaitForReadStartAsync(Cancellation);
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await move);
+        }
+        Assert.Throws<ObjectDisposedException>(() => reader.Current);
+        await reader.DisposeAsync();
+
+        await using (QueryResult afterInFlightCancellation = await session.ExecuteReadAsync(
+                         "SELECT COUNT(*) FROM items",
+                         Cancellation))
+        {
+            DbValue[] row = Assert.Single(
+                await afterInFlightCancellation.ToListAsync(Cancellation));
+            Assert.Equal(1, row[0].AsInteger);
+        }
+
+        reader = session.OpenTableReader("items");
+        Assert.True(await reader.MoveNextAsync(Cancellation));
+        await session.DisposeAsync();
+        Assert.Throws<ObjectDisposedException>(() => reader.Current);
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            async () => await reader.MoveNextAsync(Cancellation));
+        await reader.DisposeAsync();
+
+        var ownerBlockingRead = new OneShotBlockingReadInterceptor();
+        await using RetainedDatabaseSnapshotSession ownerSession =
+            await RetainedDatabaseSnapshot.OpenAsync(
+                receipt.SnapshotPath,
+                receipt.Identity,
+                CreateDatabaseOptions(FileShare.Read, interceptors: [ownerBlockingRead]),
+                SnapshotOptions(CreateDirectory("reader-owner-disposal-open-workspace")),
+                Cancellation);
+        RetainedDatabaseSnapshotTableReader ownerReader =
+            ownerSession.OpenTableReader("items", afterRowIdExclusive: 0);
+        ownerBlockingRead.Arm();
+        Task<bool> blockedMove = ownerReader.MoveNextAsync(Cancellation).AsTask();
+        await ownerBlockingRead.WaitForReadStartAsync(Cancellation);
+
+        Task ownerDisposal = ownerSession.DisposeAsync().AsTask();
+        Assert.False(ownerDisposal.IsCompleted);
+        ownerBlockingRead.Release();
+        Assert.True(await blockedMove);
+        await ownerDisposal;
+        Assert.Throws<ObjectDisposedException>(() => ownerReader.Current);
+        await ownerReader.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task OpenTableReader_RejectsNonLocalPhysicalSources_BeforeExternalArchiveRead()
+    {
+        string sourcePath = PathInRoot("reader-rejections-source.db");
+        string archivePath = PathInRoot("reader-rejections-archive.csdbtable");
+        await using (Database database = await Database.OpenAsync(
+                         sourcePath,
+                         CreateDatabaseOptions(FileShare.ReadWrite),
+                         Cancellation))
+        {
+            await database.ExecuteAsync(
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+                Cancellation);
+            await database.ExecuteAsync(
+                "INSERT INTO items VALUES (1, 'local')",
+                Cancellation);
+            await database.ExecuteAsync(
+                "CREATE VIEW item_view AS SELECT id, value FROM items",
+                Cancellation);
+            await database.ExecuteAsync(
+                "CREATE TABLE sys_saved_queries (id INTEGER PRIMARY KEY, value TEXT)",
+                Cancellation);
+            await database.ExecuteAsync(
+                "INSERT INTO sys_saved_queries VALUES (1, 'reserved')",
+                Cancellation);
+
+            TableSchema schema = database.GetTableSchema("items")!;
+            await using QueryResult rows = await database.ExecuteAsync(
+                "SELECT id, value FROM items ORDER BY id",
+                Cancellation);
+            await TableArchiveWriter.WriteAsync(
+                archivePath,
+                schema,
+                TableArchiveWriter.ToAsyncRows(
+                    await rows.ToListAsync(Cancellation),
+                    Cancellation),
+                Cancellation);
+            string escapedArchivePath = archivePath.Replace("'", "''", StringComparison.Ordinal);
+            await database.ExecuteAsync(
+                $"CREATE EXTERNAL TABLE archived_items FROM '{escapedArchivePath}'",
+                Cancellation);
+            await database.CheckpointAsync(Cancellation);
+        }
+        if (File.Exists(sourcePath + ".wal"))
+            File.Delete(sourcePath + ".wal");
+
+        RetainedDatabaseSnapshotReceipt receipt = await RetainedDatabaseSnapshot.CaptureAsync(
+            sourcePath,
+            PathInRoot("reader-rejections-snapshot.db"),
+            databaseOptions: null,
+            SnapshotOptions(CreateDirectory("reader-rejections-capture-workspace")),
+            Cancellation);
+        File.Delete(archivePath);
+
+        await using RetainedDatabaseSnapshotSession session = await RetainedDatabaseSnapshot.OpenAsync(
+            receipt.SnapshotPath,
+            receipt.Identity,
+            databaseOptions: null,
+            SnapshotOptions(CreateDirectory("reader-rejections-open-workspace")),
+            Cancellation);
+
+        Assert.Throws<InvalidOperationException>(
+            () => session.OpenTableReader("item_view"));
+        Assert.Throws<InvalidOperationException>(
+            () => session.OpenTableReader("sys.tables"));
+        Assert.Throws<InvalidOperationException>(
+            () => session.OpenTableReader("SYS_SAVED_QUERIES"));
+        Assert.Throws<InvalidOperationException>(
+            () => session.OpenTableReader("__external_tables"));
+        CSharpDbException external = Assert.Throws<CSharpDbException>(
+            () => session.OpenTableReader("archived_items"));
+        Assert.Equal(ErrorCode.TableNotFound, external.Code);
+        Assert.Contains("External tables", external.Message, StringComparison.Ordinal);
+        CSharpDbException missing = Assert.Throws<CSharpDbException>(
+            () => session.OpenTableReader("missing_items"));
+        Assert.Equal(ErrorCode.TableNotFound, missing.Code);
+        Assert.False(File.Exists(archivePath));
+
+        await using RetainedDatabaseSnapshotTableReader local =
+            session.OpenTableReader("items");
+        Assert.True(await local.MoveNextAsync(Cancellation));
+        Assert.Equal(1, local.CurrentRowId);
+        Assert.Equal("local", local.Current.Span[1].AsText);
+    }
+
+    [Fact]
+    public async Task OpenTableReader_RejectsOverWideEncodedRows_AndReleasesReadGate()
+    {
+        string sourcePath = PathInRoot("over-wide-reader-source.db");
+        var serializerProvider = new OverWideSerializerProvider();
+        DatabaseOptions databaseOptions = CreateDatabaseOptions(
+            FileShare.ReadWrite,
+            serializerProvider: serializerProvider);
+        await using (Database database = await Database.OpenAsync(
+                         sourcePath,
+                         databaseOptions,
+                         Cancellation))
+        {
+            await database.ExecuteAsync(
+                "CREATE TABLE malformed_items (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+                Cancellation);
+            await database.ExecuteAsync(
+                "INSERT INTO malformed_items VALUES (1, 'value')",
+                Cancellation);
+            await database.CheckpointAsync(Cancellation);
+        }
+        if (File.Exists(sourcePath + ".wal"))
+            File.Delete(sourcePath + ".wal");
+
+        RetainedDatabaseSnapshotReceipt receipt = await RetainedDatabaseSnapshot.CaptureAsync(
+            sourcePath,
+            PathInRoot("over-wide-reader-snapshot.db"),
+            databaseOptions,
+            SnapshotOptions(CreateDirectory("over-wide-reader-capture-workspace")),
+            Cancellation);
+        await using RetainedDatabaseSnapshotSession session = await RetainedDatabaseSnapshot.OpenAsync(
+            receipt.SnapshotPath,
+            receipt.Identity,
+            databaseOptions,
+            SnapshotOptions(CreateDirectory("over-wide-reader-open-workspace")),
+            Cancellation);
+
+        RetainedDatabaseSnapshotTableReader reader =
+            session.OpenTableReader("malformed_items");
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await reader.MoveNextAsync(Cancellation));
+        Assert.Contains("more values", error.Message, StringComparison.Ordinal);
+        Assert.Throws<ObjectDisposedException>(() => reader.Current);
+
+        await using QueryResult afterFailure = await session.ExecuteReadAsync(
+            "SELECT COUNT(*) FROM malformed_items",
+            Cancellation);
+        DbValue[] count = Assert.Single(await afterFailure.ToListAsync(Cancellation));
+        Assert.Equal(1, count[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task OpenTableReader_RejectsOversizedOverflowRowBeforeMaterialization()
+    {
+        RetainedDatabaseSnapshotReceipt receipt = await CaptureConfiguredSnapshotAsync(
+            "oversized-reader-row",
+            async database =>
+            {
+                await database.ExecuteAsync(
+                    "CREATE TABLE oversized_items (id INTEGER PRIMARY KEY, payload BLOB NOT NULL)",
+                    Cancellation);
+                InsertBatch batch = database.PrepareInsertBatch("oversized_items", initialCapacity: 1);
+                batch.AddRow(
+                    DbValue.FromInteger(1),
+                    DbValue.FromBlob(new byte[2 * 1024 * 1024]));
+                Assert.Equal(1, await batch.ExecuteAsync(Cancellation));
+            });
+
+        await using RetainedDatabaseSnapshotSession session = await RetainedDatabaseSnapshot.OpenAsync(
+            receipt.SnapshotPath,
+            receipt.Identity,
+            databaseOptions: null,
+            SnapshotOptions(
+                CreateDirectory("oversized-reader-row-open-workspace"),
+                maxEncodedRowBytes: 1024),
+            Cancellation);
+        RetainedDatabaseSnapshotTableReader reader =
+            session.OpenTableReader("oversized_items");
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await reader.MoveNextAsync(Cancellation));
+        Assert.Contains("1024-byte limit", error.Message, StringComparison.Ordinal);
+        Assert.Throws<ObjectDisposedException>(() => reader.Current);
+
+        await using QueryResult afterFailure = await session.ExecuteReadAsync(
+            "SELECT COUNT(*) FROM oversized_items",
+            Cancellation);
+        DbValue[] count = Assert.Single(await afterFailure.ToListAsync(Cancellation));
+        Assert.Equal(1, count[0].AsInteger);
+    }
+
+    [Fact]
+    public async Task OpenTableReader_ImplicitRowIdsRemainStableAcrossFreshReopens()
+    {
+        RetainedDatabaseSnapshotReceipt receipt = await CaptureConfiguredSnapshotAsync(
+            "implicit-rowids",
+            async database =>
+            {
+                await database.ExecuteAsync(
+                    "CREATE TABLE implicit_items (value TEXT NOT NULL)",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO implicit_items VALUES ('first')",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO implicit_items VALUES ('second')",
+                    Cancellation);
+                await database.ExecuteAsync(
+                    "INSERT INTO implicit_items VALUES ('third')",
+                    Cancellation);
+            });
+
+        (long RowId, DbValue[] Values)[]? baseline = null;
+        for (int reopen = 0; reopen < 2; reopen++)
+        {
+            await using RetainedDatabaseSnapshotSession session =
+                await RetainedDatabaseSnapshot.OpenAsync(
+                    receipt.SnapshotPath,
+                    receipt.Identity,
+                    databaseOptions: null,
+                    SnapshotOptions(CreateDirectory($"implicit-rowids-open-workspace-{reopen}")),
+                    Cancellation);
+            (long RowId, DbValue[] Values)[] rows =
+                (await ReadPhysicalRowsAsync(session, "implicit_items", null)).ToArray();
+
+            Assert.Equal([1L, 2L, 3L], rows.Select(static row => row.RowId));
+            Assert.Equal(
+                ["first", "second", "third"],
+                rows.Select(static row => row.Values[0].AsText));
+            if (baseline is null)
+            {
+                baseline = rows;
+            }
+            else
+            {
+                Assert.Equal(
+                    baseline.Select(static row => row.RowId),
+                    rows.Select(static row => row.RowId));
+                Assert.Equal(
+                    baseline.Select(static row => row.Values[0].AsText),
+                    rows.Select(static row => row.Values[0].AsText));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task OpenTableReader_FiftyThousandRows_ReusesOneForwardOnlyRowBuffer()
+    {
+        const int rowCount = 50_000;
+        RetainedDatabaseSnapshotReceipt receipt = await CaptureConfiguredSnapshotAsync(
+            "bounded-reader",
+            async database =>
+            {
+                await database.ExecuteAsync(
+                    "CREATE TABLE streamed_items (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+                    Cancellation);
+                InsertBatch batch = database.PrepareInsertBatch(
+                    "streamed_items",
+                    initialCapacity: 512);
+                await database.BeginTransactionAsync(Cancellation);
+                for (int id = 1; id <= rowCount; id++)
+                {
+                    batch.AddRow(
+                        DbValue.FromInteger(id),
+                        DbValue.FromText($"value-{id}"));
+                    if (id % 512 == 0)
+                        Assert.True(await batch.ExecuteAsync(Cancellation) > 0);
+                }
+                if (rowCount % 512 != 0)
+                    Assert.True(await batch.ExecuteAsync(Cancellation) > 0);
+                await database.CommitAsync(Cancellation);
+            });
+
+        await using RetainedDatabaseSnapshotSession session = await RetainedDatabaseSnapshot.OpenAsync(
+            receipt.SnapshotPath,
+            receipt.Identity,
+            databaseOptions: null,
+            SnapshotOptions(CreateDirectory("bounded-reader-open-workspace")),
+            Cancellation);
+        await using RetainedDatabaseSnapshotTableReader reader =
+            session.OpenTableReader("streamed_items");
+
+        DbValue[]? rowBuffer = null;
+        int seen = 0;
+        while (await reader.MoveNextAsync(Cancellation))
+        {
+            seen++;
+            Assert.Equal(seen, reader.CurrentRowId);
+            Assert.Equal(seen, reader.Current.Span[0].AsInteger);
+            if (seen is 1 or rowCount)
+                Assert.Equal($"value-{seen}", reader.Current.Span[1].AsText);
+
+            Assert.True(
+                MemoryMarshal.TryGetArray(
+                    reader.Current,
+                    out ArraySegment<DbValue> currentBuffer));
+            rowBuffer ??= currentBuffer.Array;
+            Assert.Same(rowBuffer, currentBuffer.Array);
+        }
+
+        Assert.Equal(rowCount, seen);
+        Assert.False(File.Exists(receipt.SnapshotPath + ".wal"));
+    }
+
     private async Task<RetainedDatabaseSnapshotReceipt> CaptureSimpleSnapshotAsync(string name)
     {
         string sourcePath = PathInRoot($"{name}-source.db");
@@ -793,6 +1286,46 @@ public sealed class RetainedDatabaseSnapshotTests : IAsyncLifetime
             databaseOptions: null,
             SnapshotOptions(CreateDirectory($"{name}-capture-workspace")),
             Cancellation);
+    }
+
+    private async Task<RetainedDatabaseSnapshotReceipt> CaptureConfiguredSnapshotAsync(
+        string name,
+        Func<Database, Task> configure)
+    {
+        string sourcePath = PathInRoot($"{name}-source.db");
+        string snapshotPath = PathInRoot($"{name}-snapshot.db");
+        await using (Database database = await Database.OpenAsync(
+                         sourcePath,
+                         CreateDatabaseOptions(FileShare.ReadWrite),
+                         Cancellation))
+        {
+            await configure(database);
+            await database.CheckpointAsync(Cancellation);
+        }
+        if (File.Exists(sourcePath + ".wal"))
+            File.Delete(sourcePath + ".wal");
+
+        return await RetainedDatabaseSnapshot.CaptureAsync(
+            sourcePath,
+            snapshotPath,
+            databaseOptions: null,
+            SnapshotOptions(CreateDirectory($"{name}-capture-workspace")),
+            Cancellation);
+    }
+
+    private static async Task<IReadOnlyList<(long RowId, DbValue[] Values)>> ReadPhysicalRowsAsync(
+        RetainedDatabaseSnapshotSession session,
+        string tableName,
+        long? afterRowIdExclusive)
+    {
+        var rows = new List<(long RowId, DbValue[] Values)>();
+        await using RetainedDatabaseSnapshotTableReader reader =
+            session.OpenTableReader(tableName, afterRowIdExclusive);
+        while (await reader.MoveNextAsync(TestContext.Current.CancellationToken))
+        {
+            rows.Add((reader.CurrentRowId, reader.Current.ToArray()));
+        }
+        return rows;
     }
 
     private async Task AssertLimitFailureAsync(
@@ -906,25 +1439,35 @@ public sealed class RetainedDatabaseSnapshotTests : IAsyncLifetime
         Assert.Equal(expectedValue, rows[0][1].AsText);
     }
 
-    private RetainedDatabaseSnapshotOptions SnapshotOptions(string workspacePath) => new()
-    {
-        WorkspacePath = workspacePath,
-        CopyBufferBytes = 4 * 1024,
-        MaxCachedPages = 4,
-        MaxCachedWalReadPages = 2,
-    };
-
-    private static DatabaseOptions CreateDatabaseOptions(FileShare primaryFileShare) => new()
-    {
-        StorageEngineOptions = new StorageEngineOptions
+    private RetainedDatabaseSnapshotOptions SnapshotOptions(
+        string workspacePath,
+        int maxEncodedRowBytes = RetainedDatabaseSnapshotOptions.DefaultMaxEncodedRowBytes)
+        => new()
         {
-            PrimaryFileShare = primaryFileShare,
-            PagerOptions = new PagerOptions
+            WorkspacePath = workspacePath,
+            CopyBufferBytes = 4 * 1024,
+            MaxCachedPages = 4,
+            MaxCachedWalReadPages = 2,
+            MaxEncodedRowBytes = maxEncodedRowBytes,
+        };
+
+    private static DatabaseOptions CreateDatabaseOptions(
+        FileShare primaryFileShare,
+        IReadOnlyList<IPageOperationInterceptor>? interceptors = null,
+        ISerializerProvider? serializerProvider = null)
+        => new()
+        {
+            StorageEngineOptions = new StorageEngineOptions
             {
-                CheckpointPolicy = new FrameCountCheckpointPolicy(1_000_000),
+                PrimaryFileShare = primaryFileShare,
+                SerializerProvider = serializerProvider ?? new DefaultSerializerProvider(),
+                PagerOptions = new PagerOptions
+                {
+                    CheckpointPolicy = new FrameCountCheckpointPolicy(1_000_000),
+                    Interceptors = interceptors ?? Array.Empty<IPageOperationInterceptor>(),
+                },
             },
-        },
-    };
+        };
 
     private static string CreateSnapshotIdentity(long byteLength, string sha256) =>
         $"csharpdb-retained-snapshot/v1:{byteLength}:{sha256}";
@@ -943,6 +1486,137 @@ public sealed class RetainedDatabaseSnapshotTests : IAsyncLifetime
             .Select(path => Path.GetRelativePath(_root, path))
             .Order(StringComparer.Ordinal)
             .ToArray();
+
+    private sealed class OneShotBlockingReadInterceptor : IPageOperationInterceptor
+    {
+        private readonly TaskCompletionSource<bool> _readStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _allowRead =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _armed;
+
+        public void Arm() => Volatile.Write(ref _armed, 1);
+
+        public void Release() => _allowRead.TrySetResult(true);
+
+        public Task WaitForReadStartAsync(CancellationToken ct) =>
+            _readStarted.Task.WaitAsync(ct);
+
+        public ValueTask OnBeforeReadAsync(uint pageId, CancellationToken ct = default)
+        {
+            if (Interlocked.CompareExchange(ref _armed, 0, 1) == 0)
+                return ValueTask.CompletedTask;
+
+            _readStarted.TrySetResult(true);
+            return new ValueTask(_allowRead.Task.WaitAsync(ct));
+        }
+
+        public ValueTask OnAfterReadAsync(
+            uint pageId,
+            PageReadSource source,
+            CancellationToken ct = default) => ValueTask.CompletedTask;
+
+        public ValueTask OnBeforeWriteAsync(uint pageId, CancellationToken ct = default) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask OnAfterWriteAsync(
+            uint pageId,
+            bool succeeded,
+            CancellationToken ct = default) => ValueTask.CompletedTask;
+
+        public ValueTask OnCommitStartAsync(
+            int dirtyPageCount,
+            CancellationToken ct = default) => ValueTask.CompletedTask;
+
+        public ValueTask OnCommitEndAsync(
+            int dirtyPageCount,
+            bool succeeded,
+            CancellationToken ct = default) => ValueTask.CompletedTask;
+
+        public ValueTask OnCheckpointStartAsync(
+            int committedFrameCount,
+            CancellationToken ct = default) => ValueTask.CompletedTask;
+
+        public ValueTask OnCheckpointEndAsync(
+            int committedFrameCount,
+            bool succeeded,
+            CancellationToken ct = default) => ValueTask.CompletedTask;
+
+        public ValueTask OnRecoveryStartAsync(CancellationToken ct = default) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask OnRecoveryEndAsync(
+            bool succeeded,
+            CancellationToken ct = default) => ValueTask.CompletedTask;
+    }
+
+    private sealed class OverWideSerializerProvider : ISerializerProvider
+    {
+        public IRecordSerializer RecordSerializer { get; } = new OverWideRecordSerializer();
+
+        public ISchemaSerializer SchemaSerializer { get; } = new DefaultSchemaSerializer();
+    }
+
+    private sealed class OverWideRecordSerializer : IRecordSerializer
+    {
+        private readonly IRecordSerializer _inner = new DefaultRecordSerializer();
+
+        public byte[] Encode(ReadOnlySpan<DbValue> values)
+        {
+            var widened = new DbValue[values.Length + 1];
+            values.CopyTo(widened);
+            widened[^1] = DbValue.Null;
+            return _inner.Encode(widened);
+        }
+
+        public DbValue[] Decode(ReadOnlySpan<byte> buffer) => _inner.Decode(buffer);
+
+        public int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination) =>
+            _inner.DecodeInto(buffer, destination);
+
+        public void DecodeSelectedInto(
+            ReadOnlySpan<byte> buffer,
+            Span<DbValue> destination,
+            ReadOnlySpan<int> selectedColumnIndices) =>
+            _inner.DecodeSelectedInto(buffer, destination, selectedColumnIndices);
+
+        public void DecodeSelectedCompactInto(
+            ReadOnlySpan<byte> buffer,
+            Span<DbValue> destination,
+            ReadOnlySpan<int> selectedColumnIndices) =>
+            _inner.DecodeSelectedCompactInto(buffer, destination, selectedColumnIndices);
+
+        public DbValue[] DecodeUpTo(
+            ReadOnlySpan<byte> buffer,
+            int maxColumnIndexInclusive) =>
+            _inner.DecodeUpTo(buffer, maxColumnIndexInclusive);
+
+        public DbValue DecodeColumn(ReadOnlySpan<byte> buffer, int columnIndex) =>
+            _inner.DecodeColumn(buffer, columnIndex);
+
+        public bool TryColumnTextEquals(
+            ReadOnlySpan<byte> buffer,
+            int columnIndex,
+            ReadOnlySpan<byte> expectedUtf8,
+            out bool equals) =>
+            _inner.TryColumnTextEquals(buffer, columnIndex, expectedUtf8, out equals);
+
+        public bool IsColumnNull(ReadOnlySpan<byte> buffer, int columnIndex) =>
+            _inner.IsColumnNull(buffer, columnIndex);
+
+        public bool TryDecodeNumericColumn(
+            ReadOnlySpan<byte> buffer,
+            int columnIndex,
+            out long intValue,
+            out double realValue,
+            out bool isReal) =>
+            _inner.TryDecodeNumericColumn(
+                buffer,
+                columnIndex,
+                out intValue,
+                out realValue,
+                out isReal);
+    }
 
     private sealed record OfflineWalFixture(string SourcePath, string BaseOnlyPath);
 

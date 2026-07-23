@@ -47,6 +47,11 @@ public sealed class CollectionAwareRecordSerializer : IRecordSerializer
         ];
     }
 
+    public int GetDecodedColumnCount(ReadOnlySpan<byte> buffer) =>
+        _supportsDirectCollectionPayloads && CollectionPayloadCodec.TryReadValidatedHeader(buffer, out _)
+            ? 2
+            : _inner.GetDecodedColumnCount(buffer);
+
     public int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination)
     {
         if (!_supportsDirectCollectionPayloads || !CollectionPayloadCodec.TryReadValidatedHeader(buffer, out var header))

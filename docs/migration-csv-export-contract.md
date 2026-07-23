@@ -140,18 +140,22 @@ CLI surface, checkpoint files, prepared output publication, or cross-process
 resume. It also does not make a two-file CSV/manifest pair atomic.
 
 The offline `RetainedDatabaseSnapshot` API now provides the required durable
-source view: it materializes recovery only on a private copy, publishes one
-clean database file, and requires an independently retained byte length and
-SHA-256 when a later process reopens it through a read-only session. A
-process-local reader transaction remains insufficient after a crash. See
+source view and deterministic row-source seam: it materializes recovery only
+on a private copy, publishes one clean database file, requires an independently
+retained byte length and SHA-256 on reopen, and scans local physical tables in
+strictly ascending row-ID order with an exclusive resume boundary. It rejects
+views, system/internal tables, and external archives whose bytes are outside
+the retained identity. A process-local reader transaction remains insufficient
+after a crash. See
 [`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
 
 The future resume contract must bind its checkpoint to that retained snapshot,
 table and ordered schema, export profile and codec, completed row boundary,
-byte boundary, and verified output prefix. Until the exporter consumes that
-cross-process boundary, a failed export must restart from the beginning rather
-than claim durable resume. The snapshot prerequisite is now available;
-writer/checkpoint integration remains outstanding.
+byte boundary, and verified output prefix. Until the exporter consumes the
+retained snapshot and row-ID cursor through that checkpoint, a failed export
+must restart from the beginning rather than claim durable resume. The source
+prerequisites are now available; writer/checkpoint integration remains
+outstanding.
 
 Phase 4A remains open until the streaming writer and CLI use this contract,
 manifest-last data and sidecar publication fails closed, lossless round trips

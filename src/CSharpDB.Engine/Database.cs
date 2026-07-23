@@ -2435,11 +2435,7 @@ public sealed class Database : IAsyncDisposable
                 throw new CSharpDbException(ErrorCode.Unknown,
                     "Reader sessions only support read-only statements.");
 
-            if (Interlocked.CompareExchange(ref _activeQuery, 1, 0) != 0)
-            {
-                throw new InvalidOperationException(
-                    "ReaderSession supports only one active query at a time. Dispose the previous QueryResult before executing another query.");
-            }
+            AcquireActiveRead();
 
             try
             {
@@ -2490,6 +2486,54 @@ public sealed class Database : IAsyncDisposable
             }
         }
 
+        /// <summary>
+        /// Opens one forward-only physical table reader over this session's
+        /// immutable pager snapshot. This bypasses SQL planning so callers can
+        /// bind durable progress to the actual table row ID.
+        /// </summary>
+        internal RetainedDatabaseSnapshotTableReader OpenTableReader(
+            string tableName,
+            long? afterRowIdExclusive,
+            int maxEncodedRowBytes)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxEncodedRowBytes);
+
+            if (IsReservedPhysicalTableName(tableName))
+            {
+                throw new InvalidOperationException(
+                    "Retained snapshot table readers cannot scan system or internal tables.");
+            }
+            if (_catalog.IsView(tableName))
+            {
+                throw new InvalidOperationException(
+                    "Retained snapshot table readers require a physical table and cannot scan a view.");
+            }
+
+            TableSchema schema = _catalog.GetTable(tableName)
+                ?? throw new CSharpDbException(
+                    ErrorCode.TableNotFound,
+                    $"Local physical table '{tableName}' was not found. External tables are not retained by the database snapshot.");
+
+            AcquireActiveRead();
+            try
+            {
+                var tree = _catalog.GetTableTree(schema.TableName, GetOrCreateSnapshotPager());
+                return new RetainedDatabaseSnapshotTableReader(
+                    schema,
+                    tree.CreateCursor(maxEncodedRowBytes),
+                    GetReadSerializer(schema),
+                    afterRowIdExclusive,
+                    _releaseActiveQueryCallback);
+            }
+            catch
+            {
+                Volatile.Write(ref _activeQuery, 0);
+                throw;
+            }
+        }
+
         public void Dispose()
         {
             if (!_disposed)
@@ -2497,6 +2541,15 @@ public sealed class Database : IAsyncDisposable
                 _snapshotPager?.Dispose();
                 _pager.ReleaseReaderSnapshot(_snapshot);
                 _disposed = true;
+            }
+        }
+
+        private void AcquireActiveRead()
+        {
+            if (Interlocked.CompareExchange(ref _activeQuery, 1, 0) != 0)
+            {
+                throw new InvalidOperationException(
+                    "ReaderSession supports only one active query or physical table reader at a time. Dispose the previous read before starting another.");
             }
         }
 
@@ -2830,6 +2883,12 @@ public sealed class Database : IAsyncDisposable
             string.Equals(tableName, "sys_planner_index_prefix_stats", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys.validation_rules", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(tableName, "sys_validation_rules", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsReservedPhysicalTableName(string tableName) =>
+            tableName.StartsWith("sys.", StringComparison.OrdinalIgnoreCase) ||
+            tableName.StartsWith("sys_", StringComparison.OrdinalIgnoreCase) ||
+            tableName.StartsWith("__", StringComparison.Ordinal) ||
+            tableName.StartsWith("_col_", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

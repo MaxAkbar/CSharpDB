@@ -26,6 +26,12 @@ public interface IRecordSerializer
     }
 
     DbValue[] Decode(ReadOnlySpan<byte> buffer);
+    /// <summary>
+    /// Returns the number of values encoded in one record. Implementations can
+    /// override this to avoid the allocation used by the compatibility
+    /// fallback.
+    /// </summary>
+    int GetDecodedColumnCount(ReadOnlySpan<byte> buffer) => Decode(buffer).Length;
     int DecodeInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination);
     void DecodeSelectedInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices);
     void DecodeSelectedCompactInto(ReadOnlySpan<byte> buffer, Span<DbValue> destination, ReadOnlySpan<int> selectedColumnIndices);
