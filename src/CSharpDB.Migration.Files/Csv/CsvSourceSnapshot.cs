@@ -24,9 +24,11 @@ public sealed class CsvSourceSnapshotException : IOException
 public sealed record CsvSourceSnapshotOptions
 {
     /// <summary>
-    /// Parent directory for the private snapshot workspace. An exclusively
-    /// reserved and ownership-marked child is always created. The operating-
-    /// system temporary directory is used when this value is null.
+    /// Caller-controlled parent directory for the private snapshot workspace.
+    /// It must not be writable, renamed, or replaced by an untrusted principal
+    /// until the snapshot and all readers are disposed. An exclusively claimed,
+    /// ownership-marked child is always created. The operating-system temporary
+    /// directory is used when this value is null.
     /// </summary>
     public string? WorkspacePath { get; init; }
 
@@ -44,6 +46,8 @@ public sealed record CsvSourceSnapshotOptions
 /// </summary>
 public sealed class CsvSourceSnapshot : IAsyncDisposable
 {
+    internal const string IdentityAlgorithm = "csv-snapshot-v1";
+
     private readonly object gate = new();
     private readonly CsvSnapshotWorkspace workspace;
     private readonly string snapshotPath;
@@ -66,7 +70,7 @@ public sealed class CsvSourceSnapshot : IAsyncDisposable
         this.integrityGuard = integrityGuard;
         ContentLength = contentLength;
         ContentDigest = contentDigest;
-        SnapshotIdentity = $"csv-snapshot-v1:{contentDigest}:bytes:{contentLength}";
+        SnapshotIdentity = $"{IdentityAlgorithm}:{contentDigest}:bytes:{contentLength}";
     }
 
     public long ContentLength { get; }

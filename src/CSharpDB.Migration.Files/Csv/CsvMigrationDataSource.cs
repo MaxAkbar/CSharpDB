@@ -63,6 +63,29 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
         MigrationCatalog catalog,
         CancellationToken cancellationToken = default)
     {
+        string catalogDigest = ValidateCatalogBinding(schema, snapshot, catalog);
+        await snapshot.VerifyIntegrityAsync(cancellationToken).ConfigureAwait(false);
+        return new CsvMigrationDataSource(schema, snapshot, catalogDigest);
+    }
+
+    /// <summary>
+    /// Creates a source when the immediate caller has already verified the
+    /// snapshot bytes while copying them. This avoids another full-file hash
+    /// without weakening the public factory's integrity boundary.
+    /// </summary>
+    internal static CsvMigrationDataSource CreateFromVerifiedSnapshot(
+        CsvSchemaInferenceResult schema,
+        CsvSourceSnapshot snapshot,
+        MigrationCatalog catalog) => new(
+            schema,
+            snapshot,
+            ValidateCatalogBinding(schema, snapshot, catalog));
+
+    internal static string ValidateCatalogBinding(
+        CsvSchemaInferenceResult schema,
+        CsvSourceSnapshot snapshot,
+        MigrationCatalog catalog)
+    {
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(catalog);
@@ -89,8 +112,7 @@ public sealed class CsvMigrationDataSource : IMigrationDataSource, IMigrationCat
                 nameof(catalog));
         }
 
-        await snapshot.VerifyIntegrityAsync(cancellationToken).ConfigureAwait(false);
-        return new CsvMigrationDataSource(schema, snapshot, catalogDigest);
+        return catalogDigest;
     }
 
     public IAsyncEnumerable<MigrationDataBatch> ReadAsync(

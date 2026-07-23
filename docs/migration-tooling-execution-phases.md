@@ -379,12 +379,16 @@ schema inference, explicit ordinal overrides, and validated migration catalogs.
 Strict full-stream migration-source adaptation now validates the entire
 projected stream, preserves projection order, bounds batches by rows and
 canonical bytes, and supplies deterministic snapshot/policy-bound cursors.
-Tolerant rejects, CLI prepared-write orchestration, manifests, and export are
-not yet complete; see
+Inspection and a later process can now cross a durable boundary through an
+atomically published, canonical, tamper-evident `.csdbcsv` package that embeds
+the raw snapshot and replays its exact reader, inference, and catalog policy.
+Tolerant rejects, CLI prepared-write orchestration, typed export manifests,
+and export are not yet complete; see
 [`migration-csv-reader-foundation.md`](migration-csv-reader-foundation.md),
 [`migration-csv-inspection-and-source-binding.md`](migration-csv-inspection-and-source-binding.md),
-[`migration-csv-schema-inference.md`](migration-csv-schema-inference.md), and
-[`migration-csv-data-source.md`](migration-csv-data-source.md).
+[`migration-csv-schema-inference.md`](migration-csv-schema-inference.md),
+[`migration-csv-data-source.md`](migration-csv-data-source.md), and
+[`migration-csv-retained-package.md`](migration-csv-retained-package.md).
 
 ### Track 4A: CSV
 
@@ -408,6 +412,9 @@ not yet complete; see
   full-stream scalar validation, strict missing/null behavior, arbitrary
   projection order, row/byte-bounded batches, replay, and opaque resume
   cursors.
+- [x] Add an atomic single-file retained snapshot package with canonical
+  manifests, strict/tamper-aware reopen, trusted digest pinning, copy-on-open
+  ownership, and cross-process schema/catalog/cursor replay.
 
 - [x] Replace physical-line parsing with an RFC 4180-capable streaming parser.
 - [x] Support quoted multiline fields, escaped quotes, explicit/detected

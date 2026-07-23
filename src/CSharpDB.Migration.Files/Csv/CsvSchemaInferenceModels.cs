@@ -91,6 +91,51 @@ public sealed record CsvSchemaInferenceOptions
     public long MaxProfileCharacters { get; init; } = 64L * 1024 * 1024;
 }
 
+internal sealed class CsvSchemaInferenceRecipe
+{
+    internal CsvSchemaInferenceRecipe(
+        bool collectProfile,
+        int maxDataRecords,
+        string tableName,
+        long maxProfileCharacters,
+        IEnumerable<CsvColumnSchemaOverride> columnOverrides)
+    {
+        CollectProfile = collectProfile;
+        MaxDataRecords = maxDataRecords;
+        TableName = tableName;
+        MaxProfileCharacters = maxProfileCharacters;
+        ColumnOverrides = Array.AsReadOnly(columnOverrides
+            .Select(CloneOverride)
+            .OrderBy(item => item.ColumnIndex)
+            .ToArray());
+    }
+
+    internal bool CollectProfile { get; }
+
+    internal int MaxDataRecords { get; }
+
+    internal string TableName { get; }
+
+    internal long MaxProfileCharacters { get; }
+
+    internal ReadOnlyCollection<CsvColumnSchemaOverride> ColumnOverrides { get; }
+
+    internal CsvSchemaInferenceOptions ToOptions() => new()
+    {
+        TableName = TableName,
+        MaxProfileCharacters = MaxProfileCharacters,
+        ColumnOverrides = ColumnOverrides.Select(CloneOverride).ToArray(),
+    };
+
+    private static CsvColumnSchemaOverride CloneOverride(CsvColumnSchemaOverride item) => new()
+    {
+        ColumnIndex = item.ColumnIndex,
+        ExpectedHeader = item.ExpectedHeader,
+        LogicalType = item.LogicalType,
+        Nullable = item.Nullable,
+    };
+}
+
 public sealed class CsvColumnSchema
 {
     internal CsvColumnSchema(
@@ -195,7 +240,7 @@ public sealed class CsvSchemaInferenceResult
 
     internal CsvSchemaInferenceResult(
         CsvSourceBinding binding,
-        string tableName,
+        CsvSchemaInferenceRecipe recipe,
         long recordsExamined,
         long profileCharactersExamined,
         bool profileCharacterLimitReached,
@@ -205,7 +250,8 @@ public sealed class CsvSchemaInferenceResult
         MigrationDiagnostic[] diagnostics)
     {
         this.binding = binding;
-        TableName = tableName;
+        Recipe = recipe;
+        TableName = recipe.TableName;
         RecordsExamined = recordsExamined;
         ProfileCharactersExamined = profileCharactersExamined;
         ProfileCharacterLimitReached = profileCharacterLimitReached;
@@ -240,6 +286,8 @@ public sealed class CsvSchemaInferenceResult
     public ReadOnlyCollection<MigrationDiagnostic> Diagnostics { get; }
 
     internal CsvSourceBinding Binding => binding;
+
+    internal CsvSchemaInferenceRecipe Recipe { get; }
 
     public MigrationCatalog CreateCatalog(string targetCSharpDbVersion) =>
         CsvMigrationCatalogBuilder.Build(this, targetCSharpDbVersion);

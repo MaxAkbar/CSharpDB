@@ -52,6 +52,22 @@ public static class CsvSchemaInferer
             collectProfile: false,
             cancellationToken);
 
+    internal static ValueTask<CsvSchemaInferenceResult> ReplayAsync(
+        CsvSourceBinding binding,
+        CsvSourceSnapshot snapshot,
+        CsvSchemaInferenceRecipe recipe,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(recipe);
+        return InferCoreAsync(
+            binding,
+            snapshot,
+            recipe.MaxDataRecords,
+            recipe.ToOptions(),
+            recipe.CollectProfile,
+            cancellationToken);
+    }
+
     private static async ValueTask<CsvSchemaInferenceResult> InferCoreAsync(
         CsvSourceBinding binding,
         CsvSourceSnapshot snapshot,
@@ -85,7 +101,15 @@ public static class CsvSchemaInferer
         }
         cancellationToken.ThrowIfCancellationRequested();
 
-        Dictionary<int, CsvColumnSchemaOverride> overrides = ValidateOverrides(options);
+        Dictionary<int, CsvColumnSchemaOverride> validatedOverrides = ValidateOverrides(options);
+        var recipe = new CsvSchemaInferenceRecipe(
+            collectProfile,
+            maxDataRecords,
+            options.TableName,
+            options.MaxProfileCharacters,
+            validatedOverrides.Values);
+        Dictionary<int, CsvColumnSchemaOverride> overrides = recipe.ColumnOverrides
+            .ToDictionary(item => item.ColumnIndex);
         await using CsvStreamingReader reader = await binding
             .OpenReaderAsync(snapshot, cancellationToken)
             .ConfigureAwait(false);
@@ -179,7 +203,7 @@ public static class CsvSchemaInferer
 
         return new CsvSchemaInferenceResult(
             binding,
-            options.TableName,
+            recipe,
             recordsExamined,
             profileCharactersExamined,
             profileCharacterLimitReached,
