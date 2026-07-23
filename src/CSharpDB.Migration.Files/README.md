@@ -71,12 +71,32 @@ data-complete manifest evidence. Zero-row progress must describe the exact
 rendered header bytes and digest.
 
 Checkpoint prefix digests are verification-only; they are not resumable
-SHA-256 state. Recovery must rehash the prepared physical prefix and replay
-retained source rows through the recorded signed row ID to rebuild hash state.
-The streaming writer remains deliberately restart-only. There is no
-prepared-output lease, durable disk flush/fsync, atomic filesystem checkpoint
-journal, retained-source export adapter, cross-process resume API, export CLI,
-or fail-closed manifest-last publication yet. The offline retained read-only
+SHA-256 state. `CsvExportPreparedOutputLease` now provides the
+Windows-qualified physical recovery boundary for local filesystems. It derives
+deterministic private prepared-data, active-checkpoint, and pending-checkpoint
+siblings solely from the normalized future destination, fails closed if that
+final path exists, and holds the prepared file through an exclusive
+current-owner-only handle. The active checkpoint read is bounded. A missing
+checkpoint with nonempty prepared data requires explicit reset; the lease
+never silently adopts those bytes.
+
+Recovery validates the canonical checkpoint and immutable binding, rehashes
+the exact physical prefix, verifies its CRLF boundary, and only then truncates
+and durably flushes an uncheckpointed tail. Generations start at zero, advance
+by exactly one, allow same-generation idempotence only for identical canonical
+bytes, keep row/byte/evidence progress monotonic, and make `DataComplete`
+terminal. Persistence orders a durable prepared stream carrying exact
+prefix-length/hash evidence before a durable exact pending checkpoint and a
+handle-based atomic active replacement. A stale pending file is never recovery
+authority, and disposing the lease preserves every private file.
+
+The prepared-output substrate is limited to local Windows filesystems; it fails
+closed on UNC and mapped network volumes and is unsupported on non-Windows
+platforms. The streaming writer remains deliberately restart-only: retained
+source-row replay and stateful writer integration, abrupt-power-loss
+qualification of namespace replacement, the retained-source export adapter,
+cross-process export/resume coordination, the export CLI, and fail-closed
+manifest-last publication remain pending. The offline retained read-only
 CSharpDB snapshot can be reopened and verified across processes, and its
 physical table reader provides strictly ascending signed row IDs with an
 exclusive resume boundary. See

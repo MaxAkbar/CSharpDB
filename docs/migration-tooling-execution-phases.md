@@ -401,11 +401,24 @@ binds the retained source identity, schema, profile, codec and resource policy
 to a complete-record byte boundary, signed last row ID, physical prefix digest,
 logical row-hash prefix digests, transform counts, and optional data-complete
 manifest evidence. Zero-row progress is exact rendered-header evidence.
-Prefix digests are verification-only rather than resumable SHA-256 state, so
-recovery must rehash prepared bytes and replay retained source rows before it
-can continue. The export CLI, retained-source adapter, exclusive prepared-file
-lease, durable flush/fsync, atomic checkpoint journal, fail-closed manifest-last
-publication, and resume API are not yet complete. The offline retained
+Prefix digests are verification-only rather than resumable SHA-256 state. A
+Windows-qualified prepared-output lease for local filesystems now derives
+private data, active checkpoint, and pending checkpoint siblings solely from
+the normalized future destination while failing closed if that final path
+exists. Its owner-only exclusive prepared handle is the cross-process lease.
+It bounds active checkpoint reads, requires explicit reset of uncheckpointed
+data, verifies the checkpoint binding plus the exact prepared-prefix digest
+and CRLF boundary before tail truncation, preserves files on disposal, and
+never treats stale pending bytes as authority. Generations start at zero,
+advance by exactly one, permit only exact-byte idempotence, enforce monotonic
+row/byte/evidence progress, and make `DataComplete` terminal. Persistence
+orders durable prepared data carrying exact prefix-hash evidence before a
+durable exact pending checkpoint and handle-based atomic active replacement.
+Stateful retained-row replay/writer integration, abrupt-power-loss
+qualification of namespace replacement, fail-closed manifest-last
+publication, the retained-source adapter, and export/resume CLI remain
+incomplete. Non-Windows platforms remain unsupported, and UNC or mapped
+network volumes fail closed. The offline retained
 read-only CSharpDB snapshot can now be reopened and verified across processes,
 and its physical table reader provides strictly ascending signed row IDs plus
 an exclusive resume boundary. See
@@ -518,12 +531,21 @@ receipts remain the resume authority.
   zero-row header evidence, transform counts, and data-complete manifest
   reconstruction. Prefix digests are verification evidence, not resumable hash
   state.
-- [ ] Add the retained-source adapter, exclusive prepared-output lease,
-  disk-durable flush/fsync ordering, atomic checkpoint journal, physical-prefix
-  rehash and source-row replay, export/resume CLI, and fail-closed manifest-last
-  publication. The retained read-only cross-process CSharpDB snapshot and
-  deterministic physical row-ID cursor are implemented for offline sources;
-  no filesystem durability or resume API exists yet.
+- [x] Add a Windows-qualified prepared-output lease and journal for local
+  filesystems with destination-only deterministic private siblings, a
+  current-owner-only exclusive prepared handle, fail-closed final-path
+  admission, explicit uncheckpointed reset, bounded active-checkpoint reads,
+  qualified binding/prefix/CRLF recovery, strict generation transitions,
+  durable data-before-checkpoint ordering, atomic active replacement,
+  non-authoritative stale pending files, and disposal that preserves all
+  private files.
+- [ ] Integrate retained-source row replay with a stateful writer, qualify
+  namespace replacement under abrupt power loss, add the retained-source
+  adapter and export/resume CLI, and implement fail-closed manifest-last
+  publication. The prepared-output substrate remains unsupported on
+  non-Windows platforms and fails closed on UNC or mapped network volumes. The
+  retained read-only cross-process CSharpDB snapshot and deterministic physical
+  row-ID cursor are implemented for offline sources.
 
 ### Track 4B: JSON And NDJSON
 

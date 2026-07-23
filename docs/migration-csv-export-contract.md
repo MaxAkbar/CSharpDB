@@ -1,11 +1,13 @@
 # Migration CSV Export Contract
 
-This note records the typed manifest, canonical checkpoint contract, and
-restart-only streaming-writer portions of the Phase 4A CSV export work. It
-freezes the compatibility boundary that a later retained-source adapter,
-reopener, publisher, and CLI must satisfy. It does not claim that the export
-command, fail-closed manifest-last publication, filesystem checkpoint journal,
-or durable resume are implemented.
+This note records the typed manifest, canonical checkpoint contract,
+restart-only streaming writer, and Windows-qualified prepared-output
+lease/journal portions of the Phase 4A CSV export work. It freezes the
+compatibility boundary that a later retained-source adapter, stateful writer,
+publisher, and CLI must satisfy. It does not claim that retained-row replay,
+manifest-last publication, power-loss qualification of checkpoint namespace
+replacement, the export/resume command, or a non-Windows implementation are
+complete.
 
 ## Contract Boundary
 
@@ -167,14 +169,70 @@ equal source/export logical evidence and zero transform counts; spreadsheet
 checkpoints retain the same aggregate consistency rules as the final manifest.
 
 The logical and physical prefix digests are verification evidence only. They
-are not serialized or resumable SHA-256 internal state. A future recovery
-implementation must rehash the prepared physical prefix through the recorded
-byte boundary and replay retained source rows through the recorded signed row
-ID to reconstruct physical and logical hash state before continuing.
+are not serialized or resumable SHA-256 internal state. Recovery now rehashes
+the prepared physical prefix through the recorded byte boundary. Retained
+source rows must still be replayed through the recorded signed row ID by the
+future stateful writer integration to reconstruct logical hash state before
+continuing.
 
-This slice is a canonical serializer and validator, not a durable checkpoint
-store. No prepared-output lease, disk-flush/fsync contract, atomic checkpoint
-journal, cross-process recovery coordinator, or resume API exists yet.
+Checkpoint transitions are fail-closed. The first durable generation is zero.
+The same generation is idempotent only when its canonical bytes are identical;
+different content at the same generation is rejected, and later generations
+must advance by exactly one. Row and byte progress advance together, all
+counters are monotonic, signed row IDs strictly increase when row progress is
+made, and physical or logical evidence cannot change without that progress.
+The only no-row-progress transition is from `Writing` to `DataComplete` with
+unchanged prefix evidence. `DataComplete` is terminal.
+
+## Windows Prepared-Output Lease And Journal
+
+`CsvExportPreparedOutputLease` implements the local Windows filesystem boundary
+for the future stateful exporter. A fully qualified, normalized destination
+path deterministically selects three private siblings in that destination's
+parent: prepared data, the active checkpoint, and a pending checkpoint. Their
+names depend only on the destination path. The final destination is never
+opened by the lease, and opening fails closed if that final path already
+exists.
+
+The prepared-data file is opened or created with a protected current-owner-only
+ACL, no-follow regular-file and single-link checks, write-through semantics,
+and an exclusive handle that acts as the cross-process lease. The parent
+directory identity is pinned and rechecked around filesystem operations.
+Existing active and pending siblings must also be private regular single-link
+files. The active checkpoint read is capped at the canonical checkpoint byte
+ceiling. A stale pending sibling is validated but ignored during recovery; it
+is never checkpoint authority.
+
+If no active checkpoint exists, an empty prepared file opens as `New`. A
+nonempty prepared file opens as `UncheckpointedData`, with stream access
+blocked until the caller explicitly invokes `ResetUncheckpointedAsync`.
+Reset truncates only the private prepared file to zero and flushes that change
+to disk. Disposal releases the handles but deliberately preserves the prepared
+data and both checkpoint siblings.
+
+When an active checkpoint exists, reopen first validates its canonical bytes
+and immutable binding. It then requires the prepared file to contain at least
+the recorded prefix, rehashes exactly that prefix, compares the SHA-256 in
+constant time, and verifies that the boundary ends in CRLF. Only after all
+three checks pass may an uncheckpointed tail be truncated and that truncation
+flushed durably. A short, mismatched, or incomplete-record prefix is rejected
+without truncation.
+
+Checkpoint persistence is data-first. The prepared stream must end exactly at
+the checkpoint byte boundary, the checkpoint carries that exact prefix length
+and SHA-256 evidence, and the prepared bytes are flushed to disk before any
+checkpoint authority changes. The canonical checkpoint bytes then replace the
+entire pending sibling and are flushed to disk. After that durable-pending
+point, cancellation is no longer observed; a handle-based atomic rename
+creates or replaces the active checkpoint. Failure leaves the old active
+checkpoint authoritative, while any stale pending file remains non-authority.
+
+This substrate is intentionally limited to local Windows filesystems. UNC and
+mapped network volumes fail closed, and non-Windows platforms receive
+`PlatformNotSupportedException`. Stateful retained-row replay and writer
+integration, abrupt-power-loss qualification of namespace rename durability,
+final data/manifest publication, the retained-source export adapter, and
+export/resume CLI wiring remain pending.
 
 ## Restart-Only Streaming Writer
 
@@ -199,10 +257,12 @@ The writer exposes no checkpoint callback or append contract and makes no claim
 that a partial record is reusable. The separate canonical checkpoint models do
 not change this restart-only writer API.
 
-The slice does not provide an export CLI surface, filesystem checkpoint
-journal, retained snapshot adapter, prepared-output lease or durable
-flush/fsync, prepared output publication, or cross-process resume. It also does
-not make a two-file CSV/manifest pair atomic.
+The slice still does not provide an export CLI surface, retained snapshot
+adapter, stateful retained-row replay, prepared-output publication, or a full
+cross-process export/resume coordinator. It also does not make a two-file
+CSV/manifest pair atomic. The separate prepared-output lease now provides the
+Windows-qualified durable physical journal described above; it does not change
+this restart-only writer API.
 
 The offline `RetainedDatabaseSnapshot` API now provides the required durable
 source view and deterministic row-source seam: it materializes recovery only
@@ -216,14 +276,15 @@ after a crash. See
 
 The canonical checkpoint contract now binds the retained snapshot, table and
 ordered schema, export profile and codec, completed row boundary, byte
-boundary, and expected output prefix. Until a retained-source adapter,
-exclusive prepared-output lease, durable data flush, atomic checkpoint journal,
-physical-prefix verifier, and source-prefix replay path enforce those
-identities and boundaries, a failed export must restart from the beginning
-rather than claim durable resume. The source, restart-only codec, and canonical
-checkpoint prerequisites are now available; filesystem durability and resume
-integration remain outstanding.
+boundary, and expected output prefix. The Windows lease now enforces exclusive
+prepared-file ownership, durable data-before-checkpoint ordering, atomic active
+checkpoint replacement, and physical-prefix verification on reopen. Until a
+retained-source adapter and stateful writer replay source rows and rebuild the
+logical prefix through that boundary, the restart-only writer must still
+restart from the beginning rather than claim end-to-end durable resume.
 
 Phase 4A remains open until the retained-source adapter and CLI use this
-contract, manifest-last data and sidecar publication fails closed, and large
-interrupted exports pass bounded-memory and resume qualification.
+contract, manifest-last data and sidecar publication fails closed, namespace
+replacement passes abrupt-power-loss qualification, and large interrupted
+exports pass bounded-memory and resume qualification. The prepared-output
+support scope remains explicitly limited to local Windows filesystems.
