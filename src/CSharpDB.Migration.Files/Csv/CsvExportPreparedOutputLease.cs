@@ -100,15 +100,46 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
         CsvExportCheckpointBinding expectedBinding,
         CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        ArgumentNullException.ThrowIfNull(expectedBinding);
+        return await OpenAsyncCore(
+                destinationPath,
+                expectedBinding,
+                allowCompletedDestination: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 
-        CsvExportHashManifest expectedBindingDigest =
-            CsvExportCheckpointSerializer.ComputeBindingDigest(expectedBinding);
-        (string normalizedDestination, CsvExportPreparedOutputPaths paths) =
-            BindPaths(destinationPath);
+    internal static async ValueTask<CsvExportPreparedOutputLease>
+        OpenAllowingCompletedDestinationAsync(
+            string destinationPath,
+            CsvExportCheckpointBinding expectedBinding,
+            CancellationToken cancellationToken)
+    {
+        return await OpenAsyncCore(
+                destinationPath,
+                expectedBinding,
+                allowCompletedDestination: true,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal static async ValueTask<CsvExportPreparedOutputLease>
+        OpenForPublicationAsync(
+            string destinationPath,
+            string expectedManifestDigest,
+            CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ValidateManifestDigest(expectedManifestDigest);
+
+        (
+            string normalizedDestination,
+            CsvExportPreparedOutputPaths paths,
+            _
+        ) = BindPaths(destinationPath, allowExistingDestination: true);
         CsvExportPreparedOutputFileSystem fileSystem =
-            CsvExportPreparedOutputFileSystem.Open(paths);
+            CsvExportPreparedOutputFileSystem.Open(
+                paths,
+                requireExistingData: true);
         try
         {
             byte[]? checkpointBytes =
@@ -116,6 +147,78 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                     .ConfigureAwait(false);
             if (checkpointBytes is null)
             {
+                throw new InvalidDataException(
+                    "CSV export publication requires an active data-complete checkpoint.");
+            }
+
+            CsvExportCheckpoint checkpoint =
+                CsvExportCheckpointSerializer.Deserialize(checkpointBytes);
+            if (checkpoint.Phase != CsvExportCheckpointPhase.DataComplete ||
+                checkpoint.Completion is null)
+            {
+                throw new InvalidDataException(
+                    "Only a data-complete CSV export can be published.");
+            }
+            VerifyManifestDigest(
+                checkpoint.Completion.ManifestDigest,
+                expectedManifestDigest,
+                "The completed CSV export does not match the expected manifest digest.");
+            await QualifyAndRecoverDataPrefixAsync(
+                    fileSystem,
+                    checkpoint.Progress,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return new CsvExportPreparedOutputLease(
+                normalizedDestination,
+                paths,
+                fileSystem,
+                checkpoint.BindingDigest,
+                CsvExportPreparedOutputState.Recovered,
+                checkpoint,
+                checkpointBytes);
+        }
+        catch
+        {
+            await fileSystem.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async ValueTask<CsvExportPreparedOutputLease> OpenAsyncCore(
+        string destinationPath,
+        CsvExportCheckpointBinding expectedBinding,
+        bool allowCompletedDestination,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(expectedBinding);
+
+        CsvExportHashManifest expectedBindingDigest =
+            CsvExportCheckpointSerializer.ComputeBindingDigest(expectedBinding);
+        (
+            string normalizedDestination,
+            CsvExportPreparedOutputPaths paths,
+            bool destinationExists
+        ) = BindPaths(destinationPath, allowCompletedDestination);
+        CsvExportPreparedOutputFileSystem fileSystem =
+            CsvExportPreparedOutputFileSystem.Open(
+                paths,
+                requireExistingData:
+                    allowCompletedDestination && destinationExists);
+        try
+        {
+            byte[]? checkpointBytes =
+                await fileSystem.ReadActiveCheckpointAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            if (checkpointBytes is null)
+            {
+                if (destinationExists)
+                {
+                    throw new InvalidDataException(
+                        "An existing CSV destination is recoverable only with a data-complete checkpoint.");
+                }
+
                 CsvExportPreparedOutputState state =
                     fileSystem.DataStream.Length == 0
                         ? CsvExportPreparedOutputState.New
@@ -137,6 +240,12 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                 checkpoint.BindingDigest,
                 expectedBindingDigest,
                 "The active CSV export checkpoint belongs to a different export binding.");
+            if (destinationExists &&
+                checkpoint.Phase != CsvExportCheckpointPhase.DataComplete)
+            {
+                throw new InvalidDataException(
+                    "An existing CSV destination conflicts with an incomplete prepared export.");
+            }
             await QualifyAndRecoverDataPrefixAsync(
                     fileSystem,
                     checkpoint.Progress,
@@ -156,6 +265,44 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
         {
             await fileSystem.DisposeAsync().ConfigureAwait(false);
             throw;
+        }
+    }
+
+    internal async ValueTask<CsvExportFilePublicationResult>
+        PublishCompletedAsync(
+            string manifestPath,
+            ReadOnlyMemory<byte> canonicalManifestBytes,
+            ICsvExportPublicationFaultInjector? faultInjector,
+            CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        await operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            CsvExportCheckpoint checkpoint = CurrentCheckpoint
+                ?? throw new InvalidOperationException(
+                    "CSV export publication requires an active checkpoint.");
+            if (State != CsvExportPreparedOutputState.Recovered ||
+                checkpoint.Phase != CsvExportCheckpointPhase.DataComplete ||
+                checkpoint.Completion is null)
+            {
+                throw new InvalidOperationException(
+                    "Only a recovered data-complete CSV export can be published.");
+            }
+
+            return await fileSystem.PublishCompletedAsync(
+                    DestinationPath,
+                    manifestPath,
+                    canonicalManifestBytes,
+                    checkpoint.Progress,
+                    faultInjector,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            operationGate.Release();
         }
     }
 
@@ -580,8 +727,13 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
         }
     }
 
-    private static (string Destination, CsvExportPreparedOutputPaths Paths)
-        BindPaths(string destinationPath)
+    internal static (
+        string Destination,
+        CsvExportPreparedOutputPaths Paths,
+        bool DestinationExists
+    ) BindPaths(
+        string destinationPath,
+        bool allowExistingDestination)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
         if (destinationPath.Contains('\0'))
@@ -623,7 +775,9 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                 nameof(destinationPath));
         }
         ValidateDirectoryChain(parent);
-        if (TryGetAttributes(normalized, out FileAttributes attributes))
+        bool destinationExists =
+            TryGetAttributes(normalized, out FileAttributes attributes);
+        if (destinationExists)
         {
             if ((attributes &
                  (FileAttributes.Directory |
@@ -634,8 +788,11 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                     "The CSV export destination cannot be a link, directory, device, or special file.");
             }
 
-            throw new InvalidDataException(
-                "The CSV export destination already exists; prepared export is fail-closed and never overwrites it.");
+            if (!allowExistingDestination)
+            {
+                throw new InvalidDataException(
+                    "The CSV export destination already exists; prepared export is fail-closed and never overwrites it.");
+            }
         }
 
         string hashPath = OperatingSystem.IsWindows()
@@ -663,7 +820,46 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                 CheckpointPath = Path.Combine(parent, stem + ".checkpoint"),
                 PendingCheckpointPath =
                     Path.Combine(parent, stem + ".checkpoint.next"),
-            });
+            },
+            destinationExists);
+    }
+
+    private static void ValidateManifestDigest(string digest)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(digest);
+        if (digest.Length != SHA256.HashSizeInBytes * 2 ||
+            digest.Any(
+                static value =>
+                    value is not (>= '0' and <= '9') and
+                    not (>= 'a' and <= 'f')))
+        {
+            throw new ArgumentException(
+                "The expected CSV export manifest digest must be lowercase SHA-256 text.",
+                nameof(digest));
+        }
+    }
+
+    private static void VerifyManifestDigest(
+        string supplied,
+        string expected,
+        string message)
+    {
+        byte[] suppliedBytes = Convert.FromHexString(supplied);
+        byte[] expectedBytes = Convert.FromHexString(expected);
+        try
+        {
+            if (!CryptographicOperations.FixedTimeEquals(
+                    suppliedBytes,
+                    expectedBytes))
+            {
+                throw new InvalidDataException(message);
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(suppliedBytes);
+            CryptographicOperations.ZeroMemory(expectedBytes);
+        }
     }
 
     private static void RejectDotSegments(string path)
@@ -727,6 +923,12 @@ public sealed class CsvExportPreparedOutputLease : IAsyncDisposable
                      [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
                      StringSplitOptions.RemoveEmptyEntries))
         {
+            if (segment.Contains('~'))
+            {
+                throw new ArgumentException(
+                    "Windows DOS short-name aliases cannot be used for prepared CSV export paths.",
+                    nameof(path));
+            }
             if (segment.EndsWith(' ') || segment.EndsWith('.'))
             {
                 throw new ArgumentException(

@@ -62,9 +62,52 @@ public sealed partial class CsvStreamingExporter
     /// bytes without an active checkpoint are explicitly reset because they
     /// carry no authoritative progress.
     /// </summary>
-    public async ValueTask<CsvStreamingExportResult> WriteResumableAsync(
+    public ValueTask<CsvStreamingExportResult> WriteResumableAsync(
         CsvResumableExportRequest request,
+        CancellationToken cancellationToken = default) =>
+        WriteResumableCoreAsync(
+            request,
+            allowCompletedDestination: false,
+            cancellationToken);
+
+    /// <summary>
+    /// Creates or source-requalifies a data-complete prepared output, then
+    /// publishes the exact CSV before its explicit canonical manifest path.
+    /// Retry recovers exact CSV-only and exact-pair states without overwrite.
+    /// </summary>
+    public async ValueTask<CsvExportPublicationResult>
+        WriteResumableAndPublishAsync(
+            CsvResumableExportRequest request,
+            string manifestPath,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        CsvExportPreparedOutputPublisher.ValidatePaths(
+            request.DestinationPath,
+            manifestPath);
+
+        CsvStreamingExportResult completed =
+            await WriteResumableCoreAsync(
+                    request,
+                    allowCompletedDestination: true,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        return await new CsvExportPreparedOutputPublisher()
+            .PublishCompletedAsync(
+                new CsvExportPublicationRequest
+                {
+                    DestinationPath = request.DestinationPath,
+                    ManifestPath = manifestPath,
+                    ExpectedManifestDigest = completed.ManifestDigest,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask<CsvStreamingExportResult> WriteResumableCoreAsync(
+        CsvResumableExportRequest request,
+        bool allowCompletedDestination,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.OpenRows is null)
@@ -104,10 +147,16 @@ public sealed partial class CsvStreamingExporter
 
         cancellationToken.ThrowIfCancellationRequested();
         await using CsvExportPreparedOutputLease lease =
-            await CsvExportPreparedOutputLease.OpenAsync(
-                    request.DestinationPath,
-                    binding,
-                    cancellationToken)
+            await (allowCompletedDestination
+                    ? CsvExportPreparedOutputLease
+                        .OpenAllowingCompletedDestinationAsync(
+                            request.DestinationPath,
+                            binding,
+                            cancellationToken)
+                    : CsvExportPreparedOutputLease.OpenAsync(
+                        request.DestinationPath,
+                        binding,
+                        cancellationToken))
                 .ConfigureAwait(false);
 
         if (lease.State == CsvExportPreparedOutputState.UncheckpointedData)

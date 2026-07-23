@@ -432,11 +432,20 @@ SHA-256, and canonical snapshot identity from the verified session and binds
 the normalized Engine reader informational version. The adapter exposes no
 custom Engine or retained-snapshot options: the reader version and built-in
 default reader/serializer composition define the source interpretation, while
-custom provider provenance remains unsupported. Abrupt-power-loss
-qualification of namespace replacement, fail-closed manifest-last
-publication, and export/resume CLI remain incomplete. Non-Windows platforms
-remain unsupported, and UNC or mapped network volumes fail closed. The offline
-retained read-only CSharpDB snapshot can be reopened and verified across
+custom provider provenance remains unsupported. The Windows publisher now
+requires an independently pinned terminal manifest digest, requalifies the
+private `DataComplete` journal and prepared bytes, copies into owner-private
+pair-bound staging files, and performs atomic no-overwrite data-first,
+manifest-last renames. It holds exact existing finals stable, reuses only an
+exact CSV-only or exact-pair state, rejects manifest-only and every different
+or unsafe final without mutation, stops observing cancellation after the
+first irreversible final-data commit, and preserves the private journal for
+recovery. The generic and retained CSharpDB end-to-end entry points replay the
+bound source through EOF before publication. Abrupt-power-loss qualification
+of namespace replacement and the export/resume CLI remain incomplete.
+Non-Windows platforms remain unsupported, and UNC or mapped network volumes
+fail closed. The offline retained read-only CSharpDB snapshot can be reopened
+and verified across
 processes, and its physical table reader provides strictly ascending signed
 row IDs plus an exclusive resume boundary. See
 [`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
@@ -569,8 +578,13 @@ receipts remain the resume authority.
   session. Bind the normalized Engine reader version and fixed built-in
   reader/serializer composition; custom provider provenance remains
   unsupported.
-- [ ] Qualify namespace replacement under abrupt power loss, add the
-  export/resume CLI, and implement fail-closed manifest-last publication.
+- [x] Implement fail-closed manifest-last publication with explicit sibling
+  paths, independently pinned terminal manifest evidence, prepared-data
+  requalification and copy, durable private staging, atomic no-overwrite
+  renames, exact-existing recovery, invalid-state preservation, frozen
+  post-data cancellation, and retained private recovery authority.
+- [ ] Qualify namespace replacement under abrupt power loss and add the
+  export/resume CLI.
   Prepared output remains unsupported on non-Windows platforms and fails
   closed on UNC or mapped network volumes.
 

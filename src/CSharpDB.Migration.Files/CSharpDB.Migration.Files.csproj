@@ -16,4 +16,8 @@
     <PackageReference Include="CsvHelper" Version="33.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.Files.Tests" />
+  </ItemGroup>
+
 </Project>

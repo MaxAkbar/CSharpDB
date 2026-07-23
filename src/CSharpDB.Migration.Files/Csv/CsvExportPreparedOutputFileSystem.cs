@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -19,9 +20,14 @@ namespace CSharpDB.Migration.Files.Csv;
 internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
 {
     private const int BufferSize = 64 * 1024;
+    private const string PublicationPathBindingContract =
+        "csharpdb-csv-export-publication-path/v1";
     private const int FileRenameInfo = 3;
+    private const int FileDispositionInfo = 4;
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
+    private const int ErrorFileExists = 80;
+    private const int ErrorAlreadyExists = 183;
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
     private const uint DeleteAccess = 0x00010000;
@@ -58,7 +64,8 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
     internal FileStream DataStream { get; }
 
     internal static CsvExportPreparedOutputFileSystem Open(
-        CsvExportPreparedOutputPaths paths)
+        CsvExportPreparedOutputPaths paths,
+        bool requireExistingData = false)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -78,7 +85,8 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
             RejectUnsafeExistingSibling(binding.PendingCheckpointPath);
             data = OpenWindowsPrivateWritable(
                 binding.PreparedDataPath,
-                requireDeleteAccess: false);
+                requireDeleteAccess: false,
+                createIfMissing: !requireExistingData);
             RequireWindowsParentIdentity(binding.ParentPath, parent);
             ValidateOptionalPrivateSibling(binding.CheckpointPath);
             ValidateOptionalPrivateSibling(binding.PendingCheckpointPath);
@@ -239,6 +247,146 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
         }
     }
 
+    internal async ValueTask<CsvExportFilePublicationResult>
+        PublishCompletedAsync(
+            string destinationPath,
+            string manifestPath,
+            ReadOnlyMemory<byte> canonicalManifestBytes,
+            CsvExportCheckpointProgress progress,
+            ICsvExportPublicationFaultInjector? faultInjector,
+            CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(progress);
+        if (canonicalManifestBytes.IsEmpty ||
+            canonicalManifestBytes.Length >
+            CsvExportManifestSerializer.MaximumManifestBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(canonicalManifestBytes),
+                "Canonical manifest bytes must be nonempty and within the manifest byte ceiling.");
+        }
+
+        PublicationPathBinding publication =
+            ValidatePublicationPaths(destinationPath, manifestPath);
+        cancellationToken.ThrowIfCancellationRequested();
+        RequireWindowsParentIdentity(parentPath, parentHandle);
+
+        FileStream? existingData = null;
+        FileStream? existingManifest = null;
+        FileStream? stableData = null;
+        FileStream? stableManifest = null;
+        bool committedPair = false;
+        try
+        {
+            existingData = OpenWindowsPrivateRead(
+                publication.DestinationPath,
+                allowMissing: true);
+            existingManifest = OpenWindowsPrivateRead(
+                publication.ManifestPath,
+                allowMissing: true);
+
+            bool dataMatches =
+                existingData is not null &&
+                await ExistingDataMatchesAsync(
+                        existingData,
+                        progress,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            bool manifestMatches =
+                existingManifest is not null &&
+                await ExistingBytesMatchAsync(
+                        existingManifest,
+                        canonicalManifestBytes,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (existingManifest is not null)
+            {
+                if (!manifestMatches)
+                {
+                    throw new IOException(
+                        "The CSV export manifest destination already contains a different file.");
+                }
+                if (existingData is null || !dataMatches)
+                {
+                    throw new InvalidDataException(
+                        "A CSV export manifest exists without its exact final data file.");
+                }
+
+                committedPair = true;
+                return new CsvExportFilePublicationResult(
+                    ReusedData: true,
+                    ReusedManifest: true);
+            }
+            if (existingData is not null && !dataMatches)
+            {
+                throw new IOException(
+                    "The CSV export destination already contains a different file.");
+            }
+
+            bool dataExistedAtPreflight = existingData is not null;
+            bool reusedData = dataExistedAtPreflight;
+            if (dataExistedAtPreflight)
+            {
+                stableData = existingData;
+                existingData = null;
+            }
+            else
+            {
+                PublishedPrivateFile publishedData =
+                    await PublishPreparedDataAsync(
+                            publication,
+                            progress,
+                            faultInjector,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                stableData = publishedData.Stream;
+                reusedData = publishedData.Reused;
+                await InjectFaultAsync(
+                        faultInjector,
+                        CsvExportPublicationFaultPoint
+                            .AfterDataNamespaceCommitBeforeManifest,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            // If this invocation established the final CSV name, its commit is
+            // the cancellation cut-off. A pre-existing exact CSV may still
+            // honor cancellation while staging the missing manifest.
+            CancellationToken manifestCancellation =
+                dataExistedAtPreflight
+                    ? cancellationToken
+                    : CancellationToken.None;
+            PublishedPrivateFile publishedManifest =
+                await PublishManifestAsync(
+                        publication,
+                        canonicalManifestBytes,
+                        faultInjector,
+                        manifestCancellation)
+                    .ConfigureAwait(false);
+            stableManifest = publishedManifest.Stream;
+
+            committedPair = true;
+            await InjectFaultAsync(
+                    faultInjector,
+                    CsvExportPublicationFaultPoint
+                        .AfterManifestNamespaceCommitBeforeResult,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            return new CsvExportFilePublicationResult(
+                ReusedData: reusedData,
+                ReusedManifest: publishedManifest.Reused);
+        }
+        finally
+        {
+            DisposeAfterPublication(existingManifest, committedPair);
+            DisposeAfterPublication(existingData, committedPair);
+            DisposeAfterPublication(stableManifest, committedPair);
+            DisposeAfterPublication(stableData, committedPair);
+        }
+    }
+
     public ValueTask DisposeAsync()
     {
         if (disposed)
@@ -290,6 +438,534 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
 
         ValidateWindowsDirectoryChain(parent);
         return new PreparedPathBinding(data, checkpoint, pending, parent);
+    }
+
+    internal static void ValidatePublicationPathsForPreflight(
+        string destinationPath,
+        string manifestPath)
+    {
+        _ = BindPublicationPaths(destinationPath, manifestPath);
+    }
+
+    private PublicationPathBinding ValidatePublicationPaths(
+        string destinationPath,
+        string manifestPath)
+    {
+        PublicationPathBinding publication =
+            BindPublicationPaths(destinationPath, manifestPath);
+        (
+            _,
+            CsvExportPreparedOutputPaths reboundPaths,
+            _
+        ) = CsvExportPreparedOutputLease.BindPaths(
+            destinationPath,
+            allowExistingDestination: true);
+        if (!string.Equals(
+                reboundPaths.PreparedDataPath,
+                paths.PreparedDataPath,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                reboundPaths.CheckpointPath,
+                paths.CheckpointPath,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                reboundPaths.PendingCheckpointPath,
+                paths.PendingCheckpointPath,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                Path.GetDirectoryName(publication.DestinationPath),
+                parentPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "The CSV publication destination does not match its prepared-output lease.");
+        }
+
+        return publication;
+    }
+
+    private static PublicationPathBinding BindPublicationPaths(
+        string destinationPath,
+        string manifestPath)
+    {
+        (
+            string normalizedDestination,
+            CsvExportPreparedOutputPaths preparedPaths,
+            _
+        ) = CsvExportPreparedOutputLease.BindPaths(
+            destinationPath,
+            allowExistingDestination: true);
+        (
+            string normalizedManifest,
+            _,
+            _
+        ) = CsvExportPreparedOutputLease.BindPaths(
+            manifestPath,
+            allowExistingDestination: true);
+
+        string destinationParent = Path.GetDirectoryName(normalizedDestination)
+            ?? throw new ArgumentException(
+                "The CSV export destination path has no parent.",
+                nameof(destinationPath));
+        string manifestParent = Path.GetDirectoryName(normalizedManifest)
+            ?? throw new ArgumentException(
+                "The CSV export manifest path has no parent.",
+                nameof(manifestPath));
+        if (!string.Equals(
+                destinationParent,
+                manifestParent,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "The final CSV and manifest must be siblings in the same directory.",
+                nameof(manifestPath));
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddDistinct(names, normalizedDestination);
+        AddDistinct(names, normalizedManifest);
+        AddDistinct(names, preparedPaths.PreparedDataPath);
+        AddDistinct(names, preparedPaths.CheckpointPath);
+        AddDistinct(names, preparedPaths.PendingCheckpointPath);
+
+        string pairText = PublicationPathBindingContract + "\0" +
+            normalizedDestination.ToUpperInvariant() + "\0" +
+            normalizedManifest.ToUpperInvariant();
+        byte[] pairBytes = Encoding.UTF8.GetBytes(pairText);
+        string digest;
+        try
+        {
+            digest = Convert.ToHexString(SHA256.HashData(pairBytes))
+                .ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(pairBytes);
+        }
+
+        string stem =
+            $".csharpdb-csv-export-{digest[..32]}.publish";
+        string dataTemporaryPath =
+            Path.Combine(destinationParent, stem + ".data.next");
+        string manifestTemporaryPath =
+            Path.Combine(destinationParent, stem + ".manifest.next");
+        AddDistinct(names, dataTemporaryPath);
+        AddDistinct(names, manifestTemporaryPath);
+
+        return new PublicationPathBinding(
+            normalizedDestination,
+            normalizedManifest,
+            dataTemporaryPath,
+            manifestTemporaryPath);
+    }
+
+    private static void AddDistinct(HashSet<string> paths, string path)
+    {
+        if (!paths.Add(path))
+        {
+            throw new ArgumentException(
+                "CSV export final and private publication paths must be distinct.");
+        }
+    }
+
+    private async ValueTask<PublishedPrivateFile> PublishPreparedDataAsync(
+        PublicationPathBinding publication,
+        CsvExportCheckpointProgress progress,
+        ICsvExportPublicationFaultInjector? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        RequireWindowsParentIdentity(parentPath, parentHandle);
+        FileStream? temporary = OpenWindowsPrivateWritable(
+            publication.DataTemporaryPath,
+            requireDeleteAccess: true);
+        long preparedPosition = DataStream.Position;
+        bool renamed = false;
+        try
+        {
+            temporary.SetLength(0);
+            temporary.Position = 0;
+            DataStream.Position = 0;
+
+            using IncrementalHash hash =
+                IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+            long remaining = progress.DataPrefixByteLength;
+            try
+            {
+                while (remaining > 0)
+                {
+                    int requested = (int)Math.Min(remaining, buffer.Length);
+                    int read = await DataStream.ReadAsync(
+                            buffer.AsMemory(0, requested),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        throw new InvalidDataException(
+                            "The prepared CSV ended before its data-complete boundary.");
+                    }
+
+                    hash.AppendData(buffer, 0, read);
+                    await temporary.WriteAsync(
+                            buffer.AsMemory(0, read),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    remaining -= read;
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(
+                    buffer.AsSpan(0, buffer.Length));
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            if (DataStream.Length != progress.DataPrefixByteLength ||
+                temporary.Length != progress.DataPrefixByteLength)
+            {
+                throw new InvalidDataException(
+                    "The prepared CSV length changed during publication.");
+            }
+
+            Span<byte> actualDigest =
+                stackalloc byte[SHA256.HashSizeInBytes];
+            if (!hash.TryGetHashAndReset(
+                    actualDigest,
+                    out int digestBytes) ||
+                digestBytes != actualDigest.Length)
+            {
+                throw new CryptographicException(
+                    "The prepared CSV publication digest could not be finalized.");
+            }
+            VerifyDigest(
+                actualDigest,
+                progress.DataPrefixDigest,
+                "The prepared CSV changed while it was being staged for publication.");
+
+            await FlushPrivateAsync(temporary, cancellationToken)
+                .ConfigureAwait(false);
+            await InjectFaultAsync(
+                    faultInjector,
+                    CsvExportPublicationFaultPoint.BeforeDataNamespaceCommit,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            using (FileStream? manifestBeforeData =
+                   OpenWindowsPrivateRead(
+                       publication.ManifestPath,
+                       allowMissing: true))
+            {
+                if (manifestBeforeData is not null)
+                {
+                    throw new InvalidDataException(
+                        "The CSV export manifest appeared before the final data commit.");
+                }
+            }
+            RequireWindowsParentIdentity(parentPath, parentHandle);
+
+            NoReplaceRenameStatus status = RenameWindowsByHandleNoReplace(
+                temporary,
+                publication.DestinationPath);
+            if (status == NoReplaceRenameStatus.Published)
+            {
+                renamed = true;
+                FileStream published = temporary;
+                temporary = null;
+                return new PublishedPrivateFile(
+                    published,
+                    Reused: false);
+            }
+
+            RemoveWindowsByHandle(temporary);
+            temporary.Dispose();
+            temporary = null;
+            FileStream existing = OpenWindowsPrivateRead(
+                    publication.DestinationPath,
+                    allowMissing: false)
+                ?? throw new IOException(
+                    "The CSV destination disappeared during publication.");
+            try
+            {
+                if (!await ExistingDataMatchesAsync(
+                        existing,
+                        progress,
+                        CancellationToken.None)
+                    .ConfigureAwait(false))
+                {
+                    throw new IOException(
+                        "The CSV export destination already contains a different file.");
+                }
+
+                return new PublishedPrivateFile(existing, Reused: true);
+            }
+            catch
+            {
+                existing.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            DataStream.Position = preparedPosition;
+            if (temporary is not null)
+            {
+                try
+                {
+                    if (!renamed)
+                        RemoveWindowsByHandle(temporary);
+                }
+                finally
+                {
+                    temporary.Dispose();
+                }
+            }
+        }
+    }
+
+    private async ValueTask<PublishedPrivateFile> PublishManifestAsync(
+        PublicationPathBinding publication,
+        ReadOnlyMemory<byte> canonicalManifestBytes,
+        ICsvExportPublicationFaultInjector? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        RequireWindowsParentIdentity(parentPath, parentHandle);
+        FileStream? temporary = OpenWindowsPrivateWritable(
+            publication.ManifestTemporaryPath,
+            requireDeleteAccess: true);
+        bool renamed = false;
+        try
+        {
+            temporary.SetLength(0);
+            temporary.Position = 0;
+            await temporary.WriteAsync(
+                    canonicalManifestBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await FlushPrivateAsync(temporary, cancellationToken)
+                .ConfigureAwait(false);
+            await InjectFaultAsync(
+                    faultInjector,
+                    CsvExportPublicationFaultPoint.BeforeManifestNamespaceCommit,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            RequireWindowsParentIdentity(parentPath, parentHandle);
+
+            NoReplaceRenameStatus status = RenameWindowsByHandleNoReplace(
+                temporary,
+                publication.ManifestPath);
+            if (status == NoReplaceRenameStatus.Published)
+            {
+                renamed = true;
+                FileStream published = temporary;
+                temporary = null;
+                return new PublishedPrivateFile(
+                    published,
+                    Reused: false);
+            }
+
+            RemoveWindowsByHandle(temporary);
+            temporary.Dispose();
+            temporary = null;
+            FileStream existing = OpenWindowsPrivateRead(
+                    publication.ManifestPath,
+                    allowMissing: false)
+                ?? throw new IOException(
+                    "The CSV manifest destination disappeared during publication.");
+            try
+            {
+                if (!await ExistingBytesMatchAsync(
+                        existing,
+                        canonicalManifestBytes,
+                        CancellationToken.None)
+                    .ConfigureAwait(false))
+                {
+                    throw new IOException(
+                        "The CSV export manifest destination already contains a different file.");
+                }
+
+                return new PublishedPrivateFile(existing, Reused: true);
+            }
+            catch
+            {
+                existing.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            if (temporary is not null)
+            {
+                try
+                {
+                    if (!renamed)
+                        RemoveWindowsByHandle(temporary);
+                }
+                finally
+                {
+                    temporary.Dispose();
+                }
+            }
+        }
+    }
+
+    private async ValueTask<bool> ExistingDataMatchesAsync(
+        FileStream existing,
+        CsvExportCheckpointProgress progress,
+        CancellationToken cancellationToken)
+    {
+        if (existing.Length != progress.DataPrefixByteLength)
+            return false;
+
+        long position = existing.Position;
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            using IncrementalHash hash =
+                IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            existing.Position = 0;
+            long remaining = existing.Length;
+            while (remaining > 0)
+            {
+                int requested = (int)Math.Min(remaining, buffer.Length);
+                int read = await existing.ReadAsync(
+                        buffer.AsMemory(0, requested),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                    return false;
+
+                hash.AppendData(buffer, 0, read);
+                remaining -= read;
+            }
+
+            Span<byte> actual = stackalloc byte[SHA256.HashSizeInBytes];
+            if (!hash.TryGetHashAndReset(actual, out int written) ||
+                written != actual.Length)
+            {
+                throw new CryptographicException(
+                    "The final CSV digest could not be finalized.");
+            }
+
+            return DigestEquals(actual, progress.DataPrefixDigest);
+        }
+        finally
+        {
+            existing.Position = position;
+            CryptographicOperations.ZeroMemory(buffer.AsSpan(0, buffer.Length));
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static async ValueTask<bool> ExistingBytesMatchAsync(
+        FileStream existing,
+        ReadOnlyMemory<byte> expected,
+        CancellationToken cancellationToken)
+    {
+        if (existing.Length != expected.Length)
+            return false;
+
+        long position = existing.Position;
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            existing.Position = 0;
+            int offset = 0;
+            while (offset < expected.Length)
+            {
+                int requested = Math.Min(
+                    buffer.Length,
+                    expected.Length - offset);
+                int read = await existing.ReadAsync(
+                        buffer.AsMemory(0, requested),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                    return false;
+                if (!CryptographicOperations.FixedTimeEquals(
+                        buffer.AsSpan(0, read),
+                        expected.Span.Slice(offset, read)))
+                {
+                    return false;
+                }
+                offset += read;
+            }
+
+            return true;
+        }
+        finally
+        {
+            existing.Position = position;
+            CryptographicOperations.ZeroMemory(buffer.AsSpan(0, buffer.Length));
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static async ValueTask FlushPrivateAsync(
+        FileStream stream,
+        CancellationToken cancellationToken)
+    {
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        stream.Flush(flushToDisk: true);
+    }
+
+    private static ValueTask InjectFaultAsync(
+        ICsvExportPublicationFaultInjector? faultInjector,
+        CsvExportPublicationFaultPoint point,
+        CancellationToken cancellationToken) =>
+        faultInjector?.InjectAsync(point, cancellationToken) ??
+        ValueTask.CompletedTask;
+
+    private static bool DigestEquals(
+        ReadOnlySpan<byte> actual,
+        CsvExportHashManifest expected)
+    {
+        if (!string.Equals(
+                expected.Algorithm,
+                CsvExportHashManifest.Sha256Algorithm,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        byte[] expectedBytes = Convert.FromHexString(expected.Value);
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(
+                actual,
+                expectedBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(expectedBytes);
+        }
+    }
+
+    private static void VerifyDigest(
+        ReadOnlySpan<byte> actual,
+        CsvExportHashManifest expected,
+        string message)
+    {
+        if (!DigestEquals(actual, expected))
+            throw new InvalidDataException(message);
+    }
+
+    private static void DisposeAfterPublication(
+        IDisposable? value,
+        bool committedPair)
+    {
+        if (value is null)
+            return;
+        try
+        {
+            value.Dispose();
+        }
+        catch when (committedPair)
+        {
+            // A fully published and qualified pair remains success even if a
+            // read or staging handle reports a late cleanup failure.
+        }
     }
 
     private static string ValidateAbsoluteNormalizedPath(
@@ -454,85 +1130,102 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
     [SupportedOSPlatform("windows")]
     private static FileStream OpenWindowsPrivateWritable(
         string path,
-        bool requireDeleteAccess)
+        bool requireDeleteAccess,
+        bool createIfMissing = true)
     {
-        try
+        if (createIfMissing)
         {
-            FileStream created = FileSystemAclExtensions.Create(
-                new FileInfo(path),
-                FileMode.CreateNew,
-                FileSystemRights.FullControl,
-                FileShare.None,
-                BufferSize,
-                FileOptions.Asynchronous |
-                    FileOptions.SequentialScan |
-                    FileOptions.WriteThrough,
-                CreatePrivateWindowsSecurity());
             try
             {
-                ValidateWindowsPrivateFile(created);
-                return created;
-            }
-            catch
-            {
-                created.Dispose();
-                throw;
-            }
-        }
-        catch (IOException) when (PathEntryExists(path))
-        {
-            uint access = GenericRead | GenericWrite | ReadControl;
-            if (requireDeleteAccess)
-                access |= DeleteAccess;
-            SafeFileHandle handle = CreateFileW(
-                path,
-                access,
-                0,
-                IntPtr.Zero,
-                OpenExisting,
-                FileAttributeNormal |
-                    FileFlagOpenReparsePoint |
-                    FileFlagOverlapped |
-                    FileFlagSequentialScan |
-                    FileFlagWriteThrough,
-                IntPtr.Zero);
-            if (handle.IsInvalid)
-            {
-                int error = Marshal.GetLastPInvokeError();
-                handle.Dispose();
-                throw new IOException(
-                    "The private prepared CSV file is unavailable or already leased.",
-                    new Win32Exception(error));
-            }
-
-            try
-            {
-                var stream = new FileStream(
-                    handle,
-                    FileAccess.ReadWrite,
+                FileStream created = FileSystemAclExtensions.Create(
+                    new FileInfo(path),
+                    FileMode.CreateNew,
+                    FileSystemRights.FullControl,
+                    FileShare.None,
                     BufferSize,
-                    isAsync: true);
-                handle = null!;
+                    FileOptions.Asynchronous |
+                        FileOptions.SequentialScan |
+                        FileOptions.WriteThrough,
+                    CreatePrivateWindowsSecurity());
                 try
                 {
-                    ValidateWindowsPrivateFile(stream);
-                    return stream;
+                    ValidateWindowsPrivateFile(created);
+                    return created;
                 }
                 catch
                 {
-                    stream.Dispose();
+                    created.Dispose();
                     throw;
                 }
             }
-            finally
+            catch (IOException) when (PathEntryExists(path))
             {
-                handle?.Dispose();
+                // The existing private file is opened below.
+            }
+            catch (UnauthorizedAccessException) when (IsUnsafeExistingSibling(path))
+            {
+                throw new InvalidDataException(
+                    "Prepared CSV sibling paths must be private regular files.");
             }
         }
-        catch (UnauthorizedAccessException) when (IsUnsafeExistingSibling(path))
+
+        uint access = GenericRead | GenericWrite | ReadControl;
+        if (requireDeleteAccess)
+            access |= DeleteAccess;
+        SafeFileHandle handle = CreateFileW(
+            path,
+            access,
+            0,
+            IntPtr.Zero,
+            OpenExisting,
+            FileAttributeNormal |
+                FileFlagOpenReparsePoint |
+                FileFlagOverlapped |
+                FileFlagSequentialScan |
+                FileFlagWriteThrough,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
         {
-            throw new InvalidDataException(
-                "Prepared CSV sibling paths must be private regular files.");
+            int error = Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            if (error == ErrorFileNotFound)
+            {
+                throw new FileNotFoundException(
+                    "The private prepared CSV file does not exist.",
+                    path);
+            }
+            if (IsUnsafeExistingSibling(path))
+            {
+                throw new InvalidDataException(
+                    "Prepared CSV sibling paths must be private regular files.");
+            }
+            throw new IOException(
+                "The private prepared CSV file is unavailable or already leased.",
+                new Win32Exception(error));
+        }
+
+        try
+        {
+            var stream = new FileStream(
+                handle,
+                FileAccess.ReadWrite,
+                BufferSize,
+                isAsync: true);
+            handle = null!;
+            try
+            {
+                ValidateWindowsPrivateFile(stream);
+                return stream;
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            handle?.Dispose();
         }
     }
 
@@ -699,6 +1392,82 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
         }
     }
 
+    [SupportedOSPlatform("windows")]
+    private static NoReplaceRenameStatus RenameWindowsByHandleNoReplace(
+        FileStream temporary,
+        string destinationPath)
+    {
+        byte[] nameBytes = Encoding.Unicode.GetBytes(destinationPath);
+        int nameOffset = IntPtr.Size == 8 ? 20 : 12;
+        int informationLength = checked(nameOffset + nameBytes.Length);
+        int allocationLength = checked(informationLength + sizeof(char));
+        IntPtr buffer = Marshal.AllocHGlobal(allocationLength);
+        try
+        {
+            Marshal.Copy(
+                new byte[allocationLength],
+                0,
+                buffer,
+                allocationLength);
+            Marshal.WriteIntPtr(
+                buffer,
+                IntPtr.Size == 8 ? 8 : 4,
+                IntPtr.Zero);
+            Marshal.WriteInt32(
+                buffer,
+                IntPtr.Size == 8 ? 16 : 8,
+                nameBytes.Length);
+            Marshal.Copy(
+                nameBytes,
+                0,
+                IntPtr.Add(buffer, nameOffset),
+                nameBytes.Length);
+            if (SetFileInformationByHandle(
+                    temporary.SafeFileHandle,
+                    FileRenameInfo,
+                    buffer,
+                    checked((uint)informationLength)))
+            {
+                return NoReplaceRenameStatus.Published;
+            }
+
+            int error = Marshal.GetLastPInvokeError();
+            if (error is ErrorAlreadyExists or ErrorFileExists)
+                return NoReplaceRenameStatus.DestinationExists;
+            throw new IOException(
+                "The CSV export file could not be atomically published.",
+                new Win32Exception(error));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void RemoveWindowsByHandle(FileStream temporary)
+    {
+        IntPtr disposition = Marshal.AllocHGlobal(1);
+        try
+        {
+            Marshal.WriteByte(disposition, 1);
+            if (!SetFileInformationByHandle(
+                    temporary.SafeFileHandle,
+                    FileDispositionInfo,
+                    disposition,
+                    1))
+            {
+                throw new IOException(
+                    "The private CSV publication staging file could not be removed.",
+                    new Win32Exception(Marshal.GetLastPInvokeError()));
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(disposition);
+        }
+    }
+
     private static bool PathEntryExists(string path)
     {
         try
@@ -743,6 +1512,22 @@ internal sealed class CsvExportPreparedOutputFileSystem : IAsyncDisposable
         string CheckpointPath,
         string PendingCheckpointPath,
         string ParentPath);
+
+    private sealed record PublicationPathBinding(
+        string DestinationPath,
+        string ManifestPath,
+        string DataTemporaryPath,
+        string ManifestTemporaryPath);
+
+    private sealed record PublishedPrivateFile(
+        FileStream Stream,
+        bool Reused);
+
+    private enum NoReplaceRenameStatus
+    {
+        Published,
+        DestinationExists,
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WindowsFileInformation

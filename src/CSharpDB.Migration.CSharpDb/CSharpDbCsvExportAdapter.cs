@@ -53,6 +53,93 @@ public sealed class CSharpDbCsvExportAdapter
         CSharpDbRetainedCsvExportRequest request,
         CancellationToken cancellationToken = default)
     {
+        ValidateRequest(request);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        await using RetainedDatabaseSnapshotSession snapshot =
+            await RetainedDatabaseSnapshot.OpenAsync(
+                    request.SnapshotPath,
+                    request.SnapshotIdentity,
+                    databaseOptions: null,
+                    options: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        CsvResumableExportRequest resumable =
+            await CreateResumableRequestAsync(
+                    request,
+                    snapshot,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        return await new CsvStreamingExporter()
+            .WriteResumableAsync(resumable, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes or resumes, source-requalifies, and publishes the final CSV
+    /// before the explicit canonical manifest path. Exact CSV-only and exact
+    /// pair states are recoverable across a fresh process.
+    /// </summary>
+    public async ValueTask<CsvExportPublicationResult>
+        WriteResumableAndPublishTableAsync(
+            CSharpDbRetainedCsvExportRequest request,
+            string manifestPath,
+            CancellationToken cancellationToken = default)
+    {
+        ValidateRequest(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(manifestPath);
+        CsvExportPreparedOutputPublisher.ValidatePaths(
+            request.DestinationPath,
+            manifestPath);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        RetainedDatabaseSnapshotSession? snapshot = null;
+        bool committedPair = false;
+        try
+        {
+            snapshot = await RetainedDatabaseSnapshot.OpenAsync(
+                        request.SnapshotPath,
+                        request.SnapshotIdentity,
+                        databaseOptions: null,
+                        options: null,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            CsvResumableExportRequest resumable =
+                await CreateResumableRequestAsync(
+                        request,
+                        snapshot,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            CsvExportPublicationResult result =
+                await new CsvStreamingExporter()
+                    .WriteResumableAndPublishAsync(
+                        resumable,
+                        manifestPath,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            committedPair = true;
+            return result;
+        }
+        finally
+        {
+            if (snapshot is not null)
+            {
+                try
+                {
+                    await snapshot.DisposeAsync().ConfigureAwait(false);
+                }
+                catch when (committedPair)
+                {
+                    // Publication is irreversible once the exact manifest-last
+                    // pair exists. Snapshot cleanup cannot downgrade success.
+                }
+            }
+        }
+    }
+
+    private static void ValidateRequest(
+        CSharpDbRetainedCsvExportRequest request)
+    {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.SnapshotPath);
         ArgumentNullException.ThrowIfNull(request.SnapshotIdentity);
@@ -69,16 +156,14 @@ public sealed class CSharpDbCsvExportAdapter
         }
         if (request.CheckpointRowInterval <= 0)
             throw new ArgumentOutOfRangeException(nameof(request));
+    }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        await using RetainedDatabaseSnapshotSession snapshot =
-            await RetainedDatabaseSnapshot.OpenAsync(
-                    request.SnapshotPath,
-                    request.SnapshotIdentity,
-                    databaseOptions: null,
-                    options: null,
-                    cancellationToken)
-                .ConfigureAwait(false);
+    private static async ValueTask<CsvResumableExportRequest>
+        CreateResumableRequestAsync(
+            CSharpDbRetainedCsvExportRequest request,
+            RetainedDatabaseSnapshotSession snapshot,
+            CancellationToken cancellationToken)
+    {
         PreparedTable prepared = await PrepareTableAsync(
                 snapshot,
                 request.TableName,
@@ -86,7 +171,7 @@ public sealed class CSharpDbCsvExportAdapter
             .ConfigureAwait(false);
         CsvExportSourceManifest source = CreateSource(snapshot.Identity);
 
-        var resumable = new CsvResumableExportRequest
+        return new CsvResumableExportRequest
         {
             DestinationPath = request.DestinationPath,
             Profile = request.Profile,
@@ -104,9 +189,6 @@ public sealed class CSharpDbCsvExportAdapter
                 request.MaximumDecodedBlobBytes,
             CheckpointRowInterval = request.CheckpointRowInterval,
         };
-        return await new CsvStreamingExporter()
-            .WriteResumableAsync(resumable, cancellationToken)
-            .ConfigureAwait(false);
     }
 
     private static async ValueTask<PreparedTable> PrepareTableAsync(

@@ -2,15 +2,14 @@
 
 This note records the typed manifest, canonical checkpoint contract,
 restart-only streaming writer, generic stateful resumable prepared-output
-coordinator, retained CSharpDB source adapter, and Windows-qualified
-prepared-output lease/journal portions of the Phase 4A CSV export work. It
-freezes the compatibility boundary that a later publisher and CLI must
-satisfy. The generic row-factory API does not by itself prove source origin;
-the CSharpDB adapter closes that boundary only for an independently pinned
-retained snapshot. This note does not claim that manifest-last publication or
-power-loss qualification of checkpoint namespace replacement is complete,
-that the export/resume command exists, or that the prepared-output substrate
-supports non-Windows systems.
+coordinator, retained CSharpDB source adapter, Windows-qualified
+prepared-output lease/journal, and fail-closed manifest-last publisher portions
+of the Phase 4A CSV export work. The generic row-factory API does not by itself
+prove source origin; the CSharpDB adapter closes that boundary only for an
+independently pinned retained snapshot. This note does not claim that
+power-loss qualification of checkpoint or final namespace replacement is
+complete, that the export/resume command exists, or that the prepared-output
+and publication substrates support non-Windows systems.
 
 ## Contract Boundary
 
@@ -91,8 +90,9 @@ valid export from silently changing a typed value.
 
 The contract serializer validates relationships within the sidecar. The
 restart-only and resumable writers produce the physical and logical proofs
-while streaming the CSV. Independent requalification of a published
-data/manifest pair remains publication work.
+while streaming the CSV. The prepared-output publisher independently
+requalifies the terminal checkpoint, prepared data, and any existing final
+pair before making or reusing the manifest-last publication described below.
 
 ## Explicit Spreadsheet-Safe Loss
 
@@ -198,8 +198,11 @@ for the stateful prepared-output coordinator. A fully qualified, normalized
 destination path deterministically selects three private siblings in that
 destination's parent: prepared data, the active checkpoint, and a pending
 checkpoint. Their names depend only on the destination path. The final
-destination is never opened by the lease, and opening fails closed if that
-final path already exists.
+destination is never opened by the ordinary prepared-writer lease, and that
+ordinary opening fails closed if the final path already exists. The separate
+source-requalifying publish flow admits an existing regular destination only
+when the same private journal contains a matching terminal `DataComplete`
+checkpoint; the publisher then qualifies the final bytes before reuse.
 
 The prepared-data file is opened or created with a protected current-owner-only
 ACL, no-follow regular-file and single-link checks, write-through semantics,
@@ -237,8 +240,83 @@ checkpoint authoritative, while any stale pending file remains non-authority.
 This substrate is intentionally limited to local Windows filesystems. UNC and
 mapped network volumes fail closed, and non-Windows platforms receive
 `PlatformNotSupportedException`. Abrupt-power-loss qualification of namespace
-rename durability, final data/manifest publication, and export/resume CLI
-wiring remain pending.
+rename durability and export/resume CLI wiring remain pending.
+
+## Fail-Closed Manifest-Last Publication
+
+`CsvExportPreparedOutputPublisher` publishes only a recovered terminal
+`DataComplete` checkpoint whose canonical manifest digest equals an
+independently supplied expected digest. The request names the exact final CSV
+path and an explicit manifest path, matching the planned CLI's `--manifest`
+surface. Both paths must be fully qualified, normalized, distinct siblings in
+the same real local-Windows directory, and cannot alias the prepared data,
+active checkpoint, pending checkpoint, or deterministic publication staging
+names. Windows path segments containing `~` are rejected so a DOS short-name
+alias cannot bypass those distinct-name and one-lease rules.
+
+The publisher reconstructs and serializes the canonical manifest from the
+checkpoint, rehashes the exact prepared-data prefix, and uses the checkpoint's
+length and SHA-256 as the final-data qualification rule. It copies the
+prepared bytes into a deterministic owner-private, single-link, write-through
+data staging file while hashing them again, durably flushes that file, and
+performs a handle-based atomic no-replace rename to the final CSV. It then
+writes and durably flushes the exact canonical manifest to a separate
+pair-bound private staging file and performs a second no-replace rename. The
+manifest rename is always last. The prepared data and active checkpoint remain
+intact after success so they continue to provide recovery and audit evidence;
+their deletion is not implicit cleanup.
+
+Every existing-state combination is classified before mutation:
+
+- neither final exists: publish data, then manifest;
+- only the exact final CSV exists: hold it stable and publish the manifest;
+- the exact CSV and exact canonical manifest exist: reuse the pair
+  idempotently;
+- a manifest without its exact CSV: fail without creating or repairing data;
+  and
+- any different, non-private, linked, special, or unavailable final: fail
+  without overwrite or deletion.
+
+At either no-replace collision, the existing file is opened with sharing that
+denies write and delete, checked as a current-owner-only regular single-link
+file, and reused only after exact qualification. The final CSV handle remains
+open through manifest publication so the data cannot be swapped between its
+hash check and the manifest commit. A stale deterministic staging file is
+non-authority and can be reclaimed only through an exclusive, owner-private,
+single-link handle.
+
+The selected parent directory is a caller-controlled trust boundary. The
+publisher pins its identity and rechecks that no manifest appeared after data
+staging and immediately before the data rename, but no ordinary Windows file
+API can reserve the absence of a child name without making a placeholder
+visible. The caller must therefore prevent other actors with directory-entry
+mutation rights from creating or replacing final names during publication.
+The identity, no-link, no-overwrite, and last-moment absence checks protect
+against accidental or uncoordinated paths; they do not make an
+attacker-writable directory safe.
+
+Cancellation is observed while qualifying and staging. For a new pair, the
+last cancellation check immediately before the final-data rename is the
+irreversible cut-off; after that rename succeeds, the publisher drives the
+manifest decision without observing cancellation. When recovering an exact
+CSV-only state, cancellation can still be honored while the manifest is
+staged, with its own last check immediately before manifest rename. A crash
+before data publication leaves the private journal authoritative; a crash
+after data but before manifest leaves an exact recoverable CSV-only state; and
+a crash after manifest publication leaves an exact reusable pair.
+
+`CsvStreamingExporter.WriteResumableAndPublishAsync` first reopens and replays
+the immutable source through the terminal boundary, proves source EOF and the
+final logical evidence, and only then invokes this publisher with the
+reconstructed manifest digest. This closes the source-to-final-pair path for a
+trusted generic row factory. The retained CSharpDB adapter exposes the same
+end-to-end operation while owning its independently verified retained snapshot
+session.
+
+The handle renames provide no-overwrite process-crash ordering, but this code
+does not claim that Windows directory entries have been forced to stable
+storage. Abrupt-power-loss qualification of both checkpoint replacement and
+the data/manifest namespace sequence remains an explicit release gate.
 
 ## Stateful Resumable Prepared-Output Coordinator
 
@@ -274,7 +352,9 @@ containing the final logical digests and exact manifest digest. Reopening a
 on that same source enumeration, verifies the final logical digests, and
 reconstructs the canonical manifest without appending data or creating another
 checkpoint generation. This closes the generic stateful writer subpart; it
-does not publish the prepared data or manifest.
+does not publish the prepared data or manifest. The separate
+`WriteResumableAndPublishAsync` composition retains these prepared-only
+semantics while adding source requalification followed by the publisher.
 
 `OpenRows` is intentionally a trusted seam, not source-origin evidence. Every
 call must enumerate the same immutable source named by `Source` and
@@ -321,6 +401,14 @@ interpretation of the retained bytes. Custom serializer, index, catalog,
 checksum, or function-provider provenance is not represented by the retained
 identity or CSV checkpoint and remains unsupported.
 
+`WriteResumableAndPublishTableAsync` keeps that verified snapshot session open
+while the generic coordinator replays or completes the prepared output, then
+publishes the exact CSV before the caller's explicit manifest path. On retry
+after a data-only publication boundary, it permits the existing CSV only for
+the same terminal checkpoint and source binding, replays the retained source
+through EOF again, and lets the publisher reuse the exact data before creating
+the manifest.
+
 ## Restart-Only Streaming Writer
 
 `CsvStreamingExporter` writes the fixed codec to a caller-owned, writable,
@@ -345,12 +433,14 @@ The writer exposes no checkpoint callback or append contract and makes no claim
 that a partial record is reusable. The separate canonical checkpoint models do
 not change this restart-only writer API.
 
-The slice still does not provide an export CLI surface or prepared-output
-publication. It also does not make a two-file CSV/manifest pair atomic. The
-separate retained-source adapter, resumable method, and prepared-output lease
-provide the verified CSharpDB source binding, generic stateful coordinator, and
-Windows-qualified durable physical journal described above; they do not
-change this restart-only writer API.
+The slice still does not provide an export CLI surface, and the two-file pair
+cannot appear in one indivisible namespace operation. The manifest-last state
+machine instead makes every observable interruption state either incomplete
+without a manifest, exactly recoverable, or a complete exact pair. The
+separate retained-source adapter, resumable method, prepared-output lease, and
+publisher provide the verified CSharpDB source binding, generic stateful
+coordinator, Windows-qualified durable physical journal, and fail-closed
+publication described above; they do not change this restart-only writer API.
 
 The offline `RetainedDatabaseSnapshot` API now provides the required durable
 source view and deterministic row-source seam: it materializes recovery only
@@ -372,8 +462,7 @@ the logical prefix through that boundary. `CSharpDbCsvExportAdapter` now proves
 that its schema, replay, and continuation all come from the bound immutable
 retained snapshot.
 
-Phase 4A remains open until the CLI uses this contract, manifest-last data and
-sidecar publication fails closed, namespace replacement passes
-abrupt-power-loss qualification, and large interrupted exports pass
-bounded-memory and resume qualification. The prepared-output support scope
-remains explicitly limited to local Windows filesystems.
+Phase 4A remains open until the CLI uses this contract, namespace replacement
+passes abrupt-power-loss qualification, and large interrupted exports pass
+bounded-memory and resume qualification. The prepared-output and publication
+support scope remains explicitly limited to local Windows filesystems.

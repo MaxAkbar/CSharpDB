@@ -101,6 +101,67 @@ public sealed class CSharpDbCsvExportAdapterTests
     }
 
     [Fact]
+    public async Task EndToEndPublish_RequalifiesSnapshotAndRecoversCsvOnlyState()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        RetainedDatabaseSnapshotReceipt receipt =
+            await CreateTypedSnapshotAsync(workspace, "publish");
+        string destinationPath = workspace.PathFor("published.csv");
+        string manifestPath =
+            workspace.PathFor("published.manifest.json");
+        CSharpDbRetainedCsvExportRequest request = Request(
+            receipt,
+            destinationPath,
+            "typed_rows",
+            checkpointRowInterval: 2);
+        var adapter = new CSharpDbCsvExportAdapter();
+
+        CsvExportPublicationResult first =
+            await adapter.WriteResumableAndPublishTableAsync(
+                request,
+                manifestPath,
+                Cancellation);
+        byte[] data = await File.ReadAllBytesAsync(
+            destinationPath,
+            Cancellation);
+
+        Assert.False(first.ReusedData);
+        Assert.False(first.ReusedManifest);
+        Assert.Equal(
+            first.CanonicalManifestBytes,
+            await File.ReadAllBytesAsync(
+                manifestPath,
+                Cancellation));
+
+        File.Delete(manifestPath);
+        CsvExportPublicationResult recovered =
+            await new CSharpDbCsvExportAdapter()
+                .WriteResumableAndPublishTableAsync(
+                    request,
+                    manifestPath,
+                    Cancellation);
+
+        Assert.True(recovered.ReusedData);
+        Assert.False(recovered.ReusedManifest);
+        Assert.Equal(
+            data,
+            await File.ReadAllBytesAsync(
+                destinationPath,
+                Cancellation));
+        Assert.Equal(
+            first.CanonicalManifestBytes,
+            recovered.CanonicalManifestBytes);
+        Assert.Equal(
+            recovered.CanonicalManifestBytes,
+            await File.ReadAllBytesAsync(
+                manifestPath,
+                Cancellation));
+    }
+
+    [Fact]
     public async Task DataCompleteReopen_ReturnsIdenticalResultWithoutChangingAuthority()
     {
         if (!OperatingSystem.IsWindows())
