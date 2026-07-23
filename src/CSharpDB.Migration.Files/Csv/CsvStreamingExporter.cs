@@ -56,7 +56,7 @@ public sealed record CsvStreamingExportResult
 /// Writes deterministic RFC 4180-compatible CSV to a caller-owned empty stream.
 /// The exporter flushes but does not claim durable storage.
 /// </summary>
-public sealed class CsvStreamingExporter
+public sealed partial class CsvStreamingExporter
 {
     private const int Utf8BufferBytes = 16 * 1024;
     private const int Utf8InputChunkCharacters = 4 * 1024;
@@ -168,6 +168,12 @@ public sealed class CsvStreamingExporter
         Stream destination,
         CsvStreamingExportRequest request)
     {
+        ValidateRestartOnlyDestination(destination);
+        return PrepareRequest(request);
+    }
+
+    private static void ValidateRestartOnlyDestination(Stream destination)
+    {
         if (!destination.CanWrite)
             throw new ArgumentException("CSV export destination must be writable.", nameof(destination));
         if (!destination.CanSeek)
@@ -195,7 +201,10 @@ public sealed class CsvStreamingExporter
                 "CSV export destination must be empty and positioned at byte zero.",
                 nameof(destination));
         }
+    }
 
+    private static PreparedRequest PrepareRequest(CsvStreamingExportRequest request)
+    {
         if (request.Rows is null)
             throw new ArgumentException("CSV export rows are required.", nameof(request));
         if (request.Table is null)
@@ -961,15 +970,36 @@ public sealed class CsvStreamingExporter
     {
         private readonly Stream destination;
         private readonly long maximumBytes;
-        private readonly IncrementalHash hash =
-            IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        private readonly IncrementalHash hash;
         private bool completed;
         private bool disposed;
 
         public ExportByteSink(Stream destination, long maximumBytes)
+            : this(
+                destination,
+                maximumBytes,
+                IncrementalHash.CreateHash(HashAlgorithmName.SHA256),
+                bytesWritten: 0)
         {
+        }
+
+        public ExportByteSink(
+            Stream destination,
+            long maximumBytes,
+            IncrementalHash hash,
+            long bytesWritten)
+        {
+            ArgumentNullException.ThrowIfNull(destination);
+            ArgumentNullException.ThrowIfNull(hash);
+            if (maximumBytes <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+            if (bytesWritten < 0 || bytesWritten > maximumBytes)
+                throw new ArgumentOutOfRangeException(nameof(bytesWritten));
+
             this.destination = destination;
             this.maximumBytes = maximumBytes;
+            this.hash = hash;
+            BytesWritten = bytesWritten;
         }
 
         public long BytesWritten { get; private set; }
@@ -991,16 +1021,22 @@ public sealed class CsvStreamingExporter
             BytesWritten = checked(BytesWritten + bytes.Length);
         }
 
-        public CsvExportHashManifest CompleteHash()
+        public CsvExportHashManifest GetCurrentHash()
         {
             ThrowIfUnavailable();
-            string value = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-            completed = true;
+            string value = Convert.ToHexString(hash.GetCurrentHash()).ToLowerInvariant();
             return new CsvExportHashManifest
             {
                 Algorithm = CsvExportHashManifest.Sha256Algorithm,
                 Value = value,
             };
+        }
+
+        public CsvExportHashManifest CompleteHash()
+        {
+            CsvExportHashManifest result = GetCurrentHash();
+            completed = true;
+            return result;
         }
 
         public void Dispose()

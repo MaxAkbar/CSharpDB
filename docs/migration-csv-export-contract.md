@@ -1,13 +1,14 @@
 # Migration CSV Export Contract
 
 This note records the typed manifest, canonical checkpoint contract,
-restart-only streaming writer, and Windows-qualified prepared-output
-lease/journal portions of the Phase 4A CSV export work. It freezes the
-compatibility boundary that a later retained-source adapter, stateful writer,
-publisher, and CLI must satisfy. It does not claim that retained-row replay,
-manifest-last publication, power-loss qualification of checkpoint namespace
-replacement, the export/resume command, or a non-Windows implementation are
-complete.
+restart-only streaming writer, generic stateful resumable prepared-output
+coordinator, and Windows-qualified prepared-output lease/journal portions of
+the Phase 4A CSV export work. It freezes the compatibility boundary that a
+later retained-source adapter, publisher, and CLI must satisfy. It does not
+claim that a caller-supplied row factory proves source origin, that
+manifest-last publication or power-loss qualification of checkpoint namespace
+replacement is complete, that the export/resume command exists, or that the
+prepared-output substrate supports non-Windows systems.
 
 ## Contract Boundary
 
@@ -87,9 +88,9 @@ This is stronger than checking the CSV file alone: it prevents a syntactically
 valid export from silently changing a typed value.
 
 The contract serializer validates relationships within the sidecar. The
-restart-only writer produces the physical and logical proofs while it streams
-the CSV. Independent requalification of a published data/manifest pair remains
-publication work.
+restart-only and resumable writers produce the physical and logical proofs
+while streaming the CSV. Independent requalification of a published
+data/manifest pair remains publication work.
 
 ## Explicit Spreadsheet-Safe Loss
 
@@ -169,11 +170,13 @@ equal source/export logical evidence and zero transform counts; spreadsheet
 checkpoints retain the same aggregate consistency rules as the final manifest.
 
 The logical and physical prefix digests are verification evidence only. They
-are not serialized or resumable SHA-256 internal state. Recovery now rehashes
-the prepared physical prefix through the recorded byte boundary. Retained
-source rows must still be replayed through the recorded signed row ID by the
-future stateful writer integration to reconstruct logical hash state before
-continuing.
+are not serialized or resumable SHA-256 internal state. The stateful
+coordinator therefore replays source rows from the beginning through the
+recorded signed row ID to rebuild and verify both logical hash states and the
+transform counters. It separately rehashes the actual prepared physical prefix
+through the recorded byte boundary before appending. These checks depend on
+the trusted row factory returning the same immutable source on every open; the
+generic coordinator does not itself prove that source origin.
 
 Checkpoint transitions are fail-closed. The first durable generation is zero.
 The same generation is idempotent only when its canonical bytes are identical;
@@ -187,12 +190,12 @@ unchanged prefix evidence. `DataComplete` is terminal.
 ## Windows Prepared-Output Lease And Journal
 
 `CsvExportPreparedOutputLease` implements the local Windows filesystem boundary
-for the future stateful exporter. A fully qualified, normalized destination
-path deterministically selects three private siblings in that destination's
-parent: prepared data, the active checkpoint, and a pending checkpoint. Their
-names depend only on the destination path. The final destination is never
-opened by the lease, and opening fails closed if that final path already
-exists.
+for the stateful prepared-output coordinator. A fully qualified, normalized
+destination path deterministically selects three private siblings in that
+destination's parent: prepared data, the active checkpoint, and a pending
+checkpoint. Their names depend only on the destination path. The final
+destination is never opened by the lease, and opening fails closed if that
+final path already exists.
 
 The prepared-data file is opened or created with a protected current-owner-only
 ACL, no-follow regular-file and single-link checks, write-through semantics,
@@ -229,10 +232,54 @@ checkpoint authoritative, while any stale pending file remains non-authority.
 
 This substrate is intentionally limited to local Windows filesystems. UNC and
 mapped network volumes fail closed, and non-Windows platforms receive
-`PlatformNotSupportedException`. Stateful retained-row replay and writer
-integration, abrupt-power-loss qualification of namespace rename durability,
-final data/manifest publication, the retained-source export adapter, and
-export/resume CLI wiring remain pending.
+`PlatformNotSupportedException`. Abrupt-power-loss qualification of namespace
+rename durability, final data/manifest publication, the retained-source export
+adapter and its source-origin proof, and export/resume CLI wiring remain
+pending.
+
+## Stateful Resumable Prepared-Output Coordinator
+
+`CsvStreamingExporter.WriteResumableAsync` now coordinates the fixed renderer,
+canonical checkpoints, and prepared-output lease without publishing the final
+CSV or manifest. A new output renders the exact header first and persists it as
+durable generation zero with zero completed rows. It then streams rows in
+strictly increasing signed row-ID order and persists a `Writing` checkpoint
+after each configured interval of newly completed rows. Source/export logical
+prefixes, physical bytes, and transform counts are accumulated without
+retaining the row set in memory.
+
+If private prepared bytes exist without any active checkpoint, no byte is
+authoritative. The coordinator explicitly invokes the lease reset operation,
+durably truncates that private file to zero, and starts again at header
+generation zero. It never resets an output that has active checkpoint
+authority.
+
+On recovery, the lease first validates the active checkpoint and physical
+prefix and durably truncates any tail beyond the last complete authoritative
+record. The coordinator independently opens `OpenRows(null, ...)`, replays the
+source from the beginning through the checkpoint's completed row count and
+last signed row ID, and passes every row through the same preparation and CSV
+rendering path into a hash-only sink. It compares the rebuilt byte length and
+digest, both logical-prefix digests, row boundary, and transform counters with
+the checkpoint. It then rereads and hashes the actual prepared prefix to seed
+the live physical digest before opening a fresh
+`OpenRows(lastCompletedRowId, ...)` sequence and appending.
+
+At source EOF, the coordinator persists a terminal `DataComplete` generation
+containing the final logical digests and exact manifest digest. Reopening a
+`DataComplete` output still replays through the recorded boundary, proves EOF
+on that same source enumeration, verifies the final logical digests, and
+reconstructs the canonical manifest without appending data or creating another
+checkpoint generation. This closes the generic stateful writer subpart; it
+does not publish the prepared data or manifest.
+
+`OpenRows` is intentionally a trusted seam, not source-origin evidence. Every
+call must enumerate the same immutable source named by `Source` and
+`SourceSnapshotIdentity`; a null boundary means from the beginning, and a
+non-null boundary must be exclusive. A retained-snapshot adapter must still
+construct the source evidence, canonical snapshot identity, table schema, and
+all row sequences from one independently verified retained snapshot session.
+That adapter and its source-origin proof remain pending.
 
 ## Restart-Only Streaming Writer
 
@@ -257,12 +304,12 @@ The writer exposes no checkpoint callback or append contract and makes no claim
 that a partial record is reusable. The separate canonical checkpoint models do
 not change this restart-only writer API.
 
-The slice still does not provide an export CLI surface, retained snapshot
-adapter, stateful retained-row replay, prepared-output publication, or a full
-cross-process export/resume coordinator. It also does not make a two-file
-CSV/manifest pair atomic. The separate prepared-output lease now provides the
-Windows-qualified durable physical journal described above; it does not change
-this restart-only writer API.
+The slice still does not provide an export CLI surface, retained-snapshot
+export adapter and source-origin proof, or prepared-output publication. It also
+does not make a two-file CSV/manifest pair atomic. The separate resumable
+method and prepared-output lease provide the generic stateful coordinator and
+Windows-qualified durable physical journal described above; they do not
+change this restart-only writer API.
 
 The offline `RetainedDatabaseSnapshot` API now provides the required durable
 source view and deterministic row-source seam: it materializes recovery only
@@ -274,17 +321,19 @@ the retained identity. A process-local reader transaction remains insufficient
 after a crash. See
 [`migration-csharpdb-retained-snapshot.md`](migration-csharpdb-retained-snapshot.md).
 
-The canonical checkpoint contract now binds the retained snapshot, table and
+The canonical checkpoint contract binds the retained snapshot, table and
 ordered schema, export profile and codec, completed row boundary, byte
-boundary, and expected output prefix. The Windows lease now enforces exclusive
+boundary, and expected output prefix. The Windows lease enforces exclusive
 prepared-file ownership, durable data-before-checkpoint ordering, atomic active
-checkpoint replacement, and physical-prefix verification on reopen. Until a
-retained-source adapter and stateful writer replay source rows and rebuild the
-logical prefix through that boundary, the restart-only writer must still
-restart from the beginning rather than claim end-to-end durable resume.
+checkpoint replacement, physical-prefix verification, and tail truncation on
+reopen. The generic stateful coordinator now replays source rows and rebuilds
+the logical prefix through that boundary. End-to-end retained-source resume
+still requires the pending adapter to prove that every `OpenRows` sequence
+came from the bound immutable snapshot.
 
 Phase 4A remains open until the retained-source adapter and CLI use this
-contract, manifest-last data and sidecar publication fails closed, namespace
-replacement passes abrupt-power-loss qualification, and large interrupted
-exports pass bounded-memory and resume qualification. The prepared-output
-support scope remains explicitly limited to local Windows filesystems.
+contract with source-origin proof, manifest-last data and sidecar publication
+fails closed, namespace replacement passes abrupt-power-loss qualification,
+and large interrupted exports pass bounded-memory and resume qualification.
+The prepared-output support scope remains explicitly limited to local Windows
+filesystems.

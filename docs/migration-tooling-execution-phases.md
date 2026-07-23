@@ -414,10 +414,19 @@ advance by exactly one, permit only exact-byte idempotence, enforce monotonic
 row/byte/evidence progress, and make `DataComplete` terminal. Persistence
 orders durable prepared data carrying exact prefix-hash evidence before a
 durable exact pending checkpoint and handle-based atomic active replacement.
-Stateful retained-row replay/writer integration, abrupt-power-loss
-qualification of namespace replacement, fail-closed manifest-last
-publication, the retained-source adapter, and export/resume CLI remain
-incomplete. Non-Windows platforms remain unsupported, and UNC or mapped
+The generic stateful prepared-output coordinator now writes the exact header as
+generation zero, emits periodic complete-row checkpoints, and recovers by
+replaying the immutable row source through the checkpoint boundary with the
+same renderer. Recovery rebuilds and verifies both logical prefixes and
+transform counters, independently rehashes the prepared physical prefix before
+continuation, and relies on the lease to truncate a non-authoritative tail.
+Reopening `DataComplete` replays through the final boundary, proves source EOF,
+verifies the final logical digests, and reconstructs the manifest without
+appending. The trusted `OpenRows` factory must return the same immutable source
+on every call; a retained-snapshot adapter and source-origin proof are still
+required. Abrupt-power-loss qualification of namespace replacement,
+fail-closed manifest-last publication, that adapter, and export/resume CLI
+remain incomplete. Non-Windows platforms remain unsupported, and UNC or mapped
 network volumes fail closed. The offline retained
 read-only CSharpDB snapshot can now be reopened and verified across processes,
 and its physical table reader provides strictly ascending signed row IDs plus
@@ -539,10 +548,17 @@ receipts remain the resume authority.
   durable data-before-checkpoint ordering, atomic active replacement,
   non-authoritative stale pending files, and disposal that preserves all
   private files.
-- [ ] Integrate retained-source row replay with a stateful writer, qualify
-  namespace replacement under abrupt power loss, add the retained-source
-  adapter and export/resume CLI, and implement fail-closed manifest-last
-  publication. The prepared-output substrate remains unsupported on
+- [x] Add the generic stateful resumable prepared-output coordinator with exact
+  header generation zero, periodic complete-row checkpoints, replay through
+  the signed row boundary using the fixed renderer, logical-prefix and
+  transform-count rebuild, independent physical-prefix rehash before append,
+  lease-owned tail truncation, and `DataComplete` EOF proof and manifest
+  reconstruction on reopen.
+- [ ] Bind a retained-snapshot adapter and source-origin proof so every trusted
+  `OpenRows` sequence comes from the checkpointed immutable source, qualify
+  namespace replacement under abrupt power loss, add the export/resume CLI,
+  and implement fail-closed manifest-last publication. The prepared-output
+  substrate remains unsupported on
   non-Windows platforms and fails closed on UNC or mapped network volumes. The
   retained read-only cross-process CSharpDB snapshot and deterministic physical
   row-ID cursor are implemented for offline sources.
