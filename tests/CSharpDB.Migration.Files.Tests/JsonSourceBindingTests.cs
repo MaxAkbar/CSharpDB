@@ -602,7 +602,8 @@ public sealed class JsonSourceBindingTests
         return records
             .Select(record => Encoding.UTF8.GetString(
                 JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
-                    record.Value)))
+                    record.Value,
+                    TestContext.Current.CancellationToken)))
             .ToArray();
     }
 

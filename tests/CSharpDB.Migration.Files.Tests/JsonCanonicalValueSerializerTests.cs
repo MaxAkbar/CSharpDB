@@ -19,7 +19,9 @@ public sealed class JsonCanonicalValueSerializerTests
                 JsonLogicalValue.CreateBoolean(false))),
             ("m", JsonLogicalValue.CreateString("text")));
 
-        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(value);
+        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+            value,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(
             """{"z":18446744073709551616,"a":[-0,{"second":1.2300e+004,"first":null},false],"m":"text"}"""u8.ToArray(),
@@ -41,7 +43,9 @@ public sealed class JsonCanonicalValueSerializerTests
             "\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f" +
             "\\\"\\\\café_日本😀/\u2028\u2029\"}";
 
-        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(value);
+        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+            value,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(Encoding.UTF8.GetBytes(expected), actual);
         Assert.False(actual.AsSpan().StartsWith(Encoding.UTF8.Preamble));
@@ -60,7 +64,9 @@ public sealed class JsonCanonicalValueSerializerTests
     [InlineData("1.2300E+004")]
     public void WritesNumberLexemesWithoutNormalization(string lexeme)
     {
-        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(Number(lexeme));
+        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+            Number(lexeme),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(Encoding.ASCII.GetBytes(lexeme), actual);
     }
@@ -76,7 +82,9 @@ public sealed class JsonCanonicalValueSerializerTests
             Object(),
             Array());
 
-        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(value);
+        byte[] actual = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+            value,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal("""[null,true,false,"",{},[]]"""u8.ToArray(), actual);
     }
@@ -89,15 +97,64 @@ public sealed class JsonCanonicalValueSerializerTests
                 JsonLogicalValue.CreateString("one"),
                 Number("2.00"),
                 Object(("x", JsonLogicalValue.CreateBoolean(true))))));
-        byte[] first = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(value);
-        byte[] repeated = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(value);
+        byte[] first = JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+            value,
+            TestContext.Current.CancellationToken);
+        byte[] repeated =
+            JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+                value,
+                TestContext.Current.CancellationToken);
         var destination = new ArrayBufferWriter<byte>(initialCapacity: 1);
 
-        JsonCanonicalValueSerializer.Write(destination, value);
+        JsonCanonicalValueSerializer.Write(
+            destination,
+            value,
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(first, repeated);
         Assert.Equal(first, destination.WrittenSpan.ToArray());
         Assert.Equal("""{"β":["one",2.00,{"x":true}]}"""u8.ToArray(), first);
+    }
+
+    [Fact]
+    public void SerializeToStringMatchesUtf8AcrossASurrogateChunkBoundary()
+    {
+        string decoded =
+            new string('a', 4_095) +
+            "😀" +
+            new string('b', 4_096);
+        JsonLogicalValue value =
+            JsonLogicalValue.CreateString(decoded);
+
+        string text =
+            JsonCanonicalValueSerializer.SerializeToString(
+                value,
+                TestContext.Current.CancellationToken);
+        byte[] bytes =
+            JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+                value,
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal("\"" + decoded + "\"", text);
+        Assert.Equal(Encoding.UTF8.GetBytes(text), bytes);
+    }
+
+    [Fact]
+    public void SerializationHonorsPreCanceledOperations()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        JsonLogicalValue value = Object(
+            ("nested", Array(Number("1"), Number("2"))));
+
+        Assert.Throws<OperationCanceledException>(
+            () => JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+                value,
+                cancellation.Token));
+        Assert.Throws<OperationCanceledException>(
+            () => JsonCanonicalValueSerializer.SerializeToString(
+                value,
+                cancellation.Token));
     }
 
     private static JsonLogicalValue Number(string lexeme) =>

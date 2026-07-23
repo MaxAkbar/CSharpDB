@@ -620,16 +620,20 @@ bind the exact framing and reader limits used for replay. The
 [`migration-json-table-schema.md`](migration-json-table-schema.md) contract
 adds full-stream object-row shape discovery, first-encounter column ordering,
 strict missing/null policy, bounded native-type evidence, preservation-first
-number classification, and migration-catalog inspection. Row-batch data
-projection, collection projection, typed sidecars, export, resume, and CLI
-integration remain open.
+number classification, and migration-catalog inspection. The
+[`migration-json-data-source.md`](migration-json-data-source.md) contract now
+adds catalog-bound object-row projection, full-stream projected-value
+revalidation, deterministic row-local rejects, bounded batches, and exact
+snapshot/policy-bound cursor replay. Retained-source packaging, collection
+projection, typed sidecars, export, and CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
 - [x] Preserve original names, explicit nulls, stable output order, duplicate
   key diagnostics, and unrepresentable number lexemes.
-- [ ] Keep nested values as canonical JSON text for tables or as documents for
-  collection targets unless an explicit projection is selected.
+- [x] Keep nested values as versioned canonical JSON text for table targets.
+- [ ] Keep nested values as documents for collection targets unless an
+  explicit projection is selected.
 - [ ] Define a sidecar or tagged convention for BLOB, decimal, GUID,
   date/time, and other non-native JSON intent.
 - [ ] Stream JSON array and NDJSON output without buffering all rows.

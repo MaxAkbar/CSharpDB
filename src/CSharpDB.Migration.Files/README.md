@@ -61,11 +61,17 @@ profiling. They preserve property encounter order, decoded names, explicit
 nulls, exact number lexemes, and nested ordered values, while rejecting
 duplicate decoded property names at every depth. The inferred catalog keeps
 missing distinct from explicit null and maps nested, mixed, or lexically
-significant values to versioned canonical JSON text. Row-batch projection,
-typed sidecars, export, resume, and CLI integration remain later slices. See
+significant values to versioned canonical JSON text. Catalog-bound row
+streaming now revalidates projected values, preserves arbitrary projection
+order, emits deterministic reject evidence, bounds batches by rows and
+canonical bytes, and supplies snapshot/policy-bound replay cursors.
+Retained-source packaging, collection projection, typed sidecars, export,
+and CLI integration remain later slices. See
 [`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
 and
-[`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md).
+[`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md),
+plus
+[`migration-json-data-source.md`](../../docs/migration-json-data-source.md).
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
 CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data

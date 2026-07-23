@@ -171,7 +171,9 @@ public sealed class JsonStreamingReaderTests
             items.Elements[0].Properties.Select(static property => property.Name));
         Assert.Equal(
             """{"outer":{"second":2,"first":1},"items":[{"y":0,"x":1},2,1]}"""u8.ToArray(),
-            JsonCanonicalValueSerializer.SerializeToUtf8Bytes(value));
+            JsonCanonicalValueSerializer.SerializeToUtf8Bytes(
+                value,
+                TestContext.Current.CancellationToken));
     }
 
     [Fact]
