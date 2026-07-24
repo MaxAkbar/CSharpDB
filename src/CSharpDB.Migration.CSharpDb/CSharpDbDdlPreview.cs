@@ -62,6 +62,61 @@ public sealed record CSharpDbDdlPreview
     public required string GeneratedDdlDigest { get; init; }
 }
 
+public enum CSharpDbDdlPreviewLimitKind
+{
+    ActionCount = 0,
+    SqlActionSize = 1,
+    AggregateSqlUtf8Bytes = 2,
+}
+
+/// <summary>
+/// Production ceilings for rendered action count and SQL payload size. Limits
+/// may be reduced by callers, but cannot exceed the parser and
+/// scratch-validation ceilings used by the migration assurance pipeline.
+/// These options do not replace upstream bounds on artifact acquisition,
+/// contract validation, or schema preprocessing.
+/// </summary>
+public sealed record CSharpDbDdlPreviewBuildOptions
+{
+    public const int HardMaxActionCount =
+        CSharpDbDdlScratchValidationOptions.HardMaxActionCount;
+    public const int HardMaxSqlCharactersPerAction =
+        CSharpDB.Sql.SqlScriptParserOptions.HardMaxScriptCharacters;
+    public const int HardMaxSqlUtf8BytesPerAction =
+        CSharpDB.Sql.SqlScriptParserOptions.HardMaxScriptUtf8Bytes;
+    public const long HardMaxAggregateSqlUtf8Bytes =
+        CSharpDbDdlScratchValidationOptions.HardMaxSqlUtf8Bytes;
+
+    public static CSharpDbDdlPreviewBuildOptions Default { get; } = new();
+
+    public int MaxActionCount { get; init; } = HardMaxActionCount;
+
+    public int MaxSqlCharactersPerAction { get; init; } = 1024 * 1024;
+
+    public int MaxSqlUtf8BytesPerAction { get; init; } = 4 * 1024 * 1024;
+
+    public long MaxAggregateSqlUtf8Bytes { get; init; } =
+        HardMaxAggregateSqlUtf8Bytes;
+}
+
+/// <summary>
+/// Indicates that an authoritative bounded preview render exceeded a
+/// configured production limit. The exception contains no rendered SQL or
+/// source identifiers.
+/// </summary>
+public sealed class CSharpDbDdlPreviewLimitException
+    : Exception
+{
+    internal CSharpDbDdlPreviewLimitException(
+        CSharpDbDdlPreviewLimitKind kind)
+        : base("The authoritative CSharpDB DDL preview exceeded a configured render limit.")
+    {
+        Kind = kind;
+    }
+
+    public CSharpDbDdlPreviewLimitKind Kind { get; }
+}
+
 internal enum CSharpDbDdlRenderLimitKind
 {
     ActionCount,
@@ -172,6 +227,57 @@ public static class CSharpDbDdlPreviewBuilder
             mappingPolicy,
             actionObserver: null,
             cancellationToken);
+
+    /// <summary>
+    /// Renders the same preview as <see cref="Build"/>, while enforcing
+    /// incremental action and SQL-size limits before each rendered action is
+    /// retained. Operator-facing callers must separately bound plan/catalog
+    /// acquisition and preprocessing.
+    /// </summary>
+    public static CSharpDbDdlPreview BuildBounded(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        CSharpDbDdlPreviewBuildOptions? options = null,
+        IDataTypeMappingProvider? mappingPolicy = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(catalog);
+        options ??= CSharpDbDdlPreviewBuildOptions.Default;
+        ValidateBuildOptions(options);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var budget = new CSharpDbDdlRenderBudget(
+            new CSharpDbDdlRenderLimits(
+                options.MaxActionCount,
+                options.MaxSqlCharactersPerAction,
+                options.MaxSqlUtf8BytesPerAction,
+                options.MaxAggregateSqlUtf8Bytes));
+        try
+        {
+            return BuildCore(
+                plan,
+                catalog,
+                mappingPolicy,
+                budget,
+                cancellationToken);
+        }
+        catch (CSharpDbDdlRenderLimitException error)
+        {
+            throw new CSharpDbDdlPreviewLimitException(
+                error.Kind switch
+                {
+                    CSharpDbDdlRenderLimitKind.ActionCount =>
+                        CSharpDbDdlPreviewLimitKind.ActionCount,
+                    CSharpDbDdlRenderLimitKind.SqlParse =>
+                        CSharpDbDdlPreviewLimitKind.SqlActionSize,
+                    CSharpDbDdlRenderLimitKind.AggregateSqlUtf8Bytes =>
+                        CSharpDbDdlPreviewLimitKind.AggregateSqlUtf8Bytes,
+                    _ => throw new InvalidOperationException(
+                        "Unknown CSharpDB DDL preview render limit kind."),
+                });
+        }
+    }
 
     private static CSharpDbDdlPreview BuildCore(
         MigrationPlan plan,
@@ -552,6 +658,49 @@ public static class CSharpDbDdlPreviewBuilder
         left.ExcludedObjectIds.SequenceEqual(
             right.ExcludedObjectIds,
             StringComparer.Ordinal);
+
+    private static void ValidateBuildOptions(
+        CSharpDbDdlPreviewBuildOptions options)
+    {
+        ValidateBuildLimit(
+            options.MaxActionCount,
+            CSharpDbDdlPreviewBuildOptions.HardMaxActionCount,
+            nameof(options.MaxActionCount));
+        ValidateBuildLimit(
+            options.MaxSqlCharactersPerAction,
+            CSharpDbDdlPreviewBuildOptions
+                .HardMaxSqlCharactersPerAction,
+            nameof(options.MaxSqlCharactersPerAction));
+        ValidateBuildLimit(
+            options.MaxSqlUtf8BytesPerAction,
+            CSharpDbDdlPreviewBuildOptions
+                .HardMaxSqlUtf8BytesPerAction,
+            nameof(options.MaxSqlUtf8BytesPerAction));
+        if (options.MaxAggregateSqlUtf8Bytes <= 0 ||
+            options.MaxAggregateSqlUtf8Bytes >
+                CSharpDbDdlPreviewBuildOptions
+                    .HardMaxAggregateSqlUtf8Bytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options.MaxAggregateSqlUtf8Bytes),
+                options.MaxAggregateSqlUtf8Bytes,
+                "The DDL preview render limit must be positive and within the production ceiling.");
+        }
+    }
+
+    private static void ValidateBuildLimit(
+        int value,
+        int maximum,
+        string name)
+    {
+        if (value <= 0 || value > maximum)
+        {
+            throw new ArgumentOutOfRangeException(
+                name,
+                value,
+                "The DDL preview render limit must be positive and within the production ceiling.");
+        }
+    }
 
     private static bool FixedTimeDigestEquals(string left, string right)
     {

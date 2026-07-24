@@ -32,9 +32,14 @@ the exact CSharpDB DDL renderer, and a transactionally isolated in-memory
 scratch catalog comparison. That proof does not promote the partial SQL Server
 inventory from `Blocked`, establish source semantics, or write a
 caller-supplied, existing, or durable target.
-Indexed-view physical details, full-text and physical partition inventory, CLI
-integration, and live server qualification are later Phase 7A checkpoints. A
-SQL Server data importer is a separately approved follow-on.
+The non-packable proof CLI now exposes schema-only inspection through a named
+environment variable, generic planning, bounded exact CSharpDB DDL preview,
+and sanitized in-memory scratch evidence. It does not accept a raw connection
+string argument, copy rows, apply DDL, open an existing target, or promote the
+analyzer's blocked readiness. Indexed-view physical details, full-text and
+physical partition inventory, optional adapter/package isolation, and live
+server qualification are later Phase 7A checkpoints. A SQL Server data
+importer is a separately approved follow-on.
 
 ## Read-only and security boundary
 

@@ -96,8 +96,9 @@ The current CLI proof surface is:
 
 ```text
 csharpdb migrate inspect --source synthetic --out catalog.json
+csharpdb migrate inspect --source sqlserver --connection-env ENV_NAME --out catalog.json
 csharpdb migrate plan catalog.json --out plan.json [--profile preserve|queryable] [--accept-exclusions all|<id,...>]
-csharpdb migrate preview plan.json --catalog catalog.json [--format text|json]
+csharpdb migrate preview plan.json --catalog catalog.json [--ddl|--scratch] [--format text|json]
 csharpdb migrate apply plan.json --catalog catalog.json --target staged.csdb --out run.json [--resume] [--format text|json]
 csharpdb migrate validate plan.json --catalog catalog.json --target staged.csdb --out validation.json [--level schema|count|checksum] [--spill-dir directory] [--format text|json]
 ```

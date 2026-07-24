@@ -115,8 +115,9 @@ csharpdb migrate inspect --source csv --input <source.csv> --package <source.csd
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source json --input <source.json|source.ndjson> --typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]
 csharpdb migrate inspect --source sqlite --input <source.db> --package <source.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]
+csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>
 csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]
-csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]
+csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
@@ -125,7 +126,8 @@ csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <phy
 
 Inspection supports the immutable synthetic qualification source, strict CSV,
 untyped retained JSON package v1, explicitly selected typed JSON package v2,
-and SQLite. CSV inspection freezes the raw bytes and complete reader and
+SQLite, and schema-only SQL Server readiness analysis. CSV inspection freezes
+the raw bytes and complete reader and
 inference policy into one no-overwrite `.csdbcsv` package. JSON inspection does
 the same for root-array JSON or NDJSON-compatible whitespace-separated
 top-level values in one no-overwrite `.csdbjson` package. Both JSON package
@@ -135,6 +137,17 @@ coherent online backup in one no-overwrite `.csdbsqlite` package and binds its
 native catalog plus sampled storage-class profile to the package SHA-256.
 SQLite backup creation is incrementally cancellable and defaults to a 1 TiB
 retained-snapshot ceiling; `--max-source-bytes` can select a smaller bound.
+
+SQL Server inspection accepts only the name of an environment variable through
+`--connection-env`; a raw connection string is never a command-line argument.
+The resolved value is held in memory, is not written to the catalog or command
+output, and should identify a dedicated least-privilege, read-only metadata
+login. The catalog destination uses create-new publication and is never
+overwritten. This checkpoint inventories and analyzes schema only: it neither
+reads application rows nor writes to SQL Server or a CSharpDB target.
+For migration commands, the first Ctrl+C requests cooperative cancellation and
+the second retains the console's normal force-termination behavior if a bounded
+provider operation has not returned.
 
 Pass both `--typed-intent` and
 `--expected-intent-manifest-digest` to select v2. The canonical sidecar must
@@ -171,6 +184,7 @@ Supported migration-source matrix:
 | JSON/NDJSON v1 | Private byte-for-byte snapshot in `.csdbjson` | Untyped table inference and streaming | Fail-fast or the fixed untyped-JSON deterministic registry |
 | Typed JSON v2 | Source- and intent-pinned `.csdbjson` | Explicit typed table contract | Fail-fast |
 | SQLite v1 | Coherent online backup in `.csdbsqlite` | Tier 1 native catalog and rowid streaming | Fail-fast |
+| SQL Server readiness | Live best-effort, schema-only metadata inspection | Inventory, compatibility, planning, and target DDL assurance only | No data route |
 
 SQLite catalogs record the adapter, Microsoft.Data.Sqlite assembly, native
 SQLite engine, compile-option digest, database text encoding, profile coverage,
@@ -189,6 +203,35 @@ csharpdb migrate preview .\plan.json --catalog .\catalog.json
 csharpdb migrate apply .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlite --expected-manifest-digest <recorded-sha256> --target .\staged.csdb --out .\run.json
 csharpdb migrate validate .\plan.json --catalog .\catalog.json --source-package .\source.csdbsqlite --expected-manifest-digest <recorded-sha256> --target .\staged.csdb --out .\validation.json --level checksum
 ```
+
+Example SQL Server schema-readiness workflow:
+
+```powershell
+# Populate CSHARPDB_SQLSERVER_SOURCE through your secret manager or protected
+# process environment; do not put the connection string in scripts.
+csharpdb migrate inspect --source sqlserver --connection-env CSHARPDB_SQLSERVER_SOURCE --out .\catalog.json
+csharpdb migrate plan .\catalog.json --out .\plan.json
+csharpdb migrate preview .\plan.json --catalog .\catalog.json
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --ddl
+csharpdb migrate preview .\plan.json --catalog .\catalog.json --scratch --format json
+```
+
+The default preview remains the compact
+`csharpdb-migration-preview/v1` planning summary. `--ddl` is the only mode that
+prints exact target SQL and typed collection actions. `--scratch` instead
+prints the sanitized `csharpdb-ddl-scratch-validation/v1` report containing
+digests, stable rule/action identifiers, counts, and evidence level, but no SQL
+or object names. The modes are mutually exclusive. A successful scratch run
+does not approve exclusions, clear diagnostics, establish source semantic
+equivalence, or make a blocked SQL Server plan ready.
+Each catalog and plan consumed by the explicit `--ddl` or `--scratch` path is
+limited to 64 MiB before contract validation; rendered action count,
+per-action SQL, and aggregate SQL bytes have separate fixed production
+ceilings.
+
+The SQL Server project reference currently belongs to this non-packable proof
+CLI. Optional adapter/package isolation and published-runtime qualification
+remain required before this surface can be treated as a shipping connector.
 
 Common CSV delimiter detection is automatic; `--delimiter` supplies the only
 candidate when an explicit convention is required. CSV defaults are strict
@@ -330,7 +373,7 @@ checkpoint, and is not consulted to decide which batches `--resume` skips.
 - `MaintenanceCommandRunner.cs` - maintenance commands
 - `DevOpsCommandRunner.cs` - schema compare commands
 - `PipelineCommandRunner.cs` - ETL package and catalog commands
-- `MigrationCommandRunner.cs` - migration inspect, plan, preview, apply, resume, validate, and retained CSV/JSON/SQLite plus CSV/JSON/NDJSON export commands
+- `MigrationCommandRunner.cs` - migration inspect, plan, bounded DDL/scratch preview, apply, resume, validate, retained CSV/JSON/SQLite, schema-only SQL Server analysis, and CSV/JSON/NDJSON export commands
 - `CliConsole.cs` and `TableFormatter.cs` - terminal formatting helpers
 
 ## Build And Test

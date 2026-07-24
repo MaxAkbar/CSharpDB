@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using CSharpDB.Migration.CSharpDb;
 
 namespace CSharpDB.Migration.Tests;
@@ -108,6 +109,221 @@ public sealed class CSharpDbDdlPreviewTests
         Assert.Equal(
             first.Readiness.BlockingDiagnosticIds,
             reordered.Readiness.BlockingDiagnosticIds);
+    }
+
+    [Fact]
+    public async Task BuildBounded_DefaultLimitsMatchExistingBuildContract()
+    {
+        MigrationCatalog catalog = await InspectSyntheticAsync();
+        MigrationPlan plan = ReadyPlan(catalog);
+
+        CSharpDbDdlPreview existing =
+            CSharpDbDdlPreviewBuilder.Build(
+                plan,
+                catalog,
+                cancellationToken: Ct);
+        CSharpDbDdlPreview bounded =
+            CSharpDbDdlPreviewBuilder.BuildBounded(
+                plan,
+                catalog,
+                cancellationToken: Ct);
+
+        Assert.Equal(existing.Format, bounded.Format);
+        Assert.Equal(
+            existing.TargetCSharpDbVersion,
+            bounded.TargetCSharpDbVersion);
+        Assert.Equal(existing.CatalogDigest, bounded.CatalogDigest);
+        Assert.Equal(
+            existing.PlanContractDigest,
+            bounded.PlanContractDigest);
+        Assert.Equal(
+            existing.GeneratedDdlDigest,
+            bounded.GeneratedDdlDigest);
+        Assert.Equal(existing.Readiness.Status, bounded.Readiness.Status);
+        Assert.Equal(Project(existing), Project(bounded));
+        Assert.Single(
+            typeof(CSharpDbDdlPreviewBuilder)
+                .GetMethods(BindingFlags.Static | BindingFlags.Public),
+            method => method.Name == nameof(
+                CSharpDbDdlPreviewBuilder.Build));
+        Assert.Single(
+            typeof(CSharpDbDdlPreviewBuilder)
+                .GetMethods(BindingFlags.Static | BindingFlags.Public),
+            method => method.Name == nameof(
+                CSharpDbDdlPreviewBuilder.BuildBounded));
+    }
+
+    [Fact]
+    public async Task BuildBounded_ActionAndAggregateLimitsAreDeterministic()
+    {
+        MigrationCatalog catalog = await InspectSyntheticAsync();
+        MigrationPlan plan = ReadyPlan(catalog);
+        CSharpDbDdlPreview unbounded =
+            CSharpDbDdlPreviewBuilder.Build(
+                plan,
+                catalog,
+                cancellationToken: Ct);
+        int actionCount = unbounded.Stages.Sum(stage => stage.Actions.Count);
+        long sqlUtf8Bytes = unbounded.Stages
+            .SelectMany(stage => stage.Actions)
+            .Where(action => action.Kind == CSharpDbDdlPreviewActionKind.Sql)
+            .Sum(action => (long)Encoding.UTF8.GetByteCount(action.Sql!));
+        Assert.True(actionCount > 1);
+        Assert.True(sqlUtf8Bytes > 1);
+
+        var actionOptions = CSharpDbDdlPreviewBuildOptions.Default with
+        {
+            MaxActionCount = actionCount - 1,
+        };
+        var aggregateOptions = CSharpDbDdlPreviewBuildOptions.Default with
+        {
+            MaxAggregateSqlUtf8Bytes = sqlUtf8Bytes - 1,
+        };
+
+        CSharpDbDdlPreviewLimitException firstAction =
+            Assert.Throws<CSharpDbDdlPreviewLimitException>(() =>
+                CSharpDbDdlPreviewBuilder.BuildBounded(
+                    plan,
+                    catalog,
+                    actionOptions,
+                    cancellationToken: Ct));
+        CSharpDbDdlPreviewLimitException repeatedAction =
+            Assert.Throws<CSharpDbDdlPreviewLimitException>(() =>
+                CSharpDbDdlPreviewBuilder.BuildBounded(
+                    plan,
+                    catalog,
+                    actionOptions,
+                    cancellationToken: Ct));
+        CSharpDbDdlPreviewLimitException aggregate =
+            Assert.Throws<CSharpDbDdlPreviewLimitException>(() =>
+                CSharpDbDdlPreviewBuilder.BuildBounded(
+                    plan,
+                    catalog,
+                    aggregateOptions,
+                    cancellationToken: Ct));
+
+        Assert.Equal(
+            CSharpDbDdlPreviewLimitKind.ActionCount,
+            firstAction.Kind);
+        Assert.Equal(firstAction.Kind, repeatedAction.Kind);
+        Assert.Equal(firstAction.Message, repeatedAction.Message);
+        Assert.Equal(
+            CSharpDbDdlPreviewLimitKind.AggregateSqlUtf8Bytes,
+            aggregate.Kind);
+    }
+
+    [Fact]
+    public void BuildBounded_RejectsOversizedTargetSqlWithSanitizedLimit()
+    {
+        string privateTargetSql = new('x', 64 * 1024);
+        MigrationCatalog catalog =
+            TargetSqlCheckCatalog(privateTargetSql);
+        MigrationPlan plan = ReadyPlan(catalog);
+        var options = CSharpDbDdlPreviewBuildOptions.Default with
+        {
+            MaxSqlCharactersPerAction = 1024,
+        };
+
+        CSharpDbDdlPreviewLimitException error =
+            Assert.Throws<CSharpDbDdlPreviewLimitException>(() =>
+                CSharpDbDdlPreviewBuilder.BuildBounded(
+                    plan,
+                    catalog,
+                    options,
+                    cancellationToken: Ct));
+
+        Assert.Equal(
+            CSharpDbDdlPreviewLimitKind.SqlActionSize,
+            error.Kind);
+        Assert.Null(error.InnerException);
+        Assert.DoesNotContain(
+            privateTargetSql,
+            error.ToString(),
+            StringComparison.Ordinal);
+
+        string privateUtf8TargetSql = new('\u00e9', 2048);
+        MigrationCatalog utf8Catalog =
+            TargetSqlCheckCatalog(privateUtf8TargetSql);
+        MigrationPlan utf8Plan = ReadyPlan(utf8Catalog);
+        CSharpDbDdlPreviewLimitException utf8Error =
+            Assert.Throws<CSharpDbDdlPreviewLimitException>(() =>
+                CSharpDbDdlPreviewBuilder.BuildBounded(
+                    utf8Plan,
+                    utf8Catalog,
+                    CSharpDbDdlPreviewBuildOptions.Default with
+                    {
+                        MaxSqlCharactersPerAction = 4096,
+                        MaxSqlUtf8BytesPerAction = 3000,
+                    },
+                    cancellationToken: Ct));
+
+        Assert.Equal(
+            CSharpDbDdlPreviewLimitKind.SqlActionSize,
+            utf8Error.Kind);
+        Assert.DoesNotContain(
+            privateUtf8TargetSql,
+            utf8Error.ToString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildBounded_ValidatesHardCeilingsAndPreCancellation()
+    {
+        MigrationCatalog catalog = CollectionCatalog();
+        MigrationPlan plan = ReadyPlan(catalog);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            CSharpDbDdlPreviewBuilder.BuildBounded(
+                plan,
+                catalog,
+                CSharpDbDdlPreviewBuildOptions.Default with
+                {
+                    MaxActionCount =
+                        CSharpDbDdlPreviewBuildOptions
+                            .HardMaxActionCount + 1,
+                },
+                cancellationToken: Ct));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            CSharpDbDdlPreviewBuilder.BuildBounded(
+                plan,
+                catalog,
+                CSharpDbDdlPreviewBuildOptions.Default with
+                {
+                    MaxSqlCharactersPerAction =
+                        CSharpDbDdlPreviewBuildOptions
+                            .HardMaxSqlCharactersPerAction + 1,
+                },
+                cancellationToken: Ct));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            CSharpDbDdlPreviewBuilder.BuildBounded(
+                plan,
+                catalog,
+                CSharpDbDdlPreviewBuildOptions.Default with
+                {
+                    MaxSqlUtf8BytesPerAction =
+                        CSharpDbDdlPreviewBuildOptions
+                            .HardMaxSqlUtf8BytesPerAction + 1,
+                },
+                cancellationToken: Ct));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            CSharpDbDdlPreviewBuilder.BuildBounded(
+                plan,
+                catalog,
+                CSharpDbDdlPreviewBuildOptions.Default with
+                {
+                    MaxAggregateSqlUtf8Bytes =
+                        CSharpDbDdlPreviewBuildOptions
+                            .HardMaxAggregateSqlUtf8Bytes + 1,
+                },
+                cancellationToken: Ct));
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            CSharpDbDdlPreviewBuilder.BuildBounded(
+                plan,
+                catalog,
+                cancellationToken: cancellation.Token));
     }
 
     [Fact]
@@ -411,6 +627,63 @@ public sealed class CSharpDbDdlPreviewTests
                 $"{stage.Ordinal}:{(int)stage.Stage}:{action.Ordinal}:{(int)action.Kind}:" +
                 (action.Sql ?? action.TargetName)))
             .ToArray();
+
+    private static MigrationCatalog TargetSqlCheckCatalog(string targetSql) => new()
+    {
+        TargetCSharpDbVersion =
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+        Source = new MigrationSourceIdentity
+        {
+            Kind = MigrationSourceKind.Synthetic,
+            Identity = "synthetic:ddl-preview-target-sql-limit",
+            Fingerprint =
+                "26bac50e3e9ff88f8f719f8021e3dc651c47ba142471098701ea4fd45f8d2afa",
+            ProviderVersion = "1.0",
+            SourceVersion = "fixture-v1",
+            Consistency = new MigrationConsistencyStrategy
+            {
+                Kind = MigrationConsistencyKind.Immutable,
+                Description =
+                    "Immutable bounded DDL preview target-SQL fixture.",
+            },
+        },
+        Objects =
+        [
+            new MigrationCatalogObject
+            {
+                ObjectId = "limit:table",
+                Kind = MigrationObjectKind.Table,
+                SourceName = "bounded_preview_table",
+            },
+            new MigrationCatalogObject
+            {
+                ObjectId = "limit:column",
+                Kind = MigrationObjectKind.Column,
+                ParentObjectId = "limit:table",
+                SourceName = "bounded_preview_column",
+                NativeType = "INT64",
+                Facets =
+                [
+                    Facet("logicalType", "signedInteger"),
+                    Facet("nullable", "false"),
+                ],
+            },
+            new MigrationCatalogObject
+            {
+                ObjectId = "limit:check",
+                Kind = MigrationObjectKind.CheckConstraint,
+                ParentObjectId = "limit:table",
+                SourceName = "bounded_preview_check",
+                DependsOn = ["limit:column"],
+                Facets =
+                [
+                    Facet("deterministic", "true"),
+                    Facet("rowLocal", "true"),
+                    Facet("targetSql", targetSql),
+                ],
+            },
+        ],
+    };
 
     private static MigrationCatalog CollectionCatalog() => new()
     {

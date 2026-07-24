@@ -20,8 +20,9 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header] [--table <name>] [--sample-rows <count>] [--null-token <text>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
         "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>] [--max-source-bytes <count>]\n" +
+        "       csharpdb migrate inspect --source sqlserver --connection-env <name> --out <catalog.json>\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
-        "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
+        "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--ddl|--scratch] [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson|source.csdbsqlite> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
@@ -29,6 +30,9 @@ internal static class MigrationCommandRunner
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+    private static readonly UTF8Encoding Utf8NoBomStrict = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
     private static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase
@@ -60,6 +64,8 @@ internal static class MigrationCommandRunner
         "csharpdb-sqlite-catalog-v1";
     private const string SqliteCatalogRouteOnlyMessage =
         "This CLI route supports only SQLite catalog contract v1.";
+    private const long MaxExplicitPreviewArtifactBytes =
+        64L * 1024 * 1024;
 
     public static bool IsKnownCommand(string? arg) =>
         string.Equals(arg, "migrate", StringComparison.OrdinalIgnoreCase);
@@ -68,8 +74,32 @@ internal static class MigrationCommandRunner
         string[] args,
         TextWriter output,
         TextWriter error,
+        CancellationToken ct = default) =>
+        await RunAsync(
+            args,
+            output,
+            error,
+            MigrationCommandDependencies.Default,
+            ct);
+
+    internal static async ValueTask<int> RunAsync(
+        string[] args,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(error);
+        ArgumentNullException.ThrowIfNull(dependencies);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.ReadEnvironmentVariable);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.CreateSqlServerInspector);
+        ArgumentNullException.ThrowIfNull(
+            dependencies.BuildCSharpDbDdlPreview);
+
         if (args.Length < 2 || !IsKnownCommand(args[0]))
             return await UsageAsync(error);
 
@@ -77,9 +107,19 @@ internal static class MigrationCommandRunner
         {
             return args[1].ToLowerInvariant() switch
             {
-                "inspect" => await RunInspectAsync(args, output, error, ct),
+                "inspect" => await RunInspectAsync(
+                    args,
+                    output,
+                    error,
+                    dependencies,
+                    ct),
                 "plan" => await RunPlanAsync(args, output, error, ct),
-                "preview" => await RunPreviewAsync(args, output, error, ct),
+                "preview" => await RunPreviewAsync(
+                    args,
+                    output,
+                    error,
+                    dependencies,
+                    ct),
                 "apply" => await RunApplyAsync(args, output, error, ct),
                 "validate" => await RunValidateAsync(args, output, error, ct),
                 "export" => await RunExportAsync(args, output, error, ct),
@@ -516,6 +556,7 @@ internal static class MigrationCommandRunner
         string[] args,
         TextWriter output,
         TextWriter error,
+        MigrationCommandDependencies dependencies,
         CancellationToken ct)
     {
         if (!TryParseOptions(
@@ -525,7 +566,9 @@ internal static class MigrationCommandRunner
                 out Dictionary<string, string> options,
                 out string? parseError))
         {
-            return await OptionErrorAsync(parseError!, error);
+            return await OptionErrorAsync(
+                SafeInspectOptionError(parseError!),
+                error);
         }
         if (!options.TryGetValue("--source", out string? source))
             return await OptionErrorAsync("Missing required option --source.", error);
@@ -565,9 +608,215 @@ internal static class MigrationCommandRunner
                 error,
                 ct);
         }
+        if (string.Equals(
+                source,
+                "sqlserver",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return await RunSqlServerInspectAsync(
+                options,
+                outputValue,
+                output,
+                error,
+                dependencies,
+                ct);
+        }
 
-        return await OptionErrorAsync($"Unsupported migration source '{source}'.", error);
+        return await OptionErrorAsync(
+            "Unsupported migration source.",
+            error);
     }
+
+    private static async ValueTask<int> RunSqlServerInspectAsync(
+        IReadOnlyDictionary<string, string> options,
+        string outputValue,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        if (!RequireOnly(
+                options,
+                ["--source", "--connection-env", "--out"],
+                out string? parseError))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server inspect command contains an unsupported option.",
+                error);
+        }
+        if (!options.TryGetValue(
+                "--connection-env",
+                out string? environmentVariableName))
+        {
+            return await OptionErrorAsync(
+                "Missing required option --connection-env.",
+                error);
+        }
+        if (!IsSafeEnvironmentVariableName(environmentVariableName))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server connection environment variable name is invalid.",
+                error);
+        }
+        if (string.IsNullOrWhiteSpace(outputValue))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server catalog path cannot be blank.",
+                error);
+        }
+
+        string outputPath;
+        try
+        {
+            outputPath = Path.GetFullPath(outputValue);
+        }
+        catch (Exception pathError) when (
+            pathError is ArgumentException or NotSupportedException or
+                PathTooLongException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-PATH-001",
+                "The SQL Server catalog path is invalid.",
+                pathError);
+        }
+        if (File.Exists(outputPath) || Directory.Exists(outputPath))
+        {
+            return await OptionErrorAsync(
+                "The SQL Server catalog destination already exists.",
+                error);
+        }
+
+        string? connectionString;
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            connectionString =
+                dependencies.ReadEnvironmentVariable(environmentVariableName);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception environmentError) when (
+            IsRecoverableCliException(environmentError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-CONNECTION-001",
+                "The SQL Server connection could not be acquired from the environment.",
+                environmentError);
+        }
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-CONNECTION-001",
+                "The SQL Server connection environment variable is unset or blank.",
+                new InvalidOperationException(
+                    "SQL Server connection material was unavailable."));
+        }
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            IMigrationSourceInspector inspector =
+                dependencies.CreateSqlServerInspector(connectionString);
+            if (inspector is null ||
+                inspector.SourceKind != MigrationSourceKind.SqlServer)
+            {
+                throw new InvalidDataException(
+                    "The SQL Server inspector contract is invalid.");
+            }
+
+            MigrationCatalog catalog = await inspector.InspectAsync(
+                new MigrationInspectionRequest
+                {
+                    TargetCSharpDbVersion =
+                        CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+                    IncludeProfile = false,
+                },
+                ct);
+            if (catalog.Source.Kind != MigrationSourceKind.SqlServer)
+            {
+                throw new InvalidDataException(
+                    "The SQL Server inspector returned another source kind.");
+            }
+
+            string serialized =
+                MigrationArtifactSerializer.SerializeCatalog(catalog);
+            await WriteNewArtifactAsync(outputPath, serialized, ct);
+
+            int exitCode = catalog.Diagnostics.Count == 0
+                ? InspectorCommandRunner.ExitOk
+                : InspectorCommandRunner.ExitWarn;
+            await output.WriteLineAsync(
+                $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
+            return exitCode;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception inspectionError) when (
+            IsRecoverableCliException(inspectionError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLSERVER-CLI-INSPECT-001",
+                "The SQL Server schema could not be inspected or published safely.",
+                inspectionError);
+        }
+    }
+
+    private static bool IsSafeEnvironmentVariableName(string? value)
+    {
+        if (value is not { Length: > 0 and <= 128 } ||
+            value[0] is not (>= 'A' and <= 'Z') and
+                not (>= 'a' and <= 'z') and
+                not '_')
+        {
+            return false;
+        }
+
+        foreach (char character in value.AsSpan(1))
+        {
+            if (character is not (>= 'A' and <= 'Z') and
+                not (>= 'a' and <= 'z') and
+                not (>= '0' and <= '9') and
+                not '_')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string SafeInspectOptionError(string error)
+    {
+        if (error.StartsWith(
+                "Duplicate option",
+                StringComparison.Ordinal))
+        {
+            return "Duplicate option in the migration inspection command.";
+        }
+        if (error.StartsWith(
+                "Missing value for",
+                StringComparison.Ordinal))
+        {
+            return "An inspection option is missing its value.";
+        }
+        if (error.StartsWith(
+                "Unexpected positional argument",
+                StringComparison.Ordinal))
+        {
+            return "The migration inspection command contains an unexpected positional argument.";
+        }
+
+        return "The migration inspection options are invalid.";
+    }
+
+    private static bool IsRecoverableCliException(Exception exception) =>
+        exception is not OutOfMemoryException and
+        not StackOverflowException and
+        not AccessViolationException;
 
     private static async ValueTask<int> RunSyntheticInspectAsync(
         string outputValue,
@@ -1365,25 +1614,113 @@ internal static class MigrationCommandRunner
         string[] args,
         TextWriter output,
         TextWriter error,
+        MigrationCommandDependencies dependencies,
         CancellationToken ct)
     {
         if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
             return await OptionErrorAsync("Missing plan artifact path.", error);
-        if (!TryParseOptions(args, 3, out Dictionary<string, string> options, out string? parseError))
-            return await OptionErrorAsync(parseError!, error);
-        if (!RequireOnly(options, ["--catalog", "--format"], out parseError))
-            return await OptionErrorAsync(parseError!, error);
+        bool explicitPreviewRequested = args
+            .Skip(3)
+            .Any(IsExplicitPreviewOptionToken);
+        if (!TryParseOptions(
+                args,
+                3,
+                ["--ddl", "--scratch"],
+                out Dictionary<string, string> options,
+                out string? parseError))
+        {
+            return await OptionErrorAsync(
+                explicitPreviewRequested
+                    ? "The explicit CSharpDB preview options are invalid."
+                    : parseError!,
+                error);
+        }
+        if (!RequireOnly(
+                options,
+                ["--catalog", "--format", "--ddl", "--scratch"],
+                out parseError))
+        {
+            return await OptionErrorAsync(
+                explicitPreviewRequested
+                    ? "The explicit CSharpDB preview command contains an unsupported option."
+                    : parseError!,
+                error);
+        }
         if (!options.TryGetValue("--catalog", out string? catalogValue))
             return await OptionErrorAsync("Missing required option --catalog.", error);
+        bool includeDdl = options.ContainsKey("--ddl");
+        bool validateScratch = options.ContainsKey("--scratch");
+        if (includeDdl && validateScratch)
+        {
+            return await OptionErrorAsync(
+                "Options --ddl and --scratch cannot be combined.",
+                error);
+        }
 
         string format = options.GetValueOrDefault("--format", "text");
         if (!string.Equals(format, "text", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
         {
-            return await OptionErrorAsync($"Unsupported preview format '{format}'.", error);
+            return await OptionErrorAsync(
+                explicitPreviewRequested
+                    ? "Unsupported explicit preview format."
+                    : $"Unsupported preview format '{format}'.",
+                error);
         }
 
-        string planPath = Path.GetFullPath(args[2]);
+        if (!includeDdl && !validateScratch)
+        {
+            return await RunDefaultPreviewAsync(
+                args[2],
+                catalogValue,
+                format,
+                output,
+                error,
+                ct);
+        }
+
+        try
+        {
+            return await RunExplicitPreviewAsync(
+                args[2],
+                catalogValue,
+                format,
+                includeDdl,
+                output,
+                error,
+                dependencies,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (CSharpDbDdlPreviewLimitException limitError)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-DDL-PREVIEW-LIMIT-001",
+                "The CSharpDB DDL preview exceeded a production safety limit.",
+                limitError);
+        }
+        catch (Exception previewError) when (
+            IsRecoverableCliException(previewError))
+        {
+            throw new MigrationCliSafeException(
+                "MIG-CSHARPDB-DDL-PREVIEW-001",
+                "The explicit CSharpDB preview could not be produced safely.",
+                previewError);
+        }
+    }
+
+    private static async ValueTask<int> RunDefaultPreviewAsync(
+        string planValue,
+        string catalogValue,
+        string format,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        string planPath = Path.GetFullPath(planValue);
         string catalogPath = Path.GetFullPath(catalogValue);
         MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
             await File.ReadAllTextAsync(catalogPath, ct));
@@ -1397,7 +1734,8 @@ internal static class MigrationCommandRunner
         MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
             await File.ReadAllTextAsync(planPath, ct),
             catalog);
-        MigrationPlanReadiness readiness = MigrationPlanReadinessValidator.Evaluate(plan, catalog);
+        MigrationPlanReadiness readiness =
+            MigrationPlanReadinessValidator.Evaluate(plan, catalog);
         PreviewCounts counts = PreviewCounts.Create(plan);
         string status = PreviewStatus(plan, readiness);
 
@@ -1409,6 +1747,158 @@ internal static class MigrationCommandRunner
         return HasReviewFindings(plan, readiness)
             ? InspectorCommandRunner.ExitWarn
             : InspectorCommandRunner.ExitOk;
+    }
+
+    private static bool IsExplicitPreviewOptionToken(
+        string argument) =>
+        string.Equals(
+            argument,
+            "--ddl",
+            StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(
+            argument,
+            "--scratch",
+            StringComparison.OrdinalIgnoreCase) ||
+        argument.StartsWith(
+            "--ddl=",
+            StringComparison.OrdinalIgnoreCase) ||
+        argument.StartsWith(
+            "--scratch=",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static async ValueTask<int> RunExplicitPreviewAsync(
+        string planValue,
+        string catalogValue,
+        string format,
+        bool includeDdl,
+        TextWriter output,
+        TextWriter error,
+        MigrationCommandDependencies dependencies,
+        CancellationToken ct)
+    {
+        string planPath = Path.GetFullPath(planValue);
+        string catalogPath = Path.GetFullPath(catalogValue);
+        MigrationCatalog catalog =
+            MigrationArtifactSerializer.DeserializeCatalog(
+                await ReadBoundedExplicitPreviewArtifactAsync(
+                    catalogPath,
+                    ct));
+        if (catalog.Source.Kind == MigrationSourceKind.Sqlite &&
+            !IsSupportedSqliteV1Catalog(catalog))
+        {
+            return await OptionErrorAsync(
+                SqliteCatalogRouteOnlyMessage,
+                error);
+        }
+        MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
+            await ReadBoundedExplicitPreviewArtifactAsync(
+                planPath,
+                ct),
+            catalog);
+        MigrationPlanReadiness readiness =
+            MigrationPlanReadinessValidator.Evaluate(plan, catalog);
+        int planExitCode = HasReviewFindings(plan, readiness)
+            ? InspectorCommandRunner.ExitWarn
+            : InspectorCommandRunner.ExitOk;
+        CSharpDbDdlPreview ddlPreview =
+            dependencies.BuildCSharpDbDdlPreview(
+                plan,
+                catalog,
+                ct);
+
+        if (includeDdl)
+        {
+            if (string.Equals(
+                    format,
+                    "json",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await output.WriteLineAsync(
+                    JsonSerializer.Serialize(ddlPreview, JsonOptions));
+            }
+            else
+            {
+                await WriteTextDdlPreviewAsync(output, ddlPreview);
+            }
+
+            return planExitCode;
+        }
+
+        CSharpDbDdlScratchValidationReport scratchReport =
+            await CSharpDbDdlScratchValidator.ValidateAsync(
+                plan,
+                catalog,
+                ddlPreview,
+                cancellationToken: ct);
+        if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
+        {
+            await output.WriteLineAsync(
+                JsonSerializer.Serialize(scratchReport, JsonOptions));
+        }
+        else
+        {
+            await WriteTextScratchValidationAsync(output, scratchReport);
+        }
+
+        return scratchReport.Status ==
+            CSharpDbDdlScratchValidationStatus.Passed
+                ? planExitCode
+                : InspectorCommandRunner.ExitError;
+    }
+
+    private static async ValueTask<string>
+        ReadBoundedExplicitPreviewArtifactAsync(
+            string path,
+            CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (stream.CanSeek &&
+            stream.Length > MaxExplicitPreviewArtifactBytes)
+        {
+            throw new InvalidDataException(
+                "The explicit preview artifact exceeds its byte limit.");
+        }
+        using var payload = new MemoryStream();
+        byte[] buffer = new byte[64 * 1024];
+        long totalBytes = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            int read = await stream.ReadAsync(
+                buffer.AsMemory(),
+                ct);
+            if (read == 0)
+                break;
+            if (totalBytes >
+                MaxExplicitPreviewArtifactBytes - read)
+            {
+                throw new InvalidDataException(
+                    "The explicit preview artifact exceeds its byte limit.");
+            }
+
+            payload.Write(buffer, 0, read);
+            totalBytes += read;
+        }
+
+        ct.ThrowIfCancellationRequested();
+        int payloadLength = checked((int)payload.Length);
+        ReadOnlySpan<byte> bytes =
+            payload.GetBuffer().AsSpan(0, payloadLength);
+        if (bytes.Length >= 3 &&
+            bytes[0] == 0xEF &&
+            bytes[1] == 0xBB &&
+            bytes[2] == 0xBF)
+        {
+            bytes = bytes[3..];
+        }
+        return Utf8NoBomStrict.GetString(bytes);
     }
 
     private static async ValueTask<int> RunApplyAsync(
@@ -2158,6 +2648,106 @@ internal static class MigrationCommandRunner
         };
         await output.WriteLineAsync(JsonSerializer.Serialize(preview, JsonOptions));
     }
+
+    private static async ValueTask WriteTextDdlPreviewAsync(
+        TextWriter output,
+        CSharpDbDdlPreview preview)
+    {
+        await output.WriteLineAsync($"Format: {preview.Format}");
+        await output.WriteLineAsync(
+            $"Target CSharpDB version: {preview.TargetCSharpDbVersion}");
+        await output.WriteLineAsync(
+            $"Catalog digest: {preview.CatalogDigest}");
+        await output.WriteLineAsync(
+            $"Plan contract digest: {preview.PlanContractDigest}");
+        await output.WriteLineAsync(
+            $"Generated DDL digest: {preview.GeneratedDdlDigest}");
+        await output.WriteLineAsync(
+            $"Readiness: {preview.Readiness.Status.ToString().ToLowerInvariant()}");
+
+        foreach (CSharpDbDdlPreviewStage stage in preview.Stages)
+        {
+            await output.WriteLineAsync(
+                $"Stage {stage.Ordinal}: {DdlStageLabel(stage.Stage)}");
+            foreach (CSharpDbDdlPreviewAction action in stage.Actions)
+            {
+                if (action.Kind == CSharpDbDdlPreviewActionKind.Sql)
+                {
+                    await output.WriteLineAsync(
+                        $"  Action {action.Ordinal}: sql");
+                    await output.WriteLineAsync(action.Sql);
+                }
+                else
+                {
+                    await output.WriteLineAsync(
+                        $"  Action {action.Ordinal}: ensure-json-document-collection {action.TargetName}");
+                }
+            }
+        }
+    }
+
+    private static async ValueTask WriteTextScratchValidationAsync(
+        TextWriter output,
+        CSharpDbDdlScratchValidationReport report)
+    {
+        await output.WriteLineAsync($"Format: {report.Format}");
+        await output.WriteLineAsync(
+            $"Status: {report.Status.ToString().ToLowerInvariant()}");
+        await output.WriteLineAsync(
+            $"Highest evidence: {report.HighestEvidence?.ToString().ToLowerInvariant() ?? "none"}");
+        await output.WriteLineAsync(
+            $"Target CSharpDB version: {report.TargetCSharpDbVersion}");
+        await output.WriteLineAsync(
+            $"Catalog digest: {report.CatalogDigest}");
+        await output.WriteLineAsync(
+            $"Plan contract digest: {report.PlanContractDigest}");
+        await output.WriteLineAsync(
+            $"Generated DDL digest: {report.GeneratedDdlDigest}");
+        if (report.AttachedPlanDigest is not null)
+        {
+            await output.WriteLineAsync(
+                $"Attached plan digest: {report.AttachedPlanDigest}");
+        }
+        await output.WriteLineAsync(
+            $"Readiness: {report.ReadinessStatus?.ToString().ToLowerInvariant() ?? "unverified"}");
+        await output.WriteLineAsync($"Rule: {report.RuleId}");
+        if (report.StageId is not null)
+            await output.WriteLineAsync($"Stage: {report.StageId}");
+        if (report.ActionId is not null)
+            await output.WriteLineAsync($"Action: {report.ActionId}");
+        await output.WriteLineAsync(
+            $"Actions: parsed={report.ParsedActionCount} executed={report.ExecutedActionCount}");
+        if (report.ExpectedSchemaDigest is not null)
+        {
+            await output.WriteLineAsync(
+                $"Expected schema digest: {report.ExpectedSchemaDigest}");
+        }
+        if (report.ActualSchemaDigest is not null)
+        {
+            await output.WriteLineAsync(
+                $"Actual schema digest: {report.ActualSchemaDigest}");
+        }
+        await output.WriteLineAsync(
+            $"Differences: {report.Differences.Count}");
+        foreach (CSharpDbDdlScratchValidationDifference difference
+                 in report.Differences)
+        {
+            await output.WriteLineAsync(
+                $"  [{difference.Ordinal}] kind={difference.Kind.ToString().ToLowerInvariant()} objectDigest={difference.ObjectIdentityDigest} expectedDigest={difference.ExpectedDefinitionDigest ?? "none"} actualDigest={difference.ActualDefinitionDigest ?? "none"}");
+        }
+    }
+
+    private static string DdlStageLabel(MigrationSchemaStage stage) =>
+        stage switch
+        {
+            MigrationSchemaStage.LoadEssential => "load-essential",
+            MigrationSchemaStage.SecondaryIndexes => "secondary-indexes",
+            MigrationSchemaStage.Constraints => "constraints",
+            MigrationSchemaStage.Views => "views",
+            MigrationSchemaStage.Triggers => "triggers",
+            _ => throw new InvalidDataException(
+                "The CSharpDB DDL preview contains an unknown schema stage."),
+        };
 
     private static bool HasReviewFindings(MigrationPlan plan, MigrationPlanReadiness readiness) =>
         readiness.Status != MigrationPlanReadinessStatus.Ready ||
@@ -3463,7 +4053,9 @@ internal static class MigrationCommandRunner
                 error = $"Duplicate option '{option}'.";
                 return false;
             }
-            if (valuelessOptions.Contains(option))
+            if (valuelessOptions.Contains(
+                    option,
+                    StringComparer.OrdinalIgnoreCase))
             {
                 options[option] = "true";
                 continue;

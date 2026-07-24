@@ -10,7 +10,36 @@ var stdout = CliConsole.Create(Console.Out, interactive: true);
 var stderr = CliConsole.Create(Console.Error);
 
 if (args.Length > 0 && MigrationCommandRunner.IsKnownCommand(args[0]))
-    return await MigrationCommandRunner.RunAsync(args, Console.Out, Console.Error);
+{
+    using var cancellation = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+    {
+        if (!cancellation.IsCancellationRequested)
+        {
+            eventArgs.Cancel = true;
+            cancellation.Cancel();
+        }
+    };
+    Console.CancelKeyPress += cancelHandler;
+    try
+    {
+        return await MigrationCommandRunner.RunAsync(
+            args,
+            Console.Out,
+            Console.Error,
+            cancellation.Token);
+    }
+    catch (OperationCanceledException)
+        when (cancellation.IsCancellationRequested)
+    {
+        await Console.Error.WriteLineAsync("Canceled.");
+        return 130;
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+    }
+}
 
 if (args.Length > 0 && InspectorCommandRunner.IsKnownCommand(args[0]))
     return await InspectorCommandRunner.RunAsync(args, Console.Out, Console.Error);

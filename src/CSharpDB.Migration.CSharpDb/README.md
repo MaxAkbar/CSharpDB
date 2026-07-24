@@ -26,6 +26,12 @@ not internal migration bookkeeping tables, and is independent of the plan
 digest so it remains stable after attachment. A plan stores only the digest;
 when present, the staged target recomputes and verifies it before creating or
 resuming a target. Legacy plans without a preview digest remain accepted.
+Operator-facing callers use `BuildBounded`, whose configurable action,
+per-action SQL, and aggregate UTF-8 limits cannot exceed production ceilings.
+The renderer enforces those limits incrementally before retaining each action
+and reports a stable, sanitized limit kind without publishing SQL or names.
+Those are render-action limits, not plan/catalog acquisition or preprocessing
+limits; callers must bound and validate those inputs separately.
 
 `CSharpDbDdlScratchValidator` verifies that reviewed preview with bounded
 aggregate and parser limits, parses each SQL action once with `CSharpDB.Sql`,
@@ -66,6 +72,8 @@ exact bytes, every transaction fault cutoff, reopen/resume, checksums,
 activation, and collection API access. See
 [`migration-json-collection-projection.md`](../../docs/migration-json-collection-projection.md).
 
-Identity/rowversion/default lowering, archive restoration, and bounded
-operator-facing CLI integration remain explicit follow-up work. SDK
-reject-artifact publication is qualified independently of the CLI.
+The bounded CLI can now request exact DDL or a separate sanitized scratch
+report, but it cannot apply that DDL or promote plan readiness. Identity,
+rowversion, and default lowering plus archive restoration remain explicit
+follow-up work. SDK reject-artifact publication is qualified independently of
+the CLI.
