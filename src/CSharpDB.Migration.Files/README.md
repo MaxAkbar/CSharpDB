@@ -66,9 +66,9 @@ streaming now revalidates projected values, preserves arbitrary projection
 order, emits deterministic reject evidence, bounds batches by rows and
 canonical bytes, and supplies snapshot/policy-bound replay cursors.
 Raw and typed retained packages, source-bound typed intent, typed table/apply
-conversion, restart-only JSON/NDJSON table export, and CLI routing are now
-implemented. Collection projection and typed export-intent generation remain
-later slices. See
+conversion, restart-only JSON/NDJSON table export, and restart-only CLI
+routing are now implemented. Collection projection and typed export-intent
+generation remain later slices. See
 [`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
 and
 [`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md),
@@ -92,10 +92,10 @@ and permits only idempotent or exact next-generation transitions.
 Root-array `Writing` checkpoints omit and reserve `]\n`; NDJSON completion can
 be a phase-only transition over identical bytes.
 
-The internal platform-neutral resumable coordinator now initializes
-generation zero, replays exactly to recovered object boundaries without
-lookahead, independently rehashes the qualified prepared prefix, resumes after
-the signed row ID, and emits periodic and EOF-qualified terminal checkpoints.
+The platform-neutral resumable coordinator initializes generation zero,
+replays exactly to recovered object boundaries without lookahead,
+independently rehashes the qualified prepared prefix, resumes after the signed
+row ID, and emits periodic and EOF-qualified terminal checkpoints.
 `JsonExportPreparedOutputLease` now supplies that session's local-Windows
 filesystem boundary: exact-spelling deterministic private siblings, an
 exclusive current-owner-only prepared handle, active-only recovery, stale
@@ -104,8 +104,17 @@ pending/active replacement relative to a pinned parent. Any uncertain
 replacement failure poisons the live lease so recovery must reopen and
 requalify durable authority. Restart-only publication staging now uses
 deterministic exclusive `.next` siblings and safely reclaims qualified crash
-leftovers. Public coordinator activation, child-process crash qualification,
-and hard-power qualification remain later gates. See
+leftovers. Public `WriteResumableAsync` composes the coordinator and durable
+lease without publishing finals. Same-lease
+`WriteResumableAndPublishAsync` keeps that exclusive prepared handle through
+source requalification and manifest-last publication, while
+`JsonExportPublisher.PublishCompletedAsync` can reopen a terminal prepared
+output using an independently retained manifest digest. Prepared data is
+copied and independently rehashed into deterministic publication staging,
+exact data-only and pair states are recoverable, and prepared/checkpoint
+authority is preserved after success. Retained-adapter and CLI resume routing,
+child-process crash qualification, and disposable-VM hard-power qualification
+remain later gates. See
 [`migration-json-export-contract.md`](../../docs/migration-json-export-contract.md).
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a

@@ -658,11 +658,14 @@ artifact, framing/generation rules, and platform-neutral replay/resume
 coordinator are now implemented. A local-Windows prepared-output lease now
 adds exact-spelling deterministic journals, active-only recovery, verified
 tail truncation, stale-pending reclamation, and data-first durable active
-checkpoint replacement relative to a pinned parent. Public retained-adapter
-and CLI resume activation, child-process crash qualification,
-abrupt-power-loss qualification, collection projection, and import CLI
-integration remain open. Restart-only publication now uses deterministic
-exclusive `.next` siblings and safely reclaims only qualified crash leftovers.
+checkpoint replacement relative to a pinned parent. Public SDK
+`WriteResumableAsync` and same-lease `WriteResumableAndPublishAsync` now
+compose durable resume, terminal source requalification, independent
+prepared-data rehash, and manifest-last prepared publication. Retained-adapter
+and CLI resume activation, child-process crash qualification, abrupt-power-loss
+qualification, collection projection, and import CLI integration remain open.
+Restart-only publication uses deterministic exclusive `.next` siblings and
+safely reclaims only qualified crash leftovers.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -706,9 +709,12 @@ exclusive `.next` siblings and safely reclaims only qualified crash leftovers.
 - [x] Replace random JSON publication staging with deterministic exact-pair
   `.next` siblings, exclusive pair leasing, handle-qualified stale-stage
   reclamation, and exact-case bound final operations.
-- [ ] Activate retained-source mid-stream resume through deterministic leased
-  prepared publication, adapter/CLI routing, and child-process crash
-  qualification.
+- [x] Expose public SDK durable resume and same-lease prepared publication
+  with source requalification, independent prepared-data rehash, exact
+  data-only/pair recovery, and preserved journal authority.
+- [ ] Route durable resume/publication through the retained CSharpDB adapter
+  and CLI.
+- [ ] Child-process qualify JSON resume and publication cutoffs.
 
 ### Shared Deliverables
 

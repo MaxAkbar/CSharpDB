@@ -7,8 +7,9 @@ table to either a compact JSON root array or newline-delimited JSON. The
 restart-only publisher is implemented. The durable checkpoint artifact,
 prefix geometry, generation transitions, and platform-neutral replay
 coordinator are implemented. A local-Windows prepared-output lease now
-provides the coordinator's durable session boundary, although the coordinator
-is not yet exposed through the retained adapter or CLI.
+provides the coordinator's durable session boundary. Public SDK durable resume
+and prepared publication are implemented; the retained CSharpDB adapter and
+CLI still use restart-from-zero JSON/NDJSON export.
 
 The completed restart-only slice includes:
 
@@ -20,12 +21,11 @@ The completed restart-only slice includes:
 - retained-snapshot source binding; and
 - `migrate export --format json|ndjson` CLI routing.
 
-Public resume activation, retained-adapter and CLI resume routing,
-child-process crash qualification, collection/document export, and typed
-export intent remain later slices. The disposable Windows VM qualification is
-also deferred. The implemented lease and restart-only publisher flush
-completed files to durable storage as supported by the host, but make no
-directory-fsync or abrupt-power-loss guarantee.
+Retained-adapter and CLI resume routing, child-process crash qualification,
+collection/document export, and typed export intent remain later slices. The
+disposable Windows VM qualification is also deferred. The implemented lease
+and publishers flush completed files to durable storage as supported by the
+host, but make no directory-fsync or abrupt-power-loss guarantee.
 
 ## Public Contract
 
@@ -53,6 +53,16 @@ Success returns:
 - the validated `JsonExportManifest`;
 - its exact canonical UTF-8 bytes; and
 - the independently retainable canonical-manifest digest.
+
+`JsonStreamingExporter.WriteResumableAsync` creates or resumes the durable
+private prepared output without publishing either final path.
+`WriteResumableAndPublishAsync` requalifies the immutable source through EOF
+and retains the same exclusive prepared-output lease through manifest-last
+publication. `JsonExportPublisher.PublishCompletedAsync` also permits a
+caller that retained the expected terminal manifest digest to reopen and
+publish an already completed prepared output. `OpenRows` is therefore a
+trusted immutable-source seam and must honor its exclusive signed row-ID
+boundary on every invocation.
 
 ## Frozen Checkpoint Artifact
 
@@ -117,13 +127,14 @@ rows. With no new rows, root-array completion adds exactly `]\n` and changes
 only physical evidence, while NDJSON completion changes only phase,
 generation, and final EOF evidence.
 
-`JsonStreamingExporter.WriteResumableCoreAsync` now implements the
-platform-neutral coordinator behind an internal prepared-output session. It
-creates generation zero, replays a recovered source without reading past a
-`Writing` boundary, proves `DataComplete` through EOF, independently rehashes
-the qualified prepared prefix before seeding new output, resumes strictly
-after the signed last row ID, persists periodic complete-object checkpoints,
-and finalizes root-array or NDJSON framing.
+Public `JsonStreamingExporter.WriteResumableAsync` composes the local-Windows
+prepared-output lease with the platform-neutral internal
+`WriteResumableCoreAsync` coordinator. The coordinator creates generation
+zero, replays a recovered source without reading past a `Writing` boundary,
+proves `DataComplete` through EOF, independently rehashes the qualified
+prepared prefix before seeding new output, resumes strictly after the signed
+last row ID, persists periodic complete-object checkpoints, and finalizes
+root-array or NDJSON framing.
 
 The session contract, not the coordinator, owns exclusive files, binding and
 transition enforcement at persistence, torn-tail truncation, durable data
@@ -178,9 +189,9 @@ failure after authority may have changed, the lease closes and becomes
 unusable so the caller must reopen and requalify the active generation.
 Disposal otherwise preserves prepared data and the active checkpoint.
 
-The platform-neutral coordinator remains internal and is not yet exposed
-through the public exporter or CLI. Wiring it to retained-source replay,
-publication, and cross-process recovery is the next activation slice.
+The public generic SDK now activates durable journal reopening and
+source-qualified resume. Retained-adapter and CLI routing, plus dedicated
+child-process crash qualification, remain later slices.
 
 ## Retained-Snapshot Publication
 
@@ -209,8 +220,8 @@ ACL. Existing final files are reusable only while they retain that same
 current-owner-only protected ACL. Non-Windows publication is not part of this
 slice.
 
-A rerun always regenerates the complete export before it examines final
-content for reuse. The following states are accepted:
+A restart-only `PublishAsync` rerun always regenerates the complete export
+before it examines final content for reuse. The following states are accepted:
 
 - neither final exists: publish data, then manifest;
 - the exact data exists alone: reuse it and publish the exact manifest; or
@@ -222,6 +233,17 @@ through staging and immediately before the data namespace commit. Once exact
 final data is committed, the publisher completes the deterministic manifest
 decision without observing cancellation so it does not deliberately strand a
 recoverable data-only state.
+
+Prepared publication uses the same final-state and manifest-last commit
+machine without rerunning serialization. It requires an independently retained
+lowercase SHA-256 manifest digest, requalifies the authoritative terminal
+checkpoint and prepared framing, and inspects finals before staging. When data
+must be published, it copies the prepared file into the deterministic private
+data stage while independently rehashing every byte; it never renames the
+prepared authority. Exact data-only and exact-pair states are reusable, and
+the prepared data plus active checkpoint remain intact after success for
+retry and audit. The write-and-publish facade holds the original exclusive
+prepared lease from source requalification through the final pair decision.
 
 `CSharpDbJsonExportAdapter` opens one retained snapshot only after path
 preflight, verifies the independently supplied canonical snapshot identity,
@@ -403,6 +425,10 @@ The merge gate covers:
 - parsing emitted bytes through the strict streaming JSON reader; and
 - a 50,000-row bounded-memory fixture;
 - exact new, data-only, and pair-reuse publication states;
+- public durable resume and terminal source requalification;
+- same-lease prepared publication, independent prepared-data copy/rehash, and
+  preserved journal authority;
+- root-array, NDJSON, and zero-byte empty-NDJSON prepared publication;
 - mismatch, alias, link, special-file, cancellation-cutoff, and injected-fault
   publication states;
 - retained-snapshot identity, schema, row-order, and source-requalification
@@ -412,20 +438,20 @@ The merge gate covers:
 
 ## Deferred Work
 
-This slice freezes and validates checkpoint artifacts, implements the portable
-replay coordinator, and persists active checkpoints through the qualified
-Windows lease. It does not yet expose partial-export resume through the
-retained adapter or CLI, process-crash qualify that composition, emit nested
-collection documents, or create a typed export-intent sidecar. An exact CLI
-rerun therefore still starts from row zero.
+The public SDK now composes the portable replay coordinator, qualified Windows
+lease, and prepared manifest-last publisher. It does not yet expose
+partial-export resume through the retained adapter or CLI, process-crash
+qualify that composition, emit nested collection documents, or create a typed
+export-intent sidecar. An exact CLI rerun therefore still starts from row
+zero.
 
 An uncatchable process termination can leave deterministic private
 `.csharpdb-json-export-*.publish.*.next` siblings. An exact-pair rerun
 exclusively requalifies and truncates safe leftovers before regeneration;
 unsafe or live siblings are never adopted or overwritten. Child-process
-qualification of every publication cutoff remains part of the resume
-activation slice. Directory-entry durability and abrupt-power-loss
-qualification remain deferred with the disposable Windows VM work.
+qualification of every publication cutoff remains a later qualification
+slice. Directory-entry durability and abrupt-power-loss qualification remain
+deferred with the disposable Windows VM work.
 
 In particular, `csharpdb-json-table-intent/v1` has no binary64 codec. A table
 containing CSharpDB `Real` values therefore cannot yet be advertised as a

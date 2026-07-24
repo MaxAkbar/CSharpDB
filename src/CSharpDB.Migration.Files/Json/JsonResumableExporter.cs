@@ -117,6 +117,127 @@ public sealed partial class JsonStreamingExporter
         64 * 1024;
 
     /// <summary>
+    /// Creates or resumes a durable private JSON or NDJSON prepared output.
+    /// Final data and manifest paths are not published by this method.
+    /// </summary>
+    public async ValueTask<JsonStreamingExportResult>
+        WriteResumableAsync(
+        JsonResumableExportRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ResumableContext context =
+            PrepareResumableContext(
+                request,
+                cancellationToken);
+        await using JsonExportPreparedOutputLease
+            lease =
+                await JsonExportPreparedOutputLease
+                    .OpenAsync(
+                        request.DestinationPath,
+                        context.Binding,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+        return await WriteResumableWithContextAsync(
+                request,
+                lease,
+                context,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Creates or source-requalifies a data-complete prepared output, then
+    /// publishes its exact data before the explicit canonical manifest path.
+    /// The same exclusive prepared-output lease remains live through
+    /// publication.
+    /// </summary>
+    public async ValueTask<JsonExportPublicationResult>
+        WriteResumableAndPublishAsync(
+        JsonResumableExportRequest request,
+        string manifestPath,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        JsonExportPublisher
+            .ValidatePreparedPublicationPaths(
+            request.DestinationPath,
+            manifestPath);
+        ResumableContext context =
+            PrepareResumableContext(
+                request,
+                cancellationToken);
+        JsonExportPreparedOutputLease? lease =
+            null;
+        bool committedPair = false;
+        Exception? bodyFailure = null;
+        try
+        {
+            lease =
+                await JsonExportPreparedOutputLease
+                    .OpenAllowingCompletedDestinationAsync(
+                        request.DestinationPath,
+                        context.Binding,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            JsonStreamingExportResult completed =
+                await WriteResumableWithContextAsync(
+                        request,
+                        lease,
+                        context,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            JsonExportPublicationResult result =
+                await new JsonExportPublisher()
+                    .PublishCompletedAsync(
+                        new JsonPreparedExportPublicationRequest
+                        {
+                            DestinationPath =
+                                request.DestinationPath,
+                            ManifestPath =
+                                manifestPath,
+                            ExpectedManifestDigest =
+                                completed.ManifestDigest,
+                        },
+                        lease,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            committedPair = true;
+            return result;
+        }
+        catch (Exception exception)
+        {
+            bodyFailure = exception;
+            throw;
+        }
+        finally
+        {
+            if (lease is not null)
+            {
+                try
+                {
+                    await lease
+                        .DisposeAsync()
+                        .ConfigureAwait(false);
+                }
+                catch (Exception cleanupFailure)
+                    when (!committedPair &&
+                          bodyFailure is not null)
+                {
+                    throw new AggregateException(
+                        "Resumable JSON export publication and lease cleanup did not both complete.",
+                        bodyFailure,
+                        cleanupFailure);
+                }
+                catch when (committedPair)
+                {
+                    // A qualified final pair is already the commit.
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Creates or resumes an already opened private prepared output. Session
     /// opening, path qualification, link defense, durable replacement, and
     /// final publication are deliberately outside this coordinator.
@@ -127,57 +248,32 @@ public sealed partial class JsonStreamingExporter
         IJsonExportPreparedOutputSession session,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(session);
-        if (string.IsNullOrWhiteSpace(
-                request.DestinationPath))
-        {
-            throw new ArgumentException(
-                "A resumable JSON export destination is required.",
-                nameof(request));
-        }
-        if (request.OpenRows is null)
-        {
-            throw new ArgumentException(
-                "A resumable JSON export row source is required.",
-                nameof(request));
-        }
-        if (request.CheckpointRowInterval <= 0)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(request),
-                "The JSON export checkpoint row interval must be positive.");
-        }
-
-        PreparedRequest prepared =
-            PrepareRequest(
-                new JsonStreamingExportRequest
-                {
-                    Profile = request.Profile,
-                    Framing = request.Framing,
-                    Source = request.Source,
-                    Table = request.Table,
-                    Rows = ResumeEmptyRows(),
-                    MaxDataBytes =
-                        request.MaxDataBytes,
-                    MaximumDecodedBlobBytes =
-                        request
-                            .MaximumDecodedBlobBytes,
-                },
+        ResumableContext context =
+            PrepareResumableContext(
+                request,
                 cancellationToken);
-        var binding =
-            new JsonExportCheckpointBinding
-            {
-                Profile = prepared.Profile,
-                Source = prepared.Source,
-                SourceSnapshotIdentity =
-                    request.SourceSnapshotIdentity,
-                Table = prepared.Table,
-                Json = prepared.Format,
-            };
+        return await WriteResumableWithContextAsync(
+                request,
+                session,
+                context,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask<JsonStreamingExportResult>
+        WriteResumableWithContextAsync(
+        JsonResumableExportRequest request,
+        IJsonExportPreparedOutputSession session,
+        ResumableContext context,
+        CancellationToken cancellationToken)
+    {
+        PreparedRequest prepared =
+            context.Prepared;
+        JsonExportCheckpointBinding binding =
+            context.Binding;
         JsonExportHashManifest bindingDigest =
-            JsonExportCheckpointSerializer
-                .ComputeBindingDigest(binding);
+            context.BindingDigest;
 
         cancellationToken
             .ThrowIfCancellationRequested();
@@ -540,6 +636,70 @@ public sealed partial class JsonStreamingExporter
                 throw;
             }
         }
+    }
+
+    private static ResumableContext
+        PrepareResumableContext(
+        JsonResumableExportRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (string.IsNullOrWhiteSpace(
+                request.DestinationPath))
+        {
+            throw new ArgumentException(
+                "A resumable JSON export destination is required.",
+                nameof(request));
+        }
+        if (request.OpenRows is null)
+        {
+            throw new ArgumentException(
+                "A resumable JSON export row source is required.",
+                nameof(request));
+        }
+        if (request.CheckpointRowInterval <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request),
+                "The JSON export checkpoint row interval must be positive.");
+        }
+
+        cancellationToken
+            .ThrowIfCancellationRequested();
+        PreparedRequest prepared =
+            PrepareRequest(
+                new JsonStreamingExportRequest
+                {
+                    Profile = request.Profile,
+                    Framing = request.Framing,
+                    Source = request.Source,
+                    Table = request.Table,
+                    Rows = ResumeEmptyRows(),
+                    MaxDataBytes =
+                        request.MaxDataBytes,
+                    MaximumDecodedBlobBytes =
+                        request
+                            .MaximumDecodedBlobBytes,
+                },
+                cancellationToken);
+        var binding =
+            new JsonExportCheckpointBinding
+            {
+                Profile = prepared.Profile,
+                Source = prepared.Source,
+                SourceSnapshotIdentity =
+                    request.SourceSnapshotIdentity,
+                Table = prepared.Table,
+                Json = prepared.Format,
+            };
+        JsonExportHashManifest bindingDigest =
+            JsonExportCheckpointSerializer
+                .ComputeBindingDigest(
+                    binding);
+        return new ResumableContext(
+            prepared,
+            binding,
+            bindingDigest);
     }
 
     private static async ValueTask<ReplayState>
@@ -1175,6 +1335,11 @@ public sealed partial class JsonStreamingExporter
             .ConfigureAwait(false);
         yield break;
     }
+
+    private sealed record ResumableContext(
+        PreparedRequest Prepared,
+        JsonExportCheckpointBinding Binding,
+        JsonExportHashManifest BindingDigest);
 
     private sealed record ReplayState(
         long RowCount,

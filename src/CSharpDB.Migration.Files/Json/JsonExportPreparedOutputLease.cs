@@ -147,6 +147,22 @@ public sealed class JsonExportPreparedOutputLease :
         OpenAsyncCore(
             destinationPath,
             expectedBinding,
+            allowCompletedDestination:
+                false,
+            checkpointFaultInjector: null,
+            cancellationToken);
+
+    internal static ValueTask<
+        JsonExportPreparedOutputLease>
+        OpenAllowingCompletedDestinationAsync(
+        string destinationPath,
+        JsonExportCheckpointBinding expectedBinding,
+        CancellationToken cancellationToken) =>
+        OpenAsyncCore(
+            destinationPath,
+            expectedBinding,
+            allowCompletedDestination:
+                true,
             checkpointFaultInjector: null,
             cancellationToken);
 
@@ -164,8 +180,88 @@ public sealed class JsonExportPreparedOutputLease :
         return OpenAsyncCore(
             destinationPath,
             expectedBinding,
+            allowCompletedDestination:
+                false,
             checkpointFaultInjector,
             cancellationToken);
+    }
+
+    internal static async ValueTask<
+        JsonExportPreparedOutputLease>
+        OpenForPublicationAsync(
+        string destinationPath,
+        string expectedManifestDigest,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken
+            .ThrowIfCancellationRequested();
+        ValidateManifestDigest(
+            expectedManifestDigest);
+        (
+            string normalizedDestination,
+            JsonExportPreparedOutputPaths paths,
+            _
+        ) = BindPathsCore(
+            destinationPath,
+            allowExistingDestination: true);
+
+        JsonExportPreparedOutputFileSystem
+            fileSystem =
+                JsonExportPreparedOutputFileSystem
+                    .Open(
+                        paths,
+                        requireExistingData:
+                            true);
+        try
+        {
+            byte[]? checkpointBytes =
+                await fileSystem
+                    .ReadActiveCheckpointAsync(
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            if (checkpointBytes is null)
+            {
+                throw new InvalidDataException(
+                    "JSON export publication requires an active data-complete checkpoint.");
+            }
+
+            JsonExportCheckpoint checkpoint =
+                JsonExportCheckpointSerializer
+                    .Deserialize(
+                        checkpointBytes);
+            RequireDataCompleteCheckpoint(
+                checkpoint);
+            RequireManifestDigestEquals(
+                checkpoint.Completion!
+                    .ManifestDigest,
+                expectedManifestDigest,
+                "The completed JSON export does not match the expected manifest digest.");
+            await QualifyAndRecoverPrefixAsync(
+                    fileSystem,
+                    checkpoint,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return new
+                JsonExportPreparedOutputLease(
+                    normalizedDestination,
+                    paths,
+                    fileSystem,
+                    checkpoint.BindingDigest,
+                    JsonExportPreparedOutputLeaseState
+                        .Recovered,
+                    checkpoint,
+                    checkpointBytes,
+                    checkpointFaultInjector:
+                        null);
+        }
+        catch
+        {
+            await fileSystem
+                .DisposeAsync()
+                .ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static async ValueTask<
@@ -173,6 +269,7 @@ public sealed class JsonExportPreparedOutputLease :
         OpenAsyncCore(
         string destinationPath,
         JsonExportCheckpointBinding expectedBinding,
+        bool allowCompletedDestination,
         IJsonExportCheckpointFaultInjector?
             checkpointFaultInjector,
         CancellationToken cancellationToken)
@@ -188,8 +285,12 @@ public sealed class JsonExportPreparedOutputLease :
                     expectedBinding);
         (
             string normalizedDestination,
-            JsonExportPreparedOutputPaths paths
-        ) = BindPaths(destinationPath);
+            JsonExportPreparedOutputPaths paths,
+            bool destinationExists
+        ) = BindPathsCore(
+            destinationPath,
+            allowExistingDestination:
+                allowCompletedDestination);
 
         JsonExportPreparedOutputFileSystem
             fileSystem =
@@ -197,7 +298,8 @@ public sealed class JsonExportPreparedOutputLease :
                     .Open(
                         paths,
                         requireExistingData:
-                            false);
+                            allowCompletedDestination &&
+                            destinationExists);
         try
         {
             byte[]? checkpointBytes =
@@ -207,6 +309,12 @@ public sealed class JsonExportPreparedOutputLease :
                     .ConfigureAwait(false);
             if (checkpointBytes is null)
             {
+                if (destinationExists)
+                {
+                    throw new InvalidDataException(
+                        "An existing JSON destination is recoverable only with a data-complete checkpoint.");
+                }
+
                 JsonExportPreparedOutputLeaseState
                     state =
                         fileSystem.DataStream.Length ==
@@ -237,6 +345,14 @@ public sealed class JsonExportPreparedOutputLease :
                 checkpoint.BindingDigest,
                 bindingDigest,
                 "The active JSON export checkpoint belongs to a different export binding.");
+            if (destinationExists &&
+                checkpoint.Phase !=
+                    JsonExportCheckpointPhase
+                        .DataComplete)
+            {
+                throw new InvalidDataException(
+                    "An existing JSON destination conflicts with an incomplete prepared export.");
+            }
             await QualifyAndRecoverPrefixAsync(
                     fileSystem,
                     checkpoint,
@@ -261,6 +377,61 @@ public sealed class JsonExportPreparedOutputLease :
                 .DisposeAsync()
                 .ConfigureAwait(false);
             throw;
+        }
+    }
+
+    internal async ValueTask<
+        JsonExportPreparedOutputPublicationQualification>
+        QualifyForPublicationAsync(
+        string expectedManifestDigest,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        ValidateManifestDigest(
+            expectedManifestDigest);
+        await operationGate
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        bool releaseGate = true;
+        try
+        {
+            ThrowIfDisposed();
+            byte[] checkpointBytes =
+                currentCheckpointBytes ??
+                throw new InvalidOperationException(
+                    "JSON export publication requires an active checkpoint.");
+            JsonExportCheckpoint checkpoint =
+                JsonExportCheckpointSerializer
+                    .Deserialize(
+                        checkpointBytes);
+            RequireDataCompleteCheckpoint(
+                checkpoint);
+            RequireManifestDigestEquals(
+                checkpoint.Completion!
+                    .ManifestDigest,
+                expectedManifestDigest,
+                "The completed JSON export does not match the expected manifest digest.");
+            await QualifyAndRecoverPrefixAsync(
+                    fileSystem,
+                    checkpoint,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            CurrentCheckpoint = checkpoint;
+            var qualification =
+                new JsonExportPreparedOutputPublicationQualification(
+                    DestinationPath,
+                    Paths,
+                    fileSystem.DataStream,
+                    checkpoint,
+                    () => operationGate.Release());
+            releaseGate = false;
+            return qualification;
+        }
+        finally
+        {
+            if (releaseGate)
+                operationGate.Release();
         }
     }
 
@@ -729,8 +900,89 @@ public sealed class JsonExportPreparedOutputLease :
         CancellationToken cancellationToken) =>
         faultInjector?.InjectAsync(
             point,
-            cancellationToken) ??
+        cancellationToken) ??
         ValueTask.CompletedTask;
+
+    private static void RequireDataCompleteCheckpoint(
+        JsonExportCheckpoint checkpoint)
+    {
+        if (checkpoint.Phase !=
+                JsonExportCheckpointPhase
+                    .DataComplete ||
+            checkpoint.Completion is null)
+        {
+            throw new InvalidDataException(
+                "Only a data-complete JSON export can be published.");
+        }
+    }
+
+    private static void ValidateManifestDigest(
+        string expectedManifestDigest)
+    {
+        ArgumentException
+            .ThrowIfNullOrWhiteSpace(
+                expectedManifestDigest);
+        if (expectedManifestDigest.Length !=
+                SHA256.HashSizeInBytes * 2 ||
+            expectedManifestDigest.Any(
+                static value =>
+                    value is not
+                        (>= '0' and <= '9') and
+                        not
+                        (>= 'a' and <= 'f')))
+        {
+            throw new ArgumentException(
+                "The expected JSON export manifest digest must be lowercase SHA-256 text.",
+                nameof(expectedManifestDigest));
+        }
+    }
+
+    private static void RequireManifestDigestEquals(
+        string supplied,
+        string expected,
+        string message)
+    {
+        byte[] suppliedBytes;
+        byte[] expectedBytes;
+        try
+        {
+            suppliedBytes =
+                Convert.FromHexString(
+                    supplied);
+            expectedBytes =
+                Convert.FromHexString(
+                    expected);
+        }
+        catch (Exception exception) when (
+            exception is
+                FormatException or
+                ArgumentNullException)
+        {
+            throw new InvalidDataException(
+                message);
+        }
+
+        try
+        {
+            if (!CryptographicOperations
+                    .FixedTimeEquals(
+                        suppliedBytes,
+                        expectedBytes))
+            {
+                throw new InvalidDataException(
+                    message);
+            }
+        }
+        finally
+        {
+            CryptographicOperations
+                .ZeroMemory(
+                    suppliedBytes);
+            CryptographicOperations
+                .ZeroMemory(
+                    expectedBytes);
+        }
+    }
 
     private static void RequireHashEquals(
         JsonExportHashManifest actual,
@@ -807,6 +1059,46 @@ public sealed class JsonExportPreparedOutputLease :
         BindPaths(
         string destinationPath)
     {
+        (
+            string destination,
+            JsonExportPreparedOutputPaths paths,
+            _
+        ) = BindPathsCore(
+            destinationPath,
+            allowExistingDestination:
+                false);
+        return (
+            destination,
+            paths);
+    }
+
+    internal static (
+        string Destination,
+        JsonExportPreparedOutputPaths Paths)
+        BindPathsAllowingCompletedDestination(
+        string destinationPath)
+    {
+        (
+            string destination,
+            JsonExportPreparedOutputPaths paths,
+            _
+        ) = BindPathsCore(
+            destinationPath,
+            allowExistingDestination:
+                true);
+        return (
+            destination,
+            paths);
+    }
+
+    private static (
+        string Destination,
+        JsonExportPreparedOutputPaths Paths,
+        bool DestinationExists)
+        BindPathsCore(
+        string destinationPath,
+        bool allowExistingDestination)
+    {
         ArgumentException
             .ThrowIfNullOrWhiteSpace(
                 destinationPath);
@@ -865,12 +1157,26 @@ public sealed class JsonExportPreparedOutputLease :
             throw new DirectoryNotFoundException(
                 "The JSON export destination parent directory does not exist.");
         }
-        if (TryGetAttributes(
+        bool destinationExists =
+            TryGetAttributes(
                 normalized,
-                out _))
+                out FileAttributes attributes);
+        if (destinationExists &&
+            !allowExistingDestination)
         {
             throw new InvalidDataException(
                 "The JSON export destination already exists; prepared export never overwrites it.");
+        }
+        if (destinationExists &&
+            (attributes &
+             (
+                 FileAttributes.Directory |
+                 FileAttributes.ReparsePoint |
+                 FileAttributes.Device
+             )) != 0)
+        {
+            throw new InvalidDataException(
+                "The existing JSON export destination must be a regular file.");
         }
 
         byte[] bindingBytes =
@@ -913,7 +1219,8 @@ public sealed class JsonExportPreparedOutputLease :
                         parent,
                         stem +
                         ".checkpoint.next"),
-            });
+            },
+            destinationExists);
     }
 
     private static void RejectDotSegments(
@@ -1103,4 +1410,58 @@ public sealed class JsonExportPreparedOutputLease :
         ObjectDisposedException.ThrowIf(
             disposed,
             this);
+}
+
+/// <summary>
+/// Borrowed, gate-held view of a fully requalified data-complete prepared
+/// output. The parent lease owns the stream and must outlive this view.
+/// Disposing this view releases only the parent's operation gate.
+/// </summary>
+internal sealed class
+    JsonExportPreparedOutputPublicationQualification :
+    IAsyncDisposable
+{
+    private Action? releaseGate;
+
+    internal
+        JsonExportPreparedOutputPublicationQualification(
+        string destinationPath,
+        JsonExportPreparedOutputPaths paths,
+        FileStream dataStream,
+        JsonExportCheckpoint checkpoint,
+        Action releaseGate)
+    {
+        DestinationPath =
+            destinationPath;
+        Paths =
+            paths;
+        DataStream =
+            dataStream;
+        Checkpoint =
+            checkpoint;
+        this.releaseGate =
+            releaseGate;
+    }
+
+    internal string DestinationPath { get; }
+
+    internal JsonExportPreparedOutputPaths Paths { get; }
+
+    /// <summary>
+    /// Borrowed exclusive prepared-data handle. The qualification consumer
+    /// must not dispose it.
+    /// </summary>
+    internal FileStream DataStream { get; }
+
+    internal JsonExportCheckpoint Checkpoint { get; }
+
+    public ValueTask DisposeAsync()
+    {
+        Action? release =
+            Interlocked.Exchange(
+                ref releaseGate,
+                null);
+        release?.Invoke();
+        return ValueTask.CompletedTask;
+    }
 }

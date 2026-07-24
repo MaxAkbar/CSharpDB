@@ -17,6 +17,20 @@ public sealed record JsonExportPublicationRequest
     public required JsonStreamingExportRequest Export { get; init; }
 }
 
+/// <summary>
+/// One completed prepared JSON or NDJSON output to publish manifest-last.
+/// The expected manifest digest independently pins the terminal checkpoint
+/// evidence supplied by the prepared-output lease.
+/// </summary>
+public sealed record JsonPreparedExportPublicationRequest
+{
+    public required string DestinationPath { get; init; }
+
+    public required string ManifestPath { get; init; }
+
+    public required string ExpectedManifestDigest { get; init; }
+}
+
 /// <summary>Exact final pair returned by manifest-last publication.</summary>
 public sealed record JsonExportPublicationResult
 {
@@ -73,6 +87,28 @@ public sealed class JsonExportPublisher
                 destinationPath,
                 manifestPath);
 
+    internal static void
+        ValidatePreparedPublicationPaths(
+        string destinationPath,
+        string manifestPath)
+    {
+        ValidatePaths(
+            destinationPath,
+            manifestPath);
+        (
+            string preparedDestination,
+            JsonExportPreparedOutputPaths
+                preparedPaths
+        ) = JsonExportPreparedOutputLease
+            .BindPathsAllowingCompletedDestination(
+                destinationPath);
+        PreflightPreparedPublicationPaths(
+            destinationPath,
+            manifestPath,
+            preparedDestination,
+            preparedPaths);
+    }
+
     public async ValueTask<JsonExportPublicationResult>
         PublishAsync(
         JsonExportPublicationRequest request,
@@ -88,11 +124,7 @@ public sealed class JsonExportPublisher
             fileSystem = null;
         FileStream? dataStaging = null;
         FileStream? manifestStaging = null;
-        FileStream? stableData = null;
-        FileStream? stableManifest = null;
-        bool committedPair = false;
-        bool newlyPublishedData = false;
-        bool freshDataRollbackRequired = false;
+        FinalState? initial = null;
         Exception? bodyFailure = null;
         List<Exception> cleanupFailures = [];
         try
@@ -143,14 +175,420 @@ public sealed class JsonExportPublisher
                 .ConfigureAwait(false);
             fileSystem.RequireParentIdentity();
 
-            await using FinalState initial =
+            initial =
                 await InspectFinalStateAsync(
                         fileSystem,
                         export,
                         cancellationToken)
                     .ConfigureAwait(false);
-            if (initial.Kind ==
+            JsonExportPublicationFileSystem
+                ownedFileSystem = fileSystem;
+            fileSystem = null;
+            FileStream ownedDataStaging =
+                dataStaging;
+            dataStaging = null;
+            FileStream ownedManifestStaging =
+                manifestStaging;
+            manifestStaging = null;
+            FinalState ownedInitial =
+                initial;
+            initial = null;
+            return await CompleteVerifiedPublicationAsync(
+                    ownedFileSystem,
+                    export,
+                    ownedInitial,
+                    ownedDataStaging,
+                    ownedManifestStaging,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            bodyFailure = exception;
+            throw;
+        }
+        finally
+        {
+            if (initial is not null)
+            {
+                try
+                {
+                    await initial
+                        .DisposeAsync()
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    cleanupFailures.Add(
+                        exception);
+                }
+            }
+            if (fileSystem is not null)
+            {
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => RemoveAndDispose(
+                        fileSystem,
+                        ref manifestStaging));
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => RemoveAndDispose(
+                        fileSystem,
+                        ref dataStaging));
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    fileSystem.Dispose);
+            }
+            else
+            {
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => DisposeStream(
+                        ref manifestStaging));
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => DisposeStream(
+                        ref dataStaging));
+            }
+
+            if (cleanupFailures.Count != 0)
+            {
+                if (bodyFailure is not null)
+                {
+                    cleanupFailures.Insert(
+                        0,
+                        bodyFailure);
+                }
+                throw new AggregateException(
+                    "JSON export publication and bound-handle cleanup did not both complete.",
+                    cleanupFailures);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reopens and publishes one terminal prepared output without deleting its
+    /// prepared data or checkpoint journal.
+    /// </summary>
+    public async ValueTask<JsonExportPublicationResult>
+        PublishCompletedAsync(
+        JsonPreparedExportPublicationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ValidatePreparedPublicationRequest(
+            request);
+        ValidatePreparedPublicationPaths(
+            request.DestinationPath,
+            request.ManifestPath);
+
+        JsonExportPreparedOutputLease? lease =
+            null;
+        bool committedPair = false;
+        Exception? bodyFailure = null;
+        try
+        {
+            lease =
+                await JsonExportPreparedOutputLease
+                    .OpenForPublicationAsync(
+                        request.DestinationPath,
+                        request.ExpectedManifestDigest,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            JsonExportPublicationResult result =
+                await PublishCompletedAsync(
+                        request,
+                        lease,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            committedPair = true;
+            return result;
+        }
+        catch (Exception exception)
+        {
+            bodyFailure = exception;
+            throw;
+        }
+        finally
+        {
+            if (lease is not null)
+            {
+                try
+                {
+                    await lease
+                        .DisposeAsync()
+                        .ConfigureAwait(false);
+                }
+                catch (Exception cleanupFailure)
+                    when (!committedPair &&
+                          bodyFailure is not null)
+                {
+                    throw new AggregateException(
+                        "Prepared JSON export publication and lease cleanup did not both complete.",
+                        bodyFailure,
+                        cleanupFailure);
+                }
+                catch when (committedPair)
+                {
+                    // A qualified final pair is already the commit.
+                }
+            }
+        }
+    }
+
+    internal async ValueTask<JsonExportPublicationResult>
+        PublishCompletedAsync(
+        JsonPreparedExportPublicationRequest request,
+        JsonExportPreparedOutputLease liveLease,
+        CancellationToken cancellationToken = default)
+    {
+        ValidatePreparedPublicationRequest(
+            request);
+        ArgumentNullException.ThrowIfNull(
+            liveLease);
+        cancellationToken
+            .ThrowIfCancellationRequested();
+        PreflightPreparedPublicationPaths(
+            request.DestinationPath,
+            request.ManifestPath,
+            liveLease.DestinationPath,
+            liveLease.Paths);
+
+        await using
+            JsonExportPreparedOutputPublicationQualification
+                qualification =
+                    await liveLease
+                        .QualifyForPublicationAsync(
+                            request
+                                .ExpectedManifestDigest,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+        return await PublishQualifiedCompletedAsync(
+                request,
+                qualification,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask<JsonExportPublicationResult>
+        PublishQualifiedCompletedAsync(
+        JsonPreparedExportPublicationRequest request,
+        JsonExportPreparedOutputPublicationQualification
+            qualification,
+        CancellationToken cancellationToken)
+    {
+        JsonExportPublicationFileSystem?
+            fileSystem = null;
+        FileStream? dataStaging = null;
+        FileStream? manifestStaging = null;
+        FinalState? initial = null;
+        Exception? bodyFailure = null;
+        List<Exception> cleanupFailures = [];
+        try
+        {
+            if (!string.Equals(
+                    request.DestinationPath,
+                    qualification.DestinationPath,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "The prepared JSON publication destination does not match its live lease.");
+            }
+
+            JsonStreamingExportResult export =
+                CreateCompletedExportEvidence(
+                    qualification.Checkpoint,
+                    request
+                        .ExpectedManifestDigest);
+            fileSystem =
+                JsonExportPublicationFileSystem.Open(
+                    request.DestinationPath,
+                    request.ManifestPath);
+            RequireDistinctPublicationPaths(
+                fileSystem.Paths,
+                qualification.Paths);
+
+            initial =
+                await InspectFinalStateAsync(
+                        fileSystem,
+                        export,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            if (initial.Kind !=
                 FinalStateKind.ExactPair)
+            {
+                if (initial.Kind ==
+                    FinalStateKind.Absent)
+                {
+                    dataStaging =
+                        fileSystem
+                            .CreatePrivateStagingFile(
+                                fileSystem.Paths
+                                    .DataStagingPath);
+                    await CopyPreparedDataAsync(
+                            qualification.DataStream,
+                            dataStaging,
+                            export.Manifest.Content,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    await FlushDurablyAsync(
+                            dataStaging,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                manifestStaging =
+                    fileSystem
+                        .CreatePrivateStagingFile(
+                            fileSystem.Paths
+                                .ManifestStagingPath);
+                await manifestStaging
+                    .WriteAsync(
+                        export.CanonicalManifestBytes,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                await FlushDurablyAsync(
+                        manifestStaging,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (dataStaging is not null)
+                {
+                    await VerifyStagingFilesAsync(
+                            dataStaging,
+                            manifestStaging,
+                            export,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await RequireExactManifestAsync(
+                            manifestStaging,
+                            export.CanonicalManifestBytes,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                fileSystem.RequireParentIdentity();
+            }
+
+            JsonExportPublicationFileSystem
+                ownedFileSystem = fileSystem;
+            fileSystem = null;
+            FileStream? ownedDataStaging =
+                dataStaging;
+            dataStaging = null;
+            FileStream? ownedManifestStaging =
+                manifestStaging;
+            manifestStaging = null;
+            FinalState ownedInitial =
+                initial;
+            initial = null;
+            return await CompleteVerifiedPublicationAsync(
+                    ownedFileSystem,
+                    export,
+                    ownedInitial,
+                    ownedDataStaging,
+                    ownedManifestStaging,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            bodyFailure = exception;
+            throw;
+        }
+        finally
+        {
+            if (initial is not null)
+            {
+                try
+                {
+                    await initial
+                        .DisposeAsync()
+                        .ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    cleanupFailures.Add(
+                        exception);
+                }
+            }
+            if (fileSystem is not null)
+            {
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => RemoveAndDispose(
+                        fileSystem,
+                        ref manifestStaging));
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => RemoveAndDispose(
+                        fileSystem,
+                        ref dataStaging));
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    fileSystem.Dispose);
+            }
+            else
+            {
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => DisposeStream(
+                        ref manifestStaging));
+                CaptureCleanupFailure(
+                    cleanupFailures,
+                    committedPair: false,
+                    () => DisposeStream(
+                        ref dataStaging));
+            }
+
+            if (cleanupFailures.Count != 0)
+            {
+                if (bodyFailure is not null)
+                {
+                    cleanupFailures.Insert(
+                        0,
+                        bodyFailure);
+                }
+                throw new AggregateException(
+                    "Prepared JSON export publication and bound-handle cleanup did not both complete.",
+                    cleanupFailures);
+            }
+        }
+    }
+
+    private async ValueTask<JsonExportPublicationResult>
+        CompleteVerifiedPublicationAsync(
+        JsonExportPublicationFileSystem fileSystem,
+        JsonStreamingExportResult export,
+        FinalState initial,
+        FileStream? dataStaging,
+        FileStream? manifestStaging,
+        CancellationToken cancellationToken)
+    {
+        JsonExportPublicationFileSystem
+            .PublicationPaths paths =
+            fileSystem.Paths;
+        FileStream? stableData = null;
+        FileStream? stableManifest = null;
+        bool committedPair = false;
+        bool newlyPublishedData = false;
+        bool freshDataRollbackRequired = false;
+        Exception? bodyFailure = null;
+        List<Exception> cleanupFailures = [];
+        try
+        {
+            if (initial.Kind ==
+                    FinalStateKind.ExactPair)
             {
                 committedPair = true;
                 return CreateResult(
@@ -162,7 +600,7 @@ public sealed class JsonExportPublisher
 
             bool reusedData;
             if (initial.Kind ==
-                FinalStateKind.ExactDataOnly)
+                    FinalStateKind.ExactDataOnly)
             {
                 stableData =
                     initial.TakeData();
@@ -170,6 +608,10 @@ public sealed class JsonExportPublisher
             }
             else
             {
+                FileStream unpublishedData =
+                    dataStaging ??
+                    throw new InvalidOperationException(
+                        "Verified JSON data staging is required before a fresh publication.");
                 await InjectFaultAsync(
                         JsonExportPublicationFaultPoint
                             .BeforeDataNamespaceCommit,
@@ -190,14 +632,14 @@ public sealed class JsonExportPublisher
                 JsonExportPublicationFileSystem
                     .NoReplaceRenameStatus dataStatus =
                     fileSystem.RenameNoReplace(
-                        dataStaging,
+                        unpublishedData,
                         paths.DestinationPath);
                 if (dataStatus ==
                     JsonExportPublicationFileSystem
                         .NoReplaceRenameStatus.Published)
                 {
                     stableData =
-                        dataStaging;
+                        unpublishedData;
                     dataStaging = null;
                     reusedData = false;
                     newlyPublishedData = true;
@@ -219,8 +661,9 @@ public sealed class JsonExportPublisher
                         fileSystem,
                         ref dataStaging);
                     stableData =
-                        fileSystem.OpenExistingRequired(
-                            paths.DestinationPath);
+                        fileSystem
+                            .OpenExistingRequired(
+                                paths.DestinationPath);
                     await RequireStableExactDataAsync(
                             fileSystem,
                             stableData,
@@ -245,9 +688,10 @@ public sealed class JsonExportPublisher
                 }
             }
 
-            // Exact final data is now the recovery authority. Its open handle
-            // denies write/delete sharing through the manifest decision, and
-            // cancellation is deliberately no longer observed.
+            // Exact final data is now the recovery authority. Its open
+            // handle denies write/delete sharing through the manifest
+            // decision, and cancellation is deliberately no longer
+            // observed.
             FileStream exactData =
                 stableData ??
                 throw new InvalidOperationException(
@@ -264,18 +708,22 @@ public sealed class JsonExportPublisher
                 .ConfigureAwait(false);
             fileSystem.RequireParentIdentity();
 
+            FileStream unpublishedManifest =
+                manifestStaging ??
+                throw new InvalidOperationException(
+                    "Verified JSON manifest staging is required before publication.");
             bool reusedManifest;
             JsonExportPublicationFileSystem
                 .NoReplaceRenameStatus manifestStatus =
                 fileSystem.RenameNoReplace(
-                    manifestStaging,
+                    unpublishedManifest,
                     paths.ManifestPath);
             if (manifestStatus ==
                 JsonExportPublicationFileSystem
                     .NoReplaceRenameStatus.Published)
             {
                 stableManifest =
-                    manifestStaging;
+                    unpublishedManifest;
                 manifestStaging = null;
                 reusedManifest = false;
             }
@@ -287,11 +735,13 @@ public sealed class JsonExportPublisher
                 try
                 {
                     stableManifest =
-                        fileSystem.OpenExistingRequired(
-                            paths.ManifestPath);
+                        fileSystem
+                            .OpenExistingRequired(
+                                paths.ManifestPath);
                     await RequireExactManifestAsync(
                             stableManifest,
-                            export.CanonicalManifestBytes,
+                            export
+                                .CanonicalManifestBytes,
                             CancellationToken.None)
                         .ConfigureAwait(false);
                     reusedManifest = true;
@@ -348,13 +798,26 @@ public sealed class JsonExportPublisher
         }
         finally
         {
+            try
+            {
+                await initial
+                    .DisposeAsync()
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                if (!committedPair)
+                {
+                    cleanupFailures.Add(
+                        exception);
+                }
+            }
             CaptureCleanupFailure(
                 cleanupFailures,
                 committedPair,
                 () => DisposeStream(
                     ref stableManifest));
-            if (fileSystem is not null &&
-                freshDataRollbackRequired)
+            if (freshDataRollbackRequired)
             {
                 CaptureCleanupFailure(
                     cleanupFailures,
@@ -370,38 +833,22 @@ public sealed class JsonExportPublisher
                 committedPair,
                 () => DisposeStream(
                     ref stableData));
-            if (fileSystem is not null)
-            {
-                CaptureCleanupFailure(
-                    cleanupFailures,
-                    committedPair,
-                    () => RemoveAndDispose(
-                        fileSystem,
-                        ref manifestStaging));
-                CaptureCleanupFailure(
-                    cleanupFailures,
-                    committedPair,
-                    () => RemoveAndDispose(
-                        fileSystem,
-                        ref dataStaging));
-                CaptureCleanupFailure(
-                    cleanupFailures,
-                    committedPair,
-                    fileSystem.Dispose);
-            }
-            else
-            {
-                CaptureCleanupFailure(
-                    cleanupFailures,
-                    committedPair,
-                    () => DisposeStream(
-                        ref manifestStaging));
-                CaptureCleanupFailure(
-                    cleanupFailures,
-                    committedPair,
-                    () => DisposeStream(
-                        ref dataStaging));
-            }
+            CaptureCleanupFailure(
+                cleanupFailures,
+                committedPair,
+                () => RemoveAndDispose(
+                    fileSystem,
+                    ref manifestStaging));
+            CaptureCleanupFailure(
+                cleanupFailures,
+                committedPair,
+                () => RemoveAndDispose(
+                    fileSystem,
+                    ref dataStaging));
+            CaptureCleanupFailure(
+                cleanupFailures,
+                committedPair,
+                fileSystem.Dispose);
 
             if (!committedPair &&
                 cleanupFailures.Count != 0)
@@ -416,6 +863,353 @@ public sealed class JsonExportPublisher
                     "JSON export publication and bound-handle cleanup did not both complete.",
                     cleanupFailures);
             }
+        }
+    }
+
+    private static void
+        ValidatePreparedPublicationRequest(
+        JsonPreparedExportPublicationRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(
+            request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            request.DestinationPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            request.ManifestPath);
+        ValidateCanonicalSha256(
+            request.ExpectedManifestDigest,
+            nameof(
+                request.ExpectedManifestDigest));
+    }
+
+    private static JsonStreamingExportResult
+        CreateCompletedExportEvidence(
+        JsonExportCheckpoint checkpoint,
+        string expectedManifestDigest)
+    {
+        JsonExportManifest manifest =
+            JsonExportCheckpointSerializer
+                .CreateCompletedManifest(
+                    checkpoint);
+        byte[] canonicalManifestBytes =
+            JsonExportManifestSerializer
+                .Serialize(manifest);
+        try
+        {
+            string manifestDigest =
+                JsonExportManifestSerializer
+                    .ComputeManifestDigest(
+                        manifest);
+            RequireManifestDigestEquals(
+                manifestDigest,
+                checkpoint.Completion!
+                    .ManifestDigest,
+                "The terminal JSON checkpoint does not match its reconstructed manifest.");
+            RequireManifestDigestEquals(
+                manifestDigest,
+                expectedManifestDigest,
+                "The terminal JSON checkpoint does not match the expected manifest digest.");
+            return new JsonStreamingExportResult
+            {
+                Manifest = manifest,
+                CanonicalManifestBytes =
+                    canonicalManifestBytes,
+                ManifestDigest =
+                    manifestDigest,
+            };
+        }
+        catch
+        {
+            CryptographicOperations
+                .ZeroMemory(
+                    canonicalManifestBytes);
+            throw;
+        }
+    }
+
+    private static void
+        RequireDistinctPublicationPaths(
+        JsonExportPublicationFileSystem
+            .PublicationPaths publication,
+        JsonExportPreparedOutputPaths prepared)
+    {
+        var paths =
+            new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+        AddDistinctPublicationPath(
+            paths,
+            publication.DestinationPath);
+        AddDistinctPublicationPath(
+            paths,
+            publication.ManifestPath);
+        AddDistinctPublicationPath(
+            paths,
+            prepared.PreparedDataPath);
+        AddDistinctPublicationPath(
+            paths,
+            prepared.CheckpointPath);
+        AddDistinctPublicationPath(
+            paths,
+            prepared.PendingCheckpointPath);
+        AddDistinctPublicationPath(
+            paths,
+            publication.DataStagingPath);
+        AddDistinctPublicationPath(
+            paths,
+            publication.ManifestStagingPath);
+    }
+
+    private static void
+        PreflightPreparedPublicationPaths(
+        string destinationPath,
+        string manifestPath,
+        string preparedDestination,
+        JsonExportPreparedOutputPaths
+            preparedPaths)
+    {
+        if (!string.Equals(
+                destinationPath,
+                preparedDestination,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The prepared JSON publication destination does not match its path binding.");
+        }
+        JsonExportPublicationFileSystem
+            .PublicationPaths publication =
+            JsonExportPublicationFileSystem
+                .PublicationPaths.Bind(
+                    destinationPath,
+                    manifestPath);
+        RequireDistinctPublicationPaths(
+            publication,
+            preparedPaths);
+    }
+
+    private static void AddDistinctPublicationPath(
+        HashSet<string> paths,
+        string path)
+    {
+        if (!paths.Add(path))
+        {
+            throw new ArgumentException(
+                "Prepared JSON final, journal, and publication-staging paths must all be distinct.");
+        }
+    }
+
+    private static async ValueTask
+        CopyPreparedDataAsync(
+        FileStream prepared,
+        FileStream staging,
+        JsonExportContentManifest content,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(
+            prepared);
+        ArgumentNullException.ThrowIfNull(
+            staging);
+        ArgumentNullException.ThrowIfNull(
+            content);
+        if (prepared.Length !=
+            content.DataByteLength)
+        {
+            throw new InvalidDataException(
+                "The prepared JSON data length changed before publication.");
+        }
+
+        long preparedPosition =
+            prepared.Position;
+        byte[] buffer =
+            ArrayPool<byte>.Shared.Rent(
+                BufferSize);
+        try
+        {
+            using IncrementalHash hash =
+                IncrementalHash.CreateHash(
+                    HashAlgorithmName.SHA256);
+            prepared.Position = 0;
+            long remaining =
+                content.DataByteLength;
+            while (remaining > 0)
+            {
+                int requested =
+                    (int)Math.Min(
+                        remaining,
+                        buffer.Length);
+                int read =
+                    await prepared
+                        .ReadAsync(
+                            buffer.AsMemory(
+                                0,
+                                requested),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    throw new InvalidDataException(
+                        "The prepared JSON data ended before its terminal checkpoint boundary.");
+                }
+
+                hash.AppendData(
+                    buffer,
+                    0,
+                    read);
+                await staging
+                    .WriteAsync(
+                        buffer.AsMemory(
+                            0,
+                            read),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                remaining -= read;
+            }
+
+            if (prepared.Length !=
+                    content.DataByteLength ||
+                staging.Length !=
+                    content.DataByteLength)
+            {
+                throw new InvalidDataException(
+                    "The prepared JSON data changed while it was staged for publication.");
+            }
+
+            byte[] actual =
+                hash.GetHashAndReset();
+            try
+            {
+                RequireHashEquals(
+                    actual,
+                    content.DataDigest,
+                    "The prepared JSON data digest changed while it was staged for publication.");
+            }
+            finally
+            {
+                CryptographicOperations
+                    .ZeroMemory(actual);
+            }
+        }
+        finally
+        {
+            prepared.Position =
+                preparedPosition;
+            CryptographicOperations
+                .ZeroMemory(
+                    buffer.AsSpan(
+                        0,
+                        buffer.Length));
+            ArrayPool<byte>.Shared.Return(
+                buffer);
+        }
+    }
+
+    private static void RequireHashEquals(
+        ReadOnlySpan<byte> actual,
+        JsonExportHashManifest expected,
+        string message)
+    {
+        if (expected is null ||
+            !string.Equals(
+                expected.Algorithm,
+                JsonExportHashManifest
+                    .Sha256Algorithm,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                message);
+        }
+
+        byte[] expectedBytes;
+        try
+        {
+            expectedBytes =
+                Convert.FromHexString(
+                    expected.Value);
+        }
+        catch (Exception exception) when (
+            exception is
+                FormatException or
+                ArgumentNullException)
+        {
+            throw new InvalidDataException(
+                message);
+        }
+
+        try
+        {
+            if (!CryptographicOperations
+                    .FixedTimeEquals(
+                        actual,
+                        expectedBytes))
+            {
+                throw new InvalidDataException(
+                    message);
+            }
+        }
+        finally
+        {
+            CryptographicOperations
+                .ZeroMemory(
+                    expectedBytes);
+        }
+    }
+
+    private static void
+        RequireManifestDigestEquals(
+        string actual,
+        string expected,
+        string message)
+    {
+        ValidateCanonicalSha256(
+            actual,
+            nameof(actual));
+        ValidateCanonicalSha256(
+            expected,
+            nameof(expected));
+        byte[] actualBytes =
+            Convert.FromHexString(actual);
+        byte[] expectedBytes =
+            Convert.FromHexString(expected);
+        try
+        {
+            if (!CryptographicOperations
+                    .FixedTimeEquals(
+                        actualBytes,
+                        expectedBytes))
+            {
+                throw new InvalidDataException(
+                    message);
+            }
+        }
+        finally
+        {
+            CryptographicOperations
+                .ZeroMemory(
+                    actualBytes);
+            CryptographicOperations
+                .ZeroMemory(
+                    expectedBytes);
+        }
+    }
+
+    private static void ValidateCanonicalSha256(
+        string value,
+        string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            value,
+            parameterName);
+        if (value.Length !=
+                SHA256.HashSizeInBytes *
+                2 ||
+            value.Any(
+                character =>
+                    character is not
+                        (>= '0' and <= '9') and not
+                        (>= 'a' and <= 'f')))
+        {
+            throw new ArgumentException(
+                "The expected JSON manifest digest must be a lowercase SHA-256 value.",
+                parameterName);
         }
     }
 

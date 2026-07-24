@@ -466,6 +466,320 @@ public sealed class JsonExportPreparedOutputLeaseTests
         Assert.Equal(prefix.LongLength, recovered.DataStream.Length);
     }
 
+    [Theory]
+    [InlineData("abc")]
+    [InlineData("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+    [InlineData("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg")]
+    public async Task OpenForPublicationAsync_RejectsNoncanonicalManifestDigestBeforeFileCreation(
+        string expectedManifestDigest)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destinationPath =
+            workspace.PathFor("invalid-digest.json");
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => JsonExportPreparedOutputLease
+                .OpenForPublicationAsync(
+                    destinationPath,
+                    expectedManifestDigest,
+                    Cancellation)
+                .AsTask());
+
+        Assert.Empty(
+            Directory.EnumerateFileSystemEntries(
+                Path.GetDirectoryName(
+                    destinationPath)!));
+    }
+
+    [Fact]
+    public async Task OpenForPublicationAsync_RequiresExistingPreparedData()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destinationPath =
+            workspace.PathFor("missing-prepared.json");
+
+        await Assert.ThrowsAsync<FileNotFoundException>(
+            () => JsonExportPreparedOutputLease
+                .OpenForPublicationAsync(
+                    destinationPath,
+                    new string('0', 64),
+                    Cancellation)
+                .AsTask());
+        Assert.Empty(
+            Directory.EnumerateFileSystemEntries(
+                Path.GetDirectoryName(
+                    destinationPath)!));
+    }
+
+    [Fact]
+    public async Task OpenForPublicationAsync_RequiresDataCompleteAuthority()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destinationPath =
+            workspace.PathFor("writing.json");
+        JsonExportCheckpointBinding binding =
+            CreateBinding(JsonExportFraming.RootArray);
+        (byte[] prefix, JsonExportCheckpoint checkpoint) =
+            CreateInitialCheckpoint(binding);
+        _ = await PersistInitialCheckpointAsync(
+            destinationPath,
+            binding,
+            prefix,
+            checkpoint);
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => JsonExportPreparedOutputLease
+                .OpenForPublicationAsync(
+                    destinationPath,
+                    new string('0', 64),
+                    Cancellation)
+                .AsTask());
+    }
+
+    [Fact]
+    public async Task OpenAllowingCompletedDestinationAsync_RejectsIncompleteAuthority()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destinationPath =
+            workspace.PathFor("incomplete-existing.json");
+        JsonExportCheckpointBinding binding =
+            CreateBinding(JsonExportFraming.RootArray);
+        (byte[] prefix, JsonExportCheckpoint checkpoint) =
+            CreateInitialCheckpoint(binding);
+        _ = await PersistInitialCheckpointAsync(
+            destinationPath,
+            binding,
+            prefix,
+            checkpoint);
+        await File.WriteAllBytesAsync(
+            destinationPath,
+            prefix,
+            Cancellation);
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => JsonExportPreparedOutputLease
+                .OpenAllowingCompletedDestinationAsync(
+                    destinationPath,
+                    binding,
+                    Cancellation)
+                .AsTask());
+    }
+
+    [Theory]
+    [InlineData(JsonExportFraming.RootArray)]
+    [InlineData(JsonExportFraming.Ndjson)]
+    public async Task OpenForPublicationAsync_RequalifiesCompletedPreparedDataAndAllowsExistingDestination(
+        JsonExportFraming framing)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destinationPath = workspace.PathFor(
+            framing == JsonExportFraming.RootArray
+                ? "completed.json"
+                : "completed.ndjson");
+        JsonExportCheckpointBinding binding =
+            CreateBinding(framing);
+        (
+            JsonExportPreparedOutputPaths paths,
+            byte[] data,
+            JsonExportCheckpoint completed
+        ) = await PersistCompletedCheckpointAsync(
+            destinationPath,
+            binding);
+        byte[] tail = "non-authoritative-tail"u8.ToArray();
+        await using (var append = new FileStream(
+                         paths.PreparedDataPath,
+                         FileMode.Append,
+                         FileAccess.Write,
+                         FileShare.None))
+        {
+            await append.WriteAsync(
+                tail,
+                Cancellation);
+            append.Flush(flushToDisk: true);
+        }
+        await File.WriteAllBytesAsync(
+            destinationPath,
+            data,
+            Cancellation);
+        string manifestDigest =
+            completed.Completion!
+                .ManifestDigest;
+
+        Assert.Throws<InvalidDataException>(
+            () => JsonExportPreparedOutputLease
+                .BindPaths(
+                    destinationPath));
+
+        await using (JsonExportPreparedOutputLease publication =
+                     await JsonExportPreparedOutputLease
+                         .OpenForPublicationAsync(
+                             destinationPath,
+                             manifestDigest,
+                             Cancellation))
+        {
+            Assert.Equal(
+                JsonExportPreparedOutputLeaseState.Recovered,
+                publication.State);
+            Assert.Equal(
+                JsonExportCheckpointPhase.DataComplete,
+                publication.CurrentCheckpoint!.Phase);
+            Assert.Equal(
+                data.LongLength,
+                publication.DataStream.Length);
+            Assert.Equal(
+                data.LongLength,
+                publication.DataStream.Position);
+        }
+
+        await using JsonExportPreparedOutputLease allowed =
+            await JsonExportPreparedOutputLease
+                .OpenAllowingCompletedDestinationAsync(
+                    destinationPath,
+                    binding,
+                    Cancellation);
+        Assert.Equal(
+            JsonExportCheckpointPhase.DataComplete,
+            allowed.CurrentCheckpoint!.Phase);
+        Assert.Equal(
+            data.LongLength,
+            allowed.DataStream.Length);
+    }
+
+    [Fact]
+    public async Task OpenForPublicationAsync_RejectsDifferentManifestDigest()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destinationPath =
+            workspace.PathFor("wrong-manifest.json");
+        JsonExportCheckpointBinding binding =
+            CreateBinding(JsonExportFraming.RootArray);
+        (
+            _,
+            _,
+            JsonExportCheckpoint completed
+        ) = await PersistCompletedCheckpointAsync(
+            destinationPath,
+            binding);
+        string different =
+            completed.Completion!
+                    .ManifestDigest ==
+                new string('f', 64)
+                ? new string('e', 64)
+                : new string('f', 64);
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => JsonExportPreparedOutputLease
+                .OpenForPublicationAsync(
+                    destinationPath,
+                    different,
+                    Cancellation)
+                .AsTask());
+    }
+
+    [Fact]
+    public async Task QualifyForPublicationAsync_HoldsLivePreparedHandleAndLeaseGate()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destinationPath =
+            workspace.PathFor("live-publication.json");
+        JsonExportCheckpointBinding binding =
+            CreateBinding(JsonExportFraming.RootArray);
+        (byte[] prefix, JsonExportCheckpoint writing) =
+            CreateInitialCheckpoint(binding);
+        (byte[] data, JsonExportCheckpoint completed) =
+            CreateCompletedCheckpoint(writing);
+
+        await using JsonExportPreparedOutputLease lease =
+            await JsonExportPreparedOutputLease.OpenAsync(
+                destinationPath,
+                binding,
+                Cancellation);
+        FileStream liveStream =
+            Assert.IsType<FileStream>(
+                lease.DataStream);
+        await liveStream.WriteAsync(
+            prefix,
+            Cancellation);
+        await lease.PersistCheckpointAsync(
+            writing,
+            Cancellation);
+        await liveStream.WriteAsync(
+            data.AsMemory(prefix.Length),
+            Cancellation);
+        await lease.PersistCheckpointAsync(
+            completed,
+            Cancellation);
+
+        Task<
+            JsonExportPreparedOutputPublicationQualification>
+            waiting;
+        await using (
+            JsonExportPreparedOutputPublicationQualification
+                qualification =
+                    await lease
+                        .QualifyForPublicationAsync(
+                            completed.Completion!
+                                .ManifestDigest,
+                            Cancellation))
+        {
+            Assert.Same(
+                liveStream,
+                qualification.DataStream);
+            Assert.Equal(
+                lease.Paths,
+                qualification.Paths);
+            Assert.Equal(
+                destinationPath,
+                qualification.DestinationPath);
+            Assert.Equal(
+                JsonExportCheckpointPhase.DataComplete,
+                qualification.Checkpoint.Phase);
+
+            waiting =
+                lease.QualifyForPublicationAsync(
+                        completed.Completion
+                            .ManifestDigest,
+                        Cancellation)
+                    .AsTask();
+            Assert.False(
+                waiting.IsCompleted);
+        }
+
+        await using (
+            JsonExportPreparedOutputPublicationQualification
+                second =
+                    await waiting)
+        {
+            Assert.Same(
+                liveStream,
+                second.DataStream);
+        }
+        Assert.Same(
+            liveStream,
+            lease.DataStream);
+    }
+
     [Fact]
     public void BindPaths_DistinguishesExactDestinationCase()
     {
@@ -507,6 +821,41 @@ public sealed class JsonExportPreparedOutputLeaseTests
             checkpoint,
             Cancellation);
         return lease.Paths;
+    }
+
+    private static async Task<(
+        JsonExportPreparedOutputPaths Paths,
+        byte[] Data,
+        JsonExportCheckpoint Completed)>
+        PersistCompletedCheckpointAsync(
+        string destinationPath,
+        JsonExportCheckpointBinding binding)
+    {
+        (byte[] prefix, JsonExportCheckpoint writing) =
+            CreateInitialCheckpoint(binding);
+        (byte[] data, JsonExportCheckpoint completed) =
+            CreateCompletedCheckpoint(writing);
+        await using JsonExportPreparedOutputLease lease =
+            await JsonExportPreparedOutputLease.OpenAsync(
+                destinationPath,
+                binding,
+                Cancellation);
+        await lease.DataStream.WriteAsync(
+            prefix,
+            Cancellation);
+        await lease.PersistCheckpointAsync(
+            writing,
+            Cancellation);
+        await lease.DataStream.WriteAsync(
+            data.AsMemory(prefix.Length),
+            Cancellation);
+        await lease.PersistCheckpointAsync(
+            completed,
+            Cancellation);
+        return (
+            lease.Paths,
+            data,
+            completed);
     }
 
     private static (
@@ -554,6 +903,116 @@ public sealed class JsonExportPreparedOutputLeaseTests
                 Completion = null,
             });
     }
+
+    private static (
+        byte[] Data,
+        JsonExportCheckpoint Checkpoint)
+        CreateCompletedCheckpoint(
+        JsonExportCheckpoint writing)
+    {
+        byte[] data =
+            writing.Binding.Json.Framing ==
+            JsonExportFraming.RootArray
+                ? "[]\n"u8.ToArray()
+                : [];
+        JsonExportCheckpointProgress progress =
+            writing.Progress with
+            {
+                DataPrefixByteLength =
+                    data.LongLength,
+                DataPrefixDigest =
+                    HashBytes(data),
+            };
+        JsonExportHashManifest finalDigest;
+        using (
+            var logical =
+                new JsonExportOrderedContentDigest())
+        {
+            finalDigest =
+                logical.Complete();
+        }
+
+        JsonExportCheckpointCompletion preliminary =
+            new()
+            {
+                SourceLogicalDigest =
+                    finalDigest,
+                ExportedLogicalDigest =
+                    finalDigest with
+                    {
+                    },
+                ManifestDigest =
+                    new string('0', 64),
+            };
+        JsonExportManifest manifest =
+            CreateExpectedManifest(
+                writing.Binding,
+                progress,
+                preliminary);
+        JsonExportCheckpointCompletion completion =
+            preliminary with
+            {
+                ManifestDigest =
+                    JsonExportManifestSerializer
+                        .ComputeManifestDigest(
+                            manifest),
+            };
+        JsonExportCheckpoint checkpoint =
+            writing with
+            {
+                Generation =
+                    writing.Generation + 1,
+                Phase =
+                    JsonExportCheckpointPhase
+                        .DataComplete,
+                Progress = progress,
+                Completion = completion,
+            };
+        _ = JsonExportCheckpointSerializer
+            .Serialize(checkpoint);
+        return (
+            data,
+            checkpoint);
+    }
+
+    private static JsonExportManifest
+        CreateExpectedManifest(
+        JsonExportCheckpointBinding binding,
+        JsonExportCheckpointProgress progress,
+        JsonExportCheckpointCompletion completion) =>
+        new()
+        {
+            Profile = binding.Profile,
+            Source = binding.Source,
+            Table = binding.Table,
+            Json = binding.Json,
+            Content =
+                new JsonExportContentManifest
+                {
+                    RowCount =
+                        progress.CompletedRowCount,
+                    DataByteLength =
+                        progress
+                            .DataPrefixByteLength,
+                    DataDigest =
+                        progress.DataPrefixDigest,
+                    Canonicalization =
+                        JsonExportContracts
+                            .Canonicalization,
+                    CanonicalizationContractDigest =
+                        JsonExportContracts
+                            .CanonicalizationContractDigest,
+                    Aggregation =
+                        JsonExportContracts
+                            .OrderedContentDigest,
+                    SourceLogicalDigest =
+                        completion
+                            .SourceLogicalDigest,
+                    ExportedLogicalDigest =
+                        completion
+                            .ExportedLogicalDigest,
+                },
+        };
 
     private static JsonExportCheckpointBinding
         CreateBinding(

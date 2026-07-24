@@ -15,6 +15,294 @@ public sealed class JsonResumableExporterTests
     [Theory]
     [InlineData(JsonExportFraming.RootArray)]
     [InlineData(JsonExportFraming.Ndjson)]
+    public async Task PublicWriteResumableAsync_UsesDurableLeaseAndRequalifiesCompletedSource(
+        JsonExportFraming framing)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        string destination =
+            workspace.PathFor(
+                framing ==
+                JsonExportFraming.RootArray
+                    ? "items.json"
+                    : "items.ndjson");
+        JsonExportRow[] rows =
+        [
+            Row(-8, 1),
+            Row(4, 2),
+        ];
+        var firstSource =
+            new RecordingRowSource(rows);
+        JsonResumableExportRequest firstRequest =
+            Request(
+                framing,
+                firstSource.Open,
+                checkpointRowInterval: 1) with
+            {
+                DestinationPath = destination,
+            };
+
+        JsonStreamingExportResult first =
+            await new JsonStreamingExporter()
+                .WriteResumableAsync(
+                    firstRequest,
+                    Cancellation);
+
+        string parent =
+            Path.GetDirectoryName(
+                destination)!;
+        string prepared =
+            Assert.Single(
+                Directory.GetFiles(
+                    parent,
+                    ".csharpdb-json-export-*.prepared"));
+        _ = Assert.Single(
+            Directory.GetFiles(
+                parent,
+                ".csharpdb-json-export-*.checkpoint"));
+        Assert.False(
+            File.Exists(destination));
+        byte[] preparedBytes =
+            await File.ReadAllBytesAsync(
+                prepared,
+                Cancellation);
+
+        var reopenedSource =
+            new RecordingRowSource(rows);
+        JsonStreamingExportResult reopened =
+            await new JsonStreamingExporter()
+                .WriteResumableAsync(
+                    firstRequest with
+                    {
+                        OpenRows =
+                            reopenedSource.Open,
+                    },
+                    Cancellation);
+
+        Assert.Equal(
+            first.ManifestDigest,
+            reopened.ManifestDigest);
+        Assert.Equal(
+            [null],
+            reopenedSource.Boundaries);
+        Assert.Equal(
+            preparedBytes,
+            await File.ReadAllBytesAsync(
+                prepared,
+                Cancellation));
+        Assert.False(
+            File.Exists(destination));
+    }
+
+    [Fact]
+    public async Task PublicWriteResumableAndPublishAsync_ReusesExactPairAfterSourceRequalification()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        string destination =
+            workspace.PathFor("items.json");
+        string manifest =
+            workspace.PathFor(
+                "items.manifest.json");
+        JsonExportRow[] rows =
+        [
+            Row(-8, 1),
+            Row(4, 2),
+        ];
+        var firstSource =
+            new RecordingRowSource(rows);
+        JsonResumableExportRequest request =
+            Request(
+                JsonExportFraming.RootArray,
+                firstSource.Open,
+                checkpointRowInterval: 1) with
+            {
+                DestinationPath =
+                    destination,
+            };
+
+        JsonExportPublicationResult first =
+            await new JsonStreamingExporter()
+                .WriteResumableAndPublishAsync(
+                    request,
+                    manifest,
+                    Cancellation);
+
+        Assert.False(first.ReusedData);
+        Assert.False(first.ReusedManifest);
+        Assert.Equal(
+            first.CanonicalManifestBytes,
+            await File.ReadAllBytesAsync(
+                manifest,
+                Cancellation));
+        Assert.Equal(
+            first.Manifest.Content.DataDigest.Value,
+            PhysicalDigest(
+                await File.ReadAllBytesAsync(
+                    destination,
+                    Cancellation)));
+
+        var reopenedSource =
+            new RecordingRowSource(rows);
+        JsonExportPublicationResult reopened =
+            await new JsonStreamingExporter()
+                .WriteResumableAndPublishAsync(
+                    request with
+                    {
+                        OpenRows =
+                            reopenedSource.Open,
+                    },
+                    manifest,
+                    Cancellation);
+
+        Assert.True(reopened.ReusedData);
+        Assert.True(reopened.ReusedManifest);
+        Assert.Equal(
+            first.ManifestDigest,
+            reopened.ManifestDigest);
+        Assert.Equal(
+            [null],
+            reopenedSource.Boundaries);
+        Assert.Empty(
+            Directory.GetFiles(
+                Path.GetDirectoryName(
+                    destination)!,
+                ".csharpdb-json-export-*.publish.*.next"));
+    }
+
+    [Fact]
+    public async Task PublicWriteResumableAndPublishAsync_RejectsJournalAliasBeforeSourceOrFiles()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        string destination =
+            workspace.PathFor("alias.json");
+        (
+            _,
+            JsonExportPreparedOutputPaths paths
+        ) = JsonExportPreparedOutputLease
+            .BindPaths(destination);
+        var source =
+            new RecordingRowSource(
+                [Row(1, 1)]);
+        JsonResumableExportRequest request =
+            Request(
+                JsonExportFraming.RootArray,
+                source.Open) with
+            {
+                DestinationPath =
+                    destination,
+            };
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => new JsonStreamingExporter()
+                .WriteResumableAndPublishAsync(
+                    request,
+                    paths.PendingCheckpointPath,
+                    Cancellation)
+                .AsTask());
+
+        Assert.Empty(source.Boundaries);
+        Assert.Empty(
+            Directory.EnumerateFileSystemEntries(
+                Path.GetDirectoryName(
+                    destination)!));
+    }
+
+    [Fact]
+    public async Task PublicWriteResumableAndPublishAsync_RepairsDataOnlyAfterSourceRequalification()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        string destination =
+            workspace.PathFor("data-only.json");
+        string manifest =
+            workspace.PathFor(
+                "data-only.manifest.json");
+        JsonExportRow[] rows =
+        [
+            Row(-8, 1),
+            Row(4, 2),
+        ];
+        JsonResumableExportRequest request =
+            Request(
+                JsonExportFraming.RootArray,
+                new RecordingRowSource(rows)
+                    .Open,
+                checkpointRowInterval: 1) with
+            {
+                DestinationPath =
+                    destination,
+            };
+        JsonStreamingExportResult completed =
+            await new JsonStreamingExporter()
+                .WriteResumableAsync(
+                    request,
+                    Cancellation);
+        var injector =
+            new ThrowOncePublicationFaultInjector(
+                JsonExportPublicationFaultPoint
+                    .AfterDataNamespaceCommitBeforeManifest);
+
+        await Assert.ThrowsAsync<
+            InjectedPublicationException>(
+            () => new JsonExportPublisher(
+                    injector)
+                .PublishCompletedAsync(
+                    new JsonPreparedExportPublicationRequest
+                    {
+                        DestinationPath =
+                            destination,
+                        ManifestPath =
+                            manifest,
+                        ExpectedManifestDigest =
+                            completed.ManifestDigest,
+                    },
+                    Cancellation)
+                .AsTask());
+        Assert.True(File.Exists(destination));
+        Assert.False(File.Exists(manifest));
+
+        var reopenedSource =
+            new RecordingRowSource(rows);
+        JsonExportPublicationResult recovered =
+            await new JsonStreamingExporter()
+                .WriteResumableAndPublishAsync(
+                    request with
+                    {
+                        OpenRows =
+                            reopenedSource.Open,
+                    },
+                    manifest,
+                    Cancellation);
+
+        Assert.True(recovered.ReusedData);
+        Assert.False(recovered.ReusedManifest);
+        Assert.Equal(
+            [null],
+            reopenedSource.Boundaries);
+        Assert.Equal(
+            recovered.CanonicalManifestBytes,
+            await File.ReadAllBytesAsync(
+                manifest,
+                Cancellation));
+    }
+
+    [Theory]
+    [InlineData(JsonExportFraming.RootArray)]
+    [InlineData(JsonExportFraming.Ndjson)]
     public async Task FreshExportPersistsInitialPeriodicAndTerminalCheckpoints(
         JsonExportFraming framing)
     {
@@ -593,6 +881,72 @@ public sealed class JsonResumableExporterTests
         }
     }
 
+    private sealed class
+        ThrowOncePublicationFaultInjector(
+        JsonExportPublicationFaultPoint point) :
+        IJsonExportPublicationFaultInjector
+    {
+        private int thrown;
+
+        public ValueTask InjectAsync(
+            JsonExportPublicationFaultPoint observed,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+            if (observed == point &&
+                Interlocked.Exchange(
+                    ref thrown,
+                    1) == 0)
+            {
+                throw new
+                    InjectedPublicationException();
+            }
+
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class
+        InjectedPublicationException :
+        Exception
+    {
+    }
+
+    private sealed class TemporaryDirectory :
+        IDisposable
+    {
+        internal TemporaryDirectory()
+        {
+            Root =
+                Path.Combine(
+                    Path.GetTempPath(),
+                    "csharpdb-json-resumable-export-tests",
+                    Guid.NewGuid()
+                        .ToString("N"));
+            Directory.CreateDirectory(
+                Root);
+        }
+
+        private string Root { get; }
+
+        internal string PathFor(
+            string leaf) =>
+            Path.Combine(
+                Root,
+                leaf);
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Root))
+            {
+                Directory.Delete(
+                    Root,
+                    recursive: true);
+            }
+        }
+    }
+
     private sealed class FakeSession :
         IJsonExportPreparedOutputSession
     {
@@ -638,7 +992,8 @@ public sealed class JsonResumableExporterTests
                 bytes);
 
         public JsonExportPreparedOutputState
-            State { get; }
+            State
+        { get; }
 
         public JsonExportCheckpoint?
             CurrentCheckpoint =>
@@ -650,10 +1005,12 @@ public sealed class JsonResumableExporterTests
             data.ToArray();
 
         internal List<JsonExportCheckpoint>
-            Persisted { get; } = [];
+            Persisted
+        { get; } = [];
 
         internal List<byte[]>
-            PersistedBytes { get; } = [];
+            PersistedBytes
+        { get; } = [];
 
         internal int ResetCount { get; private set; }
 
