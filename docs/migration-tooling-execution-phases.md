@@ -659,9 +659,10 @@ coordinator are now implemented. A local-Windows prepared-output lease now
 adds exact-spelling deterministic journals, active-only recovery, verified
 tail truncation, stale-pending reclamation, and data-first durable active
 checkpoint replacement relative to a pinned parent. Public retained-adapter
-and CLI resume activation, killed-process publication-staging reclamation,
-process-crash qualification, abrupt-power-loss qualification, collection
-projection, and import CLI integration remain open.
+and CLI resume activation, child-process crash qualification,
+abrupt-power-loss qualification, collection projection, and import CLI
+integration remain open. Restart-only publication now uses deterministic
+exclusive `.next` siblings and safely reclaims only qualified crash leftovers.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -702,9 +703,12 @@ projection, and import CLI integration remain open.
   files, bounded active-only recovery, stale-pending reclamation, exact prefix
   verification, durable tail truncation, pinned-parent-relative checkpoint
   activation, and reopen-on-uncertain-failure semantics.
+- [x] Replace random JSON publication staging with deterministic exact-pair
+  `.next` siblings, exclusive pair leasing, handle-qualified stale-stage
+  reclamation, and exact-case bound final operations.
 - [ ] Activate retained-source mid-stream resume through deterministic leased
-  publication staging, safe killed-process orphan reclamation, adapter/CLI
-  routing, and child-process crash qualification.
+  prepared publication, adapter/CLI routing, and child-process crash
+  qualification.
 
 ### Shared Deliverables
 

@@ -14,8 +14,11 @@ namespace CSharpDB.Migration.Files.Json;
 /// <summary>
 /// Windows-only, handle-bound filesystem substrate for one JSON export
 /// publication. The parent handle blocks namespace replacement, staging
-/// handles are exclusive leases, and every delete or rename acts on the
-/// already-qualified handle rather than reopening a path.
+/// names are deterministic, their handles are exclusive pair leases, and
+/// every reclaim, delete, or rename acts on the already-qualified handle
+/// rather than reopening a path. Another same-SID actor with independent
+/// authority to mutate the parent namespace is outside this boundary's threat
+/// model.
 /// </summary>
 internal sealed class JsonExportPublicationFileSystem :
     IDisposable
@@ -28,6 +31,8 @@ internal sealed class JsonExportPublicationFileSystem :
     private const int ErrorFileExists = 80;
     private const int ErrorAlreadyExists = 183;
     private const uint GenericRead = 0x80000000;
+    private const uint GenericWrite = 0x40000000;
+    private const uint DeleteAccess = 0x00010000;
     private const uint ReadControl = 0x00020000;
     private const uint FileShareRead = 0x00000001;
     private const uint FileShareWrite = 0x00000002;
@@ -36,6 +41,7 @@ internal sealed class JsonExportPublicationFileSystem :
     private const uint FileFlagOpenReparsePoint = 0x00200000;
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagSequentialScan = 0x08000000;
+    private const uint FileFlagWriteThrough = 0x80000000;
     private const uint FileFlagOverlapped = 0x40000000;
     private const FileAttributes UnsafeFileAttributes =
         FileAttributes.Directory |
@@ -110,34 +116,53 @@ internal sealed class JsonExportPublicationFileSystem :
         Action? afterCreate)
     {
         ThrowIfDisposed();
+        RequireBoundStagingPath(path);
         RequireParentIdentity();
+        RequireExactSiblingCase(
+            path,
+            allowMissing: true);
 
         FileStream? stream = null;
         try
         {
-            stream =
-                FileSystemAclExtensions.Create(
-                    new FileInfo(path),
-                    FileMode.CreateNew,
-                    FileSystemRights.FullControl,
-                    FileShare.None,
-                    BufferSize,
-                    FileOptions.Asynchronous |
-                    FileOptions.SequentialScan |
-                    FileOptions.WriteThrough,
-                    CreatePrivateWindowsSecurity());
+            try
+            {
+                stream =
+                    FileSystemAclExtensions.Create(
+                        new FileInfo(path),
+                        FileMode.CreateNew,
+                        FileSystemRights.FullControl,
+                        FileShare.None,
+                        BufferSize,
+                        FileOptions.Asynchronous |
+                        FileOptions.SequentialScan |
+                        FileOptions.WriteThrough,
+                        CreatePrivateWindowsSecurity());
+            }
+            catch (IOException)
+                when (PathEntryExists(path))
+            {
+                stream =
+                    OpenWindowsPrivateWritable(
+                        path);
+                stream.SetLength(0);
+                stream.Position = 0;
+                stream.Flush(
+                    flushToDisk: true);
+            }
+            catch (UnauthorizedAccessException)
+                when (IsUnsafeExistingSibling(path))
+            {
+                throw new InvalidDataException(
+                    "JSON export staging paths must be private regular files.");
+            }
+
             afterCreate?.Invoke();
             ValidateWindowsPrivateFile(stream);
             RequireParentIdentity();
             FileStream result = stream;
             stream = null;
             return result;
-        }
-        catch (UnauthorizedAccessException)
-            when (IsUnsafeExistingSibling(path))
-        {
-            throw new InvalidDataException(
-                "JSON export staging paths must be private regular files.");
         }
         catch (Exception qualificationFailure)
             when (stream is not null)
@@ -166,7 +191,11 @@ internal sealed class JsonExportPublicationFileSystem :
         bool allowMissing)
     {
         ThrowIfDisposed();
+        RequireBoundFinalPath(path);
         RequireParentIdentity();
+        RequireExactSiblingCase(
+            path,
+            allowMissing);
         FileStream? stream =
             OpenWindowsPrivateRead(
                 path,
@@ -212,6 +241,8 @@ internal sealed class JsonExportPublicationFileSystem :
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(temporary);
+        RequireBoundFinalPath(
+            destinationPath);
         RequireParentIdentity();
         NoReplaceRenameStatus status =
             RenameWindowsByHandleNoReplace(
@@ -290,6 +321,46 @@ internal sealed class JsonExportPublicationFileSystem :
             disposed,
             this);
 
+    private void RequireBoundStagingPath(
+        string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            path);
+        if (!string.Equals(
+                path,
+                Paths.DataStagingPath,
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                path,
+                Paths.ManifestStagingPath,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The JSON export staging path is outside this publication binding.",
+                nameof(path));
+        }
+    }
+
+    private void RequireBoundFinalPath(
+        string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            path);
+        if (!string.Equals(
+                path,
+                Paths.DestinationPath,
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                path,
+                Paths.ManifestPath,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The JSON export final path is outside this publication binding.",
+                nameof(path));
+        }
+    }
+
     private static string ValidateAbsoluteNormalizedPath(
         string path,
         string parameterName)
@@ -330,7 +401,7 @@ internal sealed class JsonExportPublicationFileSystem :
         if (!string.Equals(
                 path,
                 fullPath,
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.Ordinal))
         {
             throw new ArgumentException(
                 "JSON export paths must already be normalized.",
@@ -532,6 +603,9 @@ internal sealed class JsonExportPublicationFileSystem :
                 ],
                 StringSplitOptions.RemoveEmptyEntries))
         {
+            RequireExactChildCase(
+                current,
+                segment);
             current =
                 Path.Combine(
                     current,
@@ -547,6 +621,80 @@ internal sealed class JsonExportPublicationFileSystem :
                 throw new InvalidDataException(
                     "The JSON export parent cannot traverse a link, device, or non-directory.");
             }
+        }
+    }
+
+    private static void RequireExactChildCase(
+        string parent,
+        string requestedLeaf)
+    {
+        string[] matches =
+            Directory
+                .EnumerateFileSystemEntries(
+                    parent)
+                .Where(
+                    path =>
+                        string.Equals(
+                            Path.GetFileName(
+                                path),
+                            requestedLeaf,
+                            StringComparison
+                                .OrdinalIgnoreCase))
+                .Take(2)
+                .ToArray();
+        if (matches.Length != 1 ||
+            !string.Equals(
+                Path.GetFileName(
+                    matches[0]),
+                requestedLeaf,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The JSON export parent has ambiguous or noncanonical casing.");
+        }
+    }
+
+    private static void RequireExactSiblingCase(
+        string path,
+        bool allowMissing)
+    {
+        string parent =
+            Path.GetDirectoryName(
+                path) ??
+            throw new ArgumentException(
+                "The JSON export staging path has no parent.",
+                nameof(path));
+        string leaf =
+            Path.GetFileName(
+                path);
+        string[] matches =
+            Directory
+                .EnumerateFileSystemEntries(
+                    parent)
+                .Where(
+                    entry =>
+                        string.Equals(
+                            Path.GetFileName(
+                                entry),
+                            leaf,
+                            StringComparison
+                                .OrdinalIgnoreCase))
+                .Take(2)
+                .ToArray();
+        if (matches.Length == 0 &&
+            allowMissing)
+        {
+            return;
+        }
+        if (matches.Length != 1 ||
+            !string.Equals(
+                Path.GetFileName(
+                    matches[0]),
+                leaf,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "A JSON export staging sibling has ambiguous or noncanonical casing.");
         }
     }
 
@@ -651,7 +799,7 @@ internal sealed class JsonExportPublicationFileSystem :
         if (!string.Equals(
                 resolved,
                 requestedPath,
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.Ordinal))
         {
             throw new InvalidDataException(
                 "The JSON export parent resolves through an alias or changed namespace.");
@@ -715,6 +863,75 @@ internal sealed class JsonExportPublicationFileSystem :
         {
             throw new IOException(
                 "The JSON export parent identity changed during publication.");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static FileStream
+        OpenWindowsPrivateWritable(
+        string path)
+    {
+        SafeFileHandle handle =
+            CreateFileW(
+                path,
+                GenericRead |
+                GenericWrite |
+                DeleteAccess |
+                ReadControl,
+                0,
+                IntPtr.Zero,
+                OpenExistingDisposition,
+                FileAttributeNormal |
+                FileFlagOpenReparsePoint |
+                FileFlagOverlapped |
+                FileFlagSequentialScan |
+                FileFlagWriteThrough,
+                IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            int error =
+                Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            if (IsUnsafeExistingSibling(path))
+            {
+                throw new InvalidDataException(
+                    "JSON export staging paths must be private regular files.");
+            }
+            if (error ==
+                ErrorPathNotFound)
+            {
+                throw new DirectoryNotFoundException(
+                    "The JSON export parent disappeared.");
+            }
+            throw new IOException(
+                "The deterministic JSON export staging file is unavailable or already leased.",
+                new Win32Exception(error));
+        }
+
+        try
+        {
+            var stream =
+                new FileStream(
+                    handle,
+                    FileAccess.ReadWrite,
+                    BufferSize,
+                    isAsync: true);
+            handle = null!;
+            try
+            {
+                ValidateWindowsPrivateFile(
+                    stream);
+                return stream;
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            handle?.Dispose();
         }
     }
 
@@ -1063,6 +1280,25 @@ internal sealed class JsonExportPublicationFileSystem :
         }
     }
 
+    private static bool PathEntryExists(
+        string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(
+                path);
+            return true;
+        }
+        catch (Exception exception)
+            when (
+                exception is
+                    FileNotFoundException or
+                    DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
     internal sealed record PublicationPaths(
         string DestinationPath,
         string ManifestPath,
@@ -1070,6 +1306,9 @@ internal sealed class JsonExportPublicationFileSystem :
         string DataStagingPath,
         string ManifestStagingPath)
     {
+        private const string StagingPathBindingContract =
+            "csharpdb-json-export-publication-staging-path/v1";
+
         internal static PublicationPaths Bind(
             string destinationPath,
             string manifestPath)
@@ -1106,17 +1345,40 @@ internal sealed class JsonExportPublicationFileSystem :
 
             ValidateWindowsDirectoryChain(
                 destinationParent);
-            string token =
-                Guid.NewGuid()
-                    .ToString("N");
+            byte[] bindingBytes =
+                Encoding.UTF8.GetBytes(
+                    StagingPathBindingContract +
+                    "\0" +
+                    destination +
+                    "\0" +
+                    manifest);
+            string digest;
+            try
+            {
+                digest =
+                    Convert.ToHexString(
+                            SHA256.HashData(
+                                bindingBytes))
+                        .ToLowerInvariant();
+            }
+            finally
+            {
+                CryptographicOperations
+                    .ZeroMemory(
+                        bindingBytes);
+            }
+            string stem =
+                $".csharpdb-json-export-{digest[..32]}.publish";
             string dataStaging =
                 Path.Combine(
                     destinationParent,
-                    $".csharpdb-json-export-{token}.data.stage");
+                    stem +
+                    ".data.next");
             string manifestStaging =
                 Path.Combine(
                     destinationParent,
-                    $".csharpdb-json-export-{token}.manifest.stage");
+                    stem +
+                    ".manifest.next");
             var names =
                 new HashSet<string>(
                     StringComparer.OrdinalIgnoreCase);

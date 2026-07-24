@@ -514,7 +514,7 @@ public sealed class JsonExportPublisherTests
                         Assert.Single(
                             Directory.GetFiles(
                                 workspace.Root,
-                                ".csharpdb-json-export-*.data.stage"));
+                                ".csharpdb-json-export-*.publish.data.next"));
                     Assert.ThrowsAny<IOException>(
                         () => File.Move(
                             observedStage,
@@ -1088,6 +1088,15 @@ public sealed class JsonExportPublisherTests
                     Path.Combine(
                         differentCaseParent,
                         "manifest.json")));
+        Assert.Throws<InvalidDataException>(
+            () => JsonExportPublisher
+                .ValidatePaths(
+                    Path.Combine(
+                        differentCaseParent,
+                        "data.json"),
+                    Path.Combine(
+                        differentCaseParent,
+                        "manifest.json")));
         string unnormalized =
             workspace.Root +
             Path.DirectorySeparatorChar +
@@ -1187,6 +1196,265 @@ public sealed class JsonExportPublisherTests
             File.Exists(
                 fileSystem.Paths
                     .DataStagingPath));
+    }
+
+    [Fact]
+    public async Task StaleDeterministicStaging_IsQualifiedReclaimedAndPublished()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        PublicationFixture fixture =
+            Fixture(
+                workspace,
+                "stale-deterministic-staging");
+        JsonExportPublicationFileSystem
+            .PublicationPaths paths;
+        using (
+            JsonExportPublicationFileSystem fileSystem =
+                JsonExportPublicationFileSystem.Open(
+                    fixture.DestinationPath,
+                    fixture.ManifestPath))
+        {
+            paths = fileSystem.Paths;
+            using (FileStream data =
+                   fileSystem.CreatePrivateStagingFile(
+                       paths.DataStagingPath))
+            {
+                await data.WriteAsync(
+                    "stale-data"u8.ToArray(),
+                    Cancellation);
+                data.Flush(
+                    flushToDisk: true);
+            }
+            using (FileStream manifest =
+                   fileSystem.CreatePrivateStagingFile(
+                       paths.ManifestStagingPath))
+            {
+                await manifest.WriteAsync(
+                    "stale-manifest"u8.ToArray(),
+                    Cancellation);
+                manifest.Flush(
+                    flushToDisk: true);
+            }
+        }
+
+        Assert.True(
+            File.Exists(
+                paths.DataStagingPath));
+        Assert.True(
+            File.Exists(
+                paths.ManifestStagingPath));
+
+        JsonExportPublicationResult result =
+            await new JsonExportPublisher()
+                .PublishAsync(
+                    fixture.Request(),
+                    Cancellation);
+
+        Assert.False(
+            result.ReusedData);
+        Assert.False(
+            result.ReusedManifest);
+        Assert.False(
+            File.Exists(
+                paths.DataStagingPath));
+        Assert.False(
+            File.Exists(
+                paths.ManifestStagingPath));
+        Assert.Equal(
+            result.CanonicalManifestBytes,
+            await File.ReadAllBytesAsync(
+                fixture.ManifestPath,
+                Cancellation));
+    }
+
+    [Fact]
+    public async Task UnsafeDeterministicStaging_IsRejectedWithoutMutation()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        PublicationFixture fixture =
+            Fixture(
+                workspace,
+                "unsafe-deterministic-staging");
+        JsonExportPublicationFileSystem
+            .PublicationPaths paths =
+            JsonExportPublicationFileSystem
+                .PublicationPaths.Bind(
+                    fixture.DestinationPath,
+                    fixture.ManifestPath);
+        Directory.CreateDirectory(
+            paths.DataStagingPath);
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => new JsonExportPublisher()
+                .PublishAsync(
+                    fixture.Request(),
+                    Cancellation)
+                .AsTask());
+
+        Assert.True(
+            Directory.Exists(
+                paths.DataStagingPath));
+        Assert.False(
+            File.Exists(
+                fixture.DestinationPath));
+        Assert.False(
+            File.Exists(
+                fixture.ManifestPath));
+    }
+
+    [Fact]
+    public async Task DeterministicStaging_HoldsExclusivePairLease()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        PublicationFixture fixture =
+            Fixture(
+                workspace,
+                "exclusive-deterministic-staging");
+        using JsonExportPublicationFileSystem fileSystem =
+            JsonExportPublicationFileSystem.Open(
+                fixture.DestinationPath,
+                fixture.ManifestPath);
+        using FileStream held =
+            fileSystem.CreatePrivateStagingFile(
+                fileSystem.Paths
+                    .DataStagingPath);
+
+        await Assert.ThrowsAsync<IOException>(
+            () => new JsonExportPublisher()
+                .PublishAsync(
+                    fixture.Request(),
+                    Cancellation)
+                .AsTask());
+
+        Assert.False(
+            File.Exists(
+                fixture.DestinationPath));
+        Assert.False(
+            File.Exists(
+                fixture.ManifestPath));
+    }
+
+    [Fact]
+    public void PublicationStagingPaths_AreDeterministicAndExactCaseBound()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        string destination =
+            workspace.PathFor(
+                "items.json");
+        string manifest =
+            workspace.PathFor(
+                "items.manifest.json");
+        JsonExportPublicationFileSystem
+            .PublicationPaths first =
+            JsonExportPublicationFileSystem
+                .PublicationPaths.Bind(
+                    destination,
+                    manifest);
+        JsonExportPublicationFileSystem
+            .PublicationPaths second =
+            JsonExportPublicationFileSystem
+                .PublicationPaths.Bind(
+                    destination,
+                    manifest);
+        JsonExportPublicationFileSystem
+            .PublicationPaths changedCase =
+            JsonExportPublicationFileSystem
+                .PublicationPaths.Bind(
+                    workspace.PathFor(
+                        "Items.json"),
+                    manifest);
+
+        Assert.Equal(
+            first.DataStagingPath,
+            second.DataStagingPath);
+        Assert.Equal(
+            first.ManifestStagingPath,
+            second.ManifestStagingPath);
+        Assert.NotEqual(
+            first.DataStagingPath,
+            changedCase.DataStagingPath);
+        Assert.Matches(
+            @"^\.csharpdb-json-export-[0-9a-f]{32}\.publish\.data\.next$",
+            Path.GetFileName(
+                first.DataStagingPath));
+        Assert.Matches(
+            @"^\.csharpdb-json-export-[0-9a-f]{32}\.publish\.manifest\.next$",
+            Path.GetFileName(
+                first.ManifestStagingPath));
+    }
+
+    [Fact]
+    public async Task ExistingFinalWithDifferentCase_IsRejectedFailClosed()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        PublicationFixture fixture =
+            Fixture(
+                workspace,
+                "exact-final-case");
+        JsonExportPublicationResult published =
+            await new JsonExportPublisher()
+                .PublishAsync(
+                    fixture.Request(),
+                    Cancellation);
+        byte[] expectedData =
+            await File.ReadAllBytesAsync(
+                fixture.DestinationPath,
+                Cancellation);
+        string aliasedDestination =
+            Path.Combine(
+                workspace.Root,
+                Path.GetFileName(
+                        fixture.DestinationPath)
+                    .ToUpperInvariant());
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => new JsonExportPublisher()
+                .PublishAsync(
+                    new JsonExportPublicationRequest
+                    {
+                        DestinationPath =
+                            aliasedDestination,
+                        ManifestPath =
+                            fixture.ManifestPath,
+                        Export =
+                            fixture.ExportRequest(),
+                    },
+                    Cancellation)
+                .AsTask());
+
+        Assert.Equal(
+            expectedData,
+            await File.ReadAllBytesAsync(
+                fixture.DestinationPath,
+                Cancellation));
+        Assert.Equal(
+            published.CanonicalManifestBytes,
+            await File.ReadAllBytesAsync(
+                fixture.ManifestPath,
+                Cancellation));
+        Assert.Empty(
+            StagingFiles(
+                workspace.Root));
     }
 
     private static PublicationFixture Fixture(
@@ -1381,7 +1649,7 @@ public sealed class JsonExportPublisherTests
         string root) =>
         Directory.GetFiles(
             root,
-            ".csharpdb-json-export-*.stage");
+            ".csharpdb-json-export-*.publish.*.next");
 
     private static bool TryCreateSymbolicLink(
         string linkPath,
@@ -1541,7 +1809,10 @@ public sealed class JsonExportPublisherTests
     {
         internal List<
             JsonExportPublicationFaultPoint>
-            Observed { get; } = [];
+            Observed
+        {
+            get;
+        } = [];
 
         public ValueTask InjectAsync(
             JsonExportPublicationFaultPoint point,
@@ -1582,7 +1853,10 @@ public sealed class JsonExportPublisherTests
         : Exception
     {
         internal JsonExportPublicationFaultPoint
-            Point { get; } = point;
+            Point
+        {
+            get;
+        } = point;
     }
 
     private sealed class InjectedSourceException :

@@ -102,8 +102,9 @@ exclusive current-owner-only prepared handle, active-only recovery, stale
 pending reclamation, verified tail truncation, and data-first durable
 pending/active replacement relative to a pinned parent. Any uncertain
 replacement failure poisons the live lease so recovery must reopen and
-requalify durable authority. Public coordinator activation, deterministic
-killed-process publication-staging reclamation, process-crash qualification,
+requalify durable authority. Restart-only publication staging now uses
+deterministic exclusive `.next` siblings and safely reclaims qualified crash
+leftovers. Public coordinator activation, child-process crash qualification,
 and hard-power qualification remain later gates. See
 [`migration-json-export-contract.md`](../../docs/migration-json-export-contract.md).
 

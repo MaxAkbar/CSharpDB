@@ -20,12 +20,12 @@ The completed restart-only slice includes:
 - retained-snapshot source binding; and
 - `migrate export --format json|ndjson` CLI routing.
 
-Public resume activation, deterministic killed-process publication-staging
-reclamation, retained-adapter and CLI resume routing, collection/document
-export, and typed export intent remain later slices. The disposable Windows
-VM qualification is also deferred. The implemented lease and restart-only
-publisher flush completed files to durable storage as supported by the host,
-but make no directory-fsync or abrupt-power-loss guarantee.
+Public resume activation, retained-adapter and CLI resume routing,
+child-process crash qualification, collection/document export, and typed
+export intent remain later slices. The disposable Windows VM qualification is
+also deferred. The implemented lease and restart-only publisher flush
+completed files to durable storage as supported by the host, but make no
+directory-fsync or abrupt-power-loss guarantee.
 
 ## Public Contract
 
@@ -186,10 +186,19 @@ publication, and cross-process recovery is the next activation slice.
 
 `JsonExportPublisher.PublishAsync` accepts distinct, normalized, absolute
 sibling data and manifest paths plus one `JsonStreamingExportRequest`. It
-creates private sibling staging files, completes and verifies the streaming
-export there, durably flushes each file as supported, and then commits the
-data path before the canonical manifest path. It never overwrites a final
-path.
+derives deterministic exact-pair `.publish.data.next` and
+`.publish.manifest.next` siblings, holds them exclusively, completes and
+verifies the streaming export there, durably flushes each file as supported,
+and then commits the data path before the canonical manifest path. It never
+overwrites a final path. A stale staging sibling is reused only after an
+exclusive no-follow open proves its exact casing, current-owner-only ACL,
+regular-file type, and single-link identity; it is then truncated by that
+qualified handle. An unsafe sibling or a live competing pair lease fails
+closed.
+The pair key preserves exact normalized spelling. Cooperating callers must
+therefore use one spelling consistently; case aliases are not mutually
+excluded as pair leases, but final inspection and no-replace commit still
+reject rather than reuse a differently cased final.
 
 The publisher supports a caller-controlled local Windows directory. UNC and
 mapped-network locations fail closed. Existing directory components and final
@@ -410,11 +419,12 @@ retained adapter or CLI, process-crash qualify that composition, emit nested
 collection documents, or create a typed export-intent sidecar. An exact CLI
 rerun therefore still starts from row zero.
 
-An uncatchable process termination can leave an unreferenced private
-`.csharpdb-json-export-*.stage` sibling. A full rerun uses new private staging
-and can still recover or reuse the exact finals, but deterministic leased
-staging and safe orphan reclamation are deferred to the checkpoint and
-process-crash slice. Directory-entry durability and abrupt-power-loss
+An uncatchable process termination can leave deterministic private
+`.csharpdb-json-export-*.publish.*.next` siblings. An exact-pair rerun
+exclusively requalifies and truncates safe leftovers before regeneration;
+unsafe or live siblings are never adopted or overwritten. Child-process
+qualification of every publication cutoff remains part of the resume
+activation slice. Directory-entry durability and abrupt-power-loss
 qualification remain deferred with the disposable Windows VM work.
 
 In particular, `csharpdb-json-table-intent/v1` has no binary64 codec. A table

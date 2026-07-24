@@ -36,9 +36,10 @@ public sealed record JsonExportPublicationResult
 }
 
 /// <summary>
-/// Completes a restart-only JSON export in private sibling files, durably
-/// flushes them as supported, and publishes data before its canonical
-/// manifest without overwriting an existing path.
+/// Completes a restart-only JSON export in deterministic private sibling
+/// files, safely reclaims qualified crash leftovers, durably flushes them as
+/// supported, and publishes data before its canonical manifest without
+/// overwriting an existing path.
 /// </summary>
 public sealed class JsonExportPublisher
 {
