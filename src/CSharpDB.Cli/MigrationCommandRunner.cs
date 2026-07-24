@@ -22,7 +22,7 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
-        "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--json]";
+        "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -267,7 +267,8 @@ internal static class MigrationCommandRunner
 
         if (SnapshotUsesReservedExportNamespace(
                 snapshotPath,
-                destinationPath))
+                destinationPath,
+                ".csharpdb-csv-export-"))
         {
             return await OptionErrorAsync(
                 "The retained snapshot cannot occupy the CSV export's reserved private namespace.",
@@ -349,10 +350,16 @@ internal static class MigrationCommandRunner
         TextWriter error,
         CancellationToken ct)
     {
-        if (options.ContainsKey("--checkpoint-row-interval"))
+        long checkpointRowInterval = 10_000;
+        if (options.TryGetValue(
+                "--checkpoint-row-interval",
+                out string? checkpointValue) &&
+            !TryParsePositiveLong(
+                checkpointValue,
+                out checkpointRowInterval))
         {
             return await OptionErrorAsync(
-                "Option --checkpoint-row-interval is supported only for CSV export.",
+                $"The {exportFormat.ToUpperInvariant()} export checkpoint row interval must be a positive 64-bit integer.",
                 error);
         }
         if (options.TryGetValue(
@@ -386,9 +393,20 @@ internal static class MigrationCommandRunner
                 error);
         }
 
-        JsonExportPublisher.ValidatePaths(
-            destinationPath,
-            manifestPath);
+        if (SnapshotUsesReservedExportNamespace(
+                snapshotPath,
+                destinationPath,
+                ".csharpdb-json-export-"))
+        {
+            return await OptionErrorAsync(
+                $"The retained snapshot cannot occupy the {exportFormat.ToUpperInvariant()} export's reserved private namespace.",
+                error);
+        }
+
+        JsonExportPublisher
+            .ValidatePreparedPublicationPaths(
+                destinationPath,
+                manifestPath);
         var request = new CSharpDbRetainedJsonExportRequest
         {
             SnapshotPath = snapshotPath,
@@ -401,10 +419,11 @@ internal static class MigrationCommandRunner
                 : JsonExportFraming.Ndjson,
             MaxDataBytes = maxDataBytes,
             MaximumDecodedBlobBytes = maxDecodedBlobBytes,
+            CheckpointRowInterval = checkpointRowInterval,
         };
         JsonExportPublicationResult result =
             await new CSharpDbJsonExportAdapter()
-                .WriteAndPublishTableAsync(
+                .WriteResumableAndPublishTableAsync(
                     request,
                     manifestPath,
                     ct)
@@ -1722,15 +1741,18 @@ internal static class MigrationCommandRunner
 
     private static bool SnapshotUsesReservedExportNamespace(
         string snapshotPath,
-        string destinationPath)
+        string destinationPath,
+        string reservedPrefix)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            reservedPrefix);
         string? snapshotParent = Path.GetDirectoryName(snapshotPath);
         string? destinationParent = Path.GetDirectoryName(destinationPath);
         return snapshotParent is not null &&
             destinationParent is not null &&
             ResolvedPathsAreEquivalent(snapshotParent, destinationParent) &&
             Path.GetFileName(snapshotPath).StartsWith(
-                ".csharpdb-csv-export-",
+                reservedPrefix,
                 StringComparison.OrdinalIgnoreCase);
     }
 

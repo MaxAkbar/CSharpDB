@@ -117,7 +117,7 @@ csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|jso
 csharpdb migrate apply <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate validate <plan.json> --catalog <catalog.json> --source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]
 csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
-csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--json]
+csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <positive-int64>] [--max-decoded-blob-bytes <positive-int32>] [--checkpoint-row-interval <positive-int64>] [--json]
 ```
 
 Inspection supports both the immutable synthetic qualification source and a
@@ -154,24 +154,30 @@ row and byte counts, content digests, and whether the CSV or manifest was
 reused; `--json` emits the same result as structured JSON.
 
 JSON and NDJSON export use the same independently pinned retained-snapshot
-boundary, but are restart-only in this release. `--format json` writes one
-compact root array and `--format ndjson` writes one compact object plus LF per
-row. Each rerun reopens and verifies the retained snapshot, rechecks the
-physical table schema, and streams every row from the beginning before it
-publishes a new exact data/manifest pair, recovers an exact data-only state,
-or reuses an exact pair. The local Windows publisher uses current-owner-only
-private sibling staging, requires the same protected ACL on reusable final
-files, and never overwrites different final content. UNC and mapped-network
-paths, non-Windows publication, links, aliases, special files, unsafe
-directory chains, manifest-only states, and mismatched pairs fail closed.
+boundary and durable resume workflow. `--format json` writes one compact root
+array and `--format ndjson` writes one compact object plus LF per row. The
+exact same command is the resume command: a rerun requalifies the retained
+snapshot identity, physical table schema, private prepared data, and checkpoint
+journal, resumes only at a verified complete-row boundary, recovers an exact
+data-only publication, or reuses an exact completed data/manifest pair.
+A same-binding exact pair created by the restart-only route is
+source-requalified and bootstrapped into durable prepared/checkpoint authority
+on its first resumable rerun. Reader/source-version binding changes fail closed
+rather than adopting an older manifest implicitly. Different or unsafe
+existing files are never overwritten or repaired.
 
-JSON/NDJSON do not yet accept `--checkpoint-row-interval`, and the
-`spreadsheet-safe-lossy-v1` profile remains CSV-only. A killed process can
-leave an unreferenced private JSON staging sibling; rerunning remains safe,
-but deterministic staging leases, orphan reclamation, mid-stream resume, and
-abrupt-power-loss qualification are deferred. File content is flushed to
-durable storage as supported, with no directory-fsync or hard-power guarantee.
-The structured-status `--json` flag remains valid with both JSON data formats.
+`--checkpoint-row-interval` defaults to 10,000 rows and must be a positive
+64-bit integer. Successful JSON/NDJSON exports preserve current-owner-only
+`.csharpdb-json-export-*` prepared-data and checkpoint siblings so a later
+process can requalify and resume them. The local Windows publisher requires the
+same protected ACL on reusable final files. UNC and mapped-network paths,
+non-Windows publication, links, aliases, special files, unsafe directory
+chains, manifest-only states, and mismatched pairs fail closed. The private
+prefix cannot be selected for a source, final data, or manifest leaf. The
+`spreadsheet-safe-lossy-v1` profile remains CSV-only. File content and
+checkpoints are flushed to durable storage as supported, with no directory-fsync
+or hard-power guarantee. The structured-status `--json` flag remains valid
+with both JSON data formats.
 
 Fail-fast is the default: omitting `--reject-mode` produces the established
 `csharpdb-migration-fail-fast/v1` plan JSON and digest. Retained CSV is the only

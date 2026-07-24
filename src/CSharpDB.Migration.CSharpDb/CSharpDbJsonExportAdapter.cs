@@ -7,8 +7,8 @@ using CSharpDB.Primitives;
 namespace CSharpDB.Migration.CSharpDb;
 
 /// <summary>
-/// Complete retained CSharpDB source and resource policy for one restart-only
-/// table-to-JSON or table-to-NDJSON publication.
+/// Complete retained CSharpDB source and resource policy for one
+/// table-to-JSON or table-to-NDJSON export.
 /// </summary>
 public sealed record CSharpDbRetainedJsonExportRequest
 {
@@ -31,19 +31,134 @@ public sealed record CSharpDbRetainedJsonExportRequest
 
     public int MaximumDecodedBlobBytes { get; init; } =
         JsonExportContracts.MaximumSupportedDecodedBlobBytes;
+
+    public long CheckpointRowInterval { get; init; } = 10_000;
 }
 
 /// <summary>
-/// Binds restart-only JSON publication to one independently verified retained
-/// CSharpDB snapshot. A rerun reopens and replays the snapshot from row zero;
-/// this adapter does not retain a mid-stream resume cursor. Snapshots that
-/// require custom storage, catalog, checksum, index, or serializer providers
-/// are outside this adapter's default-reader contract.
+/// Binds JSON export to one independently verified retained CSharpDB snapshot.
+/// Resumable operations open and own one default-configured read-only session
+/// across schema capture, replay, continuation, and publication. Snapshots
+/// that require custom storage, catalog, checksum, index, or serializer
+/// providers are outside this adapter's default-reader contract.
 /// </summary>
 public sealed class CSharpDbJsonExportAdapter
 {
     private const string Sha256Prefix =
         JsonExportHashManifest.Sha256Algorithm + ":";
+
+    /// <summary>
+    /// Writes or resumes one table's private prepared JSON or NDJSON output.
+    /// Source identity, persisted schema, replay, and continuation are all
+    /// derived from the retained snapshot named by
+    /// <paramref name="request"/>.
+    /// </summary>
+    public async ValueTask<JsonStreamingExportResult>
+        WriteResumableTableAsync(
+        CSharpDbRetainedJsonExportRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateRequest(request);
+        JsonExportPublisher.ValidateSourcePath(
+            request.SnapshotPath);
+        ValidateSnapshotOutputPaths(
+            request,
+            manifestPath: null);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        await using RetainedDatabaseSnapshotSession snapshot =
+            await RetainedDatabaseSnapshot.OpenAsync(
+                    request.SnapshotPath,
+                    request.SnapshotIdentity,
+                    databaseOptions: null,
+                    options: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        JsonResumableExportRequest resumable =
+            await CreateResumableRequestAsync(
+                    request,
+                    snapshot,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        return await new JsonStreamingExporter()
+            .WriteResumableAsync(
+                resumable,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes or resumes, source-requalifies, and publishes the final JSON or
+    /// NDJSON data before the explicit canonical manifest path. Exact
+    /// data-only and exact-pair states are recoverable across a fresh process.
+    /// </summary>
+    public async ValueTask<JsonExportPublicationResult>
+        WriteResumableAndPublishTableAsync(
+        CSharpDbRetainedJsonExportRequest request,
+        string manifestPath,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateRequest(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            manifestPath);
+        JsonExportPublisher
+            .ValidatePreparedPublicationPaths(
+            request.DestinationPath,
+            manifestPath);
+        JsonExportPublisher.ValidateSourcePath(
+            request.SnapshotPath);
+        ValidateSnapshotOutputPaths(
+            request,
+            manifestPath);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        RetainedDatabaseSnapshotSession? snapshot = null;
+        bool committedPair = false;
+        try
+        {
+            snapshot =
+                await RetainedDatabaseSnapshot.OpenAsync(
+                        request.SnapshotPath,
+                        request.SnapshotIdentity,
+                        databaseOptions: null,
+                        options: null,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            JsonResumableExportRequest resumable =
+                await CreateResumableRequestAsync(
+                        request,
+                        snapshot,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            JsonExportPublicationResult result =
+                await new JsonStreamingExporter()
+                    .WriteResumableAndPublishAsync(
+                        resumable,
+                        manifestPath,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            committedPair = true;
+            return result;
+        }
+        finally
+        {
+            if (snapshot is not null)
+            {
+                try
+                {
+                    await snapshot
+                        .DisposeAsync()
+                        .ConfigureAwait(false);
+                }
+                catch when (committedPair)
+                {
+                    // Publication is irreversible once the exact
+                    // manifest-last pair exists. Snapshot cleanup cannot
+                    // downgrade success.
+                }
+            }
+        }
+    }
 
     /// <summary>
     /// Requalifies one retained table through EOF and publishes its exact data
@@ -60,6 +175,11 @@ public sealed class CSharpDbJsonExportAdapter
         ArgumentException.ThrowIfNullOrWhiteSpace(manifestPath);
         JsonExportPublisher.ValidatePaths(
             request.DestinationPath,
+            manifestPath);
+        JsonExportPublisher.ValidateSourcePath(
+            request.SnapshotPath);
+        ValidateSnapshotOutputPaths(
+            request,
             manifestPath);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -150,6 +270,92 @@ public sealed class CSharpDbJsonExportAdapter
             throw new ArgumentOutOfRangeException(
                 nameof(request));
         }
+        if (request.CheckpointRowInterval <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request));
+        }
+    }
+
+    private static void ValidateSnapshotOutputPaths(
+        CSharpDbRetainedJsonExportRequest request,
+        string? manifestPath)
+    {
+        string snapshot =
+            NormalizePath(request.SnapshotPath);
+        string destination =
+            NormalizePath(request.DestinationPath);
+        if (string.Equals(
+                snapshot,
+                destination,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "The retained CSharpDB snapshot and JSON export destination must use different files.",
+                nameof(request));
+        }
+
+        if (manifestPath is not null)
+        {
+            string manifest =
+                NormalizePath(manifestPath);
+            if (string.Equals(
+                    snapshot,
+                    manifest,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException(
+                    "The retained CSharpDB snapshot and JSON export manifest must use different files.",
+                    nameof(manifestPath));
+            }
+        }
+    }
+
+    private static string NormalizePath(
+        string path) =>
+        Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(path));
+
+    private static async ValueTask<JsonResumableExportRequest>
+        CreateResumableRequestAsync(
+        CSharpDbRetainedJsonExportRequest request,
+        RetainedDatabaseSnapshotSession snapshot,
+        CancellationToken cancellationToken)
+    {
+        PreparedTable prepared =
+            await PrepareTableAsync(
+                    snapshot,
+                    request.TableName,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        JsonExportSourceManifest source =
+            CreateSource(snapshot.Identity);
+
+        return new JsonResumableExportRequest
+        {
+            DestinationPath =
+                request.DestinationPath,
+            Profile = request.Profile,
+            Framing = request.Framing,
+            Source = source,
+            SourceSnapshotIdentity =
+                snapshot.Identity.SnapshotIdentity,
+            Table = prepared.Schema,
+            OpenRows =
+                (
+                    afterRowIdExclusive,
+                    sourceCancellationToken
+                ) => ReadRowsAsync(
+                    snapshot,
+                    prepared.Schema,
+                    afterRowIdExclusive,
+                    sourceCancellationToken),
+            MaxDataBytes = request.MaxDataBytes,
+            MaximumDecodedBlobBytes =
+                request.MaximumDecodedBlobBytes,
+            CheckpointRowInterval =
+                request.CheckpointRowInterval,
+        };
     }
 
     private static JsonStreamingExportRequest CreateExportRequest(
@@ -164,7 +370,9 @@ public sealed class CSharpDbJsonExportAdapter
             Rows = ReadRowsAsync(
                 snapshot,
                 schema,
-                CancellationToken.None),
+                afterRowIdExclusive: null,
+                cancellationToken:
+                    CancellationToken.None),
             MaxDataBytes = request.MaxDataBytes,
             MaximumDecodedBlobBytes =
                 request.MaximumDecodedBlobBytes,
@@ -189,11 +397,14 @@ public sealed class CSharpDbJsonExportAdapter
     private static async IAsyncEnumerable<JsonExportRow> ReadRowsAsync(
         RetainedDatabaseSnapshotSession snapshot,
         TableSchema expectedSchema,
+        long? afterRowIdExclusive,
         [EnumeratorCancellation]
         CancellationToken cancellationToken)
     {
         await using RetainedDatabaseSnapshotTableReader reader =
-            snapshot.OpenTableReader(expectedSchema.TableName);
+            snapshot.OpenTableReader(
+                expectedSchema.TableName,
+                afterRowIdExclusive);
         RequireMatchingSchema(reader, expectedSchema);
 
         while (await reader.MoveNextAsync(cancellationToken)

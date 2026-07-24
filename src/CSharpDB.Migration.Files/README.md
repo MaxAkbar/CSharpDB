@@ -66,7 +66,7 @@ streaming now revalidates projected values, preserves arbitrary projection
 order, emits deterministic reject evidence, bounds batches by rows and
 canonical bytes, and supplies snapshot/policy-bound replay cursors.
 Raw and typed retained packages, source-bound typed intent, typed table/apply
-conversion, restart-only JSON/NDJSON table export, and restart-only CLI
+conversion, JSON/NDJSON table export, and durable retained-adapter/CLI resume
 routing are now implemented. Collection projection and typed export-intent
 generation remain later slices. See
 [`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
@@ -112,9 +112,17 @@ source requalification and manifest-last publication, while
 output using an independently retained manifest digest. Prepared data is
 copied and independently rehashed into deterministic publication staging,
 exact data-only and pair states are recoverable, and prepared/checkpoint
-authority is preserved after success. Retained-adapter and CLI resume routing,
-child-process crash qualification, and disposable-VM hard-power qualification
-remain later gates. See
+authority is preserved after success. The retained adapter and CLI use that
+same source-qualified workflow with a configurable checkpoint row interval;
+an exact command rerun is the resume command, including bootstrap of a
+same-binding restart-only exact pair. Reader/source-version binding changes
+fail closed. The `.csharpdb-json-export-*` leaf prefix is globally private and
+cannot be selected for an external source, destination, or manifest.
+Child-process kill/restart tests qualify all three checkpoint persistence
+cutoffs after journal authority exists for root-array JSON and NDJSON and all
+five publication cutoffs for both framings, including zero-byte empty NDJSON.
+The one-time restart-only adoption transition and disposable-VM hard-power
+qualification remain later gates. See
 [`migration-json-export-contract.md`](../../docs/migration-json-export-contract.md).
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a

@@ -8,8 +8,8 @@ restart-only publisher is implemented. The durable checkpoint artifact,
 prefix geometry, generation transitions, and platform-neutral replay
 coordinator are implemented. A local-Windows prepared-output lease now
 provides the coordinator's durable session boundary. Public SDK durable resume
-and prepared publication are implemented; the retained CSharpDB adapter and
-CLI still use restart-from-zero JSON/NDJSON export.
+and prepared publication are implemented through both the generic SDK and the
+retained CSharpDB adapter/CLI.
 
 The completed restart-only slice includes:
 
@@ -21,8 +21,10 @@ The completed restart-only slice includes:
 - retained-snapshot source binding; and
 - `migrate export --format json|ndjson` CLI routing.
 
-Retained-adapter and CLI resume routing, child-process crash qualification,
-collection/document export, and typed export intent remain later slices. The
+Child-process crash qualification now covers recovery once durable checkpoint
+authority exists and manifest-last publication begins. The one-time adoption
+of same-binding restart-only finals is not yet process-kill qualified.
+Collection/document export and typed export intent remain later slices. The
 disposable Windows VM qualification is also deferred. The implemented lease
 and publishers flush completed files to durable storage as supported by the
 host, but make no directory-fsync or abrupt-power-loss guarantee.
@@ -169,6 +171,10 @@ destination-identity compare-and-swap rename; another same-SID actor that
 already has independent authority to mutate the parent namespace is outside
 this boundary's threat model.
 
+The `.csharpdb-json-export-*` leaf prefix is globally private:
+caller-chosen source, destination, and manifest paths cannot use it, even in
+another directory.
+
 Only the active checkpoint is recovery authority. A qualified stale pending
 checkpoint is handle-deleted during open and is never adopted. With no active
 checkpoint, an empty prepared file opens as `New`; nonempty bytes open as
@@ -189,9 +195,10 @@ failure after authority may have changed, the lease closes and becomes
 unusable so the caller must reopen and requalify the active generation.
 Disposal otherwise preserves prepared data and the active checkpoint.
 
-The public generic SDK now activates durable journal reopening and
-source-qualified resume. Retained-adapter and CLI routing, plus dedicated
-child-process crash qualification, remain later slices.
+The public generic SDK and retained CSharpDB adapter/CLI now activate durable
+journal reopening and source-qualified resume. Child-process kill/restart tests
+qualify all three checkpoint persistence cutoffs for root-array JSON and
+NDJSON.
 
 ## Retained-Snapshot Publication
 
@@ -245,16 +252,20 @@ the prepared data plus active checkpoint remain intact after success for
 retry and audit. The write-and-publish facade holds the original exclusive
 prepared lease from source requalification through the final pair decision.
 
-`CSharpDbJsonExportAdapter` opens one retained snapshot only after path
-preflight, verifies the independently supplied canonical snapshot identity,
-captures and rechecks the physical table schema, and enumerates typed rows in
-strictly increasing signed row-ID order. The session stays pinned through
-export and publication. An exact-pair rerun therefore still requalifies the
-retained source through EOF before reporting reuse. This v1 adapter uses the
-built-in/default Engine reader composition. Snapshots requiring custom
-storage, catalog, checksum, index, or serializer providers remain unsupported
-until their provider provenance can be represented and bound into the export
-manifest.
+`CSharpDbJsonExportAdapter` opens one retained snapshot only after full final,
+staging, journal, and reserved-source path preflight, verifies the
+independently supplied canonical snapshot identity, captures and rechecks the
+physical table schema, and enumerates typed rows in strictly increasing signed
+row-ID order. The same session stays pinned across replay, continuation,
+  terminal EOF requalification, and publication. The CLI exposes the same
+  checkpoint interval and treats an exact command rerun as resume. A
+  same-binding restart-only exact pair is source-requalified and bootstrapped
+  into preserved prepared/checkpoint authority before it is reused. Reader or
+  source-version binding changes fail closed rather than adopting an older
+  manifest implicitly. This v1 adapter uses the built-in/default Engine reader
+  composition. Snapshots requiring custom storage, catalog, checksum, index, or
+  serializer providers remain unsupported until their provider provenance can
+  be represented and bound into the export manifest.
 
 The CLI surface is:
 
@@ -429,6 +440,9 @@ The merge gate covers:
 - same-lease prepared publication, independent prepared-data copy/rehash, and
   preserved journal authority;
 - root-array, NDJSON, and zero-byte empty-NDJSON prepared publication;
+- child-process kill/restart recovery at all three checkpoint cutoffs for both
+  framings and all five publication cutoffs for both framings, including
+  zero-byte empty NDJSON;
 - mismatch, alias, link, special-file, cancellation-cutoff, and injected-fault
   publication states;
 - retained-snapshot identity, schema, row-order, and source-requalification
@@ -438,20 +452,21 @@ The merge gate covers:
 
 ## Deferred Work
 
-The public SDK now composes the portable replay coordinator, qualified Windows
-lease, and prepared manifest-last publisher. It does not yet expose
-partial-export resume through the retained adapter or CLI, process-crash
-qualify that composition, emit nested collection documents, or create a typed
-export-intent sidecar. An exact CLI rerun therefore still starts from row
-zero.
+The public SDK and retained CSharpDB adapter/CLI now compose the portable
+replay coordinator, qualified Windows lease, and prepared manifest-last
+publisher. Public recovery from established checkpoint authority and every
+publication cutoff is process-crash qualified. The initial transition from a
+same-binding restart-only final pair into journal authority is unit-qualified,
+but not yet child-process-kill qualified. The composition does not emit nested
+collection documents and does not create a typed export-intent sidecar.
 
 An uncatchable process termination can leave deterministic private
 `.csharpdb-json-export-*.publish.*.next` siblings. An exact-pair rerun
 exclusively requalifies and truncates safe leftovers before regeneration;
-unsafe or live siblings are never adopted or overwritten. Child-process
-qualification of every publication cutoff remains a later qualification
-slice. Directory-entry durability and abrupt-power-loss qualification remain
-deferred with the disposable Windows VM work.
+unsafe or live siblings are never adopted or overwritten. Child-process tests
+qualify all five publication cutoffs for root-array JSON and NDJSON, including
+zero-byte empty NDJSON. Directory-entry durability and abrupt-power-loss
+qualification remain deferred with the disposable Windows VM work.
 
 In particular, `csharpdb-json-table-intent/v1` has no binary64 codec. A table
 containing CSharpDB `Real` values therefore cannot yet be advertised as a

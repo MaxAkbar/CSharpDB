@@ -286,7 +286,7 @@ public sealed class JsonExportPreparedOutputLease :
         (
             string normalizedDestination,
             JsonExportPreparedOutputPaths paths,
-            bool destinationExists
+            _
         ) = BindPathsCore(
             destinationPath,
             allowExistingDestination:
@@ -298,8 +298,7 @@ public sealed class JsonExportPreparedOutputLease :
                     .Open(
                         paths,
                         requireExistingData:
-                            allowCompletedDestination &&
-                            destinationExists);
+                            false);
         try
         {
             byte[]? checkpointBytes =
@@ -309,12 +308,6 @@ public sealed class JsonExportPreparedOutputLease :
                     .ConfigureAwait(false);
             if (checkpointBytes is null)
             {
-                if (destinationExists)
-                {
-                    throw new InvalidDataException(
-                        "An existing JSON destination is recoverable only with a data-complete checkpoint.");
-                }
-
                 JsonExportPreparedOutputLeaseState
                     state =
                         fileSystem.DataStream.Length ==
@@ -345,14 +338,6 @@ public sealed class JsonExportPreparedOutputLease :
                 checkpoint.BindingDigest,
                 bindingDigest,
                 "The active JSON export checkpoint belongs to a different export binding.");
-            if (destinationExists &&
-                checkpoint.Phase !=
-                    JsonExportCheckpointPhase
-                        .DataComplete)
-            {
-                throw new InvalidDataException(
-                    "An existing JSON destination conflicts with an incomplete prepared export.");
-            }
             await QualifyAndRecoverPrefixAsync(
                     fileSystem,
                     checkpoint,
@@ -1152,6 +1137,10 @@ public sealed class JsonExportPreparedOutputLease :
                 "The JSON export destination file name is invalid.",
                 nameof(destinationPath));
         }
+        JsonExportPathPreflight
+            .RejectReservedPrivateLeaf(
+                normalized,
+                nameof(destinationPath));
         if (!Directory.Exists(parent))
         {
             throw new DirectoryNotFoundException(

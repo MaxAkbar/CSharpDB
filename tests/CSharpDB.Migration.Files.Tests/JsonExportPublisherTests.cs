@@ -1165,6 +1165,66 @@ public sealed class JsonExportPublisherTests
     }
 
     [Fact]
+    public void ValidatePaths_RejectsCallerChosenReservedFinalLeaves()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        string destination =
+            workspace.PathFor("data.ndjson");
+        string manifest =
+            workspace.PathFor(
+                "data.manifest.json");
+
+        Assert.Throws<ArgumentException>(
+            () => JsonExportPublisher
+                .ValidatePaths(
+                    workspace.PathFor(
+                        ".csharpdb-json-export-user.prepared"),
+                    manifest));
+        Assert.Throws<ArgumentException>(
+            () => JsonExportPublisher
+                .ValidatePaths(
+                    destination,
+                    workspace.PathFor(
+                        ".CSHARPDB-JSON-EXPORT-user.manifest")));
+
+        Assert.Empty(
+            Directory.EnumerateFiles(
+                workspace.Root,
+                "*",
+                SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public void NdjsonBinding_CannotPublishIntoAnotherBindingsPreparedPath()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        (
+            _,
+            JsonExportPreparedOutputPaths firstPaths
+        ) = JsonExportPreparedOutputLease.BindPaths(
+            workspace.PathFor("first.ndjson"));
+
+        Assert.Throws<ArgumentException>(
+            () => JsonExportPublisher
+                .ValidatePaths(
+                    firstPaths.PreparedDataPath,
+                    workspace.PathFor(
+                        "second.ndjson.manifest.json")));
+
+        Assert.Empty(
+            Directory.EnumerateFiles(
+                workspace.Root,
+                "*",
+                SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
     public void CreatePrivateStagingFile_RemovesFileWhenPostCreateQualificationFails()
     {
         if (!OperatingSystem.IsWindows())

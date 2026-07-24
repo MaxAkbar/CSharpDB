@@ -33,6 +33,10 @@ internal static class MigrationCrashHarness
             return await RunCsvCheckpointAsync(args).ConfigureAwait(false);
         if (OptionalOption(args, "--csv-publication-destination") is not null)
             return await RunCsvPublicationAsync(args).ConfigureAwait(false);
+        if (OptionalOption(args, "--json-checkpoint-destination") is not null)
+            return await RunJsonCheckpointAsync(args).ConfigureAwait(false);
+        if (OptionalOption(args, "--json-publication-destination") is not null)
+            return await RunJsonPublicationAsync(args).ConfigureAwait(false);
 
         string targetPath = Path.GetFullPath(RequiredOption(args, "--target"));
         string pipeName = RequiredOption(args, "--pipe");
@@ -199,30 +203,30 @@ internal static class MigrationCrashHarness
                     nameof(args)),
             }
             : mode switch
-        {
-            "write" => await WriteJsonPackageAsync(
-                    args,
-                    packagePath,
-                    workspacePath)
-                .ConfigureAwait(false),
-            "read" => await ReadJsonPackageAsync(
-                    args,
-                    packagePath,
-                    workspacePath,
-                    resumeCursor: null,
-                    mode)
-                .ConfigureAwait(false),
-            "resume" => await ReadJsonPackageAsync(
-                    args,
-                    packagePath,
-                    workspacePath,
-                    RequiredOption(args, "--json-resume-cursor"),
-                    mode)
-                .ConfigureAwait(false),
-            _ => throw new ArgumentException(
-                $"Unknown JSON package mode '{mode}'.",
-                nameof(args)),
-        };
+            {
+                "write" => await WriteJsonPackageAsync(
+                        args,
+                        packagePath,
+                        workspacePath)
+                    .ConfigureAwait(false),
+                "read" => await ReadJsonPackageAsync(
+                        args,
+                        packagePath,
+                        workspacePath,
+                        resumeCursor: null,
+                        mode)
+                    .ConfigureAwait(false),
+                "resume" => await ReadJsonPackageAsync(
+                        args,
+                        packagePath,
+                        workspacePath,
+                        RequiredOption(args, "--json-resume-cursor"),
+                        mode)
+                    .ConfigureAwait(false),
+                _ => throw new ArgumentException(
+                    $"Unknown JSON package mode '{mode}'.",
+                    nameof(args)),
+            };
 
         await WriteJsonPackageResultAsync(resultPath, result)
             .ConfigureAwait(false);
@@ -730,7 +734,7 @@ internal static class MigrationCrashHarness
                 nameof(args));
         }
 
-        return await RunCsvCoordinatedAsync(
+        return await RunExportCoordinatedAsync(
                 args,
                 async (reader, writer) =>
                 {
@@ -779,7 +783,7 @@ internal static class MigrationCrashHarness
                 nameof(args));
         }
 
-        return await RunCsvCoordinatedAsync(
+        return await RunExportCoordinatedAsync(
                 args,
                 async (reader, writer) =>
                 {
@@ -801,7 +805,97 @@ internal static class MigrationCrashHarness
             .ConfigureAwait(false);
     }
 
-    private static async Task<int> RunCsvCoordinatedAsync(
+    private static async Task<int> RunJsonCheckpointAsync(string[] args)
+    {
+        string destinationPath = Path.GetFullPath(
+            RequiredOption(args, "--json-checkpoint-destination"));
+        string checkpointPath = Path.GetFullPath(
+            RequiredOption(args, "--json-next-checkpoint"));
+        string appendPath = Path.GetFullPath(
+            RequiredOption(args, "--json-append-bytes"));
+        string faultName = RequiredOption(args, "--json-checkpoint-fault");
+        if (!Enum.TryParse(
+                faultName,
+                ignoreCase: false,
+                out JsonExportCheckpointFaultPoint faultPoint))
+        {
+            throw new ArgumentException(
+                $"Unknown JSON checkpoint fault point '{faultName}'.",
+                nameof(args));
+        }
+
+        return await RunExportCoordinatedAsync(
+                args,
+                async (reader, writer) =>
+                {
+                    JsonExportCheckpoint checkpoint =
+                        JsonExportCheckpointSerializer.Deserialize(
+                            await File.ReadAllBytesAsync(checkpointPath)
+                                .ConfigureAwait(false));
+                    byte[] appendBytes = await File.ReadAllBytesAsync(appendPath)
+                        .ConfigureAwait(false);
+                    await using JsonExportPreparedOutputLease lease =
+                        await JsonExportPreparedOutputLease
+                            .OpenWithCheckpointFaultInjectorAsync(
+                                destinationPath,
+                                checkpoint.Binding,
+                                new CoordinatedJsonCheckpointFaultInjector(
+                                    faultPoint,
+                                    reader,
+                                    writer),
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                    lease.DataStream.Position = lease.DataStream.Length;
+                    await lease.DataStream.WriteAsync(appendBytes)
+                        .ConfigureAwait(false);
+                    await lease.PersistCheckpointAsync(checkpoint)
+                        .ConfigureAwait(false);
+                })
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<int> RunJsonPublicationAsync(string[] args)
+    {
+        string destinationPath = Path.GetFullPath(
+            RequiredOption(args, "--json-publication-destination"));
+        string manifestPath = Path.GetFullPath(
+            RequiredOption(args, "--json-publication-manifest"));
+        string expectedManifestDigest =
+            RequiredOption(args, "--json-publication-manifest-digest");
+        string faultName = RequiredOption(args, "--json-publication-fault");
+        if (!Enum.TryParse(
+                faultName,
+                ignoreCase: false,
+                out JsonExportPublicationFaultPoint faultPoint))
+        {
+            throw new ArgumentException(
+                $"Unknown JSON publication fault point '{faultName}'.",
+                nameof(args));
+        }
+
+        return await RunExportCoordinatedAsync(
+                args,
+                async (reader, writer) =>
+                {
+                    _ = await new JsonExportPublisher(
+                            new CoordinatedJsonPublicationFaultInjector(
+                                faultPoint,
+                                reader,
+                                writer))
+                        .PublishCompletedAsync(
+                            new JsonPreparedExportPublicationRequest
+                            {
+                                DestinationPath = destinationPath,
+                                ManifestPath = manifestPath,
+                                ExpectedManifestDigest =
+                                    expectedManifestDigest,
+                            })
+                        .ConfigureAwait(false);
+                })
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<int> RunExportCoordinatedAsync(
         IReadOnlyList<string> args,
         Func<StreamReader, StreamWriter, Task> operation)
     {
@@ -1236,6 +1330,66 @@ internal static class MigrationCrashHarness
             {
                 throw new EndOfStreamException(
                     "Crash coordinator disconnected before releasing the CSV publication fault point.");
+            }
+        }
+    }
+
+    private sealed class CoordinatedJsonCheckpointFaultInjector(
+        JsonExportCheckpointFaultPoint faultPoint,
+        StreamReader reader,
+        StreamWriter writer) : IJsonExportCheckpointFaultInjector
+    {
+        private int _fired;
+
+        public async ValueTask InjectAsync(
+            JsonExportCheckpointFaultPoint point,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (point != faultPoint ||
+                Interlocked.Exchange(ref _fired, 1) != 0)
+            {
+                return;
+            }
+
+            await writer.WriteLineAsync($"JSON_CHECKPOINT_REACHED|{point}")
+                .ConfigureAwait(false);
+            string? command = await reader.ReadLineAsync()
+                .ConfigureAwait(false);
+            if (!string.Equals(command, "CONTINUE", StringComparison.Ordinal))
+            {
+                throw new EndOfStreamException(
+                    "Crash coordinator disconnected before releasing the JSON checkpoint fault point.");
+            }
+        }
+    }
+
+    private sealed class CoordinatedJsonPublicationFaultInjector(
+        JsonExportPublicationFaultPoint faultPoint,
+        StreamReader reader,
+        StreamWriter writer) : IJsonExportPublicationFaultInjector
+    {
+        private int _fired;
+
+        public async ValueTask InjectAsync(
+            JsonExportPublicationFaultPoint point,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (point != faultPoint ||
+                Interlocked.Exchange(ref _fired, 1) != 0)
+            {
+                return;
+            }
+
+            await writer.WriteLineAsync($"JSON_PUBLICATION_REACHED|{point}")
+                .ConfigureAwait(false);
+            string? command = await reader.ReadLineAsync()
+                .ConfigureAwait(false);
+            if (!string.Equals(command, "CONTINUE", StringComparison.Ordinal))
+            {
+                throw new EndOfStreamException(
+                    "Crash coordinator disconnected before releasing the JSON publication fault point.");
             }
         }
     }

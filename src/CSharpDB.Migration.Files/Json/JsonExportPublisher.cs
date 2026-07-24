@@ -87,7 +87,23 @@ public sealed class JsonExportPublisher
                 destinationPath,
                 manifestPath);
 
-    internal static void
+    /// <summary>
+    /// Validates one fully qualified, exactly normalized source file path
+    /// without opening it. Windows device paths, alternate data streams,
+    /// traversal, DOS short-name aliases, and JSON export private leaves are
+    /// rejected.
+    /// </summary>
+    public static void ValidateSourcePath(
+        string sourcePath) =>
+        JsonExportPathPreflight.ValidateSourcePath(
+            sourcePath);
+
+    /// <summary>
+    /// Validates final, deterministic publication-staging, and durable
+    /// prepared-output paths without creating, truncating, or reclaiming any
+    /// file. Call this before opening an external source.
+    /// </summary>
+    public static void
         ValidatePreparedPublicationPaths(
         string destinationPath,
         string manifestPath)

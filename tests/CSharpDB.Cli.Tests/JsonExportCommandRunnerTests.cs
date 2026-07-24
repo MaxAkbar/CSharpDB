@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CSharpDB.Engine;
+using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Json;
 
 namespace CSharpDB.Cli.Tests;
@@ -50,6 +51,7 @@ public sealed class JsonExportCommandRunnerTests
                     "--profile", "lossless-v1",
                     "--max-data-bytes", "1048576",
                     "--max-decoded-blob-bytes", "1024",
+                    "--checkpoint-row-interval", "1",
                 ]),
             output,
             error,
@@ -92,6 +94,32 @@ public sealed class JsonExportCommandRunnerTests
         Assert.Equal(
             receipt.Sha256["sha256:".Length..],
             manifest.Source.SnapshotDigest.Value);
+        string preparedPath =
+            Assert.Single(
+                Directory.GetFiles(
+                    workspace.Root,
+                    ".csharpdb-json-export-*.prepared",
+                    SearchOption.TopDirectoryOnly));
+        string checkpointPath =
+            Assert.Single(
+                Directory.GetFiles(
+                    workspace.Root,
+                    ".csharpdb-json-export-*.checkpoint",
+                    SearchOption.TopDirectoryOnly));
+        Assert.Equal(
+            data,
+            await File.ReadAllBytesAsync(
+                preparedPath,
+                Cancellation));
+        Assert.NotEmpty(
+            await File.ReadAllBytesAsync(
+                checkpointPath,
+                Cancellation));
+        Assert.Empty(
+            Directory.GetFiles(
+                workspace.Root,
+                ".csharpdb-json-export-*.checkpoint.next",
+                SearchOption.TopDirectoryOnly));
 
         string status = output.ToString();
         Assert.Contains(
@@ -140,14 +168,19 @@ public sealed class JsonExportCommandRunnerTests
         var output = new StringWriter();
         var error = new StringWriter();
 
-        int code = await MigrationCommandRunner.RunAsync(
+        string[] arguments =
             ExportArguments(
                 receipt,
                 "ndjson",
                 "export_rows",
                 dataPath,
                 manifestPath,
-                ["--json"]),
+                [
+                    "--checkpoint-row-interval", "1",
+                    "--json",
+                ]);
+        int code = await MigrationCommandRunner.RunAsync(
+            arguments,
             output,
             error,
             Cancellation);
@@ -183,6 +216,30 @@ public sealed class JsonExportCommandRunnerTests
             root.GetProperty("reusedData").GetBoolean());
         Assert.False(
             root.GetProperty("reusedManifest").GetBoolean());
+
+        var retryOutput = new StringWriter();
+        var retryError = new StringWriter();
+        Assert.Equal(
+            InspectorCommandRunner.ExitOk,
+            await MigrationCommandRunner.RunAsync(
+                arguments,
+                retryOutput,
+                retryError,
+                Cancellation));
+        Assert.True(
+            string.IsNullOrWhiteSpace(
+                retryError.ToString()));
+        using JsonDocument retry =
+            JsonDocument.Parse(
+                retryOutput.ToString());
+        Assert.True(
+            retry.RootElement
+                .GetProperty("reusedData")
+                .GetBoolean());
+        Assert.True(
+            retry.RootElement
+                .GetProperty("reusedManifest")
+                .GetBoolean());
     }
 
     [Theory]
@@ -253,7 +310,11 @@ public sealed class JsonExportCommandRunnerTests
             format,
             "export_rows",
             dataPath,
-            manifestPath);
+            manifestPath,
+            [
+                "--checkpoint-row-interval",
+                "1",
+            ]);
 
         Assert.Equal(
             InspectorCommandRunner.ExitOk,
@@ -268,6 +329,26 @@ public sealed class JsonExportCommandRunnerTests
         byte[] manifestBefore =
             await File.ReadAllBytesAsync(
                 manifestPath,
+                Cancellation);
+        string preparedPath =
+            Assert.Single(
+                Directory.GetFiles(
+                    workspace.Root,
+                    ".csharpdb-json-export-*.prepared",
+                    SearchOption.TopDirectoryOnly));
+        string checkpointPath =
+            Assert.Single(
+                Directory.GetFiles(
+                    workspace.Root,
+                    ".csharpdb-json-export-*.checkpoint",
+                    SearchOption.TopDirectoryOnly));
+        byte[] preparedBefore =
+            await File.ReadAllBytesAsync(
+                preparedPath,
+                Cancellation);
+        byte[] checkpointBefore =
+            await File.ReadAllBytesAsync(
+                checkpointPath,
                 Cancellation);
 
         var exactOutput = new StringWriter();
@@ -314,29 +395,269 @@ public sealed class JsonExportCommandRunnerTests
             await File.ReadAllBytesAsync(
                 manifestPath,
                 Cancellation));
+        Assert.Equal(
+            preparedBefore,
+            await File.ReadAllBytesAsync(
+                preparedPath,
+                Cancellation));
+        Assert.Equal(
+            checkpointBefore,
+            await File.ReadAllBytesAsync(
+                checkpointPath,
+                Cancellation));
+        Assert.Empty(
+            Directory.GetFiles(
+                workspace.Root,
+                ".csharpdb-json-export-*.checkpoint.next",
+                SearchOption.TopDirectoryOnly));
     }
 
     [Theory]
-    [InlineData(
-        "json",
-        "--checkpoint-row-interval",
-        "1")]
-    [InlineData(
-        "ndjson",
-        "--checkpoint-row-interval",
-        "1")]
-    [InlineData(
-        "json",
-        "--profile",
-        "spreadsheet-safe-lossy-v1")]
-    [InlineData(
-        "ndjson",
-        "--profile",
-        "spreadsheet-safe-lossy-v1")]
-    public async Task JsonFormats_RejectCsvOnlyOptions(
-        string format,
-        string option,
-        string value)
+    [InlineData("json")]
+    [InlineData("ndjson")]
+    public async Task ResumableCommand_BootstrapsSameBindingRestartOnlyExactPair(
+        string format)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        RetainedDatabaseSnapshotReceipt receipt =
+            await CreateSnapshotAsync(
+                workspace,
+                $"legacy-{format}");
+        string dataPath =
+            workspace.PathFor(
+                $"legacy.{format}");
+        string manifestPath =
+            workspace.PathFor(
+                $"legacy.{format}.manifest.json");
+        var request =
+            new CSharpDbRetainedJsonExportRequest
+            {
+                SnapshotPath =
+                    receipt.SnapshotPath,
+                SnapshotIdentity =
+                    receipt.Identity,
+                TableName =
+                    "export_rows",
+                DestinationPath =
+                    dataPath,
+                Framing =
+                    format == "json"
+                        ? JsonExportFraming
+                            .RootArray
+                        : JsonExportFraming
+                            .Ndjson,
+                MaxDataBytes =
+                    1L << 40,
+            };
+        _ =
+            await new CSharpDbJsonExportAdapter()
+                .WriteAndPublishTableAsync(
+                    request,
+                    manifestPath,
+                    Cancellation);
+        byte[] legacyData =
+            await File.ReadAllBytesAsync(
+                dataPath,
+                Cancellation);
+        byte[] legacyManifest =
+            await File.ReadAllBytesAsync(
+                manifestPath,
+                Cancellation);
+        Assert.Empty(
+            Directory.GetFiles(
+                workspace.Root,
+                ".csharpdb-json-export-*",
+                SearchOption.TopDirectoryOnly));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        Assert.Equal(
+            InspectorCommandRunner.ExitOk,
+            await MigrationCommandRunner
+                .RunAsync(
+                    ExportArguments(
+                        receipt,
+                        format,
+                        "export_rows",
+                        dataPath,
+                        manifestPath,
+                        [
+                            "--checkpoint-row-interval",
+                            "1",
+                        ]),
+                    output,
+                    error,
+                    Cancellation));
+
+        Assert.True(
+            string.IsNullOrWhiteSpace(
+                error.ToString()));
+        Assert.Contains(
+            "dataState=reused",
+            output.ToString(),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "manifestState=reused",
+            output.ToString(),
+            StringComparison.Ordinal);
+        Assert.Equal(
+            legacyData,
+            await File.ReadAllBytesAsync(
+                dataPath,
+                Cancellation));
+        Assert.Equal(
+            legacyManifest,
+            await File.ReadAllBytesAsync(
+                manifestPath,
+                Cancellation));
+        _ =
+            Assert.Single(
+                Directory.GetFiles(
+                    workspace.Root,
+                    ".csharpdb-json-export-*.prepared",
+                    SearchOption.TopDirectoryOnly));
+        _ =
+            Assert.Single(
+                Directory.GetFiles(
+                    workspace.Root,
+                ".csharpdb-json-export-*.checkpoint",
+                SearchOption.TopDirectoryOnly));
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("ndjson")]
+    public async Task ResumableCommand_RejectsRestartOnlyPairWithDifferentSourceBinding(
+        string format)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace =
+            new TemporaryDirectory();
+        RetainedDatabaseSnapshotReceipt receipt =
+            await CreateSnapshotAsync(
+                workspace,
+                $"legacy-binding-{format}");
+        string dataPath =
+            workspace.PathFor(
+                $"legacy-binding.{format}");
+        string manifestPath =
+            workspace.PathFor(
+                $"legacy-binding.{format}.manifest.json");
+        var request =
+            new CSharpDbRetainedJsonExportRequest
+            {
+                SnapshotPath =
+                    receipt.SnapshotPath,
+                SnapshotIdentity =
+                    receipt.Identity,
+                TableName =
+                    "export_rows",
+                DestinationPath =
+                    dataPath,
+                Framing =
+                    format == "json"
+                        ? JsonExportFraming
+                            .RootArray
+                        : JsonExportFraming
+                            .Ndjson,
+                MaxDataBytes =
+                    1L << 40,
+            };
+        _ =
+            await new CSharpDbJsonExportAdapter()
+                .WriteAndPublishTableAsync(
+                    request,
+                    manifestPath,
+                    Cancellation);
+
+        byte[] legacyData =
+            await File.ReadAllBytesAsync(
+                dataPath,
+                Cancellation);
+        JsonExportManifest currentManifest =
+            JsonExportManifestSerializer.Deserialize(
+                await File.ReadAllBytesAsync(
+                    manifestPath,
+                    Cancellation));
+        JsonExportManifest differentlyBoundManifest =
+            currentManifest with
+            {
+                Source = currentManifest.Source with
+                {
+                    Version =
+                        currentManifest.Source.Version +
+                        "-legacy-binding-mismatch",
+                },
+            };
+        byte[] legacyManifest =
+            JsonExportManifestSerializer.Serialize(
+                differentlyBoundManifest);
+        await File.WriteAllBytesAsync(
+            manifestPath,
+            legacyManifest,
+            Cancellation);
+        Assert.Empty(
+            Directory.GetFiles(
+                workspace.Root,
+                ".csharpdb-json-export-*",
+                SearchOption.TopDirectoryOnly));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        int code =
+            await MigrationCommandRunner
+                .RunAsync(
+                    ExportArguments(
+                        receipt,
+                        format,
+                        "export_rows",
+                        dataPath,
+                        manifestPath,
+                        [
+                            "--checkpoint-row-interval",
+                            "1",
+                        ]),
+                    output,
+                    error,
+                    Cancellation);
+
+        Assert.Equal(
+            InspectorCommandRunner.ExitError,
+            code);
+        Assert.True(
+            string.IsNullOrWhiteSpace(
+                output.ToString()));
+        Assert.DoesNotContain(
+            "reused",
+            output.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "manifest destination already contains a different file",
+            error.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            legacyData,
+            await File.ReadAllBytesAsync(
+                dataPath,
+                Cancellation));
+        Assert.Equal(
+            legacyManifest,
+            await File.ReadAllBytesAsync(
+                manifestPath,
+                Cancellation));
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("ndjson")]
+    public async Task JsonFormats_RejectCsvOnlyProfile(
+        string format)
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -358,7 +679,10 @@ public sealed class JsonExportCommandRunnerTests
                 "export_rows",
                 dataPath,
                 manifestPath,
-                [option, value]),
+                [
+                    "--profile",
+                    "spreadsheet-safe-lossy-v1",
+                ]),
             output,
             error,
             Cancellation);
@@ -378,10 +702,148 @@ public sealed class JsonExportCommandRunnerTests
             SearchOption.TopDirectoryOnly));
     }
 
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("not-a-number")]
+    [InlineData("9223372036854775808")]
+    public async Task JsonFormats_RejectInvalidCheckpointRowIntervals(
+        string value)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        RetainedDatabaseSnapshotReceipt receipt =
+            await CreateSnapshotAsync(
+                workspace,
+                "checkpoint-validation");
+
+        foreach (string format in
+                 new[] { "json", "ndjson" })
+        {
+            string dataPath =
+                workspace.PathFor(
+                    $"invalid-checkpoint.{format}");
+            string manifestPath =
+                workspace.PathFor(
+                    $"invalid-checkpoint.{format}.manifest.json");
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            int code =
+                await MigrationCommandRunner.RunAsync(
+                    ExportArguments(
+                        receipt,
+                        format,
+                        "export_rows",
+                        dataPath,
+                        manifestPath,
+                        [
+                            "--checkpoint-row-interval",
+                            value,
+                        ]),
+                    output,
+                    error,
+                    Cancellation);
+
+            Assert.Equal(
+                InspectorCommandRunner.ExitUsage,
+                code);
+            Assert.True(
+                string.IsNullOrWhiteSpace(
+                    output.ToString()));
+            Assert.Contains(
+                "checkpoint row interval",
+                error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.False(
+                File.Exists(dataPath));
+            Assert.False(
+                File.Exists(manifestPath));
+            Assert.Empty(
+                Directory.EnumerateFiles(
+                    workspace.Root,
+                    ".csharpdb-json-export-*",
+                    SearchOption.TopDirectoryOnly));
+        }
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("ndjson")]
+    public async Task JsonFormats_RejectSnapshotInReservedPrivateNamespace(
+        string format)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var workspace = new TemporaryDirectory();
+        const string snapshotLeaf =
+            ".csharpdb-json-export-retained.prepared";
+        RetainedDatabaseSnapshotReceipt receipt =
+            await CreateSnapshotAsync(
+                workspace,
+                $"reserved-{format}",
+                snapshotLeaf);
+        byte[] snapshotBefore =
+            await File.ReadAllBytesAsync(
+                receipt.SnapshotPath,
+                Cancellation);
+        string dataPath =
+            workspace.PathFor(
+                $"reserved.{format}");
+        string manifestPath =
+            workspace.PathFor(
+                $"reserved.{format}.manifest.json");
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        int code =
+            await MigrationCommandRunner.RunAsync(
+                ExportArguments(
+                    receipt,
+                    format,
+                    "export_rows",
+                    dataPath,
+                    manifestPath),
+                output,
+                error,
+                Cancellation);
+
+        Assert.Equal(
+            InspectorCommandRunner.ExitUsage,
+            code);
+        Assert.True(
+            string.IsNullOrWhiteSpace(
+                output.ToString()));
+        Assert.Contains(
+            "reserved private namespace",
+            error.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(
+            File.Exists(dataPath));
+        Assert.False(
+            File.Exists(manifestPath));
+        Assert.Equal(
+            snapshotBefore,
+            await File.ReadAllBytesAsync(
+                receipt.SnapshotPath,
+                Cancellation));
+        Assert.Equal(
+            receipt.SnapshotPath,
+            Assert.Single(
+                Directory.GetFiles(
+                    workspace.Root,
+                    ".csharpdb-json-export-*",
+                    SearchOption.TopDirectoryOnly)));
+    }
+
     private static async Task<RetainedDatabaseSnapshotReceipt>
         CreateSnapshotAsync(
         TemporaryDirectory workspace,
-        string name)
+        string name,
+        string? snapshotLeaf = null)
     {
         string sourcePath =
             workspace.PathFor($"{name}-source.db");
@@ -417,7 +879,9 @@ public sealed class JsonExportCommandRunnerTests
 
         return await RetainedDatabaseSnapshot.CaptureAsync(
             sourcePath,
-            workspace.PathFor($"{name}-snapshot.db"),
+            workspace.PathFor(
+                snapshotLeaf ??
+                $"{name}-snapshot.db"),
             databaseOptions: null,
             new RetainedDatabaseSnapshotOptions
             {

@@ -661,11 +661,17 @@ tail truncation, stale-pending reclamation, and data-first durable active
 checkpoint replacement relative to a pinned parent. Public SDK
 `WriteResumableAsync` and same-lease `WriteResumableAndPublishAsync` now
 compose durable resume, terminal source requalification, independent
-prepared-data rehash, and manifest-last prepared publication. Retained-adapter
-and CLI resume activation, child-process crash qualification, abrupt-power-loss
-qualification, collection projection, and import CLI integration remain open.
-Restart-only publication uses deterministic exclusive `.next` siblings and
-safely reclaims only qualified crash leftovers.
+prepared-data rehash, and manifest-last prepared publication. The retained
+  CSharpDB adapter and CLI now route through that same durable workflow with an
+  explicit checkpoint interval and exact-command resume. Child-process
+  kill/restart coverage now qualifies all three checkpoint cutoffs for both
+  framings once journal authority exists and all five publication cutoffs for
+  both framings, including empty NDJSON. The one-time adoption of same-binding
+  restart-only finals is not yet process-kill qualified. Abrupt-power-loss
+  qualification, collection projection, and import CLI integration remain
+  open. Restart-only publication uses
+deterministic exclusive `.next` siblings and safely reclaims only qualified
+crash leftovers.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -712,9 +718,9 @@ safely reclaims only qualified crash leftovers.
 - [x] Expose public SDK durable resume and same-lease prepared publication
   with source requalification, independent prepared-data rehash, exact
   data-only/pair recovery, and preserved journal authority.
-- [ ] Route durable resume/publication through the retained CSharpDB adapter
+- [x] Route durable resume/publication through the retained CSharpDB adapter
   and CLI.
-- [ ] Child-process qualify JSON resume and publication cutoffs.
+- [x] Child-process qualify JSON resume and publication cutoffs.
 
 ### Shared Deliverables
 

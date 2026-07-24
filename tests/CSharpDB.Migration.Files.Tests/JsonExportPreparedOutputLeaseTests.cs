@@ -546,7 +546,7 @@ public sealed class JsonExportPreparedOutputLeaseTests
     }
 
     [Fact]
-    public async Task OpenAllowingCompletedDestinationAsync_RejectsIncompleteAuthority()
+    public async Task OpenAllowingCompletedDestinationAsync_ResumesBootstrapWritingAuthority()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -568,13 +568,27 @@ public sealed class JsonExportPreparedOutputLeaseTests
             prefix,
             Cancellation);
 
-        await Assert.ThrowsAsync<InvalidDataException>(
-            () => JsonExportPreparedOutputLease
+        await using JsonExportPreparedOutputLease lease =
+            await JsonExportPreparedOutputLease
                 .OpenAllowingCompletedDestinationAsync(
                     destinationPath,
                     binding,
-                    Cancellation)
-                .AsTask());
+                    Cancellation);
+
+        Assert.Equal(
+            JsonExportPreparedOutputLeaseState.Recovered,
+            lease.State);
+        Assert.Equal(
+            JsonExportCheckpointPhase.Writing,
+            lease.CurrentCheckpoint!.Phase);
+        Assert.Equal(
+            prefix.LongLength,
+            lease.DataStream.Length);
+        Assert.Equal(
+            prefix,
+            await File.ReadAllBytesAsync(
+                destinationPath,
+                Cancellation));
     }
 
     [Theory]
@@ -802,6 +816,28 @@ public sealed class JsonExportPreparedOutputLeaseTests
         Assert.NotEqual(
             lowerPaths.CheckpointPath,
             upperPaths.CheckpointPath);
+    }
+
+    [Theory]
+    [InlineData(".csharpdb-json-export-owned.prepared")]
+    [InlineData(".CSHARPDB-JSON-EXPORT-owned.ndjson")]
+    public void BindPaths_RejectsCallerChosenReservedDestination(
+        string leaf)
+    {
+        using var workspace = new TemporaryDirectory();
+        string destinationPath =
+            workspace.PathFor(leaf);
+
+        Assert.Throws<ArgumentException>(
+            () => JsonExportPreparedOutputLease
+                .BindPaths(destinationPath));
+
+        Assert.Empty(
+            Directory.EnumerateFiles(
+                Path.GetDirectoryName(
+                    destinationPath)!,
+                "*",
+                SearchOption.TopDirectoryOnly));
     }
 
     private static async Task<JsonExportPreparedOutputPaths>

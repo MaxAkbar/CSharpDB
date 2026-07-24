@@ -416,6 +416,10 @@ internal sealed class JsonExportPublicationFileSystem :
                 "JSON export file names are invalid.",
                 parameterName);
         }
+        JsonExportPathPreflight
+            .RejectReservedPrivateLeaf(
+                fullPath,
+                parameterName);
 
         return fullPath;
     }
