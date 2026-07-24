@@ -16,6 +16,7 @@ internal static partial class SqlServerCatalogBuilder
 
     private static void AddRelationalObjects(
         SqlServerCatalogSnapshot snapshot,
+        SqlServerScriptDomAnalysisSnapshot scriptDomAnalysis,
         IReadOnlyDictionary<int, (SqlServerSchemaMetadata Metadata, string ObjectId)> schemasById,
         IReadOnlyDictionary<int, (SqlServerTableMetadata Metadata, string Id)> tablesByObjectId,
         IReadOnlyDictionary<
@@ -122,6 +123,15 @@ internal static partial class SqlServerCatalogBuilder
                         ? "sqlserver-unsupported-key-index"
                         : logicalKind;
             string keyId = ObjectId("key", schema.Name, table.Name, key.Name);
+            SqlServerScriptDomDefinitionAnalysis? filterAnalysis =
+                backingIndex is null
+                    ? null
+                    : GetScriptDomAnalysis(
+                        scriptDomAnalysis,
+                        SqlServerScriptDomDefinitionKind.IndexFilterPredicate,
+                        backingIndex.ObjectId,
+                        backingIndex.IndexId,
+                        backingIndex.FilterDefinition is not null);
 
             var facets = new List<MigrationCatalogFacet>
             {
@@ -141,6 +151,14 @@ internal static partial class SqlServerCatalogBuilder
                     "csharpdb-sqlserver-filter-definition/v1",
                     backingIndex.FilterDefinitionBytes,
                     backingIndex.FilterDefinition);
+                if (backingIndex.HasFilter)
+                {
+                    AddScriptDomFacets(
+                        facets,
+                        "sqlServerFilterTsqlAnalysis",
+                        "sqlServerFilterTsql",
+                        filterAnalysis);
+                }
             }
 
             MigrationObjectReference[] members = resolvedColumns
@@ -211,6 +229,11 @@ internal static partial class SqlServerCatalogBuilder
                     "Rebuild the key on an ordinary trusted rowstore index or provide a reviewed target design.",
                     canOverride: false));
             }
+            AddFilterAnalysisDiagnostic(
+                keyId,
+                backingIndex,
+                filterAnalysis,
+                diagnostics);
         }
 
         var indexObjectIds = new Dictionary<(int ObjectId, int IndexId), string>();
@@ -277,6 +300,13 @@ internal static partial class SqlServerCatalogBuilder
 
             string indexId = ObjectId("index", schema.Name, table.Name, index.Name);
             indexObjectIds.Add((index.ObjectId, index.IndexId), indexId);
+            SqlServerScriptDomDefinitionAnalysis? filterAnalysis =
+                GetScriptDomAnalysis(
+                    scriptDomAnalysis,
+                    SqlServerScriptDomDefinitionKind.IndexFilterPredicate,
+                    index.ObjectId,
+                    index.IndexId,
+                    index.FilterDefinition is not null);
             var facets = new List<MigrationCatalogFacet>
             {
                 Facet("kind", indexKind),
@@ -296,6 +326,14 @@ internal static partial class SqlServerCatalogBuilder
                 "csharpdb-sqlserver-filter-definition/v1",
                 index.FilterDefinitionBytes,
                 index.FilterDefinition);
+            if (index.HasFilter)
+            {
+                AddScriptDomFacets(
+                    facets,
+                    "sqlServerFilterTsqlAnalysis",
+                    "sqlServerFilterTsql",
+                    filterAnalysis);
+            }
 
             (SqlServerIndexColumnMetadata IndexColumn, string Id)[] resolvedKeyColumns =
                 keyColumns
@@ -348,6 +386,11 @@ internal static partial class SqlServerCatalogBuilder
                     "Simplify the index or define and test an explicit target index design.",
                     canOverride: false));
             }
+            AddFilterAnalysisDiagnostic(
+                indexId,
+                index,
+                filterAnalysis,
+                diagnostics);
         }
 
         foreach (SqlServerForeignKeyMetadata foreignKey in snapshot.ForeignKeys
@@ -557,6 +600,13 @@ internal static partial class SqlServerCatalogBuilder
                 schema.Name,
                 table.Name,
                 check.Name);
+            SqlServerScriptDomDefinitionAnalysis? checkAnalysis =
+                GetScriptDomAnalysis(
+                    scriptDomAnalysis,
+                    SqlServerScriptDomDefinitionKind.CheckPredicate,
+                    check.ObjectId,
+                    subObjectId: 0,
+                    check.Definition is not null);
             var facets = new List<MigrationCatalogFacet>
             {
                 Facet("sqlServerObjectId", Invariant(check.ObjectId)),
@@ -575,6 +625,11 @@ internal static partial class SqlServerCatalogBuilder
                 "csharpdb-sqlserver-check-definition/v1",
                 check.DefinitionBytes,
                 check.Definition);
+            AddScriptDomFacets(
+                facets,
+                "sqlServerCheckTsqlAnalysis",
+                "sqlServerCheckTsql",
+                checkAnalysis);
             string[] dependencies =
                 check.ParentColumnId > 0 &&
                 columnsByCatalogId.TryGetValue(
@@ -592,15 +647,26 @@ internal static partial class SqlServerCatalogBuilder
                 Facets = facets.AsReadOnly(),
                 DependsOn = dependencies,
             });
-            diagnostics.Add(Diagnostic(
-                checkId,
-                "MIG-SQLSERVER-CHECK-EXPRESSION-UNANALYZED-001",
-                MigrationDiagnosticSeverity.Error,
-                MigrationCompatibilityStatus.Unknown,
-                "The SQL Server check expression has not been proven target-safe.",
-                "Only a bounded definition length and digest are retained; determinism, binding, row locality, collation behavior, and target syntax have not been established.",
-                "Parse, bind, and scratch-execute an explicit target check before including it.",
-                canOverride: false));
+            if (check.Definition is null)
+            {
+                diagnostics.Add(Diagnostic(
+                    checkId,
+                    "MIG-SQLSERVER-CHECK-DEFINITION-UNAVAILABLE-001",
+                    MigrationDiagnosticSeverity.Error,
+                    MigrationCompatibilityStatus.Unknown,
+                    "The SQL Server check definition is unavailable.",
+                    "The catalog reports a check constraint, but no predicate was visible for bounded syntax analysis.",
+                    "Restore complete definition visibility and inspect again.",
+                    canOverride: false));
+            }
+            else
+            {
+                AddScriptDomDiagnostic(
+                    checkId,
+                    "check predicate",
+                    checkAnalysis!,
+                    diagnostics);
+            }
         }
 
         foreach (SqlServerSequenceMetadata sequence in snapshot.Sequences
@@ -1273,6 +1339,36 @@ internal static partial class SqlServerCatalogBuilder
             columns.Any(static item => item.PartitionOrdinal > 0))));
         if (columns.Any(item => IsHeapRid(index, item)))
             facets.Add(Facet("sqlServerHeapRid", "true"));
+    }
+
+    private static void AddFilterAnalysisDiagnostic(
+        string objectId,
+        SqlServerIndexMetadata? index,
+        SqlServerScriptDomDefinitionAnalysis? analysis,
+        ICollection<MigrationDiagnostic> diagnostics)
+    {
+        if (index?.HasFilter != true)
+            return;
+
+        if (index.FilterDefinition is null)
+        {
+            diagnostics.Add(Diagnostic(
+                objectId,
+                "MIG-SQLSERVER-FILTER-DEFINITION-UNAVAILABLE-001",
+                MigrationDiagnosticSeverity.Error,
+                MigrationCompatibilityStatus.Unknown,
+                "The SQL Server filtered-index predicate is unavailable.",
+                "The catalog reports a filtered index, but no predicate was visible for bounded syntax analysis.",
+                "Restore complete definition visibility and inspect again.",
+                canOverride: false));
+            return;
+        }
+
+        AddScriptDomDiagnostic(
+            objectId,
+            "filtered-index predicate",
+            analysis!,
+            diagnostics);
     }
 
     private static void AddDefinitionDigestFacets(

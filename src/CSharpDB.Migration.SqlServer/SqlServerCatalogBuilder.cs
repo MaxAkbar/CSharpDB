@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer;
 
 internal static partial class SqlServerCatalogBuilder
 {
-    public const string CatalogContract = "csharpdb-sqlserver-catalog/v3";
+    public const string CatalogContract = "csharpdb-sqlserver-catalog/v4";
 
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -40,6 +40,11 @@ internal static partial class SqlServerCatalogBuilder
         }
 
         ValidateSnapshot(snapshot, limits, cancellationToken);
+        SqlServerScriptDomAnalysisSnapshot scriptDomAnalysis =
+            SqlServerScriptDomAnalyzer.Analyze(
+                snapshot,
+                limits,
+                cancellationToken);
 
         var objects = new List<MigrationCatalogObject>(
             1 +
@@ -277,6 +282,36 @@ internal static partial class SqlServerCatalogBuilder
             AddDefaultFacets(facets, column);
             AddComputedFacets(facets, column);
             AddIdentityFacets(facets, column);
+            SqlServerScriptDomDefinitionAnalysis? defaultAnalysis =
+                GetScriptDomAnalysis(
+                    scriptDomAnalysis,
+                    SqlServerScriptDomDefinitionKind.DefaultExpression,
+                    column.ObjectId,
+                    column.ColumnId,
+                    column.DefaultDefinition is not null);
+            SqlServerScriptDomDefinitionAnalysis? computedAnalysis =
+                GetScriptDomAnalysis(
+                    scriptDomAnalysis,
+                    SqlServerScriptDomDefinitionKind.ComputedExpression,
+                    column.ObjectId,
+                    column.ColumnId,
+                    column.ComputedDefinition is not null);
+            if (column.HasDefault)
+            {
+                AddScriptDomFacets(
+                    facets,
+                    "sqlServerDefaultTsqlAnalysis",
+                    "sqlServerDefaultTsql",
+                    defaultAnalysis);
+            }
+            if (column.IsComputed)
+            {
+                AddScriptDomFacets(
+                    facets,
+                    "sqlServerComputedTsqlAnalysis",
+                    "sqlServerComputedTsql",
+                    computedAnalysis);
+            }
 
             objects.Add(new MigrationCatalogObject
             {
@@ -289,11 +324,18 @@ internal static partial class SqlServerCatalogBuilder
                 Facets = facets.AsReadOnly(),
             });
 
-            AddColumnDiagnostics(column, columnId, logicalType, diagnostics);
+            AddColumnDiagnostics(
+                column,
+                columnId,
+                logicalType,
+                defaultAnalysis,
+                computedAnalysis,
+                diagnostics);
         }
 
         AddRelationalObjects(
             snapshot,
+            scriptDomAnalysis,
             schemasById,
             tablesByObjectId,
             columnsByCatalogId,
@@ -303,6 +345,7 @@ internal static partial class SqlServerCatalogBuilder
 
         AddProgrammableObjects(
             snapshot,
+            scriptDomAnalysis,
             databaseId,
             schemasById,
             tablesByObjectId,
@@ -537,6 +580,8 @@ internal static partial class SqlServerCatalogBuilder
         SqlServerColumnMetadata column,
         string columnId,
         string logicalType,
+        SqlServerScriptDomDefinitionAnalysis? defaultAnalysis,
+        SqlServerScriptDomDefinitionAnalysis? computedAnalysis,
         ICollection<MigrationDiagnostic> diagnostics)
     {
         if (logicalType == "native")
@@ -554,16 +599,51 @@ internal static partial class SqlServerCatalogBuilder
 
         if (column.HasDefault)
         {
-            diagnostics.Add(Diagnostic(
-                columnId,
-                "MIG-SQLSERVER-DEFAULT-UNANALYZED-001",
-                MigrationDiagnosticSeverity.Error,
-                MigrationCompatibilityStatus.Unknown,
-                "The SQL Server default expression has not been analyzed.",
-                "The constraint name and a digest of its bounded definition are retained, but expression parsing and target lowering are deferred.",
-                "Review and rewrite the default after bounded expression analysis is available.",
-                canOverride: false,
-                occurrenceKey: column.DefaultConstraintName));
+            if (column.DefaultDefinition is null)
+            {
+                diagnostics.Add(Diagnostic(
+                    columnId,
+                    "MIG-SQLSERVER-DEFAULT-DEFINITION-UNAVAILABLE-001",
+                    MigrationDiagnosticSeverity.Error,
+                    MigrationCompatibilityStatus.Unknown,
+                    "The SQL Server default definition is unavailable.",
+                    "The catalog reports a default constraint, but no definition was visible for bounded syntax analysis.",
+                    "Restore complete definition visibility and inspect again.",
+                    canOverride: false,
+                    occurrenceKey: column.DefaultConstraintName));
+            }
+            else
+            {
+                AddScriptDomDiagnostic(
+                    columnId,
+                    "default expression",
+                    defaultAnalysis!,
+                    diagnostics);
+            }
+        }
+
+        if (column.IsComputed)
+        {
+            if (column.ComputedDefinition is null)
+            {
+                diagnostics.Add(Diagnostic(
+                    columnId,
+                    "MIG-SQLSERVER-COMPUTED-DEFINITION-UNAVAILABLE-001",
+                    MigrationDiagnosticSeverity.Error,
+                    MigrationCompatibilityStatus.Unknown,
+                    "The SQL Server computed-column definition is unavailable.",
+                    "The catalog reports a computed column, but no definition was visible for bounded syntax analysis.",
+                    "Restore complete definition visibility and inspect again.",
+                    canOverride: false));
+            }
+            else
+            {
+                AddScriptDomDiagnostic(
+                    columnId,
+                    "computed-column expression",
+                    computedAnalysis!,
+                    diagnostics);
+            }
         }
 
         if (column.IsIdentity && column.IdentitySeed is null)
@@ -981,6 +1061,248 @@ internal static partial class SqlServerCatalogBuilder
             Fields());
     }
 
+    private static SqlServerScriptDomDefinitionAnalysis? GetScriptDomAnalysis(
+        SqlServerScriptDomAnalysisSnapshot snapshot,
+        SqlServerScriptDomDefinitionKind kind,
+        int objectId,
+        int subObjectId,
+        bool definitionAvailable)
+    {
+        var key = new SqlServerScriptDomDefinitionKey(
+            kind,
+            objectId,
+            subObjectId);
+        bool found = snapshot.TryGet(
+            key,
+            out SqlServerScriptDomDefinitionAnalysis? analysis);
+        if (found != definitionAvailable)
+        {
+            throw new SqlServerMigrationException(
+                "ScriptDom analysis does not match the available SQL Server definitions.");
+        }
+        if (!found)
+            return null;
+
+        ValidateScriptDomAnalysis(analysis!, key);
+        return analysis;
+    }
+
+    private static void ValidateScriptDomAnalysis(
+        SqlServerScriptDomDefinitionAnalysis analysis,
+        SqlServerScriptDomDefinitionKey expectedKey)
+    {
+        if (analysis.Key != expectedKey ||
+            !Enum.IsDefined(analysis.Status) ||
+            !Enum.IsDefined(analysis.ExpectedRootKind) ||
+            !Enum.IsDefined(analysis.RootKind) ||
+            string.IsNullOrWhiteSpace(analysis.Grammar) ||
+            analysis.Grammar.Length > 32 ||
+            analysis.Grammar.Any(static character =>
+                !char.IsAsciiLetterOrDigit(character) && character != '-') ||
+            analysis.TokenCount < 0 ||
+            analysis.NodeCount < 0 ||
+            analysis.NestingDepth < 0 ||
+            analysis.StatementCount < 0 ||
+            analysis.ParseErrorCount < 0 ||
+            analysis.ExpectedRootKind == SqlServerScriptDomRootKind.None ||
+            !IsSha256(analysis.SourceDigest) ||
+            !IsSha256(analysis.AnalysisDigest))
+        {
+            throw new SqlServerMigrationException(
+                "ScriptDom returned invalid bounded analysis metadata.");
+        }
+
+        bool hasFirstError =
+            analysis.FirstErrorNumber is not null ||
+            analysis.FirstErrorOffset is not null ||
+            analysis.FirstErrorLine is not null ||
+            analysis.FirstErrorColumn is not null;
+        bool hasCompleteFirstError =
+            analysis.FirstErrorNumber is not null &&
+            analysis.FirstErrorOffset is >= 0 &&
+            analysis.FirstErrorLine is >= 1 &&
+            analysis.FirstErrorColumn is >= 1;
+        if (hasFirstError != hasCompleteFirstError ||
+            (analysis.ParseErrorCount == 0) == hasFirstError ||
+            analysis.Status == SqlServerScriptDomStatus.Parsed &&
+            analysis.RootKind != analysis.ExpectedRootKind)
+        {
+            throw new SqlServerMigrationException(
+                "ScriptDom returned inconsistent analysis evidence.");
+        }
+    }
+
+    private static void AddScriptDomFacets(
+        ICollection<MigrationCatalogFacet> facets,
+        string statusFacet,
+        string prefix,
+        SqlServerScriptDomDefinitionAnalysis? analysis)
+    {
+        facets.Add(Facet(
+            statusFacet,
+            analysis is null
+                ? "not-attempted"
+                : ScriptDomStatusToken(analysis.Status)));
+        if (analysis is null)
+            return;
+
+        facets.Add(Facet($"{prefix}Grammar", analysis.Grammar));
+        facets.Add(Facet(
+            $"{prefix}QuotedIdentifiers",
+            Boolean(analysis.QuotedIdentifiers)));
+        facets.Add(Facet(
+            $"{prefix}TokenCount",
+            Invariant(analysis.TokenCount)));
+        facets.Add(Facet(
+            $"{prefix}NodeCount",
+            Invariant(analysis.NodeCount)));
+        facets.Add(Facet(
+            $"{prefix}NestingDepth",
+            Invariant(analysis.NestingDepth)));
+        facets.Add(Facet(
+            $"{prefix}StatementCount",
+            Invariant(analysis.StatementCount)));
+        facets.Add(Facet(
+            $"{prefix}ParseErrorCount",
+            Invariant(analysis.ParseErrorCount)));
+        facets.Add(Facet(
+            $"{prefix}ExpectedRootKind",
+            ScriptDomRootToken(analysis.ExpectedRootKind)));
+        facets.Add(Facet(
+            $"{prefix}RootKind",
+            ScriptDomRootToken(analysis.RootKind)));
+        if (analysis.FirstErrorNumber is int firstErrorNumber)
+        {
+            facets.Add(Facet(
+                $"{prefix}FirstErrorNumber",
+                Invariant(firstErrorNumber)));
+        }
+        facets.Add(Facet($"{prefix}SourceDigest", analysis.SourceDigest));
+        facets.Add(Facet($"{prefix}AnalysisDigest", analysis.AnalysisDigest));
+    }
+
+    private static void AddScriptDomDiagnostic(
+        string objectId,
+        string definitionDescription,
+        SqlServerScriptDomDefinitionAnalysis analysis,
+        ICollection<MigrationDiagnostic> diagnostics)
+    {
+        (
+            string RuleId,
+            string Summary,
+            string Explanation,
+            string Remediation) shape = analysis.Status switch
+            {
+                SqlServerScriptDomStatus.Parsed => (
+                    "MIG-SQLSERVER-TSQL-PARSED-NOT-LOWERED-001",
+                    $"The SQL Server {definitionDescription} parsed but is not target-ready.",
+                    "ScriptDom established bounded source syntax and the expected definition root only. Name binding, semantic equivalence, target lowering, scratch execution, and differential validation have not been established.",
+                    "Bind the definition to the normalized catalog, lower a reviewed target representation, and validate it against a scratch CSharpDB database."),
+                SqlServerScriptDomStatus.RootMismatch => (
+                    "MIG-SQLSERVER-TSQL-ROOT-MISMATCH-001",
+                    $"The SQL Server {definitionDescription} has an unexpected syntax root or identity.",
+                    "The bounded definition parsed, but its fixed root category, object type, or declared schema/name identity does not match the catalog role.",
+                    "Restore a definition whose declared kind and identity match the catalog metadata, then inspect again."),
+                SqlServerScriptDomStatus.DialectUnqualified => (
+                    "MIG-SQLSERVER-TSQL-DIALECT-UNQUALIFIED-001",
+                    $"The SQL Server {definitionDescription} dialect is not qualified.",
+                    "No qualified ScriptDom grammar corresponds to the database compatibility level captured by this inspection.",
+                    "Use a qualified compatibility level or add and test an explicit parser lane."),
+                SqlServerScriptDomStatus.LexerError or
+                    SqlServerScriptDomStatus.ParserError => (
+                        "MIG-SQLSERVER-TSQL-SYNTAX-001",
+                        $"The SQL Server {definitionDescription} did not parse.",
+                        "Bounded ScriptDom analysis reported a lexical or syntax error. Only its fixed number and source position are retained; parser messages and source tokens are not persisted.",
+                        "Correct the source definition and inspect again."),
+                SqlServerScriptDomStatus.TokenLimitExceeded or
+                    SqlServerScriptDomStatus.NestingLimitExceeded or
+                    SqlServerScriptDomStatus.NodeLimitExceeded or
+                    SqlServerScriptDomStatus.ParseErrorLimitExceeded or
+                    SqlServerScriptDomStatus.StatementLimitExceeded or
+                    SqlServerScriptDomStatus.InputLimitExceeded => (
+                        "MIG-SQLSERVER-TSQL-ANALYSIS-LIMIT-001",
+                        $"The SQL Server {definitionDescription} exceeded a fixed analysis limit.",
+                        "Syntax analysis stopped at a fixed input, token, nesting, AST-node, statement, or parse-error ceiling without truncating the durable result into a compatibility claim.",
+                        "Simplify and split the definition, then inspect it again."),
+                SqlServerScriptDomStatus.AnalyzerFailure => (
+                    "MIG-SQLSERVER-TSQL-ANALYZER-FAILURE-001",
+                    $"The SQL Server {definitionDescription} could not be analyzed safely.",
+                    "The bounded analyzer failed without retaining provider exception text, source tokens, or parser messages.",
+                    "Review the definition and analyzer support before retrying."),
+                _ => throw new SqlServerMigrationException(
+                    "ScriptDom returned an unknown analysis status."),
+            };
+
+        diagnostics.Add(Diagnostic(
+            objectId,
+            shape.RuleId,
+            MigrationDiagnosticSeverity.Error,
+            MigrationCompatibilityStatus.Unknown,
+            shape.Summary,
+            shape.Explanation,
+            shape.Remediation,
+            canOverride: false,
+            occurrenceKey: string.Concat(
+                ScriptDomDefinitionKindToken(analysis.Key.Kind),
+                ":",
+                analysis.AnalysisDigest),
+            sourceSpan: new MigrationSourceSpan
+            {
+                SourceId = analysis.SourceDigest,
+                Start = analysis.FirstErrorOffset,
+                Line = analysis.FirstErrorLine,
+                Column = analysis.FirstErrorColumn,
+            }));
+    }
+
+    private static string ScriptDomStatusToken(
+        SqlServerScriptDomStatus status) => status switch
+        {
+            SqlServerScriptDomStatus.Parsed => "parsed",
+            SqlServerScriptDomStatus.RootMismatch => "root-mismatch",
+            SqlServerScriptDomStatus.DialectUnqualified => "dialect-unqualified",
+            SqlServerScriptDomStatus.LexerError => "lexer-error",
+            SqlServerScriptDomStatus.ParserError => "parser-error",
+            SqlServerScriptDomStatus.TokenLimitExceeded => "token-limit-exceeded",
+            SqlServerScriptDomStatus.NestingLimitExceeded => "nesting-limit-exceeded",
+            SqlServerScriptDomStatus.NodeLimitExceeded => "node-limit-exceeded",
+            SqlServerScriptDomStatus.ParseErrorLimitExceeded => "parse-error-limit-exceeded",
+            SqlServerScriptDomStatus.StatementLimitExceeded => "statement-limit-exceeded",
+            SqlServerScriptDomStatus.InputLimitExceeded => "input-limit-exceeded",
+            SqlServerScriptDomStatus.AnalyzerFailure => "analyzer-failure",
+            _ => throw new SqlServerMigrationException(
+                "ScriptDom returned an unknown analysis status."),
+        };
+
+    private static string ScriptDomRootToken(
+        SqlServerScriptDomRootKind root) => root switch
+        {
+            SqlServerScriptDomRootKind.None => "none",
+            SqlServerScriptDomRootKind.ScalarExpression => "scalar-expression",
+            SqlServerScriptDomRootKind.BooleanExpression => "boolean-expression",
+            SqlServerScriptDomRootKind.View => "view",
+            SqlServerScriptDomRootKind.Trigger => "trigger",
+            SqlServerScriptDomRootKind.Procedure => "procedure",
+            SqlServerScriptDomRootKind.ScalarFunction => "scalar-function",
+            SqlServerScriptDomRootKind.TableValuedFunction => "table-valued-function",
+            SqlServerScriptDomRootKind.StandaloneRule => "standalone-rule",
+            SqlServerScriptDomRootKind.StandaloneDefault => "standalone-default",
+            _ => throw new SqlServerMigrationException(
+                "ScriptDom returned an unknown root kind."),
+        };
+
+    private static string ScriptDomDefinitionKindToken(
+        SqlServerScriptDomDefinitionKind kind) => kind switch
+        {
+            SqlServerScriptDomDefinitionKind.Module => "module",
+            SqlServerScriptDomDefinitionKind.DefaultExpression => "default-expression",
+            SqlServerScriptDomDefinitionKind.ComputedExpression => "computed-expression",
+            SqlServerScriptDomDefinitionKind.CheckPredicate => "check-predicate",
+            SqlServerScriptDomDefinitionKind.IndexFilterPredicate => "index-filter-predicate",
+            _ => throw new SqlServerMigrationException(
+                "ScriptDom returned an unknown definition kind."),
+        };
+
     private static MigrationDiagnostic Diagnostic(
         string objectId,
         string ruleId,
@@ -990,7 +1312,8 @@ internal static partial class SqlServerCatalogBuilder
         string explanation,
         string? remediation,
         bool canOverride,
-        string? occurrenceKey = null) =>
+        string? occurrenceKey = null,
+        MigrationSourceSpan? sourceSpan = null) =>
         new()
         {
             DiagnosticId = string.Concat(
@@ -1009,6 +1332,7 @@ internal static partial class SqlServerCatalogBuilder
             Summary = summary,
             Explanation = explanation,
             ObjectId = objectId,
+            SourceSpan = sourceSpan,
             Remediation = remediation,
             CanOverride = canOverride,
         };

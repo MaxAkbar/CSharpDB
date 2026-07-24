@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer.Tests;
 public sealed class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "faf15ca782319e27bae531ebe0b5b525996c3f39e0af931ca0b565c34c47510c";
+        "6678b4ffd5d2e21db7b5cf977e5868e93d3619523627d6a716b8ece6fe8a9eb1";
     private const string GoldenSourceFingerprint =
         "sha256:e5462dfef903f758173295c7fd5f66b0c4c98181c96638a92f67eba374a1af03";
 
@@ -111,7 +111,7 @@ public sealed class SqlServerCatalogBuilderTests
         string[] rules = first.Diagnostics.Select(static item => item.RuleId).ToArray();
         Assert.Contains("MIG-SQLSERVER-INVENTORY-PARTIAL-001", rules);
         Assert.Contains("MIG-SQLSERVER-LIVE-QUALIFICATION-PENDING-001", rules);
-        Assert.Contains("MIG-SQLSERVER-DEFAULT-UNANALYZED-001", rules);
+        Assert.Contains("MIG-SQLSERVER-TSQL-PARSED-NOT-LOWERED-001", rules);
         Assert.Contains("MIG-SQLSERVER-COLLATION-UNANALYZED-001", rules);
         Assert.Contains("MIG-SQLSERVER-TYPE-OR-GENERATION-UNSUPPORTED-001", rules);
 
@@ -292,7 +292,7 @@ public sealed class SqlServerCatalogBuilderTests
         Assert.Contains(
             "MIG-SQLSERVER-FK-UNIQUE-INDEX-TARGET-UNSUPPORTED-001",
             rules);
-        Assert.Contains("MIG-SQLSERVER-CHECK-EXPRESSION-UNANALYZED-001", rules);
+        Assert.Contains("MIG-SQLSERVER-TSQL-PARSED-NOT-LOWERED-001", rules);
         Assert.Contains("MIG-SQLSERVER-SEQUENCE-UNSUPPORTED-001", rules);
 
         string serialized = MigrationArtifactSerializer.SerializeCatalog(catalog);
@@ -318,9 +318,9 @@ public sealed class SqlServerCatalogBuilderTests
 
         MigrationCatalogObject view =
             FindObject(catalog, MigrationObjectKind.View, "OrderSummary");
-        Assert.Equal("unparsed", Facet(view, "sqlServerModuleAnalysis"));
+        Assert.Equal("parsed", Facet(view, "sqlServerModuleAnalysis"));
         Assert.Equal(
-            "available-unparsed",
+            "available",
             Facet(view, "sqlServerModuleDefinitionStatus"));
         Assert.StartsWith(
             "sha256:",
@@ -406,7 +406,7 @@ public sealed class SqlServerCatalogBuilderTests
         string[] rules = catalog.Diagnostics
             .Select(static item => item.RuleId)
             .ToArray();
-        Assert.Contains("MIG-SQLSERVER-MODULE-ANALYSIS-PENDING-001", rules);
+        Assert.Contains("MIG-SQLSERVER-TSQL-PARSED-NOT-LOWERED-001", rules);
         Assert.Contains("MIG-SQLSERVER-MODULE-ENCRYPTED-001", rules);
         Assert.Contains("MIG-SQLSERVER-VIEW-SHAPE-UNSUPPORTED-001", rules);
         Assert.Contains("MIG-SQLSERVER-TRIGGER-SHAPE-UNSUPPORTED-001", rules);
@@ -1559,7 +1559,9 @@ public sealed class SqlServerCatalogBuilderTests
             .Where(item => item.ObjectId == column.ObjectId)
             .Select(static item => item.RuleId)
             .ToArray();
-        Assert.Contains("MIG-SQLSERVER-DEFAULT-UNANALYZED-001", rules);
+        Assert.Contains(
+            "MIG-SQLSERVER-DEFAULT-DEFINITION-UNAVAILABLE-001",
+            rules);
         Assert.Contains("MIG-SQLSERVER-IDENTITY-DETAILS-UNKNOWN-001", rules);
         Assert.Contains("MIG-SQLSERVER-TYPE-OR-GENERATION-UNSUPPORTED-001", rules);
     }

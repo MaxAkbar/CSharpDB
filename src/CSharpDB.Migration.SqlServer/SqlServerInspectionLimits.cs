@@ -32,6 +32,15 @@ internal sealed record SqlServerInspectionLimits
     public const int MaximumExpressionBytes = 1024 * 1024;
     public const long MaximumExpressionBytesTotal = 64L * 1024 * 1024;
     public const long MaximumMetadataBytes = 128L * 1024 * 1024;
+    public const int MaximumScriptDomTokensPerDefinition = 100_000;
+    public const long MaximumScriptDomTokensTotal = 1_000_000;
+    public const int MaximumScriptDomNodesPerDefinition = 100_000;
+    public const long MaximumScriptDomNodesTotal = 1_000_000;
+    public const int MaximumScriptDomParseErrorsPerDefinition = 64;
+    public const long MaximumScriptDomParseErrorsTotal = 4_096;
+    public const int MaximumScriptDomNestingPerDefinition = 256;
+    public const int MaximumScriptDomStatementsPerDefinition = 10_000;
+    public const long MaximumScriptDomStatementsTotal = 100_000;
 
     public static SqlServerInspectionLimits Default { get; } = new();
 
@@ -62,6 +71,24 @@ internal sealed record SqlServerInspectionLimits
     public int MaxExpressionBytes { get; init; } = MaximumExpressionBytes;
     public long MaxExpressionBytesTotal { get; init; } = MaximumExpressionBytesTotal;
     public long MaxMetadataBytes { get; init; } = MaximumMetadataBytes;
+    public int MaxScriptDomTokensPerDefinition { get; init; } =
+        MaximumScriptDomTokensPerDefinition;
+    public long MaxScriptDomTokensTotal { get; init; } =
+        MaximumScriptDomTokensTotal;
+    public int MaxScriptDomNodesPerDefinition { get; init; } =
+        MaximumScriptDomNodesPerDefinition;
+    public long MaxScriptDomNodesTotal { get; init; } =
+        MaximumScriptDomNodesTotal;
+    public int MaxScriptDomParseErrorsPerDefinition { get; init; } =
+        MaximumScriptDomParseErrorsPerDefinition;
+    public long MaxScriptDomParseErrorsTotal { get; init; } =
+        MaximumScriptDomParseErrorsTotal;
+    public int MaxScriptDomNestingPerDefinition { get; init; } =
+        MaximumScriptDomNestingPerDefinition;
+    public int MaxScriptDomStatementsPerDefinition { get; init; } =
+        MaximumScriptDomStatementsPerDefinition;
+    public long MaxScriptDomStatementsTotal { get; init; } =
+        MaximumScriptDomStatementsTotal;
 
     public void Validate()
     {
@@ -112,6 +139,42 @@ internal sealed record SqlServerInspectionLimits
             MaxExpressionBytesTotal,
             MaximumExpressionBytesTotal);
         Validate(nameof(MaxMetadataBytes), MaxMetadataBytes, MaximumMetadataBytes);
+        Validate(
+            nameof(MaxScriptDomTokensPerDefinition),
+            MaxScriptDomTokensPerDefinition,
+            MaximumScriptDomTokensPerDefinition);
+        Validate(
+            nameof(MaxScriptDomTokensTotal),
+            MaxScriptDomTokensTotal,
+            MaximumScriptDomTokensTotal);
+        Validate(
+            nameof(MaxScriptDomNodesPerDefinition),
+            MaxScriptDomNodesPerDefinition,
+            MaximumScriptDomNodesPerDefinition);
+        Validate(
+            nameof(MaxScriptDomNodesTotal),
+            MaxScriptDomNodesTotal,
+            MaximumScriptDomNodesTotal);
+        Validate(
+            nameof(MaxScriptDomParseErrorsPerDefinition),
+            MaxScriptDomParseErrorsPerDefinition,
+            MaximumScriptDomParseErrorsPerDefinition);
+        Validate(
+            nameof(MaxScriptDomParseErrorsTotal),
+            MaxScriptDomParseErrorsTotal,
+            MaximumScriptDomParseErrorsTotal);
+        Validate(
+            nameof(MaxScriptDomNestingPerDefinition),
+            MaxScriptDomNestingPerDefinition,
+            MaximumScriptDomNestingPerDefinition);
+        Validate(
+            nameof(MaxScriptDomStatementsPerDefinition),
+            MaxScriptDomStatementsPerDefinition,
+            MaximumScriptDomStatementsPerDefinition);
+        Validate(
+            nameof(MaxScriptDomStatementsTotal),
+            MaxScriptDomStatementsTotal,
+            MaximumScriptDomStatementsTotal);
     }
 
     private static void Validate(string name, long value, long maximum)

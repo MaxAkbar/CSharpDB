@@ -17,6 +17,7 @@ internal static partial class SqlServerCatalogBuilder
 
     private static void AddProgrammableObjects(
         SqlServerCatalogSnapshot snapshot,
+        SqlServerScriptDomAnalysisSnapshot scriptDomAnalysis,
         string databaseId,
         IReadOnlyDictionary<int, (SqlServerSchemaMetadata Metadata, string ObjectId)> schemasById,
         IReadOnlyDictionary<int, (SqlServerTableMetadata Metadata, string Id)> tablesByObjectId,
@@ -58,6 +59,8 @@ internal static partial class SqlServerCatalogBuilder
                 out SqlServerModuleMetadata? module);
             if (module is not null)
                 representedModuleIds.Add(module.ObjectId);
+            SqlServerScriptDomDefinitionAnalysis? moduleAnalysis =
+                GetModuleAnalysis(scriptDomAnalysis, module);
 
             var facets = new List<MigrationCatalogFacet>
             {
@@ -93,7 +96,7 @@ internal static partial class SqlServerCatalogBuilder
                     "sqlServerDroppedLedgerView",
                     NullableBoolean(view.IsDroppedLedgerView)),
             };
-            AddModuleFacets(facets, module);
+            AddModuleFacets(facets, module, moduleAnalysis);
             objects.Add(new MigrationCatalogObject
             {
                 ObjectId = viewId,
@@ -109,6 +112,7 @@ internal static partial class SqlServerCatalogBuilder
                 "view",
                 expectsSqlBody: true,
                 module,
+                moduleAnalysis,
                 diagnostics);
             if (view.IsIndexed ||
                 view.HasReplicationFilter ||
@@ -244,6 +248,8 @@ internal static partial class SqlServerCatalogBuilder
                 out SqlServerModuleMetadata? module);
             if (module is not null)
                 representedModuleIds.Add(module.ObjectId);
+            SqlServerScriptDomDefinitionAnalysis? moduleAnalysis =
+                GetModuleAnalysis(scriptDomAnalysis, module);
 
             var facets = new List<MigrationCatalogFacet>
             {
@@ -291,7 +297,7 @@ internal static partial class SqlServerCatalogBuilder
                     "sqlServerPermissionViewDefinition",
                     NullableBoolean(trigger.HasViewDefinition)),
             };
-            AddModuleFacets(facets, module);
+            AddModuleFacets(facets, module, moduleAnalysis);
             objects.Add(new MigrationCatalogObject
             {
                 ObjectId = triggerId,
@@ -311,6 +317,7 @@ internal static partial class SqlServerCatalogBuilder
                 "trigger",
                 sqlTrigger,
                 module,
+                moduleAnalysis,
                 diagnostics);
             if (!sqlTrigger ||
                 trigger.ParentClass != 1 ||
@@ -392,6 +399,8 @@ internal static partial class SqlServerCatalogBuilder
                 out SqlServerModuleMetadata? module);
             if (module is not null)
                 representedModuleIds.Add(module.ObjectId);
+            SqlServerScriptDomDefinitionAnalysis? moduleAnalysis =
+                GetModuleAnalysis(scriptDomAnalysis, module);
 
             var facets = new List<MigrationCatalogFacet>
             {
@@ -416,7 +425,7 @@ internal static partial class SqlServerCatalogBuilder
                     "sqlServerPermissionViewDefinition",
                     NullableBoolean(routine.HasViewDefinition)),
             };
-            AddModuleFacets(facets, module);
+            AddModuleFacets(facets, module, moduleAnalysis);
             objects.Add(new MigrationCatalogObject
             {
                 ObjectId = routineId,
@@ -433,6 +442,7 @@ internal static partial class SqlServerCatalogBuilder
                 "routine",
                 sqlRoutine,
                 module,
+                moduleAnalysis,
                 diagnostics);
             diagnostics.Add(Diagnostic(
                 routineId,
@@ -539,12 +549,14 @@ internal static partial class SqlServerCatalogBuilder
                 module.Name,
                 module.ObjectType);
             catalogObjectIdsBySqlObjectId.Add(module.ObjectId, moduleId);
+            SqlServerScriptDomDefinitionAnalysis? moduleAnalysis =
+                GetModuleAnalysis(scriptDomAnalysis, module);
             var facets = new List<MigrationCatalogFacet>
             {
                 Facet("sqlServerObjectClass", "legacy-or-unclassified-module"),
                 Facet("sqlServerObjectId", Invariant(module.ObjectId)),
             };
-            AddModuleFacets(facets, module);
+            AddModuleFacets(facets, module, moduleAnalysis);
             objects.Add(new MigrationCatalogObject
             {
                 ObjectId = moduleId,
@@ -559,6 +571,7 @@ internal static partial class SqlServerCatalogBuilder
                 "legacy or unclassified module",
                 expectsSqlBody: true,
                 module,
+                moduleAnalysis,
                 diagnostics);
             diagnostics.Add(Diagnostic(
                 moduleId,
@@ -1056,12 +1069,29 @@ internal static partial class SqlServerCatalogBuilder
             : null;
     }
 
+    private static SqlServerScriptDomDefinitionAnalysis? GetModuleAnalysis(
+        SqlServerScriptDomAnalysisSnapshot snapshot,
+        SqlServerModuleMetadata? module) =>
+        module is null
+            ? null
+            : GetScriptDomAnalysis(
+                snapshot,
+                SqlServerScriptDomDefinitionKind.Module,
+                module.ObjectId,
+                subObjectId: 0,
+                definitionAvailable: module.Definition is not null);
+
     private static void AddModuleFacets(
         ICollection<MigrationCatalogFacet> facets,
-        SqlServerModuleMetadata? module)
+        SqlServerModuleMetadata? module,
+        SqlServerScriptDomDefinitionAnalysis? analysis)
     {
         facets.Add(Facet("sqlServerModulePresent", Boolean(module is not null)));
-        facets.Add(Facet("sqlServerModuleAnalysis", "unparsed"));
+        AddScriptDomFacets(
+            facets,
+            "sqlServerModuleAnalysis",
+            "sqlServerModuleTsql",
+            analysis);
         if (module is null)
         {
             facets.Add(Facet("sqlServerModuleDefinitionStatus", "unavailable"));
@@ -1114,7 +1144,7 @@ internal static partial class SqlServerCatalogBuilder
             "sqlServerModuleEncrypted",
             NullableBoolean(module.IsEncrypted)));
         string definitionStatus = module.Definition is not null
-            ? "available-unparsed"
+            ? "available"
             : module.IsEncrypted == true
                 ? "encrypted"
                 : "unavailable";
@@ -1134,6 +1164,7 @@ internal static partial class SqlServerCatalogBuilder
         string description,
         bool expectsSqlBody,
         SqlServerModuleMetadata? module,
+        SqlServerScriptDomDefinitionAnalysis? analysis,
         ICollection<MigrationDiagnostic> diagnostics)
     {
         if (!expectsSqlBody)
@@ -1152,15 +1183,11 @@ internal static partial class SqlServerCatalogBuilder
 
         if (module?.Definition is not null)
         {
-            diagnostics.Add(Diagnostic(
+            AddScriptDomDiagnostic(
                 objectId,
-                "MIG-SQLSERVER-MODULE-ANALYSIS-PENDING-001",
-                MigrationDiagnosticSeverity.Error,
-                MigrationCompatibilityStatus.Unknown,
-                $"The {description} body has not been analyzed.",
-                "The bounded definition is represented only by byte count, character length, and digest. It has not been parsed, bound, lowered, scratch-executed, or differentially validated.",
-                "Run the later ScriptDom and live target-validation checkpoints before enabling this object.",
-                canOverride: false));
+                $"{description} body",
+                analysis!,
+                diagnostics);
             return;
         }
 

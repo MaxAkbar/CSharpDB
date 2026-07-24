@@ -7,7 +7,10 @@ primary and unique keys, foreign keys, check constraints, table indexes, and
 sequences. It also inventories user views, database and object triggers,
 procedures and functions, routine parameters, bounded SQL module facts, trigger
 events, and declared SQL expression dependencies. It does not copy SQL Server
-rows or write to either the source or a CSharpDB target.
+rows or write to either the source or a CSharpDB target. Available default,
+computed-column, check, filtered-index, and SQL module definitions receive
+bounded, syntax-only ScriptDom analysis. Parsing does not imply that an
+expression or module has been bound, lowered, or accepted by CSharpDB.
 
 The reader requires product major version 15 or later. It rejects pre-2019
 engines immediately after the server/database preflight, before running any
@@ -21,12 +24,12 @@ diagnostic. Azure SQL Database, Azure SQL Managed Instance, Synapse, Fabric,
 and other compatible services are not silently treated as equivalent to the
 intended on-premises products.
 
-This checkpoint is intentionally non-shipping. SQL module bodies and dependency
-rows are inventoried but not parsed, rebound, rewritten, or executed. Indexed
-view physical details, full-text and physical partition inventory, ScriptDom
-analysis, CSharpDB DDL previews, CLI integration, and live server qualification
-are later Phase 7A checkpoints. A SQL Server data importer is a separately
-approved follow-on.
+This checkpoint is intentionally non-shipping. Available SQL definitions are
+parsed only for bounded syntax and expected-root evidence; they are not bound,
+rewritten, scratch-executed, or differentially validated. Indexed-view physical
+details, full-text and physical partition inventory, CSharpDB DDL previews, CLI
+integration, and live server qualification are later Phase 7A checkpoints. A
+SQL Server data importer is a separately approved follow-on.
 
 ## Read-only and security boundary
 
@@ -98,16 +101,28 @@ Fixed ceilings currently allow at most 4,096 schemas, 10,000 tables, and
 index columns, foreign keys, foreign-key columns, checks, sequences, effective
 tokens, denials, views, triggers, trigger events, routines, parameters, modules,
 and expression dependencies. Additional ceilings cover names, individual and
-aggregate expressions, and total retained metadata. Crossing a ceiling fails
-the inspection rather than returning a truncated catalog. Default, computed,
-check, index-filter, and SQL module text is read and hashed only in memory;
-parsing remains deferred, and durable facets retain bounded facts and digests
-rather than raw SQL text. Unresolved, external, ambiguous, or cyclic dependency
-shapes remain explicit blockers rather than invented executable ordering.
+aggregate expressions, and total retained metadata. Crossing a reader or
+retained-metadata ceiling fails the inspection rather than returning a
+truncated catalog. Default, computed, check, index-filter, and SQL module text
+is read and hashed only in memory; ScriptDom analysis is additionally bounded
+by fixed input, token, nesting, AST-node, statement, and parse-error ceilings.
+A per-definition parser ceiling becomes an explicit compatibility blocker;
+crossing an aggregate parser ceiling fails the inspection. Durable facets
+retain only fixed parser status, dialect, root, count, error-number,
+source-position, and digest facts rather than raw SQL, token text, identifier
+text, literals, comments, or parser messages. A syntactically parsed definition
+remains blocked until later binding, lowering, and target proof. Unresolved,
+external, ambiguous, or cyclic dependency shapes remain explicit blockers
+rather than invented executable ordering.
+
+ScriptDom does not expose a cancellation hook inside its parse call.
+Cancellation is checked during input reading and bounded AST traversal, and
+before and after parsing. Isolation in a killable worker remains a prerequisite
+before qualifying hostile-source parsing for shipping use.
 Sequence fingerprints retain only static definition facts and exclude volatile
 current, last-used, and exhaustion values.
 
 ## Dependency
 
-Microsoft.Data.SqlClient 7.0.2 is used under the MIT License. See
-`THIRD-PARTY-NOTICES.md`.
+Microsoft.Data.SqlClient and Microsoft.SqlServer.TransactSql.ScriptDom are used
+under the MIT License. See `THIRD-PARTY-NOTICES.md`.
