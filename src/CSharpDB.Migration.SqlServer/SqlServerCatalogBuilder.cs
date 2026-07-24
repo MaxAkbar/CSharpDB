@@ -151,8 +151,8 @@ internal static partial class SqlServerCatalogBuilder
             MigrationDiagnosticSeverity.Error,
             MigrationCompatibilityStatus.Unknown,
             "This checkpoint is an intentionally partial SQL Server inventory.",
-            "Schemas, user tables, columns, defaults, identity, computed-column facts, keys, foreign keys, checks, table indexes, sequences, views, view columns, triggers and events, routines, module-definition evidence, parameters, and catalog expression-dependency rows are inventoried. Module bodies are not yet parsed, bound, lowered, or scratch-executed; SQL Server's dependency catalog has documented coverage gaps; indexed-view details, full-text indexes, and physical partition or storage layouts remain absent.",
-            "Complete bounded T-SQL analysis, target DDL preview, remaining physical inventory, and live qualification before relying on the analyzer for migration approval.",
+            "Schemas, user tables, columns, defaults, identity, computed-column facts, keys, foreign keys, checks, table indexes, sequences, views, view columns, triggers and events, routines, module-definition evidence, parameters, and catalog expression-dependency rows are inventoried. Available module bodies receive bounded syntax analysis but are not bound, lowered, or source-semantically proven; SQL Server's dependency catalog has documented coverage gaps; indexed-view details, full-text indexes, and physical partition or storage layouts remain absent.",
+            "Complete remaining physical inventory, expose the bounded supported-subset preview and blockers through operator tooling, and finish live qualification before relying on the analyzer for migration approval.",
             canOverride: false));
 
         var schemasById =

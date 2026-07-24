@@ -26,8 +26,13 @@ intended on-premises products.
 
 This checkpoint is intentionally non-shipping. Available SQL definitions are
 parsed only for bounded syntax and expected-root evidence; they are not bound,
-rewritten, scratch-executed, or differentially validated. Indexed-view physical
-details, full-text and physical partition inventory, CSharpDB DDL previews, CLI
+rewritten, or differentially validated. The proven ordinary relational subset
+now has an offline integration proof through the generic migration planner,
+the exact CSharpDB DDL renderer, and a transactionally isolated in-memory
+scratch catalog comparison. That proof does not promote the partial SQL Server
+inventory from `Blocked`, establish source semantics, or write a
+caller-supplied, existing, or durable target.
+Indexed-view physical details, full-text and physical partition inventory, CLI
 integration, and live server qualification are later Phase 7A checkpoints. A
 SQL Server data importer is a separately approved follow-on.
 
