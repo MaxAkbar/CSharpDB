@@ -7,15 +7,15 @@ workflow. This contract extends, but does not replace, the existing
 Implementation status: the bounded reject model, plan-bound rule/limit policy,
 reject-set and v2 batch digests, canonical ledger codec, atomic CSharpDB ledger
 write/read path, v2 receipts, target-side outcome validation, provider-neutral
-source replay, and CSV evidence are present. Capability-qualified SDK apply can
-write and exactly replay accepted-only, mixed, and all-reject batches. Before
-report publication, capability-qualified SDK validation now compares that
+source replay, and CSV/JSON evidence are present. Capability-qualified SDK apply
+can write and exactly replay accepted-only, mixed, and all-reject batches.
+Before report publication, capability-qualified SDK validation compares that
 complete replay with snapshot-scoped target receipts and the canonical reject
-ledger. The SDK can now materialize the bounded canonical reject artifact from
-one immutable target snapshot using atomic no-overwrite publication and exact
-existing-file reuse. The CLI now exposes that capability for retained CSV
-through an explicit plan-time and per-invocation opt-in. Strict fail-fast remains
-the release default.
+ledger. The SDK can materialize the bounded canonical reject artifact from one
+immutable target snapshot using atomic no-overwrite publication and exact
+existing-file reuse. The CLI exposes that capability for retained CSV and
+untyped retained JSON package v1 through an explicit plan-time and
+per-invocation opt-in. Strict fail-fast remains the release default.
 
 ## Decision
 
@@ -35,16 +35,16 @@ decide what resume should skip.
 Strict fail-fast remains the default. Tolerant mode is opt-in and applies only
 to rules explicitly classified as row-rejectable by the source adapter.
 Encoding failures, snapshot-integrity failures, resource-limit failures,
-unrecoverable CSV syntax, cancellation, target failures, and unknown
-exceptions remain fatal.
+unrecoverable source syntax or framing, cancellation, target failures, and
+unknown exceptions remain fatal.
 
 ## CLI Contract
 
 Omitting `--reject-mode` from `csharpdb migrate plan` is exactly equivalent to
 `--reject-mode fail-fast`; it does not add a reject policy and preserves the
-existing fail-fast plan JSON and digest. The initial deterministic CLI surface
-is limited to retained CSV. Selecting `--reject-mode deterministic` requires
-all of these plan options:
+existing fail-fast plan JSON and digest. The deterministic CLI surface supports
+retained CSV and untyped retained JSON package v1. Selecting
+`--reject-mode deterministic` requires all of these plan options:
 
 - `--reject-rules all|<id,...>`
 - `--max-rejected-rows-per-batch <count>`
@@ -56,12 +56,16 @@ all of these plan options:
 
 The six limits are positive base-10 integers and are validated against the
 contract ceilings and ordering rules before the plan is written. `all` is not a
-runtime wildcard: planning expands it to the current ordinal CSV registry
-`MIG-CSV-DATA-MISSING-001`, `MIG-CSV-DATA-NULL-001`, and
-`MIG-CSV-DATA-TYPE-001`. An explicit comma-separated list may select a nonempty
-subset. The contract tag, expanded rules, and six limits are serialized in the
-plan and included in its digest. Reject policy options are invalid with a
-fail-fast plan.
+runtime wildcard: planning expands it to the source-specific canonical
+registry. CSV uses `MIG-CSV-DATA-MISSING-001`,
+`MIG-CSV-DATA-NULL-001`, and `MIG-CSV-DATA-TYPE-001`. Untyped JSON v1
+uses `MIG-JSON-DATA-MISSING-001`, `MIG-JSON-DATA-NULL-001`,
+`MIG-JSON-DATA-ROW-001`, and `MIG-JSON-DATA-TYPE-001`. An explicit
+comma-separated list may select a nonempty subset of the selected source's
+registry. The contract tag, expanded rules, and six limits are serialized in
+the plan and included in its digest. Reject policy options are invalid with a
+fail-fast plan. Typed JSON v2 and `MIG-JSON-DATA-TYPED-001` remain outside the
+CLI route.
 
 Every `migrate apply`, `migrate apply --resume`, and `migrate validate`
 invocation for a deterministic plan requires both the valueless
@@ -178,11 +182,9 @@ contains:
 
 - contract version, source object ID, batch ordinal, and source-row ordinal;
 - stable `MIG-*` diagnostic rule ID;
-- one-based CSV logical-record and data-record numbers;
-- one-based start and end physical lines;
-- zero-based column index and stable column object ID when known;
-- field kind and whether the field was quoted;
-- raw value when a field value is available; and
+- a stable column object ID when known;
+- fixed-order source-specific evidence, including a bounded raw value when
+  available; and
 - the canonical entry byte count.
 
 Because v1 allows exactly one reject per source row, its reject ordinal is
@@ -193,6 +195,10 @@ evidence is stored as a fixed-property-order JSON array. The CSV adapter freezes
 the registry to `columnIndex`, `dataRecordNumber`, `endPhysicalLine`,
 `fieldKind`, `logicalRecordNumber`, `rawValue`, `startPhysicalLine`, and
 `wasQuoted`, in that ordinal order.
+The JSON adapter freezes column evidence to `columnIndex`, `jsonValueKind`,
+`propertyOrdinal`, `rawValue`, `recordByteLength`, `recordOrdinal`,
+`startByteOffset`, `startBytePositionInLine`, and `startLineNumber`. Non-object
+row evidence omits the column and property ordinals.
 The artifact begins with the canonical JSON line
 `{"format":"csharpdb-migration-reject-artifact/v1","planDigest":"<sha256>"}`;
 every subsequent line is one canonical entry and every line ends in LF.
@@ -216,6 +222,15 @@ text while its field kind records `Null`. A physically missing field has kind
 preserved as characters; canonical JSON escaping changes only their serialized
 representation. The line range and quoted flag let an operator locate the
 source without pretending the reject artifact is a byte-exact source copy.
+
+### JSON raw-value definition
+
+For JSON, `rawValue` is the ordered canonical representation of the offending
+logical JSON value, not a source-byte slice. Strings are quoted and minimally
+canonically escaped, numbers retain their exact supported lexeme, explicit
+null uses `null`, and a missing property has no raw value. The fixed record
+ordinal, byte offset, byte length, line, and position evidence locates the
+logical value without claiming byte-for-byte source retention in the artifact.
 
 ## Privacy and Resource Bounds
 
@@ -257,14 +272,13 @@ bytes per value-bearing row, sensitive bytes per batch and run, and serialized
 artifact bytes. The public property names retain `RawValue` for contract
 compatibility, but every non-null evidence value is charged so a provider
 cannot hide source payload under another evidence name. These limits, their
-public absolute ceilings, the minimum canonical artifact header, and the CSV
-reader's field, record, and column ceilings are validated before target
-creation and are included in the plan digest. Accounting uses checked
-arithmetic. The CSharpDB target serializes admission, then enforces the rule
-registry, per-row and per-batch sensitive-value limits, cumulative row/value
-run limits, and the exact canonical header + entry + LF artifact byte count
-before mutation. Reopen recomputes the same totals from the authoritative
-ledger.
+public absolute ceilings, the minimum canonical artifact header, and the
+selected source reader's resource ceilings are validated before target creation
+and are included in the plan digest. Accounting uses checked arithmetic. The
+CSharpDB target serializes admission, then enforces the rule registry, per-row
+and per-batch sensitive-value limits, cumulative row/value run limits, and the
+exact canonical header + entry + LF artifact byte count before mutation. Reopen
+recomputes the same totals from the authoritative ledger.
 
 Reader resource-limit failures are fatal rather than rejects. If adding the
 next reject would exceed a reject limit, the current batch is not committed;
@@ -359,19 +373,21 @@ after commit; they must not become the authority for resume.
    activation-binding behavior are now covered. Fresh-process qualification
    covers accepted-only, mixed, and all-reject outcomes at every transaction
    boundary, including committed replay and a second fresh reopen.
-3. CSV row-outcome metadata and capability-qualified source replay are now
-   present for `MissingField`, `NullNotAllowed`, and `TypeMismatch`. Parser,
-   integrity, conversion, and resource errors remain fatal. Snapshot-scoped
-   validation compares exact receipt and ledger streams before report
-   publication. SDK artifact materialization is now bounded and streaming, uses
-   exact canonical JSONL, preserves different destinations, reuses identical
-   destinations, and is qualified for tamper, privacy, concurrency, limits,
-   cancellation, regeneration, and both fresh-process publication boundaries.
-4. The CLI now integrates the qualified path for retained CSV through explicit
-   plan-time policy and per-invocation execution/artifact consent. Apply
-   publishes the artifact before its success report; validation requalifies it
-   after report publication and before activation. Strict mode remains the
-   default and release baseline.
+3. CSV and JSON row-outcome metadata and capability-qualified source replay are
+   present for their frozen row-local registries. Parser, integrity, conversion,
+   schema-drift, and resource errors remain fatal. Snapshot-scoped validation
+   compares exact receipt and ledger streams before report publication. SDK
+   artifact materialization is bounded and streaming, uses exact canonical
+   JSONL, preserves different destinations, reuses identical destinations, and
+   is qualified for tamper, privacy, concurrency, limits, cancellation,
+   regeneration, and both fresh-process publication boundaries.
+4. The CLI integrates the qualified path for retained CSV and untyped retained
+   JSON v1 through source-specific plan policy and per-invocation
+   execution/artifact consent. JSON CLI qualification covers bounded late-tail
+   type rejects for root-array and NDJSON framing; adapter-level tests retain
+   all-rule and all-reject authority. Apply publishes the artifact before its
+   success report; validation requalifies it after report publication and
+   before activation. Strict mode remains the default and release baseline.
 
 Later providers must pass the same contract suite; provider-specific exception
 catching or sidecar logging is not sufficient.

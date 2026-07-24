@@ -10,8 +10,9 @@ It builds on
 [`migration-json-reader-foundation.md`](migration-json-reader-foundation.md),
 [`migration-json-table-schema.md`](migration-json-table-schema.md), and
 [`migration-json-data-source.md`](migration-json-data-source.md). Later slices
-add typed sidecars, export, and fail-fast CLI routing without changing this
-package-v1 contract. Collection projection remains outside its scope.
+add typed sidecars, export, and fail-fast or deterministic-reject CLI routing
+without changing this package-v1 contract. Collection projection remains
+outside its scope.
 
 ## Public Contract
 
@@ -148,8 +149,10 @@ input, pin-opens and reads in a second process, then independently resumes an
 earlier cursor in a third process for both framing modes. CLI qualification now
 also covers fail-fast inspect, plan, apply, an independent resume command, and
 validation from independently pinned package-v1 manifests for root-array JSON
-and NDJSON. Large generated streams and broader header/manifest mutation
-fuzzing remain release qualification.
+and NDJSON. The deterministic CLI route additionally covers bounded late-tail
+type rejects, canonical artifact publication/reuse, resume, and pre-activation
+validation for both framings. Large generated streams and broader
+header/manifest mutation fuzzing remain release qualification.
 
 ## Deferred Work
 
@@ -157,4 +160,4 @@ Version 1 does not add overwrite, repair, in-place upgrade, signatures,
 encryption, compression, deduplication, direct reads from the durable package,
 remote/object storage, automatic retention cleanup, embedded plans or
 receipts, typed sidecars, collection projection, typed-package-v2 CLI routing,
-or deterministic JSON reject CLI policy.
+or typed-v2 reject CLI policy.

@@ -479,14 +479,17 @@ contiguous terminal batch chains, and bind an outcome digest into the snapshot
 identity. New activations require that identity while legacy activated targets
 remain reopenable.
 Capability-qualified SDK apply and validation now support reject-aware source
-replay, CSV evidence, and exact snapshot-scoped receipt/ledger comparison.
+replay, CSV and JSON evidence, and exact snapshot-scoped receipt/ledger
+comparison.
 Bounded SDK reject-artifact materialization now uses canonical JSONL, private
 same-directory claims, atomic no-overwrite publication, exact-existing reuse,
 and fresh-process recovery at partial-temp and post-publication boundaries.
 The CLI preserves strict fail-fast as the default. Deterministic planning is
-CSV-only and requires `--reject-mode deterministic`, the exact
-`--reject-rules all|<id,...>` registry, and explicit per-batch/per-run rejected
-row, evidence-value, evidence-batch, evidence-run, and artifact byte limits.
+available for retained CSV and untyped retained JSON v1 through source-specific
+registries. It requires `--reject-mode deterministic`, the exact
+`--reject-rules all|<id,...>` selection, and explicit per-batch/per-run
+rejected-row, evidence-value, evidence-batch, evidence-run, and artifact byte
+limits.
 Apply, resume, and validation each require
 `--allow-deterministic-rejects` and
 `--reject-artifact <absolute-normalized-rejects.jsonl>`. Apply qualifies the
@@ -668,8 +671,8 @@ prepared-data rehash, and manifest-last prepared publication. The retained
   framings once journal authority exists and all five publication cutoffs for
   both framings, including empty NDJSON. The one-time adoption of same-binding
   restart-only finals is not yet process-kill qualified. Abrupt-power-loss
-  qualification, collection projection, typed-v2 import routing, and
-  deterministic JSON reject CLI policy remain open. Fail-fast retained JSON v1
+  qualification, collection projection, and typed-v2 import routing remain
+  open. Fail-fast and source-aware deterministic-reject retained JSON v1
   inspect, plan, apply/resume, and validation now route through the CLI for
   root-array JSON and NDJSON. Restart-only publication uses
 deterministic exclusive `.next` siblings and safely reclaims only qualified
@@ -725,6 +728,9 @@ crash leftovers.
 - [x] Child-process qualify JSON resume and publication cutoffs.
 - [x] Route retained JSON v1 packages through fail-fast CLI inspect, plan,
   apply/resume, and validation for root-array JSON and NDJSON.
+- [x] Route the untyped JSON v1 reject registry through CLI planning and
+  qualify bounded late-tail type rejects, canonical artifact reuse, exact
+  resume, and pre-activation validation for root-array JSON and NDJSON.
 
 ### Shared Deliverables
 

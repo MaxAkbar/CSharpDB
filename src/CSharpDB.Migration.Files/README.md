@@ -44,14 +44,13 @@ The CLI uses that boundary for inspect, apply, resume, and validation. A
 batches, exact resume/checksum behavior, bounded memory, and temporary cleanup;
 see [`migration-csv-performance.md`](../../docs/migration-csv-performance.md).
 
-The capability-qualified SDK validation path now replays these same CSV
-accepted/rejected outcomes and compares them with the target snapshot's
-authoritative receipts and ledger before report publication. The
-provider-neutral SDK can now materialize the canonical reject artifact from
-that target-owned evidence. The CSV CLI now exposes deterministic tolerant
-planning, apply, resume, and validation only through explicit reject policy,
-limit, opt-in, and retained-artifact arguments; strict fail-fast remains the
-default.
+The capability-qualified SDK validation path now replays accepted/rejected
+outcomes and compares them with the target snapshot's authoritative receipts
+and ledger before report publication. The provider-neutral SDK can materialize
+the canonical reject artifact from that target-owned evidence. Retained CSV
+and untyped retained JSON v1 now expose deterministic tolerant planning, apply,
+resume, and validation through explicit reject policy, limit, opt-in, and
+retained-artifact arguments; strict fail-fast remains the default.
 
 The first Phase 4B slices add a bounded, forward-only JSON reader for exact
 root-array and whitespace-separated multiple-value framing (including
@@ -69,9 +68,10 @@ Raw and typed retained packages, source-bound typed intent, typed table/apply
 conversion, JSON/NDJSON table export, and durable retained-adapter/CLI resume
 routing are now implemented. Retained package v1 is also available through
 fail-fast CLI inspect, plan, apply/resume, and validation for root-array JSON
-and NDJSON. Deterministic JSON reject CLI policy, typed-v2 CLI routing,
-collection projection, and typed export-intent generation remain later slices.
-See
+and NDJSON. Its source-aware deterministic CLI route is qualified for bounded
+late-tail type rejects, exact artifact reuse, resume, and validation in both
+framings. Typed-v2 CLI routing, collection projection, and typed export-intent
+generation remain later slices. See
 [`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
 and
 [`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md),

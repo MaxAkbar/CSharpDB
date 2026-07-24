@@ -193,15 +193,23 @@ or hard-power guarantee. The structured-status `--json` flag remains valid
 with both JSON data formats.
 
 Fail-fast is the default: omitting `--reject-mode` produces the established
-`csharpdb-migration-fail-fast/v1` plan JSON and digest. Retained CSV is the only
-CLI source that can currently opt into `--reject-mode deterministic`. That mode
-requires `--reject-rules` plus all six positive, base-10 limits shown above.
-`--reject-rules all` expands in the plan to the current fixed set
+`csharpdb-migration-fail-fast/v1` plan JSON and digest. Retained CSV and
+untyped retained JSON package v1 can opt into `--reject-mode deterministic`.
+That mode requires `--reject-rules` plus all six positive, base-10 limits shown
+above. `--reject-rules all` expands to a source-specific fixed set. CSV uses
 `MIG-CSV-DATA-MISSING-001`, `MIG-CSV-DATA-NULL-001`, and
-`MIG-CSV-DATA-TYPE-001`; an explicit comma-separated value may select a
-nonempty subset. The expanded rule registry and all six limits are stored in
-the plan and therefore change its digest. They cannot be supplied to a
-fail-fast plan.
+`MIG-CSV-DATA-TYPE-001`. Untyped JSON v1 uses
+`MIG-JSON-DATA-MISSING-001`, `MIG-JSON-DATA-NULL-001`,
+`MIG-JSON-DATA-ROW-001`, and `MIG-JSON-DATA-TYPE-001`. An explicit
+comma-separated value may select a nonempty subset of the selected source's
+registry. The expanded rules and all six limits are stored in the plan and
+therefore change its digest. They cannot be supplied to a fail-fast plan.
+
+Selecting a reject rule does not waive catalog readiness. Known JSON
+structural defects remain blocking inspection diagnostics; the retained-v1 CLI
+path is end-to-end qualified for sampled schemas whose later rows produce
+row-local type mismatches. Typed JSON package v2 and
+`MIG-JSON-DATA-TYPED-001` remain outside the CLI route.
 
 Apply, `apply --resume`, and validate require a second explicit opt-in for a
 deterministic plan: both `--allow-deterministic-rejects` and
@@ -215,11 +223,11 @@ fails.
 
 These commands produce digested deterministic planning artifacts and apply an
 explicitly approved plan to a new staged database. Apply never overwrites or
-activates an existing target. Before target creation, CSV execution verifies
-the exact package-manifest digest and reconstructs the catalog, source fingerprint,
-snapshot identity, parser policy, and inference recipe. Rows and receipts
-commit together; `--resume` replays the same source snapshot and skips only
-batches whose identities and digests match exactly.
+activates an existing target. Before target creation, retained CSV or JSON
+execution verifies the exact package-manifest digest and reconstructs the
+catalog, source fingerprint, snapshot identity, reader policy, and inference
+recipe. Rows and receipts commit together; `--resume` replays the same source
+snapshot and skips only batches whose identities and digests match exactly.
 Successful execution stops at `awaitingValidation` and writes a derived run
 report that contains no source values or resume cursors. In fail-fast mode the
 first invalid value stops the load before its batch reaches the target, and the

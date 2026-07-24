@@ -4,11 +4,11 @@ namespace CSharpDB.Cli.Tests;
 
 public sealed class MigrationRejectContractCliTests
 {
-    private const string CsvOnlyExecutionMessage =
-        "Deterministic-reject CLI execution is supported only for retained CSV migrations.";
+    private const string UnsupportedSourceExecutionMessage =
+        "Deterministic-reject CLI execution is supported only for retained CSV or untyped retained JSON package v1 migrations.";
 
     [Fact]
-    public async Task Apply_CraftedDeterministicSyntheticPlanFailsClosedAsCsvOnlyUsage()
+    public async Task Apply_CraftedDeterministicSyntheticPlanFailsClosedAsUnsupportedSourceUsage()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = Path.Combine(
@@ -65,7 +65,10 @@ public sealed class MigrationRejectContractCliTests
 
             Assert.Equal(InspectorCommandRunner.ExitUsage, exitCode);
             Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
-            Assert.Contains(CsvOnlyExecutionMessage, error.ToString(), StringComparison.Ordinal);
+            Assert.Contains(
+                UnsupportedSourceExecutionMessage,
+                error.ToString(),
+                StringComparison.Ordinal);
             Assert.False(File.Exists(targetPath));
             Assert.False(File.Exists(targetPath + ".wal"));
             Assert.False(File.Exists(targetPath + ".migration.lock"));
@@ -87,7 +90,7 @@ public sealed class MigrationRejectContractCliTests
     }
 
     [Fact]
-    public async Task Validate_CraftedDeterministicSyntheticPlanFailsClosedAsCsvOnlyUsage()
+    public async Task Validate_CraftedDeterministicSyntheticPlanFailsClosedAsUnsupportedSourceUsage()
     {
         CancellationToken ct = TestContext.Current.CancellationToken;
         string directory = Path.Combine(
@@ -143,7 +146,10 @@ public sealed class MigrationRejectContractCliTests
 
             Assert.Equal(InspectorCommandRunner.ExitUsage, exitCode);
             Assert.True(string.IsNullOrWhiteSpace(output.ToString()));
-            Assert.Contains(CsvOnlyExecutionMessage, error.ToString(), StringComparison.Ordinal);
+            Assert.Contains(
+                UnsupportedSourceExecutionMessage,
+                error.ToString(),
+                StringComparison.Ordinal);
             Assert.False(File.Exists(targetPath));
             Assert.False(File.Exists(targetPath + ".wal"));
             Assert.False(File.Exists(targetPath + ".migration.lock"));

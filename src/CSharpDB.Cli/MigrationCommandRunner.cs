@@ -39,6 +39,15 @@ internal static class MigrationCommandRunner
         CsvMigrationDataRules.NullNotAllowed,
         CsvMigrationDataRules.TypeMismatch,
     ];
+    private static readonly string[] JsonDeterministicRejectRuleIds =
+    [
+        JsonMigrationDataRules.MissingProperty,
+        JsonMigrationDataRules.NullNotAllowed,
+        JsonMigrationDataRules.NonObjectRow,
+        JsonMigrationDataRules.TypeMismatch,
+    ];
+    private const string DeferredDeterministicRejectRuleId =
+        "MIG-CLI-REJECT-RULE-001";
     private const string JsonUntypedV1OnlyCode =
         "MIG-JSON-CLI-SOURCE-VERSION-001";
     private const string JsonUntypedV1OnlyMessage =
@@ -992,8 +1001,13 @@ internal static class MigrationCommandRunner
             }
         }
 
-        if (!TryCreatePlanLoadPolicy(options, out MigrationLoadPolicy load, out parseError))
+        if (!TryParsePlanLoadPolicy(
+                options,
+                out ParsedPlanLoadPolicy parsedLoad,
+                out parseError))
+        {
             return await OptionErrorAsync(parseError!, error);
+        }
         MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
             await File.ReadAllTextAsync(catalogPath, ct));
         if (catalog.Source.Kind == MigrationSourceKind.Json &&
@@ -1003,12 +1017,13 @@ internal static class MigrationCommandRunner
                 JsonUntypedV1OnlyMessage,
                 error);
         }
-        if (load.RejectMode == MigrationRejectMode.DeterministicRejects &&
-            catalog.Source.Kind != MigrationSourceKind.Csv)
+        if (!TryBindPlanLoadPolicy(
+                parsedLoad,
+                catalog,
+                out MigrationLoadPolicy load,
+                out parseError))
         {
-            return await OptionErrorAsync(
-                "Deterministic rejects are supported only for retained CSV migrations.",
-                error);
+            return await OptionErrorAsync(parseError!, error);
         }
         MigrationPlan plan = new MigrationPlanner().CreatePlan(
             catalog,
@@ -1972,14 +1987,15 @@ internal static class MigrationCommandRunner
             .Any(static segment => segment.Contains('~'));
     }
 
-    private static bool TryCreatePlanLoadPolicy(
+    private static bool TryParsePlanLoadPolicy(
         IReadOnlyDictionary<string, string> options,
-        out MigrationLoadPolicy load,
+        out ParsedPlanLoadPolicy parsed,
         out string? error)
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        load = new MigrationLoadPolicy();
+        var load = new MigrationLoadPolicy();
+        parsed = new ParsedPlanLoadPolicy(load, UseAllRuleIds: false);
         string rejectModeValue = options.GetValueOrDefault("--reject-mode", "fail-fast");
         bool deterministic = string.Equals(
             rejectModeValue,
@@ -2023,21 +2039,17 @@ internal static class MigrationCommandRunner
         }
 
         string ruleValue = options["--reject-rules"];
+        bool useAllRuleIds = string.Equals(
+            ruleValue,
+            "all",
+            StringComparison.OrdinalIgnoreCase);
         IReadOnlyList<string> allowedRuleIds;
-        if (string.Equals(ruleValue, "all", StringComparison.OrdinalIgnoreCase))
+        if (useAllRuleIds)
         {
-            allowedRuleIds = CsvDeterministicRejectRuleIds.ToArray();
+            allowedRuleIds = [DeferredDeterministicRejectRuleId];
         }
         else if (!TryParseIdList(ruleValue, out allowedRuleIds, out error))
         {
-            return false;
-        }
-
-        string? unsupportedRule = allowedRuleIds.FirstOrDefault(ruleId =>
-            !CsvDeterministicRejectRuleIds.Contains(ruleId, StringComparer.Ordinal));
-        if (unsupportedRule is not null)
-        {
-            error = $"Reject rule '{unsupportedRule}' is not supported by the retained CSV source.";
             return false;
         }
 
@@ -2093,8 +2105,108 @@ internal static class MigrationCommandRunner
             RejectMode = MigrationRejectMode.DeterministicRejects,
             RejectPolicy = rejectPolicy,
         };
+        parsed = new ParsedPlanLoadPolicy(load, useAllRuleIds);
         error = null;
         return true;
+    }
+
+    private static bool TryBindPlanLoadPolicy(
+        ParsedPlanLoadPolicy parsed,
+        MigrationCatalog catalog,
+        out MigrationLoadPolicy load,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(parsed);
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        load = parsed.Load;
+        if (load.RejectMode == MigrationRejectMode.FailFast)
+        {
+            error = null;
+            return true;
+        }
+
+        MigrationDeterministicRejectPolicy rejectPolicy =
+            load.RejectPolicy ??
+            throw new InvalidOperationException(
+                "Parsed deterministic reject policy state is inconsistent.");
+        if (!TryGetDeterministicRejectRuleRegistry(
+                catalog,
+                out IReadOnlyList<string> supportedRuleIds,
+                out string sourceDescription,
+                out error))
+        {
+            return false;
+        }
+
+        IReadOnlyList<string> allowedRuleIds = parsed.UseAllRuleIds
+            ? supportedRuleIds.ToArray()
+            : rejectPolicy.AllowedRuleIds;
+        string? unsupportedRule = allowedRuleIds.FirstOrDefault(
+            ruleId => !supportedRuleIds.Contains(
+                ruleId,
+                StringComparer.Ordinal));
+        if (unsupportedRule is not null)
+        {
+            error =
+                $"Reject rule '{unsupportedRule}' is not supported by the {sourceDescription}.";
+            return false;
+        }
+
+        rejectPolicy = rejectPolicy with
+        {
+            AllowedRuleIds = allowedRuleIds,
+        };
+        try
+        {
+            MigrationRejectReadPolicyValidator.Validate(
+                MigrationRejectContract.DeterministicRejectsV1,
+                rejectPolicy,
+                load.BatchSize);
+        }
+        catch (InvalidDataException policyError)
+        {
+            error =
+                $"Invalid deterministic reject policy: {policyError.Message}";
+            return false;
+        }
+
+        load = load with
+        {
+            RejectPolicy = rejectPolicy,
+        };
+        error = null;
+        return true;
+    }
+
+    private static bool TryGetDeterministicRejectRuleRegistry(
+        MigrationCatalog catalog,
+        out IReadOnlyList<string> supportedRuleIds,
+        out string sourceDescription,
+        out string? error)
+    {
+        switch (catalog.Source.Kind)
+        {
+            case MigrationSourceKind.Csv:
+                supportedRuleIds = CsvDeterministicRejectRuleIds;
+                sourceDescription = "retained CSV source";
+                error = null;
+                return true;
+
+            case MigrationSourceKind.Json when IsUntypedJsonV1Catalog(catalog):
+                supportedRuleIds = JsonDeterministicRejectRuleIds;
+                sourceDescription =
+                    "untyped retained JSON package v1 source";
+                error = null;
+                return true;
+
+            default:
+                supportedRuleIds = [];
+                sourceDescription = "unsupported migration source";
+                error =
+                    "Deterministic rejects are supported only for retained CSV or untyped retained JSON package v1 migrations.";
+                return false;
+        }
     }
 
     private static bool TryParseSourceByteLimit(string value, out long result) =>
@@ -2173,9 +2285,12 @@ internal static class MigrationCommandRunner
             error = "The migration plan contains an unsupported reject policy.";
             return false;
         }
-        if (catalog.Source.Kind != MigrationSourceKind.Csv)
+        if (catalog.Source.Kind != MigrationSourceKind.Csv &&
+            (catalog.Source.Kind != MigrationSourceKind.Json ||
+             !IsUntypedJsonV1Catalog(catalog)))
         {
-            error = "Deterministic-reject CLI execution is supported only for retained CSV migrations.";
+            error =
+                "Deterministic-reject CLI execution is supported only for retained CSV or untyped retained JSON package v1 migrations.";
             return false;
         }
         if (!allowDeterministicRejects)
@@ -3061,6 +3176,10 @@ internal static class MigrationCommandRunner
     private sealed record MigrationSourcePackageMetadata(
         string Format,
         string ManifestDigest);
+
+    private sealed record ParsedPlanLoadPolicy(
+        MigrationLoadPolicy Load,
+        bool UseAllRuleIds);
 
     private sealed record PreviewCounts(
         int TotalObjects,
