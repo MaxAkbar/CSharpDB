@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -142,7 +143,9 @@ public static class CSharpDbDdlPreviewBuilder
             };
         }
 
-        string generatedDdlDigest = ComputeGeneratedDdlDigest(stages);
+        string generatedDdlDigest = ComputeGeneratedDdlDigest(
+            stages,
+            cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         return new CSharpDbDdlPreview
         {
@@ -170,8 +173,10 @@ public static class CSharpDbDdlPreviewBuilder
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(preview);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        ValidatePreview(preview);
+        ValidatePreview(preview, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         CSharpDbDdlPreview actual = Build(
             plan,
             catalog,
@@ -227,37 +232,61 @@ public static class CSharpDbDdlPreviewBuilder
     }
 
     private static string ComputeGeneratedDdlDigest(
-        IReadOnlyList<CSharpDbDdlPreviewStage> stages)
+        IReadOnlyList<CSharpDbDdlPreviewStage> stages,
+        CancellationToken cancellationToken = default)
     {
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(new
+        cancellationToken.ThrowIfCancellationRequested();
+        var payload = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(payload))
         {
-            Format = CSharpDbDdlPreview.GeneratedDdlDigestFormat,
-            StageCount = stages.Count,
-            Stages = stages.Select(stage => new
+            writer.WriteStartObject();
+            writer.WriteString(
+                "Format",
+                CSharpDbDdlPreview.GeneratedDdlDigestFormat);
+            writer.WriteNumber("StageCount", stages.Count);
+            writer.WriteStartArray("Stages");
+            foreach (CSharpDbDdlPreviewStage stage in stages)
             {
-                stage.Ordinal,
-                StageContract = StageContract(stage.Stage),
-                ActionCount = stage.Actions.Count,
-                Actions = stage.Actions.Select(action => new
+                cancellationToken.ThrowIfCancellationRequested();
+                writer.WriteStartObject();
+                writer.WriteNumber("Ordinal", stage.Ordinal);
+                writer.WriteString("StageContract", StageContract(stage.Stage));
+                writer.WriteNumber("ActionCount", stage.Actions.Count);
+                writer.WriteStartArray("Actions");
+                foreach (CSharpDbDdlPreviewAction action in stage.Actions)
                 {
-                    action.Ordinal,
-                    KindCode = (int)action.Kind,
-                    Payload = action.Kind switch
+                    cancellationToken.ThrowIfCancellationRequested();
+                    writer.WriteStartObject();
+                    writer.WriteNumber("Ordinal", action.Ordinal);
+                    writer.WriteNumber("KindCode", (int)action.Kind);
+                    writer.WritePropertyName("Payload");
+                    writer.WriteStringValue(action.Kind switch
                     {
                         CSharpDbDdlPreviewActionKind.Sql => action.Sql,
                         CSharpDbDdlPreviewActionKind
                             .EnsureJsonDocumentCollection => action.TargetName,
                         _ => throw new InvalidDataException(
                             "The CSharpDB DDL preview contains an unknown action kind."),
-                    },
-                }),
-            }),
-        });
-        return Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
+                    });
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+            writer.Flush();
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return Convert.ToHexString(SHA256.HashData(payload.WrittenSpan))
+            .ToLowerInvariant();
     }
 
-    private static void ValidatePreview(CSharpDbDdlPreview preview)
+    private static void ValidatePreview(
+        CSharpDbDdlPreview preview,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!string.Equals(
                 preview.Format,
                 CSharpDbDdlPreview.CurrentFormat,
@@ -281,6 +310,7 @@ public static class CSharpDbDdlPreviewBuilder
 
         for (int stageOrdinal = 0; stageOrdinal < s_stageOrder.Length; stageOrdinal++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             CSharpDbDdlPreviewStage? stage = preview.Stages[stageOrdinal];
             if (stage is null ||
                 stage.Ordinal != stageOrdinal ||
@@ -295,6 +325,7 @@ public static class CSharpDbDdlPreviewBuilder
                  actionOrdinal < stage.Actions.Count;
                  actionOrdinal++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 CSharpDbDdlPreviewAction? action =
                     stage.Actions[actionOrdinal];
                 bool validPayload = action?.Kind switch
@@ -318,7 +349,9 @@ public static class CSharpDbDdlPreviewBuilder
             }
         }
 
-        string expectedDigest = ComputeGeneratedDdlDigest(preview.Stages);
+        string expectedDigest = ComputeGeneratedDdlDigest(
+            preview.Stages,
+            cancellationToken);
         if (!FixedTimeDigestEquals(
                 preview.GeneratedDdlDigest,
                 expectedDigest))

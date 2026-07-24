@@ -342,6 +342,38 @@ public sealed class CSharpDbDdlPreviewTests
                     StringComparison.Ordinal) == true);
     }
 
+    [Fact]
+    public void Build_PinsVersionedSchemaActionDigest()
+    {
+        MigrationCatalog catalog = CollectionCatalog();
+        MigrationPlan plan = ReadyPlan(catalog);
+
+        CSharpDbDdlPreview preview =
+            CSharpDbDdlPreviewBuilder.Build(plan, catalog, cancellationToken: Ct);
+
+        Assert.Equal(
+            "caae142bc142a608b64e6f0f6662cca151534c87ad567983f3380cd0d4f88fc7",
+            preview.GeneratedDdlDigest);
+    }
+
+    [Fact]
+    public void AttachGeneratedDdlDigest_HonorsPreCanceledValidation()
+    {
+        MigrationCatalog catalog = CollectionCatalog();
+        MigrationPlan plan = ReadyPlan(catalog);
+        CSharpDbDdlPreview preview =
+            CSharpDbDdlPreviewBuilder.Build(plan, catalog, cancellationToken: Ct);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() =>
+            CSharpDbDdlPreviewBuilder.AttachGeneratedDdlDigest(
+                plan,
+                catalog,
+                preview,
+                cancellationToken: cancellation.Token));
+    }
+
     private static async Task<MigrationCatalog> InspectSyntheticAsync() =>
         await new SyntheticMigrationSourceInspector().InspectAsync(
             new MigrationInspectionRequest
