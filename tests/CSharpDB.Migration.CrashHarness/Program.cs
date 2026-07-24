@@ -161,7 +161,44 @@ internal static class MigrationCrashHarness
         string resultPath = Path.GetFullPath(
             RequiredOption(args, "--json-result"));
 
-        JsonPackageProcessResult result = mode switch
+        bool typed = string.Equals(
+            OptionalOption(
+                args,
+                "--json-package-kind"),
+            "typed",
+            StringComparison.Ordinal);
+        JsonPackageProcessResult result = typed
+            ? mode switch
+            {
+                "write" =>
+                    await WriteJsonTypedPackageAsync(
+                            args,
+                            packagePath,
+                            workspacePath)
+                        .ConfigureAwait(false),
+                "read" =>
+                    await ReadJsonTypedPackageAsync(
+                            args,
+                            packagePath,
+                            workspacePath,
+                            resumeCursor: null,
+                            mode)
+                        .ConfigureAwait(false),
+                "resume" =>
+                    await ReadJsonTypedPackageAsync(
+                            args,
+                            packagePath,
+                            workspacePath,
+                            RequiredOption(
+                                args,
+                                "--json-resume-cursor"),
+                            mode)
+                        .ConfigureAwait(false),
+                _ => throw new ArgumentException(
+                    $"Unknown typed JSON package mode '{mode}'.",
+                    nameof(args)),
+            }
+            : mode switch
         {
             "write" => await WriteJsonPackageAsync(
                     args,
@@ -287,6 +324,166 @@ internal static class MigrationCrashHarness
     }
 
     private static async Task<JsonPackageProcessResult>
+        WriteJsonTypedPackageAsync(
+            IReadOnlyList<string> args,
+            string packagePath,
+            string workspacePath)
+    {
+        string sourcePath = Path.GetFullPath(
+            RequiredOption(args, "--json-source"));
+        string intentPath = Path.GetFullPath(
+            RequiredOption(args, "--json-intent"));
+        string framingName =
+            RequiredOption(args, "--json-framing");
+        if (!Enum.TryParse(
+                framingName,
+                ignoreCase: false,
+                out JsonInputFraming framing) ||
+            !Enum.IsDefined(framing))
+        {
+            throw new ArgumentException(
+                $"Unknown JSON framing '{framingName}'.",
+                nameof(args));
+        }
+
+        await using JsonSourceSnapshot snapshot =
+            await JsonSourceSnapshot.CreateFromFileAsync(
+                    sourcePath,
+                    new JsonSourceSnapshotOptions
+                    {
+                        WorkspacePath = workspacePath,
+                        MaxSourceBytes = 1024 * 1024,
+                        CopyBufferBytes = 32 * 1024,
+                    })
+                .ConfigureAwait(false);
+        JsonSourceBinding binding =
+            await JsonSourceBinding.CreateAsync(
+                    snapshot,
+                    CreateJsonReaderOptions(framing),
+                    logicalSourceIdentity:
+                        "json-typed-package-process-fixture")
+                .ConfigureAwait(false);
+        JsonTypedIntentManifest intent =
+            await JsonTypedIntentSidecar.WriteAsync(
+                    intentPath,
+                    binding,
+                    new JsonTypedIntentOptions
+                    {
+                        Columns =
+                        [
+                            new JsonTypedColumnIntent
+                            {
+                                ColumnIndex = 0,
+                                ExpectedPropertyName = "id",
+                                Codec =
+                                    JsonTypedValueCodec
+                                        .Int64String,
+                                Nullable = false,
+                            },
+                            new JsonTypedColumnIntent
+                            {
+                                ColumnIndex = 1,
+                                ExpectedPropertyName =
+                                    "amount",
+                                Codec =
+                                    JsonTypedValueCodec
+                                        .DecimalString,
+                                Nullable = false,
+                                Precision = 38,
+                                Scale = 18,
+                            },
+                            new JsonTypedColumnIntent
+                            {
+                                ColumnIndex = 2,
+                                ExpectedPropertyName =
+                                    "binary",
+                                Codec =
+                                    JsonTypedValueCodec
+                                        .BinaryBase64,
+                                Nullable = false,
+                            },
+                        ],
+                        MaxDecodedBinaryBytes =
+                            1024 * 1024,
+                        MaxDecimalDigits = 1024,
+                    })
+                .ConfigureAwait(false);
+        JsonTypedTableSchemaInferenceResult schema =
+            await JsonTypedTableSchemaInferer.InferAsync(
+                    binding,
+                    snapshot,
+                    intent,
+                    maxProfileRecords: 4,
+                    new JsonTableSchemaInferenceOptions
+                    {
+                        TableName =
+                            "json_typed_process_rows",
+                        MaxColumns = 32,
+                        MaxTotalColumnNameBytes =
+                            32 * 1024,
+                        MaxProfileBytes = 256 * 1024,
+                        ColumnOverrides =
+                        [
+                            new JsonTableColumnSchemaOverride
+                            {
+                                ColumnIndex = 3,
+                                ExpectedPropertyName =
+                                    "name",
+                                LogicalType =
+                                    JsonTableColumnLogicalType
+                                        .Text,
+                                Nullable = false,
+                            },
+                        ],
+                    })
+                .ConfigureAwait(false);
+        string targetVersion =
+            CSharpDbCapabilityCatalogLoader.CurrentTargetVersion;
+        MigrationCatalog catalog =
+            schema.CreateCatalog(targetVersion);
+        JsonTypedSnapshotPackageManifest manifest =
+            await JsonTypedSnapshotPackage.WriteAsync(
+                    packagePath,
+                    snapshot,
+                    schema,
+                    targetVersion)
+                .ConfigureAwait(false);
+        await using JsonMigrationDataSource dataSource =
+            await JsonMigrationDataSource.CreateAsync(
+                    schema,
+                    snapshot,
+                    catalog)
+                .ConfigureAwait(false);
+        JsonReadOutcome firstBatch =
+            await ReadJsonRowsAsync(
+                    dataSource,
+                    schema,
+                    resumeCursor: null,
+                    stopAfterFirstBatch: true)
+                .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(
+                firstBatch.NextCursor))
+        {
+            throw new InvalidDataException(
+                "The first typed JSON package batch did not produce a resume cursor.");
+        }
+
+        return new JsonPackageProcessResult
+        {
+            Mode = "write",
+            ManifestDigest = manifest.ManifestDigest,
+            CatalogDigest = manifest.CatalogDigest,
+            SnapshotIdentity = manifest.SnapshotIdentity,
+            FirstBatchCursor = firstBatch.NextCursor,
+            AcceptedRowCount =
+                firstBatch.RowDigests.Count,
+            RejectedRowCount =
+                firstBatch.RejectedRowCount,
+            RowDigests = firstBatch.RowDigests,
+        };
+    }
+
+    private static async Task<JsonPackageProcessResult>
         ReadJsonPackageAsync(
             IReadOnlyList<string> args,
             string packagePath,
@@ -332,6 +529,54 @@ internal static class MigrationCrashHarness
         };
     }
 
+    private static async Task<JsonPackageProcessResult>
+        ReadJsonTypedPackageAsync(
+            IReadOnlyList<string> args,
+            string packagePath,
+            string workspacePath,
+            string? resumeCursor,
+            string mode)
+    {
+        string expectedManifestDigest =
+            RequiredOption(
+                args,
+                "--json-expected-manifest-digest");
+        await using JsonTypedSnapshotPackageSession session =
+            await JsonTypedSnapshotPackage.OpenAsync(
+                    packagePath,
+                    new JsonSnapshotPackageOpenOptions
+                    {
+                        WorkspacePath = workspacePath,
+                        MaxSourceBytes = 1024 * 1024,
+                        CopyBufferBytes = 32 * 1024,
+                        ExpectedManifestDigest =
+                            expectedManifestDigest,
+                    })
+                .ConfigureAwait(false);
+        JsonReadOutcome rows =
+            await ReadJsonRowsAsync(
+                    session.DataSource,
+                    session.Schema,
+                    resumeCursor,
+                    stopAfterFirstBatch: false)
+                .ConfigureAwait(false);
+
+        return new JsonPackageProcessResult
+        {
+            Mode = mode,
+            ManifestDigest =
+                session.Manifest.ManifestDigest,
+            CatalogDigest =
+                session.Manifest.CatalogDigest,
+            SnapshotIdentity =
+                session.Manifest.SnapshotIdentity,
+            FirstBatchCursor = null,
+            AcceptedRowCount = rows.RowDigests.Count,
+            RejectedRowCount = rows.RejectedRowCount,
+            RowDigests = rows.RowDigests,
+        };
+    }
+
     private static JsonStreamingReaderOptions
         CreateJsonReaderOptions(JsonInputFraming framing) =>
         new()
@@ -352,13 +597,39 @@ internal static class MigrationCrashHarness
         JsonMigrationDataSource dataSource,
         JsonTableSchemaInferenceResult schema,
         string? resumeCursor,
+        bool stopAfterFirstBatch) =>
+        await ReadJsonRowsAsync(
+                dataSource,
+                schema.Columns.Select(
+                    column => column.ColumnIndex),
+                resumeCursor,
+                stopAfterFirstBatch)
+            .ConfigureAwait(false);
+
+    private static async Task<JsonReadOutcome> ReadJsonRowsAsync(
+        JsonMigrationDataSource dataSource,
+        JsonTypedTableSchemaInferenceResult schema,
+        string? resumeCursor,
+        bool stopAfterFirstBatch) =>
+        await ReadJsonRowsAsync(
+                dataSource,
+                schema.Columns.Select(
+                    column => column.ColumnIndex),
+                resumeCursor,
+                stopAfterFirstBatch)
+            .ConfigureAwait(false);
+
+    private static async Task<JsonReadOutcome> ReadJsonRowsAsync(
+        JsonMigrationDataSource dataSource,
+        IEnumerable<int> columnIndexes,
+        string? resumeCursor,
         bool stopAfterFirstBatch)
     {
-        string[] columnIds = schema.Columns
-            .OrderBy(column => column.ColumnIndex)
-            .Select(column =>
+        string[] columnIds = columnIndexes
+            .Order()
+            .Select(columnIndex =>
                 JsonMigrationObjectIds.Column(
-                    column.ColumnIndex))
+                    columnIndex))
             .ToArray();
         var request = new MigrationReadRequest
         {

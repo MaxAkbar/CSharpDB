@@ -635,8 +635,12 @@ leaving package v1 unchanged. The
 [`migration-json-typed-table.md`](migration-json-typed-table.md) contract now
 binds that sidecar into a distinct typed schema, catalog, exact scalar
 decoding, deterministic row outcomes, lossless planning, apply conversion,
-and mutually exclusive v2 cursors. A typed retained package v2, collection
-projection, export, and CLI integration remain open.
+and mutually exclusive v2 cursors. The
+[`migration-json-typed-retained-package.md`](migration-json-typed-retained-package.md)
+contract carries the exact sidecar and raw source in a deterministic,
+tamper-evident package v2, then privately reconstructs the typed schema,
+catalog, data source, and cursor replay after reopen without changing package
+v1. Collection projection, export, and CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -654,6 +658,10 @@ projection, export, and CLI integration remain open.
   full-stream scalar decoding, deterministic rejects, lossless apply
   conversion, and exact v2 cursor replay without changing package or cursor
   v1.
+- [x] Add an explicitly selected typed retained package v2 with exact intent
+  embedding, trusted package-manifest pinning, pre-workspace validation,
+  copy-on-open ownership, typed catalog replay, and fresh-process v2 cursor
+  resume while preserving package v1 bytes and APIs.
 - [ ] Stream JSON array and NDJSON output without buffering all rows.
 
 ### Shared Deliverables

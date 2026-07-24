@@ -11,8 +11,10 @@ Typed integration uses distinct schema and cursor contracts. Ordinary
 `JsonTableSchemaInferer` results, catalogs, source values, and v1 cursors remain
 unchanged. Typed results cannot be passed to
 `JsonSnapshotPackage.WriteAsync`, so the existing retained package v1 cannot
-discard or silently reinterpret intent. A package v2 that embeds the exact
-sidecar remains a later slice.
+discard or silently reinterpret intent. The distinct
+[`JsonTypedSnapshotPackage`](migration-json-typed-retained-package.md) v2 API
+now embeds the exact sidecar and replays this typed contract without changing
+package v1.
 
 ## Public Contract
 
@@ -186,7 +188,9 @@ readers and independently reparsed equivalent manifests remain deterministic.
 
 ## Deferred Work
 
-This slice does not add package v2, JSON export, CLI routing, collection
-projection, signatures, encryption, or automatic sidecar discovery. Until
-package v2 exists, a portable typed migration requires the raw immutable
-snapshot and independently retained, optionally pinned sidecar.
+JSON export, CLI routing, collection projection, signatures, encryption, and
+automatic sidecar discovery remain deferred. Portable typed migration can now
+retain the raw immutable snapshot and exact source-bound sidecar together in
+the explicitly selected
+[`csharpdb-json-snapshot-package/v2`](migration-json-typed-retained-package.md)
+format.

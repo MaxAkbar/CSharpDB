@@ -162,6 +162,23 @@ public sealed class JsonMigrationDataSource :
             snapshot,
             ValidateCatalogBinding(schema, snapshot, catalog));
 
+    /// <summary>
+    /// Creates a typed source when the immediate caller has already verified
+    /// the snapshot bytes while copying them.
+    /// </summary>
+    internal static JsonMigrationDataSource CreateFromVerifiedSnapshot(
+        JsonTypedTableSchemaInferenceResult schema,
+        JsonSourceSnapshot snapshot,
+        MigrationCatalog catalog) =>
+        new(
+            schema.RepresentationSchema,
+            schema,
+            snapshot,
+            ValidateTypedCatalogBinding(
+                schema,
+                snapshot,
+                catalog));
+
     public IAsyncEnumerable<MigrationDataBatch> ReadAsync(
         MigrationReadRequest request,
         CancellationToken cancellationToken = default)
