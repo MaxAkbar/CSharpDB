@@ -105,6 +105,10 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
             "TEXT" => Exact(DbType.Text),
             "BINARY" => Exact(DbType.Blob),
             "FLOATINGPOINT" => Exact(DbType.Real),
+            "JSON" when IsOrderedJsonDocument(source) => Reencoded(
+                DbType.Text,
+                "canonical-text",
+                Facet("logicalType", MigrationDocumentCollectionContract.JsonLogicalType)),
             "BOOLEAN" => Reencoded(DbType.Integer, "boolean-integer", Facet("true", "1"), Facet("false", "0")),
             "GUID" => Reencoded(DbType.Text, "guid-text", TextCodecParameters(CSharpDbTextCodec.GuidFormat)),
             "DATE" => Reencoded(DbType.Text, "date-text", TextCodecParameters(CSharpDbTextCodec.DateFormat)),
@@ -398,6 +402,28 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
                     source,
                     "jsonTypedIntentManifestDigest"));
     }
+
+    private static bool IsOrderedJsonDocument(MigrationCatalogObject source) =>
+        string.Equals(
+            source.NativeType,
+            MigrationDocumentCollectionContract.DocumentNativeType,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            GetFacet(source, MigrationDocumentCollectionContract.LogicalTypeFacet),
+            MigrationDocumentCollectionContract.JsonLogicalType,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            GetFacet(source, MigrationDocumentCollectionContract.NullableFacet),
+            "false",
+            StringComparison.Ordinal) &&
+        string.Equals(
+            GetFacet(source, MigrationDocumentCollectionContract.FieldRoleFacet),
+            MigrationDocumentCollectionContract.DocumentRole,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            GetFacet(source, MigrationDocumentCollectionContract.DocumentEncodingFacet),
+            MigrationDocumentCollectionContract.DocumentEncoding,
+            StringComparison.Ordinal);
 
     private static MigrationCatalogFacet Facet(string name, string value) => new()
     {

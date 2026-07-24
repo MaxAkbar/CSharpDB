@@ -40,6 +40,8 @@ public sealed class CSharpDbStagedMigrationTarget :
     private readonly string _targetTag;
     private readonly IReadOnlyDictionary<string, MigrationPlanObject> _planObjects;
     private readonly IReadOnlyDictionary<string, MigrationCatalogObject> _catalogObjects;
+    private readonly IReadOnlyDictionary<string, CSharpDbCollectionMigrationBinding>
+        _collectionBindings;
     private readonly ICSharpDbMigrationFaultInjector _faultInjector;
     private readonly SemaphoreSlim _mutationGate = new(1, 1);
     private readonly Dictionary<string, ObjectBatchProgress> _validatedObjectProgress =
@@ -74,6 +76,7 @@ public sealed class CSharpDbStagedMigrationTarget :
         TargetIdentity = targetIdentity;
         _planObjects = plan.Objects.ToDictionary(item => item.SourceObjectId, StringComparer.Ordinal);
         _catalogObjects = catalog.Objects.ToDictionary(item => item.ObjectId, StringComparer.Ordinal);
+        _collectionBindings = CSharpDbCollectionMigrationBinding.CreateAll(plan, catalog);
         _faultInjector = faultInjector ?? NoOpMigrationFaultInjector.Instance;
         _validatedArtifactBytes = plan.Load.RejectMode == MigrationRejectMode.DeterministicRejects
             ? MigrationRejectLedgerCodec.GetArtifactHeaderByteCount(_planDigest)
@@ -303,7 +306,25 @@ public sealed class CSharpDbStagedMigrationTarget :
             await _database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             transactionStarted = true;
             foreach (string action in actions)
-                await ExecuteNonQueryAsync(_database, action, cancellationToken).ConfigureAwait(false);
+            {
+                if (CSharpDbMigrationSql.TryParseCollectionAction(
+                        action,
+                        out string collectionName))
+                {
+                    await _database.EnsureJsonDocumentCollectionAsync(
+                            collectionName,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await ExecuteNonQueryAsync(
+                            _database,
+                            action,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
 
             InsertBatch stageInsert = _database.PrepareInsertBatch(CSharpDbMigrationSql.StageTable, 1);
             stageInsert.AddRow(
@@ -393,9 +414,17 @@ public sealed class CSharpDbStagedMigrationTarget :
         }
 
         MigrationPlanObject tablePlan = _planObjects[batch.SourceObjectId];
-        InsertBatch dataInsert = _database.PrepareInsertBatch(tablePlan.TargetName!, batch.Rows.Count);
-        foreach (MigrationTargetRow row in batch.Rows)
-            dataInsert.AddRow(row.Values.ToArray());
+        _collectionBindings.TryGetValue(
+            batch.SourceObjectId,
+            out CSharpDbCollectionMigrationBinding? collectionBinding);
+        InsertBatch? dataInsert = collectionBinding is null
+            ? _database.PrepareInsertBatch(tablePlan.TargetName!, batch.Rows.Count)
+            : null;
+        if (dataInsert is not null)
+        {
+            foreach (MigrationTargetRow row in batch.Rows)
+                dataInsert.AddRow(row.Values.ToArray());
+        }
 
         InsertBatch? rejectInsert = IsLegacyTarget
             ? null
@@ -460,7 +489,41 @@ public sealed class CSharpDbStagedMigrationTarget :
                 CSharpDbMigrationFaultPoint.BeforeRows,
                 batch,
                 cancellationToken).ConfigureAwait(false);
-            int rowsAffected = await dataInsert.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            int rowsAffected;
+            if (collectionBinding is null)
+            {
+                rowsAffected = await dataInsert!.ExecuteAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                rowsAffected = 0;
+                foreach (MigrationTargetRow row in batch.Rows)
+                {
+                    string key = row.Values[collectionBinding.KeyValueIndex].AsText;
+                    string document =
+                        row.Values[collectionBinding.DocumentValueIndex].AsText;
+                    byte[] documentBytes;
+                    try
+                    {
+                        documentBytes = StrictUtf8.GetBytes(document);
+                    }
+                    catch (EncoderFallbackException error)
+                    {
+                        throw new InvalidDataException(
+                            "Migration collection document contains invalid Unicode scalar data.",
+                            error);
+                    }
+
+                    await _database.InsertCanonicalJsonDocumentAsync(
+                            collectionBinding.TargetName,
+                            key,
+                            documentBytes,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    rowsAffected++;
+                }
+            }
             if (rowsAffected != batch.Rows.Count)
                 throw new InvalidDataException("Target row count differs from the converted migration batch.");
             await _faultInjector.InjectAsync(
@@ -662,7 +725,7 @@ public sealed class CSharpDbStagedMigrationTarget :
             if (loadSchemaExists)
             {
                 long physicalRows = await CountRowsAsync(
-                    objectPlan.TargetName!,
+                    ResolvePhysicalTableName(objectPlan),
                     where: null,
                     cancellationToken).ConfigureAwait(false);
                 if (physicalRows != acceptedRows)
@@ -794,6 +857,7 @@ public sealed class CSharpDbStagedMigrationTarget :
                 StringComparer.Ordinal),
             _validatedRejectedRows,
             _planObjects,
+            _collectionBindings,
             _catalog,
             schema);
     }
@@ -1227,7 +1291,9 @@ public sealed class CSharpDbStagedMigrationTarget :
         IReadOnlyDictionary<string, TableSchema> tables = included
             .Where(item => _catalogObjects[item.SourceObjectId].Kind is
                 MigrationObjectKind.Table or MigrationObjectKind.Collection)
-            .Select(item => (Plan: item, Schema: _database.GetTableSchema(item.TargetName!)))
+            .Select(item => (
+                Plan: item,
+                Schema: _database.GetTableSchema(ResolvePhysicalTableName(item))))
             .Where(item => item.Schema is not null)
             .ToDictionary(
                 item => item.Plan.SourceObjectId,
@@ -1285,14 +1351,7 @@ public sealed class CSharpDbStagedMigrationTarget :
 
         foreach (TableSchema table in actualTables)
         {
-            string tableId = ResolvePlannedObjectId(
-                    MigrationObjectKind.Table,
-                    parentObjectId: null,
-                    table.TableName) ??
-                ResolvePlannedObjectId(
-                    MigrationObjectKind.Collection,
-                    parentObjectId: null,
-                    table.TableName) ??
+            string tableId = ResolvePlannedDataObjectId(table.TableName) ??
                 ExtraObjectId(MigrationObjectKind.Table, null, table.TableName);
             tableIds.Add(table.TableName, tableId);
             if (knownIds.Add(tableId))
@@ -1448,7 +1507,14 @@ public sealed class CSharpDbStagedMigrationTarget :
         }
 
         foreach (IndexSchema index in indexes
-                     .Where(item => item.Kind == IndexKind.Sql)
+                     .Where(item =>
+                         item.Kind == IndexKind.Sql ||
+                         (item.Kind == IndexKind.Collection &&
+                          _collectionBindings.Values.Any(binding =>
+                              string.Equals(
+                                  binding.PhysicalTableName,
+                                  item.TableName,
+                                  StringComparison.OrdinalIgnoreCase))))
                      .OrderBy(item => item.IndexName, StringComparer.OrdinalIgnoreCase))
         {
             if (!tableIds.TryGetValue(index.TableName, out string? tableId))
@@ -1466,12 +1532,18 @@ public sealed class CSharpDbStagedMigrationTarget :
                 tableId,
                 indexId,
                 [Attribute("unique", BooleanToken(index.IsUnique))],
-                index.Columns.Select((name, ordinal) => new MigrationNormalizedSchemaMember
-                {
-                    Role = MigrationObjectReferenceRoles.Column,
-                    Ordinal = ordinal,
-                    ObjectId = ResolveActualColumnId(columnIds, index.TableName, name),
-                }).ToArray()));
+                index.Kind == IndexKind.Sql
+                    ? index.Columns.Select((name, ordinal) =>
+                        new MigrationNormalizedSchemaMember
+                        {
+                            Role = MigrationObjectReferenceRoles.Column,
+                            Ordinal = ordinal,
+                            ObjectId = ResolveActualColumnId(
+                                columnIds,
+                                index.TableName,
+                                name),
+                        }).ToArray()
+                    : []));
         }
 
         foreach (string viewName in viewNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
@@ -1537,6 +1609,17 @@ public sealed class CSharpDbStagedMigrationTarget :
             ?.SourceObjectId;
     }
 
+    private string? ResolvePlannedDataObjectId(string physicalTableName) =>
+        _plan.Objects
+            .Where(item => item.Included)
+            .Where(item => _catalogObjects[item.SourceObjectId].Kind is
+                MigrationObjectKind.Table or MigrationObjectKind.Collection)
+            .SingleOrDefault(item => string.Equals(
+                ResolvePhysicalTableName(item),
+                physicalTableName,
+                StringComparison.OrdinalIgnoreCase))
+            ?.SourceObjectId;
+
     private static string ResolveActualColumnId(
         IReadOnlyDictionary<string, string> columnIds,
         string tableName,
@@ -1576,12 +1659,29 @@ public sealed class CSharpDbStagedMigrationTarget :
             CSharpDbMigrationSql.RejectTable,
             StringComparison.Ordinal));
 
+    private string ResolvePhysicalTableName(MigrationPlanObject planned) =>
+        _collectionBindings.TryGetValue(
+            planned.SourceObjectId,
+            out CSharpDbCollectionMigrationBinding? binding)
+            ? binding.PhysicalTableName
+            : planned.TargetName ??
+              throw new InvalidDataException(
+                  $"Included data object '{planned.SourceObjectId}' has no target name.");
+
     private MigrationNormalizedSchemaObject? CaptureTable(
         MigrationCatalogObject item,
-        IReadOnlyDictionary<string, TableSchema> tables) =>
-        tables.TryGetValue(item.ObjectId, out TableSchema? table)
-            ? CreateActualObject(item, table.TableName)
-            : null;
+        IReadOnlyDictionary<string, TableSchema> tables)
+    {
+        if (!tables.TryGetValue(item.ObjectId, out TableSchema? table))
+            return null;
+
+        string targetName = item.Kind == MigrationObjectKind.Collection
+            ? _planObjects[item.ObjectId].TargetName ??
+              throw new InvalidDataException(
+                  $"Included collection '{item.ObjectId}' has no target name.")
+            : table.TableName;
+        return CreateActualObject(item, targetName);
+    }
 
     private MigrationNormalizedSchemaObject? CaptureColumn(
         MigrationCatalogObject item,
@@ -2098,6 +2198,41 @@ public sealed class CSharpDbStagedMigrationTarget :
                     throw new InvalidDataException($"Migration target value for '{columns[index].ObjectId}' is not finite.");
                 if (MigrationValueConverter.GetCanonicalByteCount(value) > _plan.Load.MaxValueBytes)
                     throw new InvalidDataException($"Migration target value for '{columns[index].ObjectId}' exceeds MaxValueBytes.");
+            }
+        }
+
+        if (_collectionBindings.TryGetValue(
+                batch.SourceObjectId,
+                out CSharpDbCollectionMigrationBinding? collectionBinding))
+        {
+            if (batch.RejectedRows.Count != 0 ||
+                !string.Equals(
+                    batch.RejectContractVersion,
+                    MigrationRejectContract.DeterministicFailFastV1,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "JSON collection migration accepts only fail-fast data batches.");
+            }
+
+            foreach (MigrationTargetRow row in batch.Rows)
+            {
+                DbValue keyValue = row.Values[collectionBinding.KeyValueIndex];
+                DbValue documentValue =
+                    row.Values[collectionBinding.DocumentValueIndex];
+                string expectedKey =
+                    MigrationDocumentCollectionContract.FormatOrdinalKey(
+                        row.SourceRowOrdinal);
+                if (keyValue.IsNull ||
+                    keyValue.Type != DbType.Text ||
+                    documentValue.IsNull ||
+                    documentValue.Type != DbType.Text ||
+                    !string.Equals(row.StableKey, expectedKey, StringComparison.Ordinal) ||
+                    !string.Equals(keyValue.AsText, expectedKey, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        "Migration collection row does not match its ordinal key and canonical document contract.");
+                }
             }
         }
     }
@@ -2836,6 +2971,8 @@ public sealed class CSharpDbStagedMigrationTarget :
             IReadOnlyDictionary<string, long> receiptCounts,
             long expectedRejectCount,
             IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
+            IReadOnlyDictionary<string, CSharpDbCollectionMigrationBinding>
+                collectionBindings,
             MigrationCatalog catalog,
             MigrationNormalizedSchema schema)
         {
@@ -2891,9 +3028,13 @@ public sealed class CSharpDbStagedMigrationTarget :
                             .Select(column => column.ObjectId)
                             .ToArray();
                         return new ValidationDataObjectBinding(
-                            planned.TargetName ??
-                                throw new InvalidDataException(
-                                    "Migration validation table binding is incomplete."),
+                            collectionBindings.TryGetValue(
+                                item.ObjectId,
+                                out CSharpDbCollectionMigrationBinding? collectionBinding)
+                                ? collectionBinding.PhysicalTableName
+                                : planned.TargetName ??
+                                  throw new InvalidDataException(
+                                      "Migration validation table binding is incomplete."),
                             columnObjectIds
                                 .Select(columnObjectId =>
                                     planObjects[columnObjectId].TargetName ??

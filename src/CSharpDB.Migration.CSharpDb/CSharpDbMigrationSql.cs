@@ -6,6 +6,9 @@ namespace CSharpDB.Migration.CSharpDb;
 
 internal static class CSharpDbMigrationSql
 {
+    private const string CollectionActionPrefix =
+        "csharpdb-migration-json-collection-action/v1:";
+
     internal const string StateTable = "__csharpdb_migration_state";
     internal const string StageTable = "__csharpdb_migration_stages";
     internal const string ReceiptTable = "__csharpdb_migration_receipts";
@@ -145,6 +148,23 @@ internal static class CSharpDbMigrationSql
 
     internal static string NullableLiteral(string? value) => value is null ? "NULL" : Literal(value);
 
+    internal static bool TryParseCollectionAction(
+        string action,
+        out string collectionName)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (!action.StartsWith(CollectionActionPrefix, StringComparison.Ordinal))
+        {
+            collectionName = string.Empty;
+            return false;
+        }
+
+        collectionName = action[CollectionActionPrefix.Length..];
+        if (string.IsNullOrWhiteSpace(collectionName))
+            throw new InvalidDataException("Migration collection action has no target name.");
+        return true;
+    }
+
     private static IReadOnlyList<string> BuildTables(
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
         MigrationCatalog catalog)
@@ -155,6 +175,16 @@ internal static class CSharpDbMigrationSql
                      .Where(item => planObjects[item.ObjectId].Included)
                      .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
+            if (table.Kind == MigrationObjectKind.Collection)
+            {
+                actions.Add(
+                    CollectionActionPrefix +
+                    (planObjects[table.ObjectId].TargetName ??
+                     throw new InvalidDataException(
+                         $"Included collection '{table.ObjectId}' has no target name.")));
+                continue;
+            }
+
             MigrationCatalogObject[] columns = catalog.Objects
                 .Where(item => item.Kind == MigrationObjectKind.Column &&
                     string.Equals(item.ParentObjectId, table.ObjectId, StringComparison.Ordinal) &&

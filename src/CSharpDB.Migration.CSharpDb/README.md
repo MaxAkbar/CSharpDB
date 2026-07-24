@@ -36,6 +36,17 @@ non-cancellable and resume verifies whether it completed. Fresh-process fault
 qualification covers accepted-only, mixed, and all-reject batches at every
 transaction boundary.
 
+The adapter also recognizes only the exact versioned JSON document-collection
+contract. It creates a real Engine collection, stores generated ordinal keys
+and already-canonical JSON through a migration-only direct-payload seam, and
+refuses duplicate keys rather than updating them. The document writes and
+batch receipt share one transaction. Physical `_col_` names are resolved for
+resume, schema capture, counts, and validation while normalized evidence keeps
+the logical `Collection` shape. Root-array and NDJSON qualification covers
+exact bytes, every transaction fault cutoff, reopen/resume, checksums,
+activation, and collection API access. See
+[`migration-json-collection-projection.md`](../../docs/migration-json-collection-projection.md).
+
 Identity/rowversion/default lowering, archive restoration, and bounded
 operator-facing CLI integration remain explicit follow-up work. SDK
 reject-artifact publication is qualified independently of the CLI.

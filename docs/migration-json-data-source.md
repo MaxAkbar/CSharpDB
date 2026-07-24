@@ -10,7 +10,9 @@ It builds on
 and
 [`migration-json-table-schema.md`](migration-json-table-schema.md).
 It does not define typed sidecars, collection targets, retained-source
-packaging, export, or CLI behavior.
+packaging, export, or CLI behavior. The separate complete-value collection
+projection is specified in
+[`migration-json-collection-projection.md`](migration-json-collection-projection.md).
 
 ## Binding
 

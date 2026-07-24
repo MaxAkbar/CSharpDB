@@ -17,12 +17,19 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
         _capabilities = capabilities;
     }
 
+    public bool CanEvaluateConditionalObject(MigrationCatalogObject item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        return item.Kind == MigrationObjectKind.Collection;
+    }
+
     public string? GetExclusionReason(
         MigrationCatalogObject item,
         IReadOnlyDictionary<string, MigrationCatalogObject> objectsById,
         IReadOnlyDictionary<string, MigrationTypeMapping> mappingsByObjectId) =>
         item.Kind switch
         {
+            MigrationObjectKind.Collection => EvaluateCollection(item, objectsById, mappingsByObjectId),
             MigrationObjectKind.Column => EvaluateColumn(item, objectsById, mappingsByObjectId),
             MigrationObjectKind.Key => EvaluateKey(item, objectsById, mappingsByObjectId),
             MigrationObjectKind.ForeignKey => EvaluateForeignKey(item, objectsById, mappingsByObjectId),
@@ -30,6 +37,67 @@ internal sealed class CSharpDbTargetCapabilityEvaluator
             MigrationObjectKind.Index => EvaluateIndex(item, objectsById, mappingsByObjectId),
             _ => null,
         };
+
+    private string? EvaluateCollection(
+        MigrationCatalogObject collection,
+        IReadOnlyDictionary<string, MigrationCatalogObject> objectsById,
+        IReadOnlyDictionary<string, MigrationTypeMapping> mappingsByObjectId)
+    {
+        CSharpDbCapabilityRule rule = Rule(
+            MigrationObjectKind.Collection,
+            CSharpDbCapabilityFeature.Object);
+        string? statusReason = UnsupportedStatus(rule, "document collections");
+        if (statusReason is not null)
+            return statusReason;
+
+        if (!MigrationDocumentCollectionContract.TryBindExactV1Collection(
+                collection,
+                objectsById,
+                out MigrationCatalogObject? keyColumn,
+                out MigrationCatalogObject? documentColumn,
+                out string? bindingReason))
+        {
+            return Reject(rule, bindingReason!);
+        }
+
+        if (!mappingsByObjectId.TryGetValue(keyColumn!.ObjectId, out MigrationTypeMapping? keyMapping) ||
+            keyMapping.TargetType != DbType.Text ||
+            keyMapping.Classification != MigrationMappingClassification.Exact ||
+            keyMapping.Conversion is not null)
+        {
+            return Reject(
+                rule,
+                $"requires collection key column '{keyColumn.ObjectId}' to map exactly to Text without conversion.");
+        }
+
+        if (!mappingsByObjectId.TryGetValue(
+                documentColumn!.ObjectId,
+                out MigrationTypeMapping? documentMapping) ||
+            documentMapping.TargetType != DbType.Text ||
+            documentMapping.Classification != MigrationMappingClassification.LosslessReencoded ||
+            documentMapping.Conversion is not
+            {
+                ConversionId: "canonical-text",
+                Version: 1,
+            } conversion ||
+            conversion.Parameters.Count != 1 ||
+            !conversion.Parameters.Any(parameter =>
+                string.Equals(
+                    parameter.Name,
+                    MigrationDocumentCollectionContract.LogicalTypeFacet,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    parameter.Value,
+                    MigrationDocumentCollectionContract.JsonLogicalType,
+                    StringComparison.Ordinal)))
+        {
+            return Reject(
+                rule,
+                $"requires document column '{documentColumn.ObjectId}' to use the version 1 canonical-text JSON mapping.");
+        }
+
+        return null;
+    }
 
     private string? EvaluateColumn(
         MigrationCatalogObject column,

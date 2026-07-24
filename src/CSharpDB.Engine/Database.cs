@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using CSharpDB.Primitives;
 using CSharpDB.Execution;
 using CSharpDB.Sql;
@@ -1265,12 +1266,7 @@ public sealed class Database : IAsyncDisposable
         try
         {
             await _catalog.ReloadAsync(ct);
-            foreach (var cached in _collectionCache.Values)
-            {
-                if (cached is ICollectionTreeRefresh refreshable)
-                    refreshable.RefreshTreeFromCatalog();
-            }
-
+            RefreshCachedCollectionsFromCatalog();
             _statementCache.Clear();
         }
         finally
@@ -1691,6 +1687,66 @@ public sealed class Database : IAsyncDisposable
     private const string GeneratedCollectionCacheSuffix = "\u0001generated";
 
     /// <summary>
+    /// Ensures that a real JsonElement document collection exists in the
+    /// caller's active explicit transaction.
+    /// </summary>
+    internal async ValueTask EnsureJsonDocumentCollectionAsync(
+        string collectionName,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(collectionName);
+        RequireCanonicalJsonCollectionTransaction();
+        _ = await GetCollectionCoreAsync<JsonElement>(
+            collectionName,
+            generatedOnly: false,
+            ct);
+    }
+
+    /// <summary>
+    /// Inserts one already-canonical UTF-8 JSON value into a JsonElement
+    /// collection in the caller's active explicit transaction.
+    /// </summary>
+    internal async ValueTask InsertCanonicalJsonDocumentAsync(
+        string collectionName,
+        string key,
+        ReadOnlyMemory<byte> canonicalUtf8Json,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(collectionName);
+        ArgumentNullException.ThrowIfNull(key);
+        RequireCanonicalJsonCollectionTransaction();
+
+        ct.ThrowIfCancellationRequested();
+        if (canonicalUtf8Json.Length >
+            OrderedCanonicalJsonValidator.MaximumDocumentBytes)
+        {
+            throw new InvalidDataException(
+                $"A canonical JSON migration document cannot exceed {OrderedCanonicalJsonValidator.MaximumDocumentBytes} bytes.");
+        }
+        byte[] canonicalSnapshot = canonicalUtf8Json.ToArray();
+        OrderedCanonicalJsonValidator.Validate(canonicalSnapshot, ct);
+
+        Collection<JsonElement> collection =
+            await GetCollectionCoreAsync<JsonElement>(
+                collectionName,
+                generatedOnly: false,
+                ct);
+        await collection.InsertValidatedCanonicalJsonAsync(
+            key,
+            canonicalSnapshot,
+            ct);
+    }
+
+    private void RequireCanonicalJsonCollectionTransaction()
+    {
+        if (!_inTransaction)
+        {
+            throw new InvalidOperationException(
+                "Canonical JSON collection writes require an active explicit transaction.");
+        }
+    }
+
+    /// <summary>
     /// Get or create a document collection with the given name.
     /// Collections are stored as internal tables with a "_col_" prefix.
     /// </summary>
@@ -2093,10 +2149,18 @@ public sealed class Database : IAsyncDisposable
 
     private void RefreshCachedCollectionsFromCatalog()
     {
-        foreach (var cached in _collectionCache.Values)
+        foreach (var cached in _collectionCache.ToArray())
         {
-            if (cached is ICollectionTreeRefresh refreshable)
-                refreshable.RefreshTreeFromCatalog();
+            if (cached.Value is not ICollectionTreeRefresh refreshable)
+                continue;
+
+            if (_catalog.GetTable(refreshable.CatalogTableName) is null)
+            {
+                _collectionCache.Remove(cached.Key);
+                continue;
+            }
+
+            refreshable.RefreshTreeFromCatalog();
         }
     }
 

@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using CSharpDB.Execution;
 using CSharpDB.Primitives;
 using CSharpDB.Storage.Indexing;
@@ -14,6 +15,8 @@ namespace CSharpDB.Engine;
 /// </summary>
 internal interface ICollectionTreeRefresh
 {
+    string CatalogTableName { get; }
+
     void RefreshTreeFromCatalog();
 }
 
@@ -84,6 +87,8 @@ public sealed class Collection<
     /// <summary>
     /// Refresh the underlying BTree reference from the catalog after rollback.
     /// </summary>
+    string ICollectionTreeRefresh.CatalogTableName => _catalogTableName;
+
     void ICollectionTreeRefresh.RefreshTreeFromCatalog()
     {
         RefreshTreeFromCatalogCore();
@@ -196,6 +201,91 @@ public sealed class Collection<
                 _recordPendingTransactionMutation(_catalogTableName, _tree, rowCountDelta, requiresExactRowCountSync, true);
             else
                 await _catalog.MarkTableColumnStatisticsStaleAsync(_catalogTableName, ct);
+        }
+    }
+
+    /// <summary>
+    /// Inserts an already-validated ordered canonical JSON document without
+    /// passing it through the normal collection serializer.
+    /// </summary>
+    internal async ValueTask InsertValidatedCanonicalJsonAsync(
+        string key,
+        ReadOnlyMemory<byte> canonicalUtf8Json,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (typeof(T) != typeof(JsonElement))
+        {
+            throw new InvalidOperationException(
+                "Canonical JSON document insertion requires a JsonElement collection.");
+        }
+        if (!_isInTransaction())
+        {
+            throw new InvalidOperationException(
+                "Canonical JSON document insertion requires an active explicit transaction.");
+        }
+        if (!_codec.UsesDirectPayloadFormat)
+        {
+            throw new NotSupportedException(
+                "Canonical JSON document insertion requires the direct collection payload format.");
+        }
+
+        RefreshIndexesIfSchemaChanged();
+        if (_indexes.Count != 0)
+        {
+            throw new NotSupportedException(
+                "Canonical JSON document insertion does not support collections with indexes.");
+        }
+
+        byte[] newPayload = CollectionPayloadCodec.Encode(key, canonicalUtf8Json.Span);
+        bool mutated = false;
+        long rowCountDelta = 0;
+        bool requiresExactRowCountSync = false;
+
+        await AutoCommitAsync(async () =>
+        {
+            long startHash = HashDocumentKey(key);
+            for (int probe = 0; probe < MaxProbeDistance; probe++)
+            {
+                long probeHash = (startHash + probe) & 0x7FFFFFFFFFFFFFFF;
+                var existing = await _tree.FindMemoryForWriteAsync(probeHash, ct);
+
+                if (existing is not { } existingPayload)
+                {
+                    await _tree.InsertAsync(
+                        probeHash,
+                        newPayload,
+                        _writeTraversalPath,
+                        _writeTraversalSet,
+                        ct);
+                    rowCountDelta = 1;
+                    if (HasZeroCachedRowCount())
+                        requiresExactRowCountSync = true;
+                    mutated = true;
+                    return;
+                }
+
+                if (_codec.PayloadMatchesKey(existingPayload.Span, key))
+                {
+                    throw new CSharpDbException(
+                        ErrorCode.DuplicateKey,
+                        "A document with the supplied collection key already exists.");
+                }
+            }
+
+            throw new CSharpDbException(
+                ErrorCode.Unknown,
+                "The collection key collision probe limit was exceeded.");
+        }, ct);
+
+        if (mutated)
+        {
+            _recordPendingTransactionMutation(
+                _catalogTableName,
+                _tree,
+                rowCountDelta,
+                requiresExactRowCountSync,
+                true);
         }
     }
 

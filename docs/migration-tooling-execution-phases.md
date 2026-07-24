@@ -372,7 +372,8 @@ macOS in CI.
 The two adapter tracks can proceed in parallel after the Phase 1-3 contracts
 are stable.
 
-**Status:** in progress. The isolated `CSharpDB.Migration.Files` package now
+**Status:** complete for the supported streaming file-migration scope as of
+July 24, 2026. The isolated `CSharpDB.Migration.Files` package now
 contains the strict Phase 4A CSV reader plus immutable raw-byte snapshots,
 bounded delimiter/BOM inspection with explicit ambiguity, and deterministic
 content/format source binding. It now also provides bounded confidence-bearing
@@ -600,8 +601,8 @@ receipts remain the resume authority.
   pinned canonical source identity, explicit sibling CSV and manifest paths,
   exact-command rerun recovery, profile and resource-limit controls, and text
   or JSON results with reuse flags.
-- [ ] Qualify checkpoint and publication namespace replacement under abrupt
-  power loss.
+- [ ] Deferred release qualification: qualify checkpoint and publication
+  namespace replacement under abrupt power loss.
   Follow the
   [external hard-off qualification runbook](migration-csv-export-power-loss-qualification.md);
   process-kill tests remain process-crash coverage only. Because parent
@@ -609,8 +610,9 @@ receipts remain the resume authority.
   local-Windows filesystems, close this item only after every claimed
   filesystem/cache matrix cell passes or runtime support is narrowed to the
   qualified matrix.
-  Prepared output remains unsupported on non-Windows platforms and fails
-  closed on UNC or mapped network volumes.
+  Phase 4 closes without an abrupt-power durability claim. Prepared output
+  remains unsupported on non-Windows platforms and fails closed on UNC or
+  mapped network volumes.
 
 ### Track 4B: JSON And NDJSON
 
@@ -671,8 +673,14 @@ prepared-data rehash, and manifest-last prepared publication. The retained
   framings once journal authority exists and all five publication cutoffs for
   both framings, including empty NDJSON. The one-time adoption of same-binding
   restart-only finals is not yet process-kill qualified. Abrupt-power-loss
-  qualification, collection projection, typed-v2 deterministic rejects, and
-  typed export-intent generation remain open. Fail-fast and source-aware
+  qualification remains a separately tracked release-environment exception.
+  Retained-package/CLI collection projection, typed-v2 deterministic rejects,
+  and typed export-intent generation are deferred enhancements and do not
+  block the Phase 4 file-migration exit gate.
+  The collection SDK foundation now projects every complete JSON value into a
+  real Engine collection with exact canonical bytes, ordinal keys,
+  transactional receipts, crash resume, and schema/count/checksum validation.
+  Fail-fast and source-aware
   deterministic-reject retained JSON v1 inspect, plan, apply/resume, and
   validation now route through the CLI for root-array JSON and NDJSON.
   Explicitly sidecar-selected typed package v2 also routes through fail-fast
@@ -689,8 +697,10 @@ crash leftovers.
 - [x] Add an atomic retained JSON/NDJSON package with bounded canonical
   manifests, exact raw-byte identity, trusted digest pinning, copy-on-open
   ownership, schema/catalog replay, and fresh-process cursor resume.
-- [ ] Keep nested values as documents for collection targets unless an
-  explicit projection is selected.
+- [x] Keep nested values as documents for collection targets unless an
+  explicit projection is selected. The explicit SDK projection, real
+  collection apply/resume, and schema/count/checksum validation are complete.
+  A retained collection package and CLI route are deferred enhancements.
 - [x] Define a source-bound sidecar convention for BLOB, decimal, GUID,
   date/time, and other non-native JSON intent.
 - [x] Bind source-bound typed intent into object-table schema, catalogs,
@@ -753,6 +763,13 @@ large files do not cause file-size-proportional memory growth; interrupted
 loads resume correctly; and each fixture passes schema, count, and checksum
 validation. Inference reports its coverage, and every loaded value is checked
 against the planned mapping.
+
+**Closure:** complete. CSV and JSON/NDJSON meet the shared exit gate through
+the SDK and CLI table workflows, and explicit JSON collection projection meets
+the SDK apply/resume/validation gate. Retained collection CLI packaging,
+typed-v2 reject routing, typed export-intent generation, and the external
+Windows hard-power matrix remain recorded follow-ups; none is required for
+the Phase 5 SQLite adapter to begin.
 
 ## Phase 5: SQLite And Trusted-Adoption MVP Release
 

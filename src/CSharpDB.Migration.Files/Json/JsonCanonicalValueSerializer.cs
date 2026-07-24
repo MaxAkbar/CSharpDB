@@ -52,6 +52,93 @@ public static class JsonCanonicalValueSerializer
     }
 
     /// <summary>
+    /// Strictly reparses one UTF-8 JSON value and requires its bytes to
+    /// already match
+    /// <see cref="JsonInputContracts.CanonicalNestedJsonVersion"/>.
+    /// Reader bounds are caller-controlled, while framing and stream
+    /// ownership are fixed by this operation.
+    /// </summary>
+    public static async ValueTask RequireCanonicalUtf8Async(
+        ReadOnlyMemory<byte> value,
+        JsonStreamingReaderOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        JsonStreamingReaderOptions normalized =
+            (options ?? new JsonStreamingReaderOptions()) with
+            {
+                Framing = JsonInputFraming.MultipleValues,
+                LeaveOpen = false,
+            };
+        JsonStreamingReaderSettings settings =
+            JsonStreamingReaderSettings.Create(normalized);
+        if (value.Length > settings.MaxValueBytes)
+        {
+            throw new InvalidDataException(
+                "The canonical JSON value exceeds the configured byte limit.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        await using var stream = new MemoryStream(
+            value.ToArray(),
+            writable: false);
+        await using JsonStreamingReader reader =
+            await JsonStreamingReader
+                .OpenAsync(
+                    stream,
+                    normalized,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        JsonLogicalValue? parsed = null;
+        await foreach (JsonLogicalRecord record in reader
+                           .ReadValuesAsync(cancellationToken)
+                           .WithCancellation(cancellationToken)
+                           .ConfigureAwait(false))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (parsed is not null)
+            {
+                throw new InvalidDataException(
+                    "Canonical JSON text must contain exactly one value.");
+            }
+            parsed = record.Value;
+        }
+
+        if (parsed is null)
+        {
+            throw new InvalidDataException(
+                "Canonical JSON text must contain exactly one value.");
+        }
+
+        byte[] canonical = SerializeToUtf8Bytes(
+            parsed,
+            cancellationToken);
+        if (!value.Span.SequenceEqual(canonical))
+        {
+            throw new InvalidDataException(
+                $"The JSON value is not encoded as {JsonInputContracts.CanonicalNestedJsonVersion}.");
+        }
+    }
+
+    /// <summary>
+    /// Strictly reparses one JSON string and requires its UTF-8 bytes to
+    /// already match
+    /// <see cref="JsonInputContracts.CanonicalNestedJsonVersion"/>.
+    /// </summary>
+    public static ValueTask RequireCanonicalTextAsync(
+        string value,
+        JsonStreamingReaderOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        byte[] utf8 = s_strictUtf8.GetBytes(value);
+        return RequireCanonicalUtf8Async(
+            utf8,
+            options,
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Writes one value in encounter property order, retaining exact number
     /// lexemes and using minimal JSON string escaping.
     /// </summary>

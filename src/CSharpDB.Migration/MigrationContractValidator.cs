@@ -443,10 +443,18 @@ public static class MigrationContractValidator
             MigrationCatalogObject catalogObject = catalogObjectsById[item.SourceObjectId];
             MigrationCompatibilityStatus objectStatus = capabilities.GetObjectStatus(catalogObject.Kind);
             if (catalogObject.Kind == MigrationObjectKind.Namespace ||
-                objectStatus != MigrationCompatibilityStatus.Compatible)
+                (objectStatus != MigrationCompatibilityStatus.Compatible &&
+                 !(objectStatus == MigrationCompatibilityStatus.Conditional &&
+                   capabilityEvaluator.CanEvaluateConditionalObject(catalogObject))))
             {
                 throw Invalid(
                     $"Included plan object '{item.SourceObjectId}' is not supported by its bound target object capability ({objectStatus}).");
+            }
+            if (catalogObject.Kind == MigrationObjectKind.Collection &&
+                plan.Load.RejectMode != MigrationRejectMode.FailFast)
+            {
+                throw Invalid(
+                    $"Included document collection '{item.SourceObjectId}' requires fail-fast row handling.");
             }
 
             string? capabilityReason = capabilityEvaluator.GetExclusionReason(
@@ -458,9 +466,26 @@ public static class MigrationContractValidator
                 throw Invalid(
                     $"Included plan object '{item.SourceObjectId}' violates its bound target capability: {capabilityReason}");
             }
+            if (catalogObject.Kind == MigrationObjectKind.Collection)
+            {
+                bool bound = MigrationDocumentCollectionContract.TryBindExactV1Collection(
+                    catalogObject,
+                    catalogObjectsById,
+                    out MigrationCatalogObject? keyColumn,
+                    out MigrationCatalogObject? documentColumn,
+                    out _);
+                if (!bound ||
+                    !planObjectsById[keyColumn!.ObjectId].Included ||
+                    !planObjectsById[documentColumn!.ObjectId].Included)
+                {
+                    throw Invalid(
+                        $"Included document collection '{item.SourceObjectId}' requires included key and document bridge columns.");
+                }
+            }
         }
 
         ValidateTargetNameCollisions(planObjects, catalogObjectsById);
+        ValidateCollectionPhysicalTargetNames(planObjects, catalogObjectsById);
     }
 
     private static void ValidateTargetName(string sourceObjectId, string targetName)
@@ -553,6 +578,40 @@ public static class MigrationContractValidator
             {
                 throw Invalid(
                     $"Included plan objects have colliding target name '{item.TargetName}' in scope '{scope}'.");
+            }
+        }
+    }
+
+    private static void ValidateCollectionPhysicalTargetNames(
+        IReadOnlyList<MigrationPlanObject> planObjects,
+        IReadOnlyDictionary<string, MigrationCatalogObject> catalogObjectsById)
+    {
+        var includedTableNames = planObjects
+            .Where(item =>
+                item.Included &&
+                catalogObjectsById[item.SourceObjectId].Kind == MigrationObjectKind.Table)
+            .Select(item => item.TargetName!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (MigrationPlanObject collection in planObjects.Where(item =>
+                     item.Included &&
+                     catalogObjectsById[item.SourceObjectId].Kind ==
+                     MigrationObjectKind.Collection))
+        {
+            string logicalName = collection.TargetName!;
+            if (logicalName.Length >
+                MigrationDocumentCollectionContract.MaximumLogicalCollectionNameLength)
+            {
+                throw Invalid(
+                    $"Included collection '{collection.SourceObjectId}' target name cannot fit the CSharpDB physical '{MigrationDocumentCollectionContract.CollectionPhysicalNamePrefix}' prefix within the {SqlIdentifierRules.MaxLength}-character identifier limit.");
+            }
+
+            string physicalName =
+                MigrationDocumentCollectionContract.CollectionPhysicalNamePrefix + logicalName;
+            if (includedTableNames.Contains(physicalName))
+            {
+                throw Invalid(
+                    $"Included collection '{collection.SourceObjectId}' physical table name '{physicalName}' collides case-insensitively with an included target table.");
             }
         }
     }

@@ -227,13 +227,17 @@ Tests must cover:
 - large-stream bounded memory, cancellation, integrity, and replay
   determinism.
 
-Track 4B remains open after schema inspection. Later JSON migration slices now
-implement the catalog-bound data source, deterministic row-local rejects,
+Track 4B is closed for the supported file-migration scope. The completed JSON
+migration slices implement the catalog-bound data source, deterministic
+row-local rejects,
 cursor and batch accounting, raw and typed retained packages, source-bound
 typed intent, JSON/NDJSON export with durable resume, and fail-fast retained-v1
 CLI inspect, plan, apply/resume, and validation. Retained-v1 deterministic
 reject policy, canonical artifact publication/reuse, resume, and validation are
-also routed for root-array JSON and NDJSON. Collection projection, typed
-export-intent generation, and typed-v2 deterministic-reject CLI routing remain
-open. Explicitly sidecar-selected typed package v2 is routed through the
-fail-fast CLI workflow.
+also routed for root-array JSON and NDJSON. The explicit untyped collection SDK
+projection, real collection apply/resume, and validation are implemented in
+[`migration-json-collection-projection.md`](migration-json-collection-projection.md);
+its retained package and CLI route are deferred enhancements. Typed
+export-intent generation and typed-v2 deterministic-reject CLI routing are
+also deferred. Explicitly sidecar-selected typed package v2 is routed through
+the fail-fast CLI workflow.

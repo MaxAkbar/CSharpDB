@@ -157,6 +157,65 @@ public sealed class JsonCanonicalValueSerializerTests
                 cancellation.Token));
     }
 
+    [Theory]
+    [InlineData("null")]
+    [InlineData("true")]
+    [InlineData("\"café<\\n\"")]
+    [InlineData("-0")]
+    [InlineData("1e+02")]
+    [InlineData("1.2300")]
+    [InlineData("{\"z\":[1,{\"a\":false}],\"é\":\"<\"}")]
+    public async Task StrictValidationAcceptsExactOrderedEncoding(
+        string json)
+    {
+        await JsonCanonicalValueSerializer
+            .RequireCanonicalTextAsync(
+                json,
+                cancellationToken:
+                    TestContext.Current.CancellationToken);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" null")]
+    [InlineData("null ")]
+    [InlineData("null\ntrue")]
+    [InlineData("\"\\u00e9\"")]
+    [InlineData("\"\\/\"")]
+    [InlineData("{ \"a\":1}")]
+    [InlineData("{\"a\":1, \"b\":2}")]
+    public async Task StrictValidationRejectsNoncanonicalOrMultipleText(
+        string json)
+    {
+        await Assert.ThrowsAnyAsync<InvalidDataException>(
+            async () => await JsonCanonicalValueSerializer
+                .RequireCanonicalTextAsync(
+                    json,
+                    cancellationToken:
+                        TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task StrictValidationRetainsDuplicateNameAndBoundFailures()
+    {
+        await Assert.ThrowsAsync<JsonReadException>(
+            async () => await JsonCanonicalValueSerializer
+                .RequireCanonicalTextAsync(
+                    """{"a":1,"\u0061":2}""",
+                    cancellationToken:
+                        TestContext.Current.CancellationToken));
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await JsonCanonicalValueSerializer
+                .RequireCanonicalTextAsync(
+                    "\"1234\"",
+                    new JsonStreamingReaderOptions
+                    {
+                        MaxValueBytes = 4,
+                    },
+                    TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public void OriginalClrMethodSignaturesRemainAvailable()
     {

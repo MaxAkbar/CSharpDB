@@ -126,9 +126,10 @@ public sealed class MigrationPlanner
             {
                 Exclude(exclusions, item.ObjectId, "Source namespace is flattened into deterministic target names.");
             }
-            else if (status is MigrationCompatibilityStatus.Conditional or
-                     MigrationCompatibilityStatus.Unsupported or
-                     MigrationCompatibilityStatus.Unknown)
+            else if ((status == MigrationCompatibilityStatus.Conditional &&
+                      !targetCapabilityEvaluator.CanEvaluateConditionalObject(item)) ||
+                     status is MigrationCompatibilityStatus.Unsupported or
+                         MigrationCompatibilityStatus.Unknown)
             {
                 Exclude(
                     exclusions,
@@ -174,36 +175,27 @@ public sealed class MigrationPlanner
             }
         }
 
-        bool changed;
-        do
+        if (options.Load.RejectMode != MigrationRejectMode.FailFast)
         {
-            changed = false;
-            foreach (MigrationCatalogObject item in catalog.Objects.OrderBy(item => item.ObjectId, StringComparer.Ordinal))
+            foreach (MigrationCatalogObject collection in catalog.Objects
+                         .Where(item =>
+                             item.Kind == MigrationObjectKind.Collection &&
+                             !exclusions.ContainsKey(item.ObjectId))
+                         .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
             {
-                if (exclusions.ContainsKey(item.ObjectId))
-                    continue;
-
-                string? targetParent = DeterministicMigrationNameMapper.GetTargetParentObjectId(
-                    item,
-                    catalogObjectsById);
-                if (targetParent is not null && exclusions.ContainsKey(targetParent))
-                {
-                    Exclude(exclusions, item.ObjectId, $"Target parent '{targetParent}' is excluded.");
-                    changed = true;
-                    continue;
-                }
-
-                string? excludedDependency = item.DependsOn
-                    .OrderBy(id => id, StringComparer.Ordinal)
-                    .FirstOrDefault(exclusions.ContainsKey);
-                if (excludedDependency is not null)
-                {
-                    Exclude(exclusions, item.ObjectId, $"Dependency '{excludedDependency}' is excluded.");
-                    changed = true;
-                }
+                Exclude(
+                    exclusions,
+                    collection.ObjectId,
+                    "Document collection migration requires fail-fast row handling.");
             }
         }
-        while (changed);
+
+        PropagateExclusions(catalog.Objects, catalogObjectsById, exclusions);
+        ExcludeCollectionPhysicalNameConflicts(
+            catalog.Objects,
+            targetNames,
+            exclusions);
+        PropagateExclusions(catalog.Objects, catalogObjectsById, exclusions);
 
         MigrationPlanObject[] planObjects = catalog.Objects
             .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
@@ -255,6 +247,86 @@ public sealed class MigrationPlanner
             _capabilities.Digest,
             _typeMapper);
         return plan;
+    }
+
+    internal static void ExcludeCollectionPhysicalNameConflicts(
+        IReadOnlyList<MigrationCatalogObject> objects,
+        IReadOnlyDictionary<string, string> targetNames,
+        IDictionary<string, string> exclusions)
+    {
+        var includedTableNames = objects
+            .Where(item =>
+                item.Kind == MigrationObjectKind.Table &&
+                !exclusions.ContainsKey(item.ObjectId))
+            .Select(item => targetNames[item.ObjectId])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (MigrationCatalogObject collection in objects
+                     .Where(item =>
+                         item.Kind == MigrationObjectKind.Collection &&
+                         !exclusions.ContainsKey(item.ObjectId))
+                     .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
+        {
+            string logicalName = targetNames[collection.ObjectId];
+            if (logicalName.Length >
+                MigrationDocumentCollectionContract.MaximumLogicalCollectionNameLength)
+            {
+                Exclude(
+                    exclusions,
+                    collection.ObjectId,
+                    $"Collection target name '{logicalName}' cannot fit the CSharpDB physical '{MigrationDocumentCollectionContract.CollectionPhysicalNamePrefix}' prefix within the {SqlIdentifierRules.MaxLength}-character identifier limit.");
+                continue;
+            }
+
+            string physicalName =
+                MigrationDocumentCollectionContract.CollectionPhysicalNamePrefix + logicalName;
+            if (includedTableNames.Contains(physicalName))
+            {
+                Exclude(
+                    exclusions,
+                    collection.ObjectId,
+                    $"Collection physical table name '{physicalName}' collides case-insensitively with an included target table.");
+            }
+        }
+    }
+
+    private static void PropagateExclusions(
+        IReadOnlyList<MigrationCatalogObject> objects,
+        IReadOnlyDictionary<string, MigrationCatalogObject> objectsById,
+        IDictionary<string, string> exclusions)
+    {
+        bool changed;
+        do
+        {
+            changed = false;
+            foreach (MigrationCatalogObject item in objects.OrderBy(
+                         item => item.ObjectId,
+                         StringComparer.Ordinal))
+            {
+                if (exclusions.ContainsKey(item.ObjectId))
+                    continue;
+
+                string? targetParent = DeterministicMigrationNameMapper.GetTargetParentObjectId(
+                    item,
+                    objectsById);
+                if (targetParent is not null && exclusions.ContainsKey(targetParent))
+                {
+                    Exclude(exclusions, item.ObjectId, $"Target parent '{targetParent}' is excluded.");
+                    changed = true;
+                    continue;
+                }
+
+                string? excludedDependency = item.DependsOn
+                    .OrderBy(id => id, StringComparer.Ordinal)
+                    .FirstOrDefault(exclusions.ContainsKey);
+                if (excludedDependency is not null)
+                {
+                    Exclude(exclusions, item.ObjectId, $"Dependency '{excludedDependency}' is excluded.");
+                    changed = true;
+                }
+            }
+        }
+        while (changed);
     }
 
     private static MigrationProfileCoverage ReadCoverage(MigrationCatalogObject item)

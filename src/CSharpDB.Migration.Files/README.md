@@ -75,13 +75,23 @@ typed-intent sidecar selects package v2 during inspect. The resulting
 versioned catalog selects fail-fast plan, apply/resume, and validation routing,
 and those execution commands require the independently retained package pin.
 Package selection is catalog-facet driven because v1 and v2 share the
-`.csdbjson` extension. Typed-v2 deterministic rejects, collection projection,
-and typed export-intent generation remain later slices. See
+`.csdbjson` extension.
+
+The explicit SDK collection projection now maps every complete root-array or
+NDJSON value, including scalars and null, into one real CSharpDB document.
+It uses content-independent padded ordinal keys, exact ordered-canonical JSON
+bytes, a fixed `_key`/`_doc` row bridge, isolated bounded cursors, and a
+privacy-safe full-snapshot catalog. Planning, staged apply/resume, and
+schema/count/checksum validation are qualified. Retained collection packaging
+and CLI routing, typed-v2 deterministic rejects, and typed export-intent
+generation are deferred enhancements. See
 [`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
 and
 [`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md),
 plus
-[`migration-json-data-source.md`](../../docs/migration-json-data-source.md).
+[`migration-json-data-source.md`](../../docs/migration-json-data-source.md)
+and
+[`migration-json-collection-projection.md`](../../docs/migration-json-collection-projection.md).
 
 `JsonStreamingExporter` writes one ordered physical CSharpDB table as a
 compact root array or LF-terminated NDJSON without buffering the table. Its
