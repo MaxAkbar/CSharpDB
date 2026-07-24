@@ -8,6 +8,7 @@ using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Csv;
 using CSharpDB.Migration.Files.Json;
+using CSharpDB.Migration.Sqlite;
 using CSharpDB.Migration.Validation;
 
 namespace CSharpDB.Cli;
@@ -18,6 +19,7 @@ internal static class MigrationCommandRunner
         "Usage: csharpdb migrate inspect --source synthetic --out <catalog.json>\n" +
         "       csharpdb migrate inspect --source csv --input <source.csv> --package <source.csdbcsv> --out <catalog.json> [--delimiter auto|comma|semicolon|tab|pipe|<character>] [--no-header] [--table <name>] [--sample-rows <count>] [--null-token <text>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>]\n" +
         "       csharpdb migrate inspect --source json --input <source.json|source.ndjson> --package <source.csdbjson> --out <catalog.json> [--framing root-array|ndjson] [--table <name>] [--sample-rows <count>] [--source-id <label>] [--workspace <directory>] [--max-source-bytes <count>] [--typed-intent <source.csdbjson-intent.json> --expected-intent-manifest-digest <sha256:...>]\n" +
+        "       csharpdb migrate inspect --source sqlite --input <source.db> --package <snapshot.csdbsqlite> --out <catalog.json> [--profile-sample-size <count>]\n" +
         "       csharpdb migrate plan <catalog.json> --out <plan.json> [--profile preserve|queryable] [--accept-exclusions all|<id,...>] [--accept-diagnostics <id,...>] [--reject-mode fail-fast|deterministic --reject-rules all|<id,...> --max-rejected-rows-per-batch <count> --max-rejected-rows-per-run <count> --max-reject-evidence-value-bytes <count> --max-reject-evidence-bytes-per-batch <count> --max-reject-evidence-bytes-per-run <count> --max-reject-artifact-bytes <count>]\n" +
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv|source.csdbjson> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
@@ -52,6 +54,12 @@ internal static class MigrationCommandRunner
         "MIG-JSON-CLI-SOURCE-VERSION-001";
     private const string JsonCatalogRouteOnlyMessage =
         "This CLI route supports only untyped retained JSON package v1 or explicitly typed retained JSON package v2 catalogs.";
+    private const string SqliteCatalogContractFacet =
+        "sqliteCatalogContract";
+    private const string SqliteCatalogContractV1 =
+        "csharpdb-sqlite-catalog-v1";
+    private const string SqliteCatalogRouteOnlyMessage =
+        "This CLI route supports only SQLite catalog contract v1.";
 
     public static bool IsKnownCommand(string? arg) =>
         string.Equals(arg, "migrate", StringComparison.OrdinalIgnoreCase);
@@ -548,6 +556,15 @@ internal static class MigrationCommandRunner
                 error,
                 ct);
         }
+        if (string.Equals(source, "sqlite", StringComparison.OrdinalIgnoreCase))
+        {
+            return await RunSqliteInspectAsync(
+                options,
+                outputValue,
+                output,
+                error,
+                ct);
+        }
 
         return await OptionErrorAsync($"Unsupported migration source '{source}'.", error);
     }
@@ -576,6 +593,166 @@ internal static class MigrationCommandRunner
         await output.WriteLineAsync(
             $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
         return exitCode;
+    }
+
+    private static async ValueTask<int> RunSqliteInspectAsync(
+        IReadOnlyDictionary<string, string> options,
+        string outputValue,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (!RequireOnly(
+                options,
+                [
+                    "--source",
+                    "--input",
+                    "--package",
+                    "--out",
+                    "--profile-sample-size",
+                ],
+                out string? parseError))
+        {
+            return await OptionErrorAsync(parseError!, error);
+        }
+        if (!options.TryGetValue("--input", out string? inputValue))
+            return await OptionErrorAsync("Missing required option --input.", error);
+        if (!options.TryGetValue("--package", out string? packageValue))
+            return await OptionErrorAsync("Missing required option --package.", error);
+        if (string.IsNullOrWhiteSpace(inputValue) ||
+            string.IsNullOrWhiteSpace(packageValue) ||
+            string.IsNullOrWhiteSpace(outputValue))
+        {
+            return await OptionErrorAsync(
+                "SQLite input, retained package, and catalog paths cannot be blank.",
+                error);
+        }
+
+        var inspectionRequest = new MigrationInspectionRequest
+        {
+            TargetCSharpDbVersion =
+                CSharpDbCapabilityCatalogLoader.CurrentTargetVersion,
+            IncludeProfile = true,
+        };
+        if (options.TryGetValue(
+                "--profile-sample-size",
+                out string? sampleSizeValue))
+        {
+            if (!TryParsePositiveInt(
+                    sampleSizeValue,
+                    out int profileSampleSize))
+            {
+                return await OptionErrorAsync(
+                    "The SQLite profile sample size must be a positive 32-bit integer.",
+                    error);
+            }
+
+            inspectionRequest = inspectionRequest with
+            {
+                ProfileSampleSize = profileSampleSize,
+            };
+        }
+
+        string inputPath;
+        string packagePath;
+        string outputPath;
+        try
+        {
+            inputPath = Path.GetFullPath(inputValue);
+            packagePath = Path.GetFullPath(packageValue);
+            outputPath = Path.GetFullPath(outputValue);
+        }
+        catch (Exception pathError) when (
+            pathError is ArgumentException or NotSupportedException or
+                PathTooLongException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLITE-CLI-PATH-001",
+                "The SQLite migration paths are invalid.",
+                pathError);
+        }
+
+        bool pathsCollide;
+        try
+        {
+            pathsCollide = ContainsEquivalentResolvedPaths(
+                [inputPath, packagePath, outputPath]);
+        }
+        catch (Exception pathError) when (
+            pathError is IOException or UnauthorizedAccessException or
+                ArgumentException or NotSupportedException)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLITE-CLI-PATH-001",
+                "The SQLite migration paths could not be verified safely.",
+                pathError);
+        }
+        if (pathsCollide)
+        {
+            return await OptionErrorAsync(
+                "SQLite input, retained package, and catalog output must use different files.",
+                error);
+        }
+        if (File.Exists(packagePath) || Directory.Exists(packagePath))
+        {
+            return await OptionErrorAsync(
+                "The SQLite retained package destination already exists.",
+                error);
+        }
+        if (File.Exists(outputPath) || Directory.Exists(outputPath))
+        {
+            return await OptionErrorAsync(
+                "The SQLite catalog destination already exists.",
+                error);
+        }
+
+        bool packagePublished = false;
+        bool catalogPublished = false;
+        try
+        {
+            SqliteBackupSnapshot snapshot =
+                await SqliteBackupSnapshot.CreateAsync(
+                    inputPath,
+                    packagePath,
+                    ct);
+            packagePublished = true;
+            MigrationCatalog catalog =
+                await new SqliteMigrationSourceInspector(snapshot)
+                    .InspectAsync(inspectionRequest, ct);
+            if (!IsSupportedSqliteV1Catalog(catalog))
+            {
+                throw new InvalidDataException(
+                    "The SQLite inspector produced an unsupported catalog contract.");
+            }
+            await WriteNewArtifactAsync(
+                outputPath,
+                MigrationArtifactSerializer.SerializeCatalog(catalog),
+                ct);
+            catalogPublished = true;
+
+            int exitCode = catalog.Diagnostics.Count == 0
+                ? InspectorCommandRunner.ExitOk
+                : InspectorCommandRunner.ExitWarn;
+            await output.WriteLineAsync(
+                $"Status: {StatusLabel(exitCode)} | catalog={outputPath} | package={packagePath} | manifestDigest={snapshot.ContentDigest} | objects={catalog.Objects.Count} | diagnostics={catalog.Diagnostics.Count}");
+            return exitCode;
+        }
+        catch (Exception operationFailure) when (
+            packagePublished &&
+            !catalogPublished)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLITE-CLI-CATALOG-001",
+                "SQLite catalog publication failed after the retained package was published; the package was preserved.",
+                operationFailure);
+        }
+        catch (SqliteMigrationException sqliteFailure)
+        {
+            throw new MigrationCliSafeException(
+                "MIG-SQLITE-CLI-INSPECT-001",
+                sqliteFailure.Message,
+                sqliteFailure);
+        }
     }
 
     private static async ValueTask<int> RunCsvInspectAsync(
@@ -1128,6 +1305,13 @@ internal static class MigrationCommandRunner
                 JsonCatalogRouteOnlyMessage,
                 error);
         }
+        if (catalog.Source.Kind == MigrationSourceKind.Sqlite &&
+            !IsSupportedSqliteV1Catalog(catalog))
+        {
+            return await OptionErrorAsync(
+                SqliteCatalogRouteOnlyMessage,
+                error);
+        }
         if (!TryBindPlanLoadPolicy(
                 parsedLoad,
                 catalog,
@@ -1189,6 +1373,13 @@ internal static class MigrationCommandRunner
         string catalogPath = Path.GetFullPath(catalogValue);
         MigrationCatalog catalog = MigrationArtifactSerializer.DeserializeCatalog(
             await File.ReadAllTextAsync(catalogPath, ct));
+        if (catalog.Source.Kind == MigrationSourceKind.Sqlite &&
+            !IsSupportedSqliteV1Catalog(catalog))
+        {
+            return await OptionErrorAsync(
+                SqliteCatalogRouteOnlyMessage,
+                error);
+        }
         MigrationPlan plan = MigrationArtifactSerializer.DeserializePlan(
             await File.ReadAllTextAsync(planPath, ct),
             catalog);
@@ -2859,6 +3050,40 @@ internal static class MigrationCommandRunner
             catalog,
             out _) == JsonCatalogRoute.UntypedV1;
 
+    private static bool IsSupportedSqliteV1Catalog(
+        MigrationCatalog catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        if (catalog.Source.Kind != MigrationSourceKind.Sqlite)
+            return false;
+
+        MigrationCatalogObject[] mainNamespaces = catalog.Objects
+            .Where(item =>
+                item.Kind == MigrationObjectKind.Namespace &&
+                string.Equals(
+                    item.SourceName,
+                    "main",
+                    StringComparison.Ordinal))
+            .ToArray();
+        if (mainNamespaces.Length != 1)
+            return false;
+
+        MigrationCatalogFacet[] contracts = catalog.Objects
+            .Where(item => item.Kind == MigrationObjectKind.Namespace)
+            .SelectMany(item => item.Facets)
+            .Where(facet => string.Equals(
+                facet.Name,
+                SqliteCatalogContractFacet,
+                StringComparison.Ordinal))
+            .ToArray();
+        return contracts.Length == 1 &&
+            mainNamespaces[0].Facets.Contains(contracts[0]) &&
+            string.Equals(
+                contracts[0].Value,
+                SqliteCatalogContractV1,
+                StringComparison.Ordinal);
+    }
+
     private static JsonCatalogRoute ClassifyJsonCatalog(
         MigrationCatalog catalog,
         out string? intentManifestDigest)
@@ -3228,6 +3453,52 @@ internal static class MigrationCommandRunner
 
             ct.ThrowIfCancellationRequested();
             File.Move(temporaryPath, path, overwrite: true);
+            committed = true;
+        }
+        finally
+        {
+            if (!committed)
+                TryDeleteTemporaryArtifact(temporaryPath);
+        }
+    }
+
+    private static async ValueTask WriteNewArtifactAsync(
+        string path,
+        string content,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        string? directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new InvalidOperationException(
+                "The artifact destination has no parent directory.");
+        }
+
+        Directory.CreateDirectory(directory);
+        string temporaryPath = Path.Combine(
+            directory,
+            $".csharpdb-migration-{Guid.NewGuid():N}.tmp");
+        bool committed = false;
+        try
+        {
+            await using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            await using (var writer = new StreamWriter(
+                stream,
+                Utf8NoBom))
+            {
+                await writer.WriteAsync(content.AsMemory(), ct);
+                await writer.FlushAsync(ct);
+            }
+
+            ct.ThrowIfCancellationRequested();
+            File.Move(temporaryPath, path, overwrite: false);
             committed = true;
         }
         finally

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CSharpDB.Migration.Sqlite</AssemblyName>
+    <RootNamespace>CSharpDB.Migration.Sqlite</RootNamespace>
+    <Description>Read-only SQLite source adapter for the CSharpDB migration pipeline.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="$(CSharpDbQualifiedEfCoreVersion)" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpDB.Migration.Sqlite.Tests" />
+  </ItemGroup>
+
+</Project>

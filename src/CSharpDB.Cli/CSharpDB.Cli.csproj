@@ -25,6 +25,7 @@
     <ProjectReference Include="..\CSharpDB.Migration\CSharpDB.Migration.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.CSharpDb\CSharpDB.Migration.CSharpDb.csproj" />
     <ProjectReference Include="..\CSharpDB.Migration.Files\CSharpDB.Migration.Files.csproj" />
+    <ProjectReference Include="..\CSharpDB.Migration.Sqlite\CSharpDB.Migration.Sqlite.csproj" />
     <ProjectReference Include="..\CSharpDB.Sql\CSharpDB.Sql.csproj" />
     <ProjectReference Include="..\CSharpDB.Storage.Diagnostics\CSharpDB.Storage.Diagnostics.csproj" />
   </ItemGroup>
