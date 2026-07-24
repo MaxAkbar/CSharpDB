@@ -13,6 +13,10 @@ internal static class SqlServerTestSnapshot
     public const string SecretFilterDefinition =
         "([Customer]<>N'FilterPassword=NeverPersistThis')";
 
+    public const string SecretModuleDefinition =
+        "CREATE VIEW [dbo].[OrderSummary] AS SELECT [Id], [Amount] " +
+        "FROM [dbo].[Orders] WHERE N'ModulePassword=NeverPersistThis'<>N''";
+
     public static SqlServerCatalogSnapshot Create(
         SqlServerInstanceMetadata? instance = null,
         SqlServerDatabaseMetadata? database = null,
@@ -27,19 +31,28 @@ internal static class SqlServerTestSnapshot
         IEnumerable<SqlServerCheckMetadata>? checks = null,
         IEnumerable<SqlServerSequenceMetadata>? sequences = null,
         SqlServerPermissionAuditMetadata? permissionAuditBefore = null,
-        SqlServerPermissionAuditMetadata? permissionAuditAfter = null)
+        SqlServerPermissionAuditMetadata? permissionAuditAfter = null,
+        IEnumerable<SqlServerViewMetadata>? views = null,
+        IEnumerable<SqlServerViewColumnMetadata>? viewColumns = null,
+        IEnumerable<SqlServerTriggerMetadata>? triggers = null,
+        IEnumerable<SqlServerTriggerEventMetadata>? triggerEvents = null,
+        IEnumerable<SqlServerRoutineMetadata>? routines = null,
+        IEnumerable<SqlServerModuleMetadata>? modules = null,
+        IEnumerable<SqlServerParameterMetadata>? parameters = null,
+        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null)
     {
         bool usesDefaultStructure =
             schemas is null &&
             tables is null &&
             columns is null;
+        SqlServerDatabaseMetadata selectedDatabase = database ?? Database();
         SqlServerPermissionAuditMetadata defaultAudit = PermissionAudit();
 
         return new SqlServerCatalogSnapshot(
             "sha256:" + new string('a', 64),
             "7.0.2",
             instance ?? Instance(),
-            database ?? Database(),
+            selectedDatabase,
             schemas ?? Schemas(),
             tables ?? Tables(),
             columns ?? Columns(),
@@ -52,7 +65,22 @@ internal static class SqlServerTestSnapshot
             checks ?? (usesDefaultStructure ? Checks() : []),
             sequences ?? (usesDefaultStructure ? Sequences() : []),
             permissionAuditBefore ?? defaultAudit,
-            permissionAuditAfter ?? defaultAudit);
+            permissionAuditAfter ?? defaultAudit,
+            views ?? (usesDefaultStructure ? Views() : []),
+            viewColumns ?? (usesDefaultStructure ? ViewColumns() : []),
+            triggers ?? (usesDefaultStructure ? Triggers() : []),
+            triggerEvents ?? (usesDefaultStructure ? TriggerEvents() : []),
+            routines ?? (usesDefaultStructure ? Routines() : []),
+            modules ?? (usesDefaultStructure ? Modules() : []),
+            parameters ?? (usesDefaultStructure ? Parameters() : []),
+            expressionDependencyAudit ??
+                (usesDefaultStructure
+                    ? ExpressionDependencyAudit()
+                    : selectedDatabase.HasSelectSqlExpressionDependencies == true
+                        ? new SqlServerExpressionDependencyAuditMetadata(
+                            [],
+                            Attempted: true)
+                        : SqlServerExpressionDependencyAuditMetadata.NotAttempted));
     }
 
     public static SqlServerInstanceMetadata Instance() =>
@@ -82,7 +110,8 @@ internal static class SqlServerTestSnapshot
             IsDbOwner: false,
             HasControl: false,
             HasViewDefinition: true,
-            HasViewSecurityDefinition: true);
+            HasViewSecurityDefinition: true,
+            HasSelectSqlExpressionDependencies: true);
 
     public static IReadOnlyList<SqlServerSchemaMetadata> Schemas() =>
     [
@@ -425,6 +454,294 @@ internal static class SqlServerTestSnapshot
             CacheSize: null),
     ];
 
+    public static IReadOnlyList<SqlServerViewMetadata> Views() =>
+    [
+        new(
+            ObjectId: 5_000,
+            SchemaId: 1,
+            Name: "OrderSummary",
+            IsReplicated: false,
+            HasReplicationFilter: false,
+            HasOpaqueMetadata: false,
+            HasUncheckedAssemblyData: false,
+            WithCheckOption: true,
+            IsDateCorrelationView: false,
+            IsIndexed: false,
+            HasViewDefinition: true,
+            LedgerViewType: 0,
+            LedgerViewTypeDescription: "NON_LEDGER_VIEW",
+            IsDroppedLedgerView: false),
+    ];
+
+    public static IReadOnlyList<SqlServerViewColumnMetadata> ViewColumns() =>
+    [
+        new(
+            ObjectId: 5_000,
+            ColumnId: 1,
+            Name: "Id",
+            TypeSchema: "sys",
+            TypeName: "int",
+            SystemTypeName: "int",
+            MaxLength: 4,
+            Precision: 10,
+            Scale: 0,
+            Collation: null,
+            IsNullable: false,
+            IsAnsiPadded: false,
+            IsHidden: false,
+            IsMasked: false,
+            EncryptionType: null,
+            IsXmlDocument: false,
+            XmlCollectionId: 0),
+        new(
+            ObjectId: 5_000,
+            ColumnId: 2,
+            Name: "Amount",
+            TypeSchema: "sys",
+            TypeName: "decimal",
+            SystemTypeName: "decimal",
+            MaxLength: 9,
+            Precision: 18,
+            Scale: 2,
+            Collation: null,
+            IsNullable: false,
+            IsAnsiPadded: false,
+            IsHidden: false,
+            IsMasked: false,
+            EncryptionType: null,
+            IsXmlDocument: false,
+            XmlCollectionId: 0),
+    ];
+
+    public static IReadOnlyList<SqlServerTriggerMetadata> Triggers() =>
+    [
+        new(
+            ObjectId: 6_000,
+            SchemaId: 1,
+            ParentClass: 1,
+            ParentClassDescription: "OBJECT_OR_COLUMN",
+            ParentObjectId: 100,
+            Name: "TR_Orders_Audit",
+            Type: "TR",
+            TypeDescription: "SQL_TRIGGER",
+            IsDisabled: false,
+            IsNotForReplication: false,
+            IsInsteadOfTrigger: false,
+            IsInsert: true,
+            IsUpdate: true,
+            IsDelete: false,
+            IsFirstInsert: true,
+            IsLastInsert: false,
+            IsFirstUpdate: false,
+            IsLastUpdate: true,
+            IsFirstDelete: false,
+            IsLastDelete: false,
+            HasViewDefinition: true),
+        new(
+            ObjectId: 6_001,
+            SchemaId: null,
+            ParentClass: 0,
+            ParentClassDescription: "DATABASE",
+            ParentObjectId: 0,
+            Name: "TR_Database_Ddl",
+            Type: "TR",
+            TypeDescription: "SQL_TRIGGER",
+            IsDisabled: true,
+            IsNotForReplication: false,
+            IsInsteadOfTrigger: false,
+            IsInsert: null,
+            IsUpdate: null,
+            IsDelete: null,
+            IsFirstInsert: null,
+            IsLastInsert: null,
+            IsFirstUpdate: null,
+            IsLastUpdate: null,
+            IsFirstDelete: null,
+            IsLastDelete: null,
+            HasViewDefinition: true),
+    ];
+
+    public static IReadOnlyList<SqlServerTriggerEventMetadata> TriggerEvents() =>
+    [
+        new(
+            ObjectId: 6_000,
+            Type: 1,
+            TypeDescription: "INSERT",
+            IsFirst: true,
+            IsLast: false,
+            EventGroupType: null,
+            EventGroupTypeDescription: null),
+        new(
+            ObjectId: 6_000,
+            Type: 2,
+            TypeDescription: "UPDATE",
+            IsFirst: false,
+            IsLast: true,
+            EventGroupType: null,
+            EventGroupTypeDescription: null),
+        new(
+            ObjectId: 6_001,
+            Type: 101,
+            TypeDescription: "CREATE_TABLE",
+            IsFirst: false,
+            IsLast: false,
+            EventGroupType: 100,
+            EventGroupTypeDescription: "DDL_TABLE_EVENTS"),
+    ];
+
+    public static IReadOnlyList<SqlServerRoutineMetadata> Routines() =>
+    [
+        Routine(7_000, "usp_CycleA", "P", "SQL_STORED_PROCEDURE"),
+        Routine(7_001, "usp_CycleB", "P", "SQL_STORED_PROCEDURE"),
+        Routine(
+            7_002,
+            "ufn_OrderAmount",
+            "FN",
+            "SQL_SCALAR_FUNCTION",
+            procedureFlags: null),
+    ];
+
+    public static IReadOnlyList<SqlServerModuleMetadata> Modules() =>
+    [
+        Module(
+            objectId: 5_000,
+            name: "OrderSummary",
+            objectType: "V",
+            objectTypeDescription: "VIEW",
+            definition: SecretModuleDefinition),
+        Module(
+            objectId: 6_000,
+            name: "TR_Orders_Audit",
+            objectType: "TR",
+            objectTypeDescription: "SQL_TRIGGER",
+            parentObjectId: 100,
+            definition:
+                "CREATE TRIGGER [dbo].[TR_Orders_Audit] ON [dbo].[Orders] " +
+                "AFTER INSERT, UPDATE AS SELECT 1"),
+        Module(
+            objectId: 6_001,
+            schemaId: 0,
+            name: "TR_Database_Ddl",
+            objectType: "TR",
+            objectTypeDescription: "SQL_TRIGGER",
+            definition:
+                "CREATE TRIGGER [TR_Database_Ddl] ON DATABASE " +
+                "FOR CREATE_TABLE AS SELECT 1",
+            isEncrypted: null),
+        Module(
+            objectId: 7_000,
+            name: "usp_CycleA",
+            objectType: "P",
+            objectTypeDescription: "SQL_STORED_PROCEDURE",
+            definition:
+                "CREATE PROCEDURE [dbo].[usp_CycleA] AS " +
+                "EXEC [dbo].[usp_CycleB]"),
+        Module(
+            objectId: 7_001,
+            name: "usp_CycleB",
+            objectType: "P",
+            objectTypeDescription: "SQL_STORED_PROCEDURE",
+            definition: null,
+            isEncrypted: true),
+        Module(
+            objectId: 7_002,
+            name: "ufn_OrderAmount",
+            objectType: "FN",
+            objectTypeDescription: "SQL_SCALAR_FUNCTION",
+            definition:
+                "CREATE FUNCTION [dbo].[ufn_OrderAmount](@OrderId int) " +
+                "RETURNS int AS BEGIN RETURN @OrderId END",
+            nullOnNullInput: true),
+    ];
+
+    public static IReadOnlyList<SqlServerParameterMetadata> Parameters() =>
+    [
+        Parameter(
+            objectId: 7_000,
+            parameterId: 1,
+            name: "@MinimumAmount",
+            typeName: "decimal",
+            systemTypeName: "decimal",
+            maxLength: 9,
+            precision: 18,
+            scale: 2),
+        Parameter(
+            objectId: 7_000,
+            parameterId: 2,
+            name: "@RowsChanged",
+            typeName: "int",
+            systemTypeName: "int",
+            maxLength: 4,
+            precision: 10,
+            isOutput: true),
+        Parameter(
+            objectId: 7_002,
+            parameterId: 0,
+            name: string.Empty,
+            typeName: "int",
+            systemTypeName: "int",
+            maxLength: 4,
+            precision: 10,
+            isOutput: true),
+        Parameter(
+            objectId: 7_002,
+            parameterId: 1,
+            name: "@OrderId",
+            typeName: "int",
+            systemTypeName: "int",
+            maxLength: 4,
+            precision: 10),
+    ];
+
+    public static SqlServerExpressionDependencyAuditMetadata
+        ExpressionDependencyAudit() =>
+        new(
+            [
+                Dependency(
+                    referencingId: 5_000,
+                    referencedSchemaName: "dbo",
+                    referencedEntityName: "Orders",
+                    referencedId: 100,
+                    referencedMinorId: 1,
+                    schemaBound: true),
+                Dependency(
+                    referencingId: 5_000,
+                    referencedSchemaName: "dbo",
+                    referencedEntityName: "Orders",
+                    referencedId: 100,
+                    referencedMinorId: 2,
+                    schemaBound: true),
+                Dependency(
+                    referencingId: 7_000,
+                    referencedSchemaName: "dbo",
+                    referencedEntityName: "OrderSummary",
+                    referencedId: 5_000),
+                Dependency(
+                    referencingId: 7_000,
+                    referencedSchemaName: "dbo",
+                    referencedEntityName: "usp_CycleB",
+                    referencedId: 7_001),
+                Dependency(
+                    referencingId: 7_001,
+                    referencedSchemaName: "dbo",
+                    referencedEntityName: "usp_CycleA",
+                    referencedId: 7_000),
+                Dependency(
+                    referencingId: 7_000,
+                    referencedSchemaName: null,
+                    referencedEntityName: "MissingRoutine",
+                    referencedId: null,
+                    callerDependent: true),
+                Dependency(
+                    referencingId: 7_000,
+                    referencedServerName: "ExternalServer",
+                    referencedDatabaseName: "ExternalDatabase",
+                    referencedSchemaName: "dbo",
+                    referencedEntityName: "RemoteRoutine",
+                    referencedId: null),
+            ],
+            Attempted: true);
+
     public static SqlServerPermissionAuditMetadata PermissionAudit(
         IEnumerable<SqlServerUserTokenMetadata>? tokens = null,
         IEnumerable<SqlServerPermissionDenyMetadata>? denials = null,
@@ -443,6 +760,117 @@ internal static class SqlServerTestSnapshot
              ]).ToArray(),
             (denials ?? []).ToArray(),
             Attempted: attempted);
+
+    private static SqlServerRoutineMetadata Routine(
+        int objectId,
+        string name,
+        string type,
+        string typeDescription,
+        bool? procedureFlags = false) =>
+        new(
+            ObjectId: objectId,
+            SchemaId: 1,
+            Name: name,
+            Type: type,
+            TypeDescription: typeDescription,
+            IsAutoExecuted: procedureFlags,
+            IsExecutionReplicated: procedureFlags,
+            IsReplicationSerializableOnly: procedureFlags,
+            SkipsReplicationConstraints: procedureFlags,
+            HasViewDefinition: true);
+
+    private static SqlServerModuleMetadata Module(
+        int objectId,
+        string name,
+        string objectType,
+        string objectTypeDescription,
+        string? definition,
+        int schemaId = 1,
+        int parentObjectId = 0,
+        bool nullOnNullInput = false,
+        bool? isEncrypted = false) =>
+        new(
+            ObjectId: objectId,
+            SchemaId: schemaId,
+            ParentObjectId: parentObjectId,
+            Name: name,
+            ObjectType: objectType,
+            ObjectTypeDescription: objectTypeDescription,
+            DefinitionBytes:
+                definition is null
+                    ? null
+                    : checked(definition.Length * 2L),
+            Definition: definition,
+            UsesAnsiNulls: true,
+            UsesQuotedIdentifier: true,
+            IsSchemaBound: false,
+            UsesDatabaseCollation: false,
+            IsRecompiled: false,
+            NullOnNullInput: nullOnNullInput,
+            ExecuteAsPrincipalId: null,
+            UsesNativeCompilation: false,
+            IsInlineable: false,
+            InlineType: false,
+            IsEncrypted: isEncrypted);
+
+    private static SqlServerParameterMetadata Parameter(
+        int objectId,
+        int parameterId,
+        string name,
+        string typeName,
+        string systemTypeName,
+        short maxLength,
+        byte precision,
+        byte scale = 0,
+        bool isOutput = false) =>
+        new(
+            ObjectId: objectId,
+            ParameterId: parameterId,
+            Name: name,
+            TypeSchema: "sys",
+            TypeName: typeName,
+            SystemTypeName: systemTypeName,
+            MaxLength: maxLength,
+            Precision: precision,
+            Scale: scale,
+            IsOutput: isOutput,
+            IsCursorReference: false,
+            HasDefaultValue: false,
+            IsXmlDocument: false,
+            XmlCollectionId: 0,
+            IsReadOnly: false,
+            IsNullable: true,
+            EncryptionType: null,
+            IsUserDefined: false,
+            IsAssemblyType: false,
+            IsTableType: false);
+
+    private static SqlServerExpressionDependencyMetadata Dependency(
+        int referencingId,
+        string? referencedSchemaName,
+        string referencedEntityName,
+        int? referencedId,
+        int referencedMinorId = 0,
+        bool schemaBound = false,
+        bool callerDependent = false,
+        string? referencedServerName = null,
+        string? referencedDatabaseName = null) =>
+        new(
+            ReferencingId: referencingId,
+            ReferencingMinorId: 0,
+            ReferencingClass: 1,
+            ReferencingClassDescription: "OBJECT_OR_COLUMN",
+            IsSchemaBoundReference: schemaBound,
+            ReferencedClass: 1,
+            ReferencedClassDescription: "OBJECT_OR_COLUMN",
+            ReferencedServerName: referencedServerName,
+            ReferencedDatabaseName: referencedDatabaseName,
+            ReferencedSchemaName: referencedSchemaName,
+            ReferencedEntityName: referencedEntityName,
+            ReferencedId: referencedId,
+            ReferencedMinorId: referencedMinorId,
+            IsCallerDependent: callerDependent,
+            IsAmbiguous: false);
 
     public static SqlServerCatalogSnapshot CreateSupportedRelational()
     {

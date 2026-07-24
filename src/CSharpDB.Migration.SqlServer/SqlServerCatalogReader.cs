@@ -52,7 +52,13 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                         N'DATABASE',
                         N'VIEW SECURITY DEFINITION'))
                 ELSE NULL
-            END
+            END,
+            CONVERT(
+                int,
+                HAS_PERMS_BY_NAME(
+                    N'sys.sql_expression_dependencies',
+                    N'OBJECT',
+                    N'SELECT'))
         FROM sys.databases AS d
         WHERE d.database_id = DB_ID();
         """;
@@ -177,6 +183,15 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             ForeignKeyColumnsQuery,
             ChecksQuery,
             SequencesQuery,
+            ViewsQuery,
+            LedgerViewsQuery,
+            ViewColumnsQuery,
+            TriggersQuery,
+            TriggerEventsQuery,
+            RoutinesQuery,
+            ModulesQuery,
+            ParametersQuery,
+            ExpressionDependenciesQuery,
         ]);
 
     private readonly string connectionString;
@@ -274,6 +289,7 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                     budget,
                     cancellationToken)
                 .ConfigureAwait(false);
+        EnsureSupportedProductMajorVersion(instance.ProductMajorVersion);
         SqlServerPermissionAuditMetadata permissionAuditBefore =
             await ReadPermissionAuditAsync(
                     connection,
@@ -347,6 +363,63 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
                     limits,
                     cancellationToken)
                 .ConfigureAwait(false);
+        IReadOnlyList<SqlServerViewMetadata> views = await ReadViewsAsync(
+                connection,
+                instance,
+                budget,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<SqlServerViewColumnMetadata> viewColumns =
+            await ReadViewColumnsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerTriggerMetadata> triggers =
+            await ReadTriggersAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerTriggerEventMetadata> triggerEvents =
+            await ReadTriggerEventsAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerRoutineMetadata> routines =
+            await ReadRoutinesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerModuleMetadata> modules =
+            await ReadModulesAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        IReadOnlyList<SqlServerParameterMetadata> parameters =
+            await ReadParametersAsync(
+                    connection,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        SqlServerExpressionDependencyAuditMetadata expressionDependencyAudit =
+            await ReadExpressionDependencyAuditAsync(
+                    connection,
+                    database,
+                    budget,
+                    limits,
+                    cancellationToken)
+                .ConfigureAwait(false);
         SqlServerPermissionAuditMetadata permissionAuditAfter =
             await ReadPermissionAuditAsync(
                     connection,
@@ -373,7 +446,25 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             checks,
             sequences,
             permissionAuditBefore,
-            permissionAuditAfter);
+            permissionAuditAfter,
+            views,
+            viewColumns,
+            triggers,
+            triggerEvents,
+            routines,
+            modules,
+            parameters,
+            expressionDependencyAudit);
+    }
+
+    internal static void EnsureSupportedProductMajorVersion(
+        int productMajorVersion)
+    {
+        if (productMajorVersion < 15)
+        {
+            throw new SqlServerMigrationException(
+                "SQL Server 2019 or later is required for migration inspection.");
+        }
     }
 
     private static async ValueTask<(
@@ -419,7 +510,8 @@ internal sealed partial class SqlServerCatalogReader : ISqlServerCatalogReader
             OptionalBoolean(reader, 19),
             OptionalBoolean(reader, 20),
             OptionalBoolean(reader, 21),
-            OptionalBoolean(reader, 22));
+            OptionalBoolean(reader, 22),
+            OptionalBoolean(reader, 23));
 
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {

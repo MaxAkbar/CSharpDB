@@ -6,7 +6,7 @@ namespace CSharpDB.Migration.SqlServer;
 
 internal static partial class SqlServerCatalogBuilder
 {
-    public const string CatalogContract = "csharpdb-sqlserver-catalog/v2";
+    public const string CatalogContract = "csharpdb-sqlserver-catalog/v3";
 
     private static readonly UTF8Encoding s_strictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
@@ -46,7 +46,8 @@ internal static partial class SqlServerCatalogBuilder
             snapshot.Schemas.Count +
             snapshot.Tables.Count +
             snapshot.Columns.Count +
-            RelationalObjectCapacity(snapshot));
+            RelationalObjectCapacity(snapshot) +
+            ProgrammableObjectCapacity(snapshot));
         var diagnostics = new List<MigrationDiagnostic>();
 
         string databaseId = ObjectId("database", snapshot.Database.Name);
@@ -101,6 +102,9 @@ internal static partial class SqlServerCatalogBuilder
                     "sqlServerPermissionViewSecurityDefinition",
                     NullableBoolean(snapshot.Database.HasViewSecurityDefinition)),
                 Facet(
+                    "sqlServerPermissionSelectExpressionDependencies",
+                    NullableBoolean(snapshot.Database.HasSelectSqlExpressionDependencies)),
+                Facet(
                     "sqlServerPermissionAuditAttempted",
                     Boolean(
                         snapshot.PermissionAuditBefore.Attempted &&
@@ -119,6 +123,15 @@ internal static partial class SqlServerCatalogBuilder
                     Boolean(PermissionAuditsEqual(
                         snapshot.PermissionAuditBefore,
                         snapshot.PermissionAuditAfter))),
+                Facet(
+                    "sqlServerExpressionDependencyAuditAttempted",
+                    Boolean(snapshot.ExpressionDependencyAudit.Attempted)),
+                Facet(
+                    "sqlServerExpressionDependencyCount",
+                    Invariant(snapshot.ExpressionDependencyAudit.Dependencies.Count)),
+                Facet(
+                    "sqlServerExpressionDependencyAuditDigest",
+                    ExpressionDependencyAuditDigest(snapshot.ExpressionDependencyAudit)),
             ],
         });
 
@@ -133,8 +146,8 @@ internal static partial class SqlServerCatalogBuilder
             MigrationDiagnosticSeverity.Error,
             MigrationCompatibilityStatus.Unknown,
             "This checkpoint is an intentionally partial SQL Server inventory.",
-            "Schemas, user tables, columns, defaults, identity, computed-column facts, keys, foreign keys, checks, table indexes, and sequences are inventoried. Views, triggers, routines, module bodies, dependency edges, indexed views, full-text indexes, and physical partition or storage layouts remain absent, so this catalog must not be presented as a complete readiness report.",
-            "Complete the remaining Phase 7A object-class inventory before relying on the analyzer for migration approval.",
+            "Schemas, user tables, columns, defaults, identity, computed-column facts, keys, foreign keys, checks, table indexes, sequences, views, view columns, triggers and events, routines, module-definition evidence, parameters, and catalog expression-dependency rows are inventoried. Module bodies are not yet parsed, bound, lowered, or scratch-executed; SQL Server's dependency catalog has documented coverage gaps; indexed-view details, full-text indexes, and physical partition or storage layouts remain absent.",
+            "Complete bounded T-SQL analysis, target DDL preview, remaining physical inventory, and live qualification before relying on the analyzer for migration approval.",
             canOverride: false));
 
         var schemasById =
@@ -288,6 +301,16 @@ internal static partial class SqlServerCatalogBuilder
             diagnostics,
             cancellationToken);
 
+        AddProgrammableObjects(
+            snapshot,
+            databaseId,
+            schemasById,
+            tablesByObjectId,
+            columnsByCatalogId,
+            objects,
+            diagnostics,
+            cancellationToken);
+
         string fingerprint = "sha256:" + ComputeSnapshotDigest(snapshot);
         var catalog = new MigrationCatalog
         {
@@ -332,6 +355,7 @@ internal static partial class SqlServerCatalogBuilder
         if (snapshot.Columns.Count > limits.MaxColumns)
             throw LimitExceeded("column count");
         ValidateRelationalCounts(snapshot, limits);
+        ValidateProgrammableCounts(snapshot, limits);
         if (snapshot.Instance.ProductMajorVersion <= 0)
             throw new SqlServerMigrationException("SQL Server returned an invalid product major version.");
         if (snapshot.Database.DatabaseId <= 0)
@@ -414,6 +438,13 @@ internal static partial class SqlServerCatalogBuilder
         }
 
         ValidateRelationalSnapshot(
+            snapshot,
+            schemaIds,
+            tableIds,
+            columnIds,
+            budget,
+            cancellationToken);
+        ValidateProgrammableSnapshot(
             snapshot,
             schemaIds,
             tableIds,
@@ -829,8 +860,12 @@ internal static partial class SqlServerCatalogBuilder
             return MetadataVisibility.Complete;
 
         if (database.HasViewDefinition == false ||
+            database.HasSelectSqlExpressionDependencies == false ||
             snapshot.Schemas.Any(static item => item.HasViewDefinition == false) ||
             snapshot.Tables.Any(static item => item.HasViewDefinition == false) ||
+            snapshot.Views.Any(static item => item.HasViewDefinition == false) ||
+            snapshot.Triggers.Any(static item => item.HasViewDefinition == false) ||
+            snapshot.Routines.Any(static item => item.HasViewDefinition == false) ||
             HasRelevantMetadataDeny(snapshot.PermissionAuditBefore) ||
             HasRelevantMetadataDeny(snapshot.PermissionAuditAfter))
         {
@@ -867,6 +902,7 @@ internal static partial class SqlServerCatalogBuilder
             yield return NullableBoolean(snapshot.Database.HasControl);
             yield return NullableBoolean(snapshot.Database.HasViewDefinition);
             yield return NullableBoolean(snapshot.Database.HasViewSecurityDefinition);
+            yield return NullableBoolean(snapshot.Database.HasSelectSqlExpressionDependencies);
 
             foreach (SqlServerSchemaMetadata schema in snapshot.Schemas
                          .OrderBy(static item => item.SchemaId)
@@ -936,10 +972,12 @@ internal static partial class SqlServerCatalogBuilder
 
             foreach (string? field in RelationalSnapshotFields(snapshot))
                 yield return field;
+            foreach (string? field in ProgrammableSnapshotFields(snapshot))
+                yield return field;
         }
 
         return SqlServerStableDigest.Sequence(
-            "csharpdb-sqlserver-snapshot/v2",
+            "csharpdb-sqlserver-snapshot/v3",
             Fields());
     }
 

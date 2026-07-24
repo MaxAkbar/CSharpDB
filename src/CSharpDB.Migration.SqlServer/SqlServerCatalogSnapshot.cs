@@ -24,7 +24,15 @@ internal sealed class SqlServerCatalogSnapshot
         IEnumerable<SqlServerCheckMetadata>? checks = null,
         IEnumerable<SqlServerSequenceMetadata>? sequences = null,
         SqlServerPermissionAuditMetadata? permissionAuditBefore = null,
-        SqlServerPermissionAuditMetadata? permissionAuditAfter = null)
+        SqlServerPermissionAuditMetadata? permissionAuditAfter = null,
+        IEnumerable<SqlServerViewMetadata>? views = null,
+        IEnumerable<SqlServerViewColumnMetadata>? viewColumns = null,
+        IEnumerable<SqlServerTriggerMetadata>? triggers = null,
+        IEnumerable<SqlServerTriggerEventMetadata>? triggerEvents = null,
+        IEnumerable<SqlServerRoutineMetadata>? routines = null,
+        IEnumerable<SqlServerModuleMetadata>? modules = null,
+        IEnumerable<SqlServerParameterMetadata>? parameters = null,
+        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpointDigest);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerVersion);
@@ -52,6 +60,16 @@ internal sealed class SqlServerCatalogSnapshot
             permissionAuditBefore ?? SqlServerPermissionAuditMetadata.NotAttempted);
         PermissionAuditAfter = Copy(
             permissionAuditAfter ?? SqlServerPermissionAuditMetadata.NotAttempted);
+        Views = Copy(views);
+        ViewColumns = Copy(viewColumns);
+        Triggers = Copy(triggers);
+        TriggerEvents = Copy(triggerEvents);
+        Routines = Copy(routines);
+        Modules = Copy(modules);
+        Parameters = Copy(parameters);
+        ExpressionDependencyAudit = Copy(
+            expressionDependencyAudit ??
+            SqlServerExpressionDependencyAuditMetadata.NotAttempted);
     }
 
     public string EndpointDigest { get; }
@@ -86,6 +104,22 @@ internal sealed class SqlServerCatalogSnapshot
 
     public SqlServerPermissionAuditMetadata PermissionAuditAfter { get; }
 
+    public IReadOnlyList<SqlServerViewMetadata> Views { get; }
+
+    public IReadOnlyList<SqlServerViewColumnMetadata> ViewColumns { get; }
+
+    public IReadOnlyList<SqlServerTriggerMetadata> Triggers { get; }
+
+    public IReadOnlyList<SqlServerTriggerEventMetadata> TriggerEvents { get; }
+
+    public IReadOnlyList<SqlServerRoutineMetadata> Routines { get; }
+
+    public IReadOnlyList<SqlServerModuleMetadata> Modules { get; }
+
+    public IReadOnlyList<SqlServerParameterMetadata> Parameters { get; }
+
+    public SqlServerExpressionDependencyAuditMetadata ExpressionDependencyAudit { get; }
+
     private static IReadOnlyList<T> Copy<T>(IEnumerable<T>? items) =>
         new ReadOnlyCollection<T>((items ?? []).ToArray());
 
@@ -94,6 +128,12 @@ internal sealed class SqlServerCatalogSnapshot
         new(
             Copy(audit.Tokens),
             Copy(audit.Denials),
+            audit.Attempted);
+
+    private static SqlServerExpressionDependencyAuditMetadata Copy(
+        SqlServerExpressionDependencyAuditMetadata audit) =>
+        new(
+            Copy(audit.Dependencies),
             audit.Attempted);
 }
 
@@ -122,7 +162,8 @@ internal sealed record SqlServerDatabaseMetadata(
     bool? IsDbOwner,
     bool? HasControl,
     bool? HasViewDefinition,
-    bool? HasViewSecurityDefinition = null);
+    bool? HasViewSecurityDefinition = null,
+    bool? HasSelectSqlExpressionDependencies = null);
 
 internal sealed record SqlServerSchemaMetadata(
     int SchemaId,
@@ -270,6 +311,155 @@ internal sealed record SqlServerSequenceMetadata(
     bool IsCycling,
     bool IsCached,
     int? CacheSize);
+
+internal sealed record SqlServerViewMetadata(
+    int ObjectId,
+    int SchemaId,
+    string Name,
+    bool IsReplicated,
+    bool HasReplicationFilter,
+    bool HasOpaqueMetadata,
+    bool HasUncheckedAssemblyData,
+    bool WithCheckOption,
+    bool IsDateCorrelationView,
+    bool IsIndexed,
+    bool? HasViewDefinition,
+    byte? LedgerViewType,
+    string? LedgerViewTypeDescription,
+    bool? IsDroppedLedgerView);
+
+internal sealed record SqlServerViewColumnMetadata(
+    int ObjectId,
+    int ColumnId,
+    string Name,
+    string TypeSchema,
+    string TypeName,
+    string SystemTypeName,
+    short MaxLength,
+    byte Precision,
+    byte Scale,
+    string? Collation,
+    bool IsNullable,
+    bool IsAnsiPadded,
+    bool IsHidden,
+    bool IsMasked,
+    string? EncryptionType,
+    bool IsXmlDocument,
+    int XmlCollectionId);
+
+internal sealed record SqlServerTriggerMetadata(
+    int ObjectId,
+    int? SchemaId,
+    byte ParentClass,
+    string ParentClassDescription,
+    int ParentObjectId,
+    string Name,
+    string Type,
+    string TypeDescription,
+    bool IsDisabled,
+    bool IsNotForReplication,
+    bool IsInsteadOfTrigger,
+    bool? IsInsert,
+    bool? IsUpdate,
+    bool? IsDelete,
+    bool? IsFirstInsert,
+    bool? IsLastInsert,
+    bool? IsFirstUpdate,
+    bool? IsLastUpdate,
+    bool? IsFirstDelete,
+    bool? IsLastDelete,
+    bool? HasViewDefinition);
+
+internal sealed record SqlServerTriggerEventMetadata(
+    int ObjectId,
+    int Type,
+    string TypeDescription,
+    bool IsFirst,
+    bool IsLast,
+    int? EventGroupType,
+    string? EventGroupTypeDescription);
+
+internal sealed record SqlServerRoutineMetadata(
+    int ObjectId,
+    int SchemaId,
+    string Name,
+    string Type,
+    string TypeDescription,
+    bool? IsAutoExecuted,
+    bool? IsExecutionReplicated,
+    bool? IsReplicationSerializableOnly,
+    bool? SkipsReplicationConstraints,
+    bool? HasViewDefinition);
+
+internal sealed record SqlServerModuleMetadata(
+    int ObjectId,
+    int SchemaId,
+    int ParentObjectId,
+    string Name,
+    string ObjectType,
+    string ObjectTypeDescription,
+    long? DefinitionBytes,
+    string? Definition,
+    bool UsesAnsiNulls,
+    bool UsesQuotedIdentifier,
+    bool IsSchemaBound,
+    bool UsesDatabaseCollation,
+    bool IsRecompiled,
+    bool NullOnNullInput,
+    int? ExecuteAsPrincipalId,
+    bool UsesNativeCompilation,
+    bool IsInlineable,
+    bool InlineType,
+    bool? IsEncrypted);
+
+internal sealed record SqlServerParameterMetadata(
+    int ObjectId,
+    int ParameterId,
+    string Name,
+    string TypeSchema,
+    string TypeName,
+    string SystemTypeName,
+    short MaxLength,
+    byte Precision,
+    byte Scale,
+    bool IsOutput,
+    bool IsCursorReference,
+    bool HasDefaultValue,
+    bool IsXmlDocument,
+    int XmlCollectionId,
+    bool IsReadOnly,
+    bool IsNullable,
+    string? EncryptionType,
+    bool IsUserDefined,
+    bool IsAssemblyType,
+    bool IsTableType);
+
+internal sealed record SqlServerExpressionDependencyMetadata(
+    int ReferencingId,
+    int ReferencingMinorId,
+    byte ReferencingClass,
+    string ReferencingClassDescription,
+    bool IsSchemaBoundReference,
+    byte ReferencedClass,
+    string ReferencedClassDescription,
+    string? ReferencedServerName,
+    string? ReferencedDatabaseName,
+    string? ReferencedSchemaName,
+    string ReferencedEntityName,
+    int? ReferencedId,
+    int ReferencedMinorId,
+    bool IsCallerDependent,
+    bool IsAmbiguous);
+
+internal sealed record SqlServerExpressionDependencyAuditMetadata(
+    IReadOnlyList<SqlServerExpressionDependencyMetadata> Dependencies,
+    bool Attempted)
+{
+    public static SqlServerExpressionDependencyAuditMetadata NotAttempted { get; } =
+        new(
+            Array.Empty<SqlServerExpressionDependencyMetadata>(),
+            Attempted: false);
+}
 
 internal sealed record SqlServerUserTokenMetadata(
     int PrincipalId,

@@ -6,9 +6,9 @@ namespace CSharpDB.Migration.SqlServer.Tests;
 public sealed class SqlServerCatalogBuilderTests
 {
     private const string GoldenCatalogDigest =
-        "debf3a3ac8e87e3e19ab3c71837607dc4d55b35c610af5ac3c698ec2127b4af5";
+        "faf15ca782319e27bae531ebe0b5b525996c3f39e0af931ca0b565c34c47510c";
     private const string GoldenSourceFingerprint =
-        "sha256:97405c123b11d0f1b574344400bfb1d6b9087c598dfad0609685809fda9f692a";
+        "sha256:e5462dfef903f758173295c7fd5f66b0c4c98181c96638a92f67eba374a1af03";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -51,6 +51,10 @@ public sealed class SqlServerCatalogBuilderTests
             SqlServerTestSnapshot.SecretFilterDefinition,
             serialized,
             StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            SqlServerTestSnapshot.SecretModuleDefinition,
+            serialized,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("NeverPersistThis", serialized, StringComparison.Ordinal);
 
         MigrationCatalogObject database = Assert.Single(
@@ -65,6 +69,19 @@ public sealed class SqlServerCatalogBuilderTests
         Assert.Equal("true", Facet(database, "sqlServerPermissionAuditStable"));
         Assert.Equal("2", Facet(database, "sqlServerPermissionTokenCount"));
         Assert.Equal("0", Facet(database, "sqlServerPermissionDenyCount"));
+        Assert.Equal(
+            "true",
+            Facet(database, "sqlServerPermissionSelectExpressionDependencies"));
+        Assert.Equal(
+            "true",
+            Facet(database, "sqlServerExpressionDependencyAuditAttempted"));
+        Assert.Equal(
+            "7",
+            Facet(database, "sqlServerExpressionDependencyCount"));
+        Assert.StartsWith(
+            "sha256:",
+            Facet(database, "sqlServerExpressionDependencyAuditDigest"),
+            StringComparison.Ordinal);
 
         MigrationCatalogObject amount = FindColumn(first, "Amount");
         Assert.Equal("decimal", Facet(amount, "logicalType"));
@@ -136,7 +153,15 @@ public sealed class SqlServerCatalogBuilderTests
             ordered.Checks.Reverse(),
             ordered.Sequences.Reverse(),
             Reverse(ordered.PermissionAuditBefore),
-            Reverse(ordered.PermissionAuditAfter));
+            Reverse(ordered.PermissionAuditAfter),
+            ordered.Views.Reverse(),
+            ordered.ViewColumns.Reverse(),
+            ordered.Triggers.Reverse(),
+            ordered.TriggerEvents.Reverse(),
+            ordered.Routines.Reverse(),
+            ordered.Modules.Reverse(),
+            ordered.Parameters.Reverse(),
+            Reverse(ordered.ExpressionDependencyAudit));
 
         Assert.Equal(
             MigrationArtifactSerializer.SerializeCatalog(Build(ordered)),
@@ -282,6 +307,447 @@ public sealed class SqlServerCatalogBuilderTests
     }
 
     [Fact]
+    public void BuildInventoriesProgrammableObjectsWithoutOverstatingCompatibility()
+    {
+        SqlServerCatalogSnapshot snapshot = SqlServerTestSnapshot.Create();
+        MigrationCatalog catalog = Build(snapshot);
+        IReadOnlyDictionary<string, MigrationCatalogObject> objectsById =
+            catalog.Objects.ToDictionary(
+                static item => item.ObjectId,
+                StringComparer.Ordinal);
+
+        MigrationCatalogObject view =
+            FindObject(catalog, MigrationObjectKind.View, "OrderSummary");
+        Assert.Equal("unparsed", Facet(view, "sqlServerModuleAnalysis"));
+        Assert.Equal(
+            "available-unparsed",
+            Facet(view, "sqlServerModuleDefinitionStatus"));
+        Assert.StartsWith(
+            "sha256:",
+            Facet(view, "sqlServerModuleDefinitionDigest"),
+            StringComparison.Ordinal);
+        Assert.Equal("true", Facet(view, "sqlServerWithCheckOption"));
+        Assert.Equal(MigrationObjectKind.Namespace, objectsById[view.ParentObjectId!].Kind);
+        Assert.Equal(
+            ["Amount", "Id"],
+            catalog.Objects
+                .Where(item =>
+                    item.Kind == MigrationObjectKind.Column &&
+                    item.ParentObjectId == view.ObjectId)
+                .Select(static item => item.SourceName)
+                .OrderBy(static item => item, StringComparer.Ordinal)
+                .ToArray());
+        Assert.Null(Facet(view, "deterministic"));
+        Assert.Null(Facet(view, "rowLocal"));
+        Assert.Null(Facet(view, "targetSql"));
+
+        MigrationCatalogObject dmlTrigger =
+            FindObject(catalog, MigrationObjectKind.Trigger, "TR_Orders_Audit");
+        Assert.Equal(
+            "Orders",
+            objectsById[dmlTrigger.ParentObjectId!].SourceName);
+        Assert.Equal("true", Facet(dmlTrigger, "sqlServerInsertEvent"));
+        Assert.Equal("true", Facet(dmlTrigger, "sqlServerUpdateEvent"));
+        Assert.Equal(
+            ["INSERT", "UPDATE"],
+            catalog.Objects
+                .Where(item =>
+                    item.Kind == MigrationObjectKind.Other &&
+                    item.ParentObjectId == dmlTrigger.ObjectId &&
+                    Facet(item, "sqlServerObjectClass") == "trigger-event")
+                .Select(static item => item.SourceName)
+                .OrderBy(static item => item, StringComparer.Ordinal)
+                .ToArray());
+
+        MigrationCatalogObject ddlTrigger =
+            FindObject(catalog, MigrationObjectKind.Trigger, "TR_Database_Ddl");
+        Assert.Equal(
+            MigrationObjectKind.Database,
+            objectsById[ddlTrigger.ParentObjectId!].Kind);
+        Assert.Equal("0", Facet(ddlTrigger, "sqlServerParentClass"));
+        Assert.Equal("true", Facet(ddlTrigger, "sqlServerDisabled"));
+
+        MigrationCatalogObject routine =
+            FindObject(catalog, MigrationObjectKind.Routine, "usp_CycleA");
+        Assert.Equal("P", Facet(routine, "sqlServerRoutineType"));
+        MigrationCatalogObject encrypted =
+            FindObject(catalog, MigrationObjectKind.Routine, "usp_CycleB");
+        Assert.Equal(
+            "encrypted",
+            Facet(encrypted, "sqlServerModuleDefinitionStatus"));
+        Assert.Equal("true", Facet(encrypted, "sqlServerModuleEncrypted"));
+        Assert.Null(Facet(encrypted, "sqlServerModuleDefinitionDigest"));
+
+        MigrationCatalogObject scalarFunction =
+            FindObject(catalog, MigrationObjectKind.Routine, "ufn_OrderAmount");
+        MigrationCatalogObject returnParameter = Assert.Single(
+            catalog.Objects,
+            item =>
+                item.Kind == MigrationObjectKind.Other &&
+                item.ParentObjectId == scalarFunction.ObjectId &&
+                item.SourceName == "$return");
+        Assert.Equal(
+            "routine-parameter",
+            Facet(returnParameter, "sqlServerObjectClass"));
+        Assert.Equal("0", Facet(returnParameter, "sqlServerParameterId"));
+        Assert.Equal("true", Facet(
+            returnParameter,
+            "sqlServerParameterReturnValue"));
+        Assert.Equal(
+            "false",
+            Facet(returnParameter, "sqlServerCatalogHasDefaultValue"));
+        Assert.Equal(
+            "not-catalog-reported",
+            Facet(returnParameter, "sqlServerParameterDefaultEvidence"));
+        Assert.Null(Facet(
+            returnParameter,
+            "sqlServerParameterHasDefault"));
+
+        string[] rules = catalog.Diagnostics
+            .Select(static item => item.RuleId)
+            .ToArray();
+        Assert.Contains("MIG-SQLSERVER-MODULE-ANALYSIS-PENDING-001", rules);
+        Assert.Contains("MIG-SQLSERVER-MODULE-ENCRYPTED-001", rules);
+        Assert.Contains("MIG-SQLSERVER-VIEW-SHAPE-UNSUPPORTED-001", rules);
+        Assert.Contains("MIG-SQLSERVER-TRIGGER-SHAPE-UNSUPPORTED-001", rules);
+        Assert.Contains("MIG-SQLSERVER-ROUTINE-UNSUPPORTED-001", rules);
+
+        string serialized = MigrationArtifactSerializer.SerializeCatalog(catalog);
+        Assert.DoesNotContain(
+            SqlServerTestSnapshot.SecretModuleDefinition,
+            serialized,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ModulePassword=NeverPersistThis",
+            serialized,
+            StringComparison.Ordinal);
+
+        const int explicitPrincipalId = 1_234_567_890;
+        MigrationCatalog explicitExecuteAsCatalog = Build(
+            Rebuild(
+                snapshot,
+                modules: snapshot.Modules.Select(item =>
+                    item.ObjectId == 7_000
+                        ? item with
+                        {
+                            ExecuteAsPrincipalId = explicitPrincipalId,
+                        }
+                        : item)));
+        MigrationCatalogObject explicitExecuteAsRoutine = FindObject(
+            explicitExecuteAsCatalog,
+            MigrationObjectKind.Routine,
+            "usp_CycleA");
+        Assert.Equal(
+            "explicit-principal",
+            Facet(explicitExecuteAsRoutine, "sqlServerModuleExecuteAs"));
+        Assert.Null(Facet(
+            explicitExecuteAsRoutine,
+            "sqlServerModuleExecuteAsPrincipalId"));
+        Assert.DoesNotContain(
+            explicitPrincipalId.ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+            MigrationArtifactSerializer.SerializeCatalog(
+                explicitExecuteAsCatalog),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildRetainsDependencyEvidenceWithoutInventingUnsafeOrdering()
+    {
+        SqlServerCatalogSnapshot snapshot = SqlServerTestSnapshot.Create();
+        SqlServerExpressionDependencyAuditMetadata dependencyAudit = new(
+            snapshot.ExpressionDependencyAudit.Dependencies
+                .Select(item =>
+                    item.ReferencedServerName == "ExternalServer"
+                        ? item with
+                        {
+                            ReferencedSchemaName = "ExternalSchema",
+                        }
+                        : item)
+                .ToArray(),
+            snapshot.ExpressionDependencyAudit.Attempted);
+        MigrationCatalog catalog = Build(
+            Rebuild(
+                snapshot,
+                expressionDependencyAudit: dependencyAudit));
+        MigrationContractValidator.ValidateCatalog(catalog);
+
+        MigrationCatalogObject cycleA =
+            FindObject(catalog, MigrationObjectKind.Routine, "usp_CycleA");
+        MigrationCatalogObject cycleB =
+            FindObject(catalog, MigrationObjectKind.Routine, "usp_CycleB");
+        Assert.Empty(cycleA.DependsOn);
+        Assert.Empty(cycleB.DependsOn);
+
+        MigrationCatalogObject[] dependencies = catalog.Objects
+            .Where(item =>
+                item.Kind == MigrationObjectKind.Other &&
+                Facet(item, "sqlServerObjectClass") ==
+                    "expression-dependency")
+            .ToArray();
+        Assert.Equal(7, dependencies.Length);
+        Assert.Equal(
+            5,
+            dependencies.Count(item =>
+                Facet(item, "sqlServerDependencyClassification") ==
+                    "resolved-local"));
+        Assert.All(
+            dependencies.Where(item =>
+                Facet(item, "sqlServerDependencyClassification") ==
+                    "resolved-local"),
+            static item => Assert.Single(item.DependsOn));
+
+        Assert.Contains(
+            dependencies,
+            item =>
+                item.ParentObjectId == cycleA.ObjectId &&
+                item.DependsOn.SequenceEqual([cycleB.ObjectId]));
+        Assert.Contains(
+            dependencies,
+            item =>
+                item.ParentObjectId == cycleB.ObjectId &&
+                item.DependsOn.SequenceEqual([cycleA.ObjectId]));
+        MigrationCatalogObject[] cyclicDependencies = dependencies
+            .Where(item =>
+                Facet(item, "sqlServerDependencyCycle") == "true")
+            .ToArray();
+        Assert.Equal(2, cyclicDependencies.Length);
+        Assert.All(
+            dependencies.Except(cyclicDependencies),
+            static item => Assert.Equal(
+                "false",
+                Facet(item, "sqlServerDependencyCycle")));
+        MigrationDiagnostic[] cycleDiagnostics = catalog.Diagnostics
+            .Where(static item =>
+                item.RuleId == "MIG-SQLSERVER-DEPENDENCY-CYCLE-001")
+            .ToArray();
+        Assert.Equal(2, cycleDiagnostics.Length);
+        Assert.All(
+            cycleDiagnostics,
+            static item => Assert.False(item.CanOverride));
+
+        MigrationCatalogObject callerDependent = Assert.Single(
+            dependencies,
+            item =>
+                Facet(item, "sqlServerDependencyClassification") ==
+                    "caller-dependent");
+        MigrationCatalogObject external = Assert.Single(
+            dependencies,
+            item =>
+                Facet(item, "sqlServerDependencyClassification") ==
+                    "external-server");
+        Assert.Empty(callerDependent.DependsOn);
+        Assert.Empty(external.DependsOn);
+        Assert.StartsWith(
+            "sha256:",
+            Facet(external, "sqlServerReferencedServerDigest"),
+            StringComparison.Ordinal);
+
+        MigrationDiagnostic[] unresolved = catalog.Diagnostics
+            .Where(static item =>
+                item.RuleId ==
+                    "MIG-SQLSERVER-DEPENDENCY-UNRESOLVED-001")
+            .ToArray();
+        Assert.Equal(2, unresolved.Length);
+        Assert.All(unresolved, static item => Assert.False(item.CanOverride));
+
+        string serialized = MigrationArtifactSerializer.SerializeCatalog(catalog);
+        Assert.DoesNotContain(
+            "ExternalServer",
+            serialized,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ExternalDatabase",
+            serialized,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ExternalSchema",
+            serialized,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "RemoteRoutine",
+            serialized,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildDoesNotFallBackToAParentForAnUnknownReferencingColumn()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        SqlServerExpressionDependencyAuditMetadata audit = new(
+            [
+                baseline.ExpressionDependencyAudit.Dependencies[0] with
+                {
+                    ReferencingId = 100,
+                    ReferencingMinorId = 999,
+                },
+                .. baseline.ExpressionDependencyAudit.Dependencies.Skip(1),
+            ],
+            Attempted: true);
+
+        MigrationCatalog catalog = Build(
+            Rebuild(baseline, expressionDependencyAudit: audit));
+        MigrationCatalogObject dependency = Assert.Single(
+            catalog.Objects,
+            item =>
+                item.Kind == MigrationObjectKind.Other &&
+                Facet(item, "sqlServerObjectClass") ==
+                    "expression-dependency" &&
+                Facet(item, "sqlServerDependencyClassification") ==
+                    "untracked-referencer");
+        MigrationCatalogObject database = Assert.Single(
+            catalog.Objects,
+            static item => item.Kind == MigrationObjectKind.Database);
+
+        Assert.Equal(database.ObjectId, dependency.ParentObjectId);
+        Assert.Empty(dependency.DependsOn);
+        Assert.Equal(
+            "false",
+            Facet(dependency, "sqlServerResolvedLocalEndpoint"));
+        Assert.Contains(
+            catalog.Diagnostics,
+            item =>
+                item.ObjectId == dependency.ObjectId &&
+                item.RuleId ==
+                    "MIG-SQLSERVER-DEPENDENCY-UNRESOLVED-001" &&
+                    !item.CanOverride);
+    }
+
+    [Fact]
+    public void BuildDoesNotInventACycleForAShuffledConvergingDag()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        SqlServerExpressionDependencyMetadata aToB =
+            baseline.ExpressionDependencyAudit.Dependencies.Single(
+                static item =>
+                    item.ReferencingId == 7_000 &&
+                    item.ReferencedId == 7_001);
+        SqlServerExpressionDependencyMetadata aToC = aToB with
+        {
+            ReferencedEntityName = "ufn_OrderAmount",
+            ReferencedId = 7_002,
+        };
+        SqlServerExpressionDependencyMetadata cToB = aToB with
+        {
+            ReferencingId = 7_002,
+        };
+
+        MigrationCatalog ordered = Build(
+            Rebuild(
+                baseline,
+                expressionDependencyAudit:
+                    new SqlServerExpressionDependencyAuditMetadata(
+                        [aToB, aToC, cToB],
+                        Attempted: true)));
+        MigrationCatalog shuffled = Build(
+            Rebuild(
+                baseline,
+                expressionDependencyAudit:
+                    new SqlServerExpressionDependencyAuditMetadata(
+                        [cToB, aToC, aToB],
+                        Attempted: true)));
+
+        Assert.Equal(
+            MigrationArtifactSerializer.SerializeCatalog(ordered),
+            MigrationArtifactSerializer.SerializeCatalog(shuffled));
+        MigrationCatalogObject[] dependencies = shuffled.Objects
+            .Where(item =>
+                item.Kind == MigrationObjectKind.Other &&
+                Facet(item, "sqlServerObjectClass") ==
+                    "expression-dependency")
+            .ToArray();
+        Assert.Equal(3, dependencies.Length);
+        Assert.All(
+            dependencies,
+            static item => Assert.Equal(
+                "false",
+                Facet(item, "sqlServerDependencyCycle")));
+        Assert.DoesNotContain(
+            shuffled.Diagnostics,
+            static item =>
+                item.RuleId == "MIG-SQLSERVER-DEPENDENCY-CYCLE-001");
+    }
+
+    [Fact]
+    public void BuildDoesNotMisclassifyAnUnavailableModuleAsEncrypted()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        SqlServerModuleMetadata viewModule = baseline.Modules.Single(
+            static item => item.ObjectType == "V");
+        SqlServerCatalogSnapshot hidden = Rebuild(
+            baseline,
+            modules:
+            [
+                viewModule with
+                {
+                    DefinitionBytes = null,
+                    Definition = null,
+                    IsEncrypted = false,
+                },
+                .. baseline.Modules.Where(item =>
+                    item.ObjectId != viewModule.ObjectId),
+            ]);
+
+        MigrationCatalog catalog = Build(hidden);
+        MigrationCatalogObject view =
+            FindObject(catalog, MigrationObjectKind.View, "OrderSummary");
+        Assert.Equal(
+            "unavailable",
+            Facet(view, "sqlServerModuleDefinitionStatus"));
+        Assert.Equal("false", Facet(view, "sqlServerModuleEncrypted"));
+        Assert.Contains(
+            catalog.Diagnostics,
+            item =>
+                item.ObjectId == view.ObjectId &&
+                item.RuleId ==
+                    "MIG-SQLSERVER-MODULE-DEFINITION-UNAVAILABLE-001" &&
+                !item.CanOverride);
+        Assert.DoesNotContain(
+            catalog.Diagnostics,
+            item =>
+                item.ObjectId == view.ObjectId &&
+                item.RuleId == "MIG-SQLSERVER-MODULE-ENCRYPTED-001");
+    }
+
+    [Fact]
+    public void PlannerExcludesUnprovenProgrammableObjectsAndRemainsBlocked()
+    {
+        MigrationCatalog catalog = Build(SqlServerTestSnapshot.Create());
+        MigrationPlan plan = new MigrationPlanner().CreatePlan(
+            catalog,
+            new MigrationPlanningOptions { AcceptAllExclusions = true });
+
+        Assert.False(
+            PlanObject(
+                plan,
+                catalog,
+                MigrationObjectKind.View,
+                "OrderSummary").Included);
+        Assert.False(
+            PlanObject(
+                plan,
+                catalog,
+                MigrationObjectKind.Trigger,
+                "TR_Orders_Audit").Included);
+        Assert.False(
+            PlanObject(
+                plan,
+                catalog,
+                MigrationObjectKind.Routine,
+                "usp_CycleA").Included);
+
+        MigrationPlanReadiness readiness =
+            MigrationPlanReadinessValidator.Evaluate(plan, catalog);
+        Assert.Equal(MigrationPlanReadinessStatus.Blocked, readiness.Status);
+        Assert.Contains(
+            catalog.Diagnostics.Single(static item =>
+                item.RuleId ==
+                    "MIG-SQLSERVER-DEPENDENCY-COVERAGE-PARTIAL-001")
+                .DiagnosticId,
+            readiness.BlockingDiagnosticIds);
+    }
+
+    [Fact]
     public void PlannerIncludesOnlyTheProvenRelationalSubset()
     {
         MigrationCatalog catalog =
@@ -377,7 +843,16 @@ public sealed class SqlServerCatalogBuilderTests
         };
 
         MigrationCatalog catalog = Build(
-            SqlServerTestSnapshot.Create(instance: instance, database: database));
+            SqlServerTestSnapshot.Create(
+                instance: instance,
+                database: database,
+                views: SqlServerTestSnapshot.Views().Select(static item =>
+                    item with
+                    {
+                        LedgerViewType = null,
+                        LedgerViewTypeDescription = null,
+                        IsDroppedLedgerView = null,
+                    })));
         MigrationCatalogObject databaseObject = Assert.Single(
             catalog.Objects,
             static item => item.Kind == MigrationObjectKind.Database);
@@ -584,6 +1059,169 @@ public sealed class SqlServerCatalogBuilderTests
     }
 
     [Fact]
+    public void BuildRejectsCollidingGlobalSqlObjectIdentifiers()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        SqlServerSequenceMetadata collidingSequence =
+            baseline.Sequences[0] with
+            {
+                ObjectId = baseline.Views[0].ObjectId,
+            };
+
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    sequences:
+                    [
+                        collidingSequence,
+                        .. baseline.Sequences.Skip(1),
+                    ])));
+    }
+
+    [Fact]
+    public void BuildValidatesVersionedLedgerViewMetadata()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    views:
+                    [
+                        baseline.Views[0] with
+                        {
+                            LedgerViewTypeDescription = "LEDGER_VIEW",
+                        },
+                        .. baseline.Views.Skip(1),
+                    ])));
+
+        SqlServerInstanceMetadata preLedgerInstance = baseline.Instance with
+        {
+            ProductMajorVersion = 15,
+            ProductVersion = "15.0.2000.5",
+        };
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    instance: preLedgerInstance)));
+
+        MigrationCatalog preLedgerCatalog = Build(
+            Rebuild(
+                baseline,
+                instance: preLedgerInstance,
+                views: baseline.Views.Select(static item => item with
+                {
+                    LedgerViewType = null,
+                    LedgerViewTypeDescription = null,
+                    IsDroppedLedgerView = null,
+                })));
+        Assert.NotEmpty(preLedgerCatalog.Objects);
+    }
+
+    [Fact]
+    public void BuildCouplesDependencyPermissionToAuditExecution()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    database: baseline.Database with
+                    {
+                        HasSelectSqlExpressionDependencies = false,
+                    })));
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    expressionDependencyAudit:
+                        new SqlServerExpressionDependencyAuditMetadata(
+                            [],
+                            Attempted: false))));
+
+        MigrationCatalog unavailableCatalog = Build(
+            Rebuild(
+                baseline,
+                database: baseline.Database with
+                {
+                    HasSelectSqlExpressionDependencies = false,
+                },
+                expressionDependencyAudit:
+                    new SqlServerExpressionDependencyAuditMetadata(
+                        [],
+                        Attempted: false)));
+        Assert.NotEmpty(unavailableCatalog.Objects);
+    }
+
+    [Fact]
+    public void BuildRejectsInvalidRoutineParameterShapes()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    parameters: baseline.Parameters.Where(static item =>
+                        !(item.ObjectId == 7_002 &&
+                          item.ParameterId == 0)))));
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    parameters: baseline.Parameters.Select(static item =>
+                        item.ObjectId == 7_000 &&
+                        item.ParameterId == 1
+                            ? item with
+                            {
+                                ParameterId = 0,
+                                Name = string.Empty,
+                            }
+                            : item))));
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    parameters: baseline.Parameters.Select(static item =>
+                        item.ObjectId == 7_000 &&
+                        item.ParameterId == 1
+                            ? item with
+                            {
+                                MaxLength = -1,
+                            }
+                            : item))));
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    parameters: baseline.Parameters.Select(static item =>
+                        item.ObjectId == 7_000 &&
+                        item.ParameterId == 1
+                            ? item with
+                            {
+                                Precision = 39,
+                            }
+                            : item))));
+        Assert.Throws<SqlServerMigrationException>(
+            () => Build(
+                Rebuild(
+                    baseline,
+                    parameters: baseline.Parameters.Select(static item =>
+                        item.ObjectId == 7_000 &&
+                        item.ParameterId == 1
+                            ? item with
+                            {
+                                TypeName = "datetime2",
+                                SystemTypeName = "datetime2",
+                                MaxLength = 8,
+                                Precision = 27,
+                                Scale = 8,
+                            }
+                            : item))));
+    }
+
+    [Fact]
     public void BuildFailsClosedForProfileCancellationAndBounds()
     {
         SqlServerCatalogSnapshot snapshot = SqlServerTestSnapshot.Create();
@@ -657,6 +1295,65 @@ public sealed class SqlServerCatalogBuilderTests
                 snapshot,
                 Request(),
                 new SqlServerInspectionLimits { MaxSequences = 1 },
+                Ct));
+        SqlServerCatalogSnapshot twoViews = Rebuild(
+            snapshot,
+            views:
+            [
+                .. snapshot.Views,
+                snapshot.Views[0] with
+                {
+                    ObjectId = 5_001,
+                    Name = "SecondView",
+                },
+            ]);
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                twoViews,
+                Request(),
+                new SqlServerInspectionLimits { MaxViews = 1 },
+                Ct));
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                snapshot,
+                Request(),
+                new SqlServerInspectionLimits { MaxViewColumns = 1 },
+                Ct));
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                snapshot,
+                Request(),
+                new SqlServerInspectionLimits { MaxTriggers = 1 },
+                Ct));
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                snapshot,
+                Request(),
+                new SqlServerInspectionLimits { MaxTriggerEvents = 2 },
+                Ct));
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                snapshot,
+                Request(),
+                new SqlServerInspectionLimits { MaxRoutines = 2 },
+                Ct));
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                snapshot,
+                Request(),
+                new SqlServerInspectionLimits { MaxModules = 5 },
+                Ct));
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                snapshot,
+                Request(),
+                new SqlServerInspectionLimits { MaxParameters = 3 },
+                Ct));
+        Assert.Throws<SqlServerMigrationException>(
+            () => SqlServerCatalogBuilder.Build(
+                snapshot,
+                Request(),
+                new SqlServerInspectionLimits { MaxExpressionDependencies = 6 },
                 Ct));
         Assert.Throws<SqlServerMigrationException>(
             () => SqlServerCatalogBuilder.Build(
@@ -992,6 +1689,95 @@ public sealed class SqlServerCatalogBuilderTests
             Rebuild(baseline, permissionAuditAfter: changedAudit));
     }
 
+    [Fact]
+    public void SnapshotFingerprintBindsProgrammableObjectMetadata()
+    {
+        SqlServerCatalogSnapshot baseline = SqlServerTestSnapshot.Create();
+        string expected = SqlServerCatalogBuilder.ComputeSnapshotDigest(baseline);
+
+        AssertDigestChanges(
+            expected,
+            Rebuild(
+                baseline,
+                views:
+                [
+                    baseline.Views[0] with { WithCheckOption = false },
+                    .. baseline.Views.Skip(1),
+                ]));
+        AssertDigestChanges(
+            expected,
+            Rebuild(
+                baseline,
+                viewColumns:
+                [
+                    baseline.ViewColumns[0] with { IsAnsiPadded = true },
+                    .. baseline.ViewColumns.Skip(1),
+                ]));
+        AssertDigestChanges(
+            expected,
+            Rebuild(
+                baseline,
+                triggers:
+                [
+                    baseline.Triggers[0] with { IsDisabled = true },
+                    .. baseline.Triggers.Skip(1),
+                ]));
+        AssertDigestChanges(
+            expected,
+            Rebuild(
+                baseline,
+                triggerEvents:
+                [
+                    baseline.TriggerEvents[0] with { IsLast = true },
+                    .. baseline.TriggerEvents.Skip(1),
+                ]));
+        AssertDigestChanges(
+            expected,
+            Rebuild(
+                baseline,
+                routines:
+                [
+                    baseline.Routines[0] with { IsAutoExecuted = true },
+                    .. baseline.Routines.Skip(1),
+                ]));
+        SqlServerModuleMetadata module = baseline.Modules[0];
+        Assert.NotNull(module.Definition);
+        AssertDigestChanges(
+            expected,
+            Rebuild(
+                baseline,
+                modules:
+                [
+                    module with
+                    {
+                        DefinitionBytes = module.DefinitionBytes + 2,
+                        Definition = module.Definition + " ",
+                    },
+                    .. baseline.Modules.Skip(1),
+                ]));
+        AssertDigestChanges(
+            expected,
+            Rebuild(
+                baseline,
+                parameters:
+                [
+                    baseline.Parameters[0] with { IsOutput = true },
+                    .. baseline.Parameters.Skip(1),
+                ]));
+        SqlServerExpressionDependencyAuditMetadata changedAudit = new(
+            [
+                baseline.ExpressionDependencyAudit.Dependencies[0] with
+                {
+                    IsAmbiguous = true,
+                },
+                .. baseline.ExpressionDependencyAudit.Dependencies.Skip(1),
+            ],
+            baseline.ExpressionDependencyAudit.Attempted);
+        AssertDigestChanges(
+            expected,
+            Rebuild(baseline, expressionDependencyAudit: changedAudit));
+    }
+
     private static MigrationCatalog Build(SqlServerCatalogSnapshot snapshot) =>
         SqlServerCatalogBuilder.Build(
             snapshot,
@@ -1012,6 +1798,12 @@ public sealed class SqlServerCatalogBuilderTests
         new(
             audit.Tokens.Reverse().ToArray(),
             audit.Denials.Reverse().ToArray(),
+            audit.Attempted);
+
+    private static SqlServerExpressionDependencyAuditMetadata Reverse(
+        SqlServerExpressionDependencyAuditMetadata audit) =>
+        new(
+            audit.Dependencies.Reverse().ToArray(),
             audit.Attempted);
 
     private static MigrationCatalogObject FindObject(
@@ -1070,6 +1862,8 @@ public sealed class SqlServerCatalogBuilderTests
 
     private static SqlServerCatalogSnapshot Rebuild(
         SqlServerCatalogSnapshot source,
+        SqlServerInstanceMetadata? instance = null,
+        SqlServerDatabaseMetadata? database = null,
         IEnumerable<SqlServerColumnMetadata>? columns = null,
         IEnumerable<SqlServerKeyMetadata>? keys = null,
         IEnumerable<SqlServerIndexMetadata>? indexes = null,
@@ -1079,12 +1873,20 @@ public sealed class SqlServerCatalogBuilderTests
         IEnumerable<SqlServerCheckMetadata>? checks = null,
         IEnumerable<SqlServerSequenceMetadata>? sequences = null,
         SqlServerPermissionAuditMetadata? permissionAuditBefore = null,
-        SqlServerPermissionAuditMetadata? permissionAuditAfter = null) =>
+        SqlServerPermissionAuditMetadata? permissionAuditAfter = null,
+        IEnumerable<SqlServerViewMetadata>? views = null,
+        IEnumerable<SqlServerViewColumnMetadata>? viewColumns = null,
+        IEnumerable<SqlServerTriggerMetadata>? triggers = null,
+        IEnumerable<SqlServerTriggerEventMetadata>? triggerEvents = null,
+        IEnumerable<SqlServerRoutineMetadata>? routines = null,
+        IEnumerable<SqlServerModuleMetadata>? modules = null,
+        IEnumerable<SqlServerParameterMetadata>? parameters = null,
+        SqlServerExpressionDependencyAuditMetadata? expressionDependencyAudit = null) =>
         new(
             source.EndpointDigest,
             source.ProviderVersion,
-            source.Instance,
-            source.Database,
+            instance ?? source.Instance,
+            database ?? source.Database,
             source.Schemas,
             source.Tables,
             columns ?? source.Columns,
@@ -1096,7 +1898,15 @@ public sealed class SqlServerCatalogBuilderTests
             checks ?? source.Checks,
             sequences ?? source.Sequences,
             permissionAuditBefore ?? source.PermissionAuditBefore,
-            permissionAuditAfter ?? source.PermissionAuditAfter);
+            permissionAuditAfter ?? source.PermissionAuditAfter,
+            views ?? source.Views,
+            viewColumns ?? source.ViewColumns,
+            triggers ?? source.Triggers,
+            triggerEvents ?? source.TriggerEvents,
+            routines ?? source.Routines,
+            modules ?? source.Modules,
+            parameters ?? source.Parameters,
+            expressionDependencyAudit ?? source.ExpressionDependencyAudit);
 
     private static void AssertDigestChanges(
         string expected,
@@ -1108,14 +1918,22 @@ public sealed class SqlServerCatalogBuilderTests
     private static MigrationCatalogObject FindColumn(
         MigrationCatalog catalog,
         string name,
-        string? sourceNamespace = null) =>
-        Assert.Single(
+        string? sourceNamespace = null)
+    {
+        IReadOnlySet<string> tableIds = catalog.Objects
+            .Where(static item => item.Kind == MigrationObjectKind.Table)
+            .Select(static item => item.ObjectId)
+            .ToHashSet(StringComparer.Ordinal);
+        return Assert.Single(
             catalog.Objects,
             item =>
                 item.Kind == MigrationObjectKind.Column &&
+                item.ParentObjectId is not null &&
+                tableIds.Contains(item.ParentObjectId) &&
                 item.SourceName == name &&
                 (sourceNamespace is null ||
                  item.SourceNamespace == sourceNamespace));
+    }
 
     private static string? Facet(MigrationCatalogObject item, string name) =>
         item.Facets.SingleOrDefault(

@@ -16,9 +16,17 @@ internal sealed record SqlServerInspectionLimits
     public const int MaximumForeignKeyColumns = 80_000;
     public const int MaximumChecks = 20_000;
     public const int MaximumSequences = 4_096;
+    public const int MaximumViews = 10_000;
+    public const int MaximumViewColumns = 20_000;
+    public const int MaximumTriggers = 20_000;
+    public const int MaximumTriggerEvents = 80_000;
+    public const int MaximumRoutines = 20_000;
+    public const int MaximumModules = 40_000;
+    public const int MaximumParameters = 80_000;
+    public const int MaximumExpressionDependencies = 160_000;
     public const int MaximumUserTokens = 4_096;
     public const int MaximumPermissionDenials = 32_768;
-    public const int MaximumStructuralRowsTotal = 250_000;
+    public const int MaximumStructuralRowsTotal = 500_000;
     public const int MaximumPermissionRowsTotal = 65_536;
     public const int MaximumNameBytes = 128 * 4;
     public const int MaximumExpressionBytes = 1024 * 1024;
@@ -37,6 +45,15 @@ internal sealed record SqlServerInspectionLimits
     public int MaxForeignKeyColumns { get; init; } = MaximumForeignKeyColumns;
     public int MaxChecks { get; init; } = MaximumChecks;
     public int MaxSequences { get; init; } = MaximumSequences;
+    public int MaxViews { get; init; } = MaximumViews;
+    public int MaxViewColumns { get; init; } = MaximumViewColumns;
+    public int MaxTriggers { get; init; } = MaximumTriggers;
+    public int MaxTriggerEvents { get; init; } = MaximumTriggerEvents;
+    public int MaxRoutines { get; init; } = MaximumRoutines;
+    public int MaxModules { get; init; } = MaximumModules;
+    public int MaxParameters { get; init; } = MaximumParameters;
+    public int MaxExpressionDependencies { get; init; } =
+        MaximumExpressionDependencies;
     public int MaxUserTokens { get; init; } = MaximumUserTokens;
     public int MaxPermissionDenials { get; init; } = MaximumPermissionDenials;
     public int MaxStructuralRowsTotal { get; init; } = MaximumStructuralRowsTotal;
@@ -61,6 +78,20 @@ internal sealed record SqlServerInspectionLimits
             MaximumForeignKeyColumns);
         Validate(nameof(MaxChecks), MaxChecks, MaximumChecks);
         Validate(nameof(MaxSequences), MaxSequences, MaximumSequences);
+        Validate(nameof(MaxViews), MaxViews, MaximumViews);
+        Validate(nameof(MaxViewColumns), MaxViewColumns, MaximumViewColumns);
+        Validate(nameof(MaxTriggers), MaxTriggers, MaximumTriggers);
+        Validate(
+            nameof(MaxTriggerEvents),
+            MaxTriggerEvents,
+            MaximumTriggerEvents);
+        Validate(nameof(MaxRoutines), MaxRoutines, MaximumRoutines);
+        Validate(nameof(MaxModules), MaxModules, MaximumModules);
+        Validate(nameof(MaxParameters), MaxParameters, MaximumParameters);
+        Validate(
+            nameof(MaxExpressionDependencies),
+            MaxExpressionDependencies,
+            MaximumExpressionDependencies);
         Validate(nameof(MaxUserTokens), MaxUserTokens, MaximumUserTokens);
         Validate(
             nameof(MaxPermissionDenials),

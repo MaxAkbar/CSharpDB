@@ -4,23 +4,29 @@ This optional project is the bounded SQL Server readiness analyzer for the
 CSharpDB migration tooling. It inspects server and database facts plus schemas,
 ordinary user tables, columns, defaults, identity and computed-column metadata,
 primary and unique keys, foreign keys, check constraints, table indexes, and
-sequences. It does not copy SQL Server rows or write to either the source or a
-CSharpDB target.
+sequences. It also inventories user views, database and object triggers,
+procedures and functions, routine parameters, bounded SQL module facts, trigger
+events, and declared SQL expression dependencies. It does not copy SQL Server
+rows or write to either the source or a CSharpDB target.
 
-The intended qualification boundary is on-premises SQL Server 2019, 2022, and
-2025 at their default compatibility levels 150, 160, and 170. These lanes
-remain provisional until exact-tag live fixtures pass; the analyzer records
-that pending proof explicitly. Other engine variants, major versions, and
-compatibility levels remain visible in the catalog but receive a stable
-unqualified-source diagnostic. Azure SQL Database, Azure SQL Managed Instance,
-Synapse, Fabric, and other compatible services are not silently treated as
-equivalent to the intended on-premises products.
+The reader requires product major version 15 or later. It rejects pre-2019
+engines immediately after the server/database preflight, before running any
+structural catalog query. The intended qualification boundary is on-premises
+SQL Server 2019, 2022, and 2025 at their default compatibility levels 150, 160,
+and 170. These lanes remain provisional until exact-tag live fixtures pass; the
+analyzer records that pending proof explicitly. Later or otherwise unqualified
+major versions, compatibility levels, and engine variants that pass the version
+gate remain visible in the catalog but receive a stable unqualified-source
+diagnostic. Azure SQL Database, Azure SQL Managed Instance, Synapse, Fabric,
+and other compatible services are not silently treated as equivalent to the
+intended on-premises products.
 
-This checkpoint is intentionally non-shipping. Views, triggers, routines,
-module/dependency analysis, indexed views, full-text and physical partition
-inventory, ScriptDom analysis, CSharpDB DDL previews, CLI integration, and live
-server qualification are later Phase 7A checkpoints. A SQL Server data importer
-is a separately approved follow-on.
+This checkpoint is intentionally non-shipping. SQL module bodies and dependency
+rows are inventoried but not parsed, rebound, rewritten, or executed. Indexed
+view physical details, full-text and physical partition inventory, ScriptDom
+analysis, CSharpDB DDL previews, CLI integration, and live server qualification
+are later Phase 7A checkpoints. A SQL Server data importer is a separately
+approved follow-on.
 
 ## Read-only and security boundary
 
@@ -42,11 +48,13 @@ data- or schema-write grants. Database-level `db_owner`, `CONTROL`, and
 because an object- or schema-level `DENY` can still narrow visibility. The
 reader captures effective `sys.user_token` membership and applicable explicit
 denials before and after the structural inventory, probes `VIEW DEFINITION` on
-each visible schema and table, and probes `VIEW SECURITY DEFINITION` on SQL
-Server 2022 and later. A detected denial, missing definition access, or changed
-permission snapshot blocks completeness. Only sysadmin membership currently
-promotes visibility to complete; a clean least-privilege result remains
-`Unknown` until the live restricted-account qualification lane passes.
+each visible schema, table, view, and routine, and probes
+`VIEW SECURITY DEFINITION` on SQL Server 2022 and later. Trigger metadata
+visibility follows its parent database, table, or view. A detected denial,
+missing definition access, or changed permission snapshot blocks completeness.
+Only sysadmin membership currently promotes visibility to complete; a clean
+least-privilege result remains `Unknown` until the live restricted-account
+qualification lane passes.
 
 The caller supplies connection material at runtime. Raw connection strings,
 account names, access material, and endpoints are not written to migration
@@ -88,13 +96,16 @@ prove repeatable output with a restricted account.
 Fixed ceilings currently allow at most 4,096 schemas, 10,000 tables, and
 20,000 columns, with independent and aggregate ceilings for keys, indexes,
 index columns, foreign keys, foreign-key columns, checks, sequences, effective
-tokens, and denials. Additional ceilings cover names, individual and aggregate
-expressions, and total retained metadata. Crossing a ceiling fails the
-inspection rather than returning a truncated catalog. Default, computed, check,
-and index-filter SQL text is read and hashed only in memory; parsing remains
-deferred, and durable facets retain bounded facts and digests rather than the
-raw expression. Sequence fingerprints retain only static definition facts and
-exclude volatile current, last-used, and exhaustion values.
+tokens, denials, views, triggers, trigger events, routines, parameters, modules,
+and expression dependencies. Additional ceilings cover names, individual and
+aggregate expressions, and total retained metadata. Crossing a ceiling fails
+the inspection rather than returning a truncated catalog. Default, computed,
+check, index-filter, and SQL module text is read and hashed only in memory;
+parsing remains deferred, and durable facets retain bounded facts and digests
+rather than raw SQL text. Unresolved, external, ambiguous, or cyclic dependency
+shapes remain explicit blockers rather than invented executable ordering.
+Sequence fingerprints retain only static definition facts and exclude volatile
+current, last-used, and exhaustion values.
 
 ## Dependency
 
