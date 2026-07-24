@@ -5,8 +5,9 @@
 This document freezes deterministic export from one typed retained CSharpDB
 table to either a compact JSON root array or newline-delimited JSON. The
 restart-only publisher is implemented. The durable checkpoint artifact,
-prefix geometry, and generation transitions are also frozen here before the
-prepared-output lease activates them.
+prefix geometry, generation transitions, and platform-neutral replay
+coordinator are also implemented behind an internal prepared-output session
+boundary before the Windows lease activates them.
 
 The completed restart-only slice includes:
 
@@ -18,12 +19,12 @@ The completed restart-only slice includes:
 - retained-snapshot source binding; and
 - `migrate export --format json|ndjson` CLI routing.
 
-Durable checkpoint publication, prepared-output leasing, mid-stream replay and
-resume, killed-process staging reclamation, collection/document export, and
-typed export intent remain later slices. The disposable Windows VM
-qualification is also deferred. This restart-only slice flushes completed
-staging files to durable storage as supported by the host, but makes no
-directory-fsync or abrupt-power-loss guarantee.
+Durable checkpoint publication, the Windows prepared-output lease, public
+resume activation, killed-process staging reclamation, collection/document
+export, and typed export intent remain later slices. The disposable Windows
+VM qualification is also deferred. This restart-only publisher flushes
+completed staging files to durable storage as supported by the host, but
+makes no directory-fsync or abrupt-power-loss guarantee.
 
 ## Public Contract
 
@@ -115,10 +116,20 @@ rows. With no new rows, root-array completion adds exactly `]\n` and changes
 only physical evidence, while NDJSON completion changes only phase,
 generation, and final EOF evidence.
 
-This checkpoint contract does not itself create prepared files, replace an
-active checkpoint, truncate a torn tail, or resume enumeration. Those actions
-remain behind the deterministic prepared-output lease and replay coordinator
-in the next slices.
+`JsonStreamingExporter.WriteResumableCoreAsync` now implements the
+platform-neutral coordinator behind an internal prepared-output session. It
+creates generation zero, replays a recovered source without reading past a
+`Writing` boundary, proves `DataComplete` through EOF, independently rehashes
+the qualified prepared prefix before seeding new output, resumes strictly
+after the signed last row ID, persists periodic complete-object checkpoints,
+and finalizes root-array or NDJSON framing.
+
+The session contract, not the coordinator, owns exclusive files, binding and
+transition enforcement at persistence, torn-tail truncation, durable data
+flush, pending-checkpoint durability, atomic active replacement, and the
+post-pending cancellation cutoff. The internal coordinator is not yet exposed
+through the public exporter or CLI; that activation waits for the qualified
+Windows session implementation.
 
 ## Retained-Snapshot Publication
 
@@ -341,11 +352,12 @@ The merge gate covers:
 
 ## Deferred Work
 
-This slice freezes and validates checkpoint artifacts but does not yet persist
-an active checkpoint, resume a partial export, emit nested collection
-documents, or create a typed export-intent sidecar. Until the prepared-output
-lease and replay coordinator are activated, an exact CLI rerun still starts
-from row zero.
+This slice freezes and validates checkpoint artifacts and implements the
+portable replay coordinator, but it does not yet persist an active checkpoint
+through a real filesystem lease, expose partial-export resume publicly, emit
+nested collection documents, or create a typed export-intent sidecar. Until
+the prepared-output lease activates the coordinator, an exact CLI rerun still
+starts from row zero.
 
 An uncatchable process termination can leave an unreferenced private
 `.csharpdb-json-export-*.stage` sibling. A full rerun uses new private staging

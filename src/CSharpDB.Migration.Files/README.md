@@ -90,9 +90,17 @@ to complete-object physical and logical prefixes, validates exact root-array
 and NDJSON zero/nonzero boundary geometry, reconstructs terminal manifests,
 and permits only idempotent or exact next-generation transitions.
 Root-array `Writing` checkpoints omit and reserve `]\n`; NDJSON completion can
-be a phase-only transition over identical bytes. Checkpoint persistence,
-replay/resume, deterministic killed-process staging reclamation, and
-hard-power qualification remain later gates. See
+be a phase-only transition over identical bytes.
+
+The internal platform-neutral resumable coordinator now initializes
+generation zero, replays exactly to recovered object boundaries without
+lookahead, independently rehashes the qualified prepared prefix, resumes after
+the signed row ID, and emits periodic and EOF-qualified terminal checkpoints.
+Its injected session contract leaves exclusive filesystem ownership,
+torn-tail recovery, durable pending/active replacement, and the persistence
+cancellation cutoff to the next Windows lease slice. Public resume activation,
+deterministic killed-process staging reclamation, and hard-power qualification
+remain later gates. See
 [`migration-json-export-contract.md`](../../docs/migration-json-export-contract.md).
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a

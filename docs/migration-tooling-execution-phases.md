@@ -654,10 +654,11 @@ physical schema while replaying signed row IDs through EOF. The CLI now routes
 checkpoint and lossy-profile options. The adapter is intentionally bound to
 the built-in/default Engine reader composition; custom provider provenance is
 not yet representable in the manifest. The bounded canonical checkpoint
-artifact and its framing/generation rules are now frozen, but checkpoint
-publication, replay/resume, killed-process staging reclamation,
-abrupt-power-loss qualification, collection projection, and import CLI
-integration remain open.
+artifact, framing/generation rules, and platform-neutral replay/resume
+coordinator are now implemented. The Windows prepared-output lease, durable
+checkpoint publication, public resume activation, killed-process staging
+reclamation, abrupt-power-loss qualification, collection projection, and
+import CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -689,6 +690,11 @@ integration remain open.
   retained-source and export binding, complete-row physical/logical prefix
   evidence, root-array and NDJSON boundary geometry, final-manifest
   reconstruction, and explicit generation/terminal transition rules.
+- [x] Add a platform-neutral resumable coordinator with generation-zero
+  initialization, exact source replay, independent prepared-prefix rehash,
+  strict signed row-ID continuation, periodic object-boundary checkpoints,
+  EOF-qualified completion, and a lease-owned persistence/cancellation
+  boundary.
 - [ ] Add deterministic leased JSON export staging, safe killed-process orphan
   reclamation, durable checkpoints, and verified mid-stream resume.
 
