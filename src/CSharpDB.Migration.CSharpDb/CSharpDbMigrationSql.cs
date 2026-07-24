@@ -1,8 +1,20 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using CSharpDB.Primitives;
 
 namespace CSharpDB.Migration.CSharpDb;
+
+internal interface ICSharpDbMigrationActionObserver
+{
+    void BeginSqlAction(CancellationToken cancellationToken);
+
+    void ObserveSqlSegment(
+        string segment,
+        CancellationToken cancellationToken);
+
+    void ObserveCollectionAction(CancellationToken cancellationToken);
+}
 
 internal static class CSharpDbMigrationSql
 {
@@ -108,20 +120,55 @@ internal static class CSharpDbMigrationSql
     internal static IReadOnlyList<string> BuildStageActions(
         MigrationPlan plan,
         MigrationCatalog catalog,
-        MigrationSchemaStage stage)
+        MigrationSchemaStage stage) =>
+        BuildStageActionsObserved(
+            plan,
+            catalog,
+            stage,
+            actionObserver: null,
+            CancellationToken.None);
+
+    internal static IReadOnlyList<string> BuildStageActionsObserved(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        MigrationSchemaStage stage,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects = plan.Objects
             .ToDictionary(item => item.SourceObjectId, StringComparer.Ordinal);
         IReadOnlyDictionary<string, MigrationCatalogObject> catalogObjects = catalog.Objects
             .ToDictionary(item => item.ObjectId, StringComparer.Ordinal);
+        cancellationToken.ThrowIfCancellationRequested();
 
         return stage switch
         {
-            MigrationSchemaStage.LoadEssential => BuildTables(planObjects, catalog),
-            MigrationSchemaStage.SecondaryIndexes => BuildIndexes(planObjects, catalogObjects),
-            MigrationSchemaStage.Constraints => BuildConstraints(planObjects, catalogObjects),
-            MigrationSchemaStage.Views => BuildViews(planObjects, catalog),
-            MigrationSchemaStage.Triggers => BuildTriggers(planObjects, catalog),
+            MigrationSchemaStage.LoadEssential => BuildTables(
+                planObjects,
+                catalog,
+                actionObserver,
+                cancellationToken),
+            MigrationSchemaStage.SecondaryIndexes => BuildIndexes(
+                planObjects,
+                catalogObjects,
+                actionObserver,
+                cancellationToken),
+            MigrationSchemaStage.Constraints => BuildConstraints(
+                planObjects,
+                catalogObjects,
+                actionObserver,
+                cancellationToken),
+            MigrationSchemaStage.Views => BuildViews(
+                planObjects,
+                catalog,
+                actionObserver,
+                cancellationToken),
+            MigrationSchemaStage.Triggers => BuildTriggers(
+                planObjects,
+                catalog,
+                actionObserver,
+                cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(stage), stage, "Unknown migration schema stage."),
         };
     }
@@ -167,7 +214,9 @@ internal static class CSharpDbMigrationSql
 
     private static IReadOnlyList<string> BuildTables(
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
-        MigrationCatalog catalog)
+        MigrationCatalog catalog,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
     {
         var actions = new List<string>();
         foreach (MigrationCatalogObject table in catalog.Objects
@@ -175,13 +224,16 @@ internal static class CSharpDbMigrationSql
                      .Where(item => planObjects[item.ObjectId].Included)
                      .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (table.Kind == MigrationObjectKind.Collection)
             {
-                actions.Add(
-                    CollectionActionPrefix +
-                    (planObjects[table.ObjectId].TargetName ??
-                     throw new InvalidDataException(
-                         $"Included collection '{table.ObjectId}' has no target name.")));
+                AddCollectionAction(
+                    actions,
+                    planObjects[table.ObjectId].TargetName ??
+                    throw new InvalidDataException(
+                        $"Included collection '{table.ObjectId}' has no target name."),
+                    actionObserver,
+                    cancellationToken);
                 continue;
             }
 
@@ -194,8 +246,15 @@ internal static class CSharpDbMigrationSql
             if (columns.Length == 0)
                 throw new InvalidDataException($"Included table '{table.ObjectId}' has no included columns.");
 
-            string[] definitions = columns.Select(column =>
+            var definitions =
+                new (string Name, string Type, string? Collation, bool Nullable)[
+                    columns.Length];
+            for (int columnOrdinal = 0;
+                 columnOrdinal < columns.Length;
+                 columnOrdinal++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                MigrationCatalogObject column = columns[columnOrdinal];
                 MigrationPlanObject planned = planObjects[column.ObjectId];
                 MigrationTypeMapping mapping = planned.TypeMappings.Single();
                 if (mapping.TargetType is not DbType targetType || targetType == DbType.Null)
@@ -207,33 +266,62 @@ internal static class CSharpDbMigrationSql
                         $"Included column '{column.ObjectId}' requires a default, identity, or rowversion lowering that is not in the Phase 2 staged slice.");
                 }
 
-                string definition = $"{Quote(planned.TargetName!)} {TypeName(targetType)}";
                 string? collation = Facet(column, "collation");
                 if (!string.IsNullOrWhiteSpace(collation))
                 {
                     if (collation.Any(character => !(char.IsLetterOrDigit(character) || character is '_' or '-' or ':')))
                         throw new InvalidDataException($"Column '{column.ObjectId}' contains an unsafe collation token.");
-                    definition += $" COLLATE {collation}";
                 }
-                if (!IsNullable(column))
-                    definition += " NOT NULL";
-                return definition;
-            }).ToArray();
+                definitions[columnOrdinal] = (
+                    Quote(planned.TargetName!),
+                    TypeName(targetType),
+                    collation,
+                    IsNullable(column));
+            }
 
-            actions.Add($"CREATE TABLE {Quote(planObjects[table.ObjectId].TargetName!)} ({string.Join(", ", definitions)})");
+            AddSqlAction(
+                actions,
+                actionObserver,
+                cancellationToken,
+                writer =>
+                {
+                    writer.Append("CREATE TABLE ");
+                    writer.Append(Quote(planObjects[table.ObjectId].TargetName!));
+                    writer.Append(" (");
+                    for (int ordinal = 0; ordinal < definitions.Length; ordinal++)
+                    {
+                        if (ordinal > 0)
+                            writer.Append(", ");
+                        writer.Append(definitions[ordinal].Name);
+                        writer.Append(" ");
+                        writer.Append(definitions[ordinal].Type);
+                        if (!string.IsNullOrWhiteSpace(
+                                definitions[ordinal].Collation))
+                        {
+                            writer.Append(" COLLATE ");
+                            writer.Append(definitions[ordinal].Collation!);
+                        }
+                        if (!definitions[ordinal].Nullable)
+                            writer.Append(" NOT NULL");
+                    }
+                    writer.Append(")");
+                });
         }
         return actions;
     }
 
     private static IReadOnlyList<string> BuildIndexes(
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
-        IReadOnlyDictionary<string, MigrationCatalogObject> catalogObjects)
+        IReadOnlyDictionary<string, MigrationCatalogObject> catalogObjects,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
     {
         var actions = new List<string>();
         foreach (MigrationCatalogObject index in catalogObjects.Values
                      .Where(item => item.Kind == MigrationObjectKind.Index && planObjects[item.ObjectId].Included)
                      .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             MigrationPlanObject table = ParentPlan(index, planObjects);
             string[] columns = OrderedMemberIds(index, MigrationObjectReferenceRoles.Column)
                 .Select(id => Quote(planObjects[id].TargetName!))
@@ -241,15 +329,31 @@ internal static class CSharpDbMigrationSql
             if (columns.Length == 0)
                 throw new InvalidDataException($"Included index '{index.ObjectId}' has no ordered columns.");
             string unique = IsTrue(index, "unique") ? "UNIQUE " : string.Empty;
-            actions.Add(
-                $"CREATE {unique}INDEX {Quote(planObjects[index.ObjectId].TargetName!)} ON {Quote(table.TargetName!)} ({string.Join(", ", columns)})");
+            AddSqlAction(
+                actions,
+                actionObserver,
+                cancellationToken,
+                writer =>
+                {
+                    writer.Append("CREATE ");
+                    writer.Append(unique);
+                    writer.Append("INDEX ");
+                    writer.Append(Quote(planObjects[index.ObjectId].TargetName!));
+                    writer.Append(" ON ");
+                    writer.Append(Quote(table.TargetName!));
+                    writer.Append(" (");
+                    AppendJoined(writer, columns);
+                    writer.Append(")");
+                });
         }
         return actions;
     }
 
     private static IReadOnlyList<string> BuildConstraints(
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
-        IReadOnlyDictionary<string, MigrationCatalogObject> catalogObjects)
+        IReadOnlyDictionary<string, MigrationCatalogObject> catalogObjects,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
     {
         var actions = new List<string>();
         IEnumerable<MigrationCatalogObject> included = catalogObjects.Values
@@ -259,6 +363,7 @@ internal static class CSharpDbMigrationSql
                      .Where(item => item.Kind == MigrationObjectKind.Key)
                      .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string kind = Normalize(Facet(key, "kind"));
             string constraint = kind switch
             {
@@ -272,14 +377,29 @@ internal static class CSharpDbMigrationSql
             if (columns.Length == 0)
                 throw new InvalidDataException($"Included key '{key.ObjectId}' has no ordered columns.");
             MigrationPlanObject table = ParentPlan(key, planObjects);
-            actions.Add(
-                $"ALTER TABLE {Quote(table.TargetName!)} ADD CONSTRAINT {Quote(planObjects[key.ObjectId].TargetName!)} {constraint} ({string.Join(", ", columns)})");
+            AddSqlAction(
+                actions,
+                actionObserver,
+                cancellationToken,
+                writer =>
+                {
+                    writer.Append("ALTER TABLE ");
+                    writer.Append(Quote(table.TargetName!));
+                    writer.Append(" ADD CONSTRAINT ");
+                    writer.Append(Quote(planObjects[key.ObjectId].TargetName!));
+                    writer.Append(" ");
+                    writer.Append(constraint);
+                    writer.Append(" (");
+                    AppendJoined(writer, columns);
+                    writer.Append(")");
+                });
         }
 
         foreach (MigrationCatalogObject foreignKey in included
                      .Where(item => item.Kind == MigrationObjectKind.ForeignKey)
                      .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string[] sourceColumns = OrderedMemberIds(foreignKey, MigrationObjectReferenceRoles.SourceColumn)
                 .Select(id => Quote(planObjects[id].TargetName!))
                 .ToArray();
@@ -293,34 +413,64 @@ internal static class CSharpDbMigrationSql
 
             MigrationPlanObject sourceTable = ParentPlan(foreignKey, planObjects);
             MigrationPlanObject referencedTable = ParentPlan(referencedKey, planObjects);
-            string action =
-                $"ALTER TABLE {Quote(sourceTable.TargetName!)} ADD CONSTRAINT {Quote(planObjects[foreignKey.ObjectId].TargetName!)} " +
-                $"FOREIGN KEY ({string.Join(", ", sourceColumns)}) REFERENCES {Quote(referencedTable.TargetName!)} ({string.Join(", ", referencedColumns)})";
             string onDelete = Normalize(Facet(foreignKey, "onDelete"));
             if (onDelete.StartsWith("on-delete-", StringComparison.Ordinal))
                 onDelete = onDelete["on-delete-".Length..];
+            string onDeleteClause = string.Empty;
             if (!string.IsNullOrEmpty(onDelete) && onDelete != "restrict")
             {
-                action += onDelete switch
+                onDeleteClause = onDelete switch
                 {
                     "cascade" => " ON DELETE CASCADE",
                     _ => throw new InvalidDataException(
                         $"Included foreign key '{foreignKey.ObjectId}' has unsupported delete action '{onDelete}'."),
                 };
             }
-            actions.Add(action);
+            AddSqlAction(
+                actions,
+                actionObserver,
+                cancellationToken,
+                writer =>
+                {
+                    writer.Append("ALTER TABLE ");
+                    writer.Append(Quote(sourceTable.TargetName!));
+                    writer.Append(" ADD CONSTRAINT ");
+                    writer.Append(Quote(
+                        planObjects[foreignKey.ObjectId].TargetName!));
+                    writer.Append(" FOREIGN KEY (");
+                    AppendJoined(writer, sourceColumns);
+                    writer.Append(") REFERENCES ");
+                    writer.Append(Quote(referencedTable.TargetName!));
+                    writer.Append(" (");
+                    AppendJoined(writer, referencedColumns);
+                    writer.Append(")");
+                    writer.Append(onDeleteClause);
+                });
         }
 
         foreach (MigrationCatalogObject check in included
                      .Where(item => item.Kind == MigrationObjectKind.CheckConstraint)
                      .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string expression = Facet(check, "targetSql") ??
                 throw new NotSupportedException(
                     $"Included check '{check.ObjectId}' requires a scratch-validated 'targetSql' facet.");
             MigrationPlanObject table = ParentPlan(check, planObjects);
-            actions.Add(
-                $"ALTER TABLE {Quote(table.TargetName!)} ADD CONSTRAINT {Quote(planObjects[check.ObjectId].TargetName!)} CHECK ({expression})");
+            AddSqlAction(
+                actions,
+                actionObserver,
+                cancellationToken,
+                writer =>
+                {
+                    writer.Append("ALTER TABLE ");
+                    writer.Append(Quote(table.TargetName!));
+                    writer.Append(" ADD CONSTRAINT ");
+                    writer.Append(Quote(planObjects[check.ObjectId].TargetName!));
+                    writer.Append(" CHECK (");
+                    writer.Append(expression);
+                    writer.Append(")");
+                });
         }
 
         return actions;
@@ -328,27 +478,99 @@ internal static class CSharpDbMigrationSql
 
     private static IReadOnlyList<string> BuildViews(
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
-        MigrationCatalog catalog) => catalog.Objects
-        .Where(item => item.Kind == MigrationObjectKind.View && planObjects[item.ObjectId].Included)
-        .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
-        .Select(item =>
+        MigrationCatalog catalog,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
+    {
+        var actions = new List<string>();
+        foreach (MigrationCatalogObject item in catalog.Objects
+                     .Where(item => item.Kind == MigrationObjectKind.View &&
+                         planObjects[item.ObjectId].Included)
+                     .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string sql = Facet(item, "targetSql") ??
                 throw new NotSupportedException(
                     $"Included view '{item.ObjectId}' requires a scratch-validated 'targetSql' facet.");
-            return $"CREATE VIEW {Quote(planObjects[item.ObjectId].TargetName!)} AS {sql}";
-        })
-        .ToArray();
+            AddSqlAction(
+                actions,
+                actionObserver,
+                cancellationToken,
+                writer =>
+                {
+                    writer.Append("CREATE VIEW ");
+                    writer.Append(Quote(planObjects[item.ObjectId].TargetName!));
+                    writer.Append(" AS ");
+                    writer.Append(sql);
+                });
+        }
+        return actions;
+    }
 
     private static IReadOnlyList<string> BuildTriggers(
         IReadOnlyDictionary<string, MigrationPlanObject> planObjects,
-        MigrationCatalog catalog) => catalog.Objects
-        .Where(item => item.Kind == MigrationObjectKind.Trigger && planObjects[item.ObjectId].Included)
-        .OrderBy(item => item.ObjectId, StringComparer.Ordinal)
-        .Select(item => Facet(item, "targetSql") ??
-            throw new NotSupportedException(
-                $"Included trigger '{item.ObjectId}' requires a scratch-validated 'targetSql' facet."))
-        .ToArray();
+        MigrationCatalog catalog,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
+    {
+        var actions = new List<string>();
+        foreach (MigrationCatalogObject item in catalog.Objects
+                     .Where(item => item.Kind == MigrationObjectKind.Trigger &&
+                         planObjects[item.ObjectId].Included)
+                     .OrderBy(item => item.ObjectId, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string sql = Facet(item, "targetSql") ??
+                throw new NotSupportedException(
+                    $"Included trigger '{item.ObjectId}' requires a scratch-validated 'targetSql' facet.");
+            AddSqlAction(
+                actions,
+                actionObserver,
+                cancellationToken,
+                writer => writer.Append(sql));
+        }
+        return actions;
+    }
+
+    private static void AddSqlAction(
+        List<string> actions,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken,
+        Action<CSharpDbMigrationSqlActionWriter> render)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        actionObserver?.BeginSqlAction(cancellationToken);
+        var writer = new CSharpDbMigrationSqlActionWriter(
+            actionObserver,
+            cancellationToken);
+        render(writer);
+        cancellationToken.ThrowIfCancellationRequested();
+        actions.Add(writer.ToString());
+    }
+
+    private static void AddCollectionAction(
+        List<string> actions,
+        string collectionName,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        actionObserver?.ObserveCollectionAction(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        actions.Add(CollectionActionPrefix + collectionName);
+    }
+
+    private static void AppendJoined(
+        CSharpDbMigrationSqlActionWriter writer,
+        IReadOnlyList<string> segments)
+    {
+        for (int ordinal = 0; ordinal < segments.Count; ordinal++)
+        {
+            if (ordinal > 0)
+                writer.Append(", ");
+            writer.Append(segments[ordinal]);
+        }
+    }
 
     private static MigrationPlanObject ParentPlan(
         MigrationCatalogObject item,
@@ -357,6 +579,25 @@ internal static class CSharpDbMigrationSql
         if (item.ParentObjectId is null || !planObjects.TryGetValue(item.ParentObjectId, out MigrationPlanObject? parent))
             throw new InvalidDataException($"Catalog object '{item.ObjectId}' has no planned target parent.");
         return parent;
+    }
+
+    private sealed class CSharpDbMigrationSqlActionWriter(
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
+    {
+        private readonly StringBuilder _builder = new();
+
+        internal void Append(string segment)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            actionObserver?.ObserveSqlSegment(
+                segment,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            _builder.Append(segment);
+        }
+
+        public override string ToString() => _builder.ToString();
     }
 
     private static IEnumerable<string> OrderedMemberIds(MigrationCatalogObject item, string role)

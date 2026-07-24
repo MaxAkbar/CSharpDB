@@ -27,6 +27,16 @@ digest so it remains stable after attachment. A plan stores only the digest;
 when present, the staged target recomputes and verifies it before creating or
 resuming a target. Legacy plans without a preview digest remain accepted.
 
+`CSharpDbDdlScratchValidator` verifies that reviewed preview with bounded
+aggregate and parser limits, parses each SQL action once with `CSharpDB.Sql`,
+and executes the same parsed statements in one committed, in-memory
+transaction. It then reads the resulting catalog and compares it with the
+plan's normalized expected schema. Its versioned report contains only digests,
+stable stage/action/rule identifiers, readiness, and evidence level; it never
+publishes rendered SQL, object names, ASTs, or parser/engine messages. A pass
+is scratch-execution and schema-shape evidence only. It is not source semantic
+equivalence and does not claim that view or trigger bodies were bound.
+
 Apply stops at `awaiting-validation`. Activation accepts only a permit derived
 from a coherent, published, passing validation report and persists its receipt
 atomically. One immutable validation reader snapshot exposes the complete

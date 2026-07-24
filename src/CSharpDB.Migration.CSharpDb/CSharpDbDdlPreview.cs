@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace CSharpDB.Migration.CSharpDb;
@@ -61,6 +62,90 @@ public sealed record CSharpDbDdlPreview
     public required string GeneratedDdlDigest { get; init; }
 }
 
+internal enum CSharpDbDdlRenderLimitKind
+{
+    ActionCount,
+    SqlParse,
+    AggregateSqlUtf8Bytes,
+}
+
+internal readonly record struct CSharpDbDdlRenderLimits(
+    int MaxActionCount,
+    int MaxSqlCharactersPerAction,
+    int MaxSqlUtf8BytesPerAction,
+    long MaxAggregateSqlUtf8Bytes);
+
+internal sealed class CSharpDbDdlRenderLimitException(
+    CSharpDbDdlRenderLimitKind kind)
+    : Exception("The authoritative CSharpDB DDL render exceeded a validation limit.")
+{
+    internal CSharpDbDdlRenderLimitKind Kind { get; } = kind;
+}
+
+internal sealed class CSharpDbDdlRenderBudget(
+    CSharpDbDdlRenderLimits limits) : ICSharpDbMigrationActionObserver
+{
+    private int _actionCount;
+    private int _currentSqlCharacters;
+    private int _currentSqlUtf8Bytes;
+    private long _aggregateSqlUtf8Bytes;
+
+    public void BeginSqlAction(CancellationToken cancellationToken)
+    {
+        ObserveAction(cancellationToken);
+        _currentSqlCharacters = 0;
+        _currentSqlUtf8Bytes = 0;
+    }
+
+    public void ObserveSqlSegment(
+        string segment,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (_currentSqlCharacters >
+            limits.MaxSqlCharactersPerAction - segment.Length)
+        {
+            throw new CSharpDbDdlRenderLimitException(
+                CSharpDbDdlRenderLimitKind.SqlParse);
+        }
+        _currentSqlCharacters += segment.Length;
+
+        int segmentUtf8Bytes = Encoding.UTF8.GetByteCount(segment);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_currentSqlUtf8Bytes >
+            limits.MaxSqlUtf8BytesPerAction - segmentUtf8Bytes)
+        {
+            throw new CSharpDbDdlRenderLimitException(
+                CSharpDbDdlRenderLimitKind.SqlParse);
+        }
+        _currentSqlUtf8Bytes += segmentUtf8Bytes;
+        if (_aggregateSqlUtf8Bytes >
+            limits.MaxAggregateSqlUtf8Bytes - segmentUtf8Bytes)
+        {
+            throw new CSharpDbDdlRenderLimitException(
+                CSharpDbDdlRenderLimitKind.AggregateSqlUtf8Bytes);
+        }
+        _aggregateSqlUtf8Bytes += segmentUtf8Bytes;
+    }
+
+    public void ObserveCollectionAction(
+        CancellationToken cancellationToken) =>
+        ObserveAction(cancellationToken);
+
+    private void ObserveAction(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_actionCount >= limits.MaxActionCount)
+        {
+            throw new CSharpDbDdlRenderLimitException(
+                CSharpDbDdlRenderLimitKind.ActionCount);
+        }
+        _actionCount++;
+    }
+}
+
 /// <summary>
 /// Renders the exact schema-stage actions used by the CSharpDB staged target
 /// without opening or writing a target database.
@@ -80,7 +165,20 @@ public static class CSharpDbDdlPreviewBuilder
         MigrationPlan plan,
         MigrationCatalog catalog,
         IDataTypeMappingProvider? mappingPolicy = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        BuildCore(
+            plan,
+            catalog,
+            mappingPolicy,
+            actionObserver: null,
+            cancellationToken);
+
+    private static CSharpDbDdlPreview BuildCore(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        IDataTypeMappingProvider? mappingPolicy,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(catalog);
@@ -102,7 +200,12 @@ public static class CSharpDbDdlPreviewBuilder
             cancellationToken.ThrowIfCancellationRequested();
             MigrationSchemaStage stage = s_stageOrder[stageOrdinal];
             IReadOnlyList<string> rendered =
-                CSharpDbMigrationSql.BuildStageActions(plan, catalog, stage);
+                CSharpDbMigrationSql.BuildStageActionsObserved(
+                    plan,
+                    catalog,
+                    stage,
+                    actionObserver,
+                    cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var actions = new CSharpDbDdlPreviewAction[rendered.Count];
             for (int actionOrdinal = 0; actionOrdinal < rendered.Count; actionOrdinal++)
@@ -168,7 +271,40 @@ public static class CSharpDbDdlPreviewBuilder
         MigrationCatalog catalog,
         CSharpDbDdlPreview preview,
         IDataTypeMappingProvider? mappingPolicy = null,
+        CancellationToken cancellationToken = default) =>
+        AttachGeneratedDdlDigestCore(
+            plan,
+            catalog,
+            preview,
+            mappingPolicy,
+            actionObserver: null,
+            cancellationToken);
+
+    internal static MigrationPlan AttachGeneratedDdlDigestBounded(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        CSharpDbDdlPreview preview,
+        CSharpDbDdlRenderLimits limits,
+        IDataTypeMappingProvider? mappingPolicy = null,
         CancellationToken cancellationToken = default)
+    {
+        var budget = new CSharpDbDdlRenderBudget(limits);
+        return AttachGeneratedDdlDigestCore(
+            plan,
+            catalog,
+            preview,
+            mappingPolicy,
+            budget,
+            cancellationToken);
+    }
+
+    private static MigrationPlan AttachGeneratedDdlDigestCore(
+        MigrationPlan plan,
+        MigrationCatalog catalog,
+        CSharpDbDdlPreview preview,
+        IDataTypeMappingProvider? mappingPolicy,
+        ICSharpDbMigrationActionObserver? actionObserver,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(catalog);
@@ -177,10 +313,11 @@ public static class CSharpDbDdlPreviewBuilder
 
         ValidatePreview(preview, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        CSharpDbDdlPreview actual = Build(
+        CSharpDbDdlPreview actual = BuildCore(
             plan,
             catalog,
             mappingPolicy,
+            actionObserver,
             cancellationToken);
         if (!FixedTimeDigestEquals(
                 preview.PlanContractDigest,
