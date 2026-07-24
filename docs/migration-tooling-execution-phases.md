@@ -628,8 +628,11 @@ snapshot/policy-bound cursor replay. The
 [`migration-json-retained-package.md`](migration-json-retained-package.md)
 contract adds deterministic single-file publication, strict canonical
 manifests, trusted digest pinning, copy-on-open ownership, semantic replay,
-and tamper-aware reopen. Collection projection, typed sidecars, export, and
-CLI integration remain open.
+and tamper-aware reopen. The
+[`migration-json-typed-intent.md`](migration-json-typed-intent.md) contract
+adds a canonical source-bound sidecar for non-native scalar intent while
+leaving package v1 unchanged. Typed schema/value integration, collection
+projection, export, and CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -641,7 +644,7 @@ CLI integration remain open.
   ownership, schema/catalog replay, and fresh-process cursor resume.
 - [ ] Keep nested values as documents for collection targets unless an
   explicit projection is selected.
-- [ ] Define a sidecar or tagged convention for BLOB, decimal, GUID,
+- [x] Define a source-bound sidecar convention for BLOB, decimal, GUID,
   date/time, and other non-native JSON intent.
 - [ ] Stream JSON array and NDJSON output without buffering all rows.
 
