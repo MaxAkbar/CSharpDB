@@ -318,7 +318,7 @@ public sealed class JsonMigrationDataSourceIntegrationTests
     private static byte[] Utf8Bytes(string value) =>
         new UTF8Encoding(false, true).GetBytes(value);
 
-    private sealed class ReceiptMigrationTarget :
+    internal sealed class ReceiptMigrationTarget :
         IMigrationTarget,
         IMigrationRejectLedgerTarget,
         IMigrationBatchDigestContractTarget

@@ -130,6 +130,13 @@ public static class MigrationValueConverter
                 value => DbValue.FromText(CSharpDbTextCodec.FormatDateTimeOffset(CSharpDbTextCodec.ParseDateTimeOffset(value)))),
             "decimal-scaled-int64" => ConvertScaledDecimal(source, text, conversion, column, rowOrdinal),
             "decimal-text" => ConvertDecimalText(source, text, conversion, column, rowOrdinal),
+            "json-typed-decimal-text" =>
+                ConvertTypedJsonDecimalText(
+                    source,
+                    text,
+                    conversion,
+                    column,
+                    rowOrdinal),
             "unsigned-integer-text" => ConvertUnsignedText(source, text, column, rowOrdinal),
             "unsigned-integer-binary64" => ConvertUnsignedReal(source, text, column, rowOrdinal),
             "decimal-binary64" or "numeric-binary64" => ConvertNumericReal(source, text, column, rowOrdinal),
@@ -206,6 +213,60 @@ public static class MigrationValueConverter
             throw Error("MIG-APPLY-DECIMAL-002", column, rowOrdinal, "DECIMAL scale exceeds the planned source facet.");
 
         return DbValue.FromText(canonical!);
+    }
+
+    private static DbValue ConvertTypedJsonDecimalText(
+        MigrationSourceValue source,
+        string text,
+        MigrationConversionDescriptor conversion,
+        MigrationCatalogObject column,
+        long rowOrdinal)
+    {
+        RequireSourceKind(
+            source,
+            MigrationSourceValueKind.Decimal,
+            column,
+            rowOrdinal);
+        int precision = ParameterInt(
+            conversion,
+            "precision",
+            column,
+            rowOrdinal);
+        int maximumScale = ParameterInt(
+            conversion,
+            "scale",
+            column,
+            rowOrdinal);
+        string? contract = conversion.Parameters
+            .FirstOrDefault(
+                parameter =>
+                    string.Equals(
+                        parameter.Name,
+                        "contract",
+                        StringComparison.Ordinal))
+            ?.Value;
+        if (precision < 1 ||
+            maximumScale < 0 ||
+            maximumScale > precision ||
+            !string.Equals(
+                contract,
+                "csharpdb-json-typed-value/v1",
+                StringComparison.Ordinal) ||
+            !TryCanonicalTypedJsonDecimal(
+                text,
+                out int integralDigits,
+                out int actualScale) ||
+            integralDigits > precision - maximumScale ||
+            actualScale > maximumScale)
+        {
+            throw Error(
+                "MIG-APPLY-DECIMAL-002",
+                column,
+                rowOrdinal,
+                "Typed JSON decimal text does not match the planned canonical precision and scale.");
+        }
+
+        return DbValue.FromText(text);
     }
 
     private static DbValue ConvertUnsignedText(
@@ -398,6 +459,77 @@ public static class MigrationValueConverter
         scale = fraction.Length;
         precision = checked(integer.Length + fraction.Length);
         return true;
+    }
+
+    private static bool TryCanonicalTypedJsonDecimal(
+        string text,
+        out int integralDigits,
+        out int scale)
+    {
+        integralDigits = 0;
+        scale = 0;
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        int index = text[0] == '-' ? 1 : 0;
+        if (index == text.Length ||
+            text[0] == '+')
+        {
+            return false;
+        }
+
+        int integerStart = index;
+        if (text[index] == '0')
+        {
+            index++;
+            if (index < text.Length &&
+                text[index] is >= '0' and <= '9')
+            {
+                return false;
+            }
+        }
+        else
+        {
+            if (text[index] is < '1' or > '9')
+                return false;
+            while (index < text.Length &&
+                   text[index] is >= '0' and <= '9')
+            {
+                index++;
+            }
+        }
+
+        int integerLength = index - integerStart;
+        bool zeroInteger =
+            integerLength == 1 &&
+            text[integerStart] == '0';
+        integralDigits = zeroInteger
+            ? 0
+            : integerLength;
+
+        if (index < text.Length)
+        {
+            if (text[index] != '.')
+                return false;
+            index++;
+            int fractionStart = index;
+            while (index < text.Length &&
+                   text[index] is >= '0' and <= '9')
+            {
+                index++;
+            }
+            scale = index - fractionStart;
+            if (scale == 0 ||
+                text[index - 1] == '0')
+            {
+                return false;
+            }
+        }
+
+        return index == text.Length &&
+            !(text[0] == '-' &&
+              zeroInteger &&
+              scale == 0);
     }
 
     private static bool IsNullable(MigrationCatalogObject column) =>

@@ -90,6 +90,63 @@ public sealed class MigrationPlannerTests
     }
 
     [Fact]
+    public void DecimalLookalikeFacetDoesNotActivateTypedJsonConversion()
+    {
+        var source = new MigrationCatalogObject
+        {
+            ObjectId = "test:column:amount",
+            Kind = MigrationObjectKind.Column,
+            SourceName = "amount",
+            NativeType = "UNRELATED_DECIMAL",
+            Facets =
+            [
+                new MigrationCatalogFacet
+                {
+                    Name = "logicalType",
+                    Value = "decimal",
+                },
+                new MigrationCatalogFacet
+                {
+                    Name = "precision",
+                    Value = "38",
+                },
+                new MigrationCatalogFacet
+                {
+                    Name = "scale",
+                    Value = "18",
+                },
+                new MigrationCatalogFacet
+                {
+                    Name = "jsonTypedCodec",
+                    Value = "decimalString",
+                },
+            ],
+        };
+
+        MigrationTypeMapping mapping =
+            new StandardDataTypeMappingProvider().Map(
+                new MigrationTypeMappingRequest
+                {
+                    SourceObject = source,
+                    Profile =
+                        MigrationMappingProfile.Preserve,
+                    Coverage = new MigrationProfileCoverage
+                    {
+                        Kind = MigrationCoverageKind.Full,
+                        ValuesExamined = 1,
+                        TotalValues = 1,
+                        RequiresFullStreamValidation =
+                            false,
+                    },
+                }).Mapping;
+
+        Assert.Equal(DbType.Text, mapping.TargetType);
+        Assert.Equal(
+            "decimal-text",
+            mapping.Conversion?.ConversionId);
+    }
+
+    [Fact]
     public async Task DefaultLoadPolicy_PreservesCanonicalPlanJsonAndDigest()
     {
         MigrationCatalog catalog = await InspectAsync();

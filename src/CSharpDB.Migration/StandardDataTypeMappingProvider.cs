@@ -9,6 +9,13 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
     public const string StandardPolicyId = "csharpdb-standard-mapping";
     public const int StandardPolicyVersion = 1;
 
+    private const string JsonTypedSchemaContract =
+        "csharpdb-json-typed-table-schema-v1";
+    private const string JsonTypedScalarContract =
+        "csharpdb-json-typed-table-scalar-v1";
+    private const string JsonTypedValueContract =
+        "csharpdb-json-typed-value/v1";
+
     internal const string LossyRuleId = "MIG-TYPE-LOSSY-001";
     internal const string UnsupportedRuleId = "MIG-TYPE-UNSUPPORTED-001";
 
@@ -137,7 +144,15 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
                 Lossy(DbType.Real, "numeric-binary64", Facet("format", "ieee754-binary64")),
             DbType.Text when logical == "TEXT" => Exact(DbType.Text),
             DbType.Text when logical == "DECIMAL" =>
-                Reencoded(DbType.Text, "decimal-text", DecimalTextParameters(source)),
+                IsTypedJsonDecimal(source)
+                    ? Reencoded(
+                        DbType.Text,
+                        "json-typed-decimal-text",
+                        TypedJsonDecimalTextParameters(source))
+                    : Reencoded(
+                        DbType.Text,
+                        "decimal-text",
+                        DecimalTextParameters(source)),
             DbType.Text when logical is not ("BINARY" or "GEOGRAPHY") =>
                 Reencoded(DbType.Text, "canonical-text", Facet("logicalType", logicalType)),
             DbType.Blob when logical == "BINARY" => Exact(DbType.Blob),
@@ -231,6 +246,14 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
                 ScaledDecimalParameters(precision, scale));
         }
 
+        if (IsTypedJsonDecimal(source))
+        {
+            return Reencoded(
+                DbType.Text,
+                "json-typed-decimal-text",
+                TypedJsonDecimalTextParameters(source));
+        }
+
         return Reencoded(DbType.Text, "decimal-text", DecimalTextParameters(source));
     }
 
@@ -261,6 +284,24 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
         Facet("format", "invariant-base10"),
         Facet("precision", GetFacet(source, "precision") ?? "unspecified"),
         Facet("scale", GetFacet(source, "scale") ?? "unspecified"),
+    ];
+
+    private static IReadOnlyList<MigrationCatalogFacet>
+        TypedJsonDecimalTextParameters(
+            MigrationCatalogObject source) =>
+    [
+        Facet("format", "canonical-fixed-point"),
+        Facet(
+            "precision",
+            GetFacet(source, "precision") ??
+            "unspecified"),
+        Facet(
+            "scale",
+            GetFacet(source, "scale") ??
+            "unspecified"),
+        Facet(
+            "contract",
+            "csharpdb-json-typed-value/v1"),
     ];
 
     private static IReadOnlyList<MigrationCatalogFacet> ScaledDecimalParameters(
@@ -315,6 +356,47 @@ public sealed class StandardDataTypeMappingProvider : IDataTypeMappingProvider
         {
             return false;
         }
+    }
+
+    private static bool IsTypedJsonDecimal(
+        MigrationCatalogObject source)
+    {
+        string? codec = GetFacet(
+            source,
+            "jsonTypedCodec");
+        string? expectedNativeType = codec switch
+        {
+            "decimalString" =>
+                "JSON_DECIMAL_STRING",
+            "decimalNumber" =>
+                "JSON_DECIMAL_NUMBER",
+            _ => null,
+        };
+        return expectedNativeType is not null &&
+            string.Equals(
+                source.NativeType,
+                expectedNativeType,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                GetFacet(source, "jsonSchemaAlgorithm"),
+                JsonTypedSchemaContract,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                GetFacet(source, "jsonScalarPolicy"),
+                JsonTypedScalarContract,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                GetFacet(source, "jsonTypedValueContract"),
+                JsonTypedValueContract,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                GetFacet(source, "jsonTypedValidation"),
+                "full-stream",
+                StringComparison.Ordinal) &&
+            !string.IsNullOrWhiteSpace(
+                GetFacet(
+                    source,
+                    "jsonTypedIntentManifestDigest"));
     }
 
     private static MigrationCatalogFacet Facet(string name, string value) => new()

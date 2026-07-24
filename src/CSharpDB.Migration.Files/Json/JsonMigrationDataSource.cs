@@ -14,6 +14,8 @@ public static class JsonMigrationDataRules
     public const string MissingProperty = "MIG-JSON-DATA-MISSING-001";
     public const string NullNotAllowed = "MIG-JSON-DATA-NULL-001";
     public const string TypeMismatch = "MIG-JSON-DATA-TYPE-001";
+    public const string TypedValueInvalid =
+        "MIG-JSON-DATA-TYPED-001";
     public const string ValueSizeExceeded = "MIG-JSON-DATA-VALUE-SIZE-001";
     public const string RowSizeExceeded = "MIG-JSON-DATA-ROW-SIZE-001";
     public const string SchemaDrift = "MIG-JSON-DATA-SCHEMA-001";
@@ -30,12 +32,18 @@ public sealed class JsonMigrationDataSource :
     IMigrationRejectAwareDataSource
 {
     public const string CursorAlgorithmId = "csharpdb-json-cursor/v1";
+    public const string TypedCursorAlgorithmId =
+        "csharpdb-json-cursor/v2";
 
     private const int MaximumBufferedRows = 65_536;
     private const long MaximumBufferedCanonicalBytes = 64L * 1024 * 1024;
     private const int MaximumCursorCharacters = 160;
 
-    private static readonly FrozenSet<string> SupportedRuleIds = new[]
+    private const string TypedCursorTokenAlgorithmId =
+        "csharpdb-json-cursor-token-v2";
+
+    private static readonly FrozenSet<string>
+        UntypedSupportedRuleIds = new[]
     {
         JsonMigrationDataRules.NonObjectRow,
         JsonMigrationDataRules.MissingProperty,
@@ -43,19 +51,37 @@ public sealed class JsonMigrationDataSource :
         JsonMigrationDataRules.TypeMismatch,
     }.ToFrozenSet(StringComparer.Ordinal);
 
+    private static readonly FrozenSet<string>
+        TypedSupportedRuleIds = new[]
+    {
+        JsonMigrationDataRules.NonObjectRow,
+        JsonMigrationDataRules.MissingProperty,
+        JsonMigrationDataRules.NullNotAllowed,
+        JsonMigrationDataRules.TypeMismatch,
+        JsonMigrationDataRules.TypedValueInvalid,
+    }.ToFrozenSet(StringComparer.Ordinal);
+
     private readonly JsonTableSchemaInferenceResult schema;
+    private readonly JsonTypedTableSchemaInferenceResult?
+        typedSchema;
     private readonly JsonSourceSnapshot snapshot;
     private readonly FrozenDictionary<string, int> schemaIndexesByName;
+    private readonly FrozenSet<string> supportedRuleIds;
     private int disposed;
 
     private JsonMigrationDataSource(
         JsonTableSchemaInferenceResult schema,
+        JsonTypedTableSchemaInferenceResult? typedSchema,
         JsonSourceSnapshot snapshot,
         string catalogDigest)
     {
         this.schema = schema;
+        this.typedSchema = typedSchema;
         this.snapshot = snapshot;
         CatalogDigest = catalogDigest;
+        supportedRuleIds = typedSchema is null
+            ? UntypedSupportedRuleIds
+            : TypedSupportedRuleIds;
         schemaIndexesByName = schema.Columns.ToFrozenDictionary(
             column => column.OriginalPropertyName,
             column => column.ColumnIndex,
@@ -71,7 +97,8 @@ public sealed class JsonMigrationDataSource :
     public string RejectContractVersion =>
         MigrationRejectContract.DeterministicRejectsV1;
 
-    public IReadOnlySet<string> SupportedRejectRuleIds => SupportedRuleIds;
+    public IReadOnlySet<string> SupportedRejectRuleIds =>
+        supportedRuleIds;
 
     /// <summary>
     /// Creates a repeatable source after checking the exact snapshot and
@@ -87,7 +114,38 @@ public sealed class JsonMigrationDataSource :
         string catalogDigest = ValidateCatalogBinding(schema, snapshot, catalog);
         cancellationToken.ThrowIfCancellationRequested();
         await snapshot.VerifyIntegrityAsync(cancellationToken).ConfigureAwait(false);
-        return new JsonMigrationDataSource(schema, snapshot, catalogDigest);
+        return new JsonMigrationDataSource(
+            schema,
+            typedSchema: null,
+            snapshot,
+            catalogDigest);
+    }
+
+    /// <summary>
+    /// Creates a repeatable typed source after checking the exact snapshot,
+    /// intent-bound schema, and typed catalog digest.
+    /// </summary>
+    public static async ValueTask<JsonMigrationDataSource> CreateAsync(
+        JsonTypedTableSchemaInferenceResult schema,
+        JsonSourceSnapshot snapshot,
+        MigrationCatalog catalog,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string catalogDigest =
+            ValidateTypedCatalogBinding(
+                schema,
+                snapshot,
+                catalog);
+        cancellationToken.ThrowIfCancellationRequested();
+        await snapshot
+            .VerifyIntegrityAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return new JsonMigrationDataSource(
+            schema.RepresentationSchema,
+            schema,
+            snapshot,
+            catalogDigest);
     }
 
     /// <summary>
@@ -100,6 +158,7 @@ public sealed class JsonMigrationDataSource :
         MigrationCatalog catalog) =>
         new(
             schema,
+            typedSchema: null,
             snapshot,
             ValidateCatalogBinding(schema, snapshot, catalog));
 
@@ -165,6 +224,62 @@ public sealed class JsonMigrationDataSource :
         {
             throw new ArgumentException(
                 "The JSON migration catalog does not match the table-schema policy.",
+                nameof(catalog));
+        }
+
+        return catalogDigest;
+    }
+
+    internal static string ValidateTypedCatalogBinding(
+        JsonTypedTableSchemaInferenceResult schema,
+        JsonSourceSnapshot snapshot,
+        MigrationCatalog catalog)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        JsonSourceBinding binding =
+            schema.RepresentationSchema.Binding;
+        if (!string.Equals(
+                binding.SnapshotIdentity,
+                snapshot.SnapshotIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                binding.ContentDigest,
+                snapshot.ContentDigest,
+                StringComparison.Ordinal) ||
+            binding.ContentLength != snapshot.ContentLength)
+        {
+            throw new ArgumentException(
+                "The typed JSON table schema belongs to a different source snapshot.",
+                nameof(snapshot));
+        }
+
+        MigrationContractValidator.ValidateCatalog(catalog);
+        if (catalog.Source != schema.Source)
+        {
+            throw new ArgumentException(
+                "The typed JSON migration catalog belongs to a different source.",
+                nameof(catalog));
+        }
+
+        MigrationCatalog expectedCatalog =
+            schema.CreateCatalog(
+                catalog.TargetCSharpDbVersion);
+        string catalogDigest =
+            MigrationArtifactSerializer
+                .ComputeCatalogDigest(catalog);
+        string expectedCatalogDigest =
+            MigrationArtifactSerializer
+                .ComputeCatalogDigest(expectedCatalog);
+        if (!string.Equals(
+                catalogDigest,
+                expectedCatalogDigest,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The typed JSON migration catalog does not match the exact intent-bound schema policy.",
                 nameof(catalog));
         }
 
@@ -452,7 +567,7 @@ public sealed class JsonMigrationDataSource :
                 .ToArray();
             foreach (string ruleId in frozenRuleIds)
             {
-                if (!SupportedRuleIds.Contains(ruleId))
+                if (!supportedRuleIds.Contains(ruleId))
                 {
                     throw new InvalidDataException(
                         "The JSON reject policy contains a rule that this source does not support.");
@@ -516,7 +631,9 @@ public sealed class JsonMigrationDataSource :
             projected[index] = new ProjectedColumn(
                 objectId,
                 schemaIndex,
-                schema.Columns[schemaIndex]);
+                schema.Columns[schemaIndex],
+                typedSchema?.IntentsByColumn
+                    .GetValueOrDefault(schemaIndex));
         }
 
         ReadOnlyCollection<string> frozenColumnIds =
@@ -673,30 +790,81 @@ public sealed class JsonMigrationDataSource :
                     continue;
                 }
 
-                if (!JsonTableScalarPolicy.IsCompatible(
-                        logicalValue,
-                        projected.Schema.LogicalType,
-                        cancellationToken))
+                ProjectedValue value;
+                if (projected.Intent is
+                    JsonTypedColumnIntent typedIntent)
                 {
-                    return RecoverableReject(
-                        JsonMigrationDataRules.TypeMismatch,
-                        projected,
-                        record,
+                    JsonTypedTableSchemaInferenceResult
+                        activeTypedSchema =
+                            typedSchema ??
+                            throw new InvalidOperationException(
+                                "The typed JSON projection has no bound intent manifest.");
+                    JsonTypedDecodedValue decoded;
+                    try
+                    {
+                        if (!JsonTypedValueDecoder.TryDecode(
+                                logicalValue,
+                                typedIntent,
+                                activeTypedSchema
+                                    .IntentManifest,
+                                request.MaximumValueBytes,
+                                cancellationToken,
+                                out decoded))
+                        {
+                            return RecoverableReject(
+                                JsonMigrationDataRules
+                                    .TypedValueInvalid,
+                                projected,
+                                record,
+                                logicalValue,
+                                propertyOrdinal,
+                                request,
+                                batchOrdinal,
+                                sourceRowOrdinal,
+                                cancellationToken);
+                        }
+                    }
+                    catch (JsonTypedValueSizeException)
+                    {
+                        throw Reject(
+                            JsonMigrationDataRules
+                                .ValueSizeExceeded,
+                            projected.ObjectId,
+                            batchOrdinal,
+                            sourceRowOrdinal);
+                    }
+
+                    value = new ProjectedValue(
+                        decoded.Value,
+                        decoded.CanonicalBatchBytes);
+                }
+                else
+                {
+                    if (!JsonTableScalarPolicy.IsCompatible(
+                            logicalValue,
+                            projected.Schema.LogicalType,
+                            cancellationToken))
+                    {
+                        return RecoverableReject(
+                            JsonMigrationDataRules.TypeMismatch,
+                            projected,
+                            record,
+                            logicalValue,
+                            propertyOrdinal,
+                            request,
+                            batchOrdinal,
+                            sourceRowOrdinal,
+                            cancellationToken);
+                    }
+
+                    value = ProjectValue(
                         logicalValue,
-                        propertyOrdinal,
+                        projected,
                         request,
                         batchOrdinal,
                         sourceRowOrdinal,
                         cancellationToken);
                 }
-
-                ProjectedValue value = ProjectValue(
-                    logicalValue,
-                    projected,
-                    request,
-                    batchOrdinal,
-                    sourceRowOrdinal,
-                    cancellationToken);
                 rowBytes = checked(
                     rowBytes +
                     value.CanonicalBatchBytes);
@@ -977,6 +1145,15 @@ public sealed class JsonMigrationDataSource :
         IReadOnlyList<ProjectedColumn> projected,
         MigrationDeterministicRejectPolicy? rejectPolicy)
     {
+        if (typedSchema is not null)
+        {
+            return ComputeTypedScopeDigest(
+                request,
+                projected,
+                rejectPolicy,
+                typedSchema);
+        }
+
         var components = new List<string?>(
             32 + schema.Columns.Count * 10 + projected.Count)
         {
@@ -1059,6 +1236,137 @@ public sealed class JsonMigrationDataSource :
         return JsonStableDigest.Compute(components.ToArray());
     }
 
+    private string ComputeTypedScopeDigest(
+        MigrationReadRequest request,
+        IReadOnlyList<ProjectedColumn> projected,
+        MigrationDeterministicRejectPolicy? rejectPolicy,
+        JsonTypedTableSchemaInferenceResult activeSchema)
+    {
+        var components = new List<string?>(
+            48 +
+            schema.Columns.Count * 18 +
+            projected.Count)
+        {
+            TypedCursorAlgorithmId,
+            Source.Fingerprint,
+            SnapshotIdentity,
+            CatalogDigest,
+            JsonMigrationObjectIds.Table,
+            schema.TableName,
+            JsonSourceSnapshot.IdentityAlgorithm,
+            JsonSourceBinding.SourceFingerprintAlgorithm,
+            JsonSourceBinding.OptionsAlgorithm,
+            schema.Binding.OptionsDigest,
+            JsonTypedTableSchemaInferenceResult.AlgorithmId,
+            JsonTypedTableSchemaInferenceResult.ScalarPolicyId,
+            JsonInputContracts.CanonicalNestedJsonVersion,
+            JsonInputContracts.PropertyOrderPolicy,
+            JsonInputContracts.NumberLexemePolicy,
+            JsonTypedIntentSidecar.Format,
+            activeSchema.IntentManifest.ManifestDigest,
+            JsonTypedIntentManifestSerializer
+                .TypedValueContract,
+            JsonTypedIntentManifestSerializer
+                .TextCodecContract,
+            activeSchema.IntentManifest
+                .MaxDecodedBinaryBytes.ToString(
+                    CultureInfo.InvariantCulture),
+            activeSchema.IntentManifest
+                .MaxDecimalDigits.ToString(
+                    CultureInfo.InvariantCulture),
+            request.BatchSize.ToString(
+                CultureInfo.InvariantCulture),
+            request.MaxBatchBytes.ToString(
+                CultureInfo.InvariantCulture),
+            request.MaxValueBytes.ToString(
+                CultureInfo.InvariantCulture),
+        };
+
+        if (rejectPolicy is not null)
+        {
+            components.Add(request.RejectContractVersion);
+            components.Add(rejectPolicy.ContractVersion);
+            components.Add(
+                rejectPolicy.AllowedRuleIds.Count.ToString(
+                    CultureInfo.InvariantCulture));
+            foreach (string ruleId in
+                     rejectPolicy.AllowedRuleIds)
+            {
+                components.Add(ruleId);
+            }
+            components.Add(
+                rejectPolicy.MaxRejectedRowsPerBatch.ToString(
+                    CultureInfo.InvariantCulture));
+            components.Add(
+                rejectPolicy.MaxRejectedRowsPerRun.ToString(
+                    CultureInfo.InvariantCulture));
+            components.Add(
+                rejectPolicy.MaxRawValueBytes.ToString(
+                    CultureInfo.InvariantCulture));
+            components.Add(
+                rejectPolicy.MaxRawValueBytesPerBatch.ToString(
+                    CultureInfo.InvariantCulture));
+            components.Add(
+                rejectPolicy.MaxRawValueBytesPerRun.ToString(
+                    CultureInfo.InvariantCulture));
+            components.Add(
+                rejectPolicy.MaxArtifactBytes.ToString(
+                    CultureInfo.InvariantCulture));
+        }
+
+        foreach (JsonTableColumnSchema column in
+                 schema.Columns)
+        {
+            components.Add(
+                JsonMigrationObjectIds.Column(
+                    column.ColumnIndex));
+            components.Add(column.OriginalPropertyName);
+            components.Add(column.LogicalType.ToString());
+            components.Add(column.Resolution.ToString());
+            components.Add(column.Reason.ToString());
+            components.Add(column.Confidence.ToString());
+            components.Add(
+                column.Nullable
+                    ? "nullable"
+                    : "required");
+            components.Add(column.MissingPolicy.ToString());
+            components.Add(
+                column.OverrideValidation.ToString());
+
+            JsonTypedColumnIntent? intent =
+                activeSchema.IntentsByColumn.GetValueOrDefault(
+                    column.ColumnIndex);
+            components.Add(
+                intent is null
+                    ? "untyped"
+                    : "typed");
+            if (intent is null)
+                continue;
+
+            components.Add(intent.ColumnIndex.ToString(
+                CultureInfo.InvariantCulture));
+            components.Add(intent.ExpectedPropertyName);
+            components.Add(intent.Codec.ToString());
+            components.Add(
+                intent.Nullable?.ToString() ??
+                "unspecified");
+            components.Add(intent.MissingPolicy.ToString());
+            components.Add(
+                intent.Precision?.ToString(
+                    CultureInfo.InvariantCulture) ??
+                "none");
+            components.Add(
+                intent.Scale?.ToString(
+                    CultureInfo.InvariantCulture) ??
+                "none");
+        }
+        foreach (ProjectedColumn column in projected)
+            components.Add(column.ObjectId);
+
+        return JsonStableDigest.Compute(
+            components.ToArray());
+    }
+
     private MigrationDataBatch CreateBatch(
         ValidatedRead request,
         List<MigrationDataRow> rows,
@@ -1119,25 +1427,32 @@ public sealed class JsonMigrationDataSource :
         return false;
     }
 
-    private static string EncodeCursor(
+    private string EncodeCursor(
         long rowOrdinal,
         long batchOrdinal,
-        string scopeDigest) =>
-        string.Join(
+        string scopeDigest)
+    {
+        string algorithm = typedSchema is null
+            ? CursorAlgorithmId
+            : TypedCursorAlgorithmId;
+        return string.Join(
             '/',
-            CursorAlgorithmId,
+            algorithm,
             rowOrdinal.ToString(CultureInfo.InvariantCulture),
             batchOrdinal.ToString(CultureInfo.InvariantCulture),
             ComputeCursorToken(
                 scopeDigest,
                 rowOrdinal,
                 batchOrdinal));
+    }
 
-    private static CursorPosition ParseCursor(
+    private CursorPosition ParseCursor(
         string cursor,
         string expectedScopeDigest)
     {
-        string prefix = CursorAlgorithmId + "/";
+        string prefix = (typedSchema is null
+            ? CursorAlgorithmId
+            : TypedCursorAlgorithmId) + "/";
         if (cursor.Length > MaximumCursorCharacters ||
             !cursor.StartsWith(prefix, StringComparison.Ordinal))
         {
@@ -1174,7 +1489,7 @@ public sealed class JsonMigrationDataSource :
             batchOrdinal);
     }
 
-    private static string ComputeCursorToken(
+    private string ComputeCursorToken(
         string scopeDigest,
         long rowOrdinal,
         long batchOrdinal)
@@ -1189,7 +1504,9 @@ public sealed class JsonMigrationDataSource :
         }
 
         string digest = JsonStableDigest.Compute(
-            "csharpdb-json-cursor-token-v1",
+            typedSchema is null
+                ? "csharpdb-json-cursor-token-v1"
+                : TypedCursorTokenAlgorithmId,
             scopeDigest,
             rowOrdinal.ToString(CultureInfo.InvariantCulture),
             batchOrdinal.ToString(CultureInfo.InvariantCulture));
@@ -1283,7 +1600,8 @@ public sealed class JsonMigrationDataSource :
     private sealed record ProjectedColumn(
         string ObjectId,
         int SchemaIndex,
-        JsonTableColumnSchema Schema);
+        JsonTableColumnSchema Schema,
+        JsonTypedColumnIntent? Intent);
 
     private sealed record ProjectedValue(
         MigrationSourceValue Value,

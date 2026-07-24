@@ -631,7 +631,11 @@ manifests, trusted digest pinning, copy-on-open ownership, semantic replay,
 and tamper-aware reopen. The
 [`migration-json-typed-intent.md`](migration-json-typed-intent.md) contract
 adds a canonical source-bound sidecar for non-native scalar intent while
-leaving package v1 unchanged. Typed schema/value integration, collection
+leaving package v1 unchanged. The
+[`migration-json-typed-table.md`](migration-json-typed-table.md) contract now
+binds that sidecar into a distinct typed schema, catalog, exact scalar
+decoding, deterministic row outcomes, lossless planning, apply conversion,
+and mutually exclusive v2 cursors. A typed retained package v2, collection
 projection, export, and CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
@@ -646,6 +650,10 @@ projection, export, and CLI integration remain open.
   explicit projection is selected.
 - [x] Define a source-bound sidecar convention for BLOB, decimal, GUID,
   date/time, and other non-native JSON intent.
+- [x] Bind source-bound typed intent into object-table schema, catalogs,
+  full-stream scalar decoding, deterministic rejects, lossless apply
+  conversion, and exact v2 cursor replay without changing package or cursor
+  v1.
 - [ ] Stream JSON array and NDJSON output without buffering all rows.
 
 ### Shared Deliverables
