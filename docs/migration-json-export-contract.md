@@ -2,9 +2,11 @@
 
 ## Status And Scope
 
-This document freezes the eighth Track 4B contract: deterministic,
-restart-only export from one typed retained CSharpDB table to either a compact
-JSON root array or newline-delimited JSON.
+This document freezes deterministic export from one typed retained CSharpDB
+table to either a compact JSON root array or newline-delimited JSON. The
+restart-only publisher is implemented. The durable checkpoint artifact,
+prefix geometry, and generation transitions are also frozen here before the
+prepared-output lease activates them.
 
 The completed restart-only slice includes:
 
@@ -16,11 +18,12 @@ The completed restart-only slice includes:
 - retained-snapshot source binding; and
 - `migrate export --format json|ndjson` CLI routing.
 
-Durable checkpoints, mid-stream resume, killed-process staging reclamation,
-collection/document export, and typed-intent generation remain later slices.
-The disposable Windows VM qualification is also deferred. This restart-only
-slice flushes completed staging files to durable storage as supported by the
-host, but makes no directory-fsync or abrupt-power-loss guarantee.
+Durable checkpoint publication, prepared-output leasing, mid-stream replay and
+resume, killed-process staging reclamation, collection/document export, and
+typed export intent remain later slices. The disposable Windows VM
+qualification is also deferred. This restart-only slice flushes completed
+staging files to durable storage as supported by the host, but makes no
+directory-fsync or abrupt-power-loss guarantee.
 
 ## Public Contract
 
@@ -48,6 +51,74 @@ Success returns:
 - the validated `JsonExportManifest`;
 - its exact canonical UTF-8 bytes; and
 - the independently retainable canonical-manifest digest.
+
+## Frozen Checkpoint Artifact
+
+`csharpdb-json-export-checkpoint/v1` is the canonical, bounded checkpoint
+envelope. Its lowercase SHA-256 covers the format, digest algorithm, and
+payload. The parser requires strict UTF-8 without a BOM, rejects comments,
+trailing commas, duplicate or unknown properties, unsupported enum spellings,
+noncanonical property order or whitespace, and input larger than 16 MiB.
+Diagnostics do not repeat attacker-controlled names or values.
+
+Every checkpoint contains:
+
+- a nonnegative generation and `Writing` or `DataComplete` phase;
+- an immutable `csharpdb-json-export-checkpoint-binding/v1` binding;
+- the canonical binding digest;
+- evidence for the last complete durable row boundary; and
+- final logical and manifest evidence only in `DataComplete`.
+
+The binding contains the lossless profile, exact retained source evidence and
+independently pinned snapshot identity, ordered table manifest, framing, codec,
+and resource ceilings. Progress contains the completed row count, signed last
+row ID when at least one row is complete, exact physical prefix length and
+digest, `csharpdb-json-export-ordered-content-prefix/v1`, and matching source
+and exported logical-prefix digests. Prefix digests are replay evidence, not
+serialized incremental-hash state.
+
+`DataComplete` additionally contains matching final source/exported logical
+digests and the digest of the reconstructed canonical export manifest. The
+checkpoint serializer reconstructs that manifest and verifies the supplied
+digest before accepting the checkpoint.
+
+### Durable Prefix Geometry
+
+For root-array framing, a zero-row `Writing` checkpoint describes exactly `[`.
+A nonempty writing prefix starts with `[` and ends with the final complete
+object's `}`; it has neither a trailing comma nor `]\n`. `DataComplete`
+describes the full file: exactly `[]\n` for zero rows, or a prefix starting
+with `[` and ending with `}]\n`.
+
+For NDJSON, zero rows describe an empty file in both phases. Every nonempty
+prefix starts with `{` and ends with the LF following a complete object.
+`Writing` and `DataComplete` may therefore describe identical physical bytes;
+source EOF evidence, not an extra delimiter, distinguishes the terminal
+phase.
+
+Length validation derives the minimum possible object size from the bound
+schema and JSON string escaping, uses the strict reader's maximum value size
+as the per-object upper bound, performs checked arithmetic, and reserves the
+two-byte root-array closing tail while the phase is `Writing`.
+
+### Generation Transitions
+
+The first persisted generation is zero. Repeating a generation is allowed
+only for exactly idempotent checkpoint content. Otherwise generation advances
+by exactly one; binding, aggregation, and completed evidence cannot regress.
+`DataComplete` is terminal.
+
+A `Writing` generation advances rows, signed last row ID, bytes, and both
+logical-prefix digests. The transition to `DataComplete` may include rows
+written since the last periodic checkpoint or may only finalize existing
+rows. With no new rows, root-array completion adds exactly `]\n` and changes
+only physical evidence, while NDJSON completion changes only phase,
+generation, and final EOF evidence.
+
+This checkpoint contract does not itself create prepared files, replace an
+active checkpoint, truncate a torn tail, or resume enumeration. Those actions
+remain behind the deterministic prepared-output lease and replay coordinator
+in the next slices.
 
 ## Retained-Snapshot Publication
 
@@ -270,8 +341,10 @@ The merge gate covers:
 
 ## Deferred Work
 
-This slice does not retain checkpoints, resume a partial export, emit nested
-collection documents, or create a typed-intent sidecar. An exact rerun starts
+This slice freezes and validates checkpoint artifacts but does not yet persist
+an active checkpoint, resume a partial export, emit nested collection
+documents, or create a typed export-intent sidecar. Until the prepared-output
+lease and replay coordinator are activated, an exact CLI rerun still starts
 from row zero.
 
 An uncatchable process termination can leave an unreferenced private

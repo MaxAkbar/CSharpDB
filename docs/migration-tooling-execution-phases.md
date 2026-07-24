@@ -653,9 +653,11 @@ physical schema while replaying signed row IDs through EOF. The CLI now routes
 `--format json|ndjson`, reports text or structured results, and isolates CSV
 checkpoint and lossy-profile options. The adapter is intentionally bound to
 the built-in/default Engine reader composition; custom provider provenance is
-not yet representable in the manifest. Checkpoint/resume, killed-process
-staging reclamation, abrupt-power-loss qualification, collection projection,
-and import CLI integration remain open.
+not yet representable in the manifest. The bounded canonical checkpoint
+artifact and its framing/generation rules are now frozen, but checkpoint
+publication, replay/resume, killed-process staging reclamation,
+abrupt-power-loss qualification, collection projection, and import CLI
+integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -683,6 +685,10 @@ and import CLI integration remain open.
 - [x] Publish retained-snapshot JSON/NDJSON through private local sibling
   staging with no-overwrite data-before-manifest commits, exact data-only/pair
   reuse, full source requalification, and restart-only CLI routing.
+- [x] Freeze a bounded canonical JSON/NDJSON checkpoint artifact with exact
+  retained-source and export binding, complete-row physical/logical prefix
+  evidence, root-array and NDJSON boundary geometry, final-manifest
+  reconstruction, and explicit generation/terminal transition rules.
 - [ ] Add deterministic leased JSON export staging, safe killed-process orphan
   reclamation, durable checkpoints, and verified mid-stream resume.
 

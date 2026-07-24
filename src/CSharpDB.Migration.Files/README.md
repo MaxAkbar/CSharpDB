@@ -65,13 +65,35 @@ significant values to versioned canonical JSON text. Catalog-bound row
 streaming now revalidates projected values, preserves arbitrary projection
 order, emits deterministic reject evidence, bounds batches by rows and
 canonical bytes, and supplies snapshot/policy-bound replay cursors.
-Retained-source packaging, collection projection, typed sidecars, export,
-and CLI integration remain later slices. See
+Raw and typed retained packages, source-bound typed intent, typed table/apply
+conversion, restart-only JSON/NDJSON table export, and CLI routing are now
+implemented. Collection projection and typed export-intent generation remain
+later slices. See
 [`migration-json-reader-foundation.md`](../../docs/migration-json-reader-foundation.md)
 and
 [`migration-json-table-schema.md`](../../docs/migration-json-table-schema.md),
 plus
 [`migration-json-data-source.md`](../../docs/migration-json-data-source.md).
+
+`JsonStreamingExporter` writes one ordered physical CSharpDB table as a
+compact root array or LF-terminated NDJSON without buffering the table. Its
+canonical manifest binds retained source identity, ordered schema, framing,
+resource ceilings, physical bytes, and matching lossless logical evidence.
+The local-Windows restart-only publisher uses private sibling staging,
+handle-bound no-replace data-before-manifest commits, exact pair/data-only
+reuse, and fail-closed namespace and ACL qualification.
+
+`JsonExportCheckpointSerializer` freezes the bounded canonical
+`csharpdb-json-export-checkpoint/v1` artifact before it is activated by a
+prepared-output lease. It binds the immutable source/schema/framing contract
+to complete-object physical and logical prefixes, validates exact root-array
+and NDJSON zero/nonzero boundary geometry, reconstructs terminal manifests,
+and permits only idempotent or exact next-generation transitions.
+Root-array `Writing` checkpoints omit and reserve `]\n`; NDJSON completion can
+be a phase-only transition over identical bytes. Checkpoint persistence,
+replay/resume, deterministic killed-process staging reclamation, and
+hard-power qualification remain later gates. See
+[`migration-json-export-contract.md`](../../docs/migration-json-export-contract.md).
 
 The typed `csharpdb-csv-export-manifest/v1` sidecar contract now binds a
 CSharpDB snapshot, ordered typed schema, fixed RFC 4180 codec, physical data
