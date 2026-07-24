@@ -3,20 +3,24 @@
 ## Status And Scope
 
 This document freezes the eighth Track 4B contract: deterministic,
-restart-only streaming export from one typed CSharpDB table to either a
-compact JSON root array or newline-delimited JSON.
+restart-only export from one typed retained CSharpDB table to either a compact
+JSON root array or newline-delimited JSON.
 
-The first slice includes:
+The completed restart-only slice includes:
 
 - a strict canonical export manifest;
 - exact physical and logical content evidence;
-- bounded, forward-only table-row serialization; and
-- a caller-owned empty output stream.
+- bounded, forward-only table-row serialization;
+- a caller-owned empty output stream;
+- private local-filesystem staging and fail-closed manifest-last publication;
+- retained-snapshot source binding; and
+- `migrate export --format json|ndjson` CLI routing.
 
-Retained-snapshot publication, CLI routing, durable checkpoints, mid-stream
-resume, collection/document export, and typed-intent generation remain later
-slices. The disposable Windows VM qualification is not required for this
-restart-only writer because it makes no filesystem-durability claim.
+Durable checkpoints, mid-stream resume, killed-process staging reclamation,
+collection/document export, and typed-intent generation remain later slices.
+The disposable Windows VM qualification is also deferred. This restart-only
+slice flushes completed staging files to durable storage as supported by the
+host, but makes no directory-fsync or abrupt-power-loss guarantee.
 
 ## Public Contract
 
@@ -44,6 +48,70 @@ Success returns:
 - the validated `JsonExportManifest`;
 - its exact canonical UTF-8 bytes; and
 - the independently retainable canonical-manifest digest.
+
+## Retained-Snapshot Publication
+
+`JsonExportPublisher.PublishAsync` accepts distinct, normalized, absolute
+sibling data and manifest paths plus one `JsonStreamingExportRequest`. It
+creates private sibling staging files, completes and verifies the streaming
+export there, durably flushes each file as supported, and then commits the
+data path before the canonical manifest path. It never overwrites a final
+path.
+
+The publisher supports a caller-controlled local Windows directory. UNC and
+mapped-network locations fail closed. Existing directory components and final
+files cannot be links, junctions, reparse points, devices, or other special
+files. Final data and manifest files must each have one link and distinct
+stable file identities. Private staging files receive an owner-only protected
+ACL. Existing final files are reusable only while they retain that same
+current-owner-only protected ACL. Non-Windows publication is not part of this
+slice.
+
+A rerun always regenerates the complete export before it examines final
+content for reuse. The following states are accepted:
+
+- neither final exists: publish data, then manifest;
+- the exact data exists alone: reuse it and publish the exact manifest; or
+- the exact data/manifest pair exists: reuse both.
+
+A manifest without data, different existing content, aliases, unsafe path
+components, or a data/manifest mismatch fails closed. Cancellation is observed
+through staging and immediately before the data namespace commit. Once exact
+final data is committed, the publisher completes the deterministic manifest
+decision without observing cancellation so it does not deliberately strand a
+recoverable data-only state.
+
+`CSharpDbJsonExportAdapter` opens one retained snapshot only after path
+preflight, verifies the independently supplied canonical snapshot identity,
+captures and rechecks the physical table schema, and enumerates typed rows in
+strictly increasing signed row-ID order. The session stays pinned through
+export and publication. An exact-pair rerun therefore still requalifies the
+retained source through EOF before reporting reuse. This v1 adapter uses the
+built-in/default Engine reader composition. Snapshots requiring custom
+storage, catalog, checksum, index, or serializer providers remain unsupported
+until their provider provenance can be represented and bound into the export
+manifest.
+
+The CLI surface is:
+
+```text
+csharpdb migrate export <retained-snapshot.db>
+  --format json|ndjson
+  --table <physical-table>
+  --out <table.json|table.ndjson>
+  --manifest <table.manifest.json>
+  --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<digest>>
+  [--profile lossless-v1]
+  [--max-data-bytes <positive-int64>]
+  [--max-decoded-blob-bytes <positive-int32>]
+  [--json]
+```
+
+`--format json` selects root-array framing; `--format ndjson` selects
+LF-terminated NDJSON. The final `--json` flag selects structured command
+status and is unambiguous with either data format. CSV checkpoint intervals
+and the spreadsheet-safe lossy profile are rejected for JSON/NDJSON rather
+than silently ignored.
 
 ## Fixed Lossless V1 Codec
 
@@ -191,13 +259,27 @@ The merge gate covers:
 - cancellation, leave-open ownership, and deterministic replay;
 - strict canonical-manifest tamper and resource-bound tests;
 - parsing emitted bytes through the strict streaming JSON reader; and
-- a 50,000-row bounded-memory fixture.
+- a 50,000-row bounded-memory fixture;
+- exact new, data-only, and pair-reuse publication states;
+- mismatch, alias, link, special-file, cancellation-cutoff, and injected-fault
+  publication states;
+- retained-snapshot identity, schema, row-order, and source-requalification
+  behavior; and
+- JSON/NDJSON CLI routing, result modes, empty framing, retries, and CSV-option
+  isolation.
 
 ## Deferred Work
 
-This slice does not publish files, route the CLI, retain checkpoints, resume a
-partial export, emit nested collection documents, or create a typed-intent
-sidecar.
+This slice does not retain checkpoints, resume a partial export, emit nested
+collection documents, or create a typed-intent sidecar. An exact rerun starts
+from row zero.
+
+An uncatchable process termination can leave an unreferenced private
+`.csharpdb-json-export-*.stage` sibling. A full rerun uses new private staging
+and can still recover or reuse the exact finals, but deterministic leased
+staging and safe orphan reclamation are deferred to the checkpoint and
+process-crash slice. Directory-entry durability and abrupt-power-loss
+qualification remain deferred with the disposable Windows VM work.
 
 In particular, `csharpdb-json-table-intent/v1` has no binary64 codec. A table
 containing CSharpDB `Real` values therefore cannot yet be advertised as a

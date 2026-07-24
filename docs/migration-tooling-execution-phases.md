@@ -644,9 +644,18 @@ v1. The
 [`migration-json-export-contract.md`](migration-json-export-contract.md)
 contract now adds restart-only, bounded-memory table export to compact JSON
 root arrays or LF-terminated NDJSON with canonical manifests and exact
-physical and logical evidence. Retained-snapshot publication, export CLI
-routing, checkpoint/resume, collection projection, and import CLI integration
-remain open.
+physical and logical evidence. A local Windows publisher now adds
+current-owner-only private staging and reusable finals, exact-existing
+classification, fail-closed no-overwrite
+data-before-manifest commits, and full-rerun recovery. The retained CSharpDB
+adapter pins an independently trusted snapshot identity and rechecks the
+physical schema while replaying signed row IDs through EOF. The CLI now routes
+`--format json|ndjson`, reports text or structured results, and isolates CSV
+checkpoint and lossy-profile options. The adapter is intentionally bound to
+the built-in/default Engine reader composition; custom provider provenance is
+not yet representable in the manifest. Checkpoint/resume, killed-process
+staging reclamation, abrupt-power-loss qualification, collection projection,
+and import CLI integration remain open.
 
 - [x] Stream root arrays and NDJSON/multiple top-level values without loading
   the full input.
@@ -671,6 +680,11 @@ remain open.
 - [x] Stream lossless table rows as deterministic compact JSON arrays or
   NDJSON without buffering all rows, with schema-order properties, strict
   scalar codecs, bounded values, and canonical physical/logical evidence.
+- [x] Publish retained-snapshot JSON/NDJSON through private local sibling
+  staging with no-overwrite data-before-manifest commits, exact data-only/pair
+  reuse, full source requalification, and restart-only CLI routing.
+- [ ] Add deterministic leased JSON export staging, safe killed-process orphan
+  reclamation, durable checkpoints, and verified mid-stream resume.
 
 ### Shared Deliverables
 

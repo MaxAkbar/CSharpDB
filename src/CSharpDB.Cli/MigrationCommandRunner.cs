@@ -7,6 +7,7 @@ using CSharpDB.Engine;
 using CSharpDB.Migration;
 using CSharpDB.Migration.CSharpDb;
 using CSharpDB.Migration.Files.Csv;
+using CSharpDB.Migration.Files.Json;
 using CSharpDB.Migration.Validation;
 
 namespace CSharpDB.Cli;
@@ -20,7 +21,8 @@ internal static class MigrationCommandRunner
         "       csharpdb migrate preview <plan.json> --catalog <catalog.json> [--format text|json]\n" +
         "       csharpdb migrate apply <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <run.json> [--resume] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
         "       csharpdb migrate validate <plan.json> --catalog <catalog.json> [--source-package <source.csdbcsv> --expected-manifest-digest <sha256:...> --workspace <directory> --max-source-bytes <count>] --target <staged.csdb> --out <validation.json> [--level schema|count|checksum] [--spill-dir <directory>] [--allow-deterministic-rejects --reject-artifact <absolute-normalized-rejects.jsonl>] [--format text|json]\n" +
-        "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]";
+        "       csharpdb migrate export <retained-snapshot.db> --format csv --table <physical-table> --out <table.csv> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1|spreadsheet-safe-lossy-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--checkpoint-row-interval <count>] [--json]\n" +
+        "       csharpdb migrate export <retained-snapshot.db> --format json|ndjson --table <physical-table> --out <table.json|table.ndjson> --manifest <table.manifest.json> --expected-snapshot-identity <csharpdb-retained-snapshot/v1:<bytes>:sha256:<64-lowercase-hex>> [--profile lossless-v1] [--max-data-bytes <count>] [--max-decoded-blob-bytes <count>] [--json]";
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
@@ -120,7 +122,8 @@ internal static class MigrationCommandRunner
         }
         if (!options.TryGetValue("--format", out string? formatValue))
             return await OptionErrorAsync("Missing required option --format.", error);
-        if (!string.Equals(formatValue, "csv", StringComparison.OrdinalIgnoreCase))
+        string exportFormat = formatValue.ToLowerInvariant();
+        if (exportFormat is not ("csv" or "json" or "ndjson"))
             return await OptionErrorAsync($"Unsupported export format '{formatValue}'.", error);
         if (!options.TryGetValue("--table", out string? tableName))
             return await OptionErrorAsync("Missing required option --table.", error);
@@ -141,7 +144,7 @@ internal static class MigrationCommandRunner
             string.IsNullOrWhiteSpace(manifestValue))
         {
             return await OptionErrorAsync(
-                "Export table, CSV, and manifest values cannot be blank.",
+                "Export table, data, and manifest values cannot be blank.",
                 error);
         }
         if (!TryParseRetainedSnapshotIdentity(
@@ -154,6 +157,70 @@ internal static class MigrationCommandRunner
                 error);
         }
 
+        long maxDataBytes = 1L << 40;
+        if (options.TryGetValue("--max-data-bytes", out string? maxDataValue) &&
+            !TryParsePositiveLong(maxDataValue, out maxDataBytes))
+        {
+            return await OptionErrorAsync(
+                "The export data-byte limit must be a positive 64-bit integer.",
+                error);
+        }
+
+        string snapshotPath = Path.GetFullPath(args[2]);
+        string destinationPath = Path.GetFullPath(outputValue);
+        string manifestPath = Path.GetFullPath(manifestValue);
+        if (HasWindowsDosAliasSegment(snapshotPath))
+        {
+            return await OptionErrorAsync(
+                "Windows DOS short-name aliases cannot be used for retained export snapshots.",
+                error);
+        }
+        if (ContainsEquivalentResolvedPaths(
+                [snapshotPath, destinationPath, manifestPath]))
+        {
+            return await OptionErrorAsync(
+                "Retained snapshot, data output, and manifest must use different files.",
+                error);
+        }
+
+        return exportFormat == "csv"
+            ? await RunCsvExportAsync(
+                options,
+                snapshotPath,
+                snapshotIdentity,
+                tableName,
+                destinationPath,
+                manifestPath,
+                maxDataBytes,
+                output,
+                error,
+                ct)
+            : await RunJsonExportAsync(
+                options,
+                exportFormat,
+                snapshotPath,
+                snapshotIdentity,
+                tableName,
+                destinationPath,
+                manifestPath,
+                maxDataBytes,
+                output,
+                error,
+                ct);
+    }
+
+    private static async ValueTask<int> RunCsvExportAsync(
+        IReadOnlyDictionary<string, string> options,
+        string snapshotPath,
+        RetainedDatabaseSnapshotIdentity snapshotIdentity,
+        string tableName,
+        string destinationPath,
+        string manifestPath,
+        long maxDataBytes,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
         CsvExportProfile profile = CsvExportProfile.LosslessV1;
         if (options.TryGetValue("--profile", out string? profileValue))
         {
@@ -170,15 +237,6 @@ internal static class MigrationCommandRunner
                     $"Unsupported CSV export profile '{profileValue}'.",
                     error);
             }
-        }
-
-        long maxDataBytes = 1L << 40;
-        if (options.TryGetValue("--max-data-bytes", out string? maxDataValue) &&
-            !TryParsePositiveLong(maxDataValue, out maxDataBytes))
-        {
-            return await OptionErrorAsync(
-                "The CSV export data-byte limit must be a positive 64-bit integer.",
-                error);
         }
 
         int maxDecodedBlobBytes =
@@ -207,22 +265,6 @@ internal static class MigrationCommandRunner
                 error);
         }
 
-        string snapshotPath = Path.GetFullPath(args[2]);
-        string destinationPath = Path.GetFullPath(outputValue);
-        string manifestPath = Path.GetFullPath(manifestValue);
-        if (HasWindowsDosAliasSegment(snapshotPath))
-        {
-            return await OptionErrorAsync(
-                "Windows DOS short-name aliases cannot be used for retained CSV export snapshots.",
-                error);
-        }
-        if (ContainsEquivalentResolvedPaths(
-                [snapshotPath, destinationPath, manifestPath]))
-        {
-            return await OptionErrorAsync(
-                "Retained snapshot, CSV, and manifest must use different files.",
-                error);
-        }
         if (SnapshotUsesReservedExportNamespace(
                 snapshotPath,
                 destinationPath))
@@ -282,6 +324,129 @@ internal static class MigrationCommandRunner
                 $"Status: OK | format=csv | table={result.Manifest.Table.Name} | " +
                 $"profile={FormatCsvExportProfile(result.Manifest.Profile)} | " +
                 $"csv={result.DestinationPath} | manifest={result.ManifestPath} | " +
+                $"manifestDigest={result.ManifestDigest} | " +
+                $"dataDigest={result.Manifest.Content.DataDigest.Algorithm}:" +
+                $"{result.Manifest.Content.DataDigest.Value} | " +
+                $"rows={result.Manifest.Content.RowCount} | " +
+                $"bytes={result.Manifest.Content.DataByteLength} | " +
+                $"dataState={(result.ReusedData ? "reused" : "published")} | " +
+                $"manifestState={(result.ReusedManifest ? "reused" : "published")}");
+        }
+
+        return InspectorCommandRunner.ExitOk;
+    }
+
+    private static async ValueTask<int> RunJsonExportAsync(
+        IReadOnlyDictionary<string, string> options,
+        string exportFormat,
+        string snapshotPath,
+        RetainedDatabaseSnapshotIdentity snapshotIdentity,
+        string tableName,
+        string destinationPath,
+        string manifestPath,
+        long maxDataBytes,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (options.ContainsKey("--checkpoint-row-interval"))
+        {
+            return await OptionErrorAsync(
+                "Option --checkpoint-row-interval is supported only for CSV export.",
+                error);
+        }
+        if (options.TryGetValue(
+                "--profile",
+                out string? profileValue) &&
+            !string.Equals(
+                profileValue,
+                "lossless-v1",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return await OptionErrorAsync(
+                $"Unsupported {exportFormat.ToUpperInvariant()} export profile '{profileValue}'.",
+                error);
+        }
+
+        int maxDecodedBlobBytes =
+            JsonExportContracts.MaximumSupportedDecodedBlobBytes;
+        if (options.TryGetValue(
+                "--max-decoded-blob-bytes",
+                out string? maxBlobValue) &&
+            (!TryParsePositiveInt(
+                 maxBlobValue,
+                 out maxDecodedBlobBytes) ||
+             maxDecodedBlobBytes >
+             JsonExportContracts
+                 .MaximumSupportedDecodedBlobBytes))
+        {
+            return await OptionErrorAsync(
+                $"The {exportFormat.ToUpperInvariant()} export decoded BLOB limit must be a positive 32-bit integer " +
+                $"no greater than {JsonExportContracts.MaximumSupportedDecodedBlobBytes}.",
+                error);
+        }
+
+        JsonExportPublisher.ValidatePaths(
+            destinationPath,
+            manifestPath);
+        var request = new CSharpDbRetainedJsonExportRequest
+        {
+            SnapshotPath = snapshotPath,
+            SnapshotIdentity = snapshotIdentity,
+            TableName = tableName,
+            DestinationPath = destinationPath,
+            Profile = JsonExportProfile.LosslessV1,
+            Framing = exportFormat == "json"
+                ? JsonExportFraming.RootArray
+                : JsonExportFraming.Ndjson,
+            MaxDataBytes = maxDataBytes,
+            MaximumDecodedBlobBytes = maxDecodedBlobBytes,
+        };
+        JsonExportPublicationResult result =
+            await new CSharpDbJsonExportAdapter()
+                .WriteAndPublishTableAsync(
+                    request,
+                    manifestPath,
+                    ct)
+                .ConfigureAwait(false);
+
+        if (options.ContainsKey("--json"))
+        {
+            var report = new
+            {
+                Format =
+                    "csharpdb-migration-export-result/v1",
+                Status = "complete",
+                ExportFormat = exportFormat,
+                SnapshotIdentity =
+                    snapshotIdentity.SnapshotIdentity,
+                Table = result.Manifest.Table.Name,
+                Profile = result.Manifest.Profile,
+                DataPath = result.DestinationPath,
+                ManifestPath = result.ManifestPath,
+                result.ManifestDigest,
+                RowCount =
+                    result.Manifest.Content.RowCount,
+                DataByteLength =
+                    result.Manifest.Content.DataByteLength,
+                DataDigest =
+                    result.Manifest.Content.DataDigest,
+                result.ReusedData,
+                result.ReusedManifest,
+            };
+            await output.WriteLineAsync(
+                JsonSerializer.Serialize(
+                    report,
+                    JsonOptions));
+        }
+        else
+        {
+            await output.WriteLineAsync(
+                $"Status: OK | format={exportFormat} | " +
+                $"table={result.Manifest.Table.Name} | " +
+                "profile=lossless-v1 | " +
+                $"data={result.DestinationPath} | " +
+                $"manifest={result.ManifestPath} | " +
                 $"manifestDigest={result.ManifestDigest} | " +
                 $"dataDigest={result.Manifest.Content.DataDigest.Algorithm}:" +
                 $"{result.Manifest.Content.DataDigest.Value} | " +

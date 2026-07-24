@@ -276,7 +276,7 @@ public sealed class CsvExportCommandRunnerTests
                 valid,
                 "--expected-snapshot-identity",
                 receipt.SnapshotIdentity.ToUpperInvariant()),
-            ReplaceOptionValue(valid, "--format", "json"),
+            ReplaceOptionValue(valid, "--format", "yaml"),
             [.. valid, "--profile", "lossy"],
             [.. valid, "--max-data-bytes", "0"],
             [

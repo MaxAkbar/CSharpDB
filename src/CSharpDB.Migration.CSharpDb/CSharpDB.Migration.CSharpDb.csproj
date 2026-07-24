@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>CSharpDB.Migration.CSharpDb</AssemblyName>
     <RootNamespace>CSharpDB.Migration.CSharpDb</RootNamespace>
-    <Description>CSharpDB migration adapters for crash-resumable staging and retained-snapshot CSV export.</Description>
+    <Description>CSharpDB migration adapters for crash-resumable staging and retained-snapshot CSV, JSON, and NDJSON export.</Description>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
