@@ -2813,8 +2813,9 @@ public sealed class CSharpDbStagedMigrationTarget :
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceSnapshotIdentity);
         MigrationPlanReadinessValidator.ValidateForApply(plan, catalog);
         MigrationStagedTargetPolicyValidator.ValidateForBinding(plan);
-        foreach (MigrationSchemaStage stage in Enum.GetValues<MigrationSchemaStage>())
-            _ = CSharpDbMigrationSql.BuildStageActions(plan, catalog, stage);
+        CSharpDbDdlPreviewBuilder.ValidateAttachedGeneratedDdlDigest(
+            plan,
+            catalog);
         string fullPath = Path.GetFullPath(targetPath);
         string? directory = Path.GetDirectoryName(fullPath);
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))

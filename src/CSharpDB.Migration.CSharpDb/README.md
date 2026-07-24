@@ -18,6 +18,15 @@ reject-ledger entries, and their full v2 receipt commit in one explicit
 transaction. Resume accepts only exact existing stage and batch receipts and
 rejects changed identities, cursor chains, outcome order, or payloads.
 
+`CSharpDbDdlPreviewBuilder` exposes the same ordered target-schema renderer as
+an explicit, no-write preview. It reports plan readiness, separates SQL from
+document-collection creation actions, and includes empty stages so the output
+order is unambiguous. Its versioned digest covers only migrated schema actions,
+not internal migration bookkeeping tables, and is independent of the plan
+digest so it remains stable after attachment. A plan stores only the digest;
+when present, the staged target recomputes and verifies it before creating or
+resuming a target. Legacy plans without a preview digest remain accepted.
+
 Apply stops at `awaiting-validation`. Activation accepts only a permit derived
 from a coherent, published, passing validation report and persists its receipt
 atomically. One immutable validation reader snapshot exposes the complete

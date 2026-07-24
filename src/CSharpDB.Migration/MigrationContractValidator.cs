@@ -221,7 +221,15 @@ public static class MigrationContractValidator
             throw Invalid("Migration validation policy is required.");
         RequireText(plan.Validation.CanonicalizationVersion, "Canonicalization version");
         if (plan.GeneratedDdlDigest is not null)
+        {
             RequireSha256(plan.GeneratedDdlDigest, "Generated DDL digest");
+            if (plan.GeneratedDdlDigest.Any(static character =>
+                    character is >= 'A' and <= 'F'))
+            {
+                throw Invalid(
+                    "Generated DDL digest must use lowercase hexadecimal.");
+            }
+        }
 
         IReadOnlyList<MigrationDiagnostic> diagnostics = RequireList(plan.Diagnostics, "Plan diagnostics");
         IReadOnlyDictionary<string, MigrationDiagnostic> diagnosticsById = ValidateDiagnostics(diagnostics);

@@ -403,5 +403,11 @@ public sealed record MigrationPlan
     /// </summary>
     public IReadOnlyList<string> AcceptedExclusionObjectIds { get; init; } = [];
 
+    /// <summary>
+    /// Optional lowercase SHA-256 digest of the versioned, ordered target
+    /// schema-action preview. The plan retains only this digest, not the
+    /// rendered DDL. Targets that support this contract verify it against
+    /// their actual renderer before apply.
+    /// </summary>
     public string? GeneratedDdlDigest { get; init; }
 }
